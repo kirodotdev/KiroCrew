@@ -298,7 +298,16 @@ class FakeNudgeSvc:
     def __init__(self) -> None:
         self.added: list[tuple] = []
 
-    async def add(self, *, slot_key, message, idle_secs=60, max_cycles=0, stop_sentinel_path=""):
+    async def add(
+        self,
+        *,
+        slot_key,
+        message,
+        idle_secs=60,
+        max_cycles=0,
+        stop_sentinel_path="",
+        max_runtime_secs=0,
+    ):
         self.added.append((slot_key, message, idle_secs, max_cycles))
         return SimpleNamespace(id="loop1", slot_key=slot_key, idle_secs=idle_secs, max_cycles=max_cycles)
 

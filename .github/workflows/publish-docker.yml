@@ -57,6 +57,27 @@ on:
         description: "Name of the uploaded artifact containing the wheel"
         required: true
         type: string
+      promote:
+        description: >-
+          Promote an existing tested manifest instead of building. A valid
+          promote_digest is mandatory when true; missing evidence fails closed.
+        required: false
+        type: boolean
+        default: false
+      promote_digest:
+        description: >-
+          Recorded attested manifest digest to promote. Used only when promote
+          is true; it never implicitly selects promotion or build mode.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      digest:
+        description: "Published or promoted OCI manifest digest"
+        value: ${{ jobs.publish-docker.outputs.digest }}
+      image:
+        description: "Canonical GHCR image name"
+        value: ${{ jobs.publish-docker.outputs.image }}
 
 permissions:
   contents: read
@@ -73,16 +94,36 @@ jobs:
     env:
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
+      PROMOTE: ${{ inputs.promote }}
+      PROMOTE_DIGEST: ${{ inputs.promote_digest }}
+    outputs:
+      digest: ${{ steps.digest.outputs.value }}
+      image: ${{ steps.image.outputs.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Validate build or promotion mode
+        run: |
+          set -euo pipefail
+          if [ "$PROMOTE" = "true" ]; then
+            if ! [[ "$PROMOTE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Promotion requires a recorded sha256:<64 lowercase hex> digest; refusing to build or retag."
+              exit 1
+            fi
+          elif [ -n "$PROMOTE_DIGEST" ]; then
+            echo "::error::promote_digest was supplied while promote=false; refusing ambiguous publication mode."
+            exit 1
+          fi
+
       - name: Download wheel artifact
+        if: ${{ !inputs.promote }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.wheel_artifact }}
           path: dist
 
       - name: Verify exactly one wheel
+        if: ${{ !inputs.promote }}
         run: |
           set -euo pipefail
           # The artifact carries wheel + sdist; the image consumes the wheel.
@@ -135,11 +176,19 @@ jobs:
           set -e
           if [ "$INSPECT_RC" -eq 0 ]; then
             DIGEST=$(echo "$INSPECT_OUT" | tr -d '"')
+            if [ "$PROMOTE" = "true" ] && [ "$DIGEST" != "$PROMOTE_DIGEST" ]; then
+              echo "::error::Immutable version tag ${IMAGE}:${VERSION} already points to ${DIGEST}, not recorded candidate ${PROMOTE_DIGEST}. Refusing to repoint it."
+              exit 1
+            fi
             echo "Version tag already published (job re-run): ${IMAGE}:${VERSION}@${DIGEST}"
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           elif echo "$INSPECT_OUT" | grep -qiE 'manifest unknown|name unknown|not found|MANIFEST_UNKNOWN|NAME_UNKNOWN'; then
-            echo "Version tag not published yet — building."
+            if [ "$PROMOTE" = "true" ]; then
+              echo "Version tag not published yet — verified promotion may create it."
+            else
+              echo "Version tag not published yet — building."
+            fi
             echo "exists=false" >> "$GITHUB_OUTPUT"
           else
             echo "::error::Could not determine whether ${IMAGE}:${VERSION} exists (transport/auth failure, NOT a clean not-found). Refusing to build: republishing an existing version tag would break digest-pinned deployments. Inspect output follows."
@@ -148,7 +197,7 @@ jobs:
           fi
 
       - name: Set up QEMU (arm64 emulation)
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.exists == 'false' && !inputs.promote
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
@@ -162,7 +211,7 @@ jobs:
       # The Dockerfile independently sha256-verifies the downloaded bytes
       # against the manifest (fail-closed).
       - name: Resolve kiro-cli version
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.exists == 'false' && !inputs.promote
         id: kirocli
         run: |
           set -euo pipefail
@@ -177,7 +226,7 @@ jobs:
       # (no unknown/unknown attestation entries); SLSA provenance is
       # attached by the dedicated attest step instead.
       - name: Build and push (version tag)
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.exists == 'false' && !inputs.promote
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -202,6 +251,8 @@ jobs:
           set -euo pipefail
           if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
             DIGEST="${{ steps.existing.outputs.digest }}"
+          elif [ "$PROMOTE" = "true" ]; then
+            DIGEST="$PROMOTE_DIGEST"
           else
             DIGEST="${{ steps.build.outputs.digest }}"
           fi
@@ -220,7 +271,7 @@ jobs:
       # acquire fraudulent provenance from the trusted release workflow.
       # The existing-tag re-run path is handled by the VERIFY step below.
       - name: Attest image provenance (fresh build)
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.exists == 'false' && !inputs.promote
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ steps.image.outputs.name }}
@@ -237,8 +288,8 @@ jobs:
       # unattested digest into the channel alias — recover by deleting the
       # orphaned version tag (registry UI) and re-running for a clean,
       # attested rebuild. Pinned by test_publish_docker_contract.py.
-      - name: Verify existing digest provenance (re-run)
-        if: steps.existing.outputs.exists == 'true'
+      - name: Verify existing digest provenance (re-run or promotion)
+        if: steps.existing.outputs.exists == 'true' || inputs.promote
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -260,6 +311,19 @@ jobs:
             exit 1
           fi
           echo "Existing digest carries valid provenance from this workflow."
+
+      - name: Record promoted immutable version tag
+        if: inputs.promote && steps.existing.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.digest.outputs.value }}"
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" "${IMAGE}@${DIGEST}"
+          TAG_DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          if [ "$TAG_DIGEST" != "$DIGEST" ]; then
+            echo "::error::Promoted version tag resolved to ${TAG_DIGEST}, expected recorded digest ${DIGEST}."
+            exit 1
+          fi
 
       # FRESH BUILDS ONLY: re-running an OLD workflow (e.g. re-running the
       # v0.1.0 publish after v0.1.1 shipped) hits the existing-tag path and
@@ -310,6 +374,28 @@ jobs:
             fi
           fi
           echo "::notice::Version tag already existed — channel alias NOT moved (re-runs must never roll a channel backward). If this re-run was repairing an interrupted first publish and the alias is stale, move it manually: docker buildx imagetools create -t ${IMAGE}:${CHANNEL} ${IMAGE}@${DIGEST}"
+
+      # Promotion is not complete until the mutable stable alias resolves to
+      # the manifest-recorded digest. This final-state check also catches an
+      # interrupted first promotion where the immutable version tag was written
+      # but the stable alias was not: the re-run must fail visibly rather than
+      # report success with stale channel state.
+      - name: Verify promoted stable alias reconciliation
+        if: inputs.promote
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.image.outputs.name }}"
+          EXPECTED_DIGEST="$PROMOTE_DIGEST"
+          if ! INSPECT_OUT=$(docker buildx imagetools inspect "${IMAGE}:stable" --format '{{json .Manifest.Digest}}' 2>&1); then
+            echo "::error::Could not resolve promoted stable alias ${IMAGE}:stable: ${INSPECT_OUT}"
+            exit 1
+          fi
+          STABLE_DIGEST=$(echo "$INSPECT_OUT" | tr -d '"')
+          if [ "$STABLE_DIGEST" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::Promoted stable alias resolves to ${STABLE_DIGEST}, expected recorded digest ${EXPECTED_DIGEST}. The promotion is incomplete."
+            exit 1
+          fi
+          echo "Promoted stable alias reconciled to recorded digest ${EXPECTED_DIGEST}."
 
       # Public distribution is an explicit release-policy switch. GHCR creates
       # every new package PRIVATE and never inherits visibility from the linked

@@ -151,6 +151,7 @@ class TestTargetedUser:
                 data = await resp.json()
                 assert "allowlist" in data["error"]
                 state.notify.assert_not_called()
+                assert data["code"] == "user_not_in_allowlist"
                 mock_sel.log_tool_invocation.assert_called_once_with(
                     session_key="dashboard",
                     tool_name="send_message",

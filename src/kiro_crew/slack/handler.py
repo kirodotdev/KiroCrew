@@ -29,20 +29,20 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from kiro_crew.session_map import SessionMap
+    from kiro_crew.dashboard.state import DashboardState
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
+from kiro_crew.agent_discovery import project_agent_files, project_agent_name
 from kiro_crew.config.loader import (
     ACTIVATION_REVIEW,
     ConfigReadError,
     KiroCrewConfig,
     config_path,
-    read_config_for_update,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.context import (
@@ -57,6 +57,13 @@ from kiro_crew.cron import (
     compute_next_run_ts,
     format_schedule,
     get_local_tz,
+)
+from kiro_crew.dashboard.chat_utils import (
+    expire_slack_options,
+    mint_options_token,
+    options_control_is_stale,
+    remember_slack_options,
+    run_config_write,
 )
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -83,6 +90,8 @@ from kiro_crew.providers.base import (
 from kiro_crew.safety_override import (
     SafetyOverride,
     apply_config_duration,
+    describe_grant_lifetime,
+    describe_new_grant,
     grant_declared_yolo,
     safety_override,
 )
@@ -95,6 +104,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session import SessionClosingError, SessionManager
+from kiro_crew.session_map import SessionMap
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -106,10 +116,11 @@ from kiro_crew.slack.format import (
     split_message,
     strip_thinking_tags,
 )
+from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (
     _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
-    _collect_recent_sessions,
+    _collect_recent_sessions_off_loop,
 )
 from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
@@ -500,38 +511,6 @@ _trusted_sessions: set[str] = set()
 _YOLO_TTL_SECS = SafetyOverride._ADHOC_TTL_DEFAULT
 
 
-def _fmt_duration(secs: int) -> str:
-    """Render an ad-hoc TTL for a user-facing message (e.g. "6h", "30min")."""
-    if secs % 3600 == 0:
-        return f"{secs // 3600}h"
-    return f"{secs // 60}min"
-
-
-_NO_EXPIRY_TEXT = "stays on until Kiro Crew restarts"
-
-
-def describe_grant_lifetime() -> str:
-    """Describe the LIVE grant's lifetime truthfully.
-
-    A grant can have no timed expiry at all, in which case ``remaining_secs()``
-    is -1. Claiming such a grant "auto-expires" would tell the operator the
-    skip-every-approval mode disarms itself when it never does.
-    """
-    so = safety_override()
-    if not so.is_active():
-        return "off"
-    if so.is_permanent:
-        return _NO_EXPIRY_TEXT
-    return f"{max(0, so.remaining_secs()) // 60}min remaining"
-
-
-def describe_new_grant(result_ttl: int) -> str:
-    """Describe the lifetime of a grant that was just created."""
-    if result_ttl <= 0:
-        return _NO_EXPIRY_TEXT
-    return f"auto-expires in {_fmt_duration(result_ttl)}"
-
-
 # Allowed user IDs for Slack access (set by gateway at startup).
 # Falls back to single KIROCREW_OWNER_ID for backward compatibility.
 _allowed_users: set[str] = set()
@@ -659,8 +638,17 @@ def _conv_state_map(sessions: object) -> "SessionMap | None":
     ``SessionManager`` owns (so writes stay consistent — no second instance can
     clobber them on save). Test doubles without ``_session_map`` return None, in
     which case callers fall back to the in-memory LRU dicts only.
+
+    The type check is load-bearing, not defensive politeness: a bare
+    ``getattr`` is satisfied by any attribute, and an auto-attribute stub (e.g.
+    ``MagicMock``) yields a stand-in whose ``get_flag`` returns a **truthy
+    mock** for every flag. Readers would then mark every session both temporary
+    and incognito — failing closed, but wrongly, and silently. Requiring the
+    real class is what actually delivers the "test doubles fall back to
+    in-memory only" contract this docstring promises.
     """
-    return getattr(sessions, "_session_map", None)
+    sm = getattr(sessions, "_session_map", None)
+    return sm if isinstance(sm, SessionMap) else None
 
 
 def _hydrate_conv_flags(sessions: object, session_key: str) -> None:
@@ -938,19 +926,16 @@ def _get_agent_for_session(session_key: str) -> str:
 
 
 def _discover_project_agents(project_dir: str | None) -> list[Path]:
-    """Return agent JSON files from <project_dir>/.kiro/ and .kiro/agents/."""
-    if not project_dir:
-        return []
-    if is_sensitive_path(project_dir):
-        return []
-    kiro_dir = Path(project_dir) / ".kiro"
-    if not kiro_dir.is_dir():
-        return []
-    specs = list(kiro_dir.glob("*.agent-spec.json"))
-    agents_dir = kiro_dir / "agents"
-    if agents_dir.is_dir():
-        specs.extend(agents_dir.glob("*.json"))
-    return sorted(specs, key=lambda f: f.stem)
+    """Return agent JSON files from <project_dir>/.kiro/ and .kiro/agents/.
+
+    Delegates to :func:`agent_discovery.project_agent_files`, the one implementation
+    now shared with the dashboard picker, ``spawn_run`` validation and per-turn agent
+    resolution. ``include_legacy=True`` is passed HERE and only here: Slack's
+    ``*.agent-spec.json`` convention predates ``.kiro/agents/`` and is kept for
+    continuity, but kiro-cli cannot activate such a name, so no dispatch surface may
+    offer it.
+    """
+    return project_agent_files(project_dir, include_legacy=True)
 
 
 def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None:
@@ -959,21 +944,17 @@ def _resolve_agent_name(name: str, project_dir: str | None = None) -> str | None
     Searches project-local .kiro/ first (if project_dir set), then ~/.kiro/agents/.
     Returns the resolved name, or None if not found.
     """
-    # Project-local agents take priority
+    # Project-local agents take priority — kiro-cli resolves --agent against its
+    # cwd before the user-level dir, so a project agent is the one that would run.
+    # Prefilter on the FILENAME first: this runs on the event loop, and reading
+    # every spec to compare its declared name stalls Slack and the gateway on a
+    # checkout with many agents or slow storage. At most the one matching file is
+    # read, to return the name it declares.
     for spec in _discover_project_agents(project_dir):
-        if spec.stem == name or spec.stem.replace(".agent-spec", "") == name:
-            # Fallback must strip the ".agent-spec" suffix: the match arm
-            # accepts both "<name>" and "<name>.agent-spec", so returning the
-            # raw stem would yield "<name>.agent-spec" — a name that won't
-            # resolve downstream. Use the cleaned stem in every fallback branch.
-            fallback = spec.stem.removesuffix(".agent-spec")
-            raw = safe_read_file_bytes(str(spec))
-            if raw is None:
-                return fallback
-            try:
-                return json.loads(raw.decode("utf-8")).get("name", fallback)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return fallback
+        stem = spec.stem.removesuffix(".agent-spec")
+        if stem != name and spec.stem != name:
+            continue
+        return project_agent_name(spec)
 
     agents_dir = kiro_agents_dir()
     jsons = (
@@ -1076,15 +1057,19 @@ def _set_default_agent(name: str) -> None:
     path = config_path()
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
+
+    def _apply(data: dict) -> dict:
+        data.setdefault("agent", {})["default_agent"] = name
+        return data
+
     try:
-        data = read_config_for_update(path)
+        # Locked read-modify-write: holds the sidecar advisory lock so a
+        # concurrent config writer (dashboard PATCH, CLI, the boot-time meta
+        # refresh) cannot land between this read and write and get reverted.
+        update_config_locked(path, mutate=_apply)
     except ConfigReadError as e:
         # Fail closed: writing back a {} baseline would drop every other setting.
         raise ValueError(f"Failed to read config: {e}") from e
-    data.setdefault("agent", {})["default_agent"] = name
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_config_atomically(path, data)
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
     _cached_default_agent = name
@@ -1099,20 +1084,25 @@ def _persist_channel_config(
     path = config_path()
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
+
+    def _apply(data: dict) -> dict:
+        slack_data = data.setdefault("slack", {})
+        channels = slack_data.setdefault("channels", {})
+        ch = channels.setdefault(channel_id, {})
+        if activation is not None:
+            ch["activation"] = activation
+        if agent is not None:
+            ch["agent"] = agent
+        return data
+
     try:
-        data = read_config_for_update(path)
+        # Locked read-modify-write (see _set_default_agent): without the
+        # sidecar lock, a `!channel always` racing any other config writer
+        # could be silently reverted by the loser's stale snapshot.
+        update_config_locked(path, mutate=_apply)
     except ConfigReadError as e:
         # Fail closed: writing back a {} baseline would drop every other setting.
         raise ValueError(f"Failed to read config: {e}") from e
-    slack_data = data.setdefault("slack", {})
-    channels = slack_data.setdefault("channels", {})
-    ch = channels.setdefault(channel_id, {})
-    if activation is not None:
-        ch["activation"] = activation
-    if agent is not None:
-        ch["agent"] = agent
-    try:
-        write_config_atomically(path, data)
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
 
@@ -1473,7 +1463,9 @@ async def _handle_slash_command(
                     channel, f"YOLO mode is already on ({describe_grant_lifetime()}).", reply_ts
                 )
         elif len(parts) >= 2 and parts[1].lower() == "renew":
-            result = safety_override().renew("slack")
+            # renew() audits fail-closed with a synchronous SEL write; keep
+            # that filesystem I/O off the event loop.
+            result = await asyncio.to_thread(safety_override().renew, "slack")
             if result.renewed:
                 sel().log_api_access(
                     caller=user_id,
@@ -1658,7 +1650,7 @@ async def _handle_slash_command(
         agent_name = parts[1]
         if agent_name.lower() in ("default", "off"):
             try:
-                _set_default_agent("")
+                await run_config_write(_set_default_agent, "")
             except ValueError as e:
                 await slack.post_message(channel, f"❌ {e}", reply_ts)
                 return ""
@@ -1682,7 +1674,7 @@ async def _handle_slash_command(
             )
             return ""
         try:
-            _set_default_agent(resolved)
+            await run_config_write(_set_default_agent, resolved)
         except ValueError as e:
             await slack.post_message(channel, f"❌ {e}", reply_ts)
             return ""
@@ -2026,7 +2018,7 @@ async def _handle_slash_command(
                     )
                     return ""
                 agent_name = resolved
-            _persist_channel_config(channel, agent=agent_name)
+            await run_config_write(_persist_channel_config, channel, agent=agent_name)
             _reload_orch_cfg()
             sel().log_api_access(
                 caller=user_id,
@@ -2048,7 +2040,7 @@ async def _handle_slash_command(
             )
             return ""
 
-        _persist_channel_config(channel, activation=subcmd)
+        await run_config_write(_persist_channel_config, channel, activation=subcmd)
         _reload_orch_cfg()
         sel().log_api_access(
             caller=user_id,
@@ -2157,12 +2149,18 @@ def _append_footer_actions(
     thread_ts: str | None,
     linked_session_key: str | None,
     dashboard_state: object | None,
+    staleness_token: str | None = None,
 ) -> list[dict]:
-    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks."""
+    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks.
+
+    *staleness_token* must be minted by the caller, which is async and can do the
+    transcript read off the event loop. Absent it the control posts untokened and
+    clicks on it are honoured unconditionally.
+    """
     if options:
         from kiro_crew.slack.format import build_options_blocks
 
-        footer_blocks.extend(build_options_blocks(options))
+        footer_blocks.extend(build_options_blocks(options, staleness_token=staleness_token))
     if thread_ts and not linked_session_key and dashboard_state:
         from kiro_crew.slack.format import build_link_dashboard_button
 
@@ -2243,7 +2241,7 @@ async def _handle_compact_command(
             # another timeout, or the graceful "timed out" branch is
             # unreachable and a slow-but-healthy session gets destroyed.
             await asyncio.wait_for(provider.compact(), timeout=120)
-            cr = await provider.wait_for_compaction(timeout=120.0)
+            cr = await provider.wait_for_compaction()
             if cr["type"] == "completed":
                 # ``summary`` is model-facing compacted context, not a
                 # user-facing receipt. Never publish its orchestration text.
@@ -2460,6 +2458,8 @@ async def maybe_route_linked_thread(
     channel: str,
     slack: SlackClientOps,
     reply_ts: str,
+    target_slot: Any | None = None,
+    route_pinned: bool = False,
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -2472,14 +2472,26 @@ async def maybe_route_linked_thread(
     unauthorized user was denied. Returns ``False`` when normal routing should
     continue: no dashboard state, no linked slot, or a ``!``-bang command
     (which is intentionally allowed to fall through to normal handling).
+
+    *route_pinned* makes *target_slot* authoritative instead of resolving the
+    thread's CURRENT owner. An OPTIONS answer is accepted against the
+    conversation that asked the question, but the dispatch runs as a separate
+    task -- so re-resolving here would let a link, relink or unlink landing in
+    between deliver that answer into a different conversation. Pinning is
+    tri-state on purpose: a pinned ``None`` means "this answer belongs to no
+    slot", so a thread linked AFTER acceptance cannot capture a native answer
+    either.
     """
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return False
-    # The dashboard _slack_to_slot map is keyed by the bare Slack thread_ts
-    # (reply_ts), NOT the namespaced session key — look up with reply_ts so
-    # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
-    # is kept for the SEL logging below.
-    _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
+    if route_pinned:
+        _linked_slot = target_slot
+    else:
+        # The dashboard _slack_to_slot map is keyed by the bare Slack thread_ts
+        # (reply_ts), NOT the namespaced session key — look up with reply_ts so
+        # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
+        # is kept for the SEL logging below.
+        _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
     if not _linked_slot:
         return False
 
@@ -2553,6 +2565,9 @@ async def handle_message(
     channel_agent: str | None = None,
     user_display_name: str | None = None,
     action_context: str | None = None,
+    target_slot_name: str | None = None,
+    route_pinned: bool = False,
+    asker_key: str | None = None,
     from_trusted_bot: bool = False,
     channel_activation: str | None = None,
     had_voice_input: bool = False,
@@ -2603,8 +2618,27 @@ async def handle_message(
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
 
     # ── Linked thread intercept: route to dashboard slot if linked ──
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    # Resolved from the NAME captured when the answer was accepted, not from the
+    # thread's current owner: the name survives a link change, a live slot object
+    # would not tell us whether it is still the right destination. A pinned name
+    # that no longer resolves falls through to normal handling rather than
+    # inventing a target.
+    _target_slot = None
+    if route_pinned and target_slot_name and _dashboard_state:
+        _target_slot = getattr(_dashboard_state, "_slots", {}).get(target_slot_name)
+
+    if await maybe_route_linked_thread(
+        text,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        reply_ts,
+        target_slot=_target_slot,
+        route_pinned=route_pinned,
+    ):
         return
+
     logger.info(
         "🔍 handle_message: thread_ts=%s msg_ts=%s → session_key=%s channel=%s",
         thread_ts,
@@ -2790,6 +2824,31 @@ async def handle_message(
         channel_agent=channel_agent,
     ):
         return
+
+    # A new turn supersedes whatever question the previous one ended on, so any
+    # OPTIONS control still live in this thread stops being answerable.
+    #
+    # Placed HERE, below every short-circuit above, because only a message that
+    # actually starts a turn supersedes anything. ``status``, a permission
+    # denial, a modifier-only message, a hook's canned reply and the keyword
+    # commands all answer and return WITHOUT running the agent, so the
+    # conversation has not moved and the pending question is still the one being
+    # waited on. Expiring for those spends a LIVE control and leaves valid
+    # choices unanswerable — the exact inverse of the stale click this lifecycle
+    # exists to prevent. The denial case matters most: an unauthorized caller in
+    # the thread must not be able to destroy the owner's pending question.
+    # Keeping this at one point below the short-circuits, rather than guarding
+    # each of them, means a shortcut added later inherits the right behaviour.
+    #
+    # Resolve the OWNING session, not the ``slack:<ts>`` key derived above: the
+    # control is recorded under whichever session owns the thread, and for a
+    # dashboard-linked thread that is its ``dashboard:chat-N`` key — the same
+    # distinction the linked-thread lookup relies on. Expiring under the wrong
+    # key silently no-ops and leaves the control clickable.
+    await expire_slack_options(
+        cast("DashboardState | None", get_dashboard_state()),
+        sessions.get_session_for_thread(reply_ts) or session_key,
+    )
 
     status_ctrl = StatusReactionController(
         slack,
@@ -2980,14 +3039,36 @@ async def handle_message(
     # namespaced session key. A self-linked Slack thread resolves to our own
     # canonical key (no-op rewrite); a dashboard-linked thread resolves to its
     # ``dashboard:chat-N`` key.
-    linked_session_key = sessions.get_session_for_thread(reply_ts)
-    if linked_session_key and linked_session_key != session_key:
+    # Read the thread's owner ONCE and keep it truthful. Three separate decisions
+    # below consume it -- whether to re-route this turn, whether to CLAIM the
+    # thread, and whether to mirror into a dashboard slot -- and a pinned answer
+    # needs a different answer for each. Falsifying this single value to steer all
+    # three is what made the pin land wrong three times running.
+    thread_owner_key = sessions.get_session_for_thread(reply_ts)
+    # Mirror/footer value: a pinned answer belongs to the conversation that ASKED,
+    # not to whoever owns the thread now, so it mirrors nowhere. (A pinned asker
+    # that *does* hold a slot never reaches here -- maybe_route_linked_thread
+    # already delivered the turn into that slot and returned.)
+    linked_session_key = None if route_pinned else thread_owner_key
+    if route_pinned:
+        # A pinned answer names its own conversation, so the thread's CURRENT
+        # owner has no say -- rewriting the key here is what let a pinned answer
+        # land in whoever took the thread over in the meantime.
+        #
+        # Suppressing that rewrite is only half of it. A pinned asker that holds no
+        # slot -- a cron or native conversation -- would otherwise be left running
+        # under the bare Slack thread key, which for a cron asker is a DIFFERENT
+        # conversation: the answer would open a new session and take the thread
+        # mapping with it. So the asker becomes the session key outright.
+        if asker_key:
+            session_key = asker_key
+    elif thread_owner_key and thread_owner_key != session_key:
         logger.info(
             "🔗 Slack thread %s linked to dashboard session %s — routing there",
             session_key,
-            linked_session_key,
+            thread_owner_key,
         )
-        session_key = linked_session_key
+        session_key = thread_owner_key
 
     client: LLMProvider | None = None
     try:
@@ -2999,13 +3080,28 @@ async def handle_message(
             session_key, agent=_agent, channel_id=channel
         )
         _acquired = True
+        # Expire AGAIN now the turn is serialized — see the same call in
+        # transport_dispatch. The pass earlier in this function runs before
+        # `get_or_create` waits its turn, so two messages arriving together both
+        # clear the OLD control and neither clears the NEW one the first turn
+        # posts on its way out, leaving live buttons for a superseded question.
+        await expire_slack_options(
+            cast("DashboardState | None", get_dashboard_state()),
+            sessions.get_session_for_thread(reply_ts) or session_key,
+        )
         if is_new:
             await sessions.set_channel(session_key, channel)
-        if not linked_session_key:
+        if thread_owner_key is None and not route_pinned:
             # Self-link: thread index maps the bare Slack thread_ts to this
             # session's canonical key. reply_ts (not session_key) is the true
             # Slack timestamp — storing the namespaced key as slack_thread_ts
             # would corrupt reply routing.
+            #
+            # A PINNED answer never claims the thread, however empty the index
+            # looks. Pinning exists so an accepted click cannot mutate thread
+            # routing: a cron or native asker claiming the thread here would
+            # evict its real owner, and every later human reply would land in
+            # the cron conversation instead.
             sessions.set_slack_link(session_key, reply_ts, channel)
         logger.info(
             "🔍 session state: key=%s is_new=%s resumed=%s",
@@ -3078,9 +3174,10 @@ async def handle_message(
 
             # Fallback thread metadata: when thread_parent_text is unavailable
             # (e.g. fetch_message failed), try conversations.replies to get parent info.
-            # Note: requires channels:history (public) or groups:history (private, Level 3
-            # High Risk on Amazon Slack). Gracefully degrades — if scope is missing, thread
-            # context is simply skipped.
+            # Note: requires channels:history (public) or groups:history (private). Both
+            # ship in the manifest, but installs created before groups:history was added
+            # need a reinstall to gain it. Gracefully degrades — if scope is missing,
+            # thread context is simply skipped.
             _thread_meta: str | None = None
             if (
                 is_new
@@ -3809,17 +3906,127 @@ async def handle_message(
         except Exception:
             logger.debug("Failed to delete empty thinking placeholder", exc_info=True)
 
+    # Persist the turn BEFORE posting anything that invites an answer to it.
+    # The control below carries a staleness token derived from this session's last
+    # persisted transcript row, so posting it while this turn is still unwritten
+    # would stamp it with the PREVIOUS turn's position -- and these two rows
+    # landing straight afterwards would read as the conversation having moved on,
+    # refusing the very click the control was posted for.
+    #
+    # Durability-before-invitation is also right on its own terms: a question
+    # about a turn that has no record is not answerable after a restart.
+    _skip_writes = _is_slack_restricted(session_key)
+    _turn_row_ts: str | None = None
+    if conversation_log and not _skip_writes:
+        # The per-turn hot path: two appends every turn, so this is where the
+        # ~12ms of loop time was paid most often.
+        _turn_row_ts = await save_conversation_turn_off_loop(
+            conversation_log,
+            session_key,
+            text,
+            accumulated,
+            source_thread=session_key,
+            source_user=user_id,
+            agent=_agent,
+        )
+
     # ── Timing footer ──
     elapsed = time.monotonic() - _t0
     footer_blocks, footer_text = build_timing_footer(elapsed, client)
+    # Gated on `options` alone. A top-level Slack message has no ``thread_ts``, so
+    # gating on it left every root-thread control untokened -- unprotected on
+    # exactly the path a restart strands. ``reply_ts`` is the thread this control
+    # actually lands in (``thread_ts or msg_ts``), and ``session_key`` is the
+    # conversation that ran this turn: resolving the asker from the thread instead
+    # would name whoever owns it at mint time, so a link landing mid-turn would
+    # stamp the control with a session that never asked the question.
+    #
+    # The position comes from the row this turn WROTE, not from re-reading the
+    # tail. The session permit is released well above here, so a queued second
+    # turn can persist in between; a re-read would then hand this control the
+    # NEWER turn's position and a click on it -- by then obsolete -- would read as
+    # current and be accepted. Minting from our own row also means no I/O and no
+    # await here at all. No row (restricted session, or no log) means no provable
+    # position, so the control posts untokened and its clicks are honoured.
+    _options_token = (
+        mint_options_token(
+            cast("DashboardState | None", _dashboard_state),
+            session_key,
+            _turn_row_ts,
+        )
+        if options and _turn_row_ts
+        else None
+    )
     footer_blocks = _append_footer_actions(
         footer_blocks,
         options,
         thread_ts,
         linked_session_key,
         _dashboard_state,
+        _options_token,
     )
-    await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+    _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+    if options and _footer_ts:
+        # Remember this turn's OPTIONS control so the next turn can strike it
+        # through once the conversation has moved past the question it asked.
+        #
+        # Resolved ONCE and reused by the cleanup below. The record and the
+        # expiry have to agree on the owner key or they can never pair up: a
+        # thread linked to a dashboard mid-turn changes owner, so recording under
+        # the key this turn started with files the control where the next turn's
+        # expiry will not look. Reading it twice would reopen the same split if a
+        # link landed in between.
+        _options_owner = sessions.get_session_for_thread(reply_ts) or session_key
+        try:
+
+            remember_slack_options(
+                cast("DashboardState | None", get_dashboard_state()),
+                _options_owner,
+                PostedOptions(
+                    channel=channel,
+                    ts=_footer_ts,
+                    choices=tuple(options),
+                    blocks=tuple(footer_blocks),
+                    text=footer_text,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to record OPTIONS control", exc_info=True)
+
+        # The conversation can move on while post_blocks is in flight -- a queued
+        # message can acquire the permit this turn already released and run a whole
+        # turn underneath us. The control we just posted would then be asking a
+        # question nobody is on any more.
+        #
+        # Judged by the SAME predicate the click paths use, against the token that
+        # went out on the control. That is the whole point of minting it: the
+        # question "has this conversation moved past this control" has one answer,
+        # computed one way, whether it is asked here or when a click arrives.
+        #
+        # Cosmetic. A click on a superseded control is refused on its own terms, so
+        # failing to strike it through leaves the thread untidy, not unsafe.
+        _superseded = _options_token is not None and await options_control_is_stale(
+            cast("DashboardState | None", get_dashboard_state()),
+            _options_token,
+            reply_ts,
+        )
+        if _superseded:
+            try:
+                # Narrowed to OUR footer's ts, never a session-wide drain: the
+                # very turn that superseded us can finish while we were awaiting
+                # post_blocks and record its OWN live control on this session, and
+                # draining the slot would strike that newer question through --
+                # silencing the one the conversation is now waiting on.
+                await expire_slack_options(
+                    cast("DashboardState | None", get_dashboard_state()),
+                    _options_owner,
+                    ts=_footer_ts,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to expire OPTIONS control superseded mid-post",
+                    exc_info=True,
+                )
 
     # ── Voice reply (fire-and-forget, non-blocking) ──
     # Triggers when: (a) user has opted in globally or per-thread via !voice,
@@ -3885,20 +4092,9 @@ async def handle_message(
                 )
 
     # ── Update task banner with final state ──
-    # ── Persist conversation history ──
-    _skip_writes = _is_slack_restricted(session_key)
+    # History was persisted earlier, above the OPTIONS control, so that the
+    # control's staleness token names this turn rather than the one before it.
     if conversation_log and not _skip_writes:
-        # The per-turn hot path: two appends every turn, so this is where the
-        # ~12ms of loop time was paid most often.
-        await save_conversation_turn_off_loop(
-            conversation_log,
-            session_key,
-            text,
-            accumulated,
-            source_thread=session_key,
-            source_user=user_id,
-            agent=_agent,
-        )
         if consolidator and _stop_reason != STOP_REASON_CANCELLED:
             consolidator.maybe_consolidate(session_key)
 
@@ -4715,7 +4911,8 @@ async def _handle_sessions_command(
 ) -> None:
     """Handle the ``sessions`` keyword in DMs.
 
-    Delegates to :func:`kiro_crew.slack.sessions_view._collect_recent_sessions`
+    Delegates to
+    :func:`kiro_crew.slack.sessions_view._collect_recent_sessions_off_loop`
     and :func:`kiro_crew.slack.sessions_view._build_sessions_blocks` so the
     keyword, the ``/<command> sessions`` slash command, and the App Home Tab
     all render the same Block Kit content with the same Resume button wiring.
@@ -4725,7 +4922,7 @@ async def _handle_sessions_command(
     # the access attempt would be invisible to the security pipeline.
     # Mirrors the slash and Home Tab error-path patterns.
     try:
-        rows = _collect_recent_sessions(sessions, limit=_SESSIONS_DEFAULT_LIMIT)
+        rows = await _collect_recent_sessions_off_loop(sessions, limit=_SESSIONS_DEFAULT_LIMIT)
     except Exception as exc:
         # Redact-then-truncate: redact() first so credential / exfil
         # patterns aren't split mid-string by the truncation step.

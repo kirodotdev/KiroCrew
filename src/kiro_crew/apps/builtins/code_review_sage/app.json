@@ -13,7 +13,7 @@
   "highlights": [
     "Focus Report ranks changes by blast radius so the risky files get read first",
     "One isolated agent session per change, so findings never bleed between files",
-    "Posts as a PENDING (draft) GitHub review — you remain the one who submits it",
+    "Reviews are read in the app — nothing is posted to your pull request unless you ask",
     "Learns per-repository from shipped fixes, review comments, and design discussions",
     "Reviews GitHub pull requests; needs an authenticated `gh` CLI on the gateway host"
   ],

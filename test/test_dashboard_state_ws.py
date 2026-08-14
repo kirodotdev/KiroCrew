@@ -559,11 +559,14 @@ class TestPeriodicCheckStatusRefresh:
 
         # Capped at the serialized chip count per slot — refreshing links the
         # sidebar never renders would waste provider quota — and aggregated
-        # across every slot so background sessions stay fresh too.
+        # across every slot so background sessions stay fresh too. WHICH links
+        # survive the cap is recency-ordered (newest mention first), because the
+        # refresher and the serializer share `_budgeted_source_links` and must
+        # keep agreeing on exactly the chips the sidebar renders.
         assert urls == [
-            "https://github.com/acme/repo/pull/1",
-            "https://github.com/acme/repo/pull/2",
+            "https://github.com/acme/repo/pull/4",
             "https://github.com/acme/repo/pull/3",
+            "https://github.com/acme/repo/pull/2",
             "https://github.com/acme/other/pull/9",
         ]
 
@@ -649,7 +652,7 @@ class TestPeriodicCheckStatusRefresh:
             calls["n"] += 1
             # Change the generation only on the periodic round, not the warm-up.
             if calls["n"] == 2:
-                source_providers._publish_gitlab_hosts(frozenset({"gitlab.acme.internal"}))
+                source_providers._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
             return frozenset()
 
         class Request(dict):
@@ -967,9 +970,9 @@ class TestTurnBoundarySourceStatus:
         # Only this slot's chips, capped at the serialized count — a turn ending
         # in one session must not fan provider reads across every other session.
         assert state.source_link_urls_for_slot("chat-a") == [
-            "https://github.com/acme/repo/pull/1",
-            "https://github.com/acme/repo/pull/2",
+            "https://github.com/acme/repo/pull/4",
             "https://github.com/acme/repo/pull/3",
+            "https://github.com/acme/repo/pull/2",
         ]
         assert state.source_link_urls_for_slot("nope") == []
 

@@ -65,6 +65,21 @@
         pointer-events: auto;
       }
 
+      /*
+       * The context menu's dismissal backdrop: a transparent, full-viewport catcher
+       * rendered UNDER the menu while it is open.
+       *
+       * The window's html and body are `pointer-events: none` so the desktop shows
+       * through, which means a click on an empty region hits no element and fires no
+       * DOM event — the menu's "click outside closes me" listener could never see it.
+       * This backdrop opts back in to pointer events so an outside click lands on a
+       * real element and dismisses the menu. It paints nothing (transparent) and only
+       * exists while the menu is open.
+       */
+      .cc-menu-backdrop {
+        pointer-events: auto;
+      }
+
       .cc-panel-slot {
         pointer-events: auto;
         align-self: flex-end;

@@ -25,3 +25,17 @@ with commit-SHA-pinned URLs so they survive branch deletion on merge and periodi
 ![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)
 Show each affected surface's meaningful variants; fold full-page context
 into a <details> block.>
+
+## Issue link
+<One trailer per issue this PR resolves, and it MUST use a closing verb —
+"Fixes #<n>", "Closes #<n>", or "Resolves #<n>". A bare "#<n>" or "Related: #<n>"
+links the issue and closes NOTHING, so the work merges and the issue stays open
+forever. Confirm the host actually resolved it:
+  gh pr view <n> --json closingIssuesReferences
+If this PR deliberately resolves no tracked issue, delete the trailer below and
+declare that instead, as its own line starting at column 0, in the exact form
+item 7 of the PR description contract specifies. Replace this whole instruction
+block either way — leaving it in place is not a declaration, and the readiness
+gate does not accept it as one.>
+
+Fixes #<n>

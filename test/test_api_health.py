@@ -436,6 +436,44 @@ def test_both_servers_install_the_shared_host_barrier() -> None:
         )
 
 
+def test_every_middleware_denial_is_audited_off_the_loop() -> None:
+    """Wiring pin: every middleware that refuses BEFORE ``sel_audit_middleware``
+    must route its audit through the shared ``_audit_denied`` helper.
+
+    That helper owns two properties which are easy to omit at a new deny site
+    and invisible when omitted: the write runs OFF the event loop (the first
+    ``sel()`` of a process constructs the log — trust-dir creation, key
+    validation, an ``icacls`` subprocess on Windows), and it is best-effort (an
+    audit that raises must not turn the 403 into a 500). A bare raise with no
+    audit at all is the third failure: ``sel_audit_middleware`` is registered
+    inner to these, so the refusal would appear nowhere in the audit log.
+    """
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    helper = inspect.getsource(server_mod._audit_denied)
+    assert "asyncio.to_thread" in helper, (
+        "_audit_denied no longer offloads the SEL write off the event loop"
+    )
+    assert "except Exception" in helper, "_audit_denied is no longer best-effort"
+
+    for func, name in (
+        (server_mod.start_dashboard, "start_dashboard"),
+        (server_mod.start_api_server, "start_api_server"),
+        (server_mod._make_host_validation_middleware, "host_validation"),
+    ):
+        src = inspect.getsource(func)
+        assert "_audit_denied(" in src, (
+            f"{name} has a deny arm that no longer audits via _audit_denied"
+        )
+        assert 'outcome="denied"' not in src, (
+            f"{name} re-grew a hand-rolled denial audit; route it through "
+            "_audit_denied so the off-loop and best-effort properties hold "
+            "(sel_audit_middleware's ok/error request audit is unaffected)"
+        )
+
+
 def test_both_servers_warm_the_kiro_readiness_probe() -> None:
     """Wiring pin: BOTH entrypoints must warm the Kiro readiness probe at boot.
 

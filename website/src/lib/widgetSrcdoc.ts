@@ -580,9 +580,17 @@ export function buildSrcdoc({
   head.appendChild(tailwindCfg)
 
   // Same-origin Tailwind v4 browser runtime (replaces public cdn.tailwindcss.com).
-  const tailwind = doc.createElement('script')
-  tailwind.setAttribute('src', scriptOrigin + TAILWIND_RUNTIME_PATH)
-  head.appendChild(tailwind)
+  // NOTE: we insert a placeholder <meta> instead of a live <script> element and
+  // substitute it in the final serialized HTML. happy-dom eagerly fetches
+  // <script src> URLs when the element is connected to a document
+  // (HTMLScriptElement.[connectedToDocument]), which causes ECONNREFUSED in test
+  // environments that lack a running dev server. Using a non-fetching placeholder
+  // avoids the network dial entirely — the iframe's browser loads the script from
+  // the serialized HTML string, never from a live DOM node in our process.
+  const tailwindPlaceholder = doc.createElement('meta')
+  tailwindPlaceholder.setAttribute('name', 'x-script-placeholder')
+  tailwindPlaceholder.setAttribute('data-src', scriptOrigin + TAILWIND_RUNTIME_PATH)
+  head.appendChild(tailwindPlaceholder)
 
   // <style> with base body styles + theme vars
   const style = doc.createElement('style')
@@ -697,7 +705,20 @@ export function buildSrcdoc({
   // contains only the static DOCTYPE prefix and the *serialized* DOM tree
   // (which has already had LLM content adopted as typed DOM nodes), so no
   // raw LLM string is interpolated into HTML.
-  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  //
+  // Post-serialization: replace the SINGLE trusted placeholder with the real
+  // <script> tag. No `g` flag — only the one placeholder we inserted into
+  // <head> is replaced. Model-authored content lives in <body> and cannot
+  // inject a matching placeholder because: (1) it is adopted via
+  // createContextualFragment (typed DOM), not string interpolation, and
+  // (2) attribute serialization HTML-escapes quotes, so a model byte sequence
+  // cannot produce the exact `name="x-script-placeholder"` attribute pair.
+  // The non-global replace is a defense-in-depth backstop for that invariant.
+  const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  return serialized.replace(
+    /<meta name="x-script-placeholder" data-src="([^"]*)">/,
+    (_match, src) => `<script src="${src}"></script>`,
+  )
 }
 
 /** SSR fallback for environments without a DOM. Used only by unit tests

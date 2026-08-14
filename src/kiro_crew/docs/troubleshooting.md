@@ -61,6 +61,27 @@ The doctor also runs a live handshake probe against each managed server and
 prints the child's stderr tail on failure, which is usually where the real cause
 (an import error, a bad path) shows up.
 
+### MCP tools missing on an enterprise (work) account
+
+If the probe above reports every server healthy but the tools are still absent in
+sessions — no `spawn_run`, no `cron_add`, no `learn_add` — and your Kiro account
+is a work account signed in through IAM Identity Center, your administrator has
+almost certainly allow-listed MCP servers through an MCP registry. In that mode
+kiro-cli connects only to servers marked `"type": "registry"`, and it drops the
+rest without an error. The local probe cannot see this because it spawns the
+servers directly.
+
+```bash
+kirocrew config set agent.mcp_registry_mode true
+kirocrew restart
+```
+
+Your administrator also has to add `kirocrew-core`, `kirocrew-cron` and
+`kirocrew-computer` to the registry under those exact names. `kirocrew doctor`
+prints an `MCP Governance (enterprise)` section on Identity Center hosts with the
+current state. Full walkthrough, including the registry JSON your administrator
+needs: `docs/guides/enterprise-mcp-governance.md`.
+
 ### Dashboard not loading
 
 ```bash

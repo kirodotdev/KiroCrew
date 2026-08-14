@@ -39,4 +39,19 @@ describe('ChatPage – MCP OAuth banner wiring', () => {
     expect(idxCall).toBeGreaterThanOrEqual(0)
     expect(Math.abs(idxCall - idxRole)).toBeLessThan(400)
   })
+
+  /**
+   * Chat hides a card-owned banner only while the Connections gallery is
+   * reachable. Hardcoding that argument, or dropping it, would take the only
+   * authorize prompt away from every install whose gallery flag is off — the
+   * live regression this wiring exists to prevent. The flag must come from the
+   * shared hook so chat and the gallery cannot disagree.
+   */
+  it('gates the card-owned suppression on the shared connections_ui flag', () => {
+    expect(chatPageSrc).toMatch(
+      /import\s*\{\s*useConnectionsUiEnabled\s*\}\s*from\s*['"][^'"]*useConnectionsUi['"]/,
+    )
+    expect(chatPageSrc).toMatch(/const\s+connectionsUiOn\s*=\s*useConnectionsUiEnabled\(\)/)
+    expect(chatPageSrc).toMatch(/renderMcpOAuthMessage\(\s*m\s*,\s*connectionsUiOn\s*\)/)
+  })
 })

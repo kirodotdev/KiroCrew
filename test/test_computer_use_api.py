@@ -22,7 +22,9 @@ pinned ``pytest`` for async fixtures.
 from __future__ import annotations
 
 import dataclasses
+import http.server
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1166,6 +1168,106 @@ class TestLiveViewSuppression:
         monkeypatch.setattr(screencast, "active_scope", _boom)
         assert screencast.emit_snapshot_frame(self._snapshot()) is False
         assert no_real_post == []
+
+
+class TestTheFrameRelayIsNeverProxied:
+    """The relay POST carries the gateway's local secret, so it must not proxy.
+
+    ``urlopen`` builds its opener from ``getproxies()`` and urllib has no implicit
+    loopback exemption, so with ``http_proxy`` set — routine in a container or on a
+    corporate desktop — a POST to ``http://127.0.0.1:<port>`` goes to the proxy in
+    absolute form with ``X-Internal-Secret`` attached, in cleartext. The relay runs
+    through ``loopback_urlopen``, whose opener carries an explicit
+    ``ProxyHandler({})``.
+
+    ``_post_frame`` is called DIRECTLY rather than through ``emit_snapshot_frame``:
+    every other case in this file replaces ``_post_frame`` wholesale, so the
+    transport inside it is the one part of the relay with no coverage at all.
+
+    Both listeners are real sockets on port 0, following ``test_cron_trigger.py`` —
+    the kernel hands out a free port, so no ``xdist_group`` marker is needed.
+    """
+
+    SECRET = "canary-not-a-real-frame-secret"
+
+    # ``getproxies_environment`` ignores uppercase ``HTTP_PROXY`` when
+    # ``REQUEST_METHOD`` is set (the httpoxy CGI guard), so that is cleared too —
+    # otherwise a CI runner exporting it would make this pass vacuously.
+    _PROXY_ENV_KEYS = (
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+        "REQUEST_METHOD",
+    )
+
+    @staticmethod
+    def _serve(sink: list):
+        """A listener that records the secret header it saw, then answers 200."""
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):  # noqa: N802 - stdlib naming
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                sink.append(
+                    {
+                        "requestline": self.requestline,
+                        "secret": self.headers.get("X-Internal-Secret"),
+                    }
+                )
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, fmt, *args):
+                pass  # keep pytest output clean
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, server.server_address[1]
+
+    def test_the_secret_reaches_the_gateway_and_never_the_proxy(self, home, monkeypatch):
+        from kiro_crew.computer_use import screencast
+
+        gateway_hits: list[dict] = []
+        proxy_hits: list[dict] = []
+        gateway, gateway_port = self._serve(gateway_hits)
+        proxy, proxy_port = self._serve(proxy_hits)
+        try:
+            for key in self._PROXY_ENV_KEYS:
+                monkeypatch.delenv(key, raising=False)
+            monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
+            # The real ``_headers()`` runs, so the header the ingress authenticates
+            # with is the one under test rather than a literal in this file.
+            (home / ".local_secret").write_text(self.SECRET, encoding="utf-8")
+            monkeypatch.setattr(
+                screencast,
+                "_ingress_url",
+                lambda: f"http://127.0.0.1:{gateway_port}{screencast.FRAME_INGRESS_PATH}",
+            )
+
+            screencast._post_frame({"data": "QUJD", "format": "jpeg"})
+
+            assert proxy_hits == [], f"the frame secret reached the proxy: {proxy_hits}"
+            # Positive leg too: ``_post_frame`` swallows every failure, so "the proxy
+            # saw nothing" alone would also pass if the POST had never happened.
+            assert [h["secret"] for h in gateway_hits] == [self.SECRET]
+            # Origin-form request line confirms a direct connection rather than a
+            # proxied one, which is sent absolute-form.
+            assert gateway_hits[0]["requestline"].startswith(
+                f"POST {screencast.FRAME_INGRESS_PATH}"
+            )
+        finally:
+            gateway.shutdown()
+            proxy.shutdown()
 
 
 class TestInvokePublishesTheFrameScope:

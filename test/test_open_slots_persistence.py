@@ -724,47 +724,48 @@ def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
     """The async restore must hand the loop back per tab so the heartbeat can run.
 
     Pins the actual crash mechanism: a coroutine running concurrently with the
-    restore has to get scheduled. If restore ever goes back to blocking straight
-    through, the ticker records no ticks and this fails.
+    restore must observe a partially restored slot set. If restore ever blocks
+    through every tab and yields only after the work is done, this fails.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
-    for i in range(6):
+    tab_count = 6
+    for i in range(tab_count):
         _seed_session(state, f"chat-{i}-yield")
     (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": [f"chat-{i}-yield" for i in range(6)], "ts": 0.0})
+        json.dumps({"keys": [f"chat-{i}-yield" for i in range(tab_count)], "ts": 0.0})
     )
 
     state2 = _make_state(tmp_path / "sessions")
-    ticks = 0
+    partial_restore_observed = False
 
     async def _drive():
-        stop = False
-
         async def ticker():
-            nonlocal ticks
-            while not stop:
-                ticks += 1
+            nonlocal partial_restore_observed
+            while True:
+                restored_so_far = len(state2._slots)
+                if 0 < restored_so_far < tab_count:
+                    partial_restore_observed = True
                 await asyncio.sleep(0)
 
         t = asyncio.create_task(ticker())
-        await asyncio.sleep(0)  # let the ticker reach its first await
-        restored = await restore_open_slots_async(state2)
-        stop = True
-        t.cancel()
-        # `cancel()` only requests cancellation; without awaiting it the ticker is
-        # still live when `asyncio.run` tears the loop down, leaving a "coroutine
-        # ignored GeneratorExit" for a later test to trip over.
         try:
-            await t
-        except asyncio.CancelledError:
-            pass
-        return restored
+            return await restore_open_slots_async(state2)
+        finally:
+            t.cancel()
+            # `cancel()` only requests cancellation; without awaiting it the ticker is
+            # still live when `asyncio.run` tears the loop down, leaving a "coroutine
+            # ignored GeneratorExit" for a later test to trip over.
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
     restored = asyncio.run(_drive())
-    assert restored == 6
-    # One yield per tab at minimum; the ticker interleaves on each.
-    assert ticks >= 6, f"restore starved the loop (ticks={ticks})"
+    assert restored == tab_count
+    # Observe intermediate progress rather than an incidental number of scheduler
+    # turns; a single yield after all tab work is complete must not satisfy the test.
+    assert partial_restore_observed, "restore did not yield between tabs"
 
 
 def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatch):
@@ -1270,3 +1271,173 @@ def test_persistent_body_read_failure_drops_tab_not_registers_empty(tmp_path, mo
         "restore_recent_sessions would dedupe it and the history would be lost"
     )
     assert keys[0] in state2._slots and keys[2] in state2._slots
+
+
+def test_persistent_metadata_failure_keeps_key_in_reopen_seed(tmp_path, monkeypatch):
+    """A tab dropped by an unreadable read must survive in open_slots.json.
+
+    #1733 added a retry, so a ONE-shot sharing violation no longer costs a tab
+    (see ``test_a_transient_metadata_read_failure_does_not_drop_a_tab``). But
+    when the retry budget is exhausted the tab is still dropped, and the drop
+    was previously PERMANENT rather than deferred: this snapshot is taken from
+    live ``_slots``, the ``restoring_open_slots`` guard is released as soon as
+    the restore finishes, and the next 5s flush therefore rewrites the file
+    WITHOUT the dropped key. That erases the only seed a later restore could
+    have recovered from -- and ``dashboard.restore_sessions`` defaults to
+    ``False``, so the ``restore_recent_sessions`` fallback is not a safety net
+    for an unfoldered tab.
+
+    Asserts the seed, not the slot: dropping the tab for this boot is the
+    intended behaviour, losing the ability to ever restore it is not.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    keys = [f"chat-{i}-seed" for i in range(4)]
+    for k in keys:
+        _seed_session(state, k)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    victim = state2.conversation_log._path(_history_key_for(keys[2])).name
+
+    # times=3 exhausts _METADATA_READ_ATTEMPTS, so the retry cannot absorb it.
+    with builtin_open_sharing_violation(match=victim, times=3) as seen:
+        restored = restore_open_slots(state2)
+
+    assert seen["n"] >= 1, "the simulator never intercepted the transcript open"
+    assert restored == 3, f"expected the three readable tabs; got {restored}"
+    assert keys[2] not in state2._slots, "the unreadable tab should not be registered"
+    assert keys[2] in state2.unrestored_slot_keys
+
+    # The flush that previously erased it. Guard is already released by now.
+    assert state2.restoring_open_slots is False
+    state2._persist_open_slots()
+    persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
+    assert persisted == set(keys), (
+        "the post-restore flush erased the unreadable tab's key from the reopen "
+        f"seed, so it can never be restored; seed is now {sorted(persisted)}"
+    )
+
+
+def test_absent_session_is_dropped_from_reopen_seed(tmp_path, monkeypatch):
+    """Negative control: a key with no transcript is still pruned.
+
+    Preservation must be scoped to reads that FAILED. A session that genuinely
+    has no transcript is a real answer, and keeping its key would resurrect a
+    dead tab on every restart forever.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-real")
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": ["chat-1-real", "chat-2-neverexisted"], "ts": 0.0})
+    )
+
+    state2 = _make_state(tmp_path / "sessions")
+    restored = restore_open_slots(state2)
+
+    assert restored == 1
+    assert "chat-2-neverexisted" not in state2.unrestored_slot_keys
+    state2._persist_open_slots()
+    persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
+    assert persisted == {"chat-1-real"}
+
+
+def test_metadata_failure_is_reported_above_debug(tmp_path, monkeypatch, caplog):
+    """The restore layer must name the dropped tab, not just the history layer.
+
+    ``_read_metadata`` warns that it could not read the file, but nothing said a
+    TAB was affected -- ``restored`` was simply one lower, which is unactionable
+    when the user reports "a tab disappeared".
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-logged")
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": ["chat-1-logged"], "ts": 0.0})
+    )
+
+    state2 = _make_state(tmp_path / "sessions")
+    victim = state2.conversation_log._path(_history_key_for("chat-1-logged")).name
+    with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_persistence"):
+        with builtin_open_sharing_violation(match=victim, times=3):
+            restore_open_slots(state2)
+
+    assert any(
+        "chat-1-logged" in r.message and "reopen seed" in r.message
+        for r in caplog.records
+    ), f"no WARNING named the affected tab; got {[r.message for r in caplog.records]}"
+
+
+def test_get_metadata_status_separates_unreadable_from_absent(tmp_path, monkeypatch):
+    """The new signal must not report absence as a read failure, or vice versa."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    log = state.conversation_log
+    assert log is not None
+    _seed_session(state, "chat-1-status")
+    history_key = _history_key_for("chat-1-status")
+
+    meta, readable = log.get_metadata_status(history_key)
+    assert readable is True and meta, "a healthy transcript must read back"
+
+    # No transcript at all -> empty, but a genuine answer.
+    meta, readable = log.get_metadata_status(_history_key_for("chat-2-missing"))
+    assert meta == {} and readable is True
+
+    # Exists but unopenable after every retry -> empty AND flagged unreadable.
+    log._meta_cache.clear()
+    victim = log._path(history_key).name
+    with builtin_open_sharing_violation(match=victim, times=3):
+        meta, readable = log.get_metadata_status(history_key)
+    assert meta == {} and readable is False
+
+    # get_metadata keeps its plain-dict contract for the same input.
+    log._meta_cache.clear()
+    with builtin_open_sharing_violation(match=victim, times=3):
+        assert log.get_metadata(history_key) == {}
+
+
+def test_non_object_metadata_line_does_not_abort_the_whole_restore(
+    tmp_path, monkeypatch
+):
+    """A transcript whose first line is valid JSON but not an OBJECT is skipped.
+
+    ``json.loads`` happily returns ``None`` / a list / a str / an int, and a bare
+    ``data.get("_type")`` on any of those raises ``AttributeError`` -- NOT
+    ``JSONDecodeError``. Two things must hold:
+
+    1. It stays isolated to the one tab. ``restore_open_slots_async`` has no
+       ``except`` at its call site in ``server.py``, so an escaping exception
+       aborts dashboard startup and no LATER tab restores either.
+    2. It is treated as a corrupt line, exactly like an undecodable one: a
+       genuine empty answer, so the key is PRUNED from the reopen seed. Carrying
+       it would retry a permanently-broken transcript on every boot forever,
+       and would disagree with the ``{not json`` case for no reason.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    keys = ["chat-0-ok", "chat-1-corrupt", "chat-2-ok"]
+    for k in keys:
+        _seed_session(state, k)
+    # Overwrite the corrupt tab's transcript so line 1 is valid JSON, not an object.
+    victim_path = state.conversation_log._path(_history_key_for("chat-1-corrupt"))
+    victim_path.write_text('null\n{"role": "user", "content": "hi"}\n')
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    restored = restore_open_slots(state2)
+
+    assert restored == 2, (
+        f"a corrupt metadata line cost more than its own tab; restored={restored}, "
+        f"slots={sorted(state2._slots)}"
+    )
+    assert "chat-2-ok" in state2._slots, (
+        "the tab AFTER the corrupt one did not restore -- the exception escaped "
+        "the per-tab guard and aborted the whole restore"
+    )
+    # Corrupt, not unreadable: a genuine answer, so do not carry it forever.
+    assert "chat-1-corrupt" not in state2.unrestored_slot_keys
+    state2._persist_open_slots()
+    persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
+    assert persisted == {"chat-0-ok", "chat-2-ok"}

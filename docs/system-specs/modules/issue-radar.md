@@ -625,22 +625,31 @@ the parent RUN and needs its id.
 
 ## Security Controls
 
-- **Spawn hardening**: All `gh` calls funnel through `_gh_run`, which resolves a
-  canonical `gh` via the shared provider resolver
-  (`source_providers.provider_executable_candidates` — well-known install dirs,
-  then the ambient `PATH`) and validates it (and every parent) with
-  `_validate_provider_executable`. The default policy accepts the user's OWN
-  install (Homebrew/asdf/`~/.local/bin`) and refuses only provenance the user did
-  not choose: a binary owned by another unprivileged account, a world-writable
-  one (a world-writable *directory* is tolerated only when sticky, where the
-  owner check still decides), or one inside the agent-writable project/workspace
-  tree. A gateway running as root is refused outright in both modes.
-  `KIROCREW_PROVIDER_BIN_STRICT=1` restores the historical root-owned,
-  symlink-free requirement. A minimal env is passed (no unrelated gateway
-  secrets). Benign-allowlisted in the spawn audit (1 entry).
-- **SEL audit**: Every `_gh_run` invocation emits an SEL tool-invocation event
-  (success/failure/timeout). Write handlers additionally emit denied/ok/failure
-  events around the permission check and mutation.
+- **Spawn hardening**: All `gh` calls funnel through `_gh_run`, a thin wrapper
+  over the shared hardened runner (`kiro_crew.github_runner.run_gh`), which
+  resolves a canonical `gh` via `github_runner.resolve_gh`
+  (`KIROCREW_ISSUE_RADAR_GH` override, then `KIROCREW_GH_BIN`, then the
+  well-known install dirs, then the ambient `PATH`) and validates it (and every
+  parent) with `github_runner.validate_provider_executable`. The default policy
+  accepts the user's OWN install (Homebrew/asdf/`~/.local/bin`) and refuses only
+  provenance the user did not choose: a binary owned by another unprivileged
+  account, a world-writable one (a world-writable *directory* is tolerated only
+  when sticky, where the owner check still decides), or one inside the
+  agent-writable project/workspace tree. A gateway running as root is refused
+  outright in both modes. `KIROCREW_PROVIDER_BIN_STRICT=1` restores the
+  historical root-owned, symlink-free requirement. The runner passes a minimal
+  env (`github_runner.gh_env` — the safe-key base plus gh-scoped
+  auth/network/TLS vars, with ambient ssh-agent/git-ssh identity stripped; no
+  unrelated gateway secrets) and pins `GH_HOST=github.com`, because Issue
+  Radar is github.com-only by design and its bare API paths never pass
+  `--hostname`, so an ambient enterprise `GH_HOST` must not steer them. The runner is benign-allowlisted in the spawn
+  audit once (`github_runner.py::run_gh`), covering every caller.
+- **SEL audit**: Every `_gh_run` invocation is audit-or-deny: the shared
+  runner writes a fail-closed `invoked` event before the spawn (SEL storage
+  unusable ⇒ the gh call is refused, surfaced as a retryable `GhCliError`),
+  then a best-effort outcome event on success/failure/timeout — emitted inside
+  the shared runner so no gh caller can drift out of the audit. Write handlers additionally emit
+  denied/ok/failure events around the permission check and mutation.
 - **Input validation**: Owner/repo are charset-restricted + github.com host
   allowlisted (SSRF guard). Numbers are `int()`-coerced. Write bodies go via
   JSON stdin, never argv. Request bodies validated as `dict` before `.get()`.

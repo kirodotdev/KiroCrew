@@ -162,6 +162,22 @@ exposePetApi({
   // dismiss any more).
   closeSettings: () => ipcRenderer.send("mochi-settings:close"),
   /**
+   * Main -> renderer: the native close button was clicked; run the Unsaved
+   * Changes guard instead of dying. The acknowledgement goes back AFTER the
+   * subscriber returns, so a subscriber that throws never acks and the shell's
+   * bounded fallback destroys the window rather than leaving it unclosable.
+   * The shell verifies the ack came from the window it asked, so one Settings
+   * window cannot acknowledge another's request.
+   */
+  onSettingsCloseRequested: (cb) => {
+    const handler = () => {
+      cb();
+      ipcRenderer.send("mochi-settings:close-request-ack");
+    };
+    ipcRenderer.on("mochi-settings:close-request", handler);
+    return () => ipcRenderer.removeListener("mochi-settings:close-request", handler);
+  },
+  /**
    * Hide/show every Mochi window — the same toggle the hideAll accelerator
    * drives. The pet's context menu "Hide" means THIS, not disabling the app:
    * disabling tears the app down through the app manager and takes seconds.
@@ -344,6 +360,37 @@ exposePetApi({
    * rest of the switcher reads core's /api/instances directly over HTTP.
    */
   instancesEnabledMap: () => ipcRenderer.invoke("mochi-instances:enabled-map"),
+
+  /**
+   * The per-MACHINE prefs — `{petInstance, shortcuts}` — from the SHELL's store.
+   *
+   * NOT read over HTTP, and that is the whole point. Every Mochi window is loaded
+   * FROM the gateway it shows, and this seam's HTTP calls are same-origin, so a
+   * pet showing a REMOTE would read and write that remote's copy of a choice that
+   * belongs to this computer. That mismatch made the instance switch a one-way
+   * door: the write landed where nothing reads it, and no surface was left that
+   * could move the pet back.
+   */
+  machinePrefs: () => ipcRenderer.invoke("mochi-machine:get"),
+
+  /**
+   * Point the pet at an instance AND move it, in one call.
+   *
+   * One handler rather than "POST the setting, then ask the shell to apply it":
+   * those were two steps against two different gateways, which is how a saved
+   * choice ended up with nothing acting on it.
+   */
+  setPetInstance: (instanceId) => ipcRenderer.invoke("mochi-instances:set", instanceId),
+
+  /**
+   * Core's instance list for THIS MACHINE's host gateway.
+   *
+   * The switcher's own `fetch('/api/instances')` is same-origin, so on a remote
+   * pet it listed the REMOTE's registry — possibly empty, possibly a different
+   * set of crews, and missing the one the user wanted to go back to. The host owns
+   * the registry the stored ids refer to.
+   */
+  instancesList: () => ipcRenderer.invoke("mochi-instances:list"),
 
   /**
    * Apply a just-saved `petInstance` immediately rather than on the shell's next

@@ -46,7 +46,11 @@ SLACK_CAPABILITIES = TransportCapabilities(
     rich_blocks=True,
     threads=True,
     max_message_chars=SLACK_MSG_LIMIT,
-    max_buttons=5,
+    # 10 = the platform cap on a checkboxes element's options[] — the widget
+    # Slack actually renders for [OPTIONS:]. The previous 5 was copied from
+    # the 5-buttons-per-actions-row limit, which does not govern checkboxes.
+    # Enforced at build_options_blocks (slack/format.py) via cap_choices.
+    max_buttons=10,
     supports_proactive_send=True,
 )
 

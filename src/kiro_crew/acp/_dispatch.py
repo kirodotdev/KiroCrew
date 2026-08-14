@@ -65,6 +65,7 @@ def build_session_new_params(
     *,
     mcp_servers: list[dict[str, Any]] | None = None,
     claude_meta: bool = False,
+    kas_custom_agents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the params for a ``session/new`` request.
 
@@ -72,6 +73,12 @@ def build_session_new_params(
     ``mcpServers`` field as malformed and exits cleanly (rc=0, no stderr) — so
     both backends must send it, even as an empty list. The ``claude_meta`` flag
     adds the SDK envelope the claude-agent-acp backend requires.
+
+    ``kas_custom_agents`` carries agent definitions to KAS, which has no
+    ``--agent`` flag and advertises only its own built-in modes: an injected
+    agent is registered, surfaces as a mode, and can then be activated by the
+    ordinary ``session/set_mode``. The two ``_meta`` envelopes belong to
+    different backends, so they never both apply.
     """
     params: dict[str, Any] = {
         "cwd": str(cwd),
@@ -79,6 +86,8 @@ def build_session_new_params(
     }
     if claude_meta:
         params["_meta"] = {"claudeCode": {"options": {}}}
+    if kas_custom_agents:
+        params["_meta"] = {"kiro": {"customAgents": kas_custom_agents}}
     return params
 
 
@@ -969,6 +978,14 @@ def _build_tool_refinement_event(
     title_source = select_tool_title(title, raw_input)
     title_str = _redact(title_source) if title_source else ""
     kind_str = _redact(kind) if isinstance(kind, str) and kind else ""
+    # The refinement's rawInput is the COMPLETE params object, so it carries the
+    # reserved purpose argument too. Read it here or the purpose is lost on every
+    # backend whose initial tool_call streams an empty rawInput — and consumers
+    # that treat an empty purpose as "fall back to the raw title" (the session
+    # list's running-status line) would replace a good purpose with a command.
+    purpose = extract_tool_purpose(raw_input)
+    if purpose:
+        purpose = _redact(purpose)
     # Refresh the cached shell signal only when this refinement carries a kind
     # (kind is optional on updates); a kind-less refinement must not clobber a
     # True cached by the initial tool_call. Mirrors AcpClient exactly.
@@ -982,6 +999,7 @@ def _build_tool_refinement_event(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
         tool_kind=kind_str,
+        tool_purpose=purpose,
         tool_input=input_str,
         tool_call_id=tool_use_id,
         raw_tool_params=raw_input if isinstance(raw_input, dict) else None,

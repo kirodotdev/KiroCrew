@@ -8,7 +8,10 @@ Home Tab all share, plus the keyword handler in
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import MockSlackClient
+from kiro_crew.slack import sessions_view
 from kiro_crew.slack.handler import _handle_sessions_command
 from kiro_crew.slack.sessions_view import (
     _SESSION_KIND_DASHBOARD,
@@ -24,6 +28,7 @@ from kiro_crew.slack.sessions_view import (
     _build_sessions_blocks,
     _classify_session_key,
     _collect_recent_sessions,
+    _collect_recent_sessions_off_loop,
     _default_session_title,
 )
 
@@ -583,7 +588,7 @@ class TestHandleSessionsCommandDelegation:
         slack = MockSlackClient()
         with (
             patch(
-                "kiro_crew.slack.handler._collect_recent_sessions",
+                "kiro_crew.slack.sessions_view._collect_recent_sessions",
                 side_effect=OSError("disk error"),
             ),
             patch("kiro_crew.slack.handler.sel") as mock_sel,
@@ -624,7 +629,7 @@ class TestHandleSessionsCommandDelegation:
         leaked_key = "AKIAIOSFODNN7EXAMPLE"
         with (
             patch(
-                "kiro_crew.slack.handler._collect_recent_sessions",
+                "kiro_crew.slack.sessions_view._collect_recent_sessions",
                 side_effect=OSError(f"failed reading {leaked_key} from path"),
             ),
             patch("kiro_crew.slack.handler.sel") as mock_sel,
@@ -854,7 +859,7 @@ class TestSlashSessionsAudit:
             patch("kiro_crew.slack.events.is_owner", return_value=True),
             patch("kiro_crew.slack.events.is_allowed_user", return_value=False),
             patch(
-                "kiro_crew.slack.events._collect_recent_sessions",
+                "kiro_crew.slack.sessions_view._collect_recent_sessions",
                 side_effect=OSError("disk error"),
             ),
         ):
@@ -899,7 +904,7 @@ class TestSlashSessionsAudit:
             patch("kiro_crew.slack.events.is_owner", return_value=True),
             patch("kiro_crew.slack.events.is_allowed_user", return_value=False),
             patch(
-                "kiro_crew.slack.events._collect_recent_sessions",
+                "kiro_crew.slack.sessions_view._collect_recent_sessions",
                 side_effect=OSError(f"failed reading {leaked_key} from path"),
             ),
         ):
@@ -909,3 +914,236 @@ class TestSlashSessionsAudit:
         kwargs = mock_sel.return_value.log_api_access.call_args.kwargs
         # Credential MUST NOT survive into the audit field
         assert leaked_key not in kwargs["error"]
+
+
+# ---------------------------------------------------------------------------
+# Bounded reads: only the newest ``limit`` matching transcripts are opened
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedTranscriptReads:
+    @pytest.fixture
+    def sess_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "sessions"
+        d.mkdir()
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", d)
+        return d
+
+    def _seed_many(self, sess_dir: Path, count: int, *, prefix: str = "dashboard_chat-") -> None:
+        """Seed *count* transcripts with distinct, ascending mtimes."""
+        base = 1_700_000_000
+        for i in range(count):
+            p = sess_dir / f"{prefix}{i}.jsonl"
+            _write_jsonl(p, title=f"session {i}", messages=[("user", f"msg {i}")])
+            os.utime(p, (base + i, base + i))
+
+    def test_reads_only_the_limit_newest_transcripts(self, sess_dir):
+        self._seed_many(sess_dir, 30)
+        opened: list[str] = []
+        real_read_text = Path.read_text
+
+        def counting_read_text(self, *args, **kwargs):
+            opened.append(self.name)
+            return real_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", counting_read_text):
+            rows = _collect_recent_sessions(None, limit=10)
+
+        # Output is identical to a full scan: the 10 newest, mtime-descending.
+        assert [r["title"] for r in rows] == [f"session {i}" for i in range(29, 19, -1)]
+        # But only those 10 files were actually opened — not all 30.
+        assert sorted(opened) == sorted(f"dashboard_chat-{i}.jsonl" for i in range(20, 30))
+
+    def test_kind_filter_applies_before_any_read(self, sess_dir):
+        self._seed_many(sess_dir, 5, prefix="dashboard_chat-")
+        self._seed_many(sess_dir, 5, prefix="cron_job-")
+        opened: list[str] = []
+        real_read_text = Path.read_text
+
+        def counting_read_text(self, *args, **kwargs):
+            opened.append(self.name)
+            return real_read_text(self, *args, **kwargs)
+
+        with patch.object(Path, "read_text", counting_read_text):
+            rows = _collect_recent_sessions(None, limit=10, kind=_SESSION_KIND_DASHBOARD)
+
+        assert len(rows) == 5
+        # Kind is classified from the filename stem, so filtered-out files
+        # are never opened at all.
+        assert all(name.startswith("dashboard_") for name in opened)
+
+    def test_scan_continues_past_invalid_files_to_fill_limit(self, sess_dir):
+        self._seed_many(sess_dir, 12)
+        # Empty out the two NEWEST transcripts: they are opened, found
+        # invalid, and skipped — the scan must continue down the mtime
+        # order so the caller still gets ``limit`` valid rows.
+        base = 1_700_000_000
+        for i in (10, 11):
+            p = sess_dir / f"dashboard_chat-{i}.jsonl"
+            p.write_text("", encoding="utf-8")
+            os.utime(p, (base + i, base + i))
+
+        rows = _collect_recent_sessions(None, limit=10)
+
+        assert [r["title"] for r in rows] == [f"session {i}" for i in range(9, -1, -1)]
+
+
+# ---------------------------------------------------------------------------
+# Event-loop offload: async surfaces must not run the collector on the loop
+# ---------------------------------------------------------------------------
+
+
+class TestCollectorEventLoopOffload:
+    @pytest.mark.asyncio
+    async def test_off_loop_wrapper_runs_collector_in_worker_thread(self, tmp_path, monkeypatch):
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir()
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        _write_jsonl(sess_dir / "dashboard_a.jsonl", title="t", messages=[("user", "x")])
+
+        seen: dict = {}
+        real = sessions_view._collect_recent_sessions
+
+        def recording_collector(*args, **kwargs):
+            seen["thread"] = threading.current_thread()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(sessions_view, "_collect_recent_sessions", recording_collector)
+        rows = await _collect_recent_sessions_off_loop(None, limit=5)
+
+        assert seen["thread"] is not threading.current_thread()
+        assert [r["title"] for r in rows] == ["t"]
+
+    @pytest.mark.asyncio
+    async def test_sessions_keyword_handler_does_not_block_the_loop(self, tmp_path, monkeypatch):
+        """Seeded sessions dir (many files, one large); the keyword handler
+        must leave the event loop free while the collector reads them.
+
+        Deterministic proof, no timing races: the collector is gated on a
+        ``threading.Event`` that only a coroutine on the event loop sets.
+        If the handler ran the collector ON the loop, that coroutine could
+        never run while the collector waits, the 5s gate would time out and
+        ``released`` would be False. With the offload, the loop stays free,
+        sets the event, and the collector proceeds.
+        """
+        sess_dir = tmp_path / "sessions"
+        sess_dir.mkdir()
+        monkeypatch.setattr("kiro_crew.slack.sessions_view._SESSIONS_DIR", sess_dir)
+        for i in range(25):
+            _write_jsonl(
+                sess_dir / f"dashboard_chat-{i}.jsonl",
+                title=f"s{i}",
+                messages=[("user", "hi")],
+            )
+        # One large transcript (~1MB) among the newest.
+        _write_jsonl(
+            sess_dir / "dashboard_big.jsonl",
+            title="big",
+            messages=[("user", "x" * 1_000_000)],
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+        outcome: dict = {}
+        real = sessions_view._collect_recent_sessions
+
+        def gated_collector(*args, **kwargs):
+            entered.set()
+            # Only a coroutine on the (free) event loop sets ``release``.
+            outcome["released"] = release.wait(timeout=5)
+            outcome["thread"] = threading.current_thread()
+            return real(*args, **kwargs)
+
+        # The handler dispatches through the off-loop wrapper, which resolves
+        # this module-global at call time.
+        monkeypatch.setattr(sessions_view, "_collect_recent_sessions", gated_collector)
+
+        slack = MockSlackClient()
+        task = asyncio.create_task(
+            _handle_sessions_command(
+                "sessions",
+                slack,
+                "C123",
+                "100.000",
+                "100.000",
+                "C123:100.000",
+                None,
+                sessions=None,
+            )
+        )
+        # Wait off-loop for the collector to be entered, keeping the loop free.
+        assert await asyncio.to_thread(entered.wait, 5), "collector was never invoked"
+        # This line executing WHILE the collector blocks is only possible if
+        # the handler offloaded the collector.
+        release.set()
+        await asyncio.wait_for(task, timeout=10)
+
+        assert outcome["released"] is True
+        assert outcome["thread"] is not threading.current_thread()
+        assert [a[0] for a in slack.actions] == ["blocks"]
+
+
+class TestOffLoopStructuralRatchet:
+    """Pin every async surface to the off-loop chokepoints, structurally.
+
+    The functional tests above prove the keyword handler offloads; these
+    AST-level pins keep the slash-command and Home-Tab call sites (whose
+    handlers need heavyweight orchestrator setup), the resume-context
+    transcript read, and any FUTURE module from regressing to on-loop
+    calls. AST checks cannot be fooled by comments or docstrings that
+    happen to mention the guarded names.
+    """
+
+    @staticmethod
+    def _src_modules() -> list[Path]:
+        import kiro_crew
+
+        pkg_root = Path(kiro_crew.__file__).parent
+        return sorted(pkg_root.rglob("*.py"))
+
+    def test_sync_collector_is_private_to_sessions_view(self):
+        """No module outside sessions_view.py may import or reference the
+        synchronous collector — async callers must go through
+        _collect_recent_sessions_off_loop, which owns the thread hop."""
+        import ast
+
+        offenders: list[str] = []
+        for py in self._src_modules():
+            if py.name == "sessions_view.py":
+                continue
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and any(
+                    alias.name == "_collect_recent_sessions" for alias in node.names
+                ):
+                    offenders.append(f"{py}:{node.lineno} (import)")
+                elif isinstance(node, ast.Attribute) and node.attr == "_collect_recent_sessions":
+                    offenders.append(f"{py}:{node.lineno} (attribute access)")
+        assert not offenders, (
+            "the synchronous collector must stay private to sessions_view.py; "
+            "call _collect_recent_sessions_off_loop from async code instead: "
+            f"{offenders}"
+        )
+
+    def test_resume_context_has_no_direct_read_text_call(self):
+        """interactions.py must never CALL .read_text() directly (it runs on
+        the event loop); the only allowed form passes the bound method to
+        asyncio.to_thread, where read_text appears as an argument, not as
+        the func of a Call node."""
+        import ast
+
+        import kiro_crew.slack.interactions as interactions_mod
+
+        tree = ast.parse(Path(interactions_mod.__file__).read_text(encoding="utf-8"))
+        direct_calls = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "read_text"
+        ]
+        assert not direct_calls, (
+            "direct .read_text() call(s) in slack/interactions.py at lines "
+            f"{direct_calls}; whole-transcript reads inside async handlers "
+            "must be offloaded via asyncio.to_thread"
+        )

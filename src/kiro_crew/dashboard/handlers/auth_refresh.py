@@ -31,9 +31,11 @@ from kiro_crew.dashboard.refresh_tokens import (
     refresh_cookie_name,
     validate_refresh_token,
 )
+from kiro_crew.dashboard.tailnet import TailnetTrust, peer_pin_key, resolve_forwarded_peer
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     _cookie_port_from_host,
+    bind_token_peer,
     extract_numeric_claim,
     generate_token,
     revoke_access_cookie,
@@ -498,12 +500,40 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         replacement=json.dumps(grace_payload, separators=(",", ":")),
     )
 
+    await _rebind_rotated_token_to_peer(request, new_access_token, new_session_exp)
+
     resp = web.json_response(public_payload)
     _set_access_cookie(resp, request, new_access_token, new_session_exp)
     _set_refresh_cookie(resp, request, new_refresh_token, new_refresh_exp)
     _expire_foreign_port_cookies(resp, request)
     _audit(user_id, "refresh_token_use", "ok")
     return resp
+
+
+async def _rebind_rotated_token_to_peer(
+    request: web.Request, access_token: str, session_exp: float
+) -> None:
+    """Carry the tailnet identity pin across an access-token rotation (RFC §3).
+
+    This endpoint is bypassed by the auth middleware, so without this the
+    replacement access token would be UNBOUND — one rotation would launder a
+    node-scoped identity pin into an any-peer token. When the refresh request
+    itself resolves a verified peer, the fresh token is pinned to that peer's
+    key; when no peer resolves (non-tailnet setups, daemon down, Windows) the
+    token stays unbound, which is byte-for-byte the pre-identity behaviour.
+    The middleware's early allowlist deny already covers this route (it runs
+    before the bypass list), so a verified-but-unallowlisted peer never
+    reaches this mint in the first place.
+    """
+    trust = request.app.get("tailnet_trust")
+    if not isinstance(trust, TailnetTrust) or not trust.trust_identity:
+        return
+    if not trust.allowed_logins:
+        return
+    peer = await resolve_forwarded_peer(request, trust)
+    if peer is None:
+        return
+    bind_token_peer(access_token, peer_pin_key(peer, trust.pin_scope), session_exp)
 
 
 async def api_auth_logout(request: web.Request) -> web.Response:

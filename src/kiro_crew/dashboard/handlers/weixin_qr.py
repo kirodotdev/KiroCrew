@@ -36,6 +36,12 @@ from aiohttp import web
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_WEIXIN_TOKEN, KiroCrewConfig, config_path, env_path
+from kiro_crew.dashboard.channel_folders import (
+    LIVE_RELOAD_FIELDS,
+    clean_session_folder,
+    ensure_channel_folder,
+    stored_folder_name,
+)
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.handlers.messaging import is_direct_local_request
 from kiro_crew.platform_compat import restrict_to_owner
@@ -375,6 +381,7 @@ async def weixin_config_get(request: web.Request) -> web.Response:
             "account_id": wx.account_id,
             "dm_policy": wx.dm_policy,
             "allowed_user_ids": [str(u) for u in wx.allowed_user_ids],
+            "session_folder": wx.session_folder,
         }
     )
 
@@ -402,6 +409,13 @@ async def weixin_config_save(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid dm_policy"}, status=400)
     if "allowed_user_ids" in body and not isinstance(body["allowed_user_ids"], list):
         return web.json_response({"error": "allowed_user_ids must be a list"}, status=400)
+    if "session_folder" in body:
+        try:
+            session_folder = clean_session_folder(body["session_folder"])
+        except ValueError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_session_folder"}, status=400
+            )
 
     async with _get_config_lock():
         cp = config_path()
@@ -429,8 +443,29 @@ async def weixin_config_save(request: web.Request) -> web.Response:
             wx["allowed_user_ids"] = [
                 str(u).strip() for u in body["allowed_user_ids"] if str(u).strip()
             ]
+        if "session_folder" in body:
+            wx["session_folder"] = session_folder
         serialized = json.dumps(data, ensure_ascii=False, indent=2)
         await asyncio.to_thread(_atomic_write, cp, serialized)
 
-    # Every weixin field is read once in the orchestrator's constructor.
-    return web.json_response({"ok": True, "restart_required": True})
+        # Create the configured session folder now, on this user-initiated save,
+        # so the reconcile path never has to write the folder store. Best-effort:
+        # a failure leaves conversations unfiled until the next save.
+        _folder_name = stored_folder_name(wx.get("session_folder"))
+        if _folder_name:
+            _state = request.app.get("state")
+            if _state is not None:
+                await ensure_channel_folder(
+                    _state, "weixin", _folder_name,
+                    relabel="session_folder" in body,
+                )
+
+    # Every weixin field is read once in the orchestrator's constructor —
+    # except session_folder, which the channel-slot reconciler re-reads live, so
+    # a save that only changes it does not ask the user to restart.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": bool(set(body) - LIVE_RELOAD_FIELDS),
+        }
+    )

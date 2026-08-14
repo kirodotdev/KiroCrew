@@ -5,17 +5,23 @@ from __future__ import annotations
 import base64
 import json
 import os
+import random
+import string
 import sys
 from pathlib import Path
 
 import pytest
+from oauth_url_corpus import OPERATOR_EXTENSION_OAUTH_URLS
 
+from kiro_crew import security
 from kiro_crew.security import (
+    _SECRET_KEY_LEN,
     apply_resource_limits,
     audit_bash_command,
     audit_bash_exfiltration,
     is_sensitive_bash_command,
     is_sensitive_path,
+    oauth_url_contains_credential,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -203,6 +209,13 @@ class TestRedactCredentials:
     # the intended token (the redaction test is unchanged). The split keeps any
     # single source literal from being a complete provider token, so GitHub
     # push-protection / secret scanners don't flag these synthetic fixtures.
+    #
+    # The explicit ``ids=`` labels exist for the same reason one level up:
+    # without them pytest derives each test ID from the REASSEMBLED value, and
+    # the full key-shaped string then lands verbatim in every derived artifact
+    # (.test_durations, junit XML, CI logs). Push protection rejects any branch
+    # carrying such an artifact — that is what kept the Update Test Durations
+    # workflow from ever landing its PR. Keep these labels secret-shape-free.
     @pytest.mark.parametrize(
         "secret",
         [
@@ -222,6 +235,22 @@ class TestRedactCredentials:
             "dop_v1_" "abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrst",  # DigitalOcean
             "GOCSPX-" "abcdefghijklmnopqrstuvwx",  # Google OAuth
         ],
+        ids=[
+            "github-classic-pat",
+            "github-oauth",
+            "github-fine-grained-pat",
+            "gitlab-pat",
+            "stripe-live",
+            "stripe-test",
+            "stripe-restricted",
+            "sendgrid",
+            "openai-project",
+            "anthropic",
+            "npm-token",
+            "pypi-token",
+            "digitalocean",
+            "google-oauth",
+        ],
     )
     def test_redacts_third_party_credentials(self, secret: str) -> None:
         text = f"KEY={secret}"
@@ -239,6 +268,9 @@ class TestRedactCredentials:
             "sk_live_" "51HG7aBcDeFgHiJkLmNoPqRsTuVwXyZ",  # Stripe live
             "xoxb-" "1234567890-abcdefghijklmnop",  # Slack bot token
         ],
+        # Safe display labels: pytest would otherwise derive the ID from the
+        # reassembled token — see the note on the parametrize above.
+        ids=["github-classic-pat", "anthropic", "openai-project", "stripe-live", "slack-bot"],
     )
     def test_warning_does_not_leak_secret_prefix(self, secret: str) -> None:
         """The warnings list must carry NO secret bytes — only length metadata.
@@ -658,8 +690,9 @@ class TestRedactCredentials:
         claims = json.loads(
             base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
         )
-        # `gen` is normalised alongside `sub` because it mirrors the process-global
-        # `_REVOCATION_GEN`, which is LOADED FROM DISK at import. Left ambient, the
+        # `gen` is normalised alongside `sub` because it mirrors the persisted
+        # counter behind `revocation_gen.current_revocation_gen()`, LOADED FROM
+        # DISK on first use. Left ambient, the
         # derived floor would depend on how many times this machine has revoked:
         # the repr widens at 10, moving the floor 145 -> 147, so the pin below would
         # fail on a clean checkout with no code change.
@@ -891,6 +924,371 @@ class TestBareSecretKeyRedaction:
         result, warnings = redact_credentials(blob)
         assert result == blob
         assert not warnings
+
+
+class TestBareSecretRunLevelFastPath:
+    """The run-level fast path must be an optimization ONLY, never a hole.
+
+    ``_contains_bare_secret`` slides a 40-char window byte by byte, so a long
+    base64-alphabet run costs one full classification per offset. Two per-window
+    gates reject on a property closed under substring -- a missing character
+    class (gate 2) and all-hex (gate 3) -- so the whole run can be asked once and
+    every window retired. These tests pin both halves of that claim: the fast
+    path really fires (a behaviour-only test cannot see it), and it cannot
+    swallow a genuine secret hidden inside a long run.
+    """
+
+    @staticmethod
+    def _count_window_classifications(run: str, monkeypatch: pytest.MonkeyPatch) -> int:
+        """Return how many 40-char windows of *run* got fully classified."""
+        calls = []
+        original = security._looks_like_secret_key
+
+        def counting(token: str) -> bool:
+            calls.append(token)
+            return original(token)
+
+        monkeypatch.setattr(security, "_looks_like_secret_key", counting)
+        security._contains_bare_secret(run)
+        return len(calls)
+
+    def test_run_missing_a_char_class_skips_every_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 520 lowercase chars: no window can hold an uppercase char or a digit,
+        # so gate 2 rejects all 481 of them. Without the fast path this is 481
+        # full classifications; with it, zero.
+        run = "abcdefghijklmnopqrstuvwxyz" * 20
+        assert len(run) == 520
+        assert security._contains_bare_secret(run) is False
+        assert self._count_window_classifications(run, monkeypatch) == 0
+
+    def test_all_hex_run_skips_every_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A long mixed-case hex digest passes gate 2 in every window but dies at
+        # gate 3 in every window. All-hex is closed under substring, so one
+        # whole-run test retires the slide -- 137 classifications become zero.
+        run = "0123456789abcdefABCDEF" * 8
+        assert len(run) == 176
+        assert security._HEX_ONLY_RE.match(run)
+        assert security._contains_bare_secret(run) is False
+        assert self._count_window_classifications(run, monkeypatch) == 0
+
+    def test_exactly_one_window_run_is_still_classified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # BOUNDARY: the fast path is gated on `len(run) > _SECRET_KEY_LEN`, so a
+        # 40-char run must still reach the classifier.
+        #
+        # The fixture must FAIL one of the two fast-path gates, or this test
+        # cannot detect the boundary being wrong. With 40 lowercase chars: under
+        # `>` the fast path is skipped and the sole window is classified (1);
+        # under a mutated `>=` the fast path fires, the class check rejects, and
+        # nothing is classified (0). A fixture that clears both gates -- an AWS
+        # example key, say -- passes either way and pins nothing.
+        run = "abcdefghijklmnopqrstuvwxyz" + "abcdefghijklmn"
+        assert len(run) == _SECRET_KEY_LEN
+        assert not security._has_all_three_char_classes(run)
+        assert self._count_window_classifications(run, monkeypatch) == 1
+
+    def test_secret_glued_into_a_long_mixed_run_is_still_found(self) -> None:
+        # The fast path must not retire a run that DOES contain a secret. A real
+        # key glued to base64 padding on both sides makes a 60-char run whose
+        # only qualifying window is at a non-zero offset.
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        run = "abc123XYZ/" + secret + "0123456789"
+        assert len(run) > _SECRET_KEY_LEN
+        assert security._contains_bare_secret(run) is True
+        result, warnings = redact_credentials(f"token={run}")
+        assert secret not in result
+        assert warnings
+
+    def test_run_with_all_three_classes_is_fully_slid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # NEGATIVE CONTROL: the fast path may skip a run only when it can PROVE
+        # no window qualifies. This run holds all three classes and is not
+        # all-hex, so every one of its 21 windows must still be classified --
+        # 60 - 40 + 1 == 21. (Beware fixtures like "aB3" * 30: a, B and 3 are
+        # all hex digits, so that run is all-hex and is legitimately skipped.)
+        run = "Zz9" * 20
+        assert len(run) == 60
+        assert not security._HEX_ONLY_RE.match(run)
+        assert security._contains_bare_secret(run) is False
+        assert self._count_window_classifications(run, monkeypatch) == 21
+
+
+class TestCharClassHelperMatchesTheThreeScanDefinition:
+    """``_has_all_three_char_classes`` replaced three ``any()`` scans.
+
+    The single-pass early-exit loop must agree with the definition it replaced on
+    every input, including the elif-chain cases where one character could be
+    considered for more than one class.
+    """
+
+    @staticmethod
+    def _reference(text: str) -> bool:
+        return (
+            any(ch.islower() for ch in text)
+            and any(ch.isupper() for ch in text)
+            and any(ch.isdigit() for ch in text)
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "a",
+            "A",
+            "1",
+            "aA1",
+            "1Aa",
+            "A1a",
+            "aaaaaaaa",
+            "AAAAAAAA",
+            "12345678",
+            "aaaa1111",
+            "AAAA1111",
+            "aaaaAAAA",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "0123456789abcdef0123456789abcdef01234567",
+            "+/+/+/+/",
+            "MASSE",
+            "straße",
+        ],
+    )
+    def test_agrees_with_reference_on_representative_shapes(self, text: str) -> None:
+        assert security._has_all_three_char_classes(text) is self._reference(text)
+
+    def test_agrees_with_reference_across_a_random_corpus(self) -> None:
+        rng = random.Random(20260810)
+        alphabet = string.ascii_letters + string.digits + "+/=-_ "
+        for _ in range(4000):
+            text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 44)))
+            assert security._has_all_three_char_classes(text) is self._reference(
+                text
+            ), f"disagreement on {text!r}"
+
+
+class TestSecretGateOrderIsCostOrdered:
+    """The gate ORDER is the point of the cost ordering, so pin it directly.
+
+    ``TestSecretGateOrderIsVerdictNeutral`` cannot pin it: a conjunction of pure
+    predicates is order-independent by construction, so no corpus can witness a
+    reordering. Reverting the gates to entropy-first therefore passes every
+    verdict test while silently undoing the optimisation. These tests count which
+    gates get EVALUATED, which is the only observable that distinguishes one
+    order from another.
+    """
+
+    @staticmethod
+    def _counting_classify(token: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        """Classify *token*, counting calls to each expensive gate."""
+        counts = {"entropy": 0, "decode": 0}
+        real_entropy = security._shannon_entropy
+        real_decode = security._decodes_to_printable_text
+
+        def entropy(t: str) -> float:
+            counts["entropy"] += 1
+            return real_entropy(t)
+
+        def decode(t: str) -> bool:
+            counts["decode"] += 1
+            return real_decode(t)
+
+        monkeypatch.setattr(security, "_shannon_entropy", entropy)
+        monkeypatch.setattr(security, "_decodes_to_printable_text", decode)
+        security._looks_like_secret_key(token)
+        return counts
+
+    def test_a_structural_rejection_never_pays_for_entropy_or_decode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "aB3/" * 10 is 40 chars, holds all three classes, is not all-hex, and
+        # has a vowel ratio of 0.5 -- so a structural gate rejects it. With the
+        # structural gates first, neither expensive gate is ever called. Revert
+        # to entropy-first and entropy is called, failing this test. That revert
+        # is exactly the mutation no verdict-based test can catch.
+        token = "aB3/" * 10
+        assert len(token) == _SECRET_KEY_LEN
+        assert security._has_all_three_char_classes(token)
+        assert not security._HEX_ONLY_RE.match(token)
+        counts = self._counting_classify(token, monkeypatch)
+        assert counts == {"entropy": 0, "decode": 0}, (
+            "a token rejected by a structural gate must not pay for entropy or "
+            f"decode; got {counts}"
+        )
+
+    def test_decode_is_last_so_an_entropy_rejection_never_pays_for_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "Zz9" * 20 clears both structural gates but fails the entropy floor
+        # (1.58 < 4.3). With decode last it is never called; move decode ahead of
+        # entropy and this fails.
+        token = ("Zz9" * 20)[:_SECRET_KEY_LEN]
+        assert not security._lowercase_run_exceeds(token, security._SECRET_MAX_LOWER_RUN)
+        assert security._vowel_ratio(token) <= security._SECRET_MAX_VOWEL_RATIO
+        assert security._shannon_entropy(token) < security._SECRET_ENTROPY_MIN
+        counts = self._counting_classify(token, monkeypatch)
+        assert counts["entropy"] == 1, f"entropy should be reached: {counts}"
+        assert counts["decode"] == 0, f"decode must run after entropy: {counts}"
+
+    def test_a_real_key_still_pays_for_every_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The pass-through case: a genuine key clears all gates, so every gate
+        # runs exactly once. This is what proves the cheap gates are not
+        # short-circuiting a real secret away from the expensive checks.
+        counts = self._counting_classify(
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", monkeypatch
+        )
+        assert counts == {"entropy": 1, "decode": 1}
+
+
+class TestSecretGateOrderIsVerdictNeutral:
+    """Gates 4-7 are ordered by measured cost, so the order must not change verdicts.
+
+    Every one of those gates is a pure predicate whose failure returns False, so
+    reordering them can only change WHICH gate reports a rejection -- never
+    whether the token is rejected. That is the property this class pins, because
+    a reorder that silently changed one verdict in the redaction path would mean
+    either a leaked credential or a corrupted benign output.
+    """
+
+    # Shapes chosen to exercise each gate as the deciding one: real keys, base64
+    # blobs, JWT segments, file paths, camelCase identifiers, hex digests, prose.
+    SOURCES = (
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ",
+        "src/kiro_crew/security/redaction/Handler2/Manager3/Factory4/Builder5x",
+        "getUserAccountManagerFactory2BuilderHelperImpl3ServiceProvider4x",
+        "0123456789abcdefABCDEF0123456789abcdefAB",
+        "TheGatewayRestoredTheSessionAndReplayed12ToolCallsSeeSecurityPy",
+        "aB3/" * 24,
+        "Zz9" * 20,
+        # base64 of printable ASCII: the encoded-text-blob shape gate 7 exists to
+        # exclude. This token clears gates 1-6 (vowel 0.079, no long lowercase
+        # run, entropy 4.48) and is rejected ONLY by the decode gate, which is
+        # what lets this corpus detect that gate being dropped or bypassed.
+        "dFlnal9tVWgsQmVsMzFpRWwyaHBDaFlnQ2ZyTDFz",
+    )
+
+    @staticmethod
+    def _reference(token: str) -> bool:
+        """The classifier with gates 4-7 in every order, evaluated exhaustively.
+
+        Rather than hard-code one alternative ordering, evaluate all four gates
+        independently and AND them. Any ordering of short-circuiting checks must
+        agree with the unordered conjunction.
+        """
+        if len(token) != _SECRET_KEY_LEN:
+            return False
+        if not security._has_all_three_char_classes(token):
+            return False
+        if security._HEX_ONLY_RE.match(token):
+            return False
+        return (
+            security._vowel_ratio(token) <= security._SECRET_MAX_VOWEL_RATIO
+            and not security._lowercase_run_exceeds(
+                token, security._SECRET_MAX_LOWER_RUN
+            )
+            and security._shannon_entropy(token) >= security._SECRET_ENTROPY_MIN
+            and not security._decodes_to_printable_text(token)
+        )
+
+    def _windows(self) -> list[str]:
+        out = []
+        for src in self.SOURCES:
+            for i in range(max(1, len(src) - _SECRET_KEY_LEN + 1)):
+                out.append(src[i : i + _SECRET_KEY_LEN])
+        rng = random.Random(20260811)
+        b64 = string.ascii_letters + string.digits + "+/"
+        out += ["".join(rng.choice(b64) for _ in range(40)) for _ in range(500)]
+        return out
+
+    def test_ordered_classifier_matches_the_unordered_conjunction(self) -> None:
+        windows = self._windows()
+        assert len(windows) > 500
+        for w in windows:
+            assert security._looks_like_secret_key(w) is self._reference(
+                w
+            ), f"gate order changed the verdict for {w!r}"
+
+    def test_the_corpus_actually_exercises_every_gate(self) -> None:
+        # A verdict-equivalence test over a corpus that never reaches gates 4-7
+        # would pass no matter how they were ordered. Prove the corpus bites.
+        reached = {"vowel": 0, "lower": 0, "entropy": 0, "decode": 0, "passed": 0}
+        for w in self._windows():
+            if len(w) != _SECRET_KEY_LEN or not security._has_all_three_char_classes(w):
+                continue
+            if security._HEX_ONLY_RE.match(w):
+                continue
+            if security._lowercase_run_exceeds(w, security._SECRET_MAX_LOWER_RUN):
+                reached["lower"] += 1
+            elif security._vowel_ratio(w) > security._SECRET_MAX_VOWEL_RATIO:
+                reached["vowel"] += 1
+            elif security._shannon_entropy(w) < security._SECRET_ENTROPY_MIN:
+                reached["entropy"] += 1
+            elif security._decodes_to_printable_text(w):
+                reached["decode"] += 1
+            else:
+                reached["passed"] += 1
+        for gate in ("vowel", "lower", "entropy", "decode", "passed"):
+            assert reached[gate] > 0, f"corpus never exercised gate {gate}: {reached}"
+
+    def test_a_real_secret_key_still_redacts_end_to_end(self) -> None:
+        secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result, warnings = redact_credentials(f"AWS_SECRET={secret} keep this prose")
+        assert secret not in result
+        assert warnings
+        assert "keep this prose" in result
+
+
+class TestLowercaseRunExceedsStopsAtTheCap:
+    """``_lowercase_run_exceeds`` replaced a full-maximum scan with a capped check.
+
+    The caller only compares against a threshold, so the helper answers the
+    threshold question directly. These tests pin the boundary in both directions
+    -- a run exactly at the cap must NOT trip it, cap+1 must -- so an off-by-one
+    in either direction fails.
+    """
+
+    @pytest.mark.parametrize(
+        ("token", "cap", "expected"),
+        [
+            ("", 5, False),
+            ("ABC123", 5, False),
+            ("abcde", 5, False),  # exactly at cap
+            ("abcdef", 5, True),  # cap + 1
+            ("abcdeX", 5, False),  # run broken before exceeding
+            ("abcdeXabcde", 5, False),  # two runs at cap, neither exceeds
+            ("Xabcdefghij", 5, True),  # run starts after a non-lower char
+            ("abcdefghij", 0, True),  # zero cap: any lowercase exceeds
+            ("ABCDEF", 0, False),
+            ("aB3" * 20, 5, False),  # never two lowercase in a row
+        ],
+    )
+    def test_boundary(self, token: str, cap: int, expected: bool) -> None:
+        assert security._lowercase_run_exceeds(token, cap) is expected
+
+    def test_agrees_with_the_full_maximum_it_replaced(self) -> None:
+        def longest_run(token: str) -> int:
+            best = current = 0
+            for ch in token:
+                if ch.islower():
+                    current += 1
+                    best = max(best, current)
+                else:
+                    current = 0
+            return best
+
+        rng = random.Random(20260811)
+        alphabet = string.ascii_letters + string.digits + "+/"
+        for _ in range(3000):
+            t = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 44)))
+            cap = security._SECRET_MAX_LOWER_RUN
+            assert security._lowercase_run_exceeds(t, cap) is (
+                longest_run(t) > cap
+            ), f"disagreement on {t!r}"
 
 
 class TestSandboxDeniedCommands:
@@ -1484,6 +1882,647 @@ class TestBuiltinDenyPatterns:
         from kiro_crew.security import is_denied
 
         assert is_denied("cr --summary 'Fix test discovery'") is None
+
+
+class TestOAuthAuthorizationUrlRedaction:
+    """OAuth entropy is exempt only in the dedicated ACP banner-safety path."""
+
+    STATE = "opaque-state-123"
+    CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    BARE_AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    BARE_AWS_SECRET_ALNUM = "wJalrXUtnFEMIxK7MDENGybPxRfiCYEXAMPLEKEY"
+    GITHUB_TOKEN = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+    NOTION_URL = (
+        "https://api.notion.com/v1/oauth/authorize"
+        "?client_id=client123&response_type=code"
+        f"&state={STATE}&code_challenge={CHALLENGE}"
+        "&code_challenge_method=S256"
+    )
+
+    @staticmethod
+    def _assert_general_redactors_remove_secret(url: str, secret: str) -> None:
+        text = f"Model output: {url}"
+        for redactor in (redact_credentials, redact_exfiltration_urls):
+            cleaned, warnings = redactor(text)
+            assert secret not in cleaned
+            assert warnings
+
+    def test_exact_notion_authorize_url_passes_banner_only(self) -> None:
+        assert len(self.CHALLENGE) == 43
+        assert oauth_url_contains_credential(self.NOTION_URL) is False
+
+        # The generic URL redactor handles arbitrary model/agent text and does
+        # not inherit the banner-only OAuth entropy carve-out.
+        cleaned, warnings = redact_exfiltration_urls(self.NOTION_URL)
+        assert cleaned != self.NOTION_URL
+        assert warnings
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            NOTION_URL.replace("api.notion.com", "evil.example", 1),
+            NOTION_URL.replace("api.notion.com", "api.notion.com.evil.example", 1),
+            NOTION_URL.replace("/v1/oauth/authorize", "/v1/oauth/authorize/extra", 1),
+            NOTION_URL.replace("api.notion.com", "api.notion.com:443", 1),
+            NOTION_URL.replace("https://", "http://", 1),
+        ],
+        ids=[
+            "unapproved-host",
+            "suffix-host",
+            "path-prefix",
+            "explicit-port",
+            "http-scheme",
+        ],
+    )
+    def test_unapproved_endpoint_fails_closed(self, url: str) -> None:
+        assert oauth_url_contains_credential(url) is True
+
+    def test_userinfo_embedded_token_fails_closed(self) -> None:
+        url = (
+            f"https://{self.GITHUB_TOKEN}@api.notion.com/v1/oauth/authorize"
+            "?state=ok"
+        )
+        assert oauth_url_contains_credential(url) is True
+        cleaned, warnings = redact_credentials(url)
+        assert self.GITHUB_TOKEN not in cleaned
+        assert warnings
+
+    def test_backslash_authority_spoof_fails_closed(self) -> None:
+        url = r"https://evil.com\@api.notion.com/v1/oauth/authorize?state=ok"
+        assert oauth_url_contains_credential(url) is True
+
+    def test_bare_aws_secret_in_hostname_fails_closed(self) -> None:
+        assert len(self.BARE_AWS_SECRET_ALNUM) == 40
+        url = (
+            f"https://{self.BARE_AWS_SECRET_ALNUM}.example/oauth/authorize"
+            "?state=ok"
+        )
+        assert oauth_url_contains_credential(url) is True
+
+    def test_bare_aws_secret_in_fragment_fails_closed(self) -> None:
+        assert len(self.BARE_AWS_SECRET) == 40
+        url = f"{self.NOTION_URL}#{self.BARE_AWS_SECRET}"
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            ";session=ok?state=ok",
+            "?state=ok#continue",
+        ],
+        ids=["path-params", "fragment"],
+    )
+    def test_path_params_and_fragments_fail_closed(self, suffix: str) -> None:
+        url = "https://api.notion.com/v1/oauth/authorize" + suffix
+        assert oauth_url_contains_credential(url) is True
+
+    def test_unknown_query_parameter_with_secret_fails_closed(self) -> None:
+        url = self.NOTION_URL + f"&session_blob={self.GITHUB_TOKEN}"
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, self.GITHUB_TOKEN)
+
+    def test_duplicate_value_in_standard_and_unknown_param_fails_closed(self) -> None:
+        url = self.NOTION_URL + f"&session_blob={self.CHALLENGE}"
+        assert oauth_url_contains_credential(url) is True
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned != url
+        assert warnings
+
+    @pytest.mark.parametrize(
+        "credential",
+        [
+            "AKIA" "IOSFODNN7EXAMPLE",
+            GITHUB_TOKEN,
+        ],
+        ids=["aws-access-key", "github-token"],
+    )
+    def test_fixed_credential_inside_state_fails_closed(self, credential: str) -> None:
+        url = self.NOTION_URL.replace(self.STATE, f"prefix{credential}suffix", 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, credential)
+
+    def test_once_percent_decoded_fixed_credential_fails_closed(self) -> None:
+        encoded_token = "%67%68%70%5F" + self.GITHUB_TOKEN.removeprefix("ghp_")
+        url = self.NOTION_URL.replace(self.STATE, encoded_token, 1)
+        assert oauth_url_contains_credential(url) is True
+
+    def test_base64_encoded_credential_inside_state_fails_closed(self) -> None:
+        encoded = base64.b64encode(self.GITHUB_TOKEN.encode()).decode()
+        url = self.NOTION_URL.replace(self.STATE, encoded, 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, encoded)
+
+    def test_bare_aws_secret_inside_state_fails_closed_everywhere(self) -> None:
+        assert len(self.BARE_AWS_SECRET) == 40
+        url = self.NOTION_URL.replace(self.STATE, self.BARE_AWS_SECRET, 1)
+        assert oauth_url_contains_credential(url) is True
+        self._assert_general_redactors_remove_secret(url, self.BARE_AWS_SECRET)
+
+    def test_pkce_challenge_wrapping_bare_aws_secret_fails_closed(self) -> None:
+        alphanumeric_secret = "wJalrXUtnFEMIxK7MDENGybPxRfiCYEXAMPLEKEY"
+        challenge = alphanumeric_secret + "abc"
+        assert len(alphanumeric_secret) == 40
+        assert len(challenge) == 43
+        assert challenge.isalnum()
+
+        url = self.NOTION_URL.replace(self.CHALLENGE, challenge, 1)
+        assert oauth_url_contains_credential(url) is True
+
+    def test_bare_aws_secret_in_path_without_query_fails_closed(self) -> None:
+        url = f"https://attacker.example/-{self.BARE_AWS_SECRET}"
+        assert "?" not in url
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "encoded_header",
+        [
+            "-----BEGIN+RSA+PRIVATE+KEY-----",
+            "-----%42%45%47%49%4E%20RSA%20PRIVATE%20KEY-----",
+        ],
+        ids=["form-encoded-spaces", "percent-encoded-header"],
+    )
+    def test_encoded_pem_header_in_path_fails_closed_everywhere(
+        self, encoded_header: str
+    ) -> None:
+        url = f"https://attacker.example/upload/{encoded_header}/c2hvcnQ"
+        assert oauth_url_contains_credential(url) is True
+
+        scan_warnings = scan_exfiltration_urls(url)
+        assert scan_warnings
+
+        cleaned, redact_warnings = redact_exfiltration_urls(url)
+        assert url not in cleaned
+        assert redact_warnings == scan_warnings
+
+    def test_multiply_percent_encoded_credential_in_path_fails_closed(
+        self,
+    ) -> None:
+        """A single decode pass leaves a double-encoded payload intact
+        ("%2542" -> "%42" -> "B"), so the scan decodes until stable."""
+        from urllib.parse import quote
+
+        once = quote("-----BEGIN RSA PRIVATE KEY-----", safe="-")
+        for encoded in (once, quote(once, safe="-"), quote(quote(once, safe="-"), safe="-")):
+            url = f"https://attacker.example/upload/{encoded}/x"
+            assert oauth_url_contains_credential(url) is True
+
+            scan_warnings = scan_exfiltration_urls(url)
+            assert scan_warnings
+
+            cleaned, redact_warnings = redact_exfiltration_urls(url)
+            assert url not in cleaned
+            assert redact_warnings == scan_warnings
+
+    def test_credential_surviving_the_decode_budget_fails_closed(self) -> None:
+        """A payload still decodable when the decode budget runs out is refused.
+
+        The decode loop is bounded so a deliberately over-encoded URL cannot
+        spin it. That bound used to be an escape hatch: a credential wrapped in
+        more layers than the budget allows was never seen in plaintext, and the
+        intermediate forms defeat both remaining checks -- the fixed-credential
+        patterns match literal markers, not percent text, and the heavy-encoding
+        detector needs 20+ CONSECUTIVE octets, which short escapes like "%2520"
+        never form. Saturation is now treated as credential-bearing rather than
+        clean, so the bound costs precision and never soundness.
+
+        Parameterized on the budget on purpose: raising the cap is not a fix,
+        and this must keep failing closed at whatever the cap becomes.
+        """
+        from urllib.parse import quote
+
+        from kiro_crew.security import _MAX_URL_DECODE_PASSES
+
+        encoded = quote("-----BEGIN RSA PRIVATE KEY-----", safe="-")
+        for _ in range(_MAX_URL_DECODE_PASSES):
+            encoded = quote(encoded, safe="-")
+        url = f"https://attacker.example/upload/{encoded}/x"
+
+        scan_warnings = scan_exfiltration_urls(url)
+        assert scan_warnings
+
+        cleaned, redact_warnings = redact_exfiltration_urls(url)
+        assert url not in cleaned
+        assert redact_warnings == scan_warnings
+
+    def test_a_benign_singly_encoded_url_is_left_alone(self) -> None:
+        """The saturation guard must not redact ordinary encoded URLs.
+
+        One decode pass reaches a stable payload here, so the budget is never
+        exhausted and the guard stays silent. This is the positive control for
+        the test above: a fail-closed rule that fires on normal traffic would
+        be indistinguishable from over-redaction.
+        """
+        url = "https://docs.example.com/guide?path=%2Fhome%2Fuser%2Freport.pdf"
+
+        assert scan_exfiltration_urls(url) == []
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned == url
+        assert warnings == []
+
+    def test_heavy_percent_encoding_in_standard_param_fails_closed(self) -> None:
+        url = self.NOTION_URL.replace(self.STATE, "%41" * 25, 1)
+        assert oauth_url_contains_credential(url) is True
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned != url
+        assert warnings
+
+
+class TestOperatorOAuthEndpointExtension:
+    """The keystone ``oauth_endpoints.json`` extends the OAuth endpoint set.
+
+    The builtin ``_OAUTH_AUTHORIZATION_ENDPOINTS`` is deliberately code-owned;
+    the operator's extension file is the only way to widen it, it fails soft to
+    EMPTY on any defect, and every entry is strictly validated. HTTPS-only /
+    no-explicit-port / exact-match semantics are identical to the builtin set
+    and not relaxable via the file.
+    """
+
+    HOST = "acme.okta.com"
+    PATH = "/oauth2/v1/authorize"
+    CONSENT_URL = (
+        "https://acme.okta.com/oauth2/v1/authorize"
+        "?client_id=0oabcde12345FGHIJ697"
+        "&response_type=code"
+        "&scope=openid%20profile%20email%20offline_access"
+        "&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("Zx9yW8vU" * 12)
+    )
+
+    @staticmethod
+    def _write_extension(home: Path, entries: object) -> None:
+        (home / "oauth_endpoints.json").write_text(
+            (
+                json.dumps({"additional_authorization_endpoints": entries})
+                if not isinstance(entries, str)
+                else entries
+            ),
+            encoding="utf-8",
+        )
+
+    @pytest.fixture(autouse=True)
+    def _isolated_extension_state(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Path:
+        """Fresh home + fresh process-global audit/memo state for EVERY test.
+
+        The dedupe set and the file memo are process-global by design; without
+        a reset, tests exercising the real emit path would depend on execution
+        order.
+        """
+        from kiro_crew import security
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.setattr(security, "_OAUTH_EXTENSION_AUDITED", set())
+        monkeypatch.setattr(security, "_OAUTH_EXTENSION_MEMO", {})
+        return tmp_path
+
+    @pytest.fixture()
+    def ext_home(self, _isolated_extension_state: Path) -> Path:
+        return _isolated_extension_state
+
+    # ── Loader: fail-soft postures ──
+
+    def test_missing_file_yields_empty_set(self, ext_home: Path) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "content",
+        ["{not json", "[]", '"just a string"', '{"additional_authorization_endpoints": {}}'],
+        ids=["corrupt", "non-object", "string", "key-not-list"],
+    )
+    def test_defective_file_yields_empty_set(self, ext_home: Path, content: str) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, content)
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    def test_valid_entry_accepted_and_host_lowercased(self, ext_home: Path) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": "ACME.Okta.com", "path": self.PATH}])
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+
+    def test_hand_edit_takes_effect_without_restart(self, ext_home: Path) -> None:
+        """The check-time re-read contract: no gateway restart, no stale memo."""
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+        # Consult the memoized path once more before the edit.
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+
+        self._write_extension(ext_home, [{"host": "other.idp.example", "path": "/authorize"}])
+        # Force a distinct mtime even on filesystems with coarse timestamps.
+        os.utime(
+            ext_home / "oauth_endpoints.json",
+            ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000),
+        )
+        assert _load_operator_oauth_endpoints() == frozenset(
+            {("other.idp.example", "/authorize")}
+        )
+
+        (ext_home / "oauth_endpoints.json").unlink()
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    # ── Loader: hostile entries are individually SKIPPED ──
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "*.okta.com",
+            "https://acme.okta.com",
+            "acme.okta.com:443",
+            "user@acme.okta.com",
+            "acme.%6fkta.com",
+            "acme .okta.com",
+            "acme.okta.com\t",
+            "acme\\okta.com",
+            ".acme.okta.com",
+            "acme.okta.com.",
+            "192.168.1.1",
+            "[::1]",
+            "nodots",
+            "acme.okta.123",
+            "",
+            "a" * 260 + ".com",
+        ],
+        ids=[
+            "wildcard",
+            "scheme-prefix",
+            "explicit-port",
+            "userinfo",
+            "percent-escape",
+            "whitespace",
+            "trailing-tab",
+            "backslash",
+            "leading-dot",
+            "trailing-dot",
+            "ipv4-literal",
+            "ipv6-literal",
+            "no-dot",
+            "digit-tld",
+            "empty",
+            "over-length",
+        ],
+    )
+    def test_hostile_host_skipped(self, ext_home: Path, host: str) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": host, "path": self.PATH}])
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "authorize",
+            "/authorize?x=1",
+            "/authorize#frag",
+            "/authorize;p=1",
+            "/autho%72ize",
+            "/auth orize",
+            "/auth\\orize",
+            "/../authorize",
+            "/" + "x" * 513,
+        ],
+        ids=[
+            "no-leading-slash",
+            "query",
+            "fragment",
+            "path-param",
+            "percent-escape",
+            "whitespace",
+            "backslash",
+            "dotdot",
+            "over-length",
+        ],
+    )
+    def test_hostile_path_skipped(self, ext_home: Path, path: str) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [{"host": self.HOST, "path": path}])
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "not-a-dict",
+            {"host": 1, "path": "/a"},
+            {"host": "ok.example.com", "path": None},
+            {"host": "ok.example.com"},
+            {},
+        ],
+        ids=["string-entry", "int-host", "none-path", "missing-path", "empty-dict"],
+    )
+    def test_non_string_entry_skipped(self, ext_home: Path, entry: object) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(ext_home, [entry])
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    def test_one_bad_entry_does_not_poison_the_rest(self, ext_home: Path) -> None:
+        from kiro_crew.security import _load_operator_oauth_endpoints
+
+        self._write_extension(
+            ext_home,
+            [{"host": "*.evil.example", "path": "/a"}, {"host": self.HOST, "path": self.PATH}],
+        )
+        assert _load_operator_oauth_endpoints() == frozenset({(self.HOST, self.PATH)})
+
+    def test_entry_cap_bounds_both_acceptance_and_iteration(self, ext_home: Path) -> None:
+        from kiro_crew.security import (
+            _ENDPOINT_EXTENSION_CAP,
+            _load_operator_oauth_endpoints,
+        )
+
+        # Over-cap valid entries: only the first CAP are accepted. A valid
+        # entry placed BEYOND the cap must be ignored even when earlier slots
+        # were wasted on invalid entries — the slice bounds the iteration
+        # itself, so a mangled file cannot amplify into an unbounded walk.
+        entries: list[dict] = [
+            {"host": f"idp{i}.example.com", "path": "/authorize"}
+            for i in range(_ENDPOINT_EXTENSION_CAP + 10)
+        ]
+        self._write_extension(ext_home, entries)
+        assert len(_load_operator_oauth_endpoints()) == _ENDPOINT_EXTENSION_CAP
+
+        invalid_padding: list[dict] = [
+            {"host": "*.invalid.example", "path": "/a"}
+        ] * _ENDPOINT_EXTENSION_CAP
+        self._write_extension(
+            ext_home, invalid_padding + [{"host": self.HOST, "path": self.PATH}]
+        )
+        assert _load_operator_oauth_endpoints() == frozenset()
+
+    # ── Gate: the extension widens exactly the builtin exemption, nothing more ──
+
+    def test_extended_endpoint_passes_previously_rejected_consent_url(
+        self, ext_home: Path
+    ) -> None:
+        # Fails closed with no file (the pre-extension behavior) …
+        assert oauth_url_contains_credential(self.CONSENT_URL) is True
+        # … and passes once the operator allowlists the exact endpoint.
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+    @pytest.mark.parametrize(
+        "credential",
+        ["AKIA" "IOSFODNN7EXAMPLE", "xoxb-1234567890-abcdefghijkl"],
+        ids=["aws-access-key", "slack-token"],
+    )
+    def test_credential_at_extended_endpoint_still_rejected(
+        self, ext_home: Path, credential: str
+    ) -> None:
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        url = self.CONSENT_URL.replace("state=", f"state={credential}", 1)
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda u: u.replace("https://", "http://", 1),
+            lambda u: u.replace("acme.okta.com", "acme.okta.com:443", 1),
+            lambda u: u.replace("acme.okta.com", "other.idp.example", 1),
+            lambda u: u.replace("acme.okta.com", "acme.okta.com.attacker.example", 1),
+            lambda u: u.replace("/oauth2/v1/authorize", "/oauth2/v1/authorize/extra", 1),
+        ],
+        ids=["http-scheme", "explicit-port", "unknown-host", "lookalike-suffix", "path-suffix"],
+    )
+    def test_non_matching_urls_still_fail_closed(self, ext_home: Path, mutate) -> None:
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert oauth_url_contains_credential(mutate(self.CONSENT_URL)) is True
+
+    def test_general_redactors_ignore_the_extension(self, ext_home: Path) -> None:
+        # The carve-out stays banner-only: arbitrary model/agent text keeps the
+        # full heuristics even for an operator-approved endpoint.
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        cleaned, warnings = redact_exfiltration_urls(self.CONSENT_URL)
+        assert cleaned != self.CONSENT_URL
+        assert warnings
+        assert scan_exfiltration_urls(self.CONSENT_URL)
+
+    # ── SEL audit ──
+
+    def test_extension_approval_emits_audit_event(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            security,
+            "_emit_oauth_extension_used_event",
+            lambda host, path: seen.append((host, path)),
+        )
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+        assert (self.HOST, self.PATH) in seen
+
+    def test_builtin_approval_does_not_emit_audit_event(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            security,
+            "_emit_oauth_extension_used_event",
+            lambda host, path: seen.append((host, path)),
+        )
+        url = (
+            "https://github.com/login/oauth/authorize"
+            "?client_id=Iv1.a1b2c3d4e5f6g7h8&state=xyz789randomstring"
+        )
+        assert oauth_url_contains_credential(url) is False
+        assert seen == []
+
+    def test_audit_event_deduped_per_endpoint_but_not_across_endpoints(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        logged: list = []
+
+        class _RecorderLog:
+            def log(self, event: object) -> None:
+                logged.append(event)
+
+        monkeypatch.setattr(security, "SecurityEventLog", lambda: _RecorderLog())
+        security._emit_oauth_extension_used_event(self.HOST, self.PATH)
+        security._emit_oauth_extension_used_event(self.HOST, self.PATH)
+        assert len(logged) == 1
+        event = logged[0]
+        assert event.event_type == "oauth_endpoint_extension_used"
+        assert event.metadata["host"] == self.HOST
+        assert event.metadata["path"] == self.PATH
+        assert event.metadata["file"].endswith("oauth_endpoints.json")
+
+        # A second DISTINCT endpoint still emits: dedupe is per (host, path).
+        security._emit_oauth_extension_used_event("other.idp.example", "/authorize")
+        assert len(logged) == 2
+
+    def test_audit_failure_does_not_break_the_approval(
+        self, ext_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import security
+
+        class _BrokenLog:
+            def log(self, event: object) -> None:
+                raise RuntimeError("SEL unavailable")
+
+        monkeypatch.setattr(security, "SecurityEventLog", lambda: _BrokenLog())
+        self._write_extension(ext_home, [{"host": self.HOST, "path": self.PATH}])
+        assert oauth_url_contains_credential(self.CONSENT_URL) is False
+
+    # ── Keystone fence: the agent cannot widen its own trust boundary ──
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    def test_extension_file_is_sensitive_under_every_home_prefix(self, prefix: str) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        assert is_sensitive_path(f"~/{prefix}/oauth_endpoints.json") is True
+        # The write gate is a superset of the read gate; assert it directly so
+        # the file-edit tool path is pinned too.
+        assert is_sensitive_write_path(f"~/{prefix}/oauth_endpoints.json") is True
+
+    def test_bash_write_and_read_both_blocked(self) -> None:
+        for cmd in (
+            "echo x > ~/.kiro/crew/oauth_endpoints.json",
+            "tee ~/.kiro/crew/oauth_endpoints.json",
+            "cp evil ~/.kiro/crew/oauth_endpoints.json",
+            "cat ~/.kiro/crew/oauth_endpoints.json",
+            "cat ~/.kirocrew/oauth_endpoints.json",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    # ── Corpus contract: operator-extension URLs ──
+
+    @pytest.mark.parametrize(
+        "provider,url,endpoint",
+        OPERATOR_EXTENSION_OAUTH_URLS,
+        ids=[p for p, _, _ in OPERATOR_EXTENSION_OAUTH_URLS],
+    )
+    def test_operator_extension_corpus_default_config_rejects(
+        self, ext_home: Path, provider: str, url: str, endpoint: tuple[str, str]
+    ) -> None:
+        # Without the operator file these endpoints are NOT exempt — this is
+        # what keeps the list out of LEGIT_OAUTH_URLS.
+        assert oauth_url_contains_credential(url) is True
+
+    @pytest.mark.parametrize(
+        "provider,url,endpoint",
+        OPERATOR_EXTENSION_OAUTH_URLS,
+        ids=[p for p, _, _ in OPERATOR_EXTENSION_OAUTH_URLS],
+    )
+    def test_operator_extension_corpus_passes_with_allowlisted_endpoint(
+        self, ext_home: Path, provider: str, url: str, endpoint: tuple[str, str]
+    ) -> None:
+        host, path = endpoint
+        self._write_extension(ext_home, [{"host": host, "path": path}])
+        assert oauth_url_contains_credential(url) is False
 
 
 class TestRedactExfiltrationUrls:
@@ -2167,8 +3206,14 @@ class TestIsSensitivePath:
         # security-review finding cdf82704: the SEL HMAC signing key is the trust root of
         # the tamper-evident audit chain. If an audited agent could fs_read it,
         # it could forge the entire chain, so it must be sensitive (read-blocked).
+        # The key lives at trust/sel_hmac.key (whole-dir gate); the bare leaf
+        # covers pre-migration installs and stale post-restore leftovers.
         assert is_sensitive_path("~/.kiro/crew/sel_hmac.key") is True
         assert is_sensitive_path("~/.kirocrew/sel_hmac.key") is True
+        assert is_sensitive_path("~/.kiro/crew/trust") is True
+        assert is_sensitive_path("~/.kiro/crew/trust/sel_hmac.key") is True
+        assert is_sensitive_path("~/.kirocrew/trust") is True
+        assert is_sensitive_path("~/.kirocrew/trust/sel_hmac.key") is True
 
     def test_security_events_log(self) -> None:
         # security-review finding cdf82704: the SEL audit log itself must not be
@@ -2179,8 +3224,10 @@ class TestIsSensitivePath:
     def test_sel_files_absolute_path(self) -> None:
         home = str(Path.home())
         assert is_sensitive_path(f"{home}/.kiro/crew/sel_hmac.key") is True
+        assert is_sensitive_path(f"{home}/.kiro/crew/trust/sel_hmac.key") is True
         assert is_sensitive_path(f"{home}/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path(f"{home}/.kirocrew/sel_hmac.key") is True
+        assert is_sensitive_path(f"{home}/.kirocrew/trust/sel_hmac.key") is True
         assert is_sensitive_path(f"{home}/.kirocrew/security_events.jsonl") is True
 
     def test_app_admission_policy(self) -> None:
@@ -2550,6 +3597,11 @@ class TestIsSensitiveBashCommand:
         assert result is not None and "blocked" in result.lower()
         legacy = is_sensitive_bash_command("cat ~/.kirocrew/sel_hmac.key")
         assert legacy is not None and "blocked" in legacy.lower()
+        # The key's real home since the trust/ relocation.
+        trust = is_sensitive_bash_command("cat ~/.kiro/crew/trust/sel_hmac.key")
+        assert trust is not None and "blocked" in trust.lower()
+        trust_legacy = is_sensitive_bash_command("cat ~/.kirocrew/trust/sel_hmac.key")
+        assert trust_legacy is not None and "blocked" in trust_legacy.lower()
 
     def test_cat_security_events_log_blocked(self) -> None:
         result = is_sensitive_bash_command("cat ~/.kiro/crew/security_events.jsonl")
@@ -2640,6 +3692,186 @@ class TestIsSensitiveBashCommand:
         # A benign host that resolves elsewhere must not be flagged as IMDS.
         assert _check_imds_access("curl http://93.184.216.34/") is None
         assert canonicalize_ip("8.8.8.8") == "8.8.8.8"
+
+
+class TestWindowsPathShapes:
+    """Native Windows path spellings must be recognized as path-like so the
+    normalizer pass routes them through is_sensitive_path() -- on Windows
+    hosts the fence targets are os.sep-joined, and a backslash spelling that
+    never reaches the check would leave every fenced dir shell-reachable.
+    Recognition is limited lexically to the drive/share holding Path.home():
+    every fenced target lives under home, and a foreign-drive token would only
+    feed realpath a disconnected mapped drive or dead UNC host (a synchronous
+    network stall on the permission gate)."""
+
+    def test_home_drive_paths_are_path_like(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert security._is_path_like("C:\\Users\\u\\.aws\\credentials")
+            assert security._is_path_like("c:/Users/u/.aws/credentials")
+
+    def test_foreign_drive_and_unc_are_not_probed(self, monkeypatch) -> None:
+        # A pure-backslash token on another drive/share gains no NEW
+        # recognition; treating it as path-like would only cost a realpath
+        # probe of a possibly-dead network target.
+        from unittest.mock import patch
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert not security._is_path_like("Z:\\stale\\mapped\\drive")
+            assert not security._is_path_like("\\\\dead-server\\share\\x")
+
+    def test_cross_drive_forward_slash_token_stays_path_like(self) -> None:
+        # KIROCREW_HOME may legitimately live on another drive, and its
+        # keystone leaves are re-anchored there. A forward-slash spelling was
+        # path-like via the generic "/" branch before drive shapes were
+        # recognized -- the foreign-drive check must FALL THROUGH to it, not
+        # intercept it, or the governance ceiling on that drive becomes
+        # shell-reachable.
+        from unittest.mock import patch
+
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert security._is_path_like("D:/kirocrew/security_policy.json")
+
+    def test_kirocrew_home_drive_anchors_backslash_recognition(self, monkeypatch) -> None:
+        # A BACKSLASH spelling under a cross-drive KIROCREW_HOME must also be
+        # recognized: the keystone leaves are re-anchored under that root, so
+        # its drive is an anchor alongside the user home's.
+        from unittest.mock import patch
+
+        monkeypatch.setenv("KIROCREW_HOME", "D:\\crew")
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert security._is_path_like("D:\\crew\\security_policy.json")
+            # Drives matching NEITHER root stay unrecognized (no realpath probe).
+            assert not security._is_path_like("Z:\\stale\\mapped\\drive")
+
+    def test_unc_home_share_is_path_like(self, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        with patch.object(
+            security.Path, "home", return_value=Path("\\\\srv\\homes\\u")
+        ):
+            assert security._is_path_like("\\\\srv\\homes\\u\\.aws\\credentials")
+            assert not security._is_path_like("\\\\other\\share\\x")
+            # A share that merely extends the name past the segment boundary
+            # is a DIFFERENT share -- probing it would realpath a possibly
+            # dead SMB target.
+            assert not security._is_path_like("\\\\srv\\homes-dead\\share\\x")
+
+    def test_backslash_relative_is_path_like(self) -> None:
+        assert security._is_path_like(".\\x\\y")
+        assert security._is_path_like("..\\x\\y")
+
+    def test_drive_shapes_are_inert_on_posix_homes(self, monkeypatch) -> None:
+        # With a POSIX home and no drive-lettered KIROCREW_HOME, no anchor
+        # root has a drive, so drive/UNC tokens are not path-like at all --
+        # no behavior change for POSIX workflows. (KIROCREW_HOME must be
+        # cleared: on Windows CI it is a drive-lettered path and a legitimate
+        # anchor root.)
+        from unittest.mock import patch
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        with patch.object(security.Path, "home", return_value=Path("/home/u")):
+            assert not security._is_path_like("C:\\Users\\u\\.aws\\credentials")
+            assert not security._is_path_like("\\\\server\\share\\x")
+
+    def test_non_path_tokens_stay_non_path_like(self) -> None:
+        # ``key:value`` option tokens and URLs must not become path-like --
+        # the drive-letter form requires a separator right after the colon.
+        assert not security._is_path_like("key:value")
+        assert not security._is_path_like("C:no-separator")
+        assert not security._is_path_like("https://x.example/a")
+
+    def test_native_spelling_is_blocked_in_raw_text_on_any_host(self) -> None:
+        # The raw regex pass sees the command BEFORE tokenization, so it is
+        # the only layer that can catch an embedded interpreter script or a
+        # quoted native spelling -- and it is host-independent, so these must
+        # block everywhere, not just on Windows runners.
+        cmds = [
+            "python -c \"open(r'C:\\Users\\u\\AppData\\Roaming\\kiro-cli\\data.sqlite3','w')\"",
+            "python -c \"open(r'C:\\Users\\u\\.aws\\credentials')\"",
+            "type 'C:\\Users\\u\\.ssh\\id_rsa'",
+            "cat '%USERPROFILE%\\.aws\\credentials'",
+            "type '\\\\srv\\homes\\u\\.ssh\\id_rsa'",
+            "type 'C:/Users/u/.aws/credentials'",
+            # PowerShell spelling of the profile variable.
+            "Get-Content '$env:USERPROFILE\\.aws\\credentials'",
+            # cmd.exe expansion-modifier spelling.
+            "type '%USERPROFILE:~0%\\.ssh\\id_rsa'",
+            # Braced PowerShell spelling.
+            "Get-Content '${env:USERPROFILE}\\.aws\\credentials'",
+            # HOMEDRIVE+HOMEPATH concatenation is the same home by definition.
+            'Get-Content "$env:HOMEDRIVE$env:HOMEPATH\\AppData\\Roaming\\kiro-cli\\data.sqlite3"',
+            "type '%HOMEDRIVE%%HOMEPATH%\\.ssh\\id_rsa'",
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_appdata_alias_of_fenced_store_is_blocked(self) -> None:
+        # %APPDATA% points INTO AppData\Roaming, so this spelling names the
+        # store without the AppData\Roaming text the home-anchored branch
+        # matches on -- it needs its own alias branch.
+        cmds = [
+            'del "%APPDATA%\\kiro-cli\\data.sqlite3"',
+            "type '%APPDATA%\\amazon-q\\data.sqlite3'",
+            "cat '%APPDATA%/kiro-cli/data.sqlite3'",
+            'del "$env:APPDATA\\kiro-cli\\data.sqlite3"',
+            # Single-dot segments are canonical-equivalent to their absence.
+            'cmd /c copy /Y evil.sqlite "%APPDATA%\\.\\kiro-cli\\data.sqlite3"',
+            # cmd.exe expansion modifiers resolve to the same location.
+            'cmd /c copy "%APPDATA:~0%\\kiro-cli\\data.sqlite3" .\\loot.db',
+            # Braced PowerShell spelling.
+            'del "${env:APPDATA}\\kiro-cli\\data.sqlite3"',
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+        # Other %APPDATA% content stays allowed.
+        assert is_sensitive_bash_command('type "%APPDATA%\\SomeApp\\config.json"') is None
+
+    def test_backslash_relative_traversal_is_blocked(self) -> None:
+        assert is_sensitive_bash_command("type ..\\..\\.aws\\credentials") is not None
+        assert (
+            is_sensitive_bash_command(
+                "type ..\\..\\AppData\\Roaming\\kiro-cli\\data.sqlite3"
+            )
+            is not None
+        )
+        # The POSIX spelling keeps matching through the widened alternation.
+        assert is_sensitive_bash_command("dd if=../../.aws/credentials") is not None
+
+    def test_benign_native_spellings_stay_allowed(self) -> None:
+        assert is_sensitive_bash_command("type 'C:\\Users\\u\\project\\readme.md'") is None
+        assert (
+            is_sensitive_bash_command("python -c \"open(r'C:\\temp\\x.txt')\"") is None
+        )
+
+    def test_down_up_traversal_reentry_is_blocked(self) -> None:
+        # A same-level excursion (X\..) is a canonical no-op, so a spelling
+        # that re-enters the fenced location still names it.
+        cmds = [
+            (
+                "python -c \"open(r'C:\\Users\\u\\AppData\\Roaming\\..\\Roaming"
+                "\\kiro-cli\\data.sqlite3','w')\""
+            ),
+            "type 'C:\\Users\\u\\.aws\\..\\.aws\\credentials'",
+            'del "%APPDATA%\\..\\Roaming\\kiro-cli\\data.sqlite3"',
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason="fence targets are os.sep-joined; the match is only real on Windows",
+    )
+    def test_backslash_spelling_of_fenced_dirs_is_blocked_on_windows(self) -> None:
+        # Single quotes keep the backslashes literal through POSIX shlex, so
+        # the token reaches is_sensitive_path() in its native spelling.
+        home = str(Path.home())
+        for fenced in (".aws\\credentials", "AppData\\Roaming\\kiro-cli\\data.sqlite3"):
+            cmd = f"type '{home}\\{fenced}'"
+            assert is_sensitive_bash_command(cmd) is not None, cmd
 
 
 class TestDeniedCommandsKeystone:
@@ -3428,3 +4660,243 @@ class TestApplyResourceLimits:
         monkeypatch.setattr(sec, "_resource", None)
         fn = sec.apply_resource_limits({"resource_limits": {"max_processes": 1}})
         assert fn() is None
+
+
+class TestKiroCrewSlackAppCreateLink:
+    """Kiro Crew's OWN Slack app-create deep link survives the exfil redactor.
+
+    ``kirocrew manifest --url`` and ``GET /api/slack/manifest`` emit
+    ``https://api.slack.com/apps?new_app=1&manifest_yaml=<encoded manifest>``.
+    The encoded manifest is ~1.9 KB, so the aggregate query-length heuristic
+    classified the whole link as exfiltration and the user was shown
+    ``[REDACTED: suspicious URL to api.slack.com]`` instead of the link the
+    setup guide tells them to click.
+
+    The exemption is granted by VALIDATION, not by destination: the payload must
+    reproduce the bundled template rendered with one alias. Every test below that
+    perturbs the link asserts it goes back to being redacted, because the value
+    of this carve-out is precisely that it cannot be used to carry anything else.
+    """
+
+    def _payload(self, alias: str = "someone") -> str:
+        """The deep-link payload as the REAL emitters build it."""
+        from kiro_crew import slack_manifest
+
+        return slack_manifest.render(alias, strip_comments=True)
+
+    def _link(self, alias: str = "someone", **over: str) -> str:
+        from urllib.parse import quote
+
+        from kiro_crew import slack_manifest
+
+        if not over:
+            # Default case goes through the actual emitter, so a change to its
+            # render/strip/encode procedure fails HERE rather than silently
+            # reintroducing the redaction bug for users.
+            return slack_manifest.deep_link(alias)
+        payload = over.get("payload", self._payload(alias))
+        scheme = over.get("scheme", "https")
+        host = over.get("host", "api.slack.com")
+        path = over.get("path", "/apps")
+        new_app = over.get("new_app", "1")
+        extra = over.get("extra", "")
+        return (
+            f"{scheme}://{host}{path}?new_app={new_app}"
+            f"&manifest_yaml={quote(payload, safe='')}{extra}"
+        )
+
+    def test_the_real_emitters_produce_an_unredacted_link(self) -> None:
+        """Both emitted links pass — driven through the emitters, not a rebuild.
+
+        The Design Review on #2725 called this out: rebuilding the payload inside
+        the test would let an emitter drift away from the validator with the tests
+        still green, which is the same "no test exercised the real URL" failure
+        that hid the original bug.
+        """
+        from kiro_crew import slack_manifest
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        url = slack_manifest.deep_link("someone")
+        assert len(url.split("?", 1)[1]) >= 200  # premise: over the threshold
+        assert scan_exfiltration_urls(url) == []
+        assert redact_exfiltration_urls(url)[0] == url
+
+    def test_manifest_link_is_not_redacted(self) -> None:
+        """The real emitted link passes the general text scanner untouched."""
+        from kiro_crew.security import redact_exfiltration_urls, scan_exfiltration_urls
+
+        url = self._link()
+        assert len(url.split("?", 1)[1]) >= 200
+        assert scan_exfiltration_urls(url) == []
+        cleaned, warnings = redact_exfiltration_urls(url)
+        assert cleaned == url
+        assert warnings == []
+
+    def test_alias_shapes_accepted(self) -> None:
+        """Any alias the emitters permit (alnum, hyphen, underscore) is accepted."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        for alias in ("a", "user99", "first-last", "with_underscore", "A1_b-2"):
+            assert scan_exfiltration_urls(self._link(alias)) == [], alias
+
+    def test_secret_shaped_alias_is_still_redacted(self) -> None:
+        """A credential parked in the alias slot does NOT ride through.
+
+        Regression for the blocking finding on #2725: the exemption used to zero
+        the heuristic payload, and the alias slot accepted 64 chars of
+        `[A-Za-z0-9_-]` — wide enough for a 40-char alphanumeric secret, which is
+        exactly the run length `_EXFIL_PATTERNS` needs to fire. Two independent
+        guards now cover it: `ALIAS_MAX` makes a 40-char run impossible, and the
+        alias that does fit stays under the heuristics.
+        """
+        from urllib.parse import quote
+
+        from kiro_crew import slack_manifest
+        from kiro_crew.security import scan_exfiltration_urls
+
+        # Over ALIAS_MAX — the derived pattern refuses it, so no exemption.
+        secret40 = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEYXY"
+        assert len(secret40) == 40 > slack_manifest.ALIAS_MAX
+        payload = slack_manifest.stripped_template().replace(
+            slack_manifest.ALIAS_PLACEHOLDER, secret40
+        )
+        url = (
+            "https://api.slack.com/apps?new_app=1&manifest_yaml="
+            + quote(payload, safe="")
+        )
+        assert scan_exfiltration_urls(url) != []
+
+        # Within ALIAS_MAX but a recognised credential shape — caught on the
+        # alias itself, because the alias is what the heuristics still see.
+        for hostile in ("AKIAIOSFODNN7EXAMPLE", "xoxb-123456789012-abcdef"):
+            assert len(hostile) <= slack_manifest.ALIAS_MAX, hostile
+            assert scan_exfiltration_urls(self._link(hostile)) != [], hostile
+
+    def test_mismatched_aliases_redacted(self) -> None:
+        """The manifest names the alias twice; they must be the SAME alias."""
+        from kiro_crew import slack_manifest
+        from kiro_crew.security import scan_exfiltration_urls
+
+        tampered = slack_manifest.stripped_template().replace(
+            slack_manifest.ALIAS_PLACEHOLDER, "real", 1
+        ).replace(slack_manifest.ALIAS_PLACEHOLDER, "other")
+        assert scan_exfiltration_urls(self._link(payload=tampered)) != []
+
+    def test_arbitrary_payload_redacted(self) -> None:
+        """A long payload that is not the template stays redacted."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(payload="x" * 900)) != []
+
+    def test_credential_in_payload_still_redacted(self) -> None:
+        """A secret appended to an otherwise-valid manifest is still caught.
+
+        The unconditional hard-credential scan runs BEFORE the heuristic-query
+        selection, so the carve-out cannot shield a credential even at the
+        approved endpoint.
+        """
+        from kiro_crew.security import scan_exfiltration_urls
+
+        payload = self._payload("someone") + "\nAKIAIOSFODNN7EXAMPLE\n"
+        warnings = scan_exfiltration_urls(self._link(payload=payload))
+        assert warnings != []
+        assert "credential" in warnings[0]
+
+    def test_extra_parameter_redacted(self) -> None:
+        """An extra query parameter refuses the exemption (exact param set)."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(extra="&exfil=" + "z" * 300)) != []
+
+    def test_tampered_new_app_redacted(self) -> None:
+        """``new_app`` must be exactly ``1``."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(new_app="2")) != []
+
+    def test_neighbouring_endpoints_redacted(self) -> None:
+        """Only the exact https host+path is eligible — no scheme/host/path drift."""
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(self._link(scheme="http")) != []
+        assert scan_exfiltration_urls(self._link(path="/apps2")) != []
+        assert scan_exfiltration_urls(self._link(host="api.slack.com.evil.example")) != []
+        assert scan_exfiltration_urls(self._link(host="api.slack.com:8443")) != []
+
+    def test_unrelated_slack_url_unaffected(self) -> None:
+        """A long-query URL at the same host but another path stays redacted.
+
+        Guards the documented invariant that query-length detection has no host
+        allowlist: this carve-out keys on a validated payload, not on Slack.
+        """
+        from kiro_crew.security import scan_exfiltration_urls
+
+        url = "https://api.slack.com/api/chat.postMessage?blob=" + "A" * 250
+        assert scan_exfiltration_urls(url) != []
+
+    def test_unreadable_template_fails_closed(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """If the packaged template cannot be read, the link is redacted again.
+
+        Failing closed matters more than the convenience: an install that cannot
+        prove what its own manifest looks like must not exempt a 1.9 KB payload.
+        """
+        import kiro_crew.security as sec
+
+        url = self._link()
+        monkeypatch.setattr(sec, "_slack_manifest_re_slot", [None])
+        assert sec.scan_exfiltration_urls(url) != []
+
+
+class TestDashboardLinkTokenAcrossHostForms:
+    """A dashboard access token is redacted whatever host form carries it.
+
+    This pins the OUTCOME, not the mechanism, because the mechanism today is an
+    accident worth insulating against. `_URL_RE` requires a dot plus a letter
+    TLD, so a bare `localhost` URL is never matched by the URL scanner at all,
+    while `127.0.0.1` (raw IPv4) and a dotted host (a dev desktop, a tailnet
+    name) ARE. Nobody chose that split for dashboard links — it falls out of the
+    host pattern — so `redact_credentials` is what must catch the token on every
+    form, and that is what these assertions hold to.
+
+    Two ways this could regress silently: `_URL_RE` grows to match `localhost`
+    (the exfil path starts firing on loopback URLs), or the credential patterns
+    narrow (the token stops being caught where the URL scanner never looked).
+    The token shape mirrors `dashboard.token_auth.generate_token` —
+    `base64url(payload).base64url(hmac)`, i.e. TWO segments, which is the case
+    that previously fell through to the bare-secret heuristic and survived ~74%
+    of the time (see the link-token alternative in `_CREDENTIAL_PATTERNS`).
+    """
+
+    # 43 chars is exactly HMAC-SHA256 base64url-unpadded, per token_auth._sign.
+    _TOKEN = "eyJ" + "a" * 180 + "." + "b" * 43
+
+    HOST_FORMS = (
+        "localhost:7778",
+        "127.0.0.1:7778",
+        "dev-dsk-someone.example.com:7778",
+        "host.tail1234.ts.net",
+    )
+
+    def test_token_is_redacted_on_every_host_form(self) -> None:
+        from kiro_crew.security import redact_credentials
+
+        for host in self.HOST_FORMS:
+            cleaned, _ = redact_credentials(f"http://{host}/?token={self._TOKEN}")
+            assert self._TOKEN not in cleaned, host
+            # The signature must not survive on its own either — a URL that still
+            # looks complete but no longer authenticates is the failure mode the
+            # two-segment alternative was added for.
+            assert "b" * 43 not in cleaned, host
+
+    def test_localhost_is_invisible_to_the_url_scanner(self) -> None:
+        """Documents the dot-TLD accident so a change to it is a loud diff.
+
+        Not an endorsement: if `_URL_RE` later matches `localhost`, this test
+        fails and whoever changed it gets to confirm the credential path still
+        covers loopback links (the test above) rather than discovering later that
+        redaction depended on the host pattern.
+        """
+        from kiro_crew.security import scan_exfiltration_urls
+
+        assert scan_exfiltration_urls(f"http://localhost:7778/?token={self._TOKEN}") == []
+        assert scan_exfiltration_urls(f"http://127.0.0.1:7778/?token={self._TOKEN}") != []

@@ -64,6 +64,25 @@ def test_pod_env_puts_the_checkout_venv_ahead_of_the_global_shim_dir(tmp_path):
     assert entries.index(venv_bin) < entries.index(shim_dir)
 
 
+def test_pod_env_scrubs_the_live_gateways_bound_port(tmp_path, monkeypatch):
+    """KIROCREW_BOUND_PORT must never cross the pod boundary.
+
+    A gateway-descended caller (an agent bash turn) inherits the LIVE
+    gateway's bound-port export. Inside a pod env it names the wrong plane —
+    the pod's own KIROCREW_PORT is the target — and resolve_client_port reads
+    it as a fallback, so leaving it in would let pod client commands aim at
+    the live gateway if precedence ever changed. Scrubbed unconditionally.
+    """
+    monkeypatch.setenv("KIROCREW_BOUND_PORT", "5476")
+    cfg = _pod_cfg(tmp_path)
+    checkout = _provisioned_checkout(tmp_path)
+
+    env = rt.build_pod_env(cfg, tmp_path / "home", 7900, checkout)
+
+    assert "KIROCREW_BOUND_PORT" not in env
+    assert env["KIROCREW_PORT"] == "7900"
+
+
 def test_pod_env_still_isolates_home_and_port(tmp_path):
     """The PATH change must not disturb the existing isolation keys."""
     cfg = _pod_cfg(tmp_path)

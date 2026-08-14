@@ -34,10 +34,13 @@ from kiro_crew.mcp_caller import (
     CallerContext,
     build_caller_meta,
 )
+from kiro_crew.mcp_gateway import hazards
 from kiro_crew.mcp_gateway.apps import (
+    WithheldTools,
     append_marker,
     extract_declared_ui_uris,
     extract_ui_resource_uri,
+    strip_model_hidden_tools,
     write_spool,
 )
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
@@ -259,6 +262,11 @@ def _strip_caller_meta(msg: dict[str, Any]) -> dict[str, Any]:
 MCP_APPS_EXTENSION_KEY = "io.modelcontextprotocol/ui"
 MCP_APPS_MIME_TYPE = "text/html;profile=mcp-app"
 MCP_APPS_ENV_FLAG = "KIROCREW_MCP_APPS"
+#: Tokens the env flag recognises. Module constants rather than literals inline
+#: in the gate, because the dashboard's write path has to recognise the SAME set
+#: to refuse a config write the env would override — two copies would drift.
+MCP_APPS_ENV_TRUE = ("1", "true", "yes")
+MCP_APPS_ENV_FALSE = ("0", "false", "no", "off")
 
 # Sentinel ``stub_uuid`` for a gateway-originated ``resources/read`` issued to
 # fetch a ui:// app resource. Its response is routed to the parked future in
@@ -272,50 +280,78 @@ _APPS_STUB_SENTINEL = "__apps__"
 _APPS_RESOURCE_READ_TIMEOUT_SECS = 10.0
 
 
+def mcp_apps_env_override() -> bool | None:
+    """The env flag's verdict, or ``None`` when it does not pin the feature.
+
+    Public because the dashboard's write path needs the same answer: with the env
+    pinning this, a config write is inert, and reporting success for an inert
+    write is precisely the false-success the switch exists to prevent.
+
+    Reads the CURRENT process's environment. The dashboard and gatewayd normally
+    agree — ``env_target_resolver`` hands the backend a copy of the gateway's own
+    env and this flag is not a credential, so it is inherited — but an operator
+    who exported it into only one of the two would defeat the check. It is a
+    best-effort guard against the common case, not a proof.
+    """
+    raw = os.environ.get(MCP_APPS_ENV_FLAG, "").strip().lower()
+    if raw in MCP_APPS_ENV_FALSE:
+        return False
+    if raw in MCP_APPS_ENV_TRUE:
+        return True
+    return None
+
+
 def _mcp_apps_enabled() -> bool:
-    """Feature gate for MCP Apps: follows the operator's MCP-pooling opt-in.
+    """Feature gate for MCP Apps. **Tightest-wins**: any explicit off disables.
 
-    Resolution order:
+    Capability follows the STUB, not a new preference. This function only ever
+    runs inside a backend, and a backend only exists because a stub reached the
+    broker for a server the operator stubbed, so the opt-in has already happened
+    by the time control is here. That is why there is no *forward-facing* apps
+    switch any more: a preference could not grant the feature (with no stub there
+    is no render or callback path to grant).
 
-    1. ``KIROCREW_MCP_APPS`` set to ``0``/``false``/``no``/``off`` -> disabled
-       (explicit kill-switch, wins over everything).
-    2. ``KIROCREW_MCP_APPS`` set to ``1``/``true``/``yes`` -> enabled
-       (explicit override, e.g. tests and the e2e harness).
-    3. Unset -> follow ``mcp_gateway.enabled``, read LIVE from config.
+    What survives is the two ways an operator can still say **no**:
 
-    Why config and not "am I running": an earlier version of this gate assumed
-    that executing inside gatewayd implied pooling was enabled. That invariant
-    is FALSE. A restarted gateway *adopts* a surviving daemon, and
-    ``GatewayManager._shutdown_locked`` deliberately refuses to terminate an
-    adopted daemon (ownership discipline -- it must not kill a process it did
-    not spawn, nor unlink a socket a live foreign daemon owns). So disabling
-    ``mcp_gateway`` leaves that survivor serving connected stubs. Keying on
-    "am I running" would have kept intercepting tool results, spooling app
-    payloads (which carry a ``callback_secret``), and rendering server HTML
-    *after the operator explicitly opted out*. Reading the config each call
-    means the survivor observes the opt-out and stands down.
+    1. ``KIROCREW_MCP_APPS`` off -> disabled. Absolute kill switch, for tests,
+       the e2e harness, and an operator who wants a stubbed server's backend
+       shared without its server-authored UI.
+    2. A stored ``mcp_gateway.apps_enabled = false`` -> disabled, EVEN with the
+       env flag on. This key is retired going forward — nothing writes it, the
+       MCP Management page does not surface it, and the docs no longer teach it —
+       but a released version honoured it as a trustworthy opt-out, so a config
+       that already carries ``false`` keeps its opt-out. Dropping it here would
+       silently start executing server-authored UI for the one operator who took
+       the trouble to turn it off. It defaults True when absent, so this fires
+       only on a value someone actually wrote: "not configured" is not an opt-out.
+
+    The released gate had a third leg — it also required ``mcp_gateway.enabled``,
+    because back then the broker existed only when sharing was on. That leg is
+    deliberately gone, and it costs no released behaviour: under the current
+    migration ``enabled: false`` resolves to an EMPTY stub set, so no stub, no
+    backend, and this gate never runs for such an install.
+
+    Fails CLOSED: if config cannot be read, the feature is disabled. An
+    unreadable config in gatewayd is an abnormal state, and silently disabling an
+    optional rendering feature is the low-harm outcome versus rendering against
+    an operator preference we could not confirm.
 
     Read per-call (``KiroCrewConfig.load`` is fingerprint-cached, so this is a
     dict lookup in the common case) so the gateway reflects a config change
-    without a daemon restart.
-
-    Fails CLOSED: if config cannot be read, the feature is disabled. An
-    unreadable config in gatewayd is an abnormal state, and silently disabling
-    an optional rendering feature is the low-harm outcome versus rendering
-    against an operator preference we could not confirm.
+    without a daemon restart — including a daemon this gateway merely adopted and
+    therefore cannot restart.
     """
-    raw = os.environ.get(MCP_APPS_ENV_FLAG, "").strip().lower()
-    if raw in ("0", "false", "no", "off"):
+    override = mcp_apps_env_override()
+    if override is False:
         return False
-    if raw in ("1", "true", "yes"):
-        return True
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return bool(KiroCrewConfig.load().mcp_gateway.enabled)
+        gw = KiroCrewConfig.load().mcp_gateway
     except Exception:  # pragma: no cover - defensive; fail closed
         logger.debug("mcp-apps: config unreadable; treating feature as disabled", exc_info=True)
         return False
+    return bool(gw.apps_enabled)
 
 
 def _inject_client_extensions(msg: dict[str, Any]) -> dict[str, Any]:
@@ -409,6 +445,12 @@ class Backend:
     _stub_inboxes: dict[str, "asyncio.Queue[bytes]"] = field(default_factory=dict)
     _inbox_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     refcount: int = 0
+    # Non-empty on a backend bound to a single connection, holding that
+    # connection's ``stub_uuid``. It makes ``storage_digest`` unique per
+    # connection: PoolKey is identical across connections to the same server, so
+    # without this discriminator two private backends would share a digest and
+    # an app callback could resolve onto the wrong session's process.
+    exclusive_token: str = ""
     # ``pinned`` marks a backend that the warm-pool prewarmer created ahead of
     # any stub. Such a backend sits at ``refcount == 0`` indefinitely (no stub
     # stays attached to it between chats), so the ordinary idle/LRU rules would
@@ -536,6 +578,19 @@ class Backend:
         queued = sum(inbox.qsize() for inbox in list(self._stub_inboxes.values()))
         unfinished_apps = sum(1 for task in self._apps_tasks if not task.done())
         return len(self._pending_requests) + unfinished_apps + queued
+
+    @property
+    def storage_digest(self) -> str:
+        """The pool's key for this backend, and the identity an app callback
+        resolves against.
+
+        Equal to the PoolKey digest for a shared backend -- two connections that
+        may share a process resolve to the same entry, which is the point. A
+        connection-private backend appends its ``exclusive_token`` so it is
+        addressable without being reachable from any other connection.
+        """
+        base = self.pool_key.stable_hash()
+        return f"{base}:{self.exclusive_token}" if self.exclusive_token else base
 
     @staticmethod
     def _now() -> float:
@@ -1104,6 +1159,7 @@ class Backend:
                     "notification %r (not broadcast to avoid cross-tenant leak)",
                     self.pid, method,
                 )
+                self._record_hazard(hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
             return
         # Server-to-client request (has method AND id) — route ONLY when we can
         # attribute it unambiguously:
@@ -1147,10 +1203,38 @@ class Backend:
                     "cross-tenant leak — recycling"
                 )
                 logger.warning("backend pid=%s %s", self.pid, reason)
+                self._record_hazard(hazards.HAZARD_UNROUTABLE_SERVER_REQUEST)
                 self._dead_reason = self._dead_reason or reason
                 await self._broadcast_backend_gone(reason)
             return
         logger.debug("backend pid=%s emitted malformed JSON-RPC: %r", self.pid, msg)
+
+    def _record_hazard(self, code: str) -> None:
+        """Note that this server exhibited per-client behaviour while shared.
+
+        Only meaningful once MORE THAN ONE client is attached. A backend serving
+        a single client legitimately owns it, so an unattributable frame there
+        proves nothing: there is no second tenant it could have leaked to.
+        ``exclusive_token`` is not sufficient to express that — a pooled backend
+        also serves exactly one client from the moment it starts until a second
+        stub attaches, and recording during that window would disqualify a
+        server for behaviour that is correct.
+
+        Biased toward under-recording on purpose. A hazard is permanent and has
+        no redemption path, so a false one silently kills a server that is fine;
+        a missed one costs a withdrawal that the next observation makes again.
+
+        In-memory only — the flush is off-loop.
+        """
+        if self.exclusive_token or self.refcount <= 1:
+            return
+        name = self.pool_key.server_name
+        if name and hazards.record_observed(name, code):
+            logger.warning(
+                "hazard: server %r first exhibited %s while shared; the "
+                "MCP page will withdraw its recommendation",
+                name, code,
+            )
 
     async def _fail_init(self, reason: str) -> None:
         """Transition init to the terminal ``"failed"`` state and flush every
@@ -1324,24 +1408,75 @@ class Backend:
         must NOT deliver it. Returns ``False`` (the common/off path) when the
         caller should deliver the response normally right now. Never raises:
         any classification hiccup falls back to normal delivery.
+
+        The tools/list visibility filter runs even when the feature gate is
+        OFF — see below for why — so this is not a pure no-op in that state.
         """
-        if not _mcp_apps_enabled():
-            return False
         # App-originated callbacks (the app-call relay forwards a tools/call on
         # a ``__app_call__*`` stub) must NEVER be re-intercepted: if the called
         # tool itself declares a ui:// resource, re-spooling would replace the
         # app's real result with an internal marker string and mint a stray
         # spool record. The render/spool path is only for MODEL-originated tool
         # results; app callbacks return verbatim to the requesting app.
+        #
+        # Checked ahead of the feature gate because it also exempts a listing
+        # from the visibility filter, which runs gate-independently.
         if pending.stub_uuid.startswith("__app_call__"):
             return False
-        # Passive harvest: tool declarations are the SEP-1865 PRIMARY place a
-        # server associates a tool with its ui:// resource (the real
-        # pdf-server and Excalidraw declare it ONLY here, not on results).
-        # Every tools/list response that flows through updates the map.
         if pending.method == "tools/list":
             result = msg.get("result")
             if isinstance(result, dict):
+                # SEP-1865 MUST: a tool whose visibility omits "model" is not
+                # the agent's to see. Mutates the response in place before the
+                # caller delivers it. Reachable ONLY for model-facing listings —
+                # the __app_call__ guard above returns first, so an app's
+                # authorization snapshot keeps its app-only tools and the
+                # visibility gate in app_call still sees them.
+                #
+                # DELIBERATELY OUTSIDE the feature gate: visibility is the
+                # SERVER's statement about who may call a tool, not a property
+                # of our renderer. With apps disabled there is no app to call
+                # an app-only tool, so filtering makes it unreachable — which is
+                # the server's own consequence and strictly better than handing
+                # the model a tool the server withheld from it.
+                hidden = strip_model_hidden_tools(result)
+                if hidden.declared:
+                    logger.info(
+                        "mcp-apps: withheld %d app-only tool(s) from the agent's "
+                        "listing for server=%s: %s",
+                        len(hidden.declared), self.pool_key.server_name,
+                        ", ".join(hidden.declared),
+                    )
+                if hidden.unreadable:
+                    # WARNING, not INFO: the server DID declare a visibility and
+                    # this host could not parse it, so a tool disappeared on our
+                    # judgement rather than the server's instruction. That is the
+                    # one drop an operator needs to see — it is the failure mode
+                    # where a real server's shape trips the parser.
+                    logger.warning(
+                        "mcp-apps: withheld %d tool(s) from the agent's listing "
+                        "for server=%s because their _meta.ui.visibility could "
+                        "not be read: %s",
+                        len(hidden.unreadable), self.pool_key.server_name,
+                        ", ".join(hidden.unreadable),
+                    )
+                if hidden:
+                    self._audit_visibility_withhold(pending, hidden)
+                # Passive harvest: tool declarations are the SEP-1865 PRIMARY
+                # place a server associates a tool with its ui:// resource (the
+                # real pdf-server and Excalidraw declare it ONLY here, not on
+                # results). Every tools/list response updates the map.
+                #
+                # Runs AFTER the strip, so a withheld tool's ui:// never enters
+                # the map. That ordering is load-bearing, not incidental: it
+                # means a model-originated call naming an app-only tool cannot
+                # find a declared resource to render. Keep the strip first.
+                #
+                # Also runs REGARDLESS of the feature gate, so the map always
+                # reflects the server's CURRENT declarations. Gating it would
+                # let a listing that arrives while apps are disabled leave a
+                # WITHDRAWN tool→ui association cached, which a later re-enable
+                # would then render from.
                 try:
                     declared = extract_declared_ui_uris(result)
                 except Exception:  # pragma: no cover — defensive; extract is total
@@ -1352,6 +1487,9 @@ class Backend:
                 # so later successful calls would still render the withdrawn
                 # app resource.
                 self._apps_declared_uris = declared
+            return False
+        # Everything below is the RENDER path, which the feature gate owns.
+        if not _mcp_apps_enabled():
             return False
         if pending.method != "tools/call":
             return False
@@ -1381,6 +1519,39 @@ class Backend:
         task.add_done_callback(self._apps_tasks.discard)
         return True
 
+    def _audit_visibility_withhold(
+        self, pending: _PendingRequest, hidden: WithheldTools
+    ) -> None:
+        """SEL-audit a tools/list visibility withhold.
+
+        Removing a tool from the agent's listing is an authorization decision
+        this gateway makes, and the sibling direction (an app calling a tool,
+        in :mod:`kiro_crew.mcp_gateway.app_call`) audits every outcome — so the
+        direction that silently takes capability AWAY from the model must not
+        be the unaudited one. Log lines rotate; the SEL chain is the durable
+        record of what was hidden and why.
+
+        ONE event per listing that actually withheld something, not one per
+        tool and not one per tools/list — a server with a permanent app-only
+        tool would otherwise mint an event on every listing forever.
+        """
+        try:
+            SecurityEventLog().log_api_access(
+                caller=pending.session_key or "unknown",
+                operation="mcp-gateway.tools-list-visibility",
+                outcome="denied",
+                source="gateway",
+                resources=(
+                    f"server={self.pool_key.server_name} "
+                    f"declared={','.join(hidden.declared) or '-'} "
+                    f"unreadable={','.join(hidden.unreadable) or '-'}"
+                ),
+            )
+        except Exception:  # pragma: no cover — audit must never break delivery
+            logger.debug(
+                "SEL audit for tools/list visibility withhold failed", exc_info=True
+            )
+
     async def _fetch_and_deliver_ui(
         self, pending: _PendingRequest, msg: dict[str, Any], resource_uri: str
     ) -> None:
@@ -1409,7 +1580,7 @@ class Backend:
                 # an app can only ever call back into the same pool partition
                 # (same credentials/sandbox/approval identity) that produced
                 # it — never a co-pooled tenant's backend for the same server.
-                "pool_digest": self.pool_key.stable_hash(),
+                "pool_digest": self.storage_digest,
                 "html": html,
                 "csp": csp,
                 "permissions": permissions,

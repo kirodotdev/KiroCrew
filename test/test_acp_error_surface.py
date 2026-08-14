@@ -56,6 +56,21 @@ _PROMPT_BUSY = {
     "data": "Prompt already in progress",
 }
 
+# kiro-cli >= 2.16 rewording of the capacity rejection, which names NO model.
+# The exact frame from a live cron failure (gateway.log 2026-08-12 02:57), with
+# the request id value swapped. Before its own pattern existed this fell
+# through to the unknown-shape branch and classified TERMINAL, so unattended
+# callers failed fast on a momentary blip instead of retrying.
+_MODEL_TEMP_UNAVAILABLE = {
+    "code": -32603,
+    "message": "Internal error",
+    "data": (
+        "The model you've selected is temporarily unavailable. Please use "
+        "'/model' to select a different model and try again. (request_id: "
+        "863ae6fe-de1d-4149-b3ff-6ee02d8d58a2)"
+    ),
+}
+
 
 def _handle() -> AcpSessionHandle:
     rt = MagicMock()
@@ -179,6 +194,70 @@ class TestEntitlementReachesTheHandlePath:
         assert exc.transient is True
 
 
+class TestNamelessCapacityWording:
+    """kiro-cli >= 2.16's nameless capacity rejection must stay retryable.
+
+    The rewording dropped the model name from "The model 'X' is not
+    available", so ``_RE_MODEL_UNAVAILABLE`` no longer matches and the error
+    fell through to the unknown-shape branch: passthrough text (fine) with a
+    TERMINAL verdict (not fine). A cron hit exactly this during a backend
+    capacity blip — the run before and after both succeeded — and failed
+    without spending a single retry attempt.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_verdict_is_transient(self, driver):
+        """The retry ladder must get a shot at a momentary capacity blip."""
+        assert (await driver(_MODEL_TEMP_UNAVAILABLE)).transient is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_formatted_is_actionable(self, driver):
+        msg = str(await driver(_MODEL_TEMP_UNAVAILABLE))
+
+        # Rewritten into the capacity guidance, not the raw passthrough.
+        assert "model picker" in msg
+        # The provider's '/model' TUI advice does nothing in the dashboard,
+        # Slack, or a cron — it must not be echoed (same contract as the
+        # named-model branch).
+        assert "/model" not in msg
+        # request_id survives for support correlation.
+        assert "863ae6fe-de1d-4149-b3ff-6ee02d8d58a2" in msg
+
+    def test_message_field_echo_does_not_flip_verdict(self):
+        """The pattern is data-scoped, like its named sibling.
+
+        A phrase echo in the JSON-RPC ``message`` alone must not reclassify an
+        otherwise-terminal error as transient.
+        """
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        echo_only = {
+            "code": -32603,
+            "message": "The model you've selected is temporarily unavailable.",
+            "data": "ValidationException: malformed request",
+        }
+        assert _is_transient_raw_error(echo_only) is False
+
+    def test_typographic_apostrophe_still_matches(self):
+        """Providers flip between straight and curly quotes; both must match."""
+        from kiro_crew.acp.client import _is_transient_raw_error
+
+        curly = dict(_MODEL_TEMP_UNAVAILABLE, data="The model you\u2019ve selected is temporarily unavailable.")
+        assert _is_transient_raw_error(curly) is True
+
+    def test_pre_rewrite_passthrough_still_classifies_via_marker(self):
+        """A transcript written by a pre-fix gateway carries the raw wording.
+
+        The string-fallback path (``_TRANSIENT_MARKERS``) must recognise it so
+        history-restored messages keep their retry verdict.
+        """
+        from kiro_crew.llm_helpers import is_transient_backend_error
+
+        assert is_transient_backend_error(str(_MODEL_TEMP_UNAVAILABLE["data"]))
+
+
 class TestRunnerPromptBusyIsStructural:
     """The runner's retry gate must not depend on error-message wording."""
 
@@ -232,6 +311,7 @@ class TestTransientMarkerCoupling:
         "error",
         [
             _MODEL_UNAVAILABLE,
+            _MODEL_TEMP_UNAVAILABLE,
             {"code": -32603, "message": "Internal error", "data": "ThrottlingException"},
             {"code": -32603, "message": "Internal error", "data": "InternalServerError"},
         ],

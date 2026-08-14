@@ -2,9 +2,23 @@ import { openActivityToTab } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import type { AppDispatch } from '../../store'
 
-export type SlashInterceptResult = { intercepted: true } | { intercepted: false }
+/** `failed` marks a command that was recognized but could not run (no slot,
+ *  side-open rejected, side-turn rejected — e.g. 409 while a side turn is in
+ *  flight). Callers use it to keep or restore the composer text so the
+ *  question is recoverable instead of silently lost. */
+export type SlashInterceptResult =
+  | { intercepted: true; failed?: boolean }
+  | { intercepted: false }
 
 const SIDE_RE = /^\/side(?:\s+([\s\S]+))?$/
+
+/** Sync predicate for the commands interceptSlashCommand handles. The steer
+ *  path needs a cheap synchronous check before deciding not to steer — see
+ *  ChatPage's steer() — so this stays in lockstep with the matches below. */
+export function isInterceptedSlashCommand(raw: string): boolean {
+  const trimmed = raw.trim()
+  return trimmed === '/onboarding' || SIDE_RE.test(trimmed)
+}
 
 export async function interceptSlashCommand(
   raw: string,
@@ -30,7 +44,7 @@ export async function interceptSlashCommand(
     // without an active slot, which is otherwise silent to the user.
     // eslint-disable-next-line no-console
     console.warn('[/side] no active slot — intercepted but not dispatched')
-    return { intercepted: true }
+    return { intercepted: true, failed: true }
   }
   const message = match[1]?.trim() ?? ''
   try {
@@ -39,15 +53,21 @@ export async function interceptSlashCommand(
     // Intentional diagnostic breadcrumb for a silent side-open failure.
     // eslint-disable-next-line no-console
     console.warn('[/side] sideOpen failed:', e)
-    return { intercepted: true }
+    return { intercepted: true, failed: true }
   }
   dispatch(openActivityToTab('side'))
   if (message) {
+    let failed = false
     await api.sideTurn(slot, message).catch((e: unknown) => {
-      // Intentional diagnostic breadcrumb for a silent side-turn failure.
+      // Failure surfaces through `failed` so the caller can restore the
+      // composer (e.g. 409: a side turn is already in flight, or 400: the
+      // expanded question exceeds the byte limit). The warn stays as the
+      // diagnostic detail channel.
       // eslint-disable-next-line no-console
       console.warn('[/side] sideTurn failed:', e)
+      failed = true
     })
+    if (failed) return { intercepted: true, failed: true }
   }
   return { intercepted: true }
 }

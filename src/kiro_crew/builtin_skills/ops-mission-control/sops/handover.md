@@ -13,20 +13,17 @@ and a scheduled one that nobody reads is exactly the noise this app exists to av
 
 ## Authenticate first
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"; TOKEN="${URL#*token=}"
-```
-
-Reuse `$BASE`/`$TOKEN` for every call below and pass `?token=$TOKEN`. Never hardcode a
-port and never hunt for a token elsewhere — see SKILL.md § Calling the API for why.
+Every app API call goes through the `ops_mission_control_api` MCP tool — it
+carries the gateway's own credential and always reaches this instance. Never
+call the API over raw HTTP and never hunt for a credential — see SKILL.md
+§ Calling the API for why.
 
 ## Steps
 
 1. Fetch the digest. It is computed fresh — there is no cached version to go stale:
 
-   ```bash
-   curl -sS "$GATEWAY/api/apps/ops-mission-control/handover"
+   ```
+   ops_mission_control_api(method="GET", path="/handover")
    ```
 
 2. It returns both a structured digest and a pre-rendered `text` field. **Post the

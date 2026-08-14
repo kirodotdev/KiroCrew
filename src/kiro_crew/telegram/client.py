@@ -20,7 +20,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 import aiohttp
@@ -31,14 +31,43 @@ logger = logging.getLogger(__name__)
 
 # Telegram message text limit.
 TELEGRAM_MAX_TEXT = 4096
+
+# ── Album (media group) coalescing ──
+# Telegram delivers an album as N separate `message` updates sharing one
+# `media_group_id`, with the caption on only one member. We buffer members and
+# emit ONE merged message so a four-screenshot album is one turn, not four.
+#: Idle gap after the last member before flushing. Album members arrive
+#: back-to-back (typically in a single getUpdates batch), so this only has to
+#: outlast intra-batch jitter -- not a user's typing.
+_ALBUM_WINDOW_S = 1.0
+#: Hard ceiling from the FIRST member, so a stream that keeps appending to one
+#: group can never defer the flush indefinitely.
+_ALBUM_MAX_WAIT_S = 5.0
+#: Per-group member cap. Telegram's own album limit is 10, so this is only
+#: reachable via a malformed/spoofed stream; it keeps the buffer bounded.
+_ALBUM_MAX_MEMBERS = 10
+#: Concurrent buffered groups. Defence-in-depth: each group self-flushes within
+#: _ALBUM_MAX_WAIT_S, so this only matters under a burst of incomplete groups.
+_ALBUM_MAX_GROUPS = 64
 # Safe chunk boundary (leave room for markdown overhead).
 TELEGRAM_CHUNK_LIMIT = 4000
+
+#: sendRichMessage markdown payload limit (Bot API 10.1 Rich Messages). Far
+#: larger than sendMessage's 4096. The rich path carries the segment's raw
+#: markdown with no HTML render step, so source length IS payload length and
+#: table-bearing segments are budgeted against this cap, not the render cap.
+TELEGRAM_RICH_MAX_CHARS = 32768
 
 # Bot API base URL.
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 #: Consecutive polling failures before the status callback reports unhealthy.
 _STATUS_FAILURE_THRESHOLD = 3
+
+#: Consecutive sendRichMessage 400s before we treat the method as unavailable.
+#: 400 is ambiguous -- a wrong payload shape fails every call, one oversized or
+#: 20+-column table fails only itself -- so latch on a streak, not one answer.
+_RICH_400_LATCH = 3
 
 #: Telegram's supported HTML tag set. Anything we may have to re-close when a
 #: rendered message has to be truncated mid-document.
@@ -229,6 +258,11 @@ class TelegramInbound:
     # Forum-topic id in a supergroup (Bot API ``message_thread_id``); None in a
     # 1:1 DM or the supergroup's General topic.
     message_thread_id: int | None = None
+    #: Raw file attachment dicts extracted from the Telegram update (photo,
+    #: document, audio, voice, video_note, video, animation). Each dict carries
+    #: at minimum ``file_id`` and ``file_unique_id``; optional fields include
+    #: ``file_size``, ``mime_type``, ``file_name``, and ``width``/``height``.
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -274,6 +308,12 @@ class TelegramClient:
         self._task: asyncio.Task[None] | None = None
         self._closed = False
         self._offset: int = 0
+        #: Latched True once sendRichMessage is known unavailable on this
+        #: server -- see send_rich_message for the error taxonomy.
+        self._rich_unsupported = False
+        #: Consecutive sendRichMessage 400s. A wrong payload shape fails every
+        #: call and latches; one bad table is cleared by the next good send.
+        self._rich_400_streak = 0
         # Optional health callback: called with (healthy, reason) when polling
         # transitions to persistently-failing or recovers. Set by the gateway
         # to keep the settings status badge truthful after startup.
@@ -284,6 +324,11 @@ class TelegramClient:
         self._last_status: bool | None = None
         # Live turn tasks — prevent GC of in-flight handlers.
         self._handler_tasks: set[asyncio.Task[None]] = set()
+        # Album (media group) coalescing buffers, keyed by media_group_id.
+        self._albums: dict[str, list[TelegramInbound]] = {}
+        self._album_timers: dict[str, asyncio.Task[None]] = {}
+        self._album_first_seen: dict[str, float] = {}
+        self._album_dropped: dict[str, int] = {}
 
     # ── Lifecycle ──
 
@@ -295,6 +340,12 @@ class TelegramClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
+        # Best-effort flush of buffered albums BEFORE cancelling the polling
+        # task. This is NOT a delivery guarantee -- see _flush_all_albums: the
+        # handler it spawns races SessionManager._closing and may be refused,
+        # exactly as a plain message arriving at shutdown already is today. It
+        # costs nothing, sometimes wins, and drains the buffer either way.
+        self._flush_all_albums()
         if self._task:
             self._task.cancel()
             try:
@@ -363,6 +414,77 @@ class TelegramClient:
             params.pop("parse_mode", None)
             result = await self._api("sendMessage", params)
         return result.get("message_id") if result else None
+
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        markdown: str,
+        *,
+        reply_markup: dict | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool = False,
+    ) -> int | None:
+        """Send a Rich Message (Bot API 10.1+). Returns message_id on success.
+
+        Rich Messages natively render tables, headings, code blocks, lists, and
+        other structured markdown that the legacy sendMessage + parse_mode=HTML
+        cannot represent. The *markdown* field accepts standard GitHub-Flavored
+        Markdown including pipe-table syntax.
+
+        Pass ``disable_notification`` when this send REPLACES a message the user
+        was already notified about, so replacing a bubble does not ping twice.
+
+        Returns None on failure so the caller can fall back to sendMessage.
+
+        Availability is *learned*. A server that does not implement the method
+        rejects every call identically, so re-probing it per table would burn a
+        wasted round-trip forever; ``_rich_unsupported`` latches instead:
+
+        * **401/403/404 and any other 4xx except 400/429** -- server- or
+          auth-level, identical for every message: latch immediately.
+        * **400** -- ambiguous. It is what a wrong payload shape returns (every
+          call fails, so it must latch) but ALSO what one oversized or
+          20+-column table returns (content-specific, so it must NOT latch or a
+          single bad message disables rich rendering for the whole process).
+          Resolved by counting CONSECUTIVE 400s and latching at
+          ``_RICH_400_LATCH``: a wrong payload shape reaches that immediately,
+          while one bad table is cleared by the next table that sends.
+        * **429, 5xx, transport errors** -- transient: never latch, and clear
+          the 400 streak so unrelated failures cannot accumulate into a latch.
+        """
+        if self._rich_unsupported:
+            return None
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": {"markdown": markdown},
+        }
+        if message_thread_id is not None:
+            params["message_thread_id"] = message_thread_id
+        if reply_markup:
+            params["reply_markup"] = reply_markup
+        if disable_notification:
+            params["disable_notification"] = True
+        err: dict[str, Any] = {}
+        result = await self._api("sendRichMessage", params, err_out=err)
+        if result:
+            self._rich_400_streak = 0
+            return result.get("message_id")
+        code = err.get("error_code")
+        if isinstance(code, int) and 400 <= code < 500 and code != 429:
+            if code == 400:
+                self._rich_400_streak += 1
+                if self._rich_400_streak < _RICH_400_LATCH:
+                    return None
+            logger.info(
+                "sendRichMessage unavailable on this Bot API server (code=%s); "
+                "falling back to HTML for the rest of the process.",
+                code,
+            )
+            self._rich_unsupported = True
+        else:
+            # Transient (429 / 5xx / transport): keep rich enabled.
+            self._rich_400_streak = 0
+        return None
 
     async def send_message_draft(
         self,
@@ -478,6 +600,77 @@ class TelegramClient:
                 "reaction": [{"type": "emoji", "emoji": emoji}],
             },
         )
+
+    # ── File download (attachment ingestion) ──
+
+    #: The only host Telegram file downloads may resolve to. A redirect or
+    #: different host means the URL is not from Telegram and must be refused.
+    _FILE_HOST = "api.telegram.org"
+
+    async def download_file(self, file_id: str, dest: str) -> None:
+        """Download a Telegram file by ``file_id`` to *dest*.
+
+        Two-step process per Bot API docs:
+        1. ``getFile(file_id)`` → returns a ``File`` object with ``file_path``
+        2. Construct ``https://api.telegram.org/file/bot<token>/<file_path>``
+           and download the bytes.
+
+        Host-allowlisted: only ``api.telegram.org`` is accepted. Redirects are
+        refused so a compromised file_path cannot exfiltrate data via an open
+        redirect. Errors raise token-free messages (the download URL contains
+        the bot token, so aiohttp's default exception str() must never propagate).
+        """
+        result = await self._api("getFile", {"file_id": file_id})
+        if not result or not isinstance(result, dict):
+            raise ValueError(f"getFile returned no result for file_id={file_id!r}")
+        file_path = result.get("file_path", "")
+        if not file_path:
+            raise ValueError(f"getFile returned empty file_path for file_id={file_id!r}")
+
+        url = f"https://api.telegram.org/file/bot{self._token}/{file_path}"
+
+        session = await self._ensure_session()
+        try:
+            async with session.get(
+                url,
+                proxy=self._proxy,
+                timeout=aiohttp.ClientTimeout(total=60),
+                allow_redirects=False,
+            ) as resp:
+                if 300 <= resp.status < 400:
+                    raise ValueError("refusing redirected Telegram file URL")
+                if resp.status >= 400:
+                    # Token-free error: aiohttp's ClientResponseError embeds the
+                    # full URL (which contains the bot token) in its str().
+                    raise ValueError(
+                        f"Telegram file download failed (status {resp.status})"
+                    )
+                # Offload file I/O to a worker thread — a large attachment on
+                # slow/FUSE storage must not block the gateway event loop.
+                # Mirrors discord/client.py's download_attachment pattern.
+                fh = await asyncio.to_thread(open, dest, "wb")
+                try:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        await asyncio.to_thread(fh.write, chunk)
+                finally:
+                    await asyncio.to_thread(fh.close)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            # Strip the token-bearing URL from transport exceptions.
+            raise ValueError(
+                f"Telegram file download transport error ({type(exc).__name__})"
+            ) from None
+
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> bool:
+        """Publish the bot's ``/`` autocomplete menu (``setMyCommands``).
+
+        Telegram REPLACES the whole default-scope menu on each call, so the full
+        list must be sent every time — that is also what retires a command the
+        bot no longer serves. An empty list is refused rather than sent, because
+        Telegram would read it as "this bot has no commands" and wipe the menu.
+        """
+        if not commands:
+            return False
+        return bool(await self._api("setMyCommands", {"commands": commands}))
 
     # ── Polling loop ──
 
@@ -607,25 +800,191 @@ class TelegramClient:
             return result
         return []
 
+    # ── Album (media group) coalescing ──
+
+    def _buffer_album_member(self, group_id: str, inbound: TelegramInbound) -> None:
+        """Hold one album member and (re)arm its flush timer.
+
+        The timer is rearmed on every arrival, so the album flushes
+        ``_ALBUM_WINDOW_S`` after the LAST member rather than the first — album
+        members arrive back-to-back (usually in one getUpdates batch), so this
+        settles almost immediately. ``_ALBUM_MAX_WAIT_S`` is the hard ceiling
+        that stops a pathological stream which keeps appending to one group from
+        deferring the flush forever.
+        """
+        members = self._albums.get(group_id)
+        if members is None:
+            # Cap concurrent groups. Every group self-flushes within
+            # _ALBUM_MAX_WAIT_S, so this is defence-in-depth against a burst of
+            # never-completed groups rather than an expected path. Flush the
+            # oldest rather than dropping it, so no message is silently lost.
+            if len(self._albums) >= _ALBUM_MAX_GROUPS:
+                oldest = min(self._albums, key=lambda g: self._album_first_seen.get(g, 0.0))
+                logger.warning(
+                    "Telegram: album buffer at %d groups, force-flushing oldest",
+                    _ALBUM_MAX_GROUPS,
+                )
+                self._flush_album(oldest)
+            members = self._albums[group_id] = []
+            self._album_first_seen[group_id] = time.monotonic()
+
+        if len(members) < _ALBUM_MAX_MEMBERS:
+            members.append(inbound)
+        else:
+            # Telegram's own album limit is 10, so this is unreachable for a
+            # well-formed album. Count rather than grow, and surface it at flush
+            # so an over-cap group is visible instead of silently truncated.
+            self._album_dropped[group_id] = self._album_dropped.get(group_id, 0) + 1
+
+        self._arm_album_timer(group_id)
+
+    def _arm_album_timer(self, group_id: str) -> None:
+        """(Re)schedule the flush for *group_id*, respecting the hard ceiling."""
+        existing = self._album_timers.pop(group_id, None)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        elapsed = time.monotonic() - self._album_first_seen.get(group_id, 0.0)
+        delay = min(_ALBUM_WINDOW_S, max(0.0, _ALBUM_MAX_WAIT_S - elapsed))
+        task = asyncio.create_task(self._album_flush_after(group_id, delay))
+        self._album_timers[group_id] = task
+        # Tracked alongside handler tasks so a pending flush is not garbage
+        # collected mid-flight.
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
+
+    async def _album_flush_after(self, group_id: str, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return  # a newer member rearmed the timer
+        self._album_timers.pop(group_id, None)
+        self._flush_album(group_id)
+
+    def _flush_album(self, group_id: str) -> None:
+        """Merge one buffered album into a single message and dispatch it."""
+        members = self._albums.pop(group_id, None)
+        self._album_first_seen.pop(group_id, None)
+        dropped = self._album_dropped.pop(group_id, 0)
+        timer = self._album_timers.pop(group_id, None)
+        if timer is not None and not timer.done():
+            timer.cancel()
+        if not members:
+            return
+
+        # Usually the caption rides on exactly one member, but Telegram Desktop
+        # and Android let the user caption individual items of a media group --
+        # so join every non-empty caption in album order rather than taking the
+        # first. For the single-caption case this is identical; for the
+        # per-item case it is the difference between the model seeing all of
+        # the user's words and silently seeing only the first.
+        # Everything else comes from the first member: its message_id is what a
+        # reply or a steer-ack reaction should target.
+        head = members[0]
+        text = "\n\n".join(m.text for m in members if m.text)
+        attachments: list[dict[str, Any]] = []
+        for member in members:
+            attachments.extend(member.attachments)
+        if dropped:
+            logger.warning(
+                "Telegram: album %s exceeded %d members; %d ignored",
+                group_id,
+                _ALBUM_MAX_MEMBERS,
+                dropped,
+            )
+        merged = TelegramInbound(
+            chat_id=head.chat_id,
+            user_id=head.user_id,
+            username=head.username,
+            text=text,
+            message_id=head.message_id,
+            chat_type=head.chat_type,
+            message_thread_id=head.message_thread_id,
+            attachments=attachments,
+        )
+        self._spawn_handler(merged)
+
+    def _flush_all_albums(self) -> None:
+        """Best-effort flush of every buffered album, used on shutdown.
+
+        **Not a delivery guarantee.** Shutdown runs the channel teardown and
+        ``SessionManager.close_all()`` concurrently in one ``cleanup_tasks``
+        gather, and ``close_all`` sets ``_closing``, after which ``begin_turn``
+        raises ``SessionClosingError``. So a handler spawned here may lose the
+        race and be refused.
+
+        Kept anyway because it is free and sometimes wins, and because the
+        residual is not a new failure mode: a plain single message that arrives
+        just before shutdown is refused by that same ``_closing`` gate today.
+        Buffering an album widens that pre-existing window by at most
+        ``_ALBUM_WINDOW_S``; it does not introduce a class of loss that was not
+        already there. Draining the buffer here also keeps a closed client from
+        holding album state.
+        """
+        for group_id in list(self._albums):
+            self._flush_album(group_id)
+
+    @staticmethod
+    def _build_inbound(msg: dict) -> TelegramInbound:
+        """Map ONE Telegram ``message`` envelope onto ``TelegramInbound``.
+
+        Pure and side-effect free so both the single-message path and the album
+        merge path share exactly one envelope interpretation.
+        """
+        text = msg.get("text", "") or msg.get("caption", "")
+        chat = msg.get("chat", {})
+        user = msg.get("from", {})
+        # Extract file attachments. Telegram delivers each media type in its
+        # own top-level key. ``photo`` is an array of sizes — pick the last
+        # (largest). Each attachment dict carries at minimum ``file_id``.
+        attachments: list[dict[str, Any]] = []
+        if "photo" in msg and msg["photo"]:
+            # Largest photo is last in the array (Bot API guarantee).
+            largest = msg["photo"][-1]
+            # Synthesize a filename — photos have no file_name field.
+            largest.setdefault("file_name", "photo.jpg")
+            largest.setdefault("mime_type", "image/jpeg")
+            attachments.append(largest)
+        for key in ("document", "audio", "voice", "video_note", "video", "animation"):
+            if key in msg and isinstance(msg[key], dict):
+                attachments.append(msg[key])
+        # Stickers are intentionally excluded — they are decorative, not
+        # content the model should ingest.
+        return TelegramInbound(
+            chat_id=chat.get("id", 0),
+            user_id=user.get("id", 0),
+            username=user.get("username", ""),
+            text=text,
+            message_id=msg.get("message_id", 0),
+            chat_type=chat.get("type", ""),
+            message_thread_id=msg.get("message_thread_id"),
+            attachments=attachments,
+        )
+
+    def _spawn_handler(self, inbound: TelegramInbound) -> None:
+        """Run the message handler as a tracked background task."""
+        task = asyncio.create_task(self._invoke_message(inbound))
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
+
     def _dispatch(self, update: dict) -> None:
         """Route a single Update to the appropriate handler as a background task."""
         if "message" in update:
             msg = update["message"]
-            text = msg.get("text", "")
-            chat = msg.get("chat", {})
-            user = msg.get("from", {})
-            inbound = TelegramInbound(
-                chat_id=chat.get("id", 0),
-                user_id=user.get("id", 0),
-                username=user.get("username", ""),
-                text=text,
-                message_id=msg.get("message_id", 0),
-                chat_type=chat.get("type", ""),
-                message_thread_id=msg.get("message_thread_id"),
-            )
-            task = asyncio.create_task(self._invoke_message(inbound))
-            self._handler_tasks.add(task)
-            task.add_done_callback(self._handler_tasks.discard)
+            inbound = self._build_inbound(msg)
+            # An album (media group) is delivered as N SEPARATE updates sharing
+            # one media_group_id, with the caption on only one member. Buffer
+            # them and emit a single merged message instead of N turns.
+            # Keyed by (chat_id, media_group_id), NOT media_group_id alone:
+            # nothing guarantees the id is unique across the chats one bot
+            # serves, and a collision would merge two chats' members into one
+            # message addressed to head.chat_id -- silently swallowing the other
+            # chat's copy and delivering its content into the wrong
+            # conversation. The composite key removes that class outright.
+            group_id = msg.get("media_group_id")
+            if isinstance(group_id, str) and group_id:
+                self._buffer_album_member(f"{inbound.chat_id}:{group_id}", inbound)
+                return
+            self._spawn_handler(inbound)
 
         elif "callback_query" in update:
             cq = update["callback_query"]
@@ -691,7 +1050,13 @@ class TelegramClient:
         return self._session
 
     async def _api(
-        self, method: str, params: dict, timeout: int = 30, *, record: bool = True
+        self,
+        method: str,
+        params: dict,
+        timeout: int = 30,
+        *,
+        record: bool = True,
+        err_out: dict | None = None,
     ) -> Any:
         """Call a Bot API method. Returns the 'result' field or None on error.
 
@@ -699,6 +1064,12 @@ class TelegramClient:
         we simply dropped would freeze the streaming bubble until the next
         chunk, which reads as a stutter -- so we wait out the (usually short)
         cool-down once and retry instead.
+
+        ``err_out``, when supplied, is populated with ``error_code`` and
+        ``description`` on a Telegram-level failure. Callers use it to tell a
+        PERMANENT failure (the method does not exist on this server) apart from
+        a transient one (rate limit, network), so they can stop re-probing an
+        unsupported method without disabling it on a blip.
         """
         session = await self._ensure_session()
 
@@ -750,6 +1121,9 @@ class TelegramClient:
                         continue
                     if record:
                         _record_api_duration(method, _elapsed_ms(), ok=False, err_code=err_code)
+                    if err_out is not None:
+                        err_out["error_code"] = err_code
+                        err_out["description"] = err_desc
                     logger.warning(
                         "Telegram API %s failed: code=%s desc=%s",
                         method,

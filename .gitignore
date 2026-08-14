@@ -32,6 +32,7 @@ __pycache__/
 /venv/
 /.venv/
 /.venv-x86/
+/.venv311/
 
 # Editor / IDE
 .vscode/

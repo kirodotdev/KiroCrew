@@ -1,9 +1,17 @@
 /**
- * The Agent Templates page's set-default control.
+ * The Agent Templates page's default-template control.
  *
- * The assertions below are about the LABEL as much as the wiring: they fail if
- * the button loses its text, keeping the control recognisable as a control
- * rather than a bare glyph.
+ * This used to be a star pill on every row, which had to mean both "this is the
+ * default" (state) and "make this the default" (control) with the same glyph,
+ * and a StatCard above the list restating the answer. It is now one picker: the
+ * assertions below are about that single place naming the current default and
+ * writing the new one without a Save step.
+ *
+ * The label is asserted verbatim on purpose. This control writes
+ * `config.agent.default_agent`, which is the fallback kiro-cli agent for CLI
+ * chat, chat-channel threads and warm-pool sessions — NOT what a dashboard
+ * session uses (that comes from its crew). A label reading "new sessions use"
+ * would describe a different setting than the one being written.
  */
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -16,6 +24,8 @@ const mockApi = vi.hoisted(() => ({
   mcpProbeCache: vi.fn(),
   defaultAgent: vi.fn(),
   agentDetail: vi.fn(),
+  agentMetadata: vi.fn(),
+  kirocrewAgents: vi.fn(),
   skills: vi.fn(),
   agentPatch: vi.fn(),
   spawnClear: vi.fn(),
@@ -61,47 +71,51 @@ beforeEach(() => {
   mockApi.sessionsUsage.mockResolvedValue({ usage: null })
   mockApi.agentsInstalled.mockResolvedValue([mkAgent('kirocrew'), mkAgent('fable')])
   mockApi.mcpProbeCache.mockResolvedValue([])
+  mockApi.agentMetadata.mockResolvedValue({ content: '' })
+  mockApi.kirocrewAgents.mockResolvedValue({ agents: [], default_agent: '' })
   mockApi.skills.mockResolvedValue([])
   mockApi.agentDetail.mockResolvedValue({ ...mkAgent('kirocrew'), unmanaged_skills: [] })
   mockApi.setDefaultAgent.mockResolvedValue({ ok: true, default_agent: '' })
 })
 
-describe('AgentsPage default agent', () => {
-  it('names the action in words on every non-default row', async () => {
-    mockApi.defaultAgent.mockResolvedValue({ default_agent: '' })
+describe('AgentsPage default template', () => {
+  it('names the current default in one place', async () => {
+    mockApi.defaultAgent.mockResolvedValue({ default_agent: 'fable' })
     renderPage()
-    const buttons = await screen.findAllByText('Set as default')
-    expect(buttons).toHaveLength(2)
+
+    const picker = await screen.findByRole('combobox', { name: 'When nothing names a template, use' })
+    expect(picker).toHaveTextContent('fable')
+    // The state is no longer duplicated onto every row as a control.
+    expect(screen.queryByText('Set as default')).not.toBeInTheDocument()
   })
 
-  it('writes the default when the labelled control is clicked', async () => {
-    mockApi.defaultAgent.mockResolvedValue({ default_agent: '' })
-    renderPage()
-    const buttons = await screen.findAllByText('Set as default')
-    fireEvent.click(buttons[0])
-    await waitFor(() => expect(mockApi.setDefaultAgent).toHaveBeenCalledWith('kirocrew'))
-  })
-
-  it('reads Default on the row that holds it, and clears it when clicked again', async () => {
+  it('writes the pick immediately, with no Save step', async () => {
     mockApi.defaultAgent.mockResolvedValue({ default_agent: 'kirocrew' })
     renderPage()
-    // Exactly one row is the default, so the label appears once in the list.
-    const pill = await screen.findByText('Default')
-    fireEvent.click(pill)
-    // Empty string is how the endpoint expresses "no default agent".
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'When nothing names a template, use' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'fable' }))
+
+    await waitFor(() => expect(mockApi.setDefaultAgent).toHaveBeenCalledWith('fable'))
+    expect(mockApi.agentPatch).not.toHaveBeenCalled()
+  })
+
+  it('can clear the default from the same picker', async () => {
+    mockApi.defaultAgent.mockResolvedValue({ default_agent: 'kirocrew' })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('combobox', { name: 'When nothing names a template, use' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'No default template' }))
+
     await waitFor(() => expect(mockApi.setDefaultAgent).toHaveBeenCalledWith(''))
   })
 
-  it('surfaces the current default in the summary cards, naming the scope', async () => {
-    mockApi.defaultAgent.mockResolvedValue({ default_agent: 'kirocrew' })
-    renderPage()
-    expect(await screen.findByText('Default for new sessions')).toBeInTheDocument()
-  })
-
-  it('shows an em dash rather than a blank card when no default is set', async () => {
+  it('is absent when there are no templates to choose between', async () => {
+    mockApi.agentsInstalled.mockResolvedValue([])
     mockApi.defaultAgent.mockResolvedValue({ default_agent: '' })
     renderPage()
-    expect(await screen.findByText('Default for new sessions')).toBeInTheDocument()
-    expect(screen.getByText('—')).toBeInTheDocument()
+
+    expect(await screen.findByText('No agent templates yet')).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'When nothing names a template, use' })).not.toBeInTheDocument()
   })
 })

@@ -332,12 +332,14 @@ cannot).
 - **M2 backend** — DONE via **API Gateway HTTP API → Lambda** behind CloudFront
   `/<slug>/api/*` (`app-apigw.yaml` + `deploy-backend.sh`). Live-validated:
   `/<slug>/` and `/<slug>/api/` both 200 on one public link.
-  Chosen over a raw Lambda Function URL because some managed corporate accounts run
-  automated guardrails that auto-mitigate *world-accessible* Lambda Function URLs
-  (`Principal:*`). API Gateway keeps the Lambda non-world-accessible (scoped
-  `apigateway.amazonaws.com` invoke) so no auto-mitigation fires. `app-lambda.yaml`
-  (Function URL + CloudFront OAC) is kept as the lighter variant for unrestricted
-  accounts.
+  Chosen over a raw Lambda Function URL because a Function URL requires a
+  `Principal:"*"` resource policy, making the Lambda itself world-accessible. With
+  API Gateway the Lambda's resource policy is scoped to `apigateway.amazonaws.com`
+  only — the function is never directly reachable from the internet, and all public
+  traffic enters through the managed API Gateway front door. This is also
+  compatible with managed corporate accounts whose guardrails flag world-accessible
+  Function URLs. `app-lambda.yaml` (Function URL + CloudFront OAC) is kept as the
+  lighter variant for unrestricted accounts.
 - **M3 lifecycle** — DONE: `list.sh` / `persist.sh` / `detach_backend.py`, plus the
   **in-account scheduled reaper** (`install-reaper.sh` → EventBridge-timed Lambda;
   `templates/reaper.yaml` + `scripts/reaper_lambda/`) that deletes expired

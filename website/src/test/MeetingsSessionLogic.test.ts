@@ -10,9 +10,16 @@ import {
   ALLOWED_TRANSITIONS,
   canTransition,
   isDuplicateSegment,
+  mergeTranscriptSegments,
   newSegmentText,
+  reconcileTranscriptPage,
   resolveEnabledAgents,
 } from '../apps/meetings/hooks/useMeetingSession'
+import {
+  CAPTION_FINALS_LIMIT,
+  CAPTION_WINDOW_CHARS,
+  captionWindow,
+} from '../apps/meetings/hooks/useMeetingTranscription'
 import type { AgentDef, MeetingsConfig } from '../apps/meetings/api'
 import { readFileSync } from 'node:fs'
 import EN_CATALOG from '../i18n/locales/en.json'
@@ -102,6 +109,33 @@ describe('resolveEnabledAgents', () => {
   it('treats a missing enabled_by_default as enabled', () => {
     const agents: AgentDef[] = [{ id: 'x', name: 'X', widget_type: 'markdown' }]
     expect(resolveEnabledAgents('', undefined, agents)).toEqual(['x'])
+  })
+})
+
+describe('mergeTranscriptSegments', () => {
+  const segment = (id: string) => ({
+    id,
+    timestamp: '2026-08-10T10:00:00Z',
+    source: 'speech' as const,
+    text: id,
+  })
+
+  it('appends cursor pages while deduplicating immediate dispatch responses', () => {
+    expect(
+      mergeTranscriptSegments(
+        [segment('first'), segment('immediate')],
+        [segment('immediate'), segment('polled')],
+      ).map(item => item.id),
+    ).toEqual(['first', 'immediate', 'polled'])
+  })
+
+  it('restores durable order after concurrent dispatch responses resolve out of order', () => {
+    expect(
+      reconcileTranscriptPage(
+        [segment('first'), segment('third'), segment('second')],
+        [segment('second'), segment('third')],
+      ).map(item => item.id),
+    ).toEqual(['first', 'second', 'third'])
   })
 })
 
@@ -224,6 +258,15 @@ describe('final-segment dispatch is retried, never swallowed', () => {
       /const dispatchWithRetry[\s\S]*?\n  \},\n?\s*\[[^\]]*\],?\n?\s*\)/,
     )
     expect(helper![0]).toContain('onErrorRef.current?.(')
+  })
+
+  it('treats transcript capacity as permanent and blocks later retries', () => {
+    const helper = TranscriptionSource.match(
+      /const dispatchWithRetry[\s\S]*?\n  \},\n?\s*\[[^\]]*\],?\n?\s*\)/,
+    )
+    expect(helper![0]).toContain("error.code === 'transcript_too_large'")
+    expect(helper![0]).toContain('dispatchBlockedRef.current = true')
+    expect(helper![0]).toContain("onErrorRef.current?.('transcript_full')")
   })
 
   it('the reported code has a distinct catalog key', () => {
@@ -525,5 +568,66 @@ describe('starting before the config loads does not persist an empty roster', ()
     const startCall = SessionSource.match(/const startMutation[\s\S]*?\n  \}\)/)
     expect(startCall, 'no startMutation found').not.toBeNull()
     expect(startCall![0]).not.toMatch(/enabledIds\.length/)
+  })
+})
+
+describe('the live caption shows the newest speech, not the meeting opening', () => {
+  // The durable transcript owns the complete history. The bounded local array is
+  // handed to a caption element that clips its overflow — and
+  // `text-overflow: ellipsis` shows a string's HEAD. The visible caption was
+  // therefore the meeting's first sentence, frozen for its whole duration.
+
+  const SEGMENTS = Array.from(
+    { length: 40 },
+    (_, i) => `segment ${i} with several spoken words in it`,
+  )
+
+  it('drops the oldest segments once the window is full', () => {
+    const out = captionWindow(SEGMENTS)
+    expect(out).toContain('segment 39')
+    // The defect, stated as an assertion: the opening of the meeting must be gone.
+    expect(out).not.toContain('segment 0 ')
+  })
+
+  it('bounds what the caption element is asked to render', () => {
+    expect(captionWindow(SEGMENTS).length).toBeLessThanOrEqual(CAPTION_WINDOW_CHARS)
+  })
+
+  it('leaves a transcript that already fits completely alone', () => {
+    // The common case must not be trimmed at all.
+    expect(captionWindow(['hello there', 'how are you'])).toBe('hello there how are you')
+  })
+
+  it('keeps the in-flight partial at the end', () => {
+    expect(captionWindow(['committed words'], 'and the partial')).toBe(
+      'committed words and the partial',
+    )
+    expect(captionWindow([], 'partial only')).toBe('partial only')
+    expect(captionWindow([])).toBe('')
+  })
+
+  it('keeps the tail, not the head, when one segment alone overflows', () => {
+    const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ')
+    expect(long.length).toBeGreaterThan(CAPTION_WINDOW_CHARS)
+    const out = captionWindow([long])
+    expect(out.length).toBeLessThanOrEqual(CAPTION_WINDOW_CHARS)
+    // A suffix of the segment: the newest words survive, the oldest are cut.
+    expect(long.endsWith(out)).toBe(true)
+    // And cut at a word boundary, so the caption never opens mid-token.
+    expect(out.startsWith('word')).toBe(true)
+  })
+
+  it('routes both caption call sites through the bounded window', () => {
+    // Exporting the helper is not enough. A call site left on the raw
+    // accumulation would restore the bug while every assertion above still
+    // passed, so the guard is on the source itself.
+    expect(TranscriptionSource).not.toContain("finalsRef.current.join(' ')")
+    expect(TranscriptionSource).toContain('captionWindow(finalsRef.current, lastPartial)')
+    expect(TranscriptionSource).toContain('captionWindow(finalsRef.current)')
+  })
+
+  it('bounds the browser-only final segment buffer', () => {
+    expect(CAPTION_FINALS_LIMIT).toBeGreaterThan(1)
+    expect(TranscriptionSource).toContain('finalsRef.current.splice(')
   })
 })

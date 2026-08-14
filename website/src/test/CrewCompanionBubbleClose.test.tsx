@@ -89,14 +89,24 @@ describe('closing a bubble', () => {
     expect(getComputedStyle(x as Element).position).not.toBe('absolute')
   })
 
-  it('the CTA sits below the box, outside the text row', () => {
-    // Inside the row it would line up beside the words; the box also clips overflow.
+  it('the CTA is a footer inside the card, not a pill floating under it', () => {
+    // Keeping it as the body row's sibling gives the action full width without joining the text row.
     const { container } = render(
       <Bubble text="needs your OK" kind="approval" onDismiss={() => {}} onAction={() => {}} />,
     )
-    const row = container.querySelector('.cc-bubble-cta-row')
-    expect(row).not.toBeNull()
-    expect(row!.parentElement?.className).toContain('cc-bubble-wrap')
+    const card = container.querySelector('.cc-bubble')
+    const foot = container.querySelector('.cc-bubble-foot')
+    expect(card, 'card not found').not.toBeNull()
+    expect(foot, 'footer not rendered for a kind that has a CTA').not.toBeNull()
+    // Inside the card…
+    expect(card!.contains(foot!)).toBe(true)
+    // …and a SIBLING of the message row, not nested in it (which would put the action
+    // beside the words — the reason it was originally kept outside the card at all).
+    const bodyRow = container.querySelector('.cc-bubble-body-row')
+    expect(bodyRow).not.toBeNull()
+    expect(bodyRow!.contains(foot!)).toBe(false)
+    // The old floating-pill container must be gone, not merely unused.
+    expect(container.querySelector('.cc-bubble-cta-row')).toBeNull()
   })
 
   it('unresolved work has NO ✕ and is cleared through its CTA instead', () => {

@@ -1,14 +1,78 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check } from 'lucide-react'
+import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
 import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount } from './knowledgeUtils'
-import type { Source, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
+import { fmtCompact, fmtNumber } from '../../i18n/format'
+import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
+
+/**
+ * Indexing progress and the Kiro requests a source still owes.
+ *
+ * A watched folder keeps spending at idle long after it was added and the
+ * add-time estimate has scrolled away. The remaining figure is what turns that
+ * into something a user can see before it reaches a bill.
+ *
+ * Both figures name the same unit the bill does — Kiro requests — so the number
+ * can be compared against it without the reader having to guess whether one
+ * "model call" is one billed request.
+ *
+ * The progress fraction counts SKIPPED files as resolved but not FAILED ones.
+ * Skipping is a terminal state the user chose, so leaving it out of the numerator
+ * would strand the fraction below its total with nothing left to do. A failure is
+ * also terminal — which means the requests-left figure disappears with it — so a
+ * fraction that absorbed failures would read as complete while documents are
+ * missing, and one that ignored them would sit short of total forever with no
+ * explanation. It is therefore counted separately and shown, so the gap between
+ * the fraction and the total always has a visible reason.
+ *
+ * Renders nothing for a source with no queued work — an uploaded file or an
+ * aggregate source has nothing outstanding, and a row of zeroes would only add
+ * noise to every line.
+ */
+export function SourceSpendDisplay({ spend }: { spend?: SourceSpend }) {
+  const total = spend?.files_total ?? 0
+  const remaining = spend?.estimated_llm_calls_remaining ?? 0
+  if (!spend || (total === 0 && remaining === 0)) return null
+  const failed = spend.files_failed ?? 0
+  const resolved = (spend.files_done ?? 0) + (spend.files_skipped ?? 0)
+  return (
+    <>
+      {total > 0 && (
+        <span className="text-[11px] text-muted whitespace-nowrap"
+          title={i18nT('pages.knowledge.sourcesList.chunks_embedded_so_far', { chunks: fmtNumber(spend.chunks_embedded ?? 0) })}>
+          {i18nT('pages.knowledge.sourcesList.files_indexed', {
+            done: fmtNumber(resolved), total: fmtNumber(total),
+          })}
+        </span>
+      )}
+      {failed > 0 && (
+        <span className="text-[11px] text-danger whitespace-nowrap">
+          {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failed })}
+        </span>
+      )}
+      {remaining > 0 && (
+        <span className="text-[11px] text-warn whitespace-nowrap inline-flex items-center gap-0.5"
+          title={i18nT('pages.knowledge.sourcesList.estimated_requests_still_needed_to_finish_indexi')}>
+          <Coins size={10} aria-hidden="true" />
+          {/* Two significant figures, not the raw count: the figure is an estimate
+              derived from file sizes, so rendering "11,460" claims a precision it
+              does not have while the leading ~ says otherwise. Compact keeps the
+              magnitude legible and localizes the scale word (11K / 1.1万). */}
+          {i18nT('pages.knowledge.sourcesList.kiro_requests_left', {
+            calls: fmtCompact(remaining, { maximumSignificantDigits: 2 }),
+          })}
+        </span>
+      )}
+    </>
+  )
+}
+
 export function SourceSummaryDisplay({ source }: { source: Source }) {
   if (!source.summary_topic) return null
   const themes: string[] = (() => { try { return JSON.parse(source.summary_themes || '[]') } catch { return [] } })()
@@ -353,6 +417,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 
   return (
     <div className="space-y-3">
+      {/* Stated unconditionally rather than only on the add-source dialog: the cost
+          is ongoing, and a user who inherits a configured folder never sees that
+          dialog at all. It also carries the fact that the charge is gradual, which
+          a title-attribute tooltip cannot deliver to touch or keyboard users. */}
+      <div className="flex items-start gap-1.5 text-[11px] text-muted">
+        <Coins size={12} className="shrink-0 mt-px" aria-hidden="true" />
+        <span>{i18nT('pages.knowledge.sourcesList.indexing_uses_kiro_requests_each_source_costs_mo')}</span>
+      </div>
       <div className="flex justify-end">
         <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
@@ -484,12 +556,17 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 <SourceSummaryDisplay source={s} />
               </div>
               </div>
-              {/* Meta + actions: wraps under the identity block on narrow viewports. */}
-              <div className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-nowrap shrink-0 pl-6 sm:pl-0">
+              {/* Meta + actions. Wraps at ANY width and never nowrap: the row carries a
+                  variable number of figures (item count, word count, indexing progress,
+                  remaining Kiro requests) and pinning it to one line pushed the trailing
+                  action button outside the card border and squeezed the source name to
+                  nothing at mid widths. */}
+              <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
               {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : (
                 <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{s.sync_status}</Badge>
               )}
               <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>
+              <SourceSpendDisplay spend={s.spend} />
               {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
               <StalenessIndicator lastSynced={s.last_synced} />
               {/* Pause/Resume/Confirm for folder sources */}

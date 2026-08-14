@@ -121,6 +121,104 @@ class TestRendererClose:
         asyncio.run(scenario())
 
 
+class TestOptionsControlIsStamped:
+    """The canonical Slack path must stamp the controls it posts.
+
+    ``messaging.use_transport`` defaults to True, so this renderer -- not the
+    native handler -- posts most real OPTIONS controls. A control that goes out
+    unstamped is one whose clicks can never be judged: the click-time check
+    abstains and honours it however far the conversation has since moved.
+    """
+
+    @staticmethod
+    def _options_block(rec):
+        for name, kw in rec.calls:
+            if name != "post_blocks":
+                continue
+            for block in kw["blocks"]:
+                if block.get("type") == "actions":
+                    return block
+        return None
+
+    def test_the_footer_control_carries_the_dispatcher_s_stamp(self):
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+
+            seen: list[str] = []
+
+            async def _stamp(final_text: str) -> str:
+                seen.append(final_text)
+                return "stamp-abc"
+
+            renderer.stamp_options = _stamp
+            await renderer.on_done()
+
+            actions = self._options_block(rec)
+            assert actions is not None, "the options control must still be posted"
+            assert actions.get("block_id") == "stamp-abc", (
+                "the control must carry the stamp, or its clicks cannot be judged"
+            )
+            assert seen, "the stamp must be taken BEFORE the control is posted"
+
+        asyncio.run(scenario())
+
+    def test_what_gets_persisted_keeps_the_options_trailer(self):
+        """The stamp replaces the dispatcher's persist, so it must write the same text.
+
+        A replayed turn re-renders its question as a control by finding the
+        ``[OPTIONS: ...]`` trailer in the persisted text. Handing the stamp the
+        stripped copy that goes to Slack would drop that trailer from history, and
+        every replayed control would come back as literal prose instead.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+
+            persisted: list[str] = []
+
+            async def _stamp(final_text: str) -> str:
+                persisted.append(final_text)
+                return "stamp-abc"
+
+            renderer.stamp_options = _stamp
+            await renderer.on_done()
+
+            assert persisted, "the stamp must have been invoked"
+            assert "[OPTIONS: alpha | beta]" in persisted[0], (
+                "the persisted text must keep the trailer, or replay loses the control"
+            )
+
+        asyncio.run(scenario())
+
+    def test_a_failing_stamp_costs_the_user_nothing(self):
+        """Best-effort: an unstamped control is honoured on click, as before.
+
+        Losing the footer entirely because bookkeeping failed would be a worse
+        outcome than losing the ability to refuse a stale click.
+        """
+
+        async def scenario():
+            rec = _RecSlack()
+            renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+            renderer._accumulated = "pick one\n[OPTIONS: alpha | beta]"
+
+            async def _boom(final_text: str) -> str:
+                raise RuntimeError("transcript unavailable")
+
+            renderer.stamp_options = _boom
+            await renderer.on_done()
+
+            actions = self._options_block(rec)
+            assert actions is not None, "the control must post even if stamping fails"
+            assert "block_id" not in actions
+
+        asyncio.run(scenario())
+
+
 class TestBuildApprovalBlocks:
     def test_action_ids_encode_request_id(self):
         blocks = build_approval_blocks("grep", "rq9")

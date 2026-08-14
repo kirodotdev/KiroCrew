@@ -98,6 +98,9 @@ export default {
         'slide-in-left': { from: { opacity: '0', transform: 'translateX(-16px)' }, to: { opacity: '1', transform: 'translateX(0)' } },
         'scale-in': { from: { opacity: '0', transform: 'scale(.92)' }, to: { opacity: '1', transform: 'scale(1)' } },
         shimmer: { '0%': { backgroundPosition: '-200% 0' }, '100%': { backgroundPosition: '200% 0' } },
+        /* Indeterminate progress: a review that is genuinely at 0% for minutes
+           needs to read as working, not stalled. */
+        'sage-sweep': { '0%': { transform: 'translateX(-100%)' }, '100%': { transform: 'translateX(400%)' } },
         blink: { '0%,100%': { opacity: '1' }, '50%': { opacity: '0' } },
         'dot-breathe': { '0%,100%': { opacity: '.6', transform: 'scale(.9)' }, '50%': { opacity: '1', transform: 'scale(1.1)' } },
         'brand-glow': { '0%': { opacity: '.6', transform: 'scale(1)' }, '100%': { opacity: '1', transform: 'scale(1.05)' } },
@@ -122,6 +125,7 @@ export default {
         'scale-out': { from: { opacity: '1', transform: 'scale(1)' }, to: { opacity: '0', transform: 'scale(.96)' } },
       },
       animation: {
+        'sage-sweep': 'sage-sweep 1.4s ease-in-out infinite',
         rise: 'rise .35s cubic-bezier(.16,1,.3,1) backwards',
         'fade-in': 'fade-in .2s ease',
         'slide-up': 'slide-up .3s cubic-bezier(.16,1,.3,1) backwards',

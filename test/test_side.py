@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
+from kiro_crew import context as context_module
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers.side import (
     _run_side_turn,
@@ -73,7 +75,14 @@ def _make_side_app(
 
 def _capture_broadcasts(state) -> list[tuple[str, Any]]:
     events: list[tuple[str, Any]] = []
-    state.broadcast_ws = lambda msg_type, data: events.append((msg_type, data))
+
+    def _record(msg_type, data):
+        events.append((msg_type, data))
+
+    # Both channels: side frames are owner-only while main chat events go to every client,
+    # and these tests discriminate by event type rather than by audience.
+    state.broadcast_ws = _record
+    state.broadcast_ws_owners = _record
     return events
 
 
@@ -85,10 +94,42 @@ def _stub_run_side_turn(monkeypatch, *, answer: str = _SIDE_ANSWER):
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side._run_side_turn", _fake_run)
 
 
+#: What a frozen clock reads. Any fixed instant does; a recognisable one makes an
+#: accidental real-clock read obvious in a failure diff.
+_FROZEN_NOW = datetime(2026, 1, 2, 3, 4, 5)
+
+
+class _FrozenClock(datetime):
+    """A ``datetime`` whose ``now()`` does not advance.
+
+    Subclassed rather than replaced with a stub: ``context`` happens to call only
+    ``now``, but a bare stub would break the moment any other ``datetime`` API is
+    used there, and that breakage would read as a defect in the test rather than
+    in its double.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return _FROZEN_NOW.replace(tzinfo=tz)
+
+
+def _freeze_context_clock(monkeypatch):
+    """Pin the clock that ``build_session_context`` renders into its output.
+
+    The rendered context carries a wall-clock read formatted to the MINUTE, so
+    comparing two renders byte-for-byte otherwise asserts that both happened
+    inside the same clock minute — a property no behaviour under test controls,
+    and one that breaks whenever a minute boundary lands between the two calls.
+    Freezing the clock keeps the equality total over everything else.
+    """
+    monkeypatch.setattr(context_module, "datetime", _FrozenClock)
+
+
 @pytest.mark.asyncio
 async def test_memory_isolation_byte_equal_after_round_trip(tmp_path, monkeypatch):
     """Parent build_session_context is byte-equal pre/post a /side round-trip."""
     _stub_run_side_turn(monkeypatch)
+    _freeze_context_clock(monkeypatch)
     state = _make_state(tmp_path)
     state.sessions.destroy = AsyncMock()
     parent = state.get_or_create_slot("parent")
@@ -105,6 +146,10 @@ async def test_memory_isolation_byte_equal_after_round_trip(tmp_path, monkeypatc
         conversation_log=state.conversation_log,
     )
     ctx_before = builder.build_session_context(session_key="parent")
+    # Proves the freeze reached the renderer. Without this, a rename or an
+    # inlined import in `context` would put the real clock back and hand the
+    # equality below its minute-boundary dependency again, silently.
+    assert _FROZEN_NOW.strftime("%Y-%m-%d %H:%M") in ctx_before
 
     app = _make_side_app(state)
     async with TestClient(TestServer(app)) as client:
@@ -384,7 +429,7 @@ async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch
     )
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
-        lambda cfg, agent: MagicMock(kiro_agent="kirocrew"),
+        lambda cfg, agent, project_dir=None: MagicMock(kiro_agent="kirocrew"),
     )
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.side.stream_and_collect",
@@ -395,6 +440,54 @@ async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch
 
     assert captured["agent"] == "kirocrew", (
         f"side turn passed an unresolved agent to get_or_create: " f"{captured.get('agent')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
+    """The side session is created with ``cwd=slot.project``.
+
+    Regression: the side path resolved project-scope agents (via
+    resolve_agent_bindings with slot.project) but then created the session
+    without a cwd, so kiro-cli — which resolves --agent against
+    $PWD/.kiro/agents — rejected the very mode the resolver just returned.
+    """
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent.agent = "default"
+    parent.project = str(tmp_path / "proj")
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user("q")
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = False
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_get_or_create(key, **kwargs):
+        captured["cwd"] = kwargs.get("cwd")
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
+        lambda cfg, agent, project_dir=None: MagicMock(kiro_agent="kirocrew"),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        AsyncMock(return_value="ok"),
+    )
+
+    await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
+
+    assert captured["cwd"] == parent.project, (
+        f"side session created without the slot's project cwd: {captured.get('cwd')!r}"
     )
 
 

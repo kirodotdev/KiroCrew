@@ -19,6 +19,7 @@ import {
   TAILWIND_RUNTIME_PATH,
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
+import { precompressPlugin } from './scripts/precompress.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -392,7 +393,7 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -421,6 +422,11 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'happy-dom',
+    // Pin TZ so date/time assertions are deterministic regardless of the
+    // contributor's system timezone. CI runs in UTC; without this, tests that
+    // compare Intl.DateTimeFormat output against toLocale*() defaults diverge
+    // on single-digit hours visible only outside UTC (e.g. Pacific/Kiritimati).
+    env: { TZ: 'UTC' },
     // happy-dom (unlike jsdom) actively NAVIGATES iframes and LOADS <script src>.
     // WidgetFrame renders a live <iframe src={blobUrl}> whose page carries a
     // same-origin <script src=".../tailwindcss-browser.js">, which happy-dom
@@ -435,17 +441,56 @@ export default defineConfig({
     // costs nothing.
     environmentOptions: {
       happyDOM: {
+        // Serve the test document on the gateway's real default port. happy-dom
+        // otherwise defaults to localhost:3000, which is one of the Web Preview
+        // panel's own dev-server quick-picks — and the panel refuses to frame a
+        // target on the dashboard's own port (it can only ever be this gateway,
+        // which forbids being embedded). Matching production keeps "the
+        // dashboard" and "a dev server" distinguishable in tests.
+        url: 'http://localhost:6776/',
         settings: {
           disableIframePageLoading: true,
           disableJavaScriptFileLoading: true,
           disableJavaScriptEvaluation: true,
           disableCSSFileLoading: true,
+          // Resolve a declined resource load as a silent success instead of
+          // rejecting with a NotSupportedError. happy-dom runs the load
+          // asynchronously on DOM insertion, so that rejection is orphaned —
+          // it escapes the test that inserted the node and vitest counts it as
+          // a run-level unhandled error, failing the whole shard even when every
+          // assertion passed. We assert the serialized DOM, never the sandboxed
+          // widget runtime, so a no-op success preserves the contract under test.
+          handleDisabledFileLoadingAsSuccess: true,
+          // Never follow a link or form navigation over the network. An
+          // un-intercepted `<a href>` click — e.g. an artifact anchor a test
+          // clicks with no onArtifactOpen handler — otherwise makes happy-dom
+          // dial the document origin for real; that fetch outlives the test and
+          // its ECONNREFUSED lands after msw teardown as another orphaned
+          // rejection. Disabling navigation still falls back to setting the URL
+          // (no dial), so tests that read location after a click keep working.
+          navigation: {
+            disableMainFrameNavigation: true,
+            disableChildFrameNavigation: true,
+          },
         },
       },
     },
     setupFiles: './integration/setup.ts',
     css: true,
     pool: 'forks',  // More stable than threads on ARM64 build fleet (avoids ERR_IPC_CHANNEL_CLOSED)
+    // Bound fork memory. Without a cap, vitest spawns one worker per core
+    // (os.availableParallelism); on a high-core fleet the aggregate RSS of that
+    // many full Node heaps — each retaining v8 coverage maps + happy-dom DOM
+    // state across the ~950 files it touches — exceeds host RAM under
+    // ``--coverage``. The kernel then OOM-kills a worker, which vitest surfaces
+    // as "Worker exited unexpectedly" (1 unhandled error → the job fails) even
+    // though every test passed. maxWorkers caps concurrency regardless of core
+    // count, and the per-worker --max-old-space-size gives each fork a heap
+    // ceiling that fails a genuine leak loudly instead of dragging the host down.
+    // (Vitest 4 pool rework: these are top-level, not poolOptions; minWorkers
+    // was removed — only maxWorkers has effect.)
+    maxWorkers: 2,
+    execArgv: ['--max-old-space-size=3072'],
     // Default 5s is too tight for tests that ``await import(...)`` inside the
     // body: under a full concurrent forks run the collect phase can starve the
     // dynamic import past 5s and it times out. 15s gives headroom for
@@ -454,6 +499,11 @@ export default defineConfig({
     include: ['integration/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
     onConsoleLog: (log) =>
       !log.includes('was not wrapped in act(') &&
+      // TipCard's useTipTrigger issues tipsStatus/tipsNext queries; the 232
+      // tests that vi.mock('../api/client') without stubbing those two fields
+      // leave queryFn undefined, so React Query logs "No queryFn was passed"
+      // ~44x per file. Pure noise — the component under test is never TipCard.
+      !log.includes('No queryFn was passed') &&
       // Insurance for the defense-in-depth path above: if a widget iframe
       // <script>/page load ever reaches happy-dom's disable-loading settings
       // (rather than being answered by the msw fallback first), happy-dom logs a

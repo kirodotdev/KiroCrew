@@ -13,6 +13,7 @@ from typing import Any
 
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
+from kiro_crew.messaging.renderer import SilentRenderer
 
 
 class _Sessions:
@@ -187,3 +188,136 @@ def test_a_denied_turn_neither_renders_nor_releases(monkeypatch) -> None:
     assert renderer.closed == 0
     assert sessions.released == 0
     assert sessions.successes == 0
+
+
+class _PauseSessions(_Sessions):
+    """Interface parity with the real SessionManager for the pause lookup.
+
+    Extended here rather than leaning on production's fail-open: that fallback
+    exists for the bare ``MagicMock`` managers elsewhere in the suite, and a test
+    about the gate must not be silently exercising the fallback instead.
+    """
+
+    def __init__(self, paused: bool = False):
+        super().__init__()
+        self.paused = paused
+        self.pause_calls: list[tuple[str, bool]] = []
+
+    def is_mirror_paused(self, key, *, origin=False):
+        self.pause_calls.append((key, origin))
+        return self.paused
+
+
+class _CountingRenderer(_Renderer):
+    """Records the turn-start the user would SEE as a typing indicator."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = 0
+
+    async def on_turn_start(self):
+        self.started += 1
+
+
+def _capture_driver(box: list) -> type:
+    class _Capturing(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            super().__init__()
+            box.append(renderer)
+
+    return _Capturing
+
+
+def _turn_with_key(renderer: Any, session_key: str) -> ChannelTurn:
+    return ChannelTurn(
+        channel_type="weixin",
+        session_key=session_key,
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=renderer,
+        approval_mode="auto",
+    )
+
+
+def test_a_disconnected_conversation_is_silenced(monkeypatch) -> None:
+    """Disconnect stops the replies, which for a non-Slack channel happens HERE.
+
+    Slack enforces a disconnect on its own streaming mirror. Every other channel
+    answers through this pipeline, so before this gate a disconnected channel
+    kept replying and the dashboard control changed nothing but its own label.
+
+    The turn still runs and the semaphore is still released: the binding is
+    retained by design, so the inbound message must still land in the session.
+    """
+    box: list[Any] = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver(box))
+    sessions = _PauseSessions(paused=True)
+    renderer = _CountingRenderer()
+
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(renderer, "weixin:agentA:direct:userA"),
+            sessions=sessions,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+
+    assert isinstance(box[0], SilentRenderer), "the driver must stream into the silent one"
+    assert renderer.started == 0, "a disconnected conversation must not even show typing"
+    assert renderer.closed == 0, "the real renderer was never used, so it has nothing to close"
+    assert sessions.successes == 1, "the turn still ran"
+    assert sessions.released == 1, "and the session semaphore was still released"
+
+
+def test_a_connected_conversation_keeps_its_real_renderer(monkeypatch) -> None:
+    """The non-vacuity half: without it, deleting the gate would still pass above."""
+    box: list[Any] = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver(box))
+    sessions = _PauseSessions(paused=False)
+    renderer = _CountingRenderer()
+
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(renderer, "weixin:agentA:direct:userA"),
+            sessions=sessions,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+
+    assert box[0] is renderer
+    assert renderer.started == 1
+    assert renderer.closed == 1
+
+
+def test_the_pause_is_read_for_the_role_the_turn_arrived_on(monkeypatch) -> None:
+    """Two non-Slack deliveries mute independently, so the ROLE decides the flag.
+
+    A channel-BORN session's key IS its conversation, so a turn arriving in that
+    namespace is the origin. Anything else reaching this pipeline came over a
+    mirror/resume binding. Reading the wrong flag would let one row's disconnect
+    silence the other's conversation.
+    """
+    _patch_pipeline(monkeypatch)
+
+    born = _PauseSessions(paused=False)
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(_CountingRenderer(), "weixin:agentA:direct:userA"),
+            sessions=born,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+    assert born.pause_calls == [("weixin:agentA:direct:userA", True)], "born-in reads origin"
+
+    mirrored = _PauseSessions(paused=False)
+    asyncio.run(
+        drive_turn(
+            _turn_with_key(_CountingRenderer(), "dashboard:chat-1"),
+            sessions=mirrored,
+            ctx_builder=_CtxBuilder(),
+        )
+    )
+    assert mirrored.pause_calls == [("dashboard:chat-1", False)], "a mirror reads the mirror flag"

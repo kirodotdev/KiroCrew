@@ -9,11 +9,12 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
@@ -147,13 +148,13 @@ class DiscordSessionResume:
     def leave_resumed_session(self, channel_id: str) -> str | None:
         key = self.resumed_session(channel_id)
         if key is not None:
-            # Free the LOCATION, not just the resume binding: the dashboard's
-            # mirror-link endpoint performs no occupancy check, so an outbound
-            # mirror can be laid onto a conversation a resumed session already
-            # holds. This early path bypasses the dispatcher's own sweep —
-            # clearing only *key* here would leave that mirror occupying the
-            # location and reproduce the "already attached" refusal after an
-            # apparently successful unlink.
+            # Free the LOCATION, not just the resume binding: a session map can
+            # hold co-located bindings — one written before conversations became
+            # exclusive, or hand-edited — so an outbound mirror can sit on a
+            # conversation a resumed session also holds. This early path bypasses
+            # the dispatcher's own sweep — clearing only *key* here would leave
+            # that mirror occupying the location and reproduce the "already
+            # attached" refusal after an apparently successful unlink.
             cleared = self.sessions.clear_mirror_links_at(self.link_for(channel_id))
             logger.info(
                 "discord: released resumed session %s (cleared bindings: %s)",
@@ -205,15 +206,15 @@ class DiscordSessionResume:
                     self.conv_log.search_sessions, query, _SEARCH_FETCH_LIMIT
                 )
                 if not rows and len(normalized_query.split()) > 1:
-                    # search_sessions matches the query as ONE phrase
-                    # (``needle = query.casefold()``), so out-of-order words miss:
-                    # "specific link" does not match "Link to a Specific Session".
-                    # Fall back to an all-words TITLE match so a remembered-but-
-                    # reordered title still resolves. Deliberately last-resort and
-                    # only on zero hits, so the shared search stays authoritative
-                    # and we are not running two rankers in parallel. The proper
-                    # home for multi-word support is search_sessions itself, which
-                    # would fix the dashboard too -- tracked as a follow-up.
+                    # search_sessions now matches multi-word queries token-wise
+                    # (all tokens must appear, in the title or the content), so
+                    # out-of-order words like "specific link" DO resolve
+                    # "Link to a Specific Session". What it still cannot reach is
+                    # a session older than its _SEARCH_SCAN_WINDOW most-recent
+                    # cap, so keep this unbounded all-words TITLE match as the
+                    # last resort for a long-lived install. Only on zero hits, so
+                    # the shared search stays authoritative and we are not
+                    # running two rankers in parallel.
                     listed = await asyncio.to_thread(self.conv_log.list_sessions)
                     words = normalized_query.split()
                     rows = [
@@ -245,7 +246,7 @@ class DiscordSessionResume:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if str(row.get("memory_mode", "persistent")).lower() in INCOGNITO_MEMORY_MODES:
+            if is_incognito_transcript(row.get("memory_mode")):
                 continue
             key = _history_dashboard_key(row.get("key"))
             if key is None:
@@ -450,6 +451,23 @@ class DiscordSessionResume:
                     accepts_inbound=True,
                 )
                 self._push_slots()
+            except ConversationOwnershipConflict:
+                # `_binding_conflict` already checked, twice — but it and the
+                # dashboard connect endpoint evaluate under different locks, so
+                # this precheck can lose the race. The atomic claim inside
+                # `set_mirror_link` is what catches it. This is an ordinary
+                # conflict, not a fault: say so in the precheck's own words
+                # instead of the generic failure text below, which would send the
+                # user off to retry a command that is working.
+                logger.debug("discord resume: lost the claim race for this conversation")
+                await client.edit_message(
+                    interaction.channel_id,
+                    interaction.message_id,
+                    "🧵 Another session just connected here. "
+                    "Run `!unlink`, then `!sessions` to resume this one.",
+                    components=[],
+                )
+                return
             except Exception:
                 logger.exception("discord resume: failed to persist binding")
                 await client.edit_message(

@@ -15,15 +15,16 @@ transcript / WS / hook surfaces, it does NOT replace the model's tool result.
 That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
-IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, with ``session_surface`` the one
-exception: it imports nothing from ``kiro_crew``, so it cannot cycle. ``sel`` is
-a genuine cycle (``sel`` -> config -> apps -> dashboard, and chat_runner imports
-this module before it imports sel). The rest (autonudge, autonudge_authz,
-chat_utils, security, chat_handlers) are deferred on purpose: they keep this
-module cheap to import from the turn loop's import graph, and they resolve the
-symbol at CALL time so patching the SOURCE module is what tests (and any runtime
-override) actually observe — a module-scope ``from X import name`` would freeze a
-stale binding and silently bypass it.
+IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
+Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
+constant. ``sel`` is a genuine cycle
+(``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
+before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
+security, chat_handlers) are deferred on purpose: they keep this module cheap to
+import from the turn loop's import graph, and they resolve the symbol at CALL
+time so patching the SOURCE module is what tests (and any runtime override)
+actually observe — a module-scope ``from X import name`` would freeze a stale
+binding and silently bypass it.
 """
 
 from __future__ import annotations
@@ -34,6 +35,10 @@ import os
 import time
 from typing import Any
 
+from kiro_crew.apps.builtins.auto_research.session_keys import (
+    is_owned_research_slot,
+)
+from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
@@ -101,7 +106,7 @@ async def apply_session_directive(
         elif kind == "monitor_update":
             result = await _monitor_update(session_key, args)
         elif kind == "autonudge_stop":
-            result = await _autonudge_stop(session_key, args)
+            result = await _autonudge_stop(slot, session_key, args)
         elif kind == "set_project":
             result = await _set_project(state, slot, args)
         elif kind == "suggest_followup":
@@ -148,6 +153,7 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         return "monitor_start is not supported from this session type."
     idle_secs = int(args.get("idle_secs") or 300)
     max_cycles = int(args.get("max_cycles") or 0)
+    max_runtime_secs = int(args.get("max_runtime_secs") or 0)
     loop, error, _status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
@@ -156,15 +162,19 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         idle_secs=idle_secs,
         max_cycles=max_cycles,
         stop_sentinel_path="",
+        max_runtime_secs=max_runtime_secs,
         source="mcp-directive",
         caller="session-directive",
     )
     if error is not None:
         return f"Failed to start monitor loop: {error}"
     cap = f", stopping after {max_cycles} cycles" if max_cycles else ", with NO cycle cap"
+    if max_runtime_secs:
+        cap += f", wall-clock budget {max_runtime_secs}s"
     return (
         f"Monitor loop {getattr(loop, 'id', '?')} started on this session: the "
-        f"message re-injects {idle_secs}s after each turn ENDS (idle gap){cap}. "
+        f"message re-injects every {idle_secs}s (user messages defer a due fire "
+        f"to their turn's end without restarting the countdown){cap}. "
         "End your turn now — the loop wakes you. Call autonudge_stop when the "
         "exit condition is met."
     )
@@ -195,22 +205,63 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
             f"delivered cycle count ({cycle_count}), so it would deactivate "
             "without firing again. Pass a larger cap, or 0 for unlimited."
         )
+    # Spent-budget guard, same shape as the cycle-cap one: a wall-clock budget
+    # at/below the loop's elapsed age deactivates it on the next timer without
+    # another fire — refuse rather than promise a wake that never comes.
+    if "max_runtime_secs" in patch:
+        new_budget = int(patch["max_runtime_secs"] or 0)
+        created_ts = float(getattr(loop, "created_ts", 0.0) or 0.0)
+        elapsed = int(time.time() - created_ts) if created_ts else 0
+        if new_budget and created_ts and elapsed >= new_budget:
+            raise _DirectiveDenied(
+                f"monitor_update: max_runtime_secs={new_budget} is at or below "
+                f"this loop's elapsed runtime ({elapsed}s since it was armed), "
+                "so it would deactivate without firing again. Pass a larger "
+                "budget, or 0 for unlimited."
+            )
     revived = False
     # Paused-loop protection: never silently resume unattended execution as a
-    # side effect of a metadata edit — revive ONLY a cap-stopped loop whose cap
-    # is actually being raised.
+    # side effect of a metadata edit — revive ONLY a loop stopped by one of its
+    # own terminal bounds whose stopping bound is actually being raised. Keyed
+    # on the PERSISTED ``stopped_reason`` recorded at deactivation time: the
+    # cycle-count heuristic stays only as a legacy fallback for stores written
+    # before the field existed, and the budget side has NO heuristic at all —
+    # elapsed time keeps growing after a manual pause, so "budget looks spent"
+    # cannot distinguish a pause from an expiry (GPT review on #2116: a
+    # budget raise must never resume a loop the user paused).
     if not getattr(loop, "active", True):
-        stopped_at_cap = current_cap > 0 and cycle_count >= current_cap
+        reason = str(getattr(loop, "stopped_reason", "") or "")
+        stopped_at_cap = reason == "cycle_cap" or (
+            not reason and current_cap > 0 and cycle_count >= current_cap
+        )
         raising_cap = "max_cycles" in patch and (new_cap == 0 or new_cap > current_cap)
+        stopped_at_budget = reason == "runtime_budget"
+        # A budget-raise passed the spent-budget guard above, so any budget in
+        # the patch here is beyond the loop's elapsed age (or 0 = unlimited).
+        raising_budget = "max_runtime_secs" in patch
         if stopped_at_cap and raising_cap:
             patch["active"] = True
             revived = True
+        elif stopped_at_budget and raising_budget:
+            patch["active"] = True
+            revived = True
         else:
+            # Name the bound that actually stopped the loop, so the remedy in
+            # the message is the one that will work.
+            if stopped_at_budget:
+                bound = (
+                    f"its {int(getattr(loop, 'max_runtime_secs', 0) or 0)}s wall-clock "
+                    "budget ran out; raise max_runtime_secs above the loop's age "
+                    "(or pass 0)"
+                )
+            elif stopped_at_cap:
+                bound = "it hit its cycle cap; raise max_cycles above the cap (or pass 0)"
+            else:
+                bound = "it was paused manually; ask the user, or use monitor_start"
             raise _DirectiveDenied(
                 f"Monitor loop {loop.id} is PAUSED (cycle {cycle_count}"
                 + (f" of {current_cap}" if current_cap else ", no cap")
-                + "). monitor_update will not resume a paused loop as a side "
-                "effect: raise max_cycles above the cap, or use monitor_start."
+                + f"). monitor_update will not resume it as a side effect: {bound}."
             )
     _new_loop, error, _status = await authorize_and_update_nudge(
         svc=svc,
@@ -219,6 +270,7 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
         idle_secs=patch.get("idle_secs"),
         max_cycles=patch.get("max_cycles"),
         active=patch.get("active"),
+        max_runtime_secs=patch.get("max_runtime_secs"),
         source="mcp-directive",
         caller="session-directive",
     )
@@ -227,11 +279,11 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
     fields = ", ".join(sorted(k for k in patch if k != "active"))
     return (
         f"Monitor loop {loop.id} updated on this session ({fields})."
-        + (" The cap-stopped loop has been re-armed." if revived else "")
+        + (" The stopped loop has been re-armed." if revived else "")
     )
 
 
-async def _autonudge_stop(session_key: str, args: dict[str, Any]) -> str:
+async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> str:
     from kiro_crew.autonudge import get_instance
 
     svc = get_instance()
@@ -244,8 +296,17 @@ async def _autonudge_stop(session_key: str, args: dict[str, Any]) -> str:
     if not loop:
         return "No active auto-nudge loop on this session — nothing to stop."
     loop_id = loop.id
-    await svc.remove(loop_id)
     reason = str(args.get("reason") or "").strip()
+    # Research Lab consumes a persisted stop record to distinguish deliberate
+    # completion from unreachable-session cleanup. The canonical name is not
+    # ownership evidence: users may give an ordinary dashboard slot the same
+    # shape, while the slot's persisted app provenance cannot be user-selected.
+    # Ordinary dashboard/channel monitors have no tombstone consumer, so retain
+    # their historical removal behavior instead of leaving a paused loop.
+    if is_owned_research_slot(binding, str(getattr(slot, "_app", "") or "")):
+        await svc.update(loop_id, active=False, stopped_reason=AUTONUDGE_STOP_REASON)
+    else:
+        await svc.remove(loop_id)
     return (
         f"Auto-nudge loop {loop_id} stopped on this session"
         + (f" (reason: {reason})" if reason else "")

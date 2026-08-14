@@ -10,12 +10,30 @@ Tests use a tmp_path fake $HOME so the real filesystem is never touched.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.agent_discovery import AgentInfo, clear_list_agents_cache, list_agents
+from kiro_crew.agent_discovery import (
+    SCOPE_GLOBAL,
+    SCOPE_PROJECT,
+    AgentInfo,
+    clear_list_agents_cache,
+    clear_project_agent_cache,
+    list_agents,
+    project_agent_files,
+    project_agent_name,
+    project_agent_names,
+)
+
+# caplog collects records from EVERY logger, not just the one at_level() names, so
+# a negative "logged no warning" assertion must filter by logger: an unrelated
+# neighbour's asyncio "Task was destroyed" record otherwise lands in the window
+# and fails the assertion depending on how the suite is sharded.
+_DISCOVERY_LOGGER = "kiro_crew.agent_discovery"
 
 
 @pytest.fixture
@@ -31,7 +49,282 @@ def _agents_dir(home: Path) -> Path:
     return d
 
 
+def _project_agents_dir(root: Path) -> Path:
+    d = root / ".kiro" / "agents"
+    d.mkdir(parents=True)
+    return d
+
+
+class TestProjectScopeDiscovery:
+    """Project-local ``<project>/.kiro`` agents, mirroring kiro-cli's workspace scope."""
+
+    def test_project_agent_is_discovered_and_marked(self, fake_home, tmp_path):
+        """An agent only in the project appears, tagged with the project scope."""
+        d = _agents_dir(fake_home)
+        (d / "userlevel.json").write_text(json.dumps({"name": "userlevel"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "repobot.json").write_text(json.dumps({"name": "repobot"}))
+
+        clear_list_agents_cache()
+        agents = {a.name: a for a in list_agents(agents_dir=d, project_dir=str(proj))}
+        assert set(agents) == {"userlevel", "repobot"}
+        assert agents["repobot"].scope == SCOPE_PROJECT
+        assert agents["userlevel"].scope == SCOPE_GLOBAL
+
+    def test_omitting_project_dir_keeps_user_level_only(self, fake_home, tmp_path):
+        """No project dir means no project scan — the pre-existing contract."""
+        d = _agents_dir(fake_home)
+        (d / "userlevel.json").write_text(json.dumps({"name": "userlevel"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "repobot.json").write_text(json.dumps({"name": "repobot"}))
+
+        clear_list_agents_cache()
+        assert [a.name for a in list_agents(agents_dir=d)] == ["userlevel"]
+
+    def test_project_agent_shadows_user_level_of_same_name(self, fake_home, tmp_path):
+        """One entry survives, and it is the project one kiro-cli would actually run."""
+        d = _agents_dir(fake_home)
+        (d / "dup.json").write_text(json.dumps({"name": "dup", "description": "user level"}))
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "dup.json").write_text(
+            json.dumps({"name": "dup", "description": "project level"})
+        )
+
+        clear_list_agents_cache()
+        agents = [a for a in list_agents(agents_dir=d, project_dir=str(proj)) if a.name == "dup"]
+        assert len(agents) == 1
+        assert agents[0].scope == SCOPE_PROJECT
+        assert agents[0].description == "project level"
+
+    def test_declared_name_wins_over_filename(self, fake_home, tmp_path):
+        """kiro-cli lists an agent by its declared name, so discovery must match."""
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "file-stem.json").write_text(json.dumps({"name": "declared"}))
+
+        clear_list_agents_cache()
+        names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
+        assert names == ["declared"]
+
+    def test_legacy_spec_is_not_offered_as_a_dispatchable_agent(self, fake_home, tmp_path):
+        """``.agent-spec.json`` is not a location kiro-cli reads, so it must not be
+        offered anywhere an agent gets dispatched — the picker would accept the name
+        and the backend would then fail to activate the mode."""
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        kiro = proj / ".kiro"
+        kiro.mkdir(parents=True)
+        (kiro / "legacy.agent-spec.json").write_text(json.dumps({}))
+
+        clear_list_agents_cache()
+        assert [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))] == []
+        assert project_agent_files(str(proj)) == []
+        assert project_agent_names(str(proj)) == frozenset()
+
+    def test_legacy_spec_is_still_available_to_slack(self, tmp_path):
+        """Slack's pre-existing convention keeps working via the opt-in flag."""
+        proj = tmp_path / "repo"
+        kiro = proj / ".kiro"
+        kiro.mkdir(parents=True)
+        spec = kiro / "legacy.agent-spec.json"
+        spec.write_text(json.dumps({}))
+        assert project_agent_files(str(proj), include_legacy=True) == [spec]
+
+    def test_spec_suffix_is_stripped_from_the_fallback_name(self, tmp_path):
+        """A spec with no declared name must not resolve as ``<name>.agent-spec``."""
+        kiro = tmp_path / "repo" / ".kiro"
+        kiro.mkdir(parents=True)
+        spec = kiro / "legacy.agent-spec.json"
+        spec.write_text(json.dumps({}))
+        assert project_agent_name(spec) == "legacy"
+
+    def test_sensitive_project_dir_yields_no_agents(self, tmp_path, monkeypatch):
+        """A project path the security gate rejects must not be scanned at all."""
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery.is_sensitive_path",
+            lambda p: str(p) == str(tmp_path / "secret"),
+        )
+        proj = tmp_path / "secret"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        assert project_agent_files(str(proj)) == []
+
+    def test_missing_project_kiro_dir_is_not_an_error(self, tmp_path):
+        """A checkout with no ``.kiro`` yields no agents rather than raising."""
+        assert project_agent_files(str(tmp_path / "no-kiro")) == []
+        assert project_agent_files(None) == []
+        assert project_agent_files("") == []
+
+    def test_project_symlink_to_sensitive_file_is_not_read(self, fake_home, tmp_path):
+        """The per-file resolved-target guard applies in the project scope too."""
+        d = _agents_dir(fake_home)
+        secret = tmp_path / "creds"
+        secret.write_text("[default]\naws_access_key_id=AKIAEXAMPLE\n")
+        proj = tmp_path / "repo"
+        pdir = _project_agents_dir(proj)
+        try:
+            os.symlink(secret, pdir / "evil.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+
+        def _sensitive(p):
+            return str(p) == str(secret)
+
+        clear_list_agents_cache()
+        import kiro_crew.agent_discovery as ad
+
+        original = ad.is_sensitive_path
+        ad.is_sensitive_path = _sensitive
+        try:
+            names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
+        finally:
+            ad.is_sensitive_path = original
+        assert names == []
+
+    def test_cache_does_not_leak_between_projects(self, fake_home, tmp_path):
+        """Two checkouts must not serve each other's agents from one cache entry."""
+        d = _agents_dir(fake_home)
+        one = tmp_path / "one"
+        two = tmp_path / "two"
+        (_project_agents_dir(one) / "only-one.json").write_text(json.dumps({"name": "only-one"}))
+        (_project_agents_dir(two) / "only-two.json").write_text(json.dumps({"name": "only-two"}))
+
+        clear_list_agents_cache()
+        assert [a.name for a in list_agents(agents_dir=d, project_dir=str(one))] == ["only-one"]
+        assert [a.name for a in list_agents(agents_dir=d, project_dir=str(two))] == ["only-two"]
+
+
+class TestProjectAgentNameCache:
+    """The per-turn resolver's name index: correct, cached, and per-project.
+
+    The resolver consults this on EVERY turn of a project-agent-bound session, so a
+    repeat call on an unchanged checkout must not re-read the specs.
+    """
+
+    def test_returns_declared_names(self, tmp_path):
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "file-stem.json").write_text(json.dumps({"name": "declared"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"declared"})
+
+    def test_sensitive_project_dir_denied_before_any_stat(self, tmp_path, monkeypatch):
+        """A sensitive project dir is rejected BEFORE the signature stats, loudly.
+
+        Regression: the cache path computed `_project_signature` (a stat pair
+        under the caller-supplied dir) before `project_agent_files` rejected
+        sensitivity — probing a protected tree, and silently: no SEL denial.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        secret = tmp_path / "secret"
+        (_project_agents_dir(secret) / "a.json").write_text(json.dumps({"name": "a"}))
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery.is_sensitive_path",
+            lambda p: str(p) == str(secret),
+        )
+        monkeypatch.setattr(
+            ad,
+            "_project_signature",
+            lambda d: pytest.fail("signature stat ran on a sensitive project dir"),
+        )
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            ad,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+        clear_project_agent_cache()
+
+        assert project_agent_names(str(secret)) == frozenset()
+        assert sel_events and sel_events[0]["outcome"] == "denied", (
+            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
+        )
+
+    def test_malformed_spec_is_not_dispatchable(self, tmp_path):
+        """A file that does not parse must not contribute its filename fallback.
+
+        Regression: a malformed/unreadable spec whose stem matched a stored agent
+        name entered the allowlist, so session startup selected a mode kiro-cli
+        could never load and failed at set_mode. Only a spec that parses can
+        become a mode, so only parsed specs may contribute names.
+        """
+        proj = tmp_path / "repo"
+        pdir = _project_agents_dir(proj)
+        (pdir / "good.json").write_text(json.dumps({"name": "good"}))
+        (pdir / "broken.json").write_text("{not json")
+        (pdir / "binary.json").write_bytes(b"\xff\xfe\x00\x01\xa3")
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"good"})
+
+    def test_parsed_spec_without_name_still_uses_filename_fallback(self, tmp_path):
+        """The filename fallback survives for VALID specs that omit ``name`` —
+        excluding malformed files must not tighten that pre-existing contract."""
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "nameless.json").write_text(json.dumps({"tools": []}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"nameless"})
+
+    def test_repeat_call_does_not_reread_specs(self, tmp_path, monkeypatch):
+        """A warm cache costs stats, not reads — the whole point of the index."""
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+        import kiro_crew.agent_discovery as ad
+
+        monkeypatch.setattr(
+            ad, "_read_agent_spec", lambda p: pytest.fail("re-read a spec on a warm cache")
+        )
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+    def test_edit_invalidates_the_cache(self, tmp_path):
+        """A new spec must be picked up without an explicit cache clear."""
+        proj = tmp_path / "repo"
+        pdir = _project_agents_dir(proj)
+        (pdir / "a.json").write_text(json.dumps({"name": "a"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+        b = pdir / "b.json"
+        b.write_text(json.dumps({"name": "b"}))
+        os.utime(pdir, (0, 0))  # defeat a coarse directory-mtime clock
+        os.utime(b, None)
+        assert project_agent_names(str(proj)) == frozenset({"a", "b"})
+
+    def test_names_are_per_project(self, tmp_path):
+        one, two = tmp_path / "one", tmp_path / "two"
+        (_project_agents_dir(one) / "x.json").write_text(json.dumps({"name": "x"}))
+        (_project_agents_dir(two) / "y.json").write_text(json.dumps({"name": "y"}))
+        clear_project_agent_cache()
+        assert project_agent_names(str(one)) == frozenset({"x"})
+        assert project_agent_names(str(two)) == frozenset({"y"})
+
+    def test_empty_and_missing_inputs_are_safe(self, tmp_path):
+        assert project_agent_names(None) == frozenset()
+        assert project_agent_names("") == frozenset()
+        assert project_agent_names(str(tmp_path / "nope")) == frozenset()
+
+
 class TestListAgentsRobustness:
+    def test_oversized_spec_is_rejected_not_slurped(self, fake_home, monkeypatch):
+        """A spec over the safety cap is skipped — for BOTH scopes, since
+        _read_agent_spec is the one reader.
+
+        Regression: reads used a bare ``read_bytes()``, so a multi-gigabyte
+        "agent config" was slurped whole into memory during a cache warm. The
+        read now goes through hooks.safe_read_file_bytes, whose cap refuses it.
+        """
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "MAX_FILE_BYTES", 64)
+        d = _agents_dir(fake_home)
+        (d / "small.json").write_text(json.dumps({"name": "small"}))
+        big = json.dumps({"name": "big", "pad": "x" * 512})
+        (d / "big.json").write_text(big)
+
+        names = [a.name for a in list_agents(agents_dir=d)]
+        assert names == ["small"]
+
     def test_survives_non_utf8_and_appledouble(self, fake_home):
         """A non-UTF-8 file (AppleDouble ``._*.json`` sidecar or arbitrary
         binary ``*.json``) must be skipped, not raise UnicodeDecodeError."""
@@ -290,6 +583,25 @@ class TestSpecModelCoercion:
 class TestListAgentsGlobalGuards:
     """Global agent loader edge cases."""
 
+    def test_global_symlink_loop_skipped_not_crashed(self, tmp_path: Path) -> None:
+        """A self-referential symlink is skipped, never an uncaught RuntimeError.
+
+        Regression: ``resolve(strict=True)`` signals a symlink LOOP with
+        RuntimeError (not OSError); only OSError was caught, so one
+        ``ln -s loop.json loop.json`` in a user-writable agents dir crashed
+        every surface that listed agents (e.g. Slack's ``!agent``).
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        loop = agents_dir / "loop.json"
+        loop.symlink_to(loop)
+        (agents_dir / "good.json").write_text(
+            json.dumps({"name": "ok", "model": "auto"}), encoding="utf-8"
+        )
+        agents = list_agents(agents_dir=agents_dir)
+        assert any(a.name == "ok" for a in agents)
+        assert not any(a.name == "loop" for a in agents)
+
     def test_global_broken_symlink_skipped(self, tmp_path: Path) -> None:
         """list_agents skips broken symlinks in the global dir."""
         agents_dir = tmp_path / "agents"
@@ -372,6 +684,69 @@ class TestListAgentsDedup:
         a = next((x for x in agents if x.name == "myagent"), None)
         assert a is not None
         assert a.package == "MyPkg"
+
+    def test_local_twin_of_same_package_does_not_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 'local-' twin of the same package dedupes silently (no WARNING).
+
+        Package managers publish a locally-built package as BOTH
+        ``{package}-{name}.json`` and ``local-{package}-{name}.json``. Since the
+        ``local-`` prefix is stripped from the package name, the twins collide on
+        the same (name, package) — an expected layout, not an anomaly. This
+        previously logged a self-contradictory "from packages 'X' and 'X'"
+        WARNING per agent per scan.
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "MyPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        (agents_dir / "local-MyPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.agent_discovery"):
+            agents = list_agents(agents_dir=agents_dir)
+        dupes = [a for a in agents if a.name == "myagent"]
+        assert len(dupes) == 1
+        # First-seen wins, and which twin enumerates first is platform-
+        # dependent (WindowsPath sorts case-insensitively, so "local-..."
+        # can precede "MyPkg-..."). The fix deliberately leaves selection
+        # untouched — assert only that exactly one twin survives.
+        assert dupes[0].filename in ("MyPkg-myagent.json", "local-MyPkg-myagent.json")
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and r.name == _DISCOVERY_LOGGER
+        ], "same-package local twin must not produce a WARNING"
+        # The twin is still visible at debug for diagnosis.
+        assert any("same-package twin" in r.getMessage() for r in caplog.records)
+
+    def test_cross_package_duplicate_still_warns(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A genuine name collision between two DIFFERENT packages still warns."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "AaaPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        (agents_dir / "BbbPkg-myagent.json").write_text(
+            json.dumps({"name": "myagent", "model": "auto"}), encoding="utf-8"
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.agent_discovery"):
+            agents = list_agents(agents_dir=agents_dir)
+        dupes = [a for a in agents if a.name == "myagent"]
+        assert len(dupes) == 1
+        assert dupes[0].package == "AaaPkg"  # first-seen wins
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "Duplicate agent name" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "AaaPkg" in warnings[0].getMessage()
+        assert "BbbPkg" in warnings[0].getMessage()
 
 
 class TestListAgentsCache:

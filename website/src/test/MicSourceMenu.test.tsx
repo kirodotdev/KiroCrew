@@ -60,7 +60,7 @@ describe('MicSourceMenu', () => {
 
   it('always reports the pick, so re-selecting can retry a silent fallback', async () => {
     // The menu is presentational: it only knows the SAVED preference, so it must
-    // not decide whether a pick is redundant. When the `ideal` constraint silently
+    // not decide whether a pick is redundant. When session-start acquisition
     // fell back, the live track is not on the preferred device and re-tapping the
     // checked entry IS the user's retry — swallowing it here would make the
     // fallback uncorrectable. The genuine no-op case is decided in `switchDevice`,
@@ -99,12 +99,63 @@ describe('MicSourceMenu', () => {
   })
 
   it('says the saved device is unavailable instead of faking a checkmark', async () => {
-    // getUserMedia's `ideal` constraint falls back to the default WITHOUT
-    // raising, so a stale saved id would otherwise render as a happy selection.
+    // Session-start acquisition falls back to the default when the saved id is
+    // stale, so a stale saved id would otherwise render as a happy selection.
     setPreferredMicId('unplugged-interface')
     render(<MicSourceMenu onSelect={() => {}} />)
     fireEvent.click(screen.getByRole('button'))
     expect(await screen.findByText(/unavailable/)).toBeTruthy()
+  })
+
+  it('while recording, the checkmark follows the LIVE device, not the preference', async () => {
+    // The reported bug: pick AirPods → dropdown moves, audio stays on the
+    // built-in mic. The mark must report what is actually capturing, so a
+    // switch that did not land is visible instead of papered over.
+    setPreferredMicId('airpods')
+    render(<MicSourceMenu onSelect={() => {}} recording liveSwitch activeDeviceId="builtin" />)
+    fireEvent.click(screen.getByRole('button'))
+    const menu = await screen.findByRole('menu')
+    const rows = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
+    const builtin = rows.find(r => r.textContent?.includes('MacBook Pro Microphone'))!
+    const airpods = rows.find(r => r.textContent?.includes('AirPods Pro'))!
+    expect(builtin.querySelector('svg')).toBeTruthy()
+    expect(airpods.querySelector('svg')).toBeNull()
+    // The icon is aria-hidden and the rest is colour, so the programmatic state
+    // is the only thing assistive tech can perceive — assert it, not just pixels.
+    expect(builtin.getAttribute('aria-checked')).toBe('true')
+    expect(airpods.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('falls back to label identity when the live id is permission-redacted', async () => {
+    setPreferredMicId('airpods')
+    render(<MicSourceMenu onSelect={() => {}} recording liveSwitch deviceLabel="MacBook Pro Microphone" />)
+    fireEvent.click(screen.getByRole('button'))
+    const menu = await screen.findByRole('menu')
+    const rows = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
+    const builtin = rows.find(r => r.textContent?.includes('MacBook Pro Microphone'))!
+    const airpods = rows.find(r => r.textContent?.includes('AirPods Pro'))!
+    expect(builtin.querySelector('svg')).toBeTruthy()
+    expect(airpods.querySelector('svg')).toBeNull()
+  })
+
+  it('marks NO row while recording when the live device is unknowable', async () => {
+    // No id and no label: marking the preference would be a guess dressed as a
+    // fact — the honest render is no checkmark at all (including the default row).
+    setPreferredMicId('airpods')
+    render(<MicSourceMenu onSelect={() => {}} recording liveSwitch />)
+    fireEvent.click(screen.getByRole('button'))
+    const menu = await screen.findByRole('menu')
+    expect(menu.querySelectorAll('[role="menuitemradio"] svg').length).toBe(0)
+  })
+
+  it('idle, the checkmark shows the intent: what the next capture will request', async () => {
+    setPreferredMicId('airpods')
+    render(<MicSourceMenu onSelect={() => {}} />)
+    fireEvent.click(screen.getByRole('button'))
+    const menu = await screen.findByRole('menu')
+    const rows = Array.from(menu.querySelectorAll('[role="menuitemradio"]'))
+    const airpods = rows.find(r => r.textContent?.includes('AirPods Pro'))!
+    expect(airpods.querySelector('svg')).toBeTruthy()
   })
 
   it('closes on Escape and on an outside pointerdown', async () => {

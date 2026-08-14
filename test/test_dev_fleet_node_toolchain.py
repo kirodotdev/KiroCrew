@@ -212,7 +212,7 @@ def test_toolchain_bin_finds_a_home_resident_npm(node_dir):
 
 def test_toolchain_bin_prefers_the_managed_toolchain_over_system_npm(node_dir):
     """A distro node can be older than website/package.json's engines field
-    (AL2023 ships node 18 against `20 || >=22`); ensure-node.sh installs one
+    (AL2023 ships node 18 against `>=22`); ensure-node.sh installs one
     chosen to satisfy the build."""
     with patch.object(mod, "find_node_tool", return_value=str(node_dir / "npm")), \
             patch.object(mod, "_trusted_bin", return_value="/usr/bin/npm"):

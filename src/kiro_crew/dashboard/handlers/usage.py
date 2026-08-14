@@ -312,6 +312,18 @@ _BACKGROUND_CHANNELS = frozenset(
 NAVIGABLE_CATEGORY = "dashboard"
 
 
+_LEGACY_TELEMETRY_SURFACES = {"task_runner": "taskrunner"}
+
+
+def _canonical_telemetry_surface(surface: str) -> str:
+    """Return the operational telemetry spelling used for new and stored rows.
+
+    The alias keeps historical token shards comparable with current writes;
+    artifact use-case labels are a separate schema and are not normalized here.
+    """
+    return _LEGACY_TELEMETRY_SURFACES.get(surface, surface)
+
+
 def is_session_slot(slot: str) -> bool:
     """Whether *slot* is a session in its own right, and so earns a row."""
     return bool(slot) and telemetry_channel_of(slot) not in _NON_SESSION_CHANNELS
@@ -446,7 +458,9 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                                 "window": window,
                                 "agent": str(obj.get("agent") or ""),
                                 "model": str(obj.get("model") or ""),
-                                "surface": str(obj.get("surface") or ""),
+                                "surface": _canonical_telemetry_surface(
+                                    str(obj.get("surface") or "")
+                                ),
                             }
                         )
         except (OSError, UnicodeDecodeError):
@@ -466,7 +480,7 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
     def _q(q: float) -> float:
         # Nearest-rank on the sorted samples: these are exact per-turn values,
         # not histogram buckets, so no interpolation is warranted.
-        idx = min(len(pcts) - 1, max(0, int(round(q * (len(pcts) - 1)))))
+        idx = min(len(pcts) - 1, max(0, math.ceil(q * len(pcts)) - 1))
         return round(pcts[idx], 1)
 
     sessions = sorted(
@@ -589,10 +603,11 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
       model switch, which on real data moved the bill far more than usage volume
       did, and a single-user store is small enough to render complete.
     * ``channel`` is derived from the session key, NOT read from the row's
-      ``surface`` field. Each persist site passes a hardcoded surface, so every
-      turn routed through the dashboard chat runner is stamped ``dashboard``
-      whatever transport the human used -- the field cannot separate a Telegram
-      turn from a browser one, and the key can.
+      ``surface`` field. Historical rows can carry a wrong but non-empty value
+      such as ``dashboard`` for a Telegram turn, and the token-row schema has no
+      version or writer marker that distinguishes them from trustworthy rows.
+      The key therefore remains authoritative until the store gains such a
+      boundary; a surface-first fallback would silently misattribute history.
     * Context bands are absolute token counts rather than occupancy ratios:
       spend tracks how many tokens get re-sent, and window sizes differ per
       model, so a ratio would average incomparable populations.
@@ -790,7 +805,7 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
             if rate > 0:
                 growth = round(rate, 2)
                 remaining = _COMPACTION_PCT - seg[-1][1]
-                to_90 = int(remaining / rate) if remaining > 0 else 0
+                to_90 = math.ceil(remaining / rate) if remaining > 0 else 0
         convo_rows.append(
             {
                 "slot": c["slot"],
@@ -954,30 +969,53 @@ def read_effective_model(source: object) -> str:
         for attr in ("_resolved_model_id", "_model"):
             for node in chain:
                 candidate = getattr(node, attr, "")
-                if isinstance(candidate, str) and candidate and candidate != "auto":
+                if (
+                    isinstance(candidate, str)
+                    and candidate
+                    and candidate.strip().lower() != "auto"
+                ):
                     return candidate
     except Exception:
         pass
     return ""
 
 
-def _resolve_model(model: str, model_source: object) -> str:
-    """Resolve the model to record, treating the ``"auto"`` sentinel as unresolved.
+def _source_requests_auto(source: object) -> bool:
+    """Whether the provider chain still reports Auto as its model request.
 
-    ``"auto"`` is not a model — it means "let the backend choose" — so recording
-    it would put a non-model value in the attribution dimension. Several
-    surfaces pass it verbatim (``agent.model`` defaults to ``"auto"``, and the
-    task runner forwards that value), so gating only on an empty string lets it
-    through. When the caller's value is unresolved we take the provider's
-    resolved id; if that is unavailable the field stays blank, which is what
-    ``test_late_backfill_skips_auto_sentinel`` requires ("the record stays blank
-    until a real model is known").
+    This is deliberately separate from :func:`read_effective_model`: ``auto``
+    is not a resolved model id, but it is useful attribution when a completed
+    turn has no more specific id from the backend. A blank request does not
+    prove Auto was selected, so it remains blank in the row store.
     """
-    if (model or "").strip().lower() not in ("", "auto"):
+    try:
+        return any(
+            isinstance(candidate := getattr(node, "_model", ""), str)
+            and candidate.strip().lower() == "auto"
+            for node in _wrapper_chain(source)
+        )
+    except Exception:
+        return False
+
+
+def _resolve_model(model: str, model_source: object) -> str:
+    """Resolve the model to record, retaining a known Auto selection.
+
+    A concrete resolved id remains the preferred accounting dimension. When a
+    completed Auto turn exposes no concrete id, ``"auto"`` still distinguishes
+    that deliberate backend choice from an unavailable model source. A blank
+    caller value with no Auto request remains blank because it carries no model
+    information at all.
+    """
+    requested = (model or "").strip().lower()
+    if requested not in ("", "auto"):
         return model
-    if model_source is None:
-        return "" if (model or "").strip().lower() == "auto" else model
-    return read_effective_model(model_source)
+    resolved = read_effective_model(model_source) if model_source is not None else ""
+    if resolved:
+        return resolved
+    if requested == "auto" or _source_requests_auto(model_source):
+        return "auto"
+    return ""
 
 
 def _coerce_int(value: Any) -> int:

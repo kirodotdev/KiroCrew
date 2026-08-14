@@ -101,7 +101,10 @@ export default function TreeNode({ node, depth, expanded, toggleExpand, selected
           : <span style={{ width: 14, display: 'inline-block' }} />
         }
         <IconComponent size={13} style={{ marginRight: 4, opacity: 0.85, color: isDir ? 'var(--accent)' : 'var(--muted)' }} />
-        <span className="mc-fe-tree-name">{node.name}</span>
+        {/* `min-w-0` is what lets `.mc-fe-tree-name`'s ellipsis engage: a flex
+            child defaults to `min-width:auto`, which refuses to shrink below its
+            content, so `text-overflow` never has an overflow to work with. */}
+        <span className="mc-fe-tree-name min-w-0">{node.name}</span>
         {gitBadge(gitCode)}
       </div>
       {isDir && isOpen && Array.isArray(children) && children.map((c) => (

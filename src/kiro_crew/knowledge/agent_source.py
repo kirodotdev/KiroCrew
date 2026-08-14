@@ -147,6 +147,31 @@ def get_state(store: KnowledgeStore, source_id: str, slug: str) -> tuple[str | N
     return row["content_hash"], ids
 
 
+def _record_deduped_state(store: KnowledgeStore, source_id: str, slug: str,
+                          content_hash: str, name: str) -> None:
+    """Terminal write for a document the pre-ingest gate refused.
+
+    Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the gate's
+    own ``BEGIN IMMEDIATE`` and on its worker thread, so it takes no lock and no
+    transaction of its own. The delete of the previous group, the location claim on
+    the holder's items, the terminal job row and this record are one atomic unit.
+
+    That matters most for a FIRST-TIME document: after the gate's commit this row may
+    not exist yet, and a ``delete_source_cascade`` landing in that gap reassigns the
+    surviving item here with no row to adopt it into, so the record that follows
+    reports an empty group while the source owns the item.
+
+    The group is still DERIVED, for the cascade that committed before this
+    transaction took the lock. A row that ends up owning items must be ``active``,
+    not ``deduped``: ``find_document_by_hash`` only matches ``active``, and a row
+    that owns the content while reporting ``deduped`` would let identical text in
+    again under a second slug.
+    """
+    adopted = store.surviving_group_in_txn("agent_item_state", source_id, slug)
+    _write_state_row(store, source_id, slug, content_hash, adopted, name,
+                     status="active" if adopted else "deduped")
+
+
 def set_state(store: KnowledgeStore, source_id: str, slug: str, content_hash: str,
               item_ids: list[str], name: str, status: str = "active") -> None:
     """Record one document's hash, item group, display name and status.
@@ -156,6 +181,16 @@ def set_state(store: KnowledgeStore, source_id: str, slug: str, content_hash: st
     marker back to the column default and the document would be re-ingested and
     re-collapsed on every pass.
     """
+    _write_state_row(store, source_id, slug, content_hash, item_ids, name,
+                     status=status)
+    store.db.commit()
+
+
+def _write_state_row(store: KnowledgeStore, source_id: str, slug: str,
+                     content_hash: str, item_ids: list[str], name: str,
+                     status: str = "active") -> None:
+    """The row write alone, with no transaction control, so a caller already
+    holding one can include it."""
     store.db.execute(
         "INSERT OR REPLACE INTO agent_item_state "
         "(source_id, slug, content_hash, item_ids, updated_at, name, status) "
@@ -163,7 +198,6 @@ def set_state(store: KnowledgeStore, source_id: str, slug: str, content_hash: st
         (source_id, slug, content_hash, json.dumps(item_ids),
          datetime.now().isoformat(), name, status),
     )
-    store.db.commit()
 
 
 def find_document_by_hash(store: KnowledgeStore, source_id: str, content_hash: str,
@@ -304,8 +338,18 @@ async def _add_agent_document(
     # claim for its previous content, and this document's text has changed.
     store.release_stale_claim(source_id, prev_hash, content_hash, old_item_ids)
 
-    before_ids = {r["id"] for r in store.db.execute(
-        "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()}
+    # Ownership is recorded from inside the ingest's finalize hop rather than
+    # after it returns. The items become durable during the ingest, and every
+    # await between that and a later write here -- the temp-file cleanup, the
+    # job-status read -- is a cancellation point that would leave them owned by
+    # nobody. Nothing then names the group: `get_state` reports no previous
+    # items, so the next add of this document neither replaces them nor is
+    # refused by `find_document_by_hash`, and the content is stored twice.
+    recorded_ids: list[str] = []
+
+    def _record_ownership(new_ids: list[str]) -> None:
+        recorded_ids[:] = new_ids
+        set_state(store, source_id, slug, content_hash, new_ids, title)
 
     tmp_path: str | None = None
     try:
@@ -325,6 +369,12 @@ async def _add_agent_document(
             original_name=f"{title}{_DEFAULT_EXT}",
             source_id=source_id,
             old_item_ids=old_item_ids,
+            on_committed=_record_ownership,
+            # The duplicate-branch sibling of on_committed, and inside the gate's
+            # hop for the same reason: the gate has already committed the delete
+            # and the location claim by the time it reports back.
+            on_duplicate=lambda: _record_deduped_state(
+                store, source_id, slug, content_hash, title),
         )
     finally:
         if tmp_path:
@@ -336,12 +386,8 @@ async def _add_agent_document(
     job = pipeline.get_job_status(job_id) if job_id else None
     status = (job or {}).get("status")
     if status == DUPLICATE_JOB_STATUS:
-        # The gate refused the write and deleted this document's previous items,
-        # so record that rather than leaving the state row pointing at items that
-        # no longer exist -- otherwise every later add would re-attempt from a
-        # dead group. The hash IS stored, so re-adding the same text is a cheap
-        # no-op instead of a repeated gate round-trip.
-        set_state(store, source_id, slug, content_hash, [], title, status="deduped")
+        # The gate refused the write and recorded the terminal state through the
+        # ``on_duplicate`` finalizer above, so there is nothing left to write here.
         return {"status": "duplicate",
                 "reason": "this content is already in the knowledge library",
                 "slug": slug, "source_id": source_id}
@@ -349,10 +395,7 @@ async def _add_agent_document(
         return {"status": "error",
                 "error": f"ingestion did not complete (status={status})"}
 
-    after_ids = {r["id"] for r in store.db.execute(
-        "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()}
-    new_ids = list(after_ids - before_ids)
-    set_state(store, source_id, slug, content_hash, new_ids, title)
+    new_ids = list(recorded_ids)
     sel().log_tool_invocation(
         session_key="gateway", agent="knowledge-agent-source",
         tool_name="knowledge.agent_document.add", outcome="completed",

@@ -298,6 +298,45 @@ class CronSDK:
         self._audit_add(job)
         return job
 
+    async def add_job_if_absent_async(
+        self,
+        name: str,
+        message: str,
+        *,
+        every_secs: int | None = None,
+        cron_expr: str | None = None,
+        agent: str = "",
+        command: str = "",
+        script: str = "",
+        agent_sequence: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        persistent_session: bool = True,
+        silent: bool = False,
+        enabled: bool = True,
+    ) -> Any:
+        """Atomic add-if-absent by job name; returns None when already present.
+
+        Routes through ``CronService.add_job_if_absent``, whose existence check
+        and append happen under ONE store file lock after a fresh ``_sync()`` —
+        so two concurrent registrars (e.g. a CLI enable racing gateway boot)
+        cannot both snapshot the name as absent and persist duplicates. The
+        bounded lock spin runs in a worker thread, keeping on-loop callers safe.
+        """
+        self._vet_command_script(name, command, script)
+        job = await self._cron.add_job_if_absent_async(
+            lambda existing, n=name: existing.name == n,
+            **self._add_job_kwargs(
+                name, message,
+                every_secs=every_secs, cron_expr=cron_expr, agent=agent,
+                command=command, script=script, agent_sequence=agent_sequence,
+                env=env, persistent_session=persistent_session, silent=silent,
+                enabled=enabled,
+            ),
+        )
+        if job is not None:
+            self._audit_add(job)
+        return job
+
     def _audit_add(self, job: Any) -> None:
         sel().log_api_access(
             caller=f"app:{self._app_name}",

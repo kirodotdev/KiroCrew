@@ -104,7 +104,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange }:
               placeholder={i18nT('components.agentSelector.type_to_filter')}
               value={filter}
               onChange={e => setFilter(e.target.value)}
-              className="w-full px-2 py-1 text-[13px] font-mono"
+              className="w-full px-2 py-1 text-[13px]"
             />
           </div>
           <div role="listbox" aria-label={i18nT('components.agentSelector.agent_list')} className="flex-1 min-h-0 overflow-y-auto divide-y divide-border">

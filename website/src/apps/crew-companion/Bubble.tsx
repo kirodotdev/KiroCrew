@@ -11,7 +11,7 @@
  * Hovering pauses both the dismissal and the bar — reading a bubble must not be the
  * thing that loses it.
  */
-import { X } from 'lucide-react'
+import { ArrowRight, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import './bubble.css'
 import { i18nT } from '../../i18n/t'
@@ -20,13 +20,6 @@ import { policyFor, isSticky, type NotifKind } from './notificationPolicy'
 export interface BubbleProps {
   text: string
   kind: NotifKind
-  /**
-   * Where the downward arrow sits, in pixels from the bubble's left edge — the
-   * `targetX - rect.left` the placement algorithm computes so the arrow points at
-   * the companion's top edge. Omitted while the placement is still being measured,
-   * in which case no arrow is drawn.
-   */
-  arrowLeft?: number
   /** Dismiss it. Called by the ✕, by a click on the body, and by the timer. */
   onDismiss: () => void
   /** Run the bubble's call to action, when its policy offers one. */
@@ -36,7 +29,7 @@ export interface BubbleProps {
 /** Exit animation duration; the unmount waits exactly this long. */
 const EXIT_MS = 300
 
-export function Bubble({ text, kind, arrowLeft, onDismiss, onAction }: BubbleProps) {
+export function Bubble({ text, kind, onDismiss, onAction }: BubbleProps) {
   const policy = policyFor(kind)
   const [leaving, setLeaving] = useState(false)
   const [paused, setPaused] = useState(false)
@@ -104,6 +97,8 @@ export function Bubble({ text, kind, arrowLeft, onDismiss, onAction }: BubblePro
         role="status"
         data-kind={kind}
       >
+        {/* The countdown anchors to this row so it cannot overlap the footer. */}
+        <div className="cc-bubble-body-row">
         {/*
           Text and ✕ are FLEX SIBLINGS, so the ✕ takes its own space and the text
           shrinks to make room. Absolutely positioning it over the corner instead —
@@ -126,10 +121,18 @@ export function Bubble({ text, kind, arrowLeft, onDismiss, onAction }: BubblePro
           piece you must be able to close it. Gating this on persistence is what left
           a fired reminder stuck on screen with no ✕ and no timeout.
 
-          ALWAYS VISIBLE and keyboard-focusable — this button is the accessible
-          dismiss control. It was hover-revealed once, which made a persistent
-          reminder undismissable without a mouse; the wrapper's click-to-dismiss
-          is a pointer-only convenience layered on top, never the only path.
+          HOVER-REVEALED, because this bubble only ever renders in the pet overlay and
+          that window is created with `setFocusable(false)` (electron/crew-companion/
+          petOverlay.js) — it never takes keyboard focus, so NOTHING in it is
+          keyboard-reachable and an always-visible ✕ bought no accessible path. An
+          earlier comment here claimed the opposite; it was reasoning about a focusable
+          window that does not exist. Dismissal in this window is pointer-only by
+          construction: hover reveals the ✕, and clicking the bubble body also closes
+          it (for every kind that is not sticky).
+
+          The `:focus-visible` rule in bubble.css stays anyway — it costs nothing and it
+          is the correct behaviour the day this component is rendered somewhere that CAN
+          take focus. It is defence for that future, not the mitigation for today.
         */}
         {!isSticky(kind) ? (
           <button
@@ -145,31 +148,35 @@ export function Bubble({ text, kind, arrowLeft, onDismiss, onAction }: BubblePro
           </button>
         ) : null}
 
-      </div>
+        {/*
+          The countdown lives INSIDE the box, along its bottom edge.
+          
+          It used to sit below the box, and there it was effectively invisible: its
+          colours come from `--card-fg`, the bubble's dark ink, but below the box
+          there is no card behind it — only the transparent overlay, i.e. the user's
+          desktop. Dark ink at 18%/55% over a dark desktop reads as nothing at all.
+          Inside the box it sits on the bubble's own surface, which is what those
+          colours were chosen against.
+          
+          The original reason for putting it outside was that a full-width bar got
+          clipped by the 14px corner radius and read as a stray line drawn through
+          the bubble. Insetting it from the corners solves that without leaving the
+          card. The animation is set on the track and inherited by its fill, so the
+          `:hover` pause applies to the thing the user actually sees depleting.
+        */}
+        {policy.countdown && policy.dismissMs !== null ? (
+          <span
+            className="cc-bubble-countdown"
+            style={{ animation: `ccBubbleCountdown ${policy.dismissMs}ms linear forwards` }}
+            aria-hidden="true"
+          />
+        ) : null}
 
-      {/*
-        The countdown sits BELOW the box, like the source's. Inside it, the bar was
-        clipped by the 14px corner radius and read as a stray line drawn through the
-        bubble. The animation is set on the track and inherited by its fill, so the
-        `:hover` pause applies to the thing the user actually sees depleting.
-      */}
-      {policy.countdown && policy.dismissMs !== null ? (
-        <span
-          className="cc-bubble-countdown"
-          style={{ animation: `ccBubbleCountdown ${policy.dismissMs}ms linear forwards` }}
-          aria-hidden="true"
-        />
-      ) : null}
+        </div>
 
-      {/*
-        The CTA sits BELOW the bubble box, not inside it — a sibling, as in the source.
-        Two reasons it cannot live in the box: the box is a flex ROW carrying the text
-        and the ✕, so a block child would line up beside the words; and the box clips
-        its overflow for the countdown bar. Stopping propagation still matters, since
-        the whole bubble above is a dismiss target.
-      */}
+      {/* Keep the action inside the same card as the notification it resolves. */}
       {policy.ctaKey ? (
-        <div className="cc-bubble-cta-row">
+        <div className="cc-bubble-foot">
           <button
             type="button"
             className="cc-bubble-cta"
@@ -179,20 +186,13 @@ export function Bubble({ text, kind, arrowLeft, onDismiss, onAction }: BubblePro
               setLeaving(true)
             }}
           >
-            {i18nT(policy.ctaKey as Parameters<typeof i18nT>[0])}
+            <span>{i18nT(policy.ctaKey as Parameters<typeof i18nT>[0])}</span>
+            <ArrowRight className="lucide-inline" aria-hidden="true" />
           </button>
         </div>
       ) : null}
+      </div>
 
-      {/*
-        The arrow points down at the companion's top edge. Its horizontal offset is
-        the placement algorithm's `targetX`, translated to the bubble's own frame; it
-        lives outside the bubble box (which clips its own overflow for the countdown
-        bar) so it is never cut off.
-      */}
-      {typeof arrowLeft === 'number' ? (
-        <span className="cc-bubble-arrow" style={{ left: arrowLeft }} aria-hidden="true" />
-      ) : null}
     </div>
   )
 }

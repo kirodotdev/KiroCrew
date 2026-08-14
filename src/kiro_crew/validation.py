@@ -31,6 +31,7 @@ from typing import Any
 # no native library is loaded on any platform. Aliased so the schema block below
 # reads as "the computer-use vocabulary" rather than bare names.
 from kiro_crew.computer_use import types as _cu_types
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 # ── Constants ──
 
@@ -850,6 +851,25 @@ def sanitize_string(text: str) -> str:
     return text.strip()
 
 
+def sanitize_json_values(value: Any) -> Any:
+    """Recursively sanitize every string (keys included) in decoded JSON.
+
+    Schema-level sanitization sees a JSON document only as one opaque string,
+    where an escape like ``\\u200b`` is plain ASCII and passes untouched — the
+    hidden character only materializes when ``json.loads`` decodes it, AFTER
+    the sanitizer ran. Any handler that decodes caller-supplied JSON must walk
+    the decoded structure through this before acting on it, or an invisible
+    character smuggled inside a credential defeats downstream redaction.
+    """
+    if isinstance(value, str):
+        return sanitize_string(value)
+    if isinstance(value, dict):
+        return {sanitize_json_values(k): sanitize_json_values(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json_values(item) for item in value]
+    return value
+
+
 # ── Response Sanitization ──
 
 
@@ -923,6 +943,14 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # Switchable context groups the sub-agent inherits. Explicit
+        # ``default=True`` rather than the implicit ``None``: the semantic
+        # default is "on", and without it an explicit JSON ``null`` cleans to
+        # ``None``, which a consumer coercing with ``bool()`` would read as a
+        # withheld group — the opposite of what the caller asked for.
+        FieldSpec("include_memory", bool, default=True),
+        FieldSpec("include_lessons", bool, default=True),
+        FieldSpec("include_project", bool, default=True),
     ],
 )
 
@@ -942,6 +970,7 @@ SPAWN_STEER_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("agent_id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("mode", str, pattern=re.compile(r"^(interrupt|follow_up)$")),
     ],
 )
 
@@ -960,6 +989,10 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         # enforced in handler (no item_schema support in FieldSpec).
         FieldSpec("agents", list, required=True, item_type=dict),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+        # Context groups, as on spawn_run: batch-wide, all default True.
+        FieldSpec("include_memory", bool, default=True),
+        FieldSpec("include_lessons", bool, default=True),
+        FieldSpec("include_project", bool, default=True),
     ],
 )
 
@@ -1025,13 +1058,16 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
 # monitor_start creates an AutoNudge loop bound to the calling session (the
 # agent-facing "babysit this PR" primitive). message caps match the REST
 # endpoint's 8000-char limit; interval bounds mirror autonudge's
-# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp.
+# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. max_runtime_secs is the wall-clock
+# budget (0 = unlimited); the 7-day ceiling keeps a typo like 6e9 from arming
+# an effectively-unbounded loop while still covering week-long babysits.
 MONITOR_START_SCHEMA = ToolSchema(
     tool_name="monitor_start",
     fields=[
         FieldSpec("message", str, required=True, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
     ],
 )
 
@@ -1045,6 +1081,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("message", str, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
         FieldSpec("max_cycles", int, min_val=0, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
     ],
 )
 
@@ -1165,16 +1202,12 @@ FOLLOWUP_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Z
 # instead, per component so ``feat/x.lock`` is caught as well as ``x.lock``.
 _GIT_RESERVED_REFS = frozenset({"HEAD"})
 
-# Windows reserved device names. A branch is a loose ref FILE
-# (`.git/refs/heads/<component>`), and Windows cannot create a file whose stem is
-# a device name — so `feat/CON` claims fine but the checkout fails, surfacing as
-# a false "Branch already exists". Rejected on every
-# platform so the grammar does not depend on where the gateway runs.
-_WINDOWS_DEVICE_STEMS = frozenset(
-    {"con", "prn", "aux", "nul"}
-    | {f"com{n}" for n in range(1, 10)}
-    | {f"lpt{n}" for n in range(1, 10)}
-)
+# A branch is a loose ref FILE (`.git/refs/heads/<component>`), and Windows
+# cannot create a file whose stem is a device name — so `feat/CON` claims fine
+# but the checkout fails, surfacing as a false "Branch already exists". Rejected
+# on every platform so the grammar does not depend on where the gateway runs.
+# The stem vocabulary is shared with the app-name grammar; see
+# ``constants.WINDOWS_DEVICE_STEMS``.
 
 
 def is_valid_followup_branch(branch: str) -> bool:
@@ -1187,7 +1220,7 @@ def is_valid_followup_branch(branch: str) -> bool:
         if not part or part.endswith(".") or part.endswith(".lock"):
             return False
         # Device names are reserved with OR without an extension (CON, CON.txt).
-        if part.split(".")[0].lower() in _WINDOWS_DEVICE_STEMS:
+        if part.split(".")[0].lower() in WINDOWS_DEVICE_STEMS:
             return False
     return True
 
@@ -1711,6 +1744,70 @@ _ISSUE_RADAR_STATUSES = frozenset({"investigating", "resolved", "archived"})
 # absurd value cannot produce an ENAMETOOLONG write.
 _ISSUE_RADAR_MAX_ITEM_NUMBER = 1_000_000_000
 
+# ── Tool Schemas (Ops Mission Control app) ──
+#
+# ``ops_mission_control_api`` is the agent's ONLY credentialed path to the
+# app's HTTP surface (same pattern as ``issue_radar_record_investigation``:
+# the MCP server process holds the internal secret; the agent never sees a
+# credential). The (method, path) allowlist below is the entire authorization
+# story for the tool, so it is defined here — next to the schema that
+# enforces it — and imported by both the tool handler and the tests. It
+# deliberately covers only what the app's SOPs need and EXCLUDES the
+# human-decision and configuration routes (``/incident/proposal/decide``,
+# ``/incident/propose``, ``/proposals``, ``/providers*``, ``/settings``,
+# ``/webhook``, bare ``/incident``): an agent that needs one of those is by
+# definition off-SOP.
+
+OPS_MISSION_CONTROL_ALLOWED_CALLS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/state"),
+        ("GET", "/signals"),
+        ("GET", "/incidents"),
+        ("GET", "/handover"),
+        ("GET", "/rotation"),
+        ("GET", "/ledger"),
+        ("GET", "/ledger/contradictions"),
+        ("POST", "/dispatch"),
+        ("POST", "/incident/transition"),
+        ("POST", "/incident/claim"),
+        ("POST", "/incident/action"),
+        ("POST", "/rotation/arm"),
+        ("POST", "/ledger"),
+        ("POST", "/ledger/hygiene"),
+    }
+)
+_OMC_API_METHODS = frozenset({"GET", "POST"})
+_OMC_API_PATHS = frozenset(p for _, p in OPS_MISSION_CONTROL_ALLOWED_CALLS)
+# Query strings are value-position only: no '/', '?' or '#', so a query can
+# never rewrite the path it is appended to. '%' admits URL-encoded values.
+_OMC_QUERY_RE = re.compile(r"^[A-Za-z0-9_.=&%+,:-]*$")
+# Bounds the JSON body an agent can push through the tool. Ledger entries are
+# the largest legitimate payload; 32 KiB is ~4x the biggest one observed.
+_OMC_MAX_BODY = 32_768
+
+
+def _validate_omc_api(cleaned: dict[str, Any]) -> None:
+    method = cleaned.get("method")
+    path = cleaned.get("path")
+    if (method, path) not in OPS_MISSION_CONTROL_ALLOWED_CALLS:
+        raise ValidationError("path", f"{method} {path} is not part of the agent surface")
+    if cleaned.get("query") and method != "GET":
+        raise ValidationError("query", "query is only accepted on GET calls")
+    if cleaned.get("body_json") and method == "GET":
+        raise ValidationError("body_json", "GET calls take no body")
+
+
+OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
+    tool_name="ops_mission_control_api",
+    fields=[
+        FieldSpec("method", str, required=True, allowed=_OMC_API_METHODS),
+        FieldSpec("path", str, required=True, allowed=_OMC_API_PATHS),
+        FieldSpec("query", str, max_len=512, pattern=_OMC_QUERY_RE, default=""),
+        FieldSpec("body_json", str, max_len=_OMC_MAX_BODY, default=""),
+    ],
+    custom_validator=_validate_omc_api,
+)
+
 ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
     tool_name="issue_radar_record_investigation",
     fields=[
@@ -1748,6 +1845,189 @@ ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
             max_items=20,
         ),
     ],
+)
+
+# ── Tool Schemas (Issue Radar crews) ──
+#
+# The crew ledger is an autonomous agent's ONLY memory across compaction, the
+# per-turn ceiling and a gateway restart, so both tools are on the same
+# internal-secret path as ``issue_radar_record_investigation`` and validated
+# here, next to it.
+#
+# Neither schema carries owner/repo/crew_id. That is a security choice, not an
+# omission: identity is resolved from the CALLING SESSION (see
+# ``mcp_core._crew_identity``). If the model could name the crew, a crew could
+# write into another crew's ledger — clobbering its ``next``, its worktree path
+# or its claim comment id — and the store's "at most one item in an editing
+# phase" invariant is per-crew, so a cross-crew write would also defeat that.
+#
+# The phase / event-kind vocabularies MIRROR
+# ``issue_radar.backend.crew_store.PHASES`` and ``.EVENT_KINDS`` rather than
+# importing them: ``validation`` is core and must not import an app package
+# (apps load dynamically and may be absent). ``test_issue_radar_crew_mcp_tools``
+# asserts the mirrors are exact, so drift fails a test instead of silently
+# rejecting a legitimate phase at the tool boundary.
+_ISSUE_RADAR_CREW_PHASES = frozenset(
+    {
+        "selected",
+        "claimed",
+        "investigating",
+        "implementing",
+        "awaiting-ci",
+        "addressing-review",
+        "awaiting-merge",
+        "awaiting-reply",
+        "resolved",
+        "skipped",
+        "yielded",
+        "handed-back",
+        "preempted",
+    }
+)
+_ISSUE_RADAR_CREW_EVENT_KINDS = frozenset(
+    {
+        "claim",
+        "investigate",
+        "reply",
+        "implement",
+        "ci",
+        "review",
+        "conflict",
+        "merge",
+        "handback",
+        "skip",
+        "yield",
+    }
+)
+#: Mirrors ``crew_store.SKIP_SCOPES`` — the classification a crew attaches to a
+#: pass in the repo-wide shared skip index. Advertised to the model as an enum so
+#: it picks a real one; NOT enforced as ``allowed=`` on the field (see the
+#: ``skip_scope`` spec below for why).
+#:
+#: ``needs-decision`` and ``needs-investigation`` are how a crew says the next step
+#: belongs to a human. They are scopes on a PASS because a crew never holds an
+#: issue waiting for one: it says what it needs on the issue, labels it, records the
+#: pass and moves on.
+_ISSUE_RADAR_CREW_SKIP_SCOPES = frozenset(
+    {
+        "architecture",
+        "new-feature",
+        "needs-design",
+        "needs-decision",
+        "needs-investigation",
+        "duplicate",
+        "already-fixed",
+        "not-reproducible",
+        "wrong-root-cause",
+        "breaking-change",
+        "gate-config",
+        "other",
+    }
+)
+
+# Abbreviated-or-full git object name. Bounds ``base_sha`` to something that can
+# actually be handed to git on a resume; a resumed turn checks out from this
+# value, so an arbitrary 5k string here is a resume that fails much later.
+_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+
+
+def _validate_crew_record_couples_phase_to_an_event(args: dict[str, Any]) -> None:
+    """Enforce the invariants that justify ONE write tool instead of two.
+
+    * ``event`` and ``event_kind`` travel together — the store refuses an
+      unknown kind, and an event with no kind cannot be filed on either surface
+      it feeds (crew page + the public claim comment).
+    * a ``phase`` write must carry its reason. Splitting upsert and append into
+      two tools is what allows a phase to move with nothing logged; merging them
+      only closes that if the event is actually mandatory on a phase change.
+    """
+    if args.get("event") and not args.get("event_kind"):
+        raise ValidationError("event_kind", "required when 'event' is given")
+    if args.get("event_kind") and not args.get("event"):
+        raise ValidationError("event", "required when 'event_kind' is given")
+    if args.get("phase") and not args.get("event"):
+        raise ValidationError(
+            "event",
+            "required when 'phase' changes — record the reason with the phase "
+            "(also pass 'event_kind')",
+        )
+
+
+ISSUE_RADAR_CREW_READ_SCHEMA = ToolSchema(
+    tool_name="issue_radar_crew_read",
+    fields=[
+        # Deliberately empty: no argument can select WHICH crew is read (see the
+        # block comment above). ``max_events`` is not exposed either — the
+        # handler bounds the log itself so a long-lived crew cannot blow the
+        # caller's context by asking for more.
+    ],
+)
+
+ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
+    tool_name="issue_radar_crew_record",
+    fields=[
+        # Bounds the number that becomes the work item's FILENAME
+        # (``crews/<crew_id>/<n>.json``) — same ENAMETOOLONG rationale as the
+        # investigation record, hence the same constant.
+        FieldSpec(
+            "number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER
+        ),
+        FieldSpec("phase", str, max_len=32, allowed=_ISSUE_RADAR_CREW_PHASES),
+        # Bounded but deliberately NOT ``allowed=``, unlike ``phase`` beside it.
+        # An out-of-vocabulary phase has to be refused — it would corrupt the
+        # phase state machine. A scope is only a filter label, and refusing one
+        # would fail the whole write, which on a ``skipped`` write is the write
+        # that puts the issue in the shared skip index. Weakening "a skip is
+        # always indexed" to buy a tidier label is the wrong trade, so the store
+        # coerces an unknown value to ``other`` (``crew_store.SKIP_SCOPES``) and
+        # the pass is recorded either way. The vocabulary is still advertised as
+        # an enum in the tool schema, so the model is told what to pick.
+        FieldSpec("skip_scope", str, max_len=32),
+        # ``outcome`` is a bounded free string, NOT an enum: the store keeps it
+        # as free text (``crew_store.upsert_work_item``) and no vocabulary is
+        # defined anywhere in the app, so an allowlist invented here would
+        # reject a legitimate terminal outcome and lose it.
+        FieldSpec("outcome", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("next", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("decision", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("why", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("tried_approach", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("tried_rejected_because", str, max_len=MAX_MEDIUM_STRING),
+        # Local-only resume fields. These are the ONE place an absolute path
+        # legitimately belongs, which is why the handler must not scrub them the
+        # way it scrubs the public strings.
+        FieldSpec("worktree", str, max_len=4096),
+        FieldSpec("branch", str, max_len=255),
+        FieldSpec("base_sha", str, max_len=64, pattern=_GIT_SHA_RE),
+        FieldSpec("pr_number", int, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
+        # ci_* are flat args assembled into the store's ``ci_state`` dict by the
+        # handler. ``ci_state`` is the forge's own verdict word (success /
+        # failure / pending / neutral / cancelled / timed_out, and GitLab's
+        # differ again), so it is bounded but not enumerated here.
+        FieldSpec("ci_state", str, max_len=32),
+        FieldSpec("ci_passed", int, min_val=0, max_val=100_000),
+        FieldSpec("ci_total", int, min_val=0, max_val=100_000),
+        FieldSpec("ci_round", int, min_val=0, max_val=1_000),
+        FieldSpec("ci_inherited_reds", int, min_val=0, max_val=100_000),
+        # Forge comment ids are large (GitHub is past 3e9 and monotonic).
+        FieldSpec("claim_comment_id", int, min_val=1, max_val=10**18),
+        # No ``crew:``-prefix pattern here on purpose: this field RECORDS what
+        # was applied so a hand-back knows what to remove. The prefix allowlist
+        # belongs to the forge write route that applies a label; enforcing it at
+        # this boundary would reject a truthful record and lose the removal list.
+        FieldSpec(
+            "labels_applied",
+            list,
+            item_type=str,
+            item_max_len=MAX_SHORT_STRING,
+            max_items=20,
+        ),
+        # One public progress line. Short by design: it is rendered as a list
+        # item inside the claim comment's <details> block, not as a report.
+        FieldSpec("event", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("event_kind", str, max_len=16, allowed=_ISSUE_RADAR_CREW_EVENT_KINDS),
+    ],
+    custom_validator=_validate_crew_record_couples_phase_to_an_event,
 )
 
 # ── Tool Schemas (MCP Cron) ──
@@ -1820,6 +2100,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         ),
         FieldSpec("command", str, max_len=5000, pattern=re.compile(r"^[^\x00-\x1f\x7f]*$")),
         FieldSpec("timeout", int, min_val=0, max_val=3600),
+        FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
     ],
     custom_validator=_validate_cron_add_requires_message_or_script,
 )
@@ -2126,6 +2407,13 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_rerun_subtree": WORKFLOW_RERUN_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
+    "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
+    # Registered even though ``issue_radar_crew_read`` takes no arguments: an
+    # unregistered tool's args pass through raw, and the empty-field schema is
+    # also what makes an unknown arg an "Error:" string instead of a stdio-loop
+    # crash that takes the whole kirocrew-core server down for the session.
+    "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
+    "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
 }
 
 MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
@@ -2158,6 +2446,8 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),
+            FieldSpec("timeout", int, min_val=0, max_val=3600),
+            FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
         ],
     ),
     "cron_remove": CRON_REMOVE_SCHEMA,

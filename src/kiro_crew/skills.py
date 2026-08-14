@@ -19,6 +19,7 @@ from typing import Callable
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import safe_read_file, validate_file_path
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import (
@@ -165,6 +166,39 @@ def _emit_pending_staged(payload: dict) -> None:
         fn(payload)
     except Exception:  # pragma: no cover - defensive
         logger.debug("pending-staged hook failed", exc_info=True)
+
+
+# Counterpart observer for candidates LEAVING the queue (approved, dismissed,
+# or TTL-pruned). Module-level for the same reason as the staged hook: any
+# loader instance can consume a candidate. The gateway registers a hook that
+# retires the candidate's bell-feed notification — without it, the "awaiting
+# review" row stays unread forever and its deep link lands on the
+# no-longer-awaiting-review banner.
+_PENDING_CONSUMED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_pending_consumed_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear, with ``None``) the pending-candidate consumed observer.
+
+    Called once at gateway boot. Idempotent — a later call replaces the hook.
+    """
+    global _PENDING_CONSUMED_HOOK
+    _PENDING_CONSUMED_HOOK = fn
+
+
+def _emit_pending_consumed(payload: dict) -> None:
+    """Invoke the pending-consumed hook, swallowing every failure.
+
+    Consumption has already succeeded on disk by the time this runs; a broken
+    observer must never turn a successful approve/dismiss into a failure.
+    """
+    fn = _PENDING_CONSUMED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("pending-consumed hook failed", exc_info=True)
 
 
 # Derived lifecycle states for auto-skills (not persisted — computed from
@@ -342,6 +376,108 @@ def _within_any(candidate: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
+#: Basename every skill's body lives under. Used as a cheap pre-filter before
+#: any filesystem work when deciding whether a tool call touched a skill.
+_SKILL_FILE = "SKILL.md"
+
+#: Argument names under which file-reading tools carry their target. Covers the
+#: builtin read tool's ``path`` plus the spellings other tools use; a name that
+#: is absent simply yields no candidate.
+_TOOL_READ_PATH_KEYS = ("path", "file_path", "filePath", "paths", "files")
+
+#: A whitespace/quote-delimited token ending in the skill basename — how a skill
+#: read appears inside a shell command (``cat /x/SKILL.md``). Anchored on the
+#: basename so it cannot match an arbitrary argument.
+_SHELL_SKILL_PATH_RE = re.compile(r"""[^\s"'|;&><]+SKILL\.md""")
+
+
+def _tool_read_path_candidates(
+    tool_name: str, raw_params: dict | None, command: str | None
+) -> list[str]:
+    """File targets of a tool call that DELIVERS file content to the model.
+
+    Returns nothing for a call that merely names a path — a delete, move, line
+    count, or grep. The ledger's hits mean "a body reached the model", so
+    crediting a mention would re-create the mention-as-use conflation that the
+    separate searches tally exists to avoid.
+
+    Never raises on a malformed params dict — a tool's arguments are
+    model-authored and may hold anything.
+    """
+    out: list[str] = []
+    if isinstance(raw_params, dict) and tool_name in _CONTENT_READ_TOOLS:
+        for key in _TOOL_READ_PATH_KEYS:
+            value = raw_params.get(key)
+            if isinstance(value, str):
+                out.append(value)
+            elif isinstance(value, (list, tuple)):
+                out.extend(v for v in value if isinstance(v, str))
+    if isinstance(command, str) and command:
+        for segment in _shell_segments_reading_content(command):
+            out.extend(_SHELL_SKILL_PATH_RE.findall(segment))
+    return out
+
+
+#: Shell commands that deliver a file's CONTENT to the model. Deliberately
+#: narrow: the ledger counts bodies that reached the model, so a command that
+#: merely names a path — ``rm``, ``mv``, ``wc``, ``chmod`` — earns nothing, and
+#: neither does ``grep``, which emits matching lines rather than the body.
+#: ``head``/``tail`` deliver a prefix, which is still a body the model read.
+_SHELL_READ_VERBS = frozenset(
+    {"cat", "bat", "head", "tail", "less", "more", "view", "type"}
+)
+
+#: Tools whose result hands the model a file's content. ``grep``/``glob`` are
+#: read-KIND but return matches and names, not bodies, so they are excluded for
+#: the same reason ``grep`` is above.
+_CONTENT_READ_TOOLS = frozenset({"fs_read", "read", "read_file", "readFile"})
+
+#: Splits a shell command into independently-invoked segments, so the verb that
+#: applies to a given path is the one that precedes it in ITS segment — without
+#: this, ``cat a.txt && rm x/SKILL.md`` would read as a ``cat`` of the skill.
+_SHELL_SEGMENT_RE = re.compile(r"(?:\|\||&&|[;|&\n]|\$\(|`)")
+
+
+def _shell_segments_reading_content(command: str) -> list[str]:
+    """Segments of *command* whose leading verb delivers file content.
+
+    A segment's verb is its first bare token; leading environment assignments
+    (``FOO=bar cat x``) and absolute paths (``/bin/cat``) are tolerated.
+    """
+    reading: list[str] = []
+    for segment in _SHELL_SEGMENT_RE.split(command):
+        for token in segment.split():
+            if "=" in token and not token.startswith("-"):
+                continue  # leading VAR=value assignment
+            verb = token.rsplit("/", 1)[-1]
+            if verb in _SHELL_READ_VERBS:
+                reading.append(segment)
+            break  # only the segment's first bare token is its verb
+    return reading
+
+
+def _mentions_skill_basename(raw_params: dict | None, command: str | None) -> bool:
+    """Whether a tool call's arguments name a skill body at all.
+
+    Independent of read intent: used only to tell "this call had nothing to do
+    with skills" apart from "this call named a skill but our read-intent
+    allowlists did not recognise it", which is what a provider tool rename looks
+    like from here.
+    """
+    if isinstance(command, str) and _SKILL_FILE in command:
+        return True
+    if not isinstance(raw_params, dict):
+        return False
+    for value in raw_params.values():
+        if isinstance(value, str):
+            if _SKILL_FILE in value:
+                return True
+        elif isinstance(value, (list, tuple)):
+            if any(isinstance(v, str) and _SKILL_FILE in v for v in value):
+                return True
+    return False
+
+
 def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
     """Recursively find all SKILL.md files under *base*.
 
@@ -393,6 +529,28 @@ def _iter_skill_files(base: Path) -> list[tuple[str, Path]]:
     return sorted(results, key=lambda x: x[0])
 
 
+# Skills RELOCATED into the kirocrew-dev/ folder (the Kiro Crew development
+# suite). Without this, an upgraded install keeps BOTH the old flat copy
+# and the new nested copy — two divergent copies of the same skill matched
+# nondeterministically by trigger overlap. The flat copy is NOT deleted (it
+# may carry user edits
+# the mtime-preserving sync deliberately protects): its SKILL.md is renamed
+# to SKILL.md.pre-relocation, which removes it from loader discovery while
+# preserving every byte on disk for the user to reconcile. Only done when
+# the nested replacement is verifiably present, so a failed/partial sync
+# never disables the only copy.
+#
+# Module level so the packaging guard in test/test_builtin_skill_packaging.py
+# can assert every destination actually ships: a destination the package never
+# installs makes this migration a permanent no-op and leaves the flat copy as
+# the only one the loader finds.
+_RELOCATED_SKILLS: dict[str, str] = {
+    "prepare-pr": "kirocrew-dev/prepare-pr",
+    "babysit": "kirocrew-dev/babysit",
+    "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
+}
+
+
 def _ensure_builtin_skills(base: Path) -> None:
     """Sync built-in skills: copy new/updated, remove stale.
 
@@ -418,28 +576,13 @@ def _ensure_builtin_skills(base: Path) -> None:
 
     # Remove known stale builtin skills (replaced by MCP tools)
     stale_builtins = {"learn", "subagent", "cron", "kirocrew-core"}
-    # Skills RELOCATED into the kirocrew-dev/ folder (the KiroCrew development
-    # suite). Without this, an upgraded install keeps BOTH the old flat copy
-    # and the new nested copy — two divergent copies of the same skill matched
-    # nondeterministically by trigger overlap. The flat copy is NOT deleted (it
-    # may carry user edits
-    # the mtime-preserving sync deliberately protects): its SKILL.md is renamed
-    # to SKILL.md.pre-relocation, which removes it from loader discovery while
-    # preserving every byte on disk for the user to reconcile. Only done when
-    # the nested replacement is verifiably present, so a failed/partial sync
-    # never disables the only copy.
-    relocated = {
-        "prepare-pr": "kirocrew-dev/prepare-pr",
-        "babysit": "kirocrew-dev/babysit",
-        "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
-    }
     if base.exists():
         for name in stale_builtins:
             stale = base / name
             if stale.is_dir():
                 shutil.rmtree(stale)
                 logger.info("Removed stale builtin skill: %s", name)
-        for old_name, new_name in relocated.items():
+        for old_name, new_name in _RELOCATED_SKILLS.items():
             old_skill_md = base / old_name / "SKILL.md"
             if old_skill_md.is_file() and (base / new_name / "SKILL.md").exists():
                 try:
@@ -708,6 +851,99 @@ class SkillsLoader:
             return skill_file.is_relative_to(self._dir)
         except (OSError, ValueError):
             return False
+
+    def _served_key_by_realpath(self) -> dict[str, str]:
+        """Map each served skill file's realpath to its canonical served key.
+
+        Applies the same canonical rule as ``resolve_ledger_aliases`` — the real
+        file's key beats a symlink's, then alphabetical — so a read through a
+        symlinked skill is credited to the key the budget screen displays rather
+        than splitting one file's cost across two rows. Uncached and
+        resolve()-bound for the same reason stated there, so callers must gate
+        it behind a cheap check rather than running it per tool call.
+        """
+        by_realpath: dict[str, list[tuple[str, Path]]] = {}
+        for key, skill_file in self._iter():
+            try:
+                rp = str(skill_file.resolve())
+            except (OSError, RuntimeError):
+                # A cyclic symlink raises RuntimeError, not OSError.
+                continue
+            by_realpath.setdefault(rp, []).append((key, skill_file))
+        return {
+            rp: min(pairs, key=lambda p: (p[1].is_symlink(), p[0]))[0]
+            for rp, pairs in by_realpath.items()
+        }
+
+    def resolve_tool_read_keys(
+        self,
+        tool_name: str = "",
+        raw_params: dict | None = None,
+        command: str | None = None,
+    ) -> list[str]:
+        """Served skill keys whose body a tool call is about to deliver.
+
+        Resolution only — nothing is recorded, so the caller can run this off
+        the event loop and credit later, once the read is confirmed to have
+        completed. Returns keys deduped, so one command naming a file twice
+        yields it once.
+
+        Only content-delivering reads qualify (see
+        ``_tool_read_path_candidates``): a tool call that merely names a skill
+        path earns nothing, because the ledger's hits mean a body reached the
+        model.
+
+        Filesystem-bound (``_iter`` plus a ``resolve()`` per served skill), so
+        candidates are filtered on the ``SKILL.md`` basename first and callers
+        must keep this off the event loop.
+        """
+        if self._usage is None:
+            return []
+        candidates = [
+            c
+            for c in _tool_read_path_candidates(tool_name, raw_params, command)
+            if _SKILL_FILE in c
+        ]
+        if not candidates:
+            # The read-intent allowlists (`_CONTENT_READ_TOOLS`,
+            # `_SHELL_READ_VERBS`) encode the provider's current tool spellings.
+            # A rename would silently restore the pre-existing undercount with
+            # nothing failing, so a call that clearly names a skill yet yields no
+            # candidate is logged — the one signal that distinguishes drift from
+            # a legitimately non-reading tool call.
+            if _mentions_skill_basename(raw_params, command):
+                logger.debug(
+                    "skill-read: %r names a skill but is not a content read "
+                    "(tool=%r); check the read-intent allowlists if the provider "
+                    "renamed its tools",
+                    command or raw_params,
+                    tool_name,
+                )
+            return []
+        try:
+            realpath_to_key = self._served_key_by_realpath()
+        except OSError:
+            return []
+        keys: list[str] = []
+        for cand in candidates:
+            try:
+                rp = str(Path(cand).expanduser().resolve())
+            except (OSError, RuntimeError, ValueError):
+                continue
+            key = realpath_to_key.get(rp)
+            if key is not None and key not in keys:
+                keys.append(key)
+        return keys
+
+    def credit_skill_reads(self, keys: list[str]) -> None:
+        """Record a delivery for each key in *keys*. Best-effort, never raises.
+
+        Separate from ``resolve_tool_read_keys`` so the credit lands only after
+        the read has actually completed — a tool call that was denied or failed
+        must not leave a delivery behind.
+        """
+        for key in keys:
+            self._record_use(key)
 
     def resolve_ledger_aliases(self) -> dict[str, list[str]]:
         """Map served skill keys to ledger keys that resolve to the same file.
@@ -2324,6 +2560,9 @@ class SkillsLoader:
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
         # (i) Remove the pending candidate.
+        # Captured BEFORE the removal so a same-slug replacement staged after
+        # this instant keeps its notification (see approve_pending_skill).
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(src, ignore_errors=True)
         # (j) Audit the approved update.
         sel().log_tool_invocation(
@@ -2344,6 +2583,20 @@ class SkillsLoader:
         logger.info(
             "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
         )
+        # The candidate cleanup above ignores rmtree errors (e.g. a Windows
+        # file lock), so the candidate can survive in the pending queue even
+        # though the update went live. Only report it consumed when the
+        # directory is really gone — otherwise the queue still shows an
+        # actionable review and its notification must stay unread.
+        if not src.exists():
+            _emit_pending_consumed(
+                {
+                    "slug": slug,
+                    "outcome": "approved",
+                    "name": target_name,
+                    "consumed_at": consumed_at,
+                }
+            )
         return target_name
 
     def approve_pending_skill(self, slug: str) -> str | None:
@@ -2419,6 +2672,12 @@ class SkillsLoader:
             )
             return None
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # Cutoff for notification resolution, captured BEFORE the candidate
+        # leaves the pending queue: staging refuses to overwrite an existing
+        # candidate, so a same-slug replacement can only be staged after this
+        # instant — its notification carries a strictly later ``ts`` and must
+        # survive the resolve.
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         try:
             shutil.move(str(src), str(dest))
         except OSError:
@@ -2446,6 +2705,9 @@ class SkillsLoader:
                             pass
         self._invalidate_iter_cache()
         logger.info("Approved pending skill: %s", name)
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+        )
         return name
 
     def dismiss_pending_skill(self, slug: str) -> bool:
@@ -2455,9 +2717,36 @@ class SkillsLoader:
         pdir = self._pending_root() / slug
         if not pdir.is_dir():
             return False
+        # Captured BEFORE the removal so a same-slug replacement staged after
+        # this instant keeps its notification (see approve_pending_skill).
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(pdir)
         logger.info("Dismissed pending skill: %s", slug)
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at}
+        )
         return True
+
+    def dismiss_all_pending(self) -> int:
+        """Delete all pending candidates. Returns count dismissed."""
+        pending = self.list_pending_skills()
+        count = 0
+        for entry in pending:
+            if self.dismiss_pending_skill(entry["slug"]):
+                count += 1
+        if count:
+            logger.info("Dismissed all %d pending skills", count)
+        return count
+
+    def dismiss_pending_slugs(self, slugs: list[str]) -> int:
+        """Delete only the specified pending candidates. Returns count dismissed."""
+        count = 0
+        for slug in slugs:
+            if self.dismiss_pending_skill(slug):
+                count += 1
+        if count:
+            logger.info("Dismissed %d of %d requested pending skills", count, len(slugs))
+        return count
 
     def prune_pending(self, ttl_days: int, *, now: float | None = None) -> int:
         """Remove pending candidates older than ``ttl_days``. Returns count pruned.
@@ -2980,23 +3269,29 @@ class SkillsLoader:
         honoring it here meant the opt-in could never take effect. Ignoring
         indented lines also drops the junk keys a prose line like
         ``  Steps: do x`` used to invent.
+
+        A value that is a YAML block-scalar indicator (``>``, ``|``, with an
+        optional chomping ``-``/``+``) is resolved from the indented lines that
+        follow it: folded (``>``) folds single breaks to spaces while keeping
+        blank-line and more-indented structure, literal (``|``) preserves
+        newlines. Without this, the stored value would be the indicator
+        character itself and the real content — a multi-line ``description``
+        used for routing — would be dropped, leaving the skill unroutable.
+        That grammar is pinned as ``frontmatter.SKILL_LOADER``.
         """
         content = path.read_text(encoding="utf-8")
-        if not content.startswith("---"):
-            return {}
-        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-        if not match:
-            return {}
-        meta: dict[str, str] = {}
-        for line in match.group(1).split("\n"):
-            if ":" in line and not line[:1].isspace():
-                key, value = line.split(":", 1)
-                meta[key.strip()] = value.strip().strip("\"'")
-        return meta
+        return parse_frontmatter(content, SKILL_LOADER)
 
     @staticmethod
     def strip_frontmatter(content: str) -> str:
-        """Remove YAML frontmatter from markdown."""
+        """Remove YAML frontmatter from markdown.
+
+        A fence LOCATOR, not a field parser — deliberately outside
+        ``kiro_crew.frontmatter``. Its closer grammar is stricter than
+        ``_parse_frontmatter``'s (``---`` must be followed by a newline), so
+        a ``---junk`` closer parses fields yet strips nothing; editing either
+        grammar means revisiting the other.
+        """
         if content.startswith("---"):
             match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
             if match:

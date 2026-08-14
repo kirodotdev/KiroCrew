@@ -24,25 +24,89 @@ def test_web_verify_skill_exists_with_frontmatter() -> None:
     assert "name: web-verify" in body
     assert "triggers:" in body
     # The loop is worthless if the agent never looks at the frame it captured.
-    assert "Read" in body and "browser_take_screenshot" in body
+    assert "read the file" in body.lower()
+    assert "playwright-cli screenshot" in body
 
 
 def test_web_verify_keeps_the_playwright_guard() -> None:
     """No silent pretending when no browser backend is installed."""
-    body = WEB_VERIFY.read_text(encoding="utf-8")
-    assert "browser_*" in body
-    assert "kirocrew browse setup" in body
-    assert "npm install -g agent-browser" in body
+    flat = _flat(WEB_VERIFY)
+    assert "command -v playwright-cli" in flat, "must probe before claiming a capture"
+    assert "do NOT fake it" in flat
+    assert "npm install -g @playwright/cli" in flat
+
+
+def _flat(path: Path) -> str:
+    """Skill body with runs of whitespace collapsed to single spaces.
+
+    These files are hard-wrapped prose, so a multi-word phrase can legitimately
+    straddle a newline. Asserting raw substrings against wrapped text fails for
+    a formatting reason rather than a content one (it bit `kirocrew browse
+    setup` and `does not flip` during review), so phrase assertions normalize
+    whitespace first and stay robust to reflow.
+    """
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_browser_skills_name_the_settings_toggle_not_only_a_cli() -> None:
+    """A missing browser must route the USER to the one-click fix, not just a CLI.
+
+    The failure this locks: a skill that offers only a raw `npm install -g ...`
+    line (or nothing at all) leaves a user believing the feature is broken. The
+    Settings Browser panel carries a one-click Install button, and it must be
+    named wherever a skill reports the browser missing. The toggle it used to
+    name is gone; the install card that replaced it is not.
+    """
+    for skill in (WEB_VERIFY, WEB_BROWSE):
+        assert "Settings → Browser" in _flat(skill), (
+            f"{skill.name} must name the Settings path"
+        )
+
+
+def test_browser_skills_do_not_point_at_a_toggle_that_no_longer_exists() -> None:
+    """Installing the CLI IS the grant now, so no skill may promise a switch.
+
+    This assertion is the inverse of the one it replaces, and deliberately so.
+    Under the MCP stack the enabler was a Settings toggle and the risk was a
+    skill claiming the CLI could flip it. The toggle is gone: presence of
+    `playwright-cli` on PATH is the capability grant. The live risk is therefore
+    a skill telling the user to go turn on a setting that does not exist, which
+    is a dead end no amount of retrying resolves.
+    """
+    for skill in (WEB_VERIFY, WEB_BROWSE):
+        flat = _flat(skill)
+        assert "Browser Mode" not in flat or "no Browser Mode" in flat or (
+            "not the same as" in flat
+        ), f"{skill.name} still presents Browser Mode as something to switch on"
+        assert "kirocrew browse setup" not in flat, (
+            f"{skill.name} names a CLI verb this migration removed"
+        )
+
+
+def test_browser_skills_do_not_assert_mode_off_as_fact() -> None:
+    """The agent cannot read the toggle, so "Browser Mode is off" is a guess.
+
+    Provisioning can fail with the toggle already on. Telling such a user to go
+    turn on a setting that is already on is the confusing dead end this locks
+    against: each skill must hedge ("usually means") rather than assert.
+    """
+    for skill in (WEB_VERIFY, WEB_BROWSE):
+        flat = _flat(skill)
+        if "Browser Mode is off" in flat:
+            assert "usually means" in flat or "cannot see the setting" in flat, (
+                f"{skill.name} asserts Browser Mode is off without hedging"
+            )
 
 
 def test_web_verify_names_all_three_capture_backends() -> None:
-    """A missing Playwright MCP browser must not read as 'verification impossible'."""
+    """A missing browser CLI must not read as 'verification impossible'."""
     body = WEB_VERIFY.read_text(encoding="utf-8")
-    assert "Playwright MCP" in body
-    assert "agent-browser open" in body and "agent-browser screenshot" in body
+    assert "playwright-cli" in body
+    assert "agent-browser open" in body
     assert "pod-e2e" in body
-    # The panel stream is specific to the MCP path — don't let the CLI imply it.
-    assert "not in the Browser panel" in body
+    # Only the playwright-cli session is what the panel shows; the others are
+    # offline captures, and a skill that blurs that oversells what the user saw.
+    assert "not** appear in the Browser panel" in body
 
 
 def test_web_verify_bounds_the_frame_count() -> None:
@@ -58,8 +122,12 @@ def test_prompt_drops_the_screenshot_prohibition() -> None:
 
 
 def test_prompt_authorizes_view_only_self_verification() -> None:
+    # Browsing is gated by tool availability and the agent decides when to use
+    # it; the prompt names visual verification as a reason to reach for the
+    # browser tools and points at web-verify, so front-end self-verification is
+    # permitted rather than a policy violation.
     prompt = PROMPT.read_text(encoding="utf-8")
-    assert "**View-only** use is self-authorizing" in prompt
+    assert "visual verification" in prompt
     assert "web-verify" in prompt, "prompt.md must name the skill for it to be reachable"
 
 

@@ -16,14 +16,15 @@ would be a regression, not a rewrite.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
+
+from kiro_crew import github_runner
 
 from .errors import (
     ProviderCliError,
@@ -70,34 +71,12 @@ GH_TIMEOUT_SEC = 20.0
 # once per refresh, not per view.
 GH_PAGINATE_TIMEOUT_SEC = 120.0
 
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
-def parse_github_repo_url(link: str) -> tuple[str, str]:
-    """Parse ``(owner, repo)`` from a full ``https://github.com/<owner>/<repo>`` URL.
-
-    Deliberately strict (full URL only, per product decision — no bare
-    ``owner/repo`` shorthand): rejects non-github.com hosts (SSRF guard) and
-    constrains owner/repo to a safe charset before either value is ever
-    interpolated into a subprocess argv.
-    """
-    if not link or not isinstance(link, str):
-        raise RepoUrlError("repo link is empty")
-    parsed = urlparse(link.strip())
-    host = (parsed.hostname or "").lower()
-    if host not in {"github.com", "www.github.com"}:
-        raise RepoUrlError(
-            f"not a github.com URL: {link!r} (expected https://github.com/<owner>/<repo>)"
-        )
-    parts = [p for p in (parsed.path or "").split("/") if p]
-    if len(parts) < 2:
-        raise RepoUrlError(f"not a full repo URL: {link!r} (expected .../<owner>/<repo>)")
-    owner, repo = parts[0], re.sub(r"\.git$", "", parts[1])
-    if owner in (".", "..") or repo in (".", "..") or not (
-        _SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo)
-    ):
-        raise RepoUrlError(f"invalid owner/repo segment in {link!r}")
-    return owner, repo
+# Owner/repo URL parsing lives in the shared runner; re-exported here because
+# this module is its long-standing import location (~26 internal call sites,
+# routes.py, provider.py, and the tests all reach it as
+# ``github_client.parse_github_repo_url``). ``errors.RepoUrlError`` is an alias
+# of the runner's class, so existing ``except`` clauses keep catching it.
+parse_github_repo_url = github_runner.parse_github_repo_url
 
 
 # ── gh spawn hardening ───────────────────────────────────────────────────────
@@ -112,97 +91,38 @@ def parse_github_repo_url(link: str) -> tuple[str, str]:
 # unrelated secrets (AWS/Slack/SSH) can never leak to a substituted or
 # compromised gh.
 
-# gh's own auth + network/TLS vars, forwarded (when present) on top of the
-# platform's minimal safe-key base; everything else in the parent env is dropped.
-_GH_ENV_PASSTHROUGH = (
-    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "GH_HOST", "GH_CONFIG_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-)
-
-_gh_bin_cache: str | None = None
-
-# gh resolution reuses the SAME policy and search order as the Sidebar PR panel
-# (source_providers.provider_executable_candidates) so both panels accept exactly
-# the same gh installs and never drift. Imported lazily inside _gh_bin() (its
-# owning module pulls in dashboard state, so a top-level import here would be
-# circular).
+_GH_OVERRIDE_ENV = "KIROCREW_ISSUE_RADAR_GH"
 
 
 def _gh_bin() -> str:
-    """Absolute path to an acceptable ``gh``, resolved once and cached.
-
-    Resolution and validation are shared with the Sidebar PR panel
-    (``source_providers.provider_executable_candidates`` +
-    ``_validate_provider_executable``): the well-known install dirs first, then
-    the ambient ``PATH``, accepting the user's own install (Homebrew included)
-    while refusing a binary owned by another user, a world-writable one, or one
-    inside the agent-writable project/workspace tree. Set
+    """Absolute path to an acceptable ``gh``, resolved and cached by the shared
+    runner (``github_runner.resolve_gh``): the well-known install dirs first,
+    then the ambient ``PATH``, accepting the user's own install (Homebrew
+    included) while refusing a binary owned by another user, a world-writable
+    one, or one inside the agent-writable project/workspace tree. Set
     ``KIROCREW_ISSUE_RADAR_GH`` to an absolute path to override (still
     validated), or ``KIROCREW_PROVIDER_BIN_STRICT=1`` to require a root-owned
     ``gh``. Raises :class:`GhSetupError` if no acceptable executable is found."""
-    global _gh_bin_cache
-    if _gh_bin_cache:
-        return _gh_bin_cache
     if sys.platform == "win32":
         raise GhCliError(
             "Issue Radar requires a POSIX platform (macOS/Linux); "
             "Windows is not supported — use WSL to run the Kiro Crew gateway"
         )
-
-    from kiro_crew.dashboard.handlers.source_providers import (
-        _validate_provider_executable,
-        provider_executable_candidates,
-    )
-
-    # Operator override — still validated.
-    override = os.environ.get("KIROCREW_ISSUE_RADAR_GH")
-    if override:
-        try:
-            validated = _validate_provider_executable(override)
-            _gh_bin_cache = validated
-            return validated
-        except (ValueError, OSError) as exc:
-            # A host-setup problem the user must fix (wrong path, a binary owned
-            # by another user), not a transient API failure — surface it as a
-            # GhSetupError so the connect dialog offers instructions.
-            raise GhSetupError(
-                f"KIROCREW_ISSUE_RADAR_GH={override!r} failed validation: {exc}",
-                reason="not_installed",
-            ) from exc
-
-    # Well-known install dirs first, then the ambient PATH.
-    last_error = ""
-    for cand in provider_executable_candidates("gh"):
-        if not os.path.isfile(cand):
-            continue
-        try:
-            validated = _validate_provider_executable(cand)
-            _gh_bin_cache = validated
-            return validated
-        except (ValueError, OSError) as exc:
-            last_error = str(exc)
-            continue  # untrusted provenance — skip
-
-    detail = f" (last check: {last_error})" if last_error else ""
-    raise GhSetupError(
-        "the `gh` CLI was not found on this host"
-        f"{detail} — install it (`brew install gh` or your distro's package "
-        "manager) and run `gh auth login`, or set KIROCREW_ISSUE_RADAR_GH to an "
-        "absolute gh path",
-        reason="not_installed",
-    )
+    try:
+        return github_runner.resolve_gh(override_env=_GH_OVERRIDE_ENV)
+    except github_runner.SetupError as exc:
+        # A host-setup problem the user must fix (gh absent, wrong override
+        # path, a binary owned by another user), not a transient API failure —
+        # surface it as a GhSetupError so the connect dialog offers
+        # instructions.
+        raise GhSetupError(str(exc), reason="not_installed") from exc
 
 
 def _gh_env() -> dict[str, str]:
-    """A minimal environment for ``gh``: the platform's safe-key base
-    (PATH/HOME/XDG/…) plus gh's own auth + network/TLS vars when set — NOT the
-    gateway's full environment, so unrelated secrets never reach the child."""
-    from kiro_crew.apps.registry import minimal_env
-
-    return minimal_env(**{k: os.environ[k] for k in _GH_ENV_PASSTHROUGH if k in os.environ})
+    """A minimal environment for ``gh``: the platform's safe-key base plus gh's
+    own auth + network/TLS vars when set — NOT the gateway's full environment.
+    Owned by the shared runner so every gh surface stays in lockstep."""
+    return github_runner.gh_env()
 
 
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
@@ -216,44 +136,33 @@ def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
 
 
 def _gh_run(argv: list[str], *, timeout: float, input_text: str | None = None) -> subprocess.CompletedProcess:
-    """Single spawn chokepoint for every ``gh`` call — replaces argv[0] with the
-    trusted canonical gh and passes the minimal env (see the hardening note
-    above). Emits an SEL tool-invocation event on success, failure, and timeout
-    (matching ``source_providers._run_json``)."""
+    """Single Issue Radar chokepoint for every ``gh`` call — delegates to the
+    shared hardened runner (``github_runner.run_gh``): trusted canonical gh as
+    argv[0], minimal env, bounded timeout, and an SEL tool-invocation event on
+    success, failure, and timeout. This wrapper keeps Issue Radar's error
+    taxonomy (GhSetupError/GhCliError) so routes and the connect dialog are
+    untouched."""
     gh = _gh_bin()
-    operation = f"gh {' '.join(argv[1:3])}"  # e.g. "gh api repos/…" (bounded)
     try:
-        proc = subprocess.run(
+        # pin_host: Issue Radar is github.com-only by design (its connect
+        # validation rejects every other host) and its API paths never pass
+        # --hostname, so an ambient GH_HOST must not be able to steer them to
+        # an enterprise instance.
+        return github_runner.run_gh(
             [gh, *argv[1:]],
-            capture_output=True, text=True, timeout=timeout, check=False,
-            input=input_text, env=_gh_env(),
+            timeout=timeout, input_text=input_text, audit_caller="core:issue-radar",
+            pin_host="github.com",
         )
     except FileNotFoundError as exc:  # pragma: no cover — _gh_bin guards first
-        _audit("gh_run", operation, "failure", error="gh not found")
         raise GhSetupError(
             "the `gh` CLI is not installed on this host", reason="not_installed"
         ) from exc
     except subprocess.TimeoutExpired as exc:
-        _audit("gh_run", operation, "failure", error=f"timeout after {timeout}s")
         raise GhCliError(f"`gh` timed out after {timeout}s") from exc
-    if proc.returncode != 0:
-        _audit("gh_run", operation, "failure", error=f"exit {proc.returncode}")
-    else:
-        _audit("gh_run", operation, "ok")
-    return proc
-
-
-def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
-    """SEL event for every gh spawn (reads and writes). Fire-and-forget."""
-    from kiro_crew.sel import sel
-    sel().log_api_access(
-        caller="core:issue-radar",
-        operation=f"issue_radar.{op}",
-        outcome=outcome,
-        source="builtin-app",
-        resources=target[:200],
-        error=error[:200] if error else "",
-    )
+    except github_runner.SetupError as exc:
+        # Audit-or-deny refusal (SEL unavailable): a transient host problem,
+        # not a connect-dialog setup issue — surface as the retryable class.
+        raise GhCliError(str(exc)) from exc
 
 
 def _run_gh_api(path: str, jq_filter: str, *, timeout: float = GH_TIMEOUT_SEC, paginate: bool = True) -> list[dict]:
@@ -828,8 +737,18 @@ def _normalize_timeline_event(ev: dict) -> dict | None:
     if etype == "commented":
         return {
             "kind": "comment",
+            # ``id`` and ``updated_at`` are load-bearing for the crew claim
+            # protocol, not decoration. A crew keeps ONE comment as its public
+            # claim ledger and rewrites it (``update_issue_comment``), so without
+            # ``id`` it cannot address its own comment to PATCH it — and
+            # ``created_at`` on an EDITED comment is still the ORIGINAL post time,
+            # so a crew heartbeating every 20 minutes would read as days stale and
+            # lose a claim it is actively working. Both are on the timeline's
+            # ``commented`` event already, so this costs nothing.
+            "id": ev.get("id"),
             "actor": (ev.get("user") or {}).get("login"),
             "created_at": created,
+            "updated_at": ev.get("updated_at"),
             "body": ev.get("body") or "",
             "author_association": ev.get("author_association"),
             "reactions": _norm_reactions(ev.get("reactions")),
@@ -2316,6 +2235,65 @@ def search_pulls(
 #     path at all — see the note on :func:`merge_pull_request`.
 
 
+def create_pull_request(
+    owner: str, repo: str, head: str, base: str, title: str, body: str = "",
+    *, draft: bool = False, timeout: float = GH_TIMEOUT_SEC,
+) -> dict:
+    """Open a pull request (``POST repos/{o}/{r}/pulls``).
+
+    REST, not ``gh pr create``, and that is the point. The CLI takes the title as
+    ``--title <text>`` and needs the body in a file — both of which put
+    model-authored prose on an argv (or on disk) at the moment a crew opens its PR.
+    Going through :func:`_run_gh_write` sends title AND body as JSON on stdin, so
+    neither can be reinterpreted as a flag or an option value; it also inherits the
+    403/401 → :class:`GhPermissionError` mapping, so a crew without push access gets
+    a permission error instead of an opaque exit code.
+    (``auto_improvement``'s ``pr_recipe.draft()`` is the CLI-based ancestor of this
+    call; it is deliberately NOT reused — it also pushes the branch, writes a durable
+    queue copy, and degrades to ``QUEUED:<fp>`` instead of raising.)
+
+    ``head`` is a branch name on this repo, or ``owner:branch`` for a cross-fork PR.
+    Neither it nor ``base`` is charset-validated, because unlike ``owner``/``repo``
+    they never reach a path or an argv — they are values inside the JSON body.
+
+    ``draft=True`` opens the PR as a draft. GitHub itself refuses a draft on a repo
+    that does not allow them (422), so that policy is not second-guessed here.
+
+    Returns ``{number, url, html_url, draft, state}``. ``url`` is the module's own
+    spelling for the web link (every row here — issues, PRs, checks, comments — uses
+    it), and ``html_url`` carries the same value under GitHub's REST name so a caller
+    written against the API field does not silently read ``None``.
+    """
+    subject = (title or "").strip()
+    if not subject:
+        # GitHub 422s on an empty title; failing here makes it a clear error instead
+        # of an API rejection the caller has to decode.
+        raise GhCliError("a pull request needs a title")
+    if not (head or "").strip() or not (base or "").strip():
+        raise GhCliError(f"a pull request needs both head and base refs (got {head!r} → {base!r})")
+    payload: dict[str, object] = {
+        "title": subject,
+        "head": head.strip(),
+        "base": base.strip(),
+        "body": body or "",
+        "draft": bool(draft),
+    }
+    data = _run_gh_write("POST", f"repos/{owner}/{repo}/pulls", payload, timeout=timeout)
+    if isinstance(data, dict):
+        link = data.get("html_url")
+        return {
+            "number": data.get("number"),
+            "url": link,
+            "html_url": link,
+            "draft": bool(data.get("draft", draft)),
+            "state": data.get("state") or "open",
+        }
+    # No parseable response body: the POST did not fail (that would have raised), but
+    # the PR cannot be identified. Reported as unknown rather than guessed — a caller
+    # that recorded a fabricated number would address the wrong PR from then on.
+    raise GhCliError(f"gh returned no pull request for {owner}/{repo} ({head} → {base})")
+
+
 def set_pr_state(
     owner: str, repo: str, number: int, state: str, *, timeout: float = GH_TIMEOUT_SEC
 ) -> dict:
@@ -2453,6 +2431,49 @@ def add_pr_comment(
     function for a PR on both providers; here the two coincide.
     """
     return add_issue_comment(owner, repo, number, body, timeout=timeout)
+
+
+def update_issue_comment(
+    owner: str, repo: str, comment_id: int, body: str, *, timeout: float = GH_TIMEOUT_SEC
+) -> dict:
+    """EDIT an existing issue/PR comment (``PATCH .../issues/comments/{id}``).
+
+    Addressed by COMMENT id, not by issue number — GitHub's comment endpoints are
+    repo-scoped and flat (``issues/comments/{id}``, no ``/issues/{n}/`` segment),
+    which is also why this one call serves a comment on an issue and on a PR alike.
+
+    This exists for the crew claim ledger: a crew keeps ONE comment as its public
+    record and rewrites it as work progresses, rather than appending a comment per
+    heartbeat. Editing is what makes a 20-minute heartbeat acceptable — GitHub
+    sends no notification for an edit, so a live claim does not spam every
+    subscriber, whereas a fresh comment each cycle would.
+
+    ``body`` is model-authored prose, so it rides through :func:`_run_gh_write` as
+    JSON on stdin and never touches argv; ``comment_id`` is ``int()``-coerced
+    before it reaches the path, so it cannot inject path segments.
+
+    Returns ``{id, url, updated_at}``. ``updated_at`` rather than ``created_at``
+    deliberately: on an edited comment ``created_at`` still reports the ORIGINAL
+    post time, so it is the one field that cannot confirm the edit landed — and a
+    reader using it would see a freshly-heartbeated claim as days stale.
+    """
+    text = (body or "").strip()
+    if not text:
+        # An empty edit is not a no-op — it would BLANK the claim ledger, leaving
+        # the comment in place with nothing in it for either a human or the next
+        # crew to read.
+        raise GhCliError("a comment edit needs a body")
+    data = _run_gh_write(
+        "PATCH", f"repos/{owner}/{repo}/issues/comments/{int(comment_id)}",
+        {"body": text}, timeout=timeout,
+    )
+    if isinstance(data, dict):
+        return {
+            "id": data.get("id"),
+            "url": data.get("html_url"),
+            "updated_at": data.get("updated_at"),
+        }
+    return {"id": int(comment_id), "url": None, "updated_at": None}
 
 
 # GitHub's merge methods, as accepted by the auto-merge mutation.
@@ -2714,3 +2735,124 @@ def rerun_workflow_run(
         "POST", f"repos/{owner}/{repo}/actions/runs/{int(run_id)}/{verb}", None, timeout=timeout
     )
     return {"run_id": int(run_id), "rerun": True, "failed_only": bool(failed_only)}
+
+
+# ── crew claim protocol (reading a claim back off the issue) ──────────────────
+#
+# A crew's claim on an issue lives in a COMMENT, not in a label and not only in
+# Kiro Crew's own store: the comment is the authority, so the claim survives a
+# gateway restart, is visible to a human reading the issue on GitHub, and is
+# readable by a crew running in a different process. The `crew:` labels are a
+# cheap index over it, never the source of truth.
+#
+# The machine-readable half is an HTML comment at the end of that body:
+#
+#   <!-- kirocrew-crew id=c_7f3a phase=implementing pr=2271 updated=2026-08-08T20:44:12Z -->
+#
+# HTML so GitHub renders nothing, and parsed instead of the prose so a crew can
+# rewrite its progress notes freely without breaking the protocol.
+#
+# Everything below is PURE — it takes rows already normalized by
+# ``_normalize_timeline_event`` and spawns no process. It lives here rather than in
+# the store because the rows are this module's shape and the marker's dependency on
+# a comment's ``id``/``updated_at`` is this module's contract.
+
+# The marker itself. ``\s+`` after the name is what keeps the brief sentinel
+# ``<!-- kirocrew-crew-brief v1 -->`` from matching: the next character there is a
+# hyphen, not whitespace. Lazy ``[^>]*?`` stops at the marker's own ``-->`` and
+# cannot run on into later prose.
+_CREW_CLAIM_MARKER_RE = re.compile(r"<!--\s*kirocrew-crew\s+([^>]*?)\s*-->")
+
+# ``key=value`` pairs inside the marker; values are whitespace-delimited. Unknown
+# keys are simply not read, so the marker can grow a field without this parser (or
+# an older crew reading a newer marker) breaking.
+_CREW_CLAIM_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=(\S+)")
+
+# The ONLY accepted timestamp shape: ISO-8601 UTC with a trailing ``Z``.
+#
+# Deliberately stricter than ``_parse_gh_timestamp`` / ``datetime.fromisoformat``,
+# which also accept a space separator and an absent or offset timezone. Those forms
+# are hazardous here rather than merely lax: ``2026-08-08 20:44:12`` parses to a
+# NAIVE datetime, and comparing that against the aware ``now`` a freshness check
+# uses raises TypeError — so a malformed stamp would crash the claim reader instead
+# of reading as stale. Refusing it up front makes "unparseable" mean "not fresh",
+# which is the safe direction: a claim that cannot prove it is alive must not be
+# treated as alive.
+_CREW_CLAIM_ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+
+
+def _parse_crew_marker(body: str) -> dict | None:
+    """The crew payload parsed out of ONE comment body, or ``None`` if it has none.
+
+    Returns ``{crew_id, phase, pr, updated}``. ``pr`` is an int or ``None``;
+    ``updated`` is the validated ISO-8601-``Z`` string or ``None`` (see
+    :data:`_CREW_CLAIM_ISO_Z_RE` — a malformed stamp is unparseable, NOT fresh).
+
+    The FIRST marker in a body wins. A body carrying two is malformed either way,
+    and first-wins at least makes which one is honoured deterministic rather than
+    dependent on how the prose was assembled.
+    """
+    match = _CREW_CLAIM_MARKER_RE.search(body or "")
+    if match is None:
+        return None
+    fields = dict(_CREW_CLAIM_FIELD_RE.findall(match.group(1)))
+    pr = fields.get("pr") or ""
+    updated = fields.get("updated") or ""
+    return {
+        # A marker with no ``id`` names nobody, so it can never be MATCHED against a
+        # crew id — but it is still reported (as ``""``) rather than dropped: it is
+        # evidence that some crew claimed this issue, and losing that evidence is
+        # how two crews end up working the same issue. Losing throughput to an
+        # over-cautious skip is the cheaper failure.
+        "crew_id": fields.get("id") or "",
+        "phase": fields.get("phase") or "",
+        "pr": int(pr) if pr.isdigit() else None,
+        "updated": updated if _CREW_CLAIM_ISO_Z_RE.match(updated) else None,
+    }
+
+
+def find_crew_claim(timeline_rows: list[dict], crew_id: str = "") -> list[dict]:
+    """Crew claims found in a normalized issue timeline, oldest comment id FIRST.
+
+    Takes the output of :func:`list_issue_timeline` and returns one
+    ``{comment_id, crew_id, phase, pr, updated, actor, created_at}`` entry per
+    comment carrying a crew marker. A row with no marker is skipped, and so is any
+    row that is not a ``comment``: a ``review_comment`` lives at a DIFFERENT
+    endpoint (``pulls/comments/{id}``), so treating one as a claim would hand
+    :func:`update_issue_comment` an id it cannot address.
+
+    ``crew_id`` filters to one crew's own claims — the "where is MY comment so I can
+    PATCH it" read. A list is returned either way, so callers never branch on the
+    return type; a single-claim caller takes ``[0]``. It is a list and not a single
+    entry because a duplicated post (a retried comment) is a real state a crew must
+    be able to SEE rather than have silently collapsed. The default ``""`` means
+    unfiltered, so it never matches the id-less markers described below.
+
+    **Ordering is part of the protocol, not presentation.** Collisions are resolved
+    by "smallest comment id wins" — the crew that got there first keeps the claim and
+    the other yields — so ascending comment id makes the winner ``[0]``. An entry
+    whose comment id is unknown sorts LAST: it cannot demonstrate it was first, so it
+    must not be able to win a collision, while still being visible as a claim.
+    """
+    out: list[dict] = []
+    for row in timeline_rows or []:
+        if not isinstance(row, dict) or row.get("kind") != "comment":
+            continue
+        parsed = _parse_crew_marker(row.get("body") or "")
+        if parsed is None:
+            continue
+        raw_id = row.get("id")
+        out.append({
+            # bool is a subclass of int, so it is excluded explicitly — a truthy
+            # non-id must not become comment_id 1.
+            "comment_id": raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else None,
+            **parsed,
+            "actor": row.get("actor"),
+            "created_at": row.get("created_at"),
+        })
+    if crew_id:
+        out = [e for e in out if e["crew_id"] == crew_id]
+    # Two-part key: known ids ascending, unknown ids after them (stable, so their
+    # timeline order is preserved). See the ordering note in the docstring.
+    out.sort(key=lambda e: (e["comment_id"] is None, e["comment_id"] or 0))
+    return out

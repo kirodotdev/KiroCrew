@@ -12,7 +12,7 @@ from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 # ---------------------------------------------------------------------------
 
 
-def _make_app_source(tmp_path, name="cli-test-app"):
+def _make_app_source(tmp_path, name="cli-test-app", crons=None):
     src = tmp_path / "source" / name
     src.mkdir(parents=True)
     manifest = {
@@ -24,6 +24,8 @@ def _make_app_source(tmp_path, name="cli-test-app"):
         "agents": ["agents/test-agent.json"],
         "skills": ["skills/test-skill"],
     }
+    if crons is not None:
+        manifest["crons"] = crons
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
     (src / "agents").mkdir()
     (src / "agents" / "test-agent.json").write_text('{"name": "test-agent"}')
@@ -164,3 +166,119 @@ class TestHandleApp:
         _handle_app(ns)
         captured = capsys.readouterr()
         assert "Usage" in captured.out
+
+
+class TestEnableRegistersCrons:
+    """CLI `app enable` must promote manifest crons into the scheduler store.
+
+    The HTTP enable route promotes app crons into the running CronService via
+    ``hooks_integration.on_app_enable``; the CLI runs in a separate process, so
+    it must write the jobs through the shared on-disk store instead (the
+    gateway's timer tick re-syncs the store by content digest and picks up
+    externally-added jobs). Without that write, an app enabled from the CLI
+    has its crons lie dormant until the next gateway restart.
+    """
+
+    CRONS = [{"name": "poller", "every": 900, "message": "poll things", "silent": True}]
+
+    def _store_job_names(self):
+        from kiro_crew.config import config_dir
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=config_dir())
+        return [j.name for j in svc.list_jobs(include_disabled=True)]
+
+    def _enable(self):
+        import argparse
+
+        from kiro_crew.cli import _handle_app
+
+        ns = argparse.Namespace(app_action="enable", name="cli-test-app")
+        _handle_app(ns)
+
+    def test_enable_registers_manifest_crons_in_store(self, tmp_path, app_env):
+        src = _make_app_source(tmp_path, crons=self.CRONS)
+        install_app(src)
+
+        assert self._store_job_names() == []  # nothing before enable
+        self._enable()
+
+        names = self._store_job_names()
+        assert names == ["cli-test-app/poller"]
+
+        # Ownership tag must match what disable-side cleanup removes by.
+        from kiro_crew.config import config_dir
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=config_dir())
+        job = svc.list_jobs(include_disabled=True)[0]
+        assert job.created_by == "app:cli-test-app"
+
+    def test_enable_twice_is_idempotent(self, tmp_path, app_env):
+        src = _make_app_source(tmp_path, crons=self.CRONS)
+        install_app(src)
+
+        self._enable()
+        self._enable()
+
+        assert self._store_job_names() == ["cli-test-app/poller"]
+
+    def test_concurrent_registration_persists_single_job(self, tmp_path, app_env):
+        """Two registrars with stale absent-snapshots must not persist duplicates.
+
+        Reproduces the CLI-enable-vs-gateway-boot race at the primitive the
+        bridge now routes through: two store-backed services both see the name
+        absent, then add concurrently. ``add_job_if_absent_async`` (name check
+        + append under one store lock) must let exactly one win — with the old
+        snapshot-then-``add_job_async`` path this persists two jobs.
+        """
+        import asyncio
+
+        from kiro_crew.apps.cron_sdk import CronSDK
+        from kiro_crew.config import config_dir
+        from kiro_crew.cron import CronService
+
+        async def _race() -> list:
+            # Two independent store-backed services, as in separate processes;
+            # both snapshot the store before either has appended.
+            svc_a = CronService(base_dir=config_dir())
+            svc_a._load()
+            svc_b = CronService(base_dir=config_dir())
+            svc_b._load()
+            return await asyncio.gather(
+                CronSDK("cli-test-app", svc_a).add_job_if_absent_async(
+                    "cli-test-app/poller", "poll things", every_secs=900
+                ),
+                CronSDK("cli-test-app", svc_b).add_job_if_absent_async(
+                    "cli-test-app/poller", "poll things", every_secs=900
+                ),
+            )
+
+        results = asyncio.run(_race())
+
+        assert self._store_job_names() == ["cli-test-app/poller"]
+        # Exactly one registrar won; the loser observed the existing job.
+        assert sorted(r is None for r in results) == [False, True]
+
+    def test_disable_removes_registered_crons(self, tmp_path, app_env):
+        import argparse
+
+        from kiro_crew.cli import _handle_app
+
+        src = _make_app_source(tmp_path, crons=self.CRONS)
+        install_app(src)
+        self._enable()
+        assert self._store_job_names() == ["cli-test-app/poller"]
+
+        ns = argparse.Namespace(app_action="disable", name="cli-test-app")
+        _handle_app(ns)
+
+        assert self._store_job_names() == []
+
+    def test_enable_without_crons_registers_nothing(self, tmp_path, app_env):
+        src = _make_app_source(tmp_path)  # no crons in manifest
+        install_app(src)
+
+        self._enable()
+
+        assert self._store_job_names() == []

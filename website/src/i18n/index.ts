@@ -14,13 +14,14 @@
  *    synchronous `t()` keeps them all valid with no per-test `await`.
  *
  * The cost is bundle size: every language ships to every user (except the
- * pseudolocale, which is DEV-only — see `CATALOGS`). At 11 catalogs that is
- * ~1.8 MB gzip, ~165 KB of it for each language the user will never read, so
+ * pseudolocale, which is DEV-only — see `CATALOGS`). At 12 catalogs that is
+ * ~2.0 MB gzip, ~173 KB of it for each language the user will never read, so
  * this approach does NOT scale indefinitely.
  *
  * ## Lazy-loading seam
  *
- * Catalog #12 should land behind the seam, not in front of it — switch to
+ * Korean is catalog #12 and the last one that lands in FRONT of the seam;
+ * catalog #13 belongs behind it — switch to
  * `i18next-http-backend` + `Suspense`:
  * catalogs move to `public/locales/<lng>/<ns>.json` and only the active
  * language is fetched. Nothing in the call sites changes — `useTranslation()`
@@ -43,6 +44,7 @@ import pt from './locales/pt.json'
 import ru from './locales/ru.json'
 import de from './locales/de.json'
 import ja from './locales/ja.json'
+import ko from './locales/ko.json'
 import it from './locales/it.json'
 import enXA from './locales/en-XA.json'
 import { DEFAULT_LANGUAGE, SUPPORTED_CODES } from './languages'
@@ -101,6 +103,7 @@ const AUTHORED_CATALOGS: Record<string, { translation: Record<string, unknown> }
   ru: { translation: ru },
   de: { translation: de },
   ja: { translation: ja },
+  ko: { translation: ko },
   it: { translation: it },
 }
 

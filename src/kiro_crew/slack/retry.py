@@ -30,6 +30,31 @@ _RETRYABLE_EXCEPTIONS = (
 )
 
 
+def is_retryable_slack_error(exc: BaseException) -> bool:
+    """True when *exc* is worth another attempt rather than treating as final.
+
+    The one classification rule, shared so callers cannot drift (this module's
+    whole reason for existing): a ``SlackApiError`` carrying a 4xx other than
+    429 is the caller's own fault — a deleted message, a channel we are not in,
+    a malformed payload — and will fail identically forever, so retrying it only
+    burns quota. Everything else (429, 5xx, DNS/connector blips, timeouts) is
+    transient. Anything outside the retryable classes is not a transport failure
+    at all and is likewise final.
+
+    A ``SlackApiError`` whose response carries no integer status is treated as
+    final: without a status there is nothing to suggest the next attempt would
+    differ.
+    """
+    if not isinstance(exc, _RETRYABLE_EXCEPTIONS):
+        return False
+    if not isinstance(exc, SlackApiError):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if not isinstance(status, int):
+        return False
+    return status == 429 or status >= 500
+
+
 async def open_dm_with_retry(
     slack: Any,
     user_id: str,
@@ -48,12 +73,7 @@ async def open_dm_with_retry(
         try:
             return await slack.open_dm(user_id)
         except _RETRYABLE_EXCEPTIONS as exc:
-            retryable = (
-                not isinstance(exc, SlackApiError)
-                or exc.response.status_code == 429
-                or exc.response.status_code >= 500
-            )
-            if not retryable:
+            if not is_retryable_slack_error(exc):
                 raise
             if attempt < max_attempts:
                 logger.warning(

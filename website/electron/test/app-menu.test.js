@@ -17,6 +17,8 @@ function makeDeps(overrides = {}) {
     zoomActualSize: record("zoomActualSize"),
     zoomIn: record("zoomIn"),
     zoomOut: record("zoomOut"),
+    alwaysOnTop: false,
+    toggleAlwaysOnTop: record("toggleAlwaysOnTop"),
     openNewConnectionWindow: record("openNewConnectionWindow"),
     renameCurrentWindow: record("renameCurrentWindow"),
     promptRemoteHost: record("promptRemoteHost"),
@@ -119,6 +121,25 @@ for (const isMac of [true, false]) {
     assert.strictEqual(item.accelerator, "CmdOrCtrl+Shift+I");
   });
 
+  test(`${os}: View has a Keep on Top checkbox whose checked mirrors the injected value`, () => {
+    for (const alwaysOnTop of [true, false]) {
+      const { deps } = makeDeps({ isMac, alwaysOnTop });
+      const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+      const item = view.submenu.find((i) => i.label === "Keep on Top");
+      assert.ok(item, "Keep on Top present in the View submenu");
+      assert.strictEqual(item.type, "checkbox");
+      assert.strictEqual(item.id, "keep-on-top");
+      assert.strictEqual(item.checked, alwaysOnTop, `checked follows alwaysOnTop=${alwaysOnTop}`);
+      assert.strictEqual(item.accelerator, undefined, "deliberately ships no accelerator");
+    }
+  });
+
+  test(`${os}: Keep on Top click invokes the injected toggle`, () => {
+    const { deps, calls } = makeDeps({ isMac });
+    findItem(buildMenuTemplate(deps), (i) => i.label === "Keep on Top").click();
+    assert.deepStrictEqual(calls, ["toggleAlwaysOnTop"]);
+  });
+
   test(`${os}: Settings… and About clicks invoke the injected actions`, () => {
     const { deps, calls } = makeDeps({ isMac });
     const template = buildMenuTemplate(deps);
@@ -136,6 +157,7 @@ for (const isMac of [true, false]) {
       "Actual Size",
       "Zoom In",
       "Zoom Out",
+      "Keep on Top",
       "Toggle Developer Tools",
       "New Connection Window…",
       "Rename Window…",
@@ -151,6 +173,7 @@ for (const isMac of [true, false]) {
       "zoomActualSize",
       "zoomIn",
       "zoomOut",
+      "toggleAlwaysOnTop",
       "toggleDevTools",
       "openNewConnectionWindow",
       "renameCurrentWindow",

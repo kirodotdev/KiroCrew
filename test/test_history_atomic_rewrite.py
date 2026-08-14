@@ -66,6 +66,8 @@ class TestMarkConsolidatedOffloaded:
             [{"role": "user", "content": "hi"}], 1, 0
         )
         log.get_metadata.return_value = {}
+        # A fresh span is eligible; _consolidate's inner gate reads this.
+        log.consolidation_retry_state.return_value = (0, 0.0)
         log.mark_consolidated.side_effect = lambda *a, **k: mark_thread_id.__setitem__(
             "id", threading.get_ident()
         )

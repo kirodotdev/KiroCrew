@@ -1,7 +1,10 @@
-import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest } from 'lucide-react'
+import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter } from 'lucide-react'
 import GithubLogo from '../../../components/icons/GithubLogo'
+import Clickable from '../../../components/Clickable'
+import { fmtNumber } from '../../../i18n/format'
 import { useIssueRadar } from '../context'
-import { APP_VERSION, DEFAULT_RAIL_WIDTH } from '../lib/format'
+import { APP_VERSION, CREW_SORT_FIELDS, DEFAULT_RAIL_WIDTH } from '../lib/format'
+import { CREW_FILTERS, type CrewFilter } from '../lib/types'
 import AccordionSection from './Accordion'
 import DashboardsSection from './DashboardsSection'
 import FiltersSection from './FiltersSection'
@@ -29,6 +32,7 @@ export default function LeftRail({
 }) {
   const {
     expanded, dashboardTab, active, repos, openDashboard, openIssues, openPulls, openSettings,
+    openCrews,
   } = useIssueRadar()
   // Provider vocabulary: GitLab calls these merge requests, and calling them
   // pull requests in a GitLab workspace is simply wrong copy.
@@ -75,6 +79,18 @@ export default function LeftRail({
       </AccordionSection>
 
       <AccordionSection
+        title={i18nT('apps.issueRadar.views.crews.rail_section')}
+        icon={Users}
+        expanded={expanded === 'crews'}
+        // Return to the crews page you were last on — `crewView` is persisted, so
+        // resetting it here would discard the one thing the section remembers.
+        // Same contract as Dashboards above.
+        onToggle={() => openCrews()}
+      >
+        <CrewsSection />
+      </AccordionSection>
+
+      <AccordionSection
         title={i18nT('apps.issueRadar.components.leftRail.issues')}
         icon={CircleDot}
         expanded={expanded === 'filters'}
@@ -108,6 +124,109 @@ export default function LeftRail({
         <span className="ml-auto text-[12px] text-muted opacity-70">{i18nT('apps.issueRadar.components.leftRail.v')}{APP_VERSION}</span>
       </div>
     </aside>
+  )
+}
+
+/** Body of the "Crews" accordion section: Sort and Filters over the roster — the
+ * crew analogue of FiltersSection / PrFiltersSection, and the reason those
+ * controls are NOT in column 2: the rail holds how you narrow a list, the list
+ * column holds the list.
+ *
+ * The roster itself is deliberately absent here. Column 2 is where a crew's state
+ * is read, and the rail is the surface that has to stay legible at 220px — a
+ * second copy of one list, without the state, is the worse of the two. */
+function CrewsSection() {
+  const {
+    openCrews, crewCounts,
+    crewFilter, setCrewFilter, crewSortKey, crewSortDir, cycleCrewSort,
+  } = useIssueRadar()
+
+  const rowClass = (isActive: boolean) =>
+    `w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] text-left cursor-pointer transition-colors ${
+      isActive ? 'bg-accent-subtle text-text font-medium' : 'text-muted hover:bg-bg-hover'
+    }`
+
+
+  /** Filter labels and tallies keyed by filter, so the rows are driven by
+   * `CREW_FILTERS` itself — a filter added to the list without a label or a count
+   * fails to compile here.
+   *
+   * The counts are the SERVER's, summed from each crew's open work items: data the
+   * roster payload does not carry, so they cannot be derived client-side. They are
+   * independent predicates, not a partition, and are allowed to sum past the roster
+   * size — a paused crew holding in-flight work is counted in both `working` and
+   * `paused`. */
+  const FILTER_LABEL: Record<CrewFilter, string> = {
+    all: i18nT('apps.issueRadar.views.crews.filter_all'),
+    working: i18nT('apps.issueRadar.views.crews.filter_working'),
+    paused: i18nT('apps.issueRadar.views.crews.filter_paused'),
+  }
+  const FILTER_COUNT: Record<CrewFilter, number> = {
+    all: crewCounts.on_duty,
+    working: crewCounts.working,
+    paused: crewCounts.paused,
+  }
+
+  return (
+    <div className="px-3 pt-1">
+      {/* Sort and filters only — no destinations. This surface's destinations
+          already live in column 2, where each crew is its own card. Repeating them
+          here is a second copy of one list, and the copy without the state. The
+          issues and PR sections set the shape: the rail narrows a list, the list
+          column holds it. */}
+      <div className="pt-1">
+        <div className="flex items-center gap-1.5 mb-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
+          <ArrowUpDown size={12} /> {i18nT('apps.issueRadar.views.crews.rail_sort')}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {CREW_SORT_FIELDS.map((f) => {
+            const isActive = f.key === crewSortKey
+            const DirIcon = crewSortDir === 'asc' ? ArrowUp : ArrowDown
+            return (
+              <Clickable
+                key={f.key}
+                onClick={() => cycleCrewSort(f.key)}
+                data-testid={`crew-sort-${f.key}`}
+                aria-pressed={isActive}
+                className={rowClass(isActive)}
+              >
+                <f.icon size={14} className="flex-shrink-0" />
+                <span className="flex-1">{f.label}</span>
+                {isActive && <DirIcon size={14} className="text-accent" />}
+              </Clickable>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="pt-5">
+        <div className="flex items-center gap-1.5 mb-1.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em]">
+          <ListFilter size={12} /> {i18nT('apps.issueRadar.views.crews.rail_filters')}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {/* Mutually exclusive, like the PR lifecycle rows: picking one replaces
+              the last. Each carries the server's tally on the right, which is why
+              these are not plain FilterRows. */}
+          {CREW_FILTERS.map((key) => {
+            const isActive = crewFilter === key
+            return (
+              <Clickable
+                key={key}
+                onClick={() => { setCrewFilter(key); openCrews() }}
+                data-testid={`crew-filter-${key}`}
+                aria-pressed={isActive}
+                className={rowClass(isActive)}
+              >
+                <span className="flex-1">{FILTER_LABEL[key]}</span>
+                <span className="flex-shrink-0 text-[12px] text-muted opacity-80">
+                  {fmtNumber(FILTER_COUNT[key])}
+                </span>
+              </Clickable>
+            )
+          })}
+        </div>
+      </div>
+    </div>
   )
 }
 

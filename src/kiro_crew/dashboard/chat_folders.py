@@ -8,10 +8,12 @@ import logging
 import os
 import unicodedata
 import uuid
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -152,20 +154,35 @@ def _folders_with_history_counts(state: DashboardState) -> list[dict]:
     return [{**f, "history_count": counts.get(f["id"], 0)} for f in state._folders]
 
 
-def _unhide_folder(state: DashboardState, folder_id: str) -> None:
+async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
     """Clear a folder's `hidden` flag when a session re-engages it.
 
     Model-B semantics: reviving or moving a session into a folder un-hides it so
     it stays visible until the user hides it again. Persists on change; the
     caller is responsible for pushing the slots update.
+
+    Returns whether the folder EXISTS. Existence is reported from inside the
+    store lock, which is the only place it can be checked without a race: a
+    caller that validated against ``state._folders`` beforehand and then assigned
+    can have the folder deleted in between, and would persist a placement into a
+    folder that is gone.
     """
     if not folder_id:
-        return
-    for f in state._folders:
-        if f["id"] == folder_id and f.get("hidden"):
-            f["hidden"] = False
-            state.save_folders()
-            return
+        return True
+
+    def _clear(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+        for f in folders:
+            if f["id"] == folder_id:
+                if f.get("hidden"):
+                    f["hidden"] = False
+                    return True, True
+                # Present and already visible: report no change so the store is
+                # not rewritten. This runs on every session move, so a needless
+                # write here would be a write per move.
+                return False, True
+        return False, False
+
+    return await state.mutate_folders(_clear)
 
 
 async def api_chat_folders(request: web.Request) -> web.Response:
@@ -259,8 +276,24 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     }
     if color:
         folder["color"] = color
-    state._folders.append(folder)
-    state.save_folders()
+
+    def _append(folders: list[dict[str, Any]]) -> tuple[bool, str]:
+        # Re-check the parent under the lock. Its existence was validated before
+        # the lock was taken, so a concurrent delete of that parent would
+        # otherwise land this folder with a dangling parent_id — the same
+        # pre-lock/post-lock gap the reparent path re-tests.
+        if parent_id and not any(f["id"] == parent_id for f in folders):
+            return False, "parent_not_found"
+        folder["order"] = len(folders)  # recount under the lock
+        folders.append(folder)
+        return True, ""
+
+    if await state.mutate_folders(_append) == "parent_not_found":
+        # The parent was deleted while this request waited for the lock.
+        return web.json_response(
+            {"error": "parent folder not found", "code": "folder_parent_not_found"},
+            status=400,
+        )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_create",
@@ -307,10 +340,20 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
-    if "parent_id" in body:
+    reparenting = "parent_id" in body
+    new_parent = ""
+    if reparenting:
         # Re-parent: move this folder into another folder, or to the top
         # level ("" / null). Reject self-parenting and cycles (the new
         # parent must not be the folder itself or any of its descendants).
+        #
+        # Self-parenting is state-independent, so it is decided here. The other
+        # two conditions depend on the CURRENT tree, and this check runs before
+        # the store lock is taken — so it is only a fast reject. The
+        # authoritative parent-exists / cycle test is repeated inside ``_apply``
+        # under the lock: two opposite reparents (A into B, B into A) can both
+        # pass here against the same pre-state and would otherwise both apply,
+        # persisting a cycle that makes both folders unreachable in the tree.
         new_parent = str(body["parent_id"] or "")
         if new_parent:
             if new_parent == fid:
@@ -339,11 +382,47 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 status=400,
             )
         changes["color"] = color_val
-    # All fields validated — apply atomically.
-    folder.update(changes)
-    if not folder.get("color"):
-        folder.pop("color", None)
-    state.save_folders()
+    # All fields validated — apply atomically under the store lock, re-finding
+    # the folder there so a concurrent delete cannot resurrect it, and
+    # re-deciding the tree-shape rules there so two concurrent reparents cannot
+    # each validate against the pre-state and persist a cycle between them.
+
+    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
+        target = next((f for f in folders if f["id"] == fid), None)
+        if target is None:
+            return False, "not_found"
+        if reparenting and new_parent:
+            if not any(f["id"] == new_parent for f in folders):
+                return False, "parent_not_found"
+            if _is_descendant(folders, ancestor_id=fid, folder_id=new_parent):
+                return False, "cycle"
+        target.update(changes)
+        if not target.get("color"):
+            target.pop("color", None)
+        return True, ""
+
+    err = await state.mutate_folders(_apply)
+    if err == "not_found":
+        # Deleted between the validation above and acquiring the store lock.
+        return web.json_response(
+            {"error": "not found", "code": "folder_not_found"}, status=404
+        )
+    if err == "parent_not_found":
+        # The parent was deleted while this request waited for the lock.
+        return web.json_response(
+            {"error": "parent folder not found", "code": "folder_parent_not_found"},
+            status=400,
+        )
+    if err == "cycle":
+        # A concurrent reparent moved the target under this folder while this
+        # request waited for the lock; applying it now would persist a cycle.
+        return web.json_response(
+            {
+                "error": "cannot move a folder into its own descendant",
+                "code": "folder_cycle",
+            },
+            status=409,
+        )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_update",
@@ -359,15 +438,52 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     fid = request.match_info["id"]
     if not any(f["id"] == fid for f in state._folders):
         return web.json_response({"error": "not found"}, status=404)
-    for f in state._folders:
-        if f.get("parent_id") == fid:
-            f["parent_id"] = ""
-    state._folders = [f for f in state._folders if f["id"] != fid]
+    # Unfile the folder's slots first, then commit the folder removal. If that
+    # commit fails, put the slots back: otherwise the delete half-lands —
+    # conversations persistently unfiled while the folder they came from is
+    # still there. Restoring is order-neutral, which matters because either
+    # ordering leaves a partial-commit window on its own (folder-first strands a
+    # dangling folder_id; slots-first strands unfiled conversations), and only
+    # undoing the half that did land closes both.
+    unfiled: list[tuple[Any, str]] = []
     for slot in state._slots.values():
         if slot.folder_id == fid:
+            unfiled.append((slot, slot.folder_id))
             slot.folder_id = ""
             await save_slot_off_loop(state, slot, force=True)
-    state.save_folders()
+
+    def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+        for f in folders:
+            if f.get("parent_id") == fid:
+                f["parent_id"] = ""
+        # In place, not a rebind: mutate_folders snapshots the list object it
+        # was given, and other holders of state._folders must see the removal.
+        folders[:] = [f for f in folders if f["id"] != fid]
+        return True, None
+
+    try:
+        await state.mutate_folders(_remove)
+    except Exception:
+        for slot, previous in unfiled:
+            # Only put back a slot that is STILL unfiled. Between the unfile
+            # above and this rollback the user can move that conversation
+            # somewhere else, and their move is the newer intent — restoring
+            # `previous` unconditionally would discard it and, worse, file the
+            # slot back into the folder this request was trying to delete.
+            if slot.folder_id:
+                continue
+            slot.folder_id = previous
+            try:
+                await save_slot_off_loop(state, slot, force=True)
+            except Exception:
+                # Best-effort restore; a slot left unfiled renders at the top
+                # level, which the sidebar handles, so keep restoring the rest.
+                logger.warning(
+                    "folder delete rollback: could not restore slot %s to folder %s",
+                    slot.key, previous, exc_info=True,
+                )
+        state.push_slots_update()
+        raise
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard", operation="chat.folder_delete",
@@ -391,10 +507,20 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     folder_id = str(body.get("folder_id") or "")
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
+    previous = slot.folder_id
     if folder_id != slot.folder_id:
         slot._folder_changed = True  # re-inject [FOLDER] breadcrumb on next turn
     slot.folder_id = folder_id
-    _unhide_folder(state, folder_id)
+    # The check above reads the store unlocked, so a delete can land between it
+    # and here. _unhide_folder re-checks existence under the store lock, which
+    # is the only place the answer cannot go stale — reject rather than persist a
+    # placement into a folder that no longer exists.
+    if not await _unhide_folder(state, folder_id):
+        slot.folder_id = previous
+        slot._folder_changed = False
+        return web.json_response(
+            {"error": "folder not found", "code": "folder_not_found"}, status=400
+        )
     await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
     sel().log_api_access(
@@ -426,7 +552,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "pinned": slot.pinned})
 
 
-_VALID_MODES = ("", "orchestrator")
+_VALID_MODES = ("", "orchestrator", "crew")
 
 
 async def api_chat_slot_mode(request: web.Request) -> web.Response:
@@ -437,6 +563,30 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
+    # App ownership (App Kit §5.2) — the same deny-by-default rule api_chat_send
+    # and api_chat_slot_create apply, and it matters HERE because the mode
+    # decides which execution model a session runs under: an app holding
+    # `/api/chat` could otherwise list a foreign slot and PATCH it into (or out
+    # of) crew mode, changing a session it does not own. One code for both
+    # reasons on purpose — a distinct code per reason would turn this 404 into an
+    # existence oracle for slots the caller may not know about.
+    request_app = request.get("app", "")
+    if request_app and getattr(slot, "_app", "") != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.slot_mode",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key}",
+            error=(
+                "app cannot access unscoped slots"
+                if not getattr(slot, "_app", "")
+                else "app does not own this slot"
+            ),
+        )
+        return web.json_response(
+            {"error": "not found", "code": "slot_not_found"}, status=404
+        )
     try:
         body = await request.json()
     except Exception:
@@ -444,7 +594,58 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     mode = body.get("mode", "")
     if mode not in _VALID_MODES:
         return web.json_response({"error": "invalid mode"}, status=400)
-    if slot.running:
+    # Crew keeps its durable queue in a directory named after the slot, and a
+    # key that folds to nothing but dots has no such directory (see
+    # `CrewStore`). That refusal would otherwise land on the first crew MESSAGE
+    # — an unhandled 500 on a tab the switch had already reported as crew, and
+    # on every message after it. Refuse the switch instead, while it is still a
+    # request with an answer.
+    # Deferred import: this module is reachable from the gateway's boot path
+    # (gateway -> kiro_crew.dashboard -> chat_folders), and crew is a
+    # dashboard-only subsystem, so importing it at module scope made
+    # `--no-dashboard` pay for it before the API was ready to serve. Inside a
+    # mode-switch handler the cost is a sys.modules hit.
+    from kiro_crew.crew_chat import CrewOrchestrator, is_crew_capable_slot_key
+
+    if mode == "crew" and not is_crew_capable_slot_key(slot.key):
+        return web.json_response(
+            {"error": "this session name cannot run crew mode",
+             "code": "crew_unsupported_slot"},
+            status=400,
+        )
+    # Work in SUBAGENTS keeps `slot.running` false the whole time, so that flag
+    # alone lets the mode flip mid-flight and interleave two execution models in
+    # one session. Two separate questions are needed, because the risk is not
+    # symmetric:
+    #  * ANY direction — a plain-chat subagent may be running on this slot right
+    #    now, and its completion follows the default `_run_chat` path, so
+    #    ENTERING crew mode has to be refused for that too, not just leaving it.
+    #    (Gating the whole check on `slot.mode == "crew"` missed exactly this.)
+    #  * LEAVING crew — the orchestrator may still hold crew topics or a live
+    #    queue, which only it can answer for.
+    busy = False
+    subs = getattr(state, "subagents", None)
+    if subs is not None:
+        try:
+            # The key the SPAWN ran under, which for a channel-linked slot is the
+            # channel session, not `dashboard:<tab>` — `has_pending_work_for`
+            # matches `parent_session_key` exactly, so deriving it differently
+            # here reports "idle" while that slot's subagents are still running
+            # and flips the execution model out from under them.
+            busy = bool(subs.has_pending_work_for(effective_session_key(slot)))
+        except Exception:
+            busy = True       # fail closed: refuse rather than risk the flip
+    if not busy and slot.mode == "crew":
+        # isinstance, not `is not None` — matching gateway.py's own check on this
+        # attribute. A stand-in object passes an identity check and then answers
+        # `has_live_work` with something truthy, refusing a switch that is fine.
+        crew = getattr(state, "crew", None)
+        if isinstance(crew, CrewOrchestrator):
+            try:
+                busy = bool(await crew.has_live_work(name))
+            except Exception:
+                busy = True
+    if slot.running or busy:
         sel().log_api_access(
             caller="dashboard", operation="chat.slot_mode",
             outcome="denied", source="dashboard", resources=name,

@@ -296,3 +296,61 @@ describe('SubagentRunCard rendering', () => {
     expect(screen.queryByTestId('subagent-card-queued')).toBeNull()
   })
 })
+
+describe('SubagentRunCard — opening from a background pane retargets the panel first', () => {
+  // The Subagents panel is mounted for `activeSlot`, and split view never moves
+  // activeSlot with pane focus. Without the retarget the click opens ANOTHER
+  // session's panel — usually "No subagents running" — while the card's own
+  // label promises this wave's detail.
+  const launch = { ids: ['a1'], announced: 1 }
+
+  it('activates the card\u2019s own session, then opens the panel on this wave', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: 'some-other-slot',
+        subagents: {},
+        slotActivity: { [SLOT]: { subagents: { a1: agent('a1', 'running') } } },
+        subagentQueued: {},
+        // switchSlot.pending reads these, so a partial state would throw
+        // inside the reducer rather than exercise the retarget.
+        slotHistory: [], slotMessages: {}, messages: [], toolLog: [],
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    fireEvent.click(screen.getByTestId('subagent-run-card'))
+    // switchSlot.pending assigns activeSlot synchronously as it is dispatched,
+    // so the panel is already pointed at this card's session by the time the
+    // tab opens.
+    expect(store.getState().chat.activeSlot).toBe(SLOT)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(store.getState().chat.activityTab).toBe('subagents')
+  })
+
+  it('keeps the affordance in a background pane rather than going quiet', () => {
+    // The alternative — dropping the button when the pane is not active — leaves
+    // a dead end in the one surface split view exists for: a failed wave with no
+    // route to its detail and no cue that one exists.
+    const store = createTestStore({
+      chat: {
+        activeSlot: 'some-other-slot',
+        subagents: {},
+        slotActivity: { [SLOT]: { subagents: { a1: agent('a1', 'failed') } } },
+        subagentQueued: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    const card = screen.getByTestId('subagent-run-card')
+    expect(card.tagName).toBe('BUTTON')
+    expect(card.getAttribute('title')).toBeTruthy()
+  })
+
+  it('does not retarget when the card already belongs to the active session', () => {
+    const store = createTestStore({
+      chat: { activeSlot: SLOT, subagents: { a1: agent('a1', 'running') }, subagentQueued: {} } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    fireEvent.click(screen.getByTestId('subagent-run-card'))
+    expect(store.getState().chat.activeSlot).toBe(SLOT)
+    expect(store.getState().chat.activityTab).toBe('subagents')
+  })
+})

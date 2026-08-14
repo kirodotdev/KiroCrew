@@ -118,10 +118,13 @@ describe('SideChat stale-context banner', () => {
     fireEvent.change(textarea, { target: { value: 'doomed q' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
     await waitFor(() => {
-      expect(screen.getByText('doomed q')).toBeInTheDocument()
+      expect(store.getState().chat.slotSide['slot-1']?.messages).toHaveLength(1)
     })
+    // Rolled back out of the transcript — and handed back to the composer rather
+    // than lost, since a rejected submit is a reachable path (e.g. queue full).
     await waitFor(() => {
-      expect(screen.queryByText('doomed q')).not.toBeInTheDocument()
+      expect(store.getState().chat.slotSide['slot-1']?.messages ?? []).toHaveLength(0)
     })
+    expect(textarea).toHaveValue('doomed q')
   })
 })

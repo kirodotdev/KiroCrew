@@ -16,7 +16,6 @@ vi.mock('../api/client', () => ({
       sessions: [],
       tasks: [],
       totals: { rss_mb: 0, runtimes: 0, host_mb: 16384, host_pct: 0, rss_is_upper_bound: false },
-      unattributed: null,
       history: [],
     }),
     system: () => Promise.resolve({

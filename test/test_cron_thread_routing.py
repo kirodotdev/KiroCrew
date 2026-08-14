@@ -472,7 +472,10 @@ class TestCronCallbackDashboardChat:
             "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
         ) as mock_inject:
             _run_callback(gateway, job, stream_result="cron output")
-            mock_inject.assert_called_once_with(gateway.dashboard_state, job, "cron output", history=ANY)
+            mock_inject.assert_called_once_with(
+                gateway.dashboard_state, job, "cron output", history=ANY,
+                context_reading=ANY,
+            )
 
     def test_persistent_session_without_slot_still_injects(self) -> None:
         gateway = _make_gateway()
@@ -483,7 +486,10 @@ class TestCronCallbackDashboardChat:
             "kiro_crew.slack.gateway.inject_cron_result_to_dashboard"
         ) as mock_inject:
             _run_callback(gateway, job, stream_result="cron output")
-            mock_inject.assert_called_once_with(gateway.dashboard_state, job, "cron output", history=ANY)
+            mock_inject.assert_called_once_with(
+                gateway.dashboard_state, job, "cron output", history=ANY,
+                context_reading=ANY,
+            )
 
     def test_non_persistent_session_does_not_inject(self) -> None:
         gateway = _make_gateway()
@@ -529,7 +535,7 @@ class TestCronCallbackDashboardChat:
         ) as mock_inject:
             _run_callback(gateway, job, stream_result="silent output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "silent output"
+                gateway.dashboard_state, job, "silent output", context_reading=ANY
             )
 
     def test_silent_cron_no_slot_does_not_inject(self) -> None:
@@ -570,7 +576,8 @@ class TestCronCallbackDashboardChat:
         ) as mock_inject:
             _run_callback(gateway, job, stream_result="shown output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "shown output", history=ANY
+                gateway.dashboard_state, job, "shown output", history=ANY,
+                context_reading=ANY,
             )
 
     def test_hide_in_chat_suppresses_inject_even_with_existing_slot(self) -> None:

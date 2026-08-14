@@ -187,6 +187,89 @@ def session_key(channel_type: str, conversation_id: str) -> str:
     return f"{channel_type}:{conversation_id}"
 
 
+# ── Canonical address parsing (RFC §9 rule 4: exactly ONE parser module) ──
+
+
+@dataclass(frozen=True)
+class ParsedSessionKey:
+    """A conversational session key decomposed per the RFC §9 grammar.
+
+    ``{surface}:{agent}:{chat_type}:{scope…}[:genN]`` — the first segment is
+    the surface and is the routing authority (``ChannelTurn.channel_type``
+    MUST equal it; the contract tests pin this). ``scope`` is one or more
+    segments carrying the transport's own topology; ``gen`` is the rotating
+    generation (0 = bare bucket, no suffix).
+    """
+
+    surface: str
+    agent: str
+    chat_type: str
+    scope: tuple[str, ...]
+    gen: int = 0
+
+    @property
+    def bucket(self) -> str:
+        """The durable bucket — the key with any generation suffix removed."""
+        parts = [self.surface, self.agent, self.chat_type, *self.scope]
+        return ":".join(parts)
+
+
+_GEN_SUFFIX_RE = re.compile(r"^gen(\d+)$")
+
+
+def parse_session_key(key: str) -> ParsedSessionKey | None:
+    """Parse a canonical conversational key; ``None`` for anything else.
+
+    Deliberately STRICT: only the §9 grammar parses. Legacy shapes — bare
+    Slack ``thread_ts``, two-segment ``slack:<ts>``, ``dashboard:`` keys, the
+    app-platform ``channel:{id}:{agent}`` prefix — return ``None`` rather than
+    a wrong decomposition; they predate the grammar and their migration is
+    explicitly out of scope (§9 accepted debts). Callers that must handle
+    legacy keys keep using the prefix classifiers above.
+
+    Consumers must treat a ``None`` as "not addressable by grammar", never as
+    an error: the dispatch pipeline itself stays address-agnostic and does not
+    call this (pinned in ``dispatch.py`` docstrings).
+    """
+    if not key:
+        return None
+    segments = key.split(":")
+    if len(segments) < 4:
+        return None
+    surface = segments[0]
+    if surface not in CHANNEL_SESSION_NAMESPACES:
+        return None
+    gen = 0
+    tail = segments[-1]
+    m = _GEN_SUFFIX_RE.match(tail)
+    if m is not None:
+        gen = int(m.group(1))
+        segments = segments[:-1]
+        if len(segments) < 4:
+            return None
+    if any(not s for s in segments):
+        return None  # an empty segment means a malformed key, not an address
+    return ParsedSessionKey(
+        surface=surface,
+        agent=segments[1],
+        chat_type=segments[2],
+        scope=tuple(segments[3:]),
+        gen=gen,
+    )
+
+
+def assert_colon_free(segment: str, *, what: str) -> str:
+    """Enforce §9 rule 4 at BUILD time: segments must not contain ``:``.
+
+    A colon inside a segment silently shifts every later segment during
+    parsing — the address becomes wrong, not invalid. Builders call this so
+    the corruption is impossible to construct rather than detected later.
+    """
+    if ":" in segment:
+        raise ValueError(f"session-key {what} must not contain ':': {segment!r}")
+    return segment
+
+
 def is_legacy_slack_key(key: str) -> bool:
     """True iff ``key`` is a bare Slack ``thread_ts`` (un-namespaced)."""
     return bool(_SLACK_TS_RE.fullmatch(key))
@@ -267,9 +350,22 @@ def build_dm_session_key(
     keep their compatibility shim (see ``canonical_key``) untouched.
     """
     if dm_scope == DM_SCOPE_UNIFIED and chat_type == CHAT_TYPE_DIRECT:
-        bucket = f"{DM_SCOPE_UNIFIED}:{agent}"
+        bucket = f"{DM_SCOPE_UNIFIED}:{assert_colon_free(agent, what='agent')}"
     else:
-        bucket = f"{channel}:{agent}:{chat_type}:{user}"
+        # ``user`` is a SCOPE PATH, not a single segment: telegram forum routes
+        # pass "{chat_id}:{thread}" here, which §9 rule 2 blesses as two scope
+        # segments (hierarchy depth lives in the scope). So the colon-free rule
+        # applies to its SUB-segments (none may be empty), not to the whole.
+        if ":" in user and any(not s for s in user.split(":")):
+            raise ValueError(f"session-key scope path has an empty segment: {user!r}")
+        bucket = ":".join(
+            (
+                assert_colon_free(channel, what="channel"),
+                assert_colon_free(agent, what="agent"),
+                assert_colon_free(chat_type, what="chat_type"),
+                user,
+            )
+        )
     return f"{bucket}:gen{gen}" if gen else bucket
 
 
@@ -318,10 +414,19 @@ def release_conversation_location(
 
     Returns ``(reply_text, swept_keys)``. A non-empty sweep is the caller's
     cue to refresh any dashboard projection of the cleared bindings.
+
+    The three clears are ONE critical section and one whole-map write: they are
+    one user-visible action ("nothing mirrors here anymore"), and each of them
+    would otherwise rewrite the entire map and be individually interruptible, so
+    a failure or a concurrent writer partway through could leave the location
+    half-freed while the reply already claimed ✅. Nesting is counted, so a
+    caller that batches a wider sequence around this one (Telegram pairs it with
+    the opt-out write) still gets a single write.
     """
-    cleared = int(sessions.clear_mirror_link(key))
-    cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
-    swept = sessions.clear_mirror_links_at(location)
+    with sessions.batched_save():
+        cleared = int(sessions.clear_mirror_link(key))
+        cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
+        swept = sessions.clear_mirror_links_at(location)
     if swept:
         logger.info(
             "%s: unlink swept %d mirror binding(s) at this conversation: %s",
@@ -335,6 +440,107 @@ def release_conversation_location(
     if cleared == 1:
         return "✅ Unlinked.", swept
     return "This conversation wasn't linked.", swept
+
+
+def _is_unrouted_slack_placeholder(link: ChannelLink) -> bool:
+    """True for a Slack link that names no thread, i.e. one nobody chose.
+
+    ``set_channel`` writes the conversation's namespaced bucket
+    (``discord:<id>``) into the legacy ``slack_channel_id`` field, and
+    :meth:`SessionMap.get_mirror_link` synthesizes a Slack ``ChannelLink`` from
+    that field whenever no explicit ``mirror`` row exists — so the first turn of
+    a new channel session reads back a Slack link it never asked for.
+
+    A threadless Slack row is not a routable mirror: an empty ``thread_ts`` is
+    Slack's own clear sentinel and never enters ``_thread_to_session``, so
+    nothing can be delivered through it. A real Slack mirror always names its
+    thread, which is why the thread — not the channel type — is what separates
+    bookkeeping from a binding.
+    """
+    return link.channel_type == SLACK_NAMESPACE and not link.thread_id
+
+
+def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> bool:
+    """Bind the conversation a session is being READ in as its own outbound mirror.
+
+    The in-channel counterpart of :func:`release_conversation_location`, shared by
+    the DM dispatchers and called from the inbound turn path. A channel
+    conversation IS its own mirror: the person reading the chat is the audience
+    for every turn of that session, including the turns they later take from the
+    dashboard. Slack has always stamped its own thread on every inbound turn and
+    ``SessionMap.get_mirror_link`` synthesizes a mirror from that binding, so a
+    dashboard turn on a Slack conversation has always reached Slack. A channel
+    that writes the binding only from its explicit link command reaches nobody:
+    ``_resolve_mirror_target`` finds no link for that channel and the chat sits
+    there looking dead while the conversation continues elsewhere.
+
+    Re-asserted on EVERY turn rather than only on a new session, because the
+    binding is what a restart-cold session, an unlink at this location by another
+    session, or a rival claim can take away — and only a self-healing bind cannot
+    leave a live conversation silently unmirrored. Those all REMOVE a binding;
+    none of them repoints one. So ANY binding already present is deliberate and is
+    left alone — whichever conversation and whichever CHANNEL it names. The
+    dashboard can point a session's mirror at any surface, so a channel
+    conversation whose owner aimed it elsewhere keeps that target; overwriting it
+    would silently redirect their replies into this chat. The one exception is the
+    unrouted Slack placeholder (:func:`_is_unrouted_slack_placeholder`) — the
+    first turn of a new channel session always reads one back, and it is
+    bookkeeping surfacing through the synthesis path rather than a choice.
+
+    Honours the persisted opt-out the in-channel unlink writes: without it, "off"
+    would last exactly until the user's next message, because an entry with no
+    binding is indistinguishable from one that was never linked. Declining is ALL
+    the opt-out does here — this never clears a binding it finds, so an explicit
+    dashboard link to a different target survives it.
+
+    *location* is the single definition of "this conversation", carrying whatever
+    thread/topic scoping the channel needs; the same value must be handed to
+    :func:`release_conversation_location`, which matches an occupied location by
+    VALUE, so a second spelling would let the release miss the binding this wrote.
+
+    Skipped entirely when *key* does not identify ONE conversation.
+    ``dm_scope="unified"`` collapses every allowed user's direct DMs into a single
+    ``unified:{agent}`` bucket — the channel and the user drop out of the key — so
+    "the origin conversation" has no single answer, and a mirror bound there would
+    deliver one user's dashboard replies into another user's chat. The test reads
+    the KEY rather than each channel's config, because the key is what the binding
+    hangs off: a config-derived check in each dispatcher could disagree with the
+    key actually in use, and one written per channel would have to be got right
+    again every time. A forum/thread route keeps its full bucket under any scope,
+    so it is unaffected, and the explicit in-channel link stays available — it
+    names the conversation the user is actually in.
+
+    Returns True iff a binding was written. Skipping is a no-op, and the steady
+    state is a READ: ``SessionMap`` rewrites the whole map per mutation on the
+    event loop, so a per-turn write would put that stall on the repeating path.
+
+    Never raises. This runs on the turn path, where an uncaught raise drops the
+    turn and answers the user nothing. ``ConversationOwnershipConflict`` is the
+    reachable one: a transport declaring
+    ``TransportCapabilities.supports_session_resume`` makes its conversations
+    inbound-committable, so an inbound-committed occupant refuses this claim. A
+    dispatcher that routes such a conversation to its occupant instead skips the
+    bind entirely — but its resolver fails CLOSED on duplicate inbound bindings
+    (ambiguous routing is denied), and that is precisely the state where the turn
+    path reaches this bind and the claim is refused. It is caught by type rather
+    than by name because ``session_map`` imports this module, so naming the
+    exception here would be an import cycle.
+    """
+    if channel_namespace_of(key) == DM_SCOPE_UNIFIED:
+        return False
+    if sessions.mirror_opt_out(key):
+        return False
+    existing = sessions.get_mirror_link(key)
+    if existing is not None and not _is_unrouted_slack_placeholder(existing):
+        return False
+    try:
+        sessions.set_mirror_link(key, location)
+    except Exception:
+        logger.debug(
+            "%s: origin mirror bind skipped for %s", location.channel_type, key, exc_info=True
+        )
+        return False
+    return True
 
 
 def seed_generation(

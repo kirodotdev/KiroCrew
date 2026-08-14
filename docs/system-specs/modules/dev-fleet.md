@@ -34,7 +34,7 @@ verification. Route names below are relative to that prefix.
 
 | Route | Description |
 |-------|-------------|
-| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (or `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
+| `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (launchd: job PID; foreground last resort: run-marker pid; `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
 | `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s). `?fresh=1` forces cache bypass. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
@@ -114,6 +114,13 @@ name never has two workers racing to remove the same worktree. The frontend rend
 failure reason); the preview dialog maps the kept-list verdict codes to human-readable
 reasons so users can see why a worktree is a candidate or is kept.
 
+**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` —
+and for merged-verdict candidates a `gh` lookup — per worktree, so on a large fleet the
+click is followed by seconds of silence before the dialog can appear. The Prune merged
+button therefore swaps its trash glyph for a spinner and sets `aria-busy` for the
+duration: disabling alone is indistinguishable from a wedged page, and a user who reads
+it as hung clicks again or reloads mid-scan.
+
 ## Pod Integration
 
 Relies on `kiro_crew.pod` subpackage (optional import — degrades gracefully if unavailable):
@@ -163,20 +170,29 @@ step needs before using them, so provisioning a **fresh** worktree (no
   it skips (fast idempotent path). Without this, a fresh worktree's `npm run
   build` dies with `tsc: command not found` (issue #229).
 
-### Pod Unit ExecStart Self-Heal
+### Pod Unit Self-Heal
 
-On `pod up`, if the installed systemd unit template's `ExecStart` binary no longer exists
-(typically because the worktree it resolved into was pruned), the pod CLI:
+The unit template is written once by `pod install`, so a machine keeps whatever it
+installed. On `pod up`, the pod CLI re-renders it when the installed unit is one this
+build will not boot:
 
-1. Detects the dangling binary via `unit.unit_exec_ok(cfg)` (reads the unit file, checks
-   `os.access(exe, os.X_OK)` on the baked path)
+1. Detects a stale unit via `unit.unit_is_current(cfg)`, which fails on either of two
+   triggers:
+   - the baked `ExecStart` binary no longer exists — `unit.unit_exec_ok(cfg)` reads the
+     unit file and checks `os.access(exe, os.X_OK)` on the baked path (typically the
+     worktree it resolved into was pruned)
+   - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
+     currently `ExecStopPost=` — see the pod module's teardown section)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
 5. Proceeds to start the pod normally
 
-This prevents the permanent EXEC 203 failure loop that occurs when worktrees are pruned
-after the unit was installed.
+The first trigger prevents the permanent EXEC 203 failure loop that occurs when
+worktrees are pruned after the unit was installed. The second is the upgrade path: a
+unit installed by an older build would otherwise keep a teardown hook that races the
+pod's own subprocesses and wipes the HOME on the stop half of a `Restart=`, and it
+would keep doing so until someone reinstalled by hand.
 
 ## Background Tasks
 
@@ -276,16 +292,19 @@ auto-expanded, and both persist until the user clicks the dismiss `×`
 `✓ Provisioned` briefly, then clears (the fleet refetch flips the row to its
 built state).
 
-**Known limitation — no reattach after a page reload.** Provision run state
-(including the persisted failed run and its log) lives only in component memory.
-A browser reload during or after a provision loses it, because the `/fleet`
-payload exposes no provision run ids to reattach to on mount (unlike sync, which
-reattaches via `sync_run_id`). The single-flight reattach above only covers a
-Provision **button-click** while a run is in flight, not a fresh page load.
-Server-backed reattach (exposing active/failed provision run ids in `/fleet` so
-the page can reattach on mount, mirroring `sync_run_id`) is tracked as follow-up
-work ([issue #321](https://github.com/kirodotdev/KiroCrew/issues/321); see also
-[issue #231](https://github.com/kirodotdev/KiroCrew/issues/231), PR #320).
+**Reattach after a page reload (server-backed).** Each `/fleet` worktree entry
+carries a `provision_run_id` while that checkout's provision run is still
+executing or after it finished unsuccessfully (mirroring `sync_run_id`).
+Successful and registry-evicted runs are omitted — there is nothing to
+reattach to. On mount the page fetches `/run?id=<rid>` for each exposed id: a
+running run resumes polling into the stepper (accumulating the log window as
+usual), and a failed run restores the persisted red failure state with its log
+auto-expanded. Reattached and locally-started runs are deduped by run id, so a
+fleet refetch never starts a second poll loop for a run already being tracked.
+The dismiss `×` is client-side only: a failed run's id keeps being exposed
+until a newer provision for that checkout replaces it, the run is evicted from
+the bounded registry, or the gateway restarts — so a reload after dismissing
+re-shows the failure. Server-side dismissal is deliberately out of scope here.
 
 ## Action narration (restart + sync feedback)
 
@@ -307,7 +326,11 @@ scheduling the restart and hands it to the frontend:
 
 - **Identity is manager-specific.** systemd uses
   `ExecMainStartTimestampMonotonic`; launchd uses the loaded job PID. Both change
-  when the replacement main process starts.
+  when the replacement main process starts. On a host with NO drivable manager
+  (the foreground last resort below) the identity is the pid the gateway records
+  in its `run/gateway-<port>.pid` sidecar — written before readiness is
+  published, rewritten by the replacement, and consumed by the same
+  changed-identity comparison unchanged.
 - The current identity is reported by extending the existing **`/health`**
   surface (`{status, start_id}`). Because the gateway proxies only
   `/apps/dev-fleet/api/*` to the backend, the same handler is registered at
@@ -358,9 +381,17 @@ npm ci → npm build + stage. The run script emits a
 step; the run worker records BOTH the authoritative step index and its **label**
 onto the run entry (`step` / `step_label`), so `/run` can name the CURRENT step
 even after the marker scrolls out of the 60-line output tail window. The
-frontend shows that label beside the "Syncing" progress bar. This reuses the
+frontend shows that label beside the "Syncing" spinner. This reuses the
 existing `_RUNS` / `::step::` / `/run` run-tracking mechanism — the same channel
 the provision log panel uses (#320) — rather than adding a second one.
+
+Sync progress is reported as **indeterminate** — a spinner, the current step
+label and elapsed time — and never as a percentage. The step index is a poor
+basis for one: the five steps differ in duration by more than an order of
+magnitude and shift with network and cache state, so a step-derived bar sits in
+one band for most of the run and then jumps, which reads as a stall. The
+spinner's `role="progressbar"` carries no `aria-valuenow`, which is the ARIA
+form for "in progress, amount unknown".
 
 The whole FRONTEND half of the sync — `npm ci` and `npm build + stage` — is
 **skipped on an edition checkout** (`frontend.edition_configured()`). The build
@@ -489,7 +520,7 @@ On a `write_failed` / `restart_failed` refusal the response includes
 `rolled_back: true|false` — whether the pre-cutover pointer state (prior
 content, or absence) was successfully restored on disk.
 
-### Two outcomes: automatic vs staged-only
+### Three outcomes: automatic, foreground last resort, staged-only
 
 The cutover writes the pointer on every platform. What differs is whether Dev
 Fleet can also bounce the gateway:
@@ -500,10 +531,33 @@ Fleet can also bounce the gateway:
   on Linux, bounded graceful `launchctl stop` on macOS), sets the
   `_MAKE_LIVE_COMMITTED` latch, and returns `start_id` for the restart handshake.
   The next gateway process reads the pointer and execs into the target checkout.
-- **Staged only** (`can_restart = False`): no drivable service manager is
-  available (system unit via `kirocrew service install`, macOS without a launchd
-  agent or with a legacy restart contract, terminal-launched gateway, or another
-  unsupported manager). The pointer is still
+- **Foreground last resort**: when the manager probe reports one of
+  `no_systemd` / `no_user_unit` / `no_launchd` / `no_agent` — nothing to drive at
+  all, e.g. a terminal-launched gateway on a host whose per-user systemd cannot
+  be used — `gateway_service.ForegroundBackend` finishes the cutover by
+  establishing a **detached `kirocrew restart --port <port>`** (new session, so
+  it survives the gateway it kills), reusing the CLI's whole kill-and-respawn
+  path instead of reimplementing it. Selection is strictly
+  systemd > launchd > foreground, POSIX-only, and requires: an UNCONFINED
+  backend (no `KIROCREW_SANDBOX_ACTIVE` marker, not inside
+  `kirocrew-agents.slice` — a replacement spawned from inside the sandbox or
+  cgroup scope would inherit that confinement for the gateway's whole life);
+  exactly ONE run-marker whose recorded pid is alive; and the marker's own
+  recorded `kirocrew` launcher (keystone-fenced `run/` dir — there is
+  deliberately NO `PATH` fallback, which an agent-planted `~/.local/bin/kirocrew`
+  could poison). The mis-set-up manager codes (`user_unit_inactive`,
+  `agent_not_indirected`, `agent_restart_contract_outdated`,
+  `live_program_missing`) keep their named remedies and are never bounced
+  behind the manager's back. On success the response looks exactly like an
+  automatic cutover (`start_id` = pre-restart marker pid, latch set). **Fail
+  safe:** the backend never signals any process itself — if any requirement
+  above fails or the detached spawn cannot be established, nothing has been
+  killed and the request degrades to the staged-only outcome below, pointer
+  intact.
+- **Staged only** (`can_restart = False`, no usable foreground gateway): no
+  drivable service manager is available (system unit via `kirocrew service
+  install`, macOS without a launchd agent or with a legacy restart contract, or
+  another unsupported manager). The pointer is still
   written and the cutover is reported as a success carrying `staged_only: true`,
   plus `manual_restart` (the shell command that finishes it) and a human-readable
   `notice`. The latch is deliberately NOT set — no restart is pending, so a
@@ -666,11 +720,18 @@ The app bundles two skills declared in `app.json`:
   so a killed run still yields a verdict.
 - `skills/feature-demo-recording` — headless Playwright video recording
 
-`kirocrew-worktree-dev` is deliberately NOT bundled: the canonical copy is
-owned by the `skills/kirocrew-dev/` development-skills folder (synced into
-every install via the project-dir mechanism), and the app-bridged duplicate
-was removed because two copies of the same skill drift and get loaded
-nondeterministically against each other (PR #353 arbiter finding).
+`kirocrew-worktree-dev` carries no app-bridged copy: the canonical copy is
+owned by the `kirocrew-dev` development-skills suite under
+`src/kiro_crew/builtin_skills/`, and the app-bridged duplicate was removed
+because two copies of the same skill drift and get loaded nondeterministically
+against each other (PR #353 arbiter finding). That single-copy rule is what
+matters here; where the one copy lives is a packaging question, and it lives in
+the packaged tree so `_ensure_builtin_skills` reaches every distribution. The
+project-dir mechanism reaches only some: `_project_skills_dir()` reads
+`KIROCREW_PROJECT_DIR`, which a repo checkout and the desktop bundle both
+provide (`packaging/kirocrew-backend.spec` ships the top-level `skills/` tree
+and `website/electron/main.js` sets the variable), but a `pip install` from the
+wheel or sdist provides neither.
 
 Skills are registered as symlinks into `~/.kiro/crew/skills/` via the app bridge at
 two lifecycle points:
@@ -705,3 +766,37 @@ the request is refused with a descriptive error — regardless of the `force` fl
 
 The check uses `_live_worktree_path()` which performs a fresh filesystem resolution
 (no caching) to avoid TOCTOU issues where a previously-cached path is stale.
+
+## Forced Removal Refusal Matrix
+
+The `_worktree_remove` decision surface evaluates `force × PR-merged × dirty`
+and emits one audit action per outcome. `--force` is NEVER passed to
+`git worktree remove`; every path either refuses or removes without `--force`
+so that git's own dirty check is the atomic last line of defence.
+
+| force | PR merged | dirty | Outcome | Audit action |
+|-------|-----------|-------|---------|--------------|
+| True | No | True | **Refuse** — uncommitted changes on unmerged branch | `refused_dirty_unmerged` |
+| True | No | None | **Refuse** — cannot verify cleanliness | `refused_unverifiable` |
+| True | No | False | **Remove** (no `--force`); git's own check guards the TOCTOU window | `unmerged_clean_no_git_force` |
+| True | Yes | True | **Refuse** — fresh-MERGED confirms merge but tree is dirty | `refused_dirty_merged` |
+| True | Yes | None | **Refuse** — fresh-MERGED confirms merge but tree is unverifiable | `refused_unverifiable_merged` |
+| True | Yes | False | **Remove** (no `--force`); mirrors unmerged-clean TOCTOU pattern | `merged_clean_no_git_force` |
+| False | Yes | * | Non-forced path (squash-safe OID race guard) | n/a (no force audit) |
+| False | No | * | Non-forced path | n/a (no force audit) |
+
+Additional pre-gates (evaluated before the matrix above):
+
+| Condition | Outcome | Audit action |
+|-----------|---------|--------------|
+| Branch OID unpinnable | **Refuse** | `refused_unpinnable` |
+| Cached MERGED but fresh verification fails | **Refuse** | `refused_stale_merged` |
+| Fresh-MERGED but branch OID not contained in PR head | **Refuse** | `refused_uncontained_fresh_head` |
+| Target is the live gateway worktree | **Refuse** | (live-worktree guard) |
+| Worktree inside another worktree (containment) | **Refuse** | `refused_containment` |
+
+**Invariant:** `git worktree remove --force` is unreachable from any code path.
+Both clean-removal branches (unmerged and merged) set `force_use_git_force = False`
+explicitly, and every non-clean state is a hard refusal. A late dirty edit in the
+check-to-removal window is caught by git's own atomic dirty check (exit code != 0),
+surfaced as `refused_dirty_at_removal`.

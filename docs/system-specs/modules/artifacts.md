@@ -38,7 +38,7 @@ The dashboard provides a `/artifacts` library page for browse/search and a
 |---|---|---|
 | `slug` | string | URL-safe handle, derived from `name` if not given |
 | `name` | string | Human-readable display name |
-| `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)) |
+| `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)) |
 | `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import` |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
@@ -543,10 +543,10 @@ comment never disappears without a trace.
 
 ## Knowledge Library Auto-Ingest
 
-Content-bearing local artifacts (markdown/text documents) are automatically
+Content-bearing local artifacts (markdown/text documents) can be automatically
 ingested into the Knowledge Library so they become searchable, stay in sync as
-the artifact changes, and are removed when the artifact is deleted. On by
-default via `knowledge.auto_ingest_artifacts`; the eligible kinds are
+the artifact changes, and are removed when the artifact is deleted. Off by
+default, opt in with `knowledge.auto_ingest_artifacts`; the eligible kinds are
 `knowledge.auto_ingest_artifact_kinds` (default `["markdown", "text", "html",
 "json"]`). `widget` is excluded (widgets/dashboards are UI, not documents — and
 a remote widget round-trips back to `kind="widget"` on clone) and `svg` is
@@ -585,14 +585,73 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   content-affecting mutation (create, content-changing update, delete). A
   metadata-only rename fires a separate `rename` signal that refreshes the
   stored group label without re-ingesting (no chunk churn).
-- **First-enable backfill tied to source-row creation.** Because the feature is
-  on by default, the store may already hold artifacts created before the
-  listener existed. The one-time pass that ingests them is tied to the
-  *creation of the aggregate source row*: when `ensure_artifact_source` actually
-  inserts the row (its existence is the idempotency marker — no separate flag),
-  a background backfill runs once. On every later boot the row already exists,
-  so nothing re-runs. (Nothing writes the store while the gateway is down, and
-  there is no out-of-process writer, so no recurring reconcile is needed.)
+- **Reconcile on every start, not a creation-gated backfill.** The feature is
+  opt-in, and while it is off the change-listener is not registered, so writes in
+  that window never reach the Library. Tying the catch-up pass to *creation of
+  the aggregate source row* cannot repair that: the row outlives the feature
+  being switched off, so on any install that ever had it on a later opt-in gets
+  `created=False` and the pass never runs — the gap is permanent and silent.
+  `ArtifactKnowledgeSync.start()` therefore runs `reconcile_artifacts`
+  **unconditionally**, comparing the artifact store against
+  `artifact_item_state`: ingest what is missing or changed, drop state for
+  artifacts that no longer exist. `created` is now reported for logging only.
+  - **Converged is free.** `ingest_artifact` already skips unchanged content, so
+    the steady state spends no extraction calls and logs at debug.
+  - **Removals are judged against every artifact, not the eligible kinds.**
+    Narrowing `auto_ingest_artifact_kinds` makes an artifact ineligible, not
+    absent; reaping on that basis would delete content the user never deleted.
+    A reap also requires two signals, not one: `get()` raising
+    `ArtifactNotFoundError` *and* the artifact's directory being gone. That error
+    is also what a missing `meta.json` raises, which a partially-restored
+    directory hits while its content is still present, and deletion removes the
+    whole directory — so demanding both costs a recoverable stale group instead
+    of unrecoverable deleted items.
+  - **An emptied artifact is dropped unbudgeted.** Its body is blank, so there is
+    nothing to extract and the drop costs no LLM calls. Keeping it behind the
+    budget would let obsolete text stay searchable for as many restarts as a
+    backlog of newer changes takes to drain. Only tracked artifacts are read, and
+    the pass stands down on `source_missing` for the same reason
+    `ingest_artifact` does.
+  - **Off-window metadata drift is repaired unbudgeted.** A tracked artifact
+    whose kind differs from the kind recorded at ingest (`artifact_item_state.kind`)
+    had its group produced by the previous kind's reader, so that group is
+    reaped exactly as the live `upsert` path does, and the ingest loop rebuilds
+    it if the new kind is eligible. The decision reads the *recorded* kind, not
+    the current allowlist: "the artifact changed" and "the user narrowed
+    `auto_ingest_artifact_kinds`" are indistinguishable from the current kind
+    alone, and reaping on the latter would delete content the user never
+    touched. A row predating the column carries `NULL`, so its ingested kind is
+    unknown; that is resolved by which repair is safe. An eligible artifact is
+    re-ingested once (in budget, no deletion), which repairs any undetectable
+    drift and backfills the column so it never repeats; an ineligible one is
+    left alone, because deletion is the only repair available there and drift
+    was never proven. Where the
+    removal happens depends on whether anything will rebuild the group: a drift
+    into an *ineligible* kind is reaped in the unbudgeted pre-pass (removal is
+    the whole repair), while a drift between two *eligible* kinds is replaced
+    inside the budgeted loop, so a backlog past the budget keeps its stale group
+    and defers rather than being deleted now and restored several starts later.
+    An eligible replacement clears only the recorded content hash, never the
+    group: that defeats the unchanged-content short-circuit (a byte-identical
+    body under a new kind would otherwise keep the previous reader's chunks)
+    while leaving `ingest_file` to do its normal atomic replace, so a failed
+    extraction keeps the old items and the artifact stays searchable.
+    Every tracked artifact's stored group label is also refreshed to its current
+    redacted name, so a rename during the off-window stops showing the old
+    label. Neither pass touches content hashes — a converged store still spends
+    nothing.
+- **A dead source pointer neither deletes nor rewrites an index.**
+  `ingest_artifact` returns early whenever `get()` reported `source_missing`
+  (live file moved / unreadable, so the content is a snapshot fallback). That
+  snapshot is not evidence about the live file in either direction: blank does
+  not mean the artifact was emptied, and non-blank does not mean it is current,
+  so acting on it would either destroy a valid index or replace newer indexed
+  text with older. Same rule as the reconcile reap — only provable state acts.
+  - **Ingests are bounded per run** by `RECONCILE_INGEST_BUDGET` (a module
+    constant, not a config key). `ArtifactStore.list` is newest-first, so a
+    backlog from a long off-window drains across successive starts with the most
+    recent artifacts first, instead of arriving as one unbounded burst of billed
+    extraction calls. Unchanged artifacts do not consume budget.
 - **Security.** Ingested text *and* the LLM-originated artifact name (used as
   the source/item title) are passed through `redact_credentials()` and
   `redact_exfiltration_urls()` before landing in the Knowledge store (per
@@ -822,3 +881,102 @@ Separately, the **reaper path** (the in-account reaper Lambda or
 and performs the same cleanup on a schedule. The reaper runs with the user's
 own credentials in-account and handles the case where the gateway is unreachable
 or the user did not explicitly destroy before TTL expiry.
+
+## Image Artifacts (`kind="image"`)
+
+An `image` artifact is a **raster picture**, not text. Its bytes live in a binary
+sidecar beside `meta.json` and are served by a dedicated endpoint; the textual
+`current.html` exists but stays **empty**, and `content` in every API response is
+`""`. Consumers must therefore never render an image artifact through the text or
+widget paths — `ArtifactBodyImage` handles it, bypassing both Monaco and the
+sandboxed iframe.
+
+SVG is deliberately **not** an image artifact: it is markup, stored as
+`kind="svg"` text and rendered through the sanitizing `SvgViewer`. Serving
+agent-authored SVG as an image would reintroduce a same-origin script vector.
+
+### Storage layout
+
+```
+~/.kiro/crew/artifacts/
+└── <slug>/
+    ├── meta.json        includes the `image` block below
+    ├── current.html     present but EMPTY (bytes are not text)
+    ├── asset.<ext>      the raster bytes (png|jpg|webp|gif|bmp)
+    └── versions/
+        └── v1.html      empty, mirroring current.html
+```
+
+The sidecar's extension is derived **from the allowlisted mime**, never from the
+stored `ext` field, on every read (see [Security](#security)). `delete` removes
+the whole artifact directory, so the sidecar needs no separate cleanup.
+
+### `image` metadata schema
+
+Tolerant-loaded: every field is optional so an older or hand-edited record still
+opens, and each consumer degrades gracefully.
+
+| Field | Type | Description |
+|---|---|---|
+| `mime` | string | One of `image/png`, `image/jpeg`, `image/webp`, `image/gif`, `image/bmp`. Anything else is rejected on create **and** refused on read. |
+| `ext` | string | Sidecar extension as written. Informational only — reads re-derive it from `mime`. |
+| `size_bytes` | int | Byte length of the sidecar. |
+| `width` / `height` | int | Natural pixel size, sniffed from the file header with the stdlib only (no Pillow). `null` when unmeasurable — dimensions are a rendering nicety, not a gate. |
+| `sha256` | string | Hex digest of the bytes. |
+| `original_filename` | string | Basename of the source file; names the download. **LLM-derived** → redacted in `_serialize`. |
+| `alt` | string | Accessible description, from the markdown alt text. **LLM-derived** → redacted in `_serialize`. |
+
+### Asset endpoint
+
+`GET /api/artifacts/{slug}/asset` — returns the raw bytes with the sniffed
+`Content-Type`, so an `<img src=…>` can point straight at it and the artifact
+JSON never carries base64.
+
+- **Authenticated** like every other artifact route; unauthenticated requests get
+  403. No restricted-session gate applies (it is a read) and no `referenced`
+  breadcrumb is recorded (an asset fetch is a sub-resource of a detail view that
+  was already counted).
+- `Cache-Control: private, max-age=31536000, immutable` — `private` because the
+  bytes are behind token auth and a shared proxy must never serve a cached copy
+  to an unauthenticated requester.
+- 404 when the slug does not resolve, is not an image artifact, its sidecar is
+  missing, or its mime is not in the allowlist.
+- The read is offloaded with `asyncio.to_thread`: the sidecar may be up to
+  `MAX_CONTENT_BYTES` and a synchronous read would stall every other gateway
+  task, the liveness heartbeat included.
+
+### Auto-registration from chat (`kiro_crew.image_artifacts`)
+
+Finalized assistant messages are scanned for **local** markdown image references
+and each one is registered, copying the bytes immediately so temp-file cleanup
+cannot strip them.
+
+- **Identity.** Slugs are derived deterministically from `(message_ts, index)`
+  via the widget-slug contract, where `index` counts **every** image match in the
+  message including skipped ones — so an image's ordinal is stable regardless of
+  which siblings were skipped. A replayed message is therefore idempotent and
+  never clobbers an artifact the user has since edited.
+- **Destination parsing.** Balanced-paren walk, so `screenshot(1).png` survives;
+  `<...>` destinations are unwrapped so a path containing spaces survives;
+  backslashes are treated as escapes **only** before markdown-significant
+  characters, so a native Windows path (`C:\Users\me\shot.png`) survives; alt
+  text accepts escaped brackets (`![Revenue \[Q1\]](…)`) and is unescaped for
+  display.
+- **Skipped:** remote/`data:`/protocol-relative URLs (never fetched), relative
+  paths, unsupported extensions, sensitive paths, and restricted/incognito
+  sessions.
+- **Budgets (per message):** at most `MAX_IMAGES_PER_MESSAGE` (12) images and
+  `MAX_IMAGE_BYTES_PER_MESSAGE` (64 MiB) of copied bytes. Counted over
+  *eligible* images rather than successful writes, so a replay cannot walk past
+  the cap one batch at a time. Pruning runs after the loop, so without these a
+  single message could fill the disk.
+- **Retention.** Auto-registered images are `auto_registered=True` and unpinned,
+  so they ride the **same** count-based sweep as auto-registered widgets
+  (`prune_auto_widgets(keep=MAX_AUTO_WIDGET_ARTIFACTS)`) — the predicate is
+  kind-agnostic. Images and widgets therefore share one budget; pinning
+  ("Save permanently"), filing, tagging, or commenting exempts a record.
+- **Never raises.** A failure to register a chat image is a lost convenience, not
+  a reason to fail the turn that produced it; per-image failures are logged and
+  skipped individually. Dispatch uses `asyncio.to_thread` rather than the shared
+  subprocess pool, so a wedged teardown worker cannot hold registration until
+  after the source file is gone.

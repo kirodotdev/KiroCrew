@@ -10,6 +10,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
+import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
 
 function mountWithUpdateApi(info: Record<string, unknown>, setChannel?: (c: string) => Promise<{ ok: boolean }>) {
@@ -25,7 +26,9 @@ function mountWithUpdateApi(info: Record<string, unknown>, setChannel?: (c: stri
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <AboutPanel />
+        <MemoryRouter>
+          <AboutPanel />
+        </MemoryRouter>
       </QueryClientProvider>
     </Provider>,
   )

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import json
 import logging
 import secrets
@@ -63,6 +64,11 @@ ITEM_VOICE = 3
 ITEM_FILE = 4
 ITEM_VIDEO = 5
 
+#: Item types the inbound path downloads from the CDN. Ordered as a frozenset so
+#: membership is the only question asked — the per-type envelope shape lives in
+#: ``weixin/attachments.py``, not here.
+INBOUND_MEDIA_ITEM_TYPES = frozenset({ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO})
+
 MSG_TYPE_USER = 1
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
@@ -82,7 +88,16 @@ def _json_dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def _random_wechat_uin() -> str:
+@functools.lru_cache(maxsize=1)
+def _wechat_uin() -> str:
+    """One random UIN per process, generated on first use and then reused.
+
+    iLink binds a bot session to the ``X-WECHAT-UIN`` it saw at authorization.
+    Generating a fresh value per request made the first ``getupdates``
+    long-poll after a QR login return ``-14`` (:data:`SESSION_EXPIRED_ERRCODE`),
+    which parked the poll loop for 10 minutes and made the channel look like it
+    had never connected.
+    """
     value = struct.unpack(">I", secrets.token_bytes(4))[0]
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
 
@@ -96,7 +111,7 @@ def _headers(token: Optional[str], body: str) -> Dict[str, str]:
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "Content-Length": str(len(body.encode("utf-8"))),
-        "X-WECHAT-UIN": _random_wechat_uin(),
+        "X-WECHAT-UIN": _wechat_uin(),
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
@@ -112,11 +127,12 @@ def _atomic_json_write(path: Path, payload: Dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-# NOTE: media (image/voice/file/video) is NOT supported yet — only the text item
-# of an inbound message is read, and replies are text-only. The iLink media path
-# needs an AES-128-ECB envelope over the WeChat CDN (the cipher mode is dictated
-# by the remote protocol, not chosen by us); those helpers land with the media
-# feature rather than sitting here unreachable.
+# NOTE: OUTBOUND media (image/voice/file/video) is NOT supported yet -- replies
+# are text-only. INBOUND media IS supported: ``weixin/media.py`` downloads the
+# CDN object and AES-128-ECB decrypts it (the cipher mode is dictated by the
+# remote protocol, not chosen by us) and ``weixin/attachments.py`` feeds it to
+# the shared ingest pipeline. The upload half (``getuploadurl`` + encrypted CDN
+# PUT) lands with outbound media rather than sitting here unreachable.
 
 
 # --- Credential + ephemeral state persistence ---------------------------------

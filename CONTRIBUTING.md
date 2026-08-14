@@ -37,7 +37,7 @@ tell you in a paragraph.
 
 - macOS or Linux (Windows is not supported by the `kiro-cli` backend)
 - Python ≥ 3.9
-- Node.js ≥ 18 and npm (for the frontend)
+- Node.js ≥ 22 (24 LTS recommended) and npm (for the frontend)
 - The `kiro-cli` agent on your `PATH`, logged in (`kiro-cli login`) — it is the
   only LLM backend (`agent.provider = acp`)
 - [Ollama](https://ollama.com) for memory and knowledge-library embeddings
@@ -61,21 +61,23 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[voice]"
 
 # 4. Configure and verify
-kirocrew setup               # data dir, agent backend, Slack tokens (optional)
+kirocrew setup               # data dir, agent backend (channels connect later)
 kirocrew doctor              # verify everything works
-kirocrew gateway             # start server (dashboard + Slack)
+kirocrew gateway             # start server (dashboard + messaging channels)
 ```
 
 The dashboard is at `http://localhost:5476`.
 
-**Dashboard-only mode**: skip Slack tokens during `kirocrew setup` to run
-without Slack.
+**Messaging channels are optional**: the default `kirocrew setup` configures
+none, and the dashboard + CLI work without any channel credentials. Connect
+Slack, Discord, Telegram, Teams, Webex, WeCom, or WeChat later, or run
+`kirocrew setup --slack` for the guided Slack path.
 
 ## Development Skills (agents and humans)
 
 The contributor workflow is codified as agent-loadable skills in
-[`skills/kirocrew-dev/`](skills/kirocrew-dev/) — the canonical definition of
-how code gets written, tested, and reviewed here:
+[`src/kiro_crew/builtin_skills/kirocrew-dev/`](src/kiro_crew/builtin_skills/kirocrew-dev/)
+— the canonical definition of how code gets written, tested, and reviewed here:
 
 - **`kirocrew-worktree-dev`** — the HARD RULE workflow: every change in a git
   worktree, the blocking build gates, the built-dist gotcha, preview paths.
@@ -178,11 +180,21 @@ are cut as a **release branch** off `main` on 0.1 increments (`0.1.0` → `0.2.0
 Once a branch is cut, **bug fixes for that release go on the release branch, not
 on `main`.** Each one produces a new release candidate — `0.2.0-rc.1`,
 `-rc.2`, … — published to the insider channel. **Stable is the last RC we judge
-stable enough, promoted by tagging that RC's commit — never rebuilt.** So
-`0.2.0-rc.5` becomes stable `0.2.0`: same commit, same bytes, a new tag.
+stable enough, promoted by tagging that RC's commit — never rebuilt.** The RC
+run records one immutable promotion bundle (wheel/sdist, AppImage, notarized
+zip/DMG, and OCI manifest digest). A bare `v0.2.0` tag on that exact commit
+resolves the newest successful `0.2.0-*` run, verifies the GitHub artifact's
+API-recorded digest plus every file digest in its manifest, and only then moves
+stable pointers/tags to those bytes.
 
-Hot patches bump the patch digit (`0.2.0` → `0.2.1`) and are also cut from the
-release branch.
+Because changing an embedded version changes and invalidates the tested bytes,
+the promoted binaries retain the selected RC's embedded version; the bare git
+tag, GitHub Release, and stable channel are the final release identity. If the
+record is missing or its 90-day artifact retention elapsed, promotion fails
+closed: cut and validate a fresh RC rather than rebuilding stable.
+
+Hot patches bump the patch digit (`0.2.0` → `0.2.1`) from the release branch and
+must also have a successful prerelease candidate before the bare stable tag.
 
 After each stable cut, do two things: **bump `main` by 0.1** (to `0.3.0`) so
 nightlies sort above what just shipped, and **merge the branch's fixes back into
@@ -214,14 +226,16 @@ git push -u origin release/0.2.0
 git tag -a v0.2.0-rc.1 -m "0.2.0 rc1" && git push origin v0.2.0-rc.1
 #    ... fixes land on release/0.2.0 ... then v0.2.0-rc.2, -rc.3, …
 
-# 3. Promote: tag the good RC's COMMIT with a bare version → stable
+# 3. Promote: tag the good RC's EXACT COMMIT with a bare version → stable.
+#    release.yml resolves that successful RC run's immutable promotion bundle;
+#    it does not invoke either build workflow on the bare tag.
 git tag -a v0.2.0 -m "release 0.2.0" <rc-commit-sha>
 git push origin v0.2.0
 
 # 4. Bump main to 0.3.0 (PR), and merge the branch's fixes back into main
 
-# Hot patch: fix on the release branch, then
-git tag -a v0.2.1 -m "release 0.2.1" && git push origin v0.2.1
+# Hot patch: fix on the release branch, cut/test v0.2.1-rc.1 first, then
+# put bare v0.2.1 on that candidate's exact commit and push it.
 ```
 
 Update `CHANGELOG.md` with a `## [X.Y.Z] — YYYY-MM-DD` section as part of the
@@ -233,15 +247,19 @@ release branch directly.
 
 **Nightly** runs on a schedule every night and can be kicked off on demand at any
 time. **Insider and stable are triggered by pushing a version tag** — an RC tag
-publishes to insider, a plain version tag publishes to stable.
+builds and publishes to insider, while a plain version tag promotes the exact
+recorded RC artifacts to stable without rebuilding.
 
 The release branch, the RC numbering, the promote decision, and the back-merge
-are all **human process**. The pipeline only reacts to the tag.
+are all **human process**. The pipeline reacts to the tag, but the stable path
+also requires the successful same-commit prerelease record and fails closed if
+it cannot prove that record's immutable digest.
 
-Each build ships a signed and notarized macOS app, a Linux AppImage, a pip
-wheel, and a Docker image. A channel's update feed is repointed **last**, after
-its artifacts are verified downloadable, and clients only install with the
-user's consent. Windows builds but is not yet signed or published.
+A nightly or prerelease build produces a signed and notarized macOS app, a Linux
+AppImage, a pip wheel, and a Docker image. Stable republishes/retags those exact
+candidate bytes. A channel's update feed is repointed **last**, after its
+artifacts are verified downloadable, and clients only install with the user's
+consent. Windows builds but is not yet signed or published.
 
 **There is no rollback — we roll forward by cutting a new version.** Published
 CDN keys are immutable and are never overwritten.
@@ -451,7 +469,7 @@ depends on *where your branch lives*:
 
 | Check | Fork PR | Branch pushed to `kirodotdev/KiroCrew` |
 | --- | --- | --- |
-| **Opus 5 Review** | Skipped (neutral — not a failure) | Runs |
+| **Opus 4.8 Review** | Skipped (neutral — not a failure) | Runs |
 | **GPT 5.6 Review** | Skipped | Runs |
 | **Design Review** | Skipped | Runs |
 | Tests, lint, typecheck, CodeQL, coverage, build | Run normally | Run normally |

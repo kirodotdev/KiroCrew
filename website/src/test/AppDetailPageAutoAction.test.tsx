@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const getApp = vi.fn()
 const listRegistry = vi.fn()
@@ -47,13 +48,19 @@ const REGISTRY_APP = {
 
 /** Render the detail route, optionally with router state or a query string. */
 function renderDetail({ search = '', state }: { search?: string; state?: unknown } = {}) {
+  // `useTrustGate` invalidates the ['trusted-apps'] / ['apps'] queries after a
+  // grant, so it needs a QueryClient in scope. The app root always provides
+  // one; the harness has to as well.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[{ pathname: '/apps/detail/secretary', search, state }]}>
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[{ pathname: '/apps/detail/secretary', search, state }]}>
       <Routes>
         <Route path="/apps/detail/:name" element={<AppDetailPage />} />
         <Route path="/apps" element={<div>apps list</div>} />
-      </Routes>
-    </MemoryRouter>,
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 

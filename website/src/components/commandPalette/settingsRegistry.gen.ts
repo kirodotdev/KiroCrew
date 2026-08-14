@@ -6,20 +6,25 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
-    "id": "browser.chrome-extension-mode",
-    "label": "Chrome Extension Mode",
-    "description": "Attach to your running Chrome with all existing logins and sessions. Recommended for macOS.",
-    "tab": "browser",
+    "id": "channels.file-sessions-in-a-folder",
+    "label": "File sessions in a folder",
+    "tab": "channels",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
   },
   {
-    "id": "browser.connection-token",
-    "label": "Connection Token",
-    "description": "Paste PLAYWRIGHT_MCP_EXTENSION_TOKEN value from the extension popup",
-    "tab": "browser",
+    "id": "channels.folder-name",
+    "label": "Folder name",
+    "description": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
     "type": "input",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
   },
   {
     "id": "channels.owner-slack-member-id",
@@ -66,43 +71,13 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "chat.auto-add-documents",
-    "label": "Auto-Add Documents",
-    "description": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. It reads them with its own tools under your approval — Kiro Crew fetches nothing itself. Added documents appear in one “Auto-added” source you can remove in a click.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.auto-add-saved-artifacts",
-    "label": "Auto-Add Saved Artifacts",
-    "description": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
     "tab": "chat",
     "type": "select",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.auto-ingest-limit-per-scan",
-    "label": "Auto-Ingest Limit Per Scan",
-    "tab": "chat",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.auto-register-project-documents",
-    "label": "Auto-Register Project Documents",
-    "description": "Register the documents of each project you work in, so its design docs, specs and READMEs become searchable without adding the folder by hand. Documents only — never source code, agent instructions or generated files.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "session.autocompact_pct"
   },
   {
     "id": "chat.background-effort",
@@ -176,7 +151,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.fallback-model",
     "label": "Fallback Model",
-    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Crews, or pick one inside a session to override it there.",
+    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -258,7 +233,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Keep your computer awake while a task is running",
     "tab": "chat",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "dashboard.prevent_sleep"
   },
   {
     "id": "chat.quick-send",
@@ -270,7 +246,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "chat.response-verbosity",
     "label": "Response Verbosity",
-    "description": "How terse the agent's prose is. Ultra-concise writes for an ADHD reader: the answer lands in an opening of at most three sentences, and any detail after it must be scannable bullets rather than prose. Code, commands, and error strings stay verbatim; security warnings and multi-step instructions keep full detail at every level.",
+    "description": "How terse the agent's prose is. Ultra-concise keeps the whole reply short: answer first, bullets over paragraphs, no filler. Code, commands, and error strings stay verbatim at every level, and security warnings and multi-step instructions keep full detail.",
     "tab": "chat",
     "type": "select",
     "occurrence": 1
@@ -299,9 +275,25 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.session-summaries",
+    "label": "Session summaries",
+    "description": "Summarize each session by intent. Uses tokens on turns that change the session.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.show-context-percentage",
     "label": "Show Context Percentage",
     "description": "Display usage percentage next to the context progress bar",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.show-context-tokens",
+    "label": "Show Context Tokens",
+    "description": "Display used and total tokens next to the context progress bar",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1
@@ -447,6 +439,23 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.run-a-local-gateway",
+    "label": "Run a local gateway",
+    "description": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "display.default-shell",
+    "label": "Default shell",
+    "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.shell"
+  },
+  {
     "id": "display.display-mode",
     "label": "Display Mode",
     "description": "How the session color is applied to the row.",
@@ -465,7 +474,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.font-family",
     "label": "Font Family",
-    "description": "UI font family for the dashboard",
+    "description": "UI font family for the dashboard. Code font follows the active theme.",
     "tab": "display",
     "type": "buttonGroup",
     "occurrence": 1
@@ -549,12 +558,29 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "privacy.record-metrics",
+    "label": "Record metrics",
+    "tab": "privacy",
+    "type": "toggle",
+    "occurrence": 1,
+    "configKey": "telemetry.enabled"
+  },
+  {
+    "id": "security.trust-every-third-party-app",
+    "label": "Trust every third-party app",
+    "description": "Off by default. When on, every third-party app you install can run its own code straight away, without asking you first.",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "skills.auto-generate-skills-from-sessions",
     "label": "Auto-generate skills from sessions",
     "description": "Analyze each completed session and draft a reusable SKILL.md when a non-trivial multi-step procedure is detected. Off by default. Drafts are staged to the pending queue on the Skills tab for review — nothing goes live without your approval (see below).",
     "tab": "skills",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "skills.auto_create_from_sessions"
   },
   {
     "id": "skills.require-approval-before-generated-skills-go-live",
@@ -562,7 +588,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
     "tab": "skills",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "skills.approval_required"
   },
   {
     "id": "voice.auto-speak-responses",
@@ -634,6 +661,13 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Amazon Polly engine type",
     "tab": "voice",
     "type": "select",
+    "occurrence": 1
+  },
+  {
+    "id": "voice.how-the-key-works",
+    "label": "How the key works",
+    "tab": "voice",
+    "type": "buttonGroup",
     "occurrence": 1
   },
   {
@@ -720,6 +754,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
     "tab": "voice",
     "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "voice.tap-vs-hold-cutoff",
+    "label": "Tap vs. hold cutoff",
+    "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on.",
+    "tab": "voice",
+    "type": "stepper",
     "occurrence": 1
   },
   {

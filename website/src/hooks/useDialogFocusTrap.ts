@@ -26,6 +26,11 @@ export const FOCUSABLE =
  * focus to whatever was focused before the OUTER dialog opened (i.e. behind
  * both overlays) the moment the inner one appears.
  *
+ * `handleEscape` may be disabled when a caller deliberately owns Escape on a
+ * bubble-phase listener. Modal uses that path so a nested overlay can consume
+ * Escape before the outer dialog observes it, while this hook still owns focus
+ * entry, restoration, and Tab trapping.
+ *
  * The keydown listener is CAPTURE phase on purpose: dialogs stop keydown
  * propagation so the page's own shortcuts don't fire while the user types
  * inside them, and a bubble-phase listener would then never see Escape or Tab
@@ -35,6 +40,7 @@ export function useDialogFocusTrap(
   containerRef: RefObject<HTMLElement | null>,
   onEscape: () => void,
   enabled = true,
+  handleEscape = true,
 ): void {
   // Move focus into the dialog on open, restore it on close, so keyboard users
   // aren't dumped at the top of the document afterwards.
@@ -54,7 +60,7 @@ export function useDialogFocusTrap(
   useEffect(() => {
     if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && handleEscape) {
         onEscape()
         return
       }
@@ -79,5 +85,5 @@ export function useDialogFocusTrap(
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [containerRef, onEscape, enabled])
+  }, [containerRef, onEscape, enabled, handleEscape])
 }

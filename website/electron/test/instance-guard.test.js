@@ -6,7 +6,14 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { identityFamily, decideGatewayAction, FAMILY_META, HEALTH_IDENTITY_PATH } = require("../instance-guard");
+const {
+  identityFamily,
+  decideGatewayAction,
+  classifyGatewayReadiness,
+  FAMILY_META,
+  HEALTH_IDENTITY_PATH,
+  READY_PATH,
+} = require("../instance-guard");
 
 test("identityFamily maps channels to bundle-identity families", () => {
   assert.equal(identityFamily("0.1.0-nightly.20260722120000"), "nightly");
@@ -126,4 +133,60 @@ test("identity probe targets /api/health, never the /api/status liveness URL", (
   // every gateway as "unidentified" and silently disables the takeover path.
   assert.equal(HEALTH_IDENTITY_PATH, "/api/health");
   assert.notEqual(HEALTH_IDENTITY_PATH, "/api/status");
+});
+
+// ── Readiness: adopting must be gated on SERVING, not merely ANSWERING ──────
+// /api/status and /api/health both stay 200 while the backend drains after
+// POST /api/shutdown, so a relaunch during a graceful stop used to adopt the
+// dying gateway ("reusing existing gateway — bundled backend NOT spawned") and
+// then wait on a port nothing would ever answer again. Only /api/ready flips
+// to 503 with `shutting_down: true` the moment shutdown is requested.
+
+test("readiness probe targets /api/ready, never the drain-blind status/health URLs", () => {
+  assert.equal(READY_PATH, "/api/ready");
+  assert.notEqual(READY_PATH, "/api/status");
+  assert.notEqual(READY_PATH, HEALTH_IDENTITY_PATH);
+});
+
+test("a serving gateway (200) is ready to adopt", () => {
+  assert.equal(classifyGatewayReadiness(200, { ready: true }), "ready");
+});
+
+test("a draining gateway (503 + shutting_down) refuses adoption", () => {
+  // The incident shape: a relaunch arriving seconds into a graceful stop.
+  // Adopting here is the root cause of the dead-window bug.
+  assert.equal(
+    classifyGatewayReadiness(503, { ready: false, shutting_down: true }),
+    "shutting-down",
+  );
+});
+
+test("a booting gateway (503 without the marker) is adoptable — the splash already waits", () => {
+  assert.equal(
+    classifyGatewayReadiness(503, { ready: false, startup_complete: false }),
+    "starting",
+  );
+});
+
+test("a detail-withheld 503 payload stays adoptable (marker gated on check_host)", () => {
+  // A disallowed-Host caller gets only {"ready": false}; without the positive
+  // shutdown marker the classification must fail open to the historical adopt.
+  assert.equal(classifyGatewayReadiness(503, { ready: false }), "starting");
+});
+
+test("an unparseable 503 body classifies on status alone, never refuses", () => {
+  assert.equal(classifyGatewayReadiness(503, null), "starting");
+});
+
+test("legacy gateways and failed probes keep the historical adopt behavior", () => {
+  assert.equal(classifyGatewayReadiness(404, null), "unknown"); // no /api/ready endpoint
+  assert.equal(classifyGatewayReadiness(null, null), "unknown"); // probe error/timeout
+  assert.equal(classifyGatewayReadiness(undefined, null), "unknown");
+});
+
+test("only a POSITIVE boolean marker refuses — truthy junk does not", () => {
+  // The payload is remote input; a string "false" or 1 must not flip the
+  // refuse-to-adopt path.
+  assert.equal(classifyGatewayReadiness(503, { shutting_down: "false" }), "starting");
+  assert.equal(classifyGatewayReadiness(503, { shutting_down: 1 }), "starting");
 });

@@ -81,6 +81,28 @@ describe('parseCustomJson', () => {
 // ---------------------------------------------------------------------------
 
 describe('add mode', () => {
+  it('shows the remote-with-headers shape in the placeholder and posts it through', async () => {
+    const REMOTE_AUTH = { url: 'https://mcp.example.com/sse', headers: { Authorization: 'Bearer x' } }
+    mockedApi.mcpCustomAdd.mockResolvedValue({ ok: true, added: ['remote'], enabled: false })
+    const user = userEvent.setup()
+    renderModal()
+
+    // The placeholder teaches both shapes, including headers on the remote one.
+    const textarea = screen.getByLabelText('Servers JSON')
+    expect(textarea).toHaveAttribute('placeholder', expect.stringContaining('"headers"'))
+    expect(textarea).toHaveAttribute('placeholder', expect.stringContaining('"url"'))
+
+    await user.click(textarea)
+    await user.paste(JSON.stringify({ mcpServers: { remote: REMOTE_AUTH } }))
+    expect(await screen.findByText('Will add')).toBeInTheDocument()
+    expect(screen.getByText('https://mcp.example.com/sse')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Add/ }))
+    await waitFor(() =>
+      expect(mockedApi.mcpCustomAdd).toHaveBeenCalledWith({ remote: REMOTE_AUTH }, false),
+    )
+  })
+
   it('previews parsed servers and posts with enable=false by default', async () => {
     mockedApi.mcpCustomAdd.mockResolvedValue({ ok: true, added: ['weather'], enabled: false })
     const user = userEvent.setup()
@@ -176,6 +198,31 @@ describe('add mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('edit mode', () => {
+  it('shows the read-only note when the loaded spec carries redacted headers', async () => {
+    mockedApi.mcpCustomGet.mockResolvedValue({
+      name: 'remote',
+      spec: { url: 'https://mcp.example.com/sse', headers: { Authorization: '[REDACTED: credential]' } },
+      enabled: true,
+    })
+    renderModal({ editName: 'remote' })
+
+    // The note appears BEFORE the user invests edits — stored values are
+    // preserve-only and a modified save would 400.
+    expect(await screen.findByRole('note')).toHaveTextContent(/hidden and read-only/)
+  })
+
+  it('shows no read-only note when the spec has no stored headers', async () => {
+    mockedApi.mcpCustomGet.mockResolvedValue({
+      name: 'remote',
+      spec: { url: 'https://mcp.example.com/sse' },
+      enabled: true,
+    })
+    renderModal({ editName: 'remote' })
+
+    await screen.findByLabelText('Server spec JSON')
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  })
+
   it('prefills from the full spec (env included) and PUTs the edited spec', async () => {
     mockedApi.mcpCustomGet.mockResolvedValue({ name: 'weather', spec: STDIO, enabled: false })
     mockedApi.mcpCustomUpdate.mockResolvedValue({ ok: true, name: 'weather' })

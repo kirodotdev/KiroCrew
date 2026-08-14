@@ -262,7 +262,14 @@ export default function RemoteArtifactDetailPage() {
     const msg = detailQuery.error instanceof Error ? detailQuery.error.message : i18nT('pages.remoteArtifactDetailPage.failed_to_load_remote_artifact')
     return (
       <>
-        <PageHeader title={i18nT('pages.remoteArtifactDetailPage.remote_artifact')} subtitle={externalId} />
+        <div className="sticky top-0 z-10 bg-bg border-b border-border">
+          <PageHeader title={i18nT('pages.remoteArtifactDetailPage.remote_artifact')} subtitle={externalId} />
+          <div className="px-6 py-2 flex flex-wrap items-center gap-2">
+            <Btn onClick={() => navigate('/artifacts')} className="flex items-center gap-1">
+              <ArrowLeft size={13} /> {i18nT('pages.remoteArtifactDetailPage.back')}
+            </Btn>
+          </div>
+        </div>
         <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
           <Card>
             <div className="flex items-start gap-3">
@@ -288,9 +295,9 @@ export default function RemoteArtifactDetailPage() {
 
   return (
     <>
-      <PageHeader title={title} subtitle={i18nT('pages.remoteArtifactDetailPage.remote_artifact_2', { provider })} />
-      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-        <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className="sticky top-0 z-10 bg-bg border-b border-border">
+        <PageHeader title={title} subtitle={i18nT('pages.remoteArtifactDetailPage.remote_artifact_2', { provider })} />
+        <div className="px-6 py-2 flex flex-wrap items-center gap-2">
           <Btn onClick={() => navigate('/artifacts')} className="flex items-center gap-1">
             <ArrowLeft size={13} /> {i18nT('pages.remoteArtifactDetailPage.back')}
           </Btn>
@@ -335,6 +342,8 @@ export default function RemoteArtifactDetailPage() {
             </Btn>
           </span>
         </div>
+      </div>
+      <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
 
         {art.summary && <div className="mb-3 text-sm text-muted italic">{art.summary}</div>}
         {forkError && (

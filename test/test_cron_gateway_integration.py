@@ -64,13 +64,19 @@ def _make_command_job(**overrides):
     return CronJob(**defaults)
 
 
-async def _run_script_callback(gw, job, script_result):
-    """Run the cron callback with a mocked run_script_sandboxed result."""
+async def _run_script_callback(gw, job, script_result, vet_reason=None):
+    """Run the cron callback with a mocked run_script_sandboxed result.
+
+    ``vet_reason`` feeds the fire-time governance gate (None = job may run);
+    patching vet_job_at_fire_time also stands in for the script-path
+    resolution it performs, which the removed gateway-level
+    resolve_script_path call used to cover.
+    """
     captured_cb = None
 
     with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
          patch("kiro_crew.slack.gateway.run_script_sandboxed", return_value=script_result) as mock_run, \
-         patch("kiro_crew.slack.gateway.resolve_script_path"), \
+         patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=vet_reason), \
          patch("kiro_crew.slack.gateway.sel"):
 
         def capture_cron(on_job=None, **kw):
@@ -159,7 +165,7 @@ class TestScriptExecution:
         with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
              patch("kiro_crew.slack.gateway.run_script_sandboxed",
                    return_value={"status": "done", "message": "CR merged"}), \
-             patch("kiro_crew.slack.gateway.resolve_script_path"), \
+             patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=None), \
              patch("kiro_crew.slack.gateway.sel"):
 
             def capture_cron(on_job=None, **kw):
@@ -315,6 +321,294 @@ class TestCommandExecution:
             )
         assert job.last_status == "ok"
         mock_run.assert_called_once()
+
+
+class TestFireTimeGatesScriptAndMessage:
+    """Fire-time re-vetting for script and message (LLM) cron jobs.
+
+    Command jobs gained this gate first (TestCommandExecution above); these
+    tests lock in the same policy-tightened-after-scheduling protection for
+    the other two job kinds, routed through mcp_cron.vet_job_at_fire_time.
+    The mcp_cron privates are patched (not the helper itself) so the
+    helper's real dispatch logic is exercised.
+    """
+
+    async def _run_script_real_vet(self, gw, job, script_result, cap=None, script_vet=None):
+        """Run the script callback with the REAL vet helper, privates patched."""
+        captured_cb = None
+
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+            patch(
+                "kiro_crew.slack.gateway.run_script_sandboxed", return_value=script_result
+            ) as mock_run,
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=cap),
+            patch("kiro_crew.mcp_cron.resolve_script_path", return_value=("/tmp/x.py", "run")),
+            patch("kiro_crew.mcp_cron._vet_script_file", return_value=script_vet) as mock_vet_file,
+            patch("kiro_crew.slack.gateway.sel") as mock_sel,
+        ):
+
+            def capture_cron(on_job=None, **kw):
+                nonlocal captured_cb
+                captured_cb = on_job
+                svc = MagicMock()
+                svc.start = AsyncMock()
+                svc.remove_job_async = AsyncMock(return_value=True)
+                return svc
+
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+
+            await gw._init_cron()
+            assert captured_cb is not None
+            result = await captured_cb(job)
+            return result, mock_run, mock_vet_file, mock_sel
+
+    @pytest.mark.asyncio
+    async def test_script_fire_time_capability_deny_blocks_execution(self):
+        # capabilities.cron disabled AFTER the script job was scheduled must
+        # deny the run at fire time — previously only the path was re-resolved.
+        gw = _make_gw()
+        job = _make_script_job()
+        result, mock_run, _, mock_sel = await self._run_script_real_vet(
+            gw,
+            job,
+            {"status": "ok"},
+            cap="Error: cron scheduling blocked by governance policy: disabled",
+        )
+        assert result is None
+        assert job.last_status == "error"
+        assert "governance" in job.last_error
+        mock_run.assert_not_called()
+        # Job KEPT (a later policy loosening lets it resume on its own):
+        # not removed, and the denial did NOT feed the auto-pause counter.
+        gw.cron_svc.remove_job_async.assert_not_called()
+        assert job.consecutive_failures == 0
+        assert job.enabled is True
+        outcomes = [
+            c.kwargs.get("outcome")
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert "denied" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_script_fire_time_body_rescan_denies_edited_script(self):
+        # A script file edited on disk after authoring (e.g. to read a
+        # credential path) is re-scanned at fire time and denied.
+        gw = _make_gw()
+        job = _make_script_job()
+        result, mock_run, mock_vet_file, mock_sel = await self._run_script_real_vet(
+            gw,
+            job,
+            {"status": "ok"},
+            script_vet="Error: cron script blocked: references a credential path",
+        )
+        assert result is None
+        assert job.last_status == "error"
+        assert "credential" in job.last_error
+        mock_run.assert_not_called()
+        gw.cron_svc.remove_job_async.assert_not_called()
+        assert job.consecutive_failures == 0
+        assert job.enabled is True
+        # The re-scan ran against the freshly re-resolved path.
+        mock_vet_file.assert_called_once_with("/tmp/x.py")
+        outcomes = [
+            c.kwargs.get("outcome")
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert "denied" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_script_fire_time_allow_still_executes(self):
+        gw = _make_gw()
+        job = _make_script_job()
+        result, mock_run, _, _ = await self._run_script_real_vet(gw, job, {"status": "ok"})
+        assert result == "ok"
+        assert job.last_status == "ok"
+        mock_run.assert_called_once()
+
+    async def _run_message_callback(self, gw, job, cap=None):
+        """Run the cron callback for a message (LLM) job up to the gate."""
+        captured_cb = None
+
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+            patch("kiro_crew.mcp_cron._vet_cron_capability_governance", return_value=cap),
+            patch("kiro_crew.slack.gateway.sel") as mock_sel,
+        ):
+
+            def capture_cron(on_job=None, **kw):
+                nonlocal captured_cb
+                captured_cb = on_job
+                svc = MagicMock()
+                svc.start = AsyncMock()
+                svc.remove_job_async = AsyncMock(return_value=True)
+                return svc
+
+            mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+
+            await gw._init_cron()
+            assert captured_cb is not None
+            result = await captured_cb(job)
+            return result, mock_sel
+
+    @pytest.mark.asyncio
+    async def test_message_fire_time_capability_deny_blocks_dispatch(self):
+        # Message (LLM) jobs previously had NO fire-time capabilities.cron
+        # check at all: disabling the capability after scheduling had no
+        # effect. The gate must block the session dispatch entirely.
+        gw = _make_gw()
+        job = CronJob(
+            id="mj1",
+            name="msg-job",
+            message="summarize the day",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+        result, mock_sel = await self._run_message_callback(
+            gw,
+            job,
+            cap="Error: cron scheduling blocked by governance policy: disabled",
+        )
+        assert result is None
+        assert job.last_status == "error"
+        assert "governance" in job.last_error
+        # No LLM session was acquired.
+        gw.sessions.get_or_create.assert_not_called()
+        gw.cron_svc.remove_job_async.assert_not_called()
+        assert job.consecutive_failures == 0
+        assert job.enabled is True
+        outcomes = [
+            c.kwargs.get("outcome")
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert "denied" in outcomes
+
+
+class TestFireTimeDenyOneShotRetention:
+    """A fire-time denial is a policy refusal, not a completed run: one-shot
+    delete_after_run jobs must be RETAINED and at-jobs stay armed."""
+
+    @pytest.mark.asyncio
+    async def test_deny_sets_fire_time_denied_flag(self):
+        gw = _make_gw()
+        job = _make_script_job(delete_after_run=True)
+        result, mock_run = await _run_script_callback(
+            gw, job, {"status": "ok"},
+            vet_reason="Error: cron scheduling blocked by governance policy: x",
+        )
+        assert result is None
+        assert job.fire_time_denied is True
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_run_resets_flag_via_execute(self):
+        # CronService._execute resets the marker at the start of every run.
+        from kiro_crew.cron import CronService
+
+        job = _make_script_job()
+        job.fire_time_denied = True  # stale from a prior denied run
+
+        async def _ok(j):
+            return "ok"
+
+        svc = CronService.__new__(CronService)
+        svc._on_job = _ok
+        await svc._execute(job)
+        assert job.fire_time_denied is False
+
+    def test_merge_retains_denied_delete_after_run_job(self, tmp_path):
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(name="one-shot", message="go", at_ts=9999999999.0)
+        job.delete_after_run = True
+        svc._save()
+        job.fire_time_denied = True
+        job.last_status = "error"
+        job.enabled = False  # _execute parks a denied at-job disabled
+        svc._merge_job_result(job)
+        # include_disabled: the denied one-shot is parked DISABLED, so the
+        # default (enabled-only) listing hides it — retention is what matters.
+        stored = next(
+            (j for j in svc.list_jobs(include_disabled=True) if j.id == job.id), None
+        )
+        assert stored is not None, "denied one-shot was deleted"
+        # Parked DISABLED so a past-due at-job cannot refire every tick.
+        assert stored.enabled is False
+        # A COMPLETED run (no denial) still deletes it.
+        job.fire_time_denied = False
+        job.last_status = "ok"
+        svc._merge_job_result(job)
+        assert not any(j.id == job.id for j in svc.list_jobs(include_disabled=True))
+
+    @pytest.mark.asyncio
+    async def test_denied_past_due_at_job_does_not_stay_due(self):
+        """A past-due at-job denied at fire time must be parked disabled —
+        leaving it enabled would make it due again on every timer tick."""
+        from kiro_crew.cron import CronService
+
+        job = _make_script_job(
+            schedule=CronSchedule(kind="at", at_ts=1.0), delete_after_run=True
+        )
+
+        async def _deny(j):
+            # Mirrors the gateway deny branch: mark refusal, return normally.
+            j.last_status = "error"
+            j.fire_time_denied = True
+            return None
+
+        svc = CronService.__new__(CronService)
+        svc._on_job = _deny
+        await svc._execute(job)
+        assert job.enabled is False
+        assert job.fire_time_denied is True
+
+
+class TestFireTimeAuditTrail:
+    """Every fire-time decision — allowed and denied — leaves a SEL
+    governance_decision event keyed cron:<job.id>."""
+
+    def test_allowed_fire_emits_governance_decision(self):
+        from kiro_crew.mcp_cron import vet_job_at_fire_time
+
+        job = _make_command_job()
+        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance",
+                   return_value=None), \
+             patch("kiro_crew.mcp_cron._vet_command_governance", return_value=None), \
+             patch("kiro_crew.mcp_cron.sel") as mock_sel:
+            assert vet_job_at_fire_time(job) is None
+        calls = mock_sel.return_value.log_governance_decision.call_args_list
+        assert any(c.kwargs.get("outcome") == "allowed"
+                   and c.kwargs.get("session_key") == f"cron:{job.id}" for c in calls)
+
+    def test_denied_fire_emits_governance_decision(self):
+        from kiro_crew.mcp_cron import vet_job_at_fire_time
+
+        job = _make_command_job()
+        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance",
+                   return_value=None), \
+             patch("kiro_crew.mcp_cron._vet_command_governance",
+                   return_value="Error: cron command blocked by governance policy: x"), \
+             patch("kiro_crew.mcp_cron.sel") as mock_sel:
+            assert vet_job_at_fire_time(job) is not None
+        calls = mock_sel.return_value.log_governance_decision.call_args_list
+        assert any(c.kwargs.get("outcome") == "denied"
+                   and c.kwargs.get("scope") == "commands" for c in calls)
+
+    def test_script_body_deny_emits_scoped_decision(self):
+        from kiro_crew.mcp_cron import vet_job_at_fire_time
+
+        job = _make_script_job()
+        with patch("kiro_crew.mcp_cron._vet_cron_capability_governance",
+                   return_value=None), \
+             patch("kiro_crew.mcp_cron.resolve_script_path",
+                   return_value=("/tmp/x.py", "run")), \
+             patch("kiro_crew.mcp_cron._vet_script_file",
+                   return_value="Error: cron script blocked: x"), \
+             patch("kiro_crew.mcp_cron.sel") as mock_sel:
+            assert vet_job_at_fire_time(job) is not None
+        calls = mock_sel.return_value.log_governance_decision.call_args_list
+        assert any(c.kwargs.get("outcome") == "denied"
+                   and c.kwargs.get("scope") == "cron_script_body" for c in calls)
 
 
 class TestTimeoutPersistence:

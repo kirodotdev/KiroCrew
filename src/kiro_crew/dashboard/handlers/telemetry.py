@@ -31,16 +31,18 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from aiohttp import web
 
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.chat_utils import slot_transcript_key
 from kiro_crew.dashboard.handlers.usage import context_occupancy, context_trace, cost_breakdown
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.metrics.provider import TELEMETRY_ENV_VAR, env_pin
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -76,18 +78,54 @@ _CACHE_TS: float = 0.0
 _CACHE_TTL = 30.0
 
 
-def _telemetry_cfg() -> tuple[bool, Path]:
-    """Return (enabled, metrics_dir), resolved the same way the exporter is."""
+class _TelemetryState(NamedTuple):
+    """Effective telemetry posture for the panel."""
+
+    enabled: bool
+    directory: Path
+    env_pinned: bool
+    env_var: str
+    otlp_configured: bool
+
+
+def _telemetry_cfg() -> _TelemetryState:
+    """Resolve the telemetry posture the same way the exporter does.
+
+    ``enabled`` is the EFFECTIVE state, not the stored flag: ``KIROCREW_TELEMETRY``
+    overrides ``telemetry.enabled`` in the collector, so reporting the config value
+    alone would tell a pinned host "off" while metrics were being written (or "on"
+    while nothing was). ``env_pinned`` says the choice is not the config file's to
+    make, which is what lets the panel's switch disable itself instead of offering
+    a write that cannot take effect.
+
+    The pin comes from ``metrics.provider`` rather than a second read of the env
+    var here: two resolutions are two things to keep in sync, and a control that
+    disagrees with the collector about what "on" means is worse than no control.
+    """
     enabled = False
+    env_pinned = False
+    otlp_configured = False
     directory = config_dir() / "metrics"
     try:
         cfg = KiroCrewConfig.load().telemetry
         enabled = bool(cfg.enabled)
         if getattr(cfg, "local_dir", None):
             directory = Path(cfg.local_dir).expanduser()
+        # Presence only. The endpoint string can carry credentials, so it never
+        # leaves this function; the panel only needs to know one is configured.
+        otlp_configured = bool(str(getattr(cfg, "otlp_endpoint", "") or "").strip())
     except Exception:
         logger.debug("telemetry config load failed; assuming disabled", exc_info=True)
-    return enabled, directory
+    env_var = TELEMETRY_ENV_VAR
+    try:
+        pin = env_pin()
+    except Exception:
+        logger.debug("telemetry env pin resolution failed", exc_info=True)
+        pin = None
+    if pin is not None:
+        enabled = pin
+        env_pinned = True
+    return _TelemetryState(enabled, directory, env_pinned, env_var, otlp_configured)
 
 
 def _shards_in_window(directory: Path, days: int) -> list[Path]:
@@ -517,7 +555,7 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
 def _parse_startup_metrics() -> dict[str, Any]:
     """Windowed + fingerprint-cached aggregation over the metric shards."""
     global _CACHE, _CACHE_KEY, _CACHE_TS
-    _enabled, directory = _telemetry_cfg()
+    directory = _telemetry_cfg().directory
     shards = _shards_in_window(directory, _WINDOW_DAYS)
     if not shards:
         _CACHE, _CACHE_KEY = None, None
@@ -590,17 +628,19 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     separate page. Both are independent of the telemetry main switch — those rows
     are always written — so they are fetched even when OTEL export is off.
     """
-    enabled, directory = _telemetry_cfg()
+    state = _telemetry_cfg()
     data = await asyncio.to_thread(_parse_startup_metrics)
     context = await asyncio.to_thread(_context_block)
     cost = await asyncio.to_thread(_cost_block)
     if cost:
-        cost = _with_conversation_titles(request, cost)
+        cost = await _with_conversation_titles(request, cost)
     return web.json_response(
         {
-            "enabled": enabled,
+            "enabled": state.enabled,
+            "env_pinned": state.env_pinned,
+            "env_var": state.env_var,
             "window_days": _WINDOW_DAYS,
-            "metrics_dir": str(directory),
+            "metrics_dir": str(state.directory),
             "shard_count": data.get("shard_count", 0),
             "startup": data.get("startup"),
             "turn": data.get("turn"),
@@ -632,20 +672,65 @@ async def api_context_trace(request: web.Request) -> web.Response:
     return web.json_response(trace)
 
 
-def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) -> dict[str, Any]:
+def _persisted_titles(conversation_log: Any, slot_keys: list[str]) -> dict[str, str]:
+    """Read the persisted title for each of *slot_keys*. Blocking; call off-loop.
+
+    ``get_metadata`` rather than ``list_sessions``: the latter falls back to the
+    first user message and then to the session key when the metadata line names
+    no title, which would turn a ranking label into prompt text and leave no way
+    to tell a named conversation from an unnamed one. Only an explicit
+    ``metadata["title"]`` counts here, which is the same thing the live slot
+    carries.
+
+    Keyed by SLOT key on the way out, so the caller never has to know how a slot
+    maps onto a transcript. Distinct slots can share one transcript (a
+    channel-born slot's conversation IS the channel's), so the read is
+    deduplicated by transcript key rather than by slot.
+    """
+    by_transcript: dict[str, str] = {}
+    out: dict[str, str] = {}
+    for slot_key in slot_keys:
+        try:
+            transcript_key = slot_transcript_key(slot_key)
+        except Exception:  # pragma: no cover — a key shape no rule recognises
+            continue
+        if transcript_key not in by_transcript:
+            try:
+                meta = conversation_log.get_metadata(transcript_key) or {}
+            except Exception:
+                logger.debug("no persisted title for %s", transcript_key, exc_info=True)
+                meta = {}
+            by_transcript[transcript_key] = str(meta.get("title") or "")
+        title = by_transcript[transcript_key]
+        if title and title != NEW_SESSION_TITLE:
+            out[slot_key] = title
+    return out
+
+
+async def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) -> dict[str, Any]:
     """Attach a redacted human title to each ranked conversation, where known.
 
-    Titles live only on the in-memory slot, so a conversation the user has since
-    closed has none to attach. That is reported as an absent title rather than
-    filled with the raw key, leaving the frontend to decide how to render an
-    unnamed row — a ranking of opaque keys is not a ranking anyone can act on.
+    A title is resolved from the live slot first, so a rename is reflected before
+    it has been persisted. A conversation the user has since closed has no slot,
+    and its title is read back from the transcript's metadata line instead —
+    without that fallback the longer the window, the more of the ranking renders
+    unnamed, which is backwards for the question the window exists to answer.
+
+    A row with neither still reports an absent title rather than the raw key,
+    leaving the frontend to decide how to render an unnamed row.
 
     ``display_title`` is LLM-authored (``chat_title._generate_title_via_kiro``),
     so it carries the same two scanners the slot's own serialization applies at
     ``_ChatSlot.to_dict``. This endpoint is a SECOND serialization boundary for
     that field, and the scan is load-bearing rather than duplicated: a title set
     through ``api_chat_slot_resume`` is written to the slot unredacted, so
-    nothing upstream of here has sanitised it.
+    nothing upstream of here has sanitised it. A persisted title takes the same
+    path, so where it came from cannot change what leaves here.
+
+    The metadata reads are the only blocking work, and they run in a thread: the
+    surrounding handler already offloads its three other blocks, and this one is
+    bounded by the ranked rows (``_COST_TOP_CONVOS``) rather than by the number
+    of sessions on disk.
 
     Rows are copied before the title is attached. ``cost_breakdown`` hands back
     its memoised object by reference, so writing into the row would store the
@@ -662,27 +747,50 @@ def _with_conversation_titles(request: web.Request, cost: dict[str, Any]) -> dic
     get_slot = getattr(state, "get_slot", None)
     if not callable(get_slot):
         return cost
-    rows = []
-    for row in cost.get("conversations") or []:
-        slot = get_slot(str(row.get("slot") or ""))
+
+    conversations = cost.get("conversations") or []
+    titles: dict[str, str] = {}
+    unresolved: list[str] = []
+    for row in conversations:
+        slot_key = str(row.get("slot") or "")
+        if not slot_key:
+            continue
+        slot = get_slot(slot_key)
         title = getattr(slot, "display_title", "") if slot is not None else ""
         if title and title != NEW_SESSION_TITLE:
-            safe, _ = redact_exfiltration_urls(str(title))
+            titles[slot_key] = str(title)
+        elif slot_key not in titles:
+            unresolved.append(slot_key)
+
+    conversation_log = getattr(state, "conversation_log", None)
+    if unresolved and conversation_log is not None:
+        titles.update(
+            await asyncio.to_thread(_persisted_titles, conversation_log, unresolved)
+        )
+
+    rows = []
+    for row in conversations:
+        title = titles.get(str(row.get("slot") or ""))
+        if title:
+            safe, _ = redact_exfiltration_urls(title)
             safe, _ = redact_credentials(safe)
             row = {**row, "title": safe}
         rows.append(row)
     return {**cost, "conversations": rows}
 
 
-def _beacon_overlay_pins_value() -> bool:
-    """Return whether ``config.local.json`` sets ``telemetry.beacon_enabled``.
+def _telemetry_overlay_pins(leaf: str) -> bool:
+    """Return whether ``config.local.json`` sets ``telemetry.<leaf>``.
 
     That overlay deep-merges OVER ``config.json`` at load, and the Settings
-    toggle writes the BASE file — so an entry here makes the switch snap back to
+    toggles write the BASE file — so an entry here makes a switch snap back to
     the overlay's value after a successful write. Reporting it lets the panel say
     why instead of looking broken. Best-effort: an unreadable or malformed
     overlay is reported as "not pinned" rather than raising, since this is a
-    diagnostic (the effective value in ``enabled`` is still authoritative).
+    diagnostic (the effective value the handler reports is still authoritative).
+
+    Shared by both telemetry switches: the shadowing mechanism is the overlay,
+    not the key, so a second copy per key would be two things to keep in sync.
     """
     from kiro_crew.config.loader import config_local_path
 
@@ -694,7 +802,7 @@ def _beacon_overlay_pins_value() -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     section = data.get("telemetry") if isinstance(data, dict) else None
-    return isinstance(section, dict) and "beacon_enabled" in section
+    return isinstance(section, dict) and leaf in section
 
 
 async def api_beacon_status(request: web.Request) -> web.Response:
@@ -733,7 +841,7 @@ async def api_beacon_status(request: web.Request) -> web.Response:
         enabled = cfg.telemetry.beacon_enabled
         endpoint = cfg.telemetry.beacon_endpoint
         acked = cfg.dashboard.privacy_acked
-        overlay_override = await asyncio.to_thread(_beacon_overlay_pins_value)
+        overlay_override = await asyncio.to_thread(_telemetry_overlay_pins, "beacon_enabled")
     except Exception:
         # A diagnostic must never 500: an unreadable config is exactly when the
         # user wants to see this panel. Fail toward "off" so the UI never claims
@@ -765,5 +873,46 @@ async def api_beacon_status(request: web.Request) -> web.Response:
             # than re-evaluated here, so this reports the same verdict that
             # should_send and the PATCH gate act on.
             "governance_override": bool(info.get("governance_pinned_off", False)),
+        }
+    )
+
+
+async def api_collection_status(request: web.Request) -> web.Response:
+    """GET /api/telemetry/collection — local metric collection state for Settings → Privacy.
+
+    Powers the recording switch, and is deliberately separate from
+    ``/api/telemetry/startup``: that route parses every metric shard in the window
+    to aggregate percentiles, which is far too much work for a panel that only
+    needs to know whether a switch is on.
+
+    ``enabled`` is the EFFECTIVE state rather than the stored flag, because
+    ``KIROCREW_TELEMETRY`` overrides ``telemetry.enabled`` inside the collector: a
+    switch that read back the config value alone would sit on "off" while metrics
+    were being written. ``env_pinned`` says the env var is what decides, so the
+    panel can disable the control instead of offering a write the collector
+    ignores, and ``overlay_override`` does the same for a ``config.local.json``
+    entry that would make the switch snap back after a successful save.
+
+    ``otlp_configured`` reports that ``telemetry.otlp_endpoint`` is set. That makes
+    collection not-local — ``_build_recorder`` attaches an OTLP reader — so the
+    config route refuses to ENABLE it from here and the panel disables that
+    direction rather than offering a write that comes back 409. Disabling stays
+    available on such a host, which is where an opt-out matters most. The endpoint
+    itself is never returned: it can carry credentials, and the panel only needs to
+    know that one exists.
+
+    Nothing here is an egress control — the switch cannot start egress, by the gate
+    above — so unlike the beacon there is no governance ceiling to report.
+    """
+    state = await asyncio.to_thread(_telemetry_cfg)
+    overlay_override = await asyncio.to_thread(_telemetry_overlay_pins, "enabled")
+    return web.json_response(
+        {
+            "enabled": state.enabled,
+            "env_pinned": state.env_pinned,
+            "env_var": state.env_var,
+            "overlay_override": overlay_override,
+            "otlp_configured": state.otlp_configured,
+            "metrics_dir": str(state.directory),
         }
     )

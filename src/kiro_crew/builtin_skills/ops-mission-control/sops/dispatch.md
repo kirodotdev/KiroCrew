@@ -15,17 +15,15 @@ survivable at all.
 
 ## Authenticate first
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"; TOKEN="${URL#*token=}"
-```
-
-Reuse `$BASE`/`$TOKEN` for every call below and pass `?token=$TOKEN`. Never hardcode a
-port and never hunt for a token elsewhere — see SKILL.md § Calling the API for why.
+Every app API call goes through the `ops_mission_control_api` MCP tool — it
+carries the gateway's own credential and always reaches this instance. Never
+call the API over raw HTTP and never hunt for a credential — see SKILL.md
+§ Calling the API for why. Paths below are relative to the app base, exactly
+as the tool takes them.
 
 ## Steps
 
-1. `GET /api/apps/ops-mission-control/signals` — polls every configured source
+1. `GET /signals` — polls every configured source
    concurrently and returns `unclaimed` already diffed against the dispatch index.
    Per-source errors come back in `errors`; a single unreachable provider is
    normal and is not worth a message.
@@ -33,7 +31,7 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
 2. For each unclaimed signal, up to **3 per run** (the cap exists so a provider
    fanning out 200 alarms cannot spawn 200 sessions):
 
-   a. `POST /api/apps/ops-mission-control/incident/claim` with the signal.
+   a. `POST /incident/claim` with the signal as the body.
       A `409` means another instance won the race — skip it, do not retry.
 
    b. Read the returned incident's `operating_mode` and `ledger_matches`.
@@ -51,18 +49,34 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
       reply in that thread reach the investigation. The response reports
       `slack_thread_replyable` so you can see whether it took.
 
-      ```bash
-      curl -sS -X POST "$GATEWAY/api/chat/slots" \
-        -H 'Content-Type: application/json' \
-        -d '{"name": "ops-mission-control-INV-7"}'
-      ```
+      The slot is created through the chat API (this one is outside the app
+      base, so it is a plain gateway route, not an `ops_mission_control_api`
+      path): `POST /api/chat/slots` with body `{"name": "ops-mission-control-INV-7"}`
+      — use the tool or route your session runtime provides for slot creation.
+      **If your runtime provides neither** (no slot tool and no credentialed
+      HTTP route — the normal case for an unattended cron run), do NOT
+      improvise with raw HTTP: launch the investigator with `spawn_run`
+      instead, passing the same investigation kickoff (incident id, signal
+      title, operating mode, and the `ops-mission-control` skill reference) as
+      the task. The incident panel shows "no session yet" without the
+      conventional slot key, but the investigation genuinely runs and its
+      outcome lands through the transition in (d).
+
+      **Only continue to (d)'s `investigating` transition after the
+      investigator actually launched** — a created slot with the kickoff
+      posted, or a `spawn_run` that returned a spawned agent id. If BOTH
+      launch paths fail, leave the incident unclaimed and report the launch
+      failure instead: transitioning to `investigating` with no investigator
+      running marks the claim as handled and suppresses redispatch until the
+      stale sweep, which is exactly how an alert goes quietly uninvestigated
+      for the whole stale window.
 
       Because the user is watching that panel, they can also approve tool calls
       from it: an approval card rendered in the embed resolves through
       `/api/approvals/<id>/approve`. So when you need permission for a read-only
       probe, ASK — do not silently skip the step.
 
-   d. `POST /api/apps/ops-mission-control/incident/transition` to
+   d. `POST /incident/transition` to
       `investigating`, attaching `slot_key` (the same
       `ops-mission-control-<incident_id>`) and `slack_thread_ts`. Do this even when you
       have nothing else to record: it is what makes the Slack thread answerable.

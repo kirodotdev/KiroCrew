@@ -50,4 +50,42 @@ describe('JsonViewer', () => {
     // Raw content preview is shown so the user can see what the viewer received.
     expect(text).toContain(broken)
   })
+
+  it('re-escapes string values holding embedded JSON instead of rendering them raw', () => {
+    // The bug class: JSON.parse consumes the escapes, and rendering the parsed
+    // value wrapped in hand-placed quotes displays `"{"execute":…"` — which is
+    // indistinguishable from invalid nested raw JSON. Common real payloads hit
+    // this: SNS notification envelopes, SQS bodies, EventBridge detail strings.
+    const content = JSON.stringify({ Message: '{"execute":{"type":"UPSERT"}}' })
+    const { container } = render(<JsonViewer content={content} />)
+    const text = container.textContent || ''
+    expect(text).not.toMatch(/Invalid JSON/)
+    // The leaf renders as valid JSON source: quotes inside the string are escaped.
+    expect(text).toContain('"{\\"execute\\":{\\"type\\":\\"UPSERT\\"}}"')
+    // And the misleading unescaped form is NOT shown.
+    expect(text).not.toContain('"{"execute"')
+  })
+
+  it('re-escapes object keys containing quotes or backslashes', () => {
+    const content = '{"quo\\"te": 1, "back\\\\slash": 2}'
+    const { container } = render(<JsonViewer content={content} />)
+    const text = container.textContent || ''
+    expect(text).toContain('"quo\\"te"')
+    expect(text).toContain('"back\\\\slash"')
+  })
+
+  it('truncates long strings without cutting an escape sequence in half', () => {
+    // A `"` at raw index 199 straddles the 200-char slice point. Because the
+    // RAW value is truncated before JSON.stringify, the escape for that quote
+    // survives whole. The ellipsis renders OUTSIDE the closing quote so the
+    // quoted text is never mistaken for the faithful full value.
+    const long = 'a'.repeat(199) + '"' + 'b'.repeat(50)
+    const { container } = render(<JsonViewer content={JSON.stringify({ v: long })} />)
+    const text = container.textContent || ''
+    // Truncated to 200 raw chars (…199 a's + the quote), escaped, quote-closed,
+    // then the truncation marker outside the quotes.
+    expect(text).toContain('a'.repeat(199) + '\\""…')
+    // The b's beyond the truncation point never render.
+    expect(text).not.toContain('bbb')
+  })
 })

@@ -323,10 +323,25 @@ class TestDispatchQueued:
 
 def _make_route_orch() -> MagicMock:
     """Minimal mock orch that passes _route_message guards."""
-    from kiro_crew.config.loader import ACTIVATION_ALWAYS, KiroCrewConfig
+    from kiro_crew.config.loader import ACTIVATION_ALWAYS, KiroCrewConfig, MessagingConfig
 
     orch = MagicMock()
-    orch._cfg = KiroCrewConfig(slack_channels={}, slack_dm_activation=ACTIVATION_ALWAYS)
+    # Pin the dispatch path explicitly. MessagingConfig.use_transport defaults
+    # to True, so a bare KiroCrewConfig() sends _route_message down
+    # handle_message_transport and every `patch(...events.handle_message)` in
+    # this file becomes inert: the real transport coroutine then runs against
+    # this MagicMock session plumbing, raises TypeError inside
+    # transport_dispatch, and has it swallowed by that module's own error
+    # handler. The drain assertions below still passed -- via the failure path
+    # rather than the completed-turn path they document. Pinning it False keeps
+    # these tests on the native _on_done drain they are named for; the
+    # transport-side drain has its own coverage in test_channel_activation.py
+    # (TestQueuedDrain::test_queued_drains_to_transport_when_on).
+    orch._cfg = KiroCrewConfig(
+        slack_channels={},
+        slack_dm_activation=ACTIVATION_ALWAYS,
+        messaging=MessagingConfig(use_transport=False),
+    )
     orch.channel_history = MagicMock()
     orch.slack = AsyncMock()
     orch.sessions = MagicMock()
@@ -356,6 +371,35 @@ _ROUTE_PATCHES = [
     patch("kiro_crew.slack.events.is_allowed_user", return_value=True),
     patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True),
 ]
+
+
+async def _settle_handler_tasks(orch: MagicMock, *, rounds: int = 20) -> None:
+    """Await the dispatched handler task and the drain chain its done-callback
+    schedules, without sleeping on the wall clock.
+
+    _route_message dispatches fire-and-forget, and the drain runs in the task's
+    done-callback -- which can itself schedule a follow-up _dispatch_queued
+    task. A fixed `asyncio.sleep(0.05)` makes the assertion a race against a
+    handler that does real work (the transport branch alone does two
+    KiroCrewConfig.load() disk reads while building its coroutine), so it holds
+    only while the runner is fast enough. Draining the task set to empty is the
+    same wait expressed as a condition instead of a duration.
+    """
+    for _ in range(rounds):
+        pending = [t for t in orch._handler_tasks if not t.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Yield on EVERY round, including the one that just gathered. A task's
+        # done-callback runs via loop.call_soon, and on Python 3.12 awaiting a
+        # gather() whose tasks are already finished returns *without* yielding
+        # to the loop (3.10/3.11 yielded), so gathering alone never lets
+        # _on_done discard the task or run the drain: the set stays non-empty
+        # and this helper spins out its rounds. sleep(0) gives the ready queue
+        # one turn on every version.
+        await asyncio.sleep(0)
+        if not orch._handler_tasks:
+            return
+    raise AssertionError("handler tasks did not settle")
 
 
 class TestQueueRouting:
@@ -431,15 +475,18 @@ class TestOnDoneDrain:
             None,
         ]
         event = {"user": "U1", "text": "first", "ts": "ts1", "channel": "D1", "channel_type": "im", "team": "T1"}
-        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock), \
+        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm, \
+             patch("kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock) as mock_tr, \
              patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True):
             await _route_message(orch, event, SeenCache(), is_mention=True)
-            await asyncio.sleep(0.05)
             # Drain should have dispatched the queued message via _dispatch_queued
-            tasks = list(orch._handler_tasks)
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            await _settle_handler_tasks(orch)
+        # The stub must actually have been reached: if the dispatch path moves,
+        # this test would otherwise keep passing on the drain-after-failure
+        # branch and stop testing what it is named for.
+        mock_hm.assert_called()
+        mock_tr.assert_not_called()
         # dequeue was called in _on_done
         orch.sessions.dequeue.assert_called()
 
@@ -453,14 +500,14 @@ class TestOnDoneDrain:
         # Stash in pending queue
         orch._pending_queue = {"ts1": [("ts_pq", "pending", {"channel": "C1"})]}
         event = {"user": "U1", "text": "first", "ts": "ts1", "channel": "D1", "channel_type": "im", "team": "T1"}
-        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock), \
+        with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_hm, \
+             patch("kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock) as mock_tr, \
              patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
              patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True):
             await _route_message(orch, event, SeenCache(), is_mention=True)
-            await asyncio.sleep(0.05)
-            tasks = list(orch._handler_tasks)
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            await _settle_handler_tasks(orch)
+        mock_hm.assert_called()
+        mock_tr.assert_not_called()
         # pending queue should have been drained
         assert "ts1" not in getattr(orch, "_pending_queue", {})
 

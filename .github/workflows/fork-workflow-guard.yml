@@ -70,9 +70,28 @@ jobs:
 
           # Resolve the PR by matching the open PR whose head SHA == head_sha
           # (workflow_run.pull_requests is empty for forks).
-          pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty" 2>/dev/null || true)"
-          if [ -z "$pr" ]; then echo "::error::could not resolve an open PR for $head_sha"; exit 1; fi
+          # An empty result here has TWO causes that need OPPOSITE handling, and
+          # collapsing them is what made this abort unfalsifiable: the same
+          # message and the same exit 1 were emitted whether the query failed or
+          # whether it succeeded and found nothing.
+          #   * query FAILED (5xx, rate limit, network) -> we know nothing about
+          #     this PR. Stay red and loud: skipping here would let a fork PR
+          #     that really does touch .github/** proceed with no verdict.
+          #   * query SUCCEEDED, no OPEN PR has this head -> the push was
+          #     superseded, or its PR closed, while CI was queued. There is
+          #     nothing to evaluate, and this abort is upstream of both
+          #     check-run POSTs, so nothing was published and no verdict is
+          #     withheld. Report it and exit 0.
+          # stderr is no longer discarded, so a failing query now says why.
+          if ! pr="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
+            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed; see the error above"
+            exit 1
+          fi
+          if [ -z "$pr" ]; then
+            echo "::notice::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to evaluate"
+            exit 0
+          fi
 
           # AUTHORITATIVE, COMPLETE changed-file list from the paginated PR-files
           # endpoint. NOT the compare API — its `.files` caps at 300, which would

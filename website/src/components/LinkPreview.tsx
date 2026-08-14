@@ -14,6 +14,14 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, Copy, Globe } from 'lucide-react'
 import type { LinkMeta } from '../lib/linkMeta'
+import {
+  iconNeedsPlate,
+  measureIconTone,
+  prefersDarkIcon,
+  subscribeThemeSurface,
+  surfaceLuminance,
+  type IconTone,
+} from '../lib/iconContrast'
 import { copyToClipboard } from '../utils/clipboard'
 
 /** How long the copied checkmark stays before reverting to the copy icon. */
@@ -27,30 +35,93 @@ const COPIED_FEEDBACK_MS = 1600
  * bytes arrive. `onError` swaps the `<img>` for the placeholder rather than
  * leaving the browser's broken-image glyph in a 14px slot.
  *
- * The box paints NO background of its own. Favicons are routinely transparent
- * PNG/ICO, so a tinted fill here shows through as a themed plate around the
- * logo — on a light theme it reads as a grey square the site did not ship.
- * Letting the surface behind it (the card, the chip's own tint, the paragraph)
- * show through is what makes a transparent icon look like the site's icon.
+ * The box paints NO background of its own by default. Favicons are routinely
+ * transparent PNG/ICO, so a tinted fill here shows through as a themed plate
+ * around the logo — on a light theme it reads as a grey square the site did not
+ * ship. Letting the surface behind it (the card, the chip's own tint, the
+ * paragraph) show through is what makes a transparent icon look like the site's
+ * icon.
+ *
+ * The exception is an icon that CANNOT be seen against that surface. A site
+ * shipping one tab-coloured icon (a near-black glyph, designed for a white
+ * browser tab) renders as an invisible shape on a dark theme. Two things answer
+ * that, in order of preference:
+ *
+ * 1. If the site declares a `prefers-color-scheme: dark` variant, render THAT
+ *    on a dark surface — the icon its designer drew for this case beats anything
+ *    inferred here.
+ * 2. Otherwise, when the measured icon and the measured surface collide, paint
+ *    `--text` behind the icon — the one token every theme guarantees to contrast
+ *    with its own backgrounds, which makes it correct in both directions: a
+ *    light plate under a dark icon on a dark theme, a dark plate under a light
+ *    icon on a light one.
+ *
+ * The surface is measured FIRST and independently of the icon, because it is
+ * what decides which variant to render; the tone is measured from whichever
+ * variant that produced.
  */
-function Favicon({ icon, className, iconClassName }: {
+function Favicon({ icon, iconDark, className, iconClassName }: {
   icon: string
+  iconDark: string
   className: string
   iconClassName: string
 }) {
-  const [broken, setBroken] = useState(false)
-  const show = icon && !broken
+  /**
+   * The srcs that failed to decode, keyed BY SRC rather than a single "broken"
+   * flag, because the two icons fail independently. A variant that arrives
+   * undecodable (a 200 carrying garbage under an image content-type — the
+   * backend validates the header, not the magic bytes) must demote to the
+   * site's other icon, not take the whole chip down to the placeholder. A list
+   * rather than one src so a second failure cannot bounce the choice back to
+   * the first, which would retry the dead image forever.
+   */
+  const [failed, setFailed] = useState<string[]>([])
+  const [tone, setTone] = useState<IconTone | null>(null)
+  const [surface, setSurface] = useState<number | null>(null)
+  const box = useRef<HTMLSpanElement>(null)
+
+  useEffect(() => {
+    // Read from the box's PARENT, never the box: once a plate is painted the
+    // box's own background IS the plate, so measuring the box would compare the
+    // icon against the plate and immediately undo the decision.
+    const parent = box.current?.parentElement ?? null
+    const read = () => setSurface(surfaceLuminance(parent))
+    read()
+    return subscribeThemeSurface(read)
+  }, [])
+
+  const chosen = iconDark && !failed.includes(iconDark) && prefersDarkIcon(surface) ? iconDark : icon
+  const show = !!chosen && !failed.includes(chosen)
+
+  // A different picture in the same slot invalidates the measurement taken from
+  // the previous one.
+  useEffect(() => { setTone(null) }, [chosen])
+
+  const sample = (img: HTMLImageElement | null, decoded = false) => {
+    // Called from `onLoad` AND from the ref: a `data:` URI can already be
+    // decoded by the time the ref fires, in which case no load event is coming.
+    if (img && (decoded || img.complete)) setTone((prev) => prev ?? measureIconTone(img))
+  }
+
   return (
     <span
+      ref={box}
       aria-hidden="true"
-      className={`shrink-0 grid place-items-center overflow-hidden rounded-sm ${className}`}
+      className={[
+        'shrink-0 grid place-items-center overflow-hidden rounded-sm',
+        show && iconNeedsPlate(tone, surface) ? 'bg-text' : '',
+        className,
+      ].filter(Boolean).join(' ')}
     >
       {show ? (
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad` is a resource event on a decorative image, not a user interaction, so it needs no keyboard equivalent.
         <img
-          src={icon}
+          ref={(img) => sample(img)}
+          src={chosen}
           alt=""
           className="w-full h-full object-contain"
-          onError={() => setBroken(true)}
+          onLoad={(e) => sample(e.currentTarget, true)}
+          onError={() => setFailed((prev) => (prev.includes(chosen) ? prev : [...prev, chosen]))}
         />
       ) : (
         <Globe className={`${iconClassName} text-muted`} />
@@ -97,7 +168,12 @@ export function LinkChip({ meta, href, children }: {
         data-unfurl-url={href}
         className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
       >
-        <Favicon icon={meta.icon} className="w-[14px] h-[14px]" iconClassName="w-[11px] h-[11px]" />
+        <Favicon
+          icon={meta.icon}
+          iconDark={meta.iconDark}
+          className="w-[14px] h-[14px]"
+          iconClassName="w-[11px] h-[11px]"
+        />
         {/* Capped in `ch`, not just at the container edge: an og:title is written
          *  for a browser tab, so a retailer's "<Brand>. Spend less. Smile more."
          *  runs 35+ characters, and a container-width cap lets one swallow most of
@@ -123,8 +199,13 @@ export function LinkChip({ meta, href, children }: {
  * Built from `<span>`s with `block` rather than `<div>`s so the card stays
  * valid markup wherever the renderer places it, including inside a `<p>` —
  * `<button>` is phrasing content, so it is legal there too.
+ *
+ * `icon` replaces the fetched favicon for cards built synchronously from the
+ * URL alone (the Jira card): those have no icon URL to give `Favicon`, but they
+ * do have a provider mark component. The slot mirrors Favicon's box exactly, so
+ * both forms of the card line up. Decorative either way — `aria-hidden`.
  */
-export function LinkCard({ meta, href }: { meta: LinkMeta; href: string }) {
+export function LinkCard({ meta, href, icon }: { meta: LinkMeta; href: string; icon?: React.ReactNode }) {
   return (
     <span className="relative flex items-start gap-3 my-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
       <a
@@ -134,7 +215,18 @@ export function LinkCard({ meta, href }: { meta: LinkMeta; href: string }) {
         data-unfurl-url={href}
         className="flex min-w-0 flex-1 items-start gap-3 no-underline focus-ring"
       >
-        <Favicon icon={meta.icon} className="w-8 h-8 rounded-md" iconClassName="w-4 h-4" />
+        {icon ? (
+          <span aria-hidden="true" className="w-8 h-8 shrink-0 grid place-items-center overflow-hidden rounded-md">
+            {icon}
+          </span>
+        ) : (
+          <Favicon
+            icon={meta.icon}
+            iconDark={meta.iconDark}
+            className="w-8 h-8 rounded-md"
+            iconClassName="w-4 h-4"
+          />
+        )}
         <span className="min-w-0 flex-1">
           <span className="block truncate text-text font-semibold">
             {meta.title || meta.domain}

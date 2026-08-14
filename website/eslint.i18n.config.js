@@ -60,6 +60,15 @@ export default [
       // the module may contain ONLY paint data, so the filename IS the
       // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
       'src/components/folderColorPaint.ts',
+      // Per-shell env-var export command builders for SettingRef's env popover:
+      // every string is CLI syntax handed to a terminal (`export`, `$env:`,
+      // `set`, `=1`), never user-visible copy — translating a fragment would
+      // break the command. Same named-boundary idiom as `*.prompt.ts` above:
+      // the module may contain ONLY command builders (shell display names live
+      // in the catalog as `privacyDisclosure.shell*Label` keys), so the
+      // filename IS the boundary and its consumer (SettingRef.tsx) stays fully
+      // covered by the gate.
+      'src/components/settingRef/envShellCommands.ts',
       // Generated and data-only.
       'src/i18n/locales/**',
       // Generated sources: the copy's real home is the panel that declares the
@@ -197,6 +206,23 @@ export default [
       // module parser-facing only, and keep it DOM-free, which is the property
       // that makes that easy to check.
       'src/hooks/themeCss.ts',
+      // The Kiro-ghost avatar generator's art tables. Every literal in the module
+      // is SVG handed to the SVG parser: the shipped mark's `d` path data, the
+      // per-part fragments built from it, and the hex tile colors. Translating any
+      // of them would not change a word anyone reads — it would emit a malformed
+      // path and render a blank avatar.
+      //
+      // Verified copy-free rather than assumed, and by a MECHANICAL boundary: the
+      // module's only import is a TYPE from `@dicebear/core`, it imports no `i18nT`
+      // / `useTranslation`, and it does not touch the DOM — every export is data in,
+      // SVG `string` out. Its consumer `components/CrewAvatar.tsx` stays fully
+      // gated, and that component renders the avatar `alt=""` / `aria-hidden`
+      // precisely because the crew name is shown as real translated text beside it.
+      //
+      // Stated as a false-negative class, per this file's convention: any
+      // user-visible copy ever added to THIS path will not be reported — keep the
+      // module parser-facing only, and keep it DOM-free.
+      'src/lib/kiroGhostAvatar.ts',
       // Same rationale, different convention: this app keeps its seed prompts in a
       // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
       // payload sent over the wire, never rendered.
@@ -270,8 +296,15 @@ export default [
               // A URL query built from an already-encoded value, e.g.
               // `${PATH}?id=${encodeURIComponent(x)}`. A request path is a server
               // contract; translating it would 404. Full-string for the same reason as
-              // above; the literals that reach the linter here are `?id=` and `?since=`.
-              String.raw`^\?[a-z_]+=$`,
+              // above; the literals that reach the linter here are `?id=`, `?since=`
+              // and `&v=`.
+              //
+              // The leading character is `[?&]`, not `?` alone: a CONTINUATION
+              // parameter is exactly the same server contract as the first one, and a
+              // URL carrying two parameters has to spell one of them with `&`. The
+              // shape stays just as tight — prose takes neither a leading `?`/`&` nor
+              // a trailing `=`, so this still reports real copy.
+              String.raw`^[?&][a-z_]+=$`,
 
               // A catalog KEY assembled at runtime, e.g.
               // `apps.crewCompanion.state.${slot}`. Translating a key would break the
@@ -325,17 +358,26 @@ export default [
               //      flagged, so it lands in the baseline. Accepted: a false positive
               //      costs one baseline entry, a false negative hides copy forever.
               '^(?![a-z]+(?: [a-z]+)+$)[\\s\\-a-z0-9:/\\[\\]().%#]+$',
-              // CSS ATTRIBUTE SELECTORS, e.g. `[role="dialog"],[data-x]` — a
-              // comma-joined list of bracketed attribute selectors, as passed to
-              // querySelector. The Tailwind/class shape above cannot cover these:
-              // its char class forbids `=`, `"` and `,`, which is exactly what an
-              // attribute selector is made of. Such constants live at module level
-              // under an ALL-CAPS name, so `i18n-strict` looks inside them.
+              // CSS SELECTOR LISTS, e.g. `[role="dialog"],[data-x]` or
+              // `a,button,[tabindex]` — a comma-joined list of type selectors and
+              // bracketed attribute selectors, as passed to querySelector. The
+              // Tailwind/class shape above cannot cover these: its char class forbids
+              // `=`, `"` and `,`, which is exactly what an attribute selector is made
+              // of. Such constants live at module level under an ALL-CAPS name, so
+              // `i18n-strict` looks inside them.
               //
-              // Deliberately anchored and total: the WHOLE string must be
-              // bracketed selectors, so prose cannot match (prose has no square
-              // brackets), and a sentence merely containing one is still flagged.
-              '^\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\](?:\\s*,\\s*\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])*$',
+              // A bare type selector is admitted only alongside a bracketed one: the
+              // leading lookahead requires at least one `[` in the WHOLE string, and
+              // that is what keeps this entry from becoming a general "lowercase words
+              // joined by commas" exemption. Without it `'save,delete'` would match,
+              // and `\s*,\s*` permits a space, so `'save, delete'` would too. A
+              // sentence merely containing a bracket still fails, because every member
+              // must match end to end and a prose member carries spaces.
+              //
+              // Known false negative, stated: a comma-joined list of lowercase words
+              // that also holds a bracketed term is exempt. Copy does not take that
+              // shape — a bracket in copy sits inside a phrase, not as a list member.
+              '^(?=[^\\[]*\\[)(?:[a-z][a-z0-9]*|\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])(?:\\s*,\\s*(?:[a-z][a-z0-9]*|\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\]))*$',
               // Identifiers, paths, URLs, mime types, storage keys.
               // camelCase identifiers only. A plain lowercase word must NOT be excluded
               // here: `saved`, `active` and `done` are all real UI copy, and a pattern of
@@ -373,6 +415,22 @@ export default [
               // a shape UI copy takes — copy has spaces and capitals, which is what keeps
               // `['Save changes', 'Delete item']` reported.
               '^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$',
+              // A `KeyboardEvent.code` SIDE-SPECIFIC MODIFIER identifier, i.e.
+              // `AltRight`, `ControlLeft`, `MetaRight`, `ShiftLeft`. These are DOM
+              // protocol values: they are compared against `e.code` and never
+              // rendered — the strings a user sees for the same keys come from the
+              // catalog (`ptt_key_right_option` and friends). Such lists live at
+              // module level under an ALL-CAPS name (`SELECTABLE_BARE_CODES`), so
+              // `i18n-strict` looks inside them.
+              //
+              // Enumerated rather than shaped, deliberately. The obvious shape,
+              // `^[A-Z][a-zA-Z0-9]*$` (PascalCase single token), was tried and
+              // rejected: it also exempts `'Save'`, `'Delete'` and `'Done'`, which
+              // are exactly the single-word copy the config already calls out as
+              // the hardest false-negative class. Spelling out the eight members of
+              // a closed DOM set cannot match prose — no English phrase is
+              // `AltRight` — and a new key code has to be added here on purpose.
+              '^(?:Alt|Control|Meta|Shift)(?:Left|Right)$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such
@@ -426,6 +484,25 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // A FILE-PICKER `accept` EXTENSION LIST, e.g.
+              // `,.txt,.md,.json,.har,.yaml` — the comma-joined dot-extension
+              // string handed to `<input type="file" accept=…>`. These live at
+              // module level under an ALL-CAPS name (`FILE_ACCEPT`), so
+              // `i18n-strict` looks inside them, and no identifier pattern above
+              // reaches them: the dotted-token shape requires a leading letter
+              // and the path shapes require a slash. The string is DOM protocol
+              // data — the browser matches it against filenames and no character
+              // of it is rendered as copy; translating a fragment would break
+              // the picker's filtering.
+              //
+              // Deliberately narrow: an optional LEADING comma (the literal is
+              // concatenated after a MIME list), then one-or-more comma-joined
+              // `.lower09` tokens, full-string. Prose cannot match — every token
+              // must begin with a dot and the char class holds no spaces or
+              // capitals. Known false negative, stated: a string that is ONLY
+              // dot-extensions (`'.har'`) would be exempt anywhere — it is not a
+              // shape UI copy takes.
+              '^,?\\.[a-z0-9]+(?:,\\.[a-z0-9]+)*$',
               // A GATEWAY WIRE MARKER, e.g. `[Tool refusal — automatic recovery]` or
               // `[Continue — requested by the user]`. These are matched with
               // `startsWith` against gateway-authored transcript rows and must stay
@@ -495,9 +572,10 @@ export default [
               // pattern, so a prefix-only one is inert.
               '/[\\w./-]*(?:\\?[\\w=&%-]*)?$',
               // The attachment wire format a composer writes into the outgoing message,
-              // mirroring core's own convention (`[attached_file N] /path`, `![image](path)`).
+              // mirroring core's own convention (`[attached_file N] /path`,
+              // `[attached_dir N] /path`, `![image](path)`).
               // Machine syntax the agent parses, not copy.
-              '!\\[image\\]\\($', '\\[attached_file$',
+              '!\\[image\\]\\($', '\\[attached_(?:file|dir)$',
               // An escaped newline joining two interpolations. Quasi values are
               // TRIMMED before matching, so this arrives as the two characters
               // backslash and `n` — which the letterless pattern below cannot cover.
@@ -517,6 +595,15 @@ export default [
               // to the whole value, so a sentence merely *containing* the brand is still
               // reported — only the bare name is exempt.
               '^Kiro ?Crew$',
+              // The messaging-channel product brands. Same class as the product
+              // brand above and covered by the do-not-translate glossary: "Slack"
+              // is "Slack" in every locale, and a localized spelling would name a
+              // product that does not exist. They reach the UI as a folder-name
+              // placeholder and an interpolated `{{channel}}` value in the
+              // per-channel settings panels. Enumerated and whole-value-anchored,
+              // so a sentence merely mentioning a channel is still reported —
+              // only the bare name is exempt.
+              '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal
@@ -613,6 +700,10 @@ export default [
               // same class as `fetch` directly above. Uniquely named so the
               // exclusion cannot mask a `call(...)`/`vq(...)` callee elsewhere.
               '^mdnbCall$', '^mdnbVaultQuery$',
+              // App-local request helpers. Their first argument is an endpoint path
+              // (often a template literal carrying a query string), which is the
+              // same machine value `fetch` above is excluded for.
+              '^(get|send)JSON$',
               'setAttribute', 'getAttribute', 'removeAttribute', 'classList\\.\\w+',
               // STRING COMPARISON. The argument is the value being compared AGAINST,
               // so that call cannot render it — the same reason the plugin already
@@ -859,6 +950,36 @@ export default [
   // any copy later added here belongs in the catalog, not behind this exemption.
   {
     files: ['src/components/Strands.tsx'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // PROTOCOL VALUES ONLY, same category as `wireValues.ts` above: the two
+  // Aperture-registered literals for the session-pulse survey (a radio
+  // question's response values, and the question text itself). Both are
+  // compared/sent by value against Aperture's registered form template
+  // (category=KiroCrew, name=SessionFeedback, version=1.0.1) — ingestion  // brand-ok: registered category id
+  // 400s on any text/type mismatch, so translating either would break the
+  // submission rather than localize it. See the module's own header.
+  {
+    files: ['src/components/sessionPulseWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // SEARCH-KEYWORD SYNONYMS ONLY: a manual overlay of extra query terms merged
+  // into the Settings search corpus so a query like "dark mode" finds a setting
+  // whose label does not contain those words. Every value is a term matched
+  // against the user's typed query, never rendered — translating one would break
+  // the match in that locale while adding catalog noise for a word the user
+  // typed in their own language anyway. The keys are setting ids (enforced by
+  // settingsKeywords.test.ts). Scoped to this one file for the same reason as the
+  // modules above: a shape rule cannot express "search synonyms, but only here",
+  // and any real copy later added elsewhere still belongs in the catalog.
+  {
+    files: ['src/components/commandPalette/settingsKeywords.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

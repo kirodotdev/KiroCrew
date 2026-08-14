@@ -6,7 +6,7 @@ import { useEffect } from 'react'
 import { MC_NOTIFICATION_EVENT, MC_SOUND_SETTINGS_CHANGED_EVENT, type McNotificationDetail } from './notificationEvent'
 import { safeSetItem } from '../utils/safeStorage'
 
-export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop'] as const
+export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop', 'pulse'] as const
 export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
 
 /** Category mirrors Notification.kind values used by NotificationsPage, plus
@@ -95,6 +95,12 @@ const PRESETS: Record<Exclude<SoundPreset, 'none'>, ToneStep[]> = {
   ding:  [{ freq: 1760, start: 0, dur: 0.45, gain: 1.0 }],
   blip:  [{ freq: 880,  start: 0, dur: 0.08, gain: 1.0 }],
   pop:   [{ freq: 220,  start: 0, dur: 0.12, gain: 0.9 }],
+  pulse: [
+    { freq: 660,  start: 0,    dur: 0.12, gain: 1.0 },
+    { freq: 880,  start: 0.15, dur: 0.12, gain: 1.0 },
+    { freq: 660,  start: 0.30, dur: 0.12, gain: 0.9 },
+    { freq: 880,  start: 0.45, dur: 0.12, gain: 0.9 },
+  ],
 }
 
 export function playPreset(preset: SoundPreset, volume: number): void {
@@ -161,11 +167,21 @@ function scheduleTones(ctx: AudioContext, preset: Exclude<SoundPreset, 'none'>, 
 }
 
 /** Picks preset for a given notification kind using current settings. */
+/** Built-in preset defaults for specific categories. Unlike DEFAULTS.perCategory,
+ * these are NOT persisted to localStorage and therefore cannot be clobbered by
+ * a "Use default" reset. They apply only when the user has never explicitly
+ * chosen a preset for the category. */
+const BUILTIN_CATEGORY_DEFAULTS: Partial<Record<SoundCategory, SoundPreset>> = {
+  approval: 'pulse',
+}
+
 export function presetForKind(kind: string | undefined, settings: SoundSettings): SoundPreset {
   if (!settings.enabled) return 'none'
   const cat = kind && VALID_CATEGORIES.has(kind) ? (kind as SoundCategory) : undefined
   const specific = cat ? settings.perCategory[cat] : undefined
   if (specific) return specific
+  // Built-in category default (not persisted — survives "Use default" reset)
+  if (cat && BUILTIN_CATEGORY_DEFAULTS[cat]) return BUILTIN_CATEGORY_DEFAULTS[cat]!
   return settings.perCategory.all ?? 'chime'
 }
 

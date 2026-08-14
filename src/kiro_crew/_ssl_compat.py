@@ -1,10 +1,19 @@
-"""Ensure the system CA bundle is visible to OpenSSL on Amazon Linux.
+"""Ensure the system CA bundle is visible to OpenSSL before any HTTPS call.
 
 Must run before any library (aiohttp, slack_sdk, requests) caches its
 default SSL context, otherwise every HTTPS call fails with
-CERTIFICATE_VERIFY_FAILED on dev-desktops where mise-installed Python
-looks for certs at ``/etc/ssl/`` but Amazon Linux stores them at
-``/etc/pki/tls/``.
+CERTIFICATE_VERIFY_FAILED.
+
+Two distinct gaps, one fix: on Amazon Linux dev-desktops, mise-installed
+Python looks for certs at ``/etc/ssl/`` but Amazon Linux stores them at
+``/etc/pki/tls/`` (the ``_CA_CANDIDATES`` file paths below). On macOS, a
+python.org/Homebrew/pyenv-built CPython ships no bundled CA store at all and
+does not read the OS Keychain via any of these file paths — the standard
+fix there is ``certifi``'s bundled Mozilla root store, already present as a
+transitive dependency (``pip``, ``requests``, ``slack-sdk`` all pull it) but
+never installed as a direct one, so it is used only as a soft fallback: if
+it is not importable, this function is a no-op on that platform, matching
+prior behavior.
 """
 
 from __future__ import annotations
@@ -20,7 +29,7 @@ _CA_CANDIDATES = (
 
 
 def _ensure_ssl_certs() -> None:
-    """Point OpenSSL at the system CA bundle before any library caches it.
+    """Point OpenSSL at a working CA bundle before any library caches it.
 
     Sets both ``SSL_CERT_FILE`` (used by OpenSSL / aiohttp) and
     ``REQUESTS_CA_BUNDLE`` (used by the ``requests`` library / slack_sdk).
@@ -39,3 +48,15 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             os.environ.setdefault("REQUESTS_CA_BUNDLE", candidate)
             return
+
+    # None of the Linux system paths exist (e.g. macOS) — fall back to
+    # certifi's bundle if it happens to be installed transitively.
+    try:
+        import certifi
+
+        bundle = certifi.where()
+    except ImportError:
+        return
+    if Path(bundle).exists():
+        os.environ["SSL_CERT_FILE"] = bundle
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)

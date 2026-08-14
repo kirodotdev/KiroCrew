@@ -21,6 +21,7 @@ import aiohttp
 import pytest
 
 from kiro_crew.dashboard.handlers import updates
+from kiro_crew.platform import update_layout
 
 # A well-formed manifest, shaped like the real feed document.
 _FEED_TEMPLATE = {
@@ -67,7 +68,7 @@ def _wheel_install(monkeypatch, tmp_path):
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
     (tmp_path / "channel").write_text("insider\n")
-    monkeypatch.setattr(updates, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
     # Pin the packaging stamp rather than inheriting the ambient one: a checkout
     # has no `_build_info.py` and reports `source`, but an installed wheel reports
     # `wheel`, and the suite must not read differently depending on where it runs.
@@ -130,16 +131,16 @@ class TestVersionOrdering:
 class TestChannelResolution:
     def test_reads_the_channel_file_the_installer_wrote(self, tmp_path, monkeypatch):
         (tmp_path / "channel").write_text("  Insider \n")
-        monkeypatch.setattr(updates, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
         assert updates._release_channel() == "insider"
 
     def test_missing_file_falls_back_to_stable(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(updates, "config_dir", lambda: tmp_path / "nope")
+        monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path / "nope")
         assert updates._release_channel() == "stable"
 
     def test_junk_falls_back_to_stable(self, tmp_path, monkeypatch):
         (tmp_path / "channel").write_text("../../etc/passwd")
-        monkeypatch.setattr(updates, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
         assert updates._release_channel() == "stable"
 
     def test_update_command_always_names_the_channel(self):

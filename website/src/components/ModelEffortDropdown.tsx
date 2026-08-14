@@ -1,5 +1,6 @@
 import { useState, useRef, useLayoutEffect } from 'react'
 import { motion } from 'framer-motion'
+import { Trans } from 'react-i18next'
 import { ChevronRight, ChevronLeft, Settings2, Pin, Check, Ban } from 'lucide-react'
 import { Input } from './ui'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
@@ -100,7 +101,7 @@ export default function ModelEffortDropdown({
                 placeholder={i18nT('components.modelEffortDropdown.type_to_filter')}
                 value={filter}
                 onChange={e => setFilter(e.target.value)}
-                className="w-full px-2 py-1 text-[13px] font-mono"
+                className="w-full px-2 py-1 text-[13px]"
               />
             </div>
             <div role="listbox" aria-label={i18nT('components.modelEffortDropdown.model_list')} className="overflow-y-auto max-h-[280px]">
@@ -127,17 +128,34 @@ export default function ModelEffortDropdown({
                 aria-pressed={pinnedToAgent}
                 className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover transition-colors disabled:cursor-default disabled:hover:bg-transparent"
               >
-                <span>
+                {/* Wraps rather than truncates. The label's whole job is to name
+                    WHICH agent and WHICH model the write targets, and both
+                    identifiers sit at the ends — an ellipsis eats exactly the
+                    part that carries the meaning. English fits on one line, but
+                    the disambiguating word costs 8-14 characters in the Romance
+                    locales ("modelo predeterminado", "modèle par défaut"), so
+                    those overflow 340px. The popover already springs its height
+                    to the measured page, so a second line is free. min-w-0 lets
+                    the flex item shrink below its content; break-words is the
+                    backstop for a model id longer than one line. */}
+                <span className="min-w-0 text-left break-words">
                   {pinModelUnavailable
-                    ? i18nT('components.modelEffortDropdown.pin_model_unavailable', {
-                        model: pinModelName,
-                      })
+                    ? <Trans
+                        i18nKey="components.modelEffortDropdown.pin_model_unavailable"
+                        components={{ model: <span className="font-mono">{pinModelName}</span> }}
+                      />
                     : pinnedToAgent
-                    ? i18nT('components.modelEffortDropdown.default_for_agent', { agent: agentName })
-                    : i18nT('components.modelEffortDropdown.set_default_for_agent', {
-                        agent: agentName,
-                        model: pinModelName,
-                      })}
+                    ? <Trans
+                        i18nKey="components.modelEffortDropdown.default_for_agent"
+                        components={{ agent: <span className="font-mono">{agentName}</span> }}
+                      />
+                    : <Trans
+                        i18nKey="components.modelEffortDropdown.set_default_for_agent"
+                        components={{
+                          model: <span className="font-mono">{pinModelName}</span>,
+                          agent: <span className="font-mono">{agentName}</span>,
+                        }}
+                      />}
                 </span>
                 {pinnedToAgent ? <Check size={13} className="text-accent" /> : pinModelUnavailable ? <Ban size={13} /> : <Pin size={13} />}
               </button>

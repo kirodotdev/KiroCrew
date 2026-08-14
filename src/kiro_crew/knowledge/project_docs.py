@@ -107,7 +107,8 @@ def project_source_properties() -> dict:
     }
 
 
-def ensure_project_doc_source(store, root: str) -> tuple[str | None, bool]:
+def ensure_project_doc_source(store, root: str, *,
+                              max_sources: int = 0) -> tuple[str | None, bool]:
     """Get-or-create the project-docs source for *root*, unless it is dismissed.
 
     Returns ``(source_id, created)``, or ``(None, False)`` when the user
@@ -127,6 +128,7 @@ def ensure_project_doc_source(store, root: str) -> tuple[str | None, bool]:
             source_type="local_folder",
             uri=root,
             properties=project_source_properties(),
+            max_sources=max_sources,
         )
     except Exception:
         # Lost a race on the UNIQUE uri -- re-read and treat as pre-existing.
@@ -164,13 +166,17 @@ def project_source_still_valid(uri: str) -> bool:
     return not is_sensitive_path(str(resolved))
 
 
-def discover_and_register(store, project_dirs: list[str]) -> list[str]:
+def discover_and_register(store, project_dirs: list[str], *,
+                          max_sources: int = 0) -> list[str]:
     """Register a document source for each distinct project repo root.
 
     Returns the ids of sources actually CREATED -- an already-registered or
     previously-dismissed root yields nothing, which is what makes repeated
     sweeps idempotent. Synchronous: it stats the filesystem and writes SQLite,
     so callers on the event loop must hand it to ``asyncio.to_thread``.
+
+    ``max_sources``: global source cap (0 = unbounded). When reached, no new
+    sources are registered and the remaining project dirs are skipped.
     """
     created: list[str] = []
     seen: set[str] = set()
@@ -179,11 +185,18 @@ def discover_and_register(store, project_dirs: list[str]) -> list[str]:
         if not root or root in seen:
             continue
         seen.add(root)
-        source_id, was_created = ensure_project_doc_source(store, root)
+        source_id, was_created = ensure_project_doc_source(
+            store, root, max_sources=max_sources)
         if source_id and was_created:
             logger.info(
                 "Auto-registered project documents: %s (source %s)", root, source_id)
             created.append(source_id)
+        elif source_id is None and max_sources > 0 and store.source_count() >= max_sources:
+            # Cap genuinely reached (not a dismissed source) — stop registering.
+            logger.info(
+                "Max sources cap (%d) reached; skipping remaining project dirs",
+                max_sources)
+            break
     return created
 
 

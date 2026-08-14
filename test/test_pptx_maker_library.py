@@ -751,8 +751,12 @@ class TestLibraryWriteFailures(_LibraryFixture):
                 self.assertEqual(status, 200)
 
     def test_a_failed_template_write_leaves_no_placeholder(self) -> None:
-        """Same for the binary sibling, which claims the name with a zero-byte file."""
-        with mock.patch.object(library.Path, "write_bytes", side_effect=OSError("disk full")):
+        """Same for the binary sibling, which claims the name with a zero-byte file.
+
+        `atomic_write` cleans up its own temp file; the zero-byte placeholder at
+        the TARGET is this module's to remove, which is what this pins.
+        """
+        with mock.patch.object(library, "atomic_write", side_effect=OSError("disk full")):
             status, _ = library.import_template("deck", b"PK\x03\x04data")
         self.assertEqual(status, 500)
         self.assertFalse((self.config_dir / "templates" / "deck.pptx").exists())
@@ -850,8 +854,11 @@ class TestLibraryWriteFailures(_LibraryFixture):
         self.assertEqual(payload["code"], "style_rename_failed")
 
     def test_a_failed_template_write_is_500(self) -> None:
-        # The import writes a temp then `os.replace`s it; patch the temp write.
-        with mock.patch.object(library.Path, "write_bytes", side_effect=OSError("disk full")):
+        # The import delegates the temp-write-and-replace to `atomic_write`, so
+        # that is the seam to fail. Patching `Path.write_bytes` here silently
+        # stopped injecting anything once the hand-rolled copy was removed, and
+        # the assertions below then passed a 200 straight through.
+        with mock.patch.object(library, "atomic_write", side_effect=OSError("disk full")):
             status, payload = library.import_template("deck", b"PK\x03\x04", "")
         self.assertEqual(status, 500)
         self.assertEqual(payload["code"], "template_write_failed")

@@ -1,0 +1,754 @@
+/**
+ * Coverage-directed tests for ChatPage's render dispatch and its queued-message
+ * / pinned-message handlers.
+ *
+ * Three areas of ChatPage.tsx that the existing ~620 ChatPage tests never
+ * reach, all driven through a real `render(<ChatPage />)`:
+ *
+ *  1. `renderMessage`'s role dispatch. Existing suites only ever put `user`,
+ *     `assistant` and `error` rows in the store, so the thinking / tool /
+ *     workflow-launch / spawn-launch / file / queued / nudge / stop-event /
+ *     recovery / notice / permission / mcp_oauth / workflow-completion /
+ *     subagent-completion / cron-inject branches are all cold. Each row is
+ *     built to satisfy the REAL predicate that selects it (extractWorkflowRunId,
+ *     extractSpawnRunLaunch, parseRecoveryMessage, isWorkflowCompletionMessage,
+ *     isSubagentCompletionMessage, renderMcpOAuthMessage), so a drift in any of
+ *     those predicates fails these tests rather than silently skipping a branch.
+ *
+ *  2. The `kind: 'turn'` display item. `groupDisplayItems` only emits one when a
+ *     turn has working steps AND more than two items, which no existing ChatPage
+ *     fixture produces, so `renderTurnItem` and the TurnBlock wrapper are cold.
+ *
+ *  3. The QueueStack and PinnedMessagesPanel callbacks (cancel / interrupt /
+ *     edit / reorder queued; jump-to-pin, unpin, pin-status auto-dismiss). Both
+ *     components are stubbed as prop recorders so the callbacks can be invoked
+ *     directly — the panels' own rendering is covered by QueueStack.test.tsx and
+ *     chatPins.test.tsx.
+ *
+ * jsdom has no layout, so the virtualizer is stubbed to mount every item (the
+ * same technique ChatPage.navFarJump.test.tsx uses) and `isAtBottom` is reported
+ * false so the scroll-to-bottom affordance renders. Nothing else about the page
+ * is faked: grouping, the render dispatch and the handlers run for real.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { createTestStore } from './helpers'
+import { ThemeProvider } from '../hooks/useTheme'
+import type { RootState } from '../store'
+import type { ChatMessage } from '../types'
+
+// --- Prop recorders for the two panels whose callbacks are under test --------
+
+interface QueueStackProps {
+  messages: ChatMessage[]
+  onCancel: (queueId: string) => void
+  onInterrupt: (queueId: string) => void
+  onEdit: (queueId: string, content: string) => void
+  onReorder: (queueId: string, direction: 'next' | 'later') => void
+}
+let queueProps: QueueStackProps | null = null
+
+interface PinsPanelProps {
+  onJumpToMessage: (messageTs: string, mid?: string) => void
+  onUnpin: (id: string) => void
+}
+let pinsProps: PinsPanelProps | null = null
+
+interface UserMessageProps {
+  content: string
+  pinned: boolean
+  onTogglePin?: () => void
+}
+let userMsgProps: UserMessageProps | null = null
+
+vi.mock('../components/QueueStack', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/QueueStack')>()
+  return {
+    ...actual,
+    default: (props: QueueStackProps) => { queueProps = props; return null },
+  }
+})
+vi.mock('../pages/chat/PinnedMessagesPanel', () => ({
+  PinnedMessagesPanel: (props: PinsPanelProps) => { pinsProps = props; return null },
+}))
+
+// --- Child components stubbed to keep the render tree small ------------------
+// (Same set the other ChatPage suites stub; the transcript CARDS are left real
+// so their selecting predicates run for real.)
+vi.mock('../pages/chat', async () => {
+  const React = await import('react')
+  return {
+    ChatFooter: () => null,
+    McpInfoButton: () => null,
+    PinnedPrompt: () => null,
+    UserMessage: (props: UserMessageProps) => {
+      userMsgProps = props
+      return React.createElement('div', { 'data-testid': 'user-msg' }, props.content)
+    },
+    AssistantMessage: ({ content }: { content: string }) =>
+      React.createElement('div', { 'data-testid': 'assistant-msg' }, content),
+  }
+})
+vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
+vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
+vi.mock('../components/DiffPanel', () => ({ default: () => null }))
+vi.mock('../components/MarkdownRenderer', () => ({
+  default: ({ content }: { content?: string }) => content ?? null,
+}))
+vi.mock('../components/TypewriterText', () => ({ default: () => null }))
+vi.mock('../components/OverlayDrawer', () => ({ default: ({ children }: { children?: ReactNode }) => children }))
+vi.mock('../components/AgentDropdownList', () => ({ default: () => null }))
+vi.mock('../components/ModelDropdownList', () => ({ default: () => null }))
+vi.mock('../components/InfoTip', () => ({ default: () => null }))
+vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
+vi.mock('../components/ChatInput', () => ({ default: () => null }))
+vi.mock('../components/WelcomeView', () => ({ default: () => null }))
+vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
+vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
+vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
+vi.mock('../pages/chat/ChatSettings', () => ({
+  loadChatConfig: () => ({ contentWidth: 'compact' }),
+  CONTENT_WIDTH: {
+    compact: { messages: '900px', input: '916px' },
+    comfortable: { messages: '84%', input: '85%' },
+    full: { messages: '92%', input: '93%' },
+  },
+}))
+vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [], defaultAgent: null }) }))
+vi.mock('../hooks/useFilteredDropdown', () => ({
+  useFilteredDropdown: () => ({
+    filtered: [], query: '', setQuery: vi.fn(),
+    selectedIndex: 0, setSelectedIndex: vi.fn(), onKeyDown: vi.fn(),
+  }),
+}))
+vi.mock('../hooks/useVoiceInput', () => ({
+  useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }),
+  voiceInputSupported: false,
+}))
+
+// Mounts every display item so ChatPage's own row renderer runs for real, and
+// reports `isAtBottom: false` so the scroll-to-bottom affordance renders.
+vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
+  useVirtualChat: (opts: { items?: unknown[]; getKey?: (it: unknown, i: number) => string }) => {
+    const items = opts.items ?? []
+    return {
+      virtualItems: items.map((data, index) => ({
+        key: opts.getKey ? opts.getKey(data, index) : String(index),
+        index,
+        mounted: true,
+        data,
+      })),
+      isAtBottom: false,
+      scrollToBottom: vi.fn(),
+      scrollToIndexSmooth: vi.fn(),
+      mountIndex: vi.fn(() => false),
+      measureRef: () => () => {},
+      topSentinelRef: { current: null },
+      bottomSentinelRef: { current: null },
+      offsetBefore: 0,
+      offsetAfter: 0,
+      totalHeight: 0,
+    }
+  },
+}))
+
+const pinsListMock = vi.fn()
+const pinsCreateMock = vi.fn()
+const pinsRemoveMock = vi.fn()
+vi.mock('../api/pins', () => ({
+  PIN_PREVIEW_INPUT_MAX_CHARS: 4096,
+  pinsApi: {
+    list: (...a: unknown[]) => pinsListMock(...a),
+    create: (...a: unknown[]) => pinsCreateMock(...a),
+    remove: (...a: unknown[]) => pinsRemoveMock(...a),
+  },
+}))
+
+const apiMocks: Record<string, ReturnType<typeof vi.fn>> = {}
+/** Seed (or fetch) the mock for one api method so a test can assert it was
+ *  never called — reading it off `apiMocks` lazily would report `undefined`. */
+const apiSpy = (name: string) => {
+  if (!(name in apiMocks)) apiMocks[name] = vi.fn().mockResolvedValue({})
+  return apiMocks[name]
+}
+vi.mock('../api/client', () => ({
+  api: new Proxy({}, {
+    get: (_t, prop: string) => {
+      if (!(prop in apiMocks)) {
+        apiMocks[prop] = vi.fn().mockResolvedValue(
+          prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 } : {},
+        )
+      }
+      return apiMocks[prop]
+    },
+  }),
+  fileReadUrl: (p: string) => `/api/file?path=${encodeURIComponent(p)}`,
+}))
+
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation((q: string) => ({
+    matches: false, media: q, onchange: null,
+    addListener: vi.fn(), removeListener: vi.fn(),
+    addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  })),
+})
+globalThis.fetch = vi.fn().mockResolvedValue({
+  ok: true, status: 200, text: () => Promise.resolve(''), json: () => Promise.resolve({}),
+}) as never
+
+import ChatPage from '../pages/ChatPage'
+
+// --- Fixtures ---------------------------------------------------------------
+
+const SLOT = {
+  key: 'chat-1', title: 'chat-1', messages: 0, running: false,
+  mode: '', created: '', last_ts: '',
+}
+
+const msg = (role: string, content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+  role, content, cls: '', ...extra,
+})
+
+interface RenderOpts {
+  /** Extra preloaded `chat` slice fields. */
+  chat?: Record<string, unknown>
+  /** Responses `api.chatSlotDetail` yields, in call order (head page first). */
+  detailPages?: { messages: ChatMessage[]; has_more: boolean; total: number }[]
+  /** Browser URL to mount at — the token / prefill effects read it directly
+   *  off `window.location`, not off the router. */
+  url?: string
+}
+
+/** Renders ChatPage, then pushes `messages` into the active slot.
+ *
+ *  The messages are dispatched AFTER mount rather than preloaded: ChatPage's
+ *  slot-activation effect fetches the slot detail on mount and replaces the
+ *  transcript with the response, so a preloaded list is discarded before the
+ *  first paint. */
+function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
+  const { chat = {}, detailPages, url } = opts
+  if (url) window.history.replaceState({}, '', url)
+  apiMocks.chatSlots = vi.fn().mockResolvedValue([SLOT])
+  if (detailPages) {
+    const detail = vi.fn()
+    detailPages.forEach(page => detail.mockResolvedValueOnce(page))
+    detail.mockResolvedValue({ messages: [], has_more: false, total: 0 })
+    apiMocks.chatSlotDetail = detail
+  } else {
+    apiMocks.chatSlotDetail = vi.fn().mockResolvedValue({
+      messages, has_more: false, total: messages.length,
+    })
+  }
+  const store = createTestStore({
+    dashboard: {
+      status: { platform: 'darwin' }, connected: false, slots: [SLOT],
+      approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0,
+      unreadSlots: [], updateProgress: null,
+      subagentRunning: {}, subagentDetails: {}, subagentText: {},
+      sessionDefaultColor: null, sessionColorsMode: 'tint',
+      sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
+    },
+    chat: {
+      activeSlot: 'chat-1', messages: [],
+      slotRunning: false, slotStopping: false, slotState: 'idle',
+      slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
+      lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
+      pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
+      subagents: {}, toolLog: [], activityOpen: false, activityTab: 'logs',
+      slotActivity: {}, slotHistory: [],
+      ...chat,
+    },
+  } as unknown as Partial<RootState>)
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <Provider store={store}>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={['/chat/chat-1']}>
+            <Routes>
+              <Route path="/chat/:slug?" element={<ChatPage mode="" />} />
+            </Routes>
+          </MemoryRouter>
+        </ThemeProvider>
+      </Provider>
+    </QueryClientProvider>,
+  )
+  if (messages.length) {
+    act(() => { store.dispatch({ type: 'chat/replaceMessages', payload: messages }) })
+  }
+  return { store }
+}
+
+/** All text currently on screen — ChatPage spans several sibling roots. */
+const shown = () => document.body.textContent || ''
+/** Mounted transcript rows (one per display item). */
+const rows = () => document.body.querySelectorAll('[data-display-index]')
+
+/** Records sessionStorage writes so a hand-off that is consumed (and deleted)
+ *  in the same tick is still observable. */
+const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
+
+beforeEach(() => {
+  queueProps = null
+  pinsProps = null
+  userMsgProps = null
+  sessionStorage.clear()
+  setItemSpy.mockClear()
+  window.history.replaceState({}, '', '/chat')
+  for (const k of Object.keys(apiMocks)) delete apiMocks[k]
+  pinsListMock.mockReset().mockResolvedValue({ pins: [] })
+  pinsCreateMock.mockReset().mockImplementation((p: { mid: string; message_ts: string; role: string; preview: string }) =>
+    Promise.resolve({
+      id: `pin-${p.mid}`, slot_key: 'chat-1', mid: p.mid, message_ts: p.message_ts,
+      role: p.role, preview: p.preview, pinned_at: '2026-08-01T12:00:00Z',
+    }))
+  pinsRemoveMock.mockReset().mockResolvedValue({ ok: true })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('ChatPage renderMessage — role dispatch', () => {
+  it('renders a thinking row as a reasoning block and drops an empty one', async () => {
+    renderChatPage([
+      msg('thinking', 'weighing two options', { ts: 'r1' }),
+      msg('thinking', '', { ts: 'r2' }),
+    ])
+    // The trace is folded behind its own disclosure, so the label is what
+    // reaches the transcript — the point being that it is NOT an ordinary
+    // assistant bubble.
+    await waitFor(() => expect(shown()).toContain('Thinking'))
+    expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
+    // The empty thinking row still occupies a display slot but renders nothing.
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('drops a tool completion row that is not a 🔧 call', async () => {
+    renderChatPage([
+      msg('tool', '✅ done', { ts: 't1' }),
+      msg('notice', 'session resumed', { ts: 'n1' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('session resumed'))
+    expect(shown()).not.toContain('✅ done')
+  })
+
+  it('renders a 🔧 tool row as a tool-call line', async () => {
+    renderChatPage([
+      msg('tool', '🔧 grep', { ts: 't1', meta: { output: 'no matches' } }),
+    ])
+    await waitFor(() => expect(shown()).toContain('grep'))
+  })
+
+  it('renders a workflow_run launch as its own inline card, not a tool pill', async () => {
+    renderChatPage([
+      msg('tool', '🔧 workflow_run', {
+        ts: 't1',
+        meta: {
+          input: JSON.stringify({ name: 'nightly digest' }),
+          output: 'Started workflow run `wf_abc123`',
+        },
+      }),
+    ])
+    await waitFor(() => expect(shown()).toContain('nightly digest'))
+  })
+
+  it('renders a spawn_run launch as a sub-agent run card', async () => {
+    const output = [
+      'Spawned 2 subagent(s).',
+      '  aaaa1111: read the specs',
+      '  bbbb2222: read the code',
+    ].join('\n')
+    renderChatPage([msg('tool', '🔧 spawn_run', { ts: 't1', meta: { output } })])
+    // The card is keyed off the parsed launch, not the raw tool name.
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(shown()).not.toContain('Spawned 2 subagent(s).')
+  })
+
+  it('renders a file row as a file card and falls through when its JSON is broken', async () => {
+    renderChatPage([
+      msg('file', JSON.stringify({ filename: 'report.txt', size: 12 }), { ts: 'f1' }),
+      msg('file', 'not json at all', { ts: 'f2' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('report.txt'))
+    // The unparseable row falls through to the default bubble rather than
+    // throwing or rendering nothing.
+    expect(shown()).toContain('not json at all')
+  })
+
+  it('renders nothing in the transcript for queued and permission rows', async () => {
+    renderChatPage([
+      msg('queued', 'later please', { ts: 'q1', meta: { queueId: 'q1' } }),
+      msg('permission', 'may I run ls?', { ts: 'p1', meta: { approval_id: 'a1' } }),
+      msg('notice', 'anchor row', { ts: 'n1' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('anchor row'))
+    expect(shown()).not.toContain('later please')
+    expect(shown()).not.toContain('may I run ls?')
+  })
+
+  it('renders a nudge row as its own auto-nudge card, not an assistant bubble', async () => {
+    renderChatPage([
+      msg('nudge', 'Check the PR again and report only real signals.', {
+        ts: 'g1', meta: { loopId: 'loop-1', cycle: 3 },
+      }),
+    ])
+    await waitFor(() => expect(shown()).toContain('Auto-nudge'))
+    expect(rows()).toHaveLength(1)
+    expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('user-msg')).not.toBeInTheDocument()
+  })
+
+  it('renders a stop_event row as a stop card', async () => {
+    renderChatPage([
+      msg('assistant', 'stopped early', {
+        ts: 's1', kind: 'stop_event', meta: { id: 'stop-1', reason: 'user_stop' },
+      }),
+    ])
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
+  })
+
+  it('renders an automatic-recovery inject as a recovery card', async () => {
+    renderChatPage([
+      msg('inject', '[Stalled turn — automatic recovery]\nContinue from where you stopped.', { ts: 'i1' }),
+    ])
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    // The card names the event instead of printing the instruction prose.
+    expect(shown()).not.toContain('Continue from where you stopped.')
+  })
+
+  it('renders a cron inject as a labelled bubble with the wrapper tags stripped', async () => {
+    const content = [
+      '[Cron notification from "daily ship report"]',
+      'Three PRs merged today.',
+      '[End of cron notification]',
+    ].join('\n')
+    renderChatPage([
+      msg('inject', content, { ts: 'i1', meta: { cronLabel: 'daily ship report' } }),
+    ])
+    await waitFor(() => expect(shown()).toContain('Three PRs merged today.'))
+    expect(shown()).toContain('daily ship report')
+    expect(shown()).not.toContain('[End of cron notification]')
+  })
+
+  it('renders a notice row as a plain centred strip', async () => {
+    renderChatPage([msg('notice', 'Context compacted.', { ts: 'n1' })])
+    await waitFor(() => expect(shown()).toContain('Context compacted.'))
+    expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
+  })
+
+  it('renders an mcp_oauth row as a banner when it carries an authorize url', async () => {
+    renderChatPage([
+      msg('mcp_oauth', '', {
+        ts: 'o1',
+        meta: { server_name: 'github', oauth_url: 'https://example.com/authorize' },
+      }),
+    ])
+    await waitFor(() => expect(shown()).toContain('github'))
+  })
+
+  it('renders no mcp_oauth banner when the row has no url and no outcome', async () => {
+    renderChatPage([
+      msg('mcp_oauth', '', { ts: 'o2', meta: { server_name: 'gitlab' } }),
+      msg('notice', 'anchor row', { ts: 'n1' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('anchor row'))
+    expect(shown()).not.toContain('gitlab')
+  })
+
+  it('renders a workflow completion event as a status card, not raw JSON', async () => {
+    const content = [
+      '[Workflow completion event]',
+      'Workflow `issue triage` (wf_abc123) → **finished**',
+      '',
+      'Result: 4 issues triaged.',
+      'Use workflow_result(wf_abc123) for the full stream.',
+    ].join('\n')
+    renderChatPage([msg('assistant', content, { ts: 'w1' })])
+    await waitFor(() => expect(shown()).toContain('issue triage'))
+    expect(shown()).not.toContain('Use workflow_result(')
+    expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
+  })
+
+  it('renders a sub-agent completion event as an outcome row, not a chat bubble', async () => {
+    const content = [
+      '[Subagent completion event]',
+      'Agent `53e3e5eb` (kirocrew) completed ✅',
+      'Task: Add two short UI labels to the German catalog',
+      '',
+      'Added both keys and ran the parity check.',
+    ].join('\n')
+    renderChatPage([msg('subagent', content, { ts: 'a1' })])
+    await waitFor(() => expect(shown()).toContain('53e3e5eb'))
+    expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the assistant bubble when a completion prefix does not parse', async () => {
+    renderChatPage([
+      msg('assistant', '[Subagent completion event]\nnothing parseable here', { ts: 'a1' }),
+    ])
+    await waitFor(() => expect(screen.getByTestId('assistant-msg')).toBeInTheDocument())
+    expect(shown()).toContain('nothing parseable here')
+  })
+
+  it('offers the scroll-to-bottom affordance while the list is scrolled up', async () => {
+    renderChatPage([msg('notice', 'anchor row', { ts: 'n1' })])
+    const btn = await screen.findByLabelText('Scroll to bottom')
+    fireEvent.click(btn)
+    expect(btn).toBeInTheDocument()
+  })
+})
+
+describe('ChatPage transcript grouping — collapsed turns', () => {
+  // groupDisplayItems only emits a `turn` when the items after a user message
+  // have working steps AND number more than two; anything shorter is spread as
+  // loose rows. Both shapes are asserted so the boundary is pinned.
+  it('folds a multi-step turn into one collapsed display row', async () => {
+    renderChatPage([
+      msg('user', 'find the leak', { ts: 'u1' }),
+      msg('assistant', 'looking', { ts: 'a1' }),
+      msg('tool', '🔧 grep', { ts: 't1', meta: { output: '' } }),
+      msg('tool', '🔧 read', { ts: 't2', meta: { output: '' } }),
+      msg('assistant', 'found it in the pool', { ts: 'a2' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('find the leak'))
+    // The user row stays its own display item; the four working steps collapse
+    // into a single turn row after it.
+    expect(rows()).toHaveLength(2)
+  })
+
+  it('keeps a two-step turn as loose rows instead of collapsing it', async () => {
+    renderChatPage([
+      msg('user', 'quick question', { ts: 'u1' }),
+      msg('assistant', 'quick answer', { ts: 'a1' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('quick question'))
+    expect(rows()).toHaveLength(2)
+    expect(shown()).toContain('quick answer')
+  })
+
+  it('skips a non-🔧 tool completion inside a collapsed turn', async () => {
+    renderChatPage([
+      msg('user', 'find the leak', { ts: 'u1' }),
+      msg('assistant', 'looking', { ts: 'a1' }),
+      msg('tool', '🔧 grep', { ts: 't1', meta: { output: '' } }),
+      msg('tool', '✅ grep finished', { ts: 't2' }),
+      msg('assistant', 'found it', { ts: 'a2' }),
+    ])
+    await waitFor(() => expect(shown()).toContain('find the leak'))
+    expect(shown()).not.toContain('grep finished')
+  })
+})
+
+describe('ChatPage queued-message controls', () => {
+  const queued = (id: string, content: string) =>
+    msg('queued', content, { ts: id, meta: { queueId: id } })
+
+  it('cancelling a queued card restores its text and removes it optimistically', async () => {
+    renderChatPage([queued('q1', 'run the migration'), queued('q2', 'then deploy')])
+    await waitFor(() => expect(queueProps).not.toBeNull())
+    expect(queueProps!.messages.map(m => m.content)).toEqual(['run the migration', 'then deploy'])
+
+    act(() => queueProps!.onCancel('q1'))
+    await waitFor(() => expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1'))
+    await waitFor(() => expect(queueProps!.messages.map(m => m.content)).toEqual(['then deploy']))
+  })
+
+  it('interrupting a queued card calls the interrupt endpoint for that slot', async () => {
+    renderChatPage([queued('q1', 'run the migration')])
+    await waitFor(() => expect(queueProps).not.toBeNull())
+
+    act(() => queueProps!.onInterrupt('q1'))
+    await waitFor(() => expect(apiMocks.interruptSlot).toHaveBeenCalledWith('chat-1', 'q1'))
+  })
+
+  it('editing a queued card trims the text and ignores a whitespace-only edit', async () => {
+    renderChatPage([queued('q1', 'run the migration')])
+    await waitFor(() => expect(queueProps).not.toBeNull())
+    const editSpy = apiSpy('editQueuedMessage')
+
+    act(() => queueProps!.onEdit('q1', '   '))
+    expect(editSpy).not.toHaveBeenCalled()
+
+    act(() => queueProps!.onEdit('q1', '  deploy instead  '))
+    await waitFor(() => expect(editSpy).toHaveBeenCalledWith('chat-1', 'q1', 'deploy instead'))
+    await waitFor(() => expect(queueProps!.messages[0].content).toBe('deploy instead'))
+  })
+
+  it('reordering submits the FULL queue order, including non-interactive deliveries', async () => {
+    // The delivery row is filtered out of the visible cards but must still ride
+    // along in the submitted order, or the backend would re-append it at the
+    // tail and silently demote it.
+    const delivery = msg('queued', '[Subagent completion event]\nAgent `abcd1234` completed ✅', {
+      ts: 'qd', meta: { queueId: 'qd' },
+    })
+    renderChatPage([delivery, queued('q1', 'first'), queued('q2', 'second')])
+    await waitFor(() => expect(queueProps).not.toBeNull())
+    expect(queueProps!.messages.map(m => m.ts)).toEqual(['q1', 'q2'])
+
+    act(() => queueProps!.onReorder('q2', 'next'))
+    await waitFor(() =>
+      expect(apiMocks.reorderQueuedMessages).toHaveBeenCalledWith('chat-1', ['qd', 'q2', 'q1']),
+    )
+  })
+
+  it('refuses a reorder that would move a card past either end of the queue', async () => {
+    renderChatPage([queued('q1', 'first'), queued('q2', 'second')])
+    await waitFor(() => expect(queueProps).not.toBeNull())
+    const reorderSpy = apiSpy('reorderQueuedMessages')
+
+    act(() => queueProps!.onReorder('q1', 'next'))    // already first
+    act(() => queueProps!.onReorder('q2', 'later'))   // already last
+    act(() => queueProps!.onReorder('nope', 'next'))  // unknown id
+    expect(reorderSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatPage pinned-messages panel', () => {
+  /** Opens the pins panel and returns once its props have been recorded. */
+  async function openPins(messages: ChatMessage[], opts: RenderOpts = {}) {
+    renderChatPage(messages, opts)
+    const toggle = await screen.findByLabelText('Open pinned messages')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(pinsProps).not.toBeNull())
+  }
+
+  const highlighted = () => document.body.querySelector('.animate-msg-highlight')
+  const UNAVAILABLE = 'This pinned message is no longer available in the loaded history.'
+
+  it('jumping to a loaded pin highlights that message and clears the highlight later', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    await openPins([
+      msg('user', 'the pinned one', { ts: 'u1', meta: { mid: 'm-1' } }),
+      msg('assistant', 'reply', { ts: 'a1' }),
+    ])
+
+    act(() => pinsProps!.onJumpToMessage('u1', 'm-1'))
+    await waitFor(() => expect(highlighted()).not.toBeNull())
+
+    // The highlight is time-boxed, not sticky.
+    await act(async () => { vi.advanceTimersByTime(3100) })
+    expect(highlighted()).toBeNull()
+  })
+
+  it('falls back to timestamp matching when the pin carries no message id', async () => {
+    await openPins([msg('user', 'legacy pin target', { ts: 'u1' })])
+
+    act(() => pinsProps!.onJumpToMessage('u1'))
+    await waitFor(() => expect(highlighted()).not.toBeNull())
+  })
+
+  it('reports an unavailable pin when the message is absent and no history remains', async () => {
+    await openPins([msg('user', 'something else', { ts: 'u1' })])
+
+    act(() => pinsProps!.onJumpToMessage('missing-ts', 'm-gone'))
+    expect(await screen.findByText(UNAVAILABLE)).toBeInTheDocument()
+  })
+
+  it('surfaces an unpin failure and auto-dismisses the notice', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    pinsRemoveMock.mockRejectedValue(new Error('nope'))
+    await openPins([msg('user', 'pinned', { ts: 'u1', meta: { mid: 'm-1' } })])
+
+    act(() => pinsProps!.onUnpin('pin-1'))
+    expect(await screen.findByText('Could not unpin the message. Try again.')).toBeInTheDocument()
+
+    await act(async () => { vi.advanceTimersByTime(8100) })
+    await waitFor(() =>
+      expect(screen.queryByText('Could not unpin the message. Try again.')).not.toBeInTheDocument(),
+    )
+  })
+})
+
+describe('ChatPage per-message pin toggle', () => {
+  const PIN = {
+    id: 'pin-1', slot_key: 'chat-1', mid: 'm-1', message_ts: 'u1',
+    role: 'user', preview: 'pin me', pinned_at: '2026-08-01T12:00:00Z',
+  }
+
+  it('offers no pin action on a row without a message id', async () => {
+    renderChatPage([msg('user', 'no mid here', { ts: 'u1' })])
+    await waitFor(() => expect(userMsgProps).not.toBeNull())
+    expect(userMsgProps!.onTogglePin).toBeUndefined()
+    expect(userMsgProps!.pinned).toBe(false)
+  })
+
+  it('pins a row that is not pinned yet', async () => {
+    renderChatPage([msg('user', 'pin me', { ts: 'u1', meta: { mid: 'm-1' } })])
+    await waitFor(() => expect(userMsgProps?.onTogglePin).toBeInstanceOf(Function))
+    expect(userMsgProps!.pinned).toBe(false)
+
+    await act(async () => { userMsgProps!.onTogglePin!() })
+    await waitFor(() => expect(pinsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ mid: 'm-1', message_ts: 'u1', role: 'user' }),
+    ))
+    expect(pinsRemoveMock).not.toHaveBeenCalled()
+  })
+
+  it('unpins a row that is already pinned', async () => {
+    pinsListMock.mockResolvedValue({ pins: [PIN] })
+    renderChatPage([msg('user', 'pin me', { ts: 'u1', meta: { mid: 'm-1' } })])
+    await waitFor(() => expect(userMsgProps?.pinned).toBe(true))
+
+    await act(async () => { userMsgProps!.onTogglePin!() })
+    await waitFor(() => expect(pinsRemoveMock).toHaveBeenCalled())
+    expect(pinsCreateMock).not.toHaveBeenCalled()
+  })
+
+  it('swallows a pin failure rather than throwing out of the click handler', async () => {
+    pinsCreateMock.mockRejectedValue(new Error('nope'))
+    renderChatPage([msg('user', 'pin me', { ts: 'u1', meta: { mid: 'm-1' } })])
+    await waitFor(() => expect(userMsgProps?.onTogglePin).toBeInstanceOf(Function))
+
+    await act(async () => { userMsgProps!.onTogglePin!() })
+    expect(await screen.findByText('Could not pin the message. Try again.')).toBeInTheDocument()
+  })
+})
+
+describe('ChatPage URL prompt hand-off', () => {
+  /** Base64url payload token, the shape the channel redirect issues. */
+  const tokenFor = (payload: Record<string, unknown>) =>
+    `${btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_')}.sig`
+
+  /** A prefill hand-off is consumed (and deleted) by the slot-restore effect as
+   *  soon as it names the active slot, so the WRITE is what these tests read. */
+  const prefillWrites = () =>
+    setItemSpy.mock.calls
+      .filter(([k]) => k === 'kirocrew_prefill')
+      .map(([, v]) => JSON.parse(v as string) as { slotKey: string; prompt: string })
+
+  it('moves a ?prefill= prompt into session storage and strips it from the URL', async () => {
+    renderChatPage([], { url: '/chat?sid=chat-1&prefill=deploy%20the%20thing&keep=1' })
+    await waitFor(() => expect(prefillWrites().length).toBeGreaterThan(0))
+    expect(prefillWrites()[0]).toMatchObject({ slotKey: 'chat-1', prompt: 'deploy the thing' })
+    // Only `prefill` is dropped; unrelated params survive.
+    expect(window.location.search).not.toContain('prefill')
+    expect(window.location.search).toContain('keep=1')
+  })
+
+  it('creates a session and links it back to the originating thread', async () => {
+    const token = tokenFor({ prompt: 'look into this', channel: 'C123', thread_ts: '1700.5' })
+    apiMocks.createChatSlot = vi.fn().mockResolvedValue({ key: 'chat-9', title: 'chat-9' })
+    renderChatPage([], { url: `/chat?token=${token}` })
+
+    await waitFor(() => expect(apiMocks.slackLink).toHaveBeenCalledWith('chat-9', 'C123', '1700.5'))
+    expect(prefillWrites().at(-1)).toMatchObject({ slotKey: 'chat-9', prompt: 'look into this' })
+  })
+
+  it('ignores a token whose payload carries no prompt, but still strips it', async () => {
+    const token = tokenFor({ channel: 'C123' })
+    const createSpy = apiSpy('createChatSlot')
+    renderChatPage([], { url: `/chat?token=${token}` })
+
+    await waitFor(() => expect(window.location.search).toBe(''))
+    expect(prefillWrites()).toHaveLength(0)
+    expect(createSpy).not.toHaveBeenCalled()
+  })
+})

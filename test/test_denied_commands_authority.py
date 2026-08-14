@@ -93,12 +93,15 @@ class TestIsDeniedForwarding:
     def test_is_denied_forwards_denied_regexes(self) -> None:
         calls: list[dict] = []
 
-        def _fake_is_denied(tool_name, extra_patterns=None, *, denied_regexes=None):
+        def _fake_is_denied(
+            tool_name, extra_patterns=None, *, denied_regexes=None, reason_notes=None
+        ):
             calls.append(
                 {
                     "tool_name": tool_name,
                     "extra_patterns": extra_patterns,
                     "denied_regexes": denied_regexes,
+                    "reason_notes": reason_notes,
                 }
             )
             return None
@@ -116,8 +119,32 @@ class TestIsDeniedForwarding:
                 "tool_name": "some cmd",
                 "extra_patterns": None,
                 "denied_regexes": ["aws.*terminate.*"],
+                "reason_notes": None,
             }
         ]
+
+    def test_is_denied_forwards_reason_notes(self) -> None:
+        """The operator-note map must reach the gate, or an annotated rule would
+        silently fall back to showing its raw regex."""
+        calls: list[dict] = []
+
+        def _fake_is_denied(
+            tool_name, extra_patterns=None, *, denied_regexes=None, reason_notes=None
+        ):
+            calls.append({"reason_notes": reason_notes})
+            return None
+
+        notes = {"find .*": "use -maxdepth, or rg/fd"}
+        orig = security.is_denied
+        security.is_denied = _fake_is_denied  # type: ignore[assignment]
+        try:
+            PolicyAuthority().is_denied(
+                "some cmd", denied_regexes=["find .*"], reason_notes=notes
+            )
+        finally:
+            security.is_denied = orig  # type: ignore[assignment]
+
+        assert calls == [{"reason_notes": notes}]
 
     def test_default_denied_regexes_fails_closed_to_builtins(self) -> None:
         # With no denied_regexes the fail-closed default (all built-ins) applies.

@@ -24,10 +24,12 @@ pull_request
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene, dep audit
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
-  |-- claude-review.yml "Opus 5 Review"     line-level, code-only, blocking
+  |-- claude-review.yml "Opus 4.8 Review"     line-level, code-only, blocking
   |-- codex-review.yml  "GPT 5.6 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape, advisory
   |-- ux-review.yml     "UX Review"         rendered experience, advisory
+  |-- first-principles-review.yml
+  |                     "First Principles Review"  why it exists, advisory
   |-- CodeQL                                GitHub default setup, not a checked-in file
   |
   '-> pr-readiness.yml  "PR Readiness"  one commit status + one readiness: label
@@ -61,8 +63,16 @@ Out-of-band lanes that never gate a PR:
   balanced by recorded runtime, and opens a PR with the update), `issue-triage.yml`
   (a model picks `type:` / `area:` / `platform:` labels from the repository's own
   live label set, because keyword rules mislabel often enough to be worse than no
-  label), `pr-merge-conflict-label.yml` and `fork-pr-label.yml` (both mirror a fact
-  GitHub does not surface in the `/pulls` list onto a label), and
+  label), `issue-summary.yml` (a second, deliberately separate lane posts ONE
+  comment per new issue: the report restated for a maintainer, the information
+  still missing, and the recent issues most likely to be duplicates. Split from
+  triage because publishing prose gives a prompt injection an audience that the
+  label path does not have — so this lane, and only this lane, carries the
+  markdown neutralizer and the candidate-pool intersection that stop an issue
+  body from minting a `#N` reference or a mention. It gets no checkout on
+  purpose; grounded, file-level investigation is Issue Radar's Investigate
+  button, not a CI comment), `pr-merge-conflict-label.yml` and `fork-pr-label.yml`
+  (both mirror a fact GitHub does not surface in the `/pulls` list onto a label), and
   `add-contributor.yml` (a daily cron, plus manual dispatch, adds each merged
   PR's author to the README Contributors block via
   `scripts/update_contributors.py`; because the default branch is protected it
@@ -77,12 +87,14 @@ Every job here is blocking.
 | Job | What it enforces |
 |---|---|
 | `scrub-lint` | `scripts/scrub-lint.sh --no-history`. Fails on any internal marker in this public tree, so a sync cannot reintroduce a coupling |
+| `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Always-on (not behind the `changes` path filter) |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.10 and 3.12. `black --check` is commented out pending a bulk format pass |
+| `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
 | `backend-test` | 2 Python versions x 4 duration-balanced pytest-split shards (8 jobs), `-n auto` within each. Coverage only on 3.12 (3.10 passes `--no-cov` for a trace-free run) |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The two suites the sharded matrix deselects because they need unprivileged user namespaces: `test_script_hooks.py` and `test_cron_script.py` |
-| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces backend >= 77% and frontend >= 60% on the raw line-rate (floors live in the job's `env:` block) |
+| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block) |
 | `frontend-lint` | `tsc -b`, `eslint --max-warnings 1116`, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
@@ -105,7 +117,24 @@ Details worth knowing:
 - **`coverage-gate` is fail-closed.** It runs `if: always()` and its first step
   converts any non-success upstream result into an explicit failure, because GitHub
   treats a **skipped** required check as satisfied. It also compares the raw
-  line-rate and rounds only for display, so 76.95% cannot pass a 77% floor.
+  line-rate and rounds only for display, so 79.95% cannot pass an 80% floor.
+- **`coverage-gate` enforces two different shapes.** The project floors
+  (`BACKEND_MIN`, `FRONTEND_MIN`) compare one lane-wide average; the per-file floor
+  (`PER_FILE_MIN`, `scripts/check_per_file_coverage.py`) requires *every measured
+  file* to clear it. Both are needed because an average is satisfiable without
+  touching the files that carry the risk — a well-covered large file pays for a
+  bare small one. The per-file gate exempts only the files listed in
+  `.github/coverage-baselines/{backend,frontend}.txt`, and that list may only
+  shrink: an unlisted file below the floor fails, a listed file that slides further
+  fails, and a listed file that *clears* the floor by the same noise band fails
+  until it is removed. Refresh with `--update-baseline`, which **prunes only** —
+  it cannot add a path or rewrite a recorded rate, so neither a new offender nor a
+  regression can be cleared by refreshing instead of by adding tests; seeding a
+  new lane is a separate `--seed-baseline`. The floor's rationale and measured
+  cost live in the script's docstring, not here, so they cannot go stale in two
+  places. Per-file enforcement is skipped for a lane whose suite ran as a
+  coverage-free subset, because subset rates are not comparable to a baseline
+  recorded on the full suite.
 - **`eslint --max-warnings 1116` is a ratchet baseline.** Burn it down, never raise
   it.
 - **The i18n gates split into three tiers,** and only two can fail: diff-scoped
@@ -201,18 +230,103 @@ scrubbed from every long-lived process environ.
 
 ## The AI review ladder
 
-Four reviewers, each with a distinct question and a distinct trust posture. The
+Five reviewers, each with a distinct question and a distinct trust posture. The
 design axis is **what each is allowed to read** (its prompt-injection surface) and
 **whether it can block**.
 
 | Reviewer | Check name | Harness | Reads | Question | Blocks? |
 |---|---|---|---|---|---|
-| Opus 5 | `Opus 5 Review` | Agentic, `--max-turns 120`, one pass with two internal phases | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
+| Opus 4.8 | `Opus 4.8 Review` | Agentic, `--max-turns 120` per stage, **two real invocations** (discovery -> validation) | **Code only**: `Read`, `Grep`, `Glob`, `Bash(gh pr diff:*)` | Line-level correctness, security, AUTOSDE | Yes, fail-closed |
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback | Code plus committed screenshot PNGs, read directly | Does the shipped experience read correctly? | Advisory; red only on a genuine `BLOCK` |
+| First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
 
-### Why Opus 5 is code-only
+### Why a first-principles lane is not a second Design Review
+
+Design Review takes the PR's **stated problem as its frame** and judges the shape of
+the solution. Two blind spots survive that. The first is **plurality**: a change
+with one stated purpose routinely ships several observable differences — a control
+that moved, a relabelled button, a flipped default, a new knob, a retry — and only
+the one named in the description gets examined. The second is **depth**: a fix aimed
+at the symptom the author happened to trip over passes every lane, because each line
+is correct, the shape fits and the surface renders.
+
+So this lane is defined by a method rather than a topic. It states the author's
+**intent** in one sentence and whether the change is a fix or an addition, then
+**inventories** it into the **observable differences** it ships — written the way a
+person would notice them, not the way the code expresses them — and runs every
+remaining question **per item**:
+
+A new capability is only one of the kinds that count. A **move, reorder or regroup**
+is its own item, and it is the kind that goes unexamined most often precisely because
+nothing became newly possible, so nothing reads as "added". The same applies to a
+rename, a changed default, an added or removed confirmation, a change in what is
+visible by default, and a change in when something happens. If the change is a *fix*,
+every item that is not the fix is called out as **riding along**.
+
+A move also carries a **higher** bar than an addition, not a lower one: the capability
+already existed, so the only harm available is that people could not find it, and the
+review must name who was failing and how that is known. "It groups better" is analogy,
+and it does not outweigh the relearning cost every existing user pays.
+
+- **Does it deserve to exist?** The zero option (what observably breaks if this item
+  ships nothing), the delete option (could the same harm be removed by deleting code
+  or a concept instead of adding one), and provenance — is the requirement *derived*
+  from a constraint you can point at, or *inherited* from convention, symmetry, "for
+  flexibility"? Reasoning by analogy is named and rejected explicitly, because
+  analogy is how an unnecessary feature enters a codebase looking reasonable.
+- **Does it already exist?** A grep for the mechanism that already does this job. A
+  second spelling of one capability is a finding even when no code is duplicated,
+  because both spellings must then be maintained and will diverge.
+- **Does it fix the cause?** Each item is placed on a named chain — **symptom**
+  (patched where it was observed), **mechanism** (the code that produced it), or
+  **cause** (the decision or invariant gap that let it misbehave). Symptom-level
+  with a reachable in-scope cause is a finding. Generality is then decided by
+  *counting* unfixed sibling instances of the same cause, so "this is a point patch"
+  has to come with paths.
+
+Three constraints keep it honest:
+
+- **One contract, read from the base ref.** The lenses live in
+  `.github/review-prompts/first-principles.md`, and both lanes `git show` it from the
+  PR's **base** commit — the same mechanism the Opus lanes use for their two prompts.
+  That removes the second copy entirely, and it means a pull request cannot edit the
+  reviewer that judges it. A contract *absent* from the base is not an error — it is
+  what happens on the pull request that introduces or moves the contract, so the lane
+  reports a non-blocking "no contract on the base commit" and produces no verdict. It
+  never falls back to the head's copy, because a rename would then let a change hand
+  the reviewer its own rubric.
+- **Count before you claim.** Every duplication, consumer-count and unfixed-sibling
+  finding must state the count and the pattern grepped; an uncounted claim is a
+  fabrication and must be dropped. This is what stops the lane drifting into taste.
+- **Every suggestion is a subtraction.** It may propose only deletions, shrinks,
+  deferrals, or "use the thing that already exists" — it may not even ask for a doc
+  or an RFC. A reviewer allowed to propose additions becomes a source of the exact
+  surface it exists to remove.
+- **The inventory is printed, even on a PASS.** A `PASS` here is a claim about *every*
+  item, so the item list is the evidence a human needs to check that claim. This is
+  a deliberate divergence from the sibling lanes, whose clean verdict collapses to
+  one line.
+
+It runs whenever a diff touches product or CI surface — **including a plain bug
+fix**, which is where the root-cause lens earns the most. Only a change that ships
+no capability at all (docs, tests, screenshots, generated files) skips, so the
+2x-rate-card Fable 5 spend goes to diffs that can actually produce a finding.
+
+It is advisory in `pr-readiness.yml` (UX-style, not Design-style): a `BLOCK` here is
+a judgment about whether a feature should exist, and a model does not get to wedge a
+merge on that until the lane's calibration is proven. Promoting it to a readiness
+blocker later is a one-line change in the aggregator.
+
+**Where it overlaps Design Review, this lane owns the question.** Design Review's own
+rubric asks whether a change fixes a root cause and whether a simpler alternative
+exists; those questions are asked here from the premise side and per item. The split
+is deliberate — premise and cause here, shape quality there — and if the two lanes
+converge in practice, the answer is to trim the overlap out of Design Review, not to
+tune two prompts against each other.
+
+### Why Opus 4.8 is code-only
 
 It is the agentic reviewer, so pulling attacker-controllable PR prose into its
 context is a prompt-injection surface. `gh pr view` and `gh api` are disallowed, and
@@ -240,12 +354,14 @@ says "No findings." is the expected output for a typical PR.
 
 ### Asymmetric multi-pass is intentional
 
-The agentic Opus 5 reviewer runs ONE pass with two internal phases: discover
-(generous candidate collection), then falsify (kill each candidate against code it
-opened, with extra falsification effort only where the diff touches
-security or data-integrity paths). The lean single-shot GPT 5.6 reviewer runs
-**two real invocations**: a discovery pass that generates candidates, then an
-**authoritative falsification** pass whose primary job is to *kill* them. A
+BOTH line reviewers now run **two real invocations**: a discovery pass that
+generates candidates, then an **authoritative falsification** pass whose primary
+job is to *kill* them. The Opus lane used to run one pass with two internal phases; that
+was measured on this repo to suppress findings the same model reports reliably
+without the precision clauses, because a prompt asked to discover AND to police
+its own precision stops discovering. Its discovery half therefore carries no
+precision gates, and its validation half applies a confidence floor and the closed
+blocking list to candidates that already exist. A
 candidate survives only if pass 2 re-derived the input, the call path and the
 observable outcome itself from code it opened in that pass. Pass 2 is the only
 gated verdict. Falsification raises precision *within a single run*, which is why
@@ -256,7 +372,7 @@ and therefore cannot contradict itself across rounds.
 
 The markers are the **only** gate:
 
-- Opus 5 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
+- Opus 4.8 emits `[OPUS-REVIEWED] <sha>` always, and `[BLOCK-MERGE] <sha>` only when a
   blocking finding exists. Both are parsed out of the action's `execution_file`
   transcript rather than a `--json-schema` structured output, because the harness's
   internal structured-output tool is unreliable when other tools are enabled:
@@ -353,12 +469,17 @@ queries the latest run per monitored workflow, and publishes **one `PR Readiness
 commit status plus one `readiness:` label**.
 
 - **Always required:** CI, Build, Code Review.
-- **Additionally required on a same-repo PR:** CodeQL, Opus 5 Review, GPT 5.6
-  Review, and completion of Design Review and UX Review.
-- **Design Review and UX Review are completion-required but advisory:** once
-  complete they score as `"(advisory)"` whatever their conclusion, so neither their
-  opinion nor an infrastructure failure becomes an independent blocker. Completion is
-  still required so the verdict is not premature.
+- **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
+  Review, and completion of Design Review, UX Review and First Principles Review.
+- **UX Review and First Principles Review are completion-required but advisory:**
+  once complete they score as `"(advisory)"` whatever their conclusion, so neither
+  their opinion nor an infrastructure failure becomes an independent blocker.
+  Completion is still required so the verdict is not premature.
+- **Design Review is completion-required AND blocks on a genuine `BLOCK`:** the
+  aggregator scores its `failure` conclusion as a readiness blocker. That is safe
+  because the lane fails its own check *only* on a `BLOCK` verdict — an errored,
+  throttled or verdict-less run exits 0 — so a `failure` here can only mean a
+  design judged wrong, never infrastructure noise.
 - **CodeQL is not a checked-in workflow.** It runs via GitHub default setup and is
   resolved by `path == "dynamic/github-code-scanning/codeql"`. `skipped` counts as
   passed for it.
@@ -390,6 +511,34 @@ Two subtleties:
   recompute it on an unchanged commit, freezing the status at pending indefinitely.
   So it is added only when the live evaluation still found something genuinely
   incomplete.
+- **A transport error during evaluation is non-terminal.** Every read-only `gh`
+  call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
+  attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
+  the job loudly instead of retrying. If an **evaluation** read still fails after
+  the retries, the evaluate step publishes an explicit non-terminal "could not be
+  evaluated" verdict (`pending` under `readiness: checking`) instead of exiting
+  non-zero — so a transient network/TLS blip during evaluation never leaves a red
+  check-run or skips the publish step (issue #2753: the same commit evaluated
+  green then red 39 seconds apart). Exhausted retries in the other steps (context
+  resolution, closed-PR label cleanup, the publish step's own reads) still fail
+  the job — only the evaluation loop has the non-terminal branch. This does not
+  weaken the gate: `pending` blocks merge exactly like `failure`, and only a
+  transport error with no already-observed blocker takes that branch (a genuine
+  failure recorded by an earlier lane dominates and the verdict stays the
+  terminal red `action required`, with a summary note that the evaluation was
+  truncated). Recovery is automatic — the self-heal sweep re-fires stale pending
+  statuses, and any later monitored-workflow event recomputes sooner. A truncated
+  run defers (publishes nothing) only when the revision already carries a
+  **blocking** verdict — the merge is already held and pending would only discard
+  the red's diagnostics. Every other prior state publishes pending: an existing
+  *success* is re-pended (a rerun means validation state is unknown again, and a
+  stale green left mergeable is the unsafe direction — pending can only ever
+  block, never allow), and an unreadable verdict state gets the same fail-safe
+  treatment. The status
+  POST itself is never retried: commit statuses are last-write-wins with no
+  conditional write, so any retry races a concurrent run's newer verdict — a
+  failed POST fails the step loud and a re-run republishes. The label writes
+  keep only the narrow 404/already-exists race tolerance they already have.
 - **Nothing keys off `workflow_run.pull_requests`.** That array is empty whenever the
   head repository is a fork, the same GitHub behaviour the `fork-*` workflows already
   work around. The job gate admits every `pull_request` and `dynamic` run and lets the
@@ -421,7 +570,7 @@ protection remain separate gates.
 `fork-ux-review.yml` each trigger on the **completion of CI** (stage 1) and run
 privileged from the default branch (stage 2), gated on
 `workflow_run.head_repository.full_name != github.repository`. Each posts a check-run
-named exactly like its same-repo twin (`Opus 5 Review`, `GPT 5.6 Review`,
+named exactly like its same-repo twin (`Opus 4.8 Review`, `GPT 5.6 Review`,
 `Design Review`, `UX Review`), so branch protection is satisfied on either path, and
 it opens that check-run as early as possible keyed to `head_sha` so a job that dies
 still leaves a fail-closed result.
@@ -463,10 +612,14 @@ resists this:
 - **Both line reviewers share an identical FIX BAR:** every finding must carry a fix
   expressible as an edit to lines **this PR changed**. If the fix would need a new
   function, module, abstraction, config knob, dependency, or an edit to untouched
-  code, it is out of scope for the bot and the finding is dropped. **The absence of a
+  code, it is out of scope for the bot. GPT 5.6 drops such a finding; Opus 4.8
+  **demotes it to advisory instead of dropping it** -- the author cannot land the
+  remedy in this PR, so it must not gate the merge, but the signal is real and a
+  human decides. A regression the diff itself introduces still blocks either way,
+  since reverting the hunk is an in-diff fix. **The absence of a
   mechanism is never a finding.** This makes "add mechanism X" structurally
   un-reportable: the demand fails the bar before it can become a finding. A scope cap
-  complements it: Opus 5 stays within the evident scope of the diff (it is code-only),
+  complements it: Opus 4.8 stays within the evident scope of the diff (it is code-only),
   and GPT 5.6 stays within the PR's stated purpose, flagging a
   description-versus-diff mismatch as an **advisory** finding rather than a block.
 - **The WHAT BLOCKS list is closed:** exhaustive, never extended, never reasoned about

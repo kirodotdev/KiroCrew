@@ -1202,18 +1202,32 @@ class TestModelSourceFallback:
         )
         assert self._row(shard_dir)["model"] == "claude-opus-4.8"
 
-    def test_auto_without_resolvable_source_records_blank(self, tmp_path, monkeypatch):
-        # Matches test_late_backfill_skips_auto_sentinel's contract: the record
-        # stays blank until a real model is known -- never the sentinel itself.
+    def test_auto_without_resolvable_source_records_auto(self, tmp_path, monkeypatch):
+        # `auto` records the explicit backend-selection mode even when the
+        # backend does not disclose the concrete model for this completed turn.
         shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
         persist_token_record(
             "slot", "auto", self._event(), provider="acp", surface="task_runner"
         )
-        assert self._row(shard_dir)["model"] == ""
+        assert self._row(shard_dir)["model"] == "auto"
 
     def test_auto_is_case_and_space_insensitive(self, tmp_path, monkeypatch):
         shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
         persist_token_record(
             "slot", "  AUTO ", self._event(), provider="acp", surface="cron"
         )
-        assert self._row(shard_dir)["model"] == ""
+        assert self._row(shard_dir)["model"] == "auto"
+
+    def test_auto_source_fills_empty_model(self, tmp_path, monkeypatch):
+        # Dashboard slots use an empty override for Auto while the live client
+        # retains the request sentinel.
+        shard_dir = _patch_shard_layout(monkeypatch, tmp_path)
+        persist_token_record(
+            "dashboard:auto",
+            "",
+            self._event(),
+            provider="acp",
+            surface="dashboard",
+            model_source=_Inner("  AUTO "),
+        )
+        assert self._row(shard_dir)["model"] == "auto"

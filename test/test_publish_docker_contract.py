@@ -64,9 +64,10 @@ def test_attest_runs_only_for_fresh_builds() -> None:
     attest = _step_index(lines, "Attest image provenance")
     body = _step_body(lines, attest)
     assert any(
-        line.strip() == "if: steps.existing.outputs.exists == 'false'"
+        "steps.existing.outputs.exists == 'false'" in line and "!inputs.promote" in line
         for line in body
-    ), "attestation must be gated to the fresh-build path"
+        if line.strip().startswith("if:")
+    ), "attestation must be gated to a fresh build, never a promoted digest"
 
 
 def test_existing_tag_path_verifies_prior_provenance() -> None:
@@ -79,9 +80,10 @@ def test_existing_tag_path_verifies_prior_provenance() -> None:
     body = _step_body(lines, verify)
     text = "\n".join(body)
     assert any(
-        line.strip() == "if: steps.existing.outputs.exists == 'true'"
+        "steps.existing.outputs.exists == 'true'" in line and "inputs.promote" in line
         for line in body
-    ), "verification is the existing-tag counterpart of the fresh-build attest"
+        if line.strip().startswith("if:")
+    ), "verification must cover both the existing-tag and promotion paths"
     assert "gh attestation verify" in text
     assert "--signer-workflow" in text, (
         "verification must be bound to THIS workflow's identity, not merely "
@@ -106,12 +108,12 @@ def test_attest_and_verify_precede_channel_alias_on_selected_digest() -> None:
 
     attest_body = "\n".join(_step_body(lines, attest))
     alias_body = "\n".join(_step_body(lines, alias))
-    assert "steps.digest.outputs.value" in attest_body, (
-        "attest must sign the SELECTED digest, not steps.build.outputs.digest"
-    )
-    assert "steps.digest.outputs.value" in alias_body, (
-        "the alias must point at the same selected digest provenance covers"
-    )
+    assert (
+        "steps.digest.outputs.value" in attest_body
+    ), "attest must sign the SELECTED digest, not steps.build.outputs.digest"
+    assert (
+        "steps.digest.outputs.value" in alias_body
+    ), "the alias must point at the same selected digest provenance covers"
 
 
 def test_version_tag_build_still_skipped_on_rerun() -> None:
@@ -121,22 +123,91 @@ def test_version_tag_build_still_skipped_on_rerun() -> None:
     build = _step_index(lines, "Build and push (version tag)")
     body = _step_body(lines, build)
     assert any(
-        line.strip() == "if: steps.existing.outputs.exists == 'false'"
+        "steps.existing.outputs.exists == 'false'" in line and "!inputs.promote" in line
         for line in body
-    ), "re-runs must never rebuild/republish different bytes under an existing version tag"
+        if line.strip().startswith("if:")
+    ), "re-runs and promotions must never build/republish a version tag"
 
 
-def test_channel_alias_moves_only_on_fresh_builds() -> None:
-    """Re-running an OLD release workflow hits the existing-tag path; if the
-    alias step ran there it would repoint nightly/stable/latest BACKWARD to
-    the stale digest for every unpinned pull. The alias must be gated to
-    fresh builds."""
+def test_promotion_requires_a_recorded_digest_and_disables_rebuild_paths() -> None:
+    """Promotion is an explicit mode: an empty/malformed recorded digest
+    aborts before artifact download, while every image-building step is
+    structurally unreachable even if the digest output is missing."""
+    import yaml
+
+    lines = _lines()
+    validate = _step_index(lines, "Validate build or promotion mode")
+    download = _step_index(lines, "Download wheel artifact")
+    assert validate < download
+
+    validation = "\n".join(_step_body(lines, validate))
+    assert '[ "$PROMOTE" = "true" ]' in validation
+    assert "^sha256:[0-9a-f]{64}$" in validation
+    assert "Promotion requires a recorded" in validation
+    assert "exit 1" in validation
+
+    for step_name in (
+        "Download wheel artifact",
+        "Verify exactly one wheel",
+        "Set up QEMU",
+        "Resolve kiro-cli version",
+        "Build and push (version tag)",
+        "Attest image provenance",
+    ):
+        body = "\n".join(_step_body(lines, _step_index(lines, step_name)))
+        assert (
+            "!inputs.promote" in body
+        ), f"{step_name} must be unreachable in explicit promotion mode"
+
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    inputs = workflow[True]["workflow_call"]["inputs"]
+    assert inputs["promote"]["default"] is False
+
+    release = yaml.safe_load(CALLERS[1].read_text(encoding="utf-8"))
+    call = release["jobs"]["publish-docker"]["with"]
+    assert call["promote"].endswith(" == 'stable' }}")
+    assert "resolve-promotion.outputs.docker_digest" in call["promote_digest"]
+
+
+def test_promotion_retags_the_recorded_digest_without_building_or_attesting() -> None:
+    """Stable promotion creates its immutable version tag and aliases from
+    the manifest-recorded digest; it neither rebuilds nor signs prior bytes."""
+    lines = _lines()
+    select = _step_index(lines, "Select published digest")
+    verify = _step_index(lines, "Verify existing digest provenance")
+    promote = _step_index(lines, "Record promoted immutable version tag")
+    alias = _step_index(lines, "Update channel alias")
+    assert select < verify < promote < alias
+
+    select_text = "\n".join(_step_body(lines, select))
+    promote_text = "\n".join(_step_body(lines, promote))
+    assert 'DIGEST="$PROMOTE_DIGEST"' in select_text
+    assert "inputs.promote" in promote_text
+    assert 'imagetools create -t "${IMAGE}:${VERSION}" "${IMAGE}@${DIGEST}"' in promote_text
+    assert "TAG_DIGEST" in promote_text and '!= "$DIGEST"' in promote_text
+
+
+def test_existing_version_tag_must_match_recorded_promotion_digest() -> None:
+    """An immutable stable version tag can never be repointed to a newly
+    selected candidate, even if the operator retries promotion."""
+    lines = _lines()
+    existing = _step_index(lines, "Check for existing version tag")
+    text = "\n".join(_step_body(lines, existing))
+    assert '"$DIGEST" != "$PROMOTE_DIGEST"' in text
+    assert "Refusing to repoint it" in text
+    assert "exit 1" in text
+
+
+def test_channel_alias_moves_only_for_new_version_tags() -> None:
+    """Re-running an OLD release hits the existing-tag path and must never
+    repoint nightly/stable/latest backward. Fresh builds and first-time
+    promotions both have ``exists == false`` and may move the alias only
+    after attestation or prior-provenance verification."""
     lines = _lines()
     alias = _step_index(lines, "Update channel alias")
     body = _step_body(lines, alias)
     assert any(
-        line.strip() == "if: steps.existing.outputs.exists == 'false'"
-        for line in body
+        line.strip() == "if: steps.existing.outputs.exists == 'false'" for line in body
     ), "the channel alias must never move on the existing-tag re-run path"
 
 
@@ -150,20 +221,36 @@ def test_rerun_reconcile_only_converges_latest_toward_owned_stable() -> None:
     reconcile = _step_index(lines, "Reconcile aliases (re-run)")
     body = _step_body(lines, reconcile)
     text = "\n".join(body)
-    assert any(
-        line.strip() == "if: steps.existing.outputs.exists == 'true'"
-        for line in body
-    )
-    assert '"${STABLE_DIGEST}" = "${DIGEST}"' in text, (
-        "the repair must require stable to already own this digest"
-    )
-    assert "imagetools create -t \"${IMAGE}:latest\"" in text
+    assert any(line.strip() == "if: steps.existing.outputs.exists == 'true'" for line in body)
+    assert (
+        '"${STABLE_DIGEST}" = "${DIGEST}"' in text
+    ), "the repair must require stable to already own this digest"
+    assert 'imagetools create -t "${IMAGE}:latest"' in text
     # And it must never execute a channel-tag write on this path (the only
     # quoted create target is latest; the channel tag appears solely inside
     # the manual-repair notice text).
-    assert "create -t \"${IMAGE}:${CHANNEL}\"" not in text, (
-        "the reconcile step may only touch latest, never the channel alias"
-    )
+    assert (
+        'create -t "${IMAGE}:${CHANNEL}"' not in text
+    ), "the reconcile step may only touch latest, never the channel alias"
+
+
+def test_promotion_fails_closed_unless_stable_alias_matches_recorded_digest() -> None:
+    """An interrupted promotion must not go green merely because its immutable
+    version tag exists. Promotion succeeds only when ``stable`` resolves to the
+    manifest-recorded digest at the end of the job."""
+    lines = _lines()
+    alias = _step_index(lines, "Update channel alias")
+    reconcile = _step_index(lines, "Reconcile aliases (re-run)")
+    verify = _step_index(lines, "Verify promoted stable alias reconciliation")
+    assert alias < verify and reconcile < verify
+
+    body = _step_body(lines, verify)
+    text = "\n".join(body)
+    assert any(line.strip() == "if: inputs.promote" for line in body)
+    assert 'EXPECTED_DIGEST="$PROMOTE_DIGEST"' in text
+    assert 'imagetools inspect "${IMAGE}:stable"' in text
+    assert '"$STABLE_DIGEST" != "$EXPECTED_DIGEST"' in text
+    assert "exit 1" in text, "a stale or missing stable alias must fail promotion"
 
 
 def test_existing_tag_check_distinguishes_not_found_from_transport_failure() -> None:
@@ -174,15 +261,15 @@ def test_existing_tag_check_distinguishes_not_found_from_transport_failure() -> 
     lines = _lines()
     check = _step_index(lines, "Check for existing version tag")
     text = "\n".join(_step_body(lines, check))
-    assert "manifest unknown" in text and "name unknown" in text, (
-        "the check must classify the inspect error before declaring the tag absent"
-    )
-    assert "exit 1" in text, (
-        "an unclassifiable inspect failure must fail the job, not select the build path"
-    )
-    assert "2>/dev/null" not in text, (
-        "stderr carries the classification signal and must not be discarded"
-    )
+    assert (
+        "manifest unknown" in text and "name unknown" in text
+    ), "the check must classify the inspect error before declaring the tag absent"
+    assert (
+        "exit 1" in text
+    ), "an unclassifiable inspect failure must fail the job, not select the build path"
+    assert (
+        "2>/dev/null" not in text
+    ), "stderr carries the classification signal and must not be discarded"
 
 
 def test_public_access_gate_is_required_by_every_canonical_caller() -> None:

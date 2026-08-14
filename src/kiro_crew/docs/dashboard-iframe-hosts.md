@@ -25,7 +25,11 @@ reused for another's job:
   server-supplied or model-supplied HTML in it.
 - `McpAppFrame` is the **least** privileged (no `allow-same-origin`, no popups)
   *and* the **most** connected. It is the only host with a live bidirectional
-  bridge, and it is null-origin precisely because it must be.
+  bridge, and it is null-origin precisely because it must be. Note this is a
+  deliberate divergence from SEP-1865, which mandates a two-frame *sandbox proxy*
+  whose outer frame carries `allow-same-origin`; the trade and what it costs an
+  app are documented in [MCP Apps](mcp-apps.md#deviations-from-sep-1865). Do not
+  "fix" the sandbox attribute to match the spec without reading that section.
 - `WidgetFrame` is closest to `McpAppFrame` on content, but is built on the
   opposite bridge assumption. Reusing it for an MCP App would mean adopting a
   host that is designed to distrust exactly the messages the App protocol needs.

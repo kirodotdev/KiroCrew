@@ -285,9 +285,9 @@ async def test_drain_waits_on_already_cancelled_but_unfinished_turn(cfg):
 
     n = await mgr.drain_active_turns(timeout=1.0)
 
-    assert n == 1                            # selected despite has_active_turn False
-    assert p.cancel_calls == [1.0]           # graceful cancel still attempted
-    assert p.wait_turn_done_calls == [1.0]   # and we waited for the pending ack
+    assert n == 1  # selected despite has_active_turn False
+    assert p.cancel_calls == [1.0]  # graceful cancel still attempted
+    assert p.wait_turn_done_calls == [1.0]  # and we waited for the pending ack
     assert p.has_unfinished_turn() is False  # ack arrived -> turn finished
 
 
@@ -321,10 +321,10 @@ async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg):
     await asyncio.wait_for(mgr.close_all(drain_timeout=0.2), timeout=1.0)
     elapsed = time.monotonic() - t0
 
-    assert p.cancel_calls == [0.2]      # drain used the passed budget
-    assert p.shutdown_called is True    # kill path ran
+    assert p.cancel_calls == [0.2]  # drain used the passed budget
+    assert p.shutdown_called is True  # kill path ran
     assert mgr.count == 0
-    assert elapsed < 1.0                # fit inside the tight deadline
+    assert elapsed < 1.0  # fit inside the tight deadline
 
 
 @pytest.mark.asyncio
@@ -349,8 +349,8 @@ async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg):
         await asyncio.wait_for(mgr.close_all(drain_timeout=5.0), timeout=0.3)
     elapsed = time.monotonic() - t0
 
-    assert p.cancel_calls              # drain was attempted before the cancel
-    assert elapsed < 1.0               # the 0.3s deadline was honored, not ~6s
+    assert p.cancel_calls  # drain was attempted before the cancel
+    assert elapsed < 1.0  # the 0.3s deadline was honored, not ~6s
     # The cancel propagated instead of being swallowed: close_all did not run the
     # in-line kill to completion on this path (that is the reaper's job).
     assert p.shutdown_called is False
@@ -376,6 +376,36 @@ async def test_close_all_sets_closing_state(cfg):
     assert mgr._closing is False
     await mgr.close_all()
     assert mgr._closing is True
+
+
+@pytest.mark.asyncio
+async def test_registration_refused_when_closing_began_during_startup(cfg):
+    """GPT BLOCKING — late-registration leak. The entry gate runs BEFORE the
+    multi-second provider.start(); if close_all() begins during the handshake,
+    the registration lock must re-check _closing and refuse — a session
+    registered behind the shutdown snapshot is invisible to the kill loop and
+    its kiro-cli would outlive the gateway holding the persisted session lock.
+    Eager spawn widens this window: its handshakes run with no turn in flight,
+    which is exactly when the drain completes instantly."""
+    started = asyncio.Event()
+    resume = asyncio.Event()
+
+    class _SlowStartProvider(_FakeProvider):
+        async def start(self) -> None:
+            started.set()
+            await resume.wait()
+
+    provider = _SlowStartProvider()
+    mgr = SessionManager(cfg, provider_factory=lambda *a, **k: provider)
+
+    task = asyncio.create_task(mgr.get_or_create("s-late"))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    mgr._closing = True  # close_all()'s first act, mid-handshake
+    resume.set()
+    with pytest.raises(SessionClosingError):
+        await asyncio.wait_for(task, timeout=2)
+    # Nothing registered behind the snapshot.
+    assert "s-late" not in mgr._sessions
 
 
 # ── begin_turn: lease-dispatch race (Codex HIGH) ──

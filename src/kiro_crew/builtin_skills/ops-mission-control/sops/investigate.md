@@ -14,13 +14,11 @@ context and be talking to you.
 
 ## Authenticate first
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"; TOKEN="${URL#*token=}"
-```
-
-Reuse `$BASE`/`$TOKEN` for every call below and pass `?token=$TOKEN`. Never hardcode a
-port and never hunt for a token elsewhere — see SKILL.md § Calling the API for why.
+Every app API call goes through the `ops_mission_control_api` MCP tool — it
+carries the gateway's own credential and always reaches this instance. Never
+call the API over raw HTTP and never hunt for a credential — see SKILL.md
+§ Calling the API for why. Paths below are relative to the app base, exactly
+as the tool takes them.
 
 ## Phase 0 — know your authority
 
@@ -102,13 +100,12 @@ diagnosis" while a complete root-cause analysis was one scroll away.
 1. **Record the diagnosis on the incident.** Do this FIRST, before posting anywhere
    — it is what clears the "no diagnosis" state:
 
-   ```bash
-   curl -sS -X POST "$GATEWAY/api/apps/ops-mission-control/incident/transition" \
-     -H 'Content-Type: application/json' \
-     -d '{"id": "INV-7",
-          "status": "needs_human",
-          "diagnosis": "<2-3 sentences: what broke and why>",
-          "resolution": ""}'
+   ```
+   ops_mission_control_api(method="POST", path="/incident/transition",
+     body_json='{"id": "INV-7",
+                 "status": "needs_human",
+                 "diagnosis": "<2-3 sentences: what broke and why>",
+                 "resolution": ""}')
    ```
 
    Pick `status` from your Phase 3 decision:
@@ -132,13 +129,13 @@ diagnosis" while a complete root-cause analysis was one scroll away.
 4. If the obvious fix has a side effect, put that in the entry. The trap is the
    most expensive part to rediscover.
 
-   ```bash
-   curl -sS -X POST "$GATEWAY/api/apps/ops-mission-control/ledger" \
-     -H 'Content-Type: application/json' \
-     -d '{"pattern": "<observable symptom>", "fix": "<specific fix + any trap>",
-          "fingerprints": ["<this incident'"'"'s fingerprint>"],
-          "provider_keys": ["<this incident'"'"'s provider_key, if it has one>"],
-          "confidence": "high", "trust": "observed"}'
+   ```
+   ops_mission_control_api(method="POST", path="/ledger",
+     body_json='{"pattern": "<observable symptom>",
+                 "fix": "<specific fix + any trap>",
+                 "fingerprints": ["<this incident'\''s fingerprint>"],
+                 "provider_keys": ["<this incident'\''s provider_key, if it has one>"],
+                 "confidence": "high", "trust": "observed"}')
    ```
 
    Bind the incident's own `fingerprint` (it is in your brief) or the entry will
@@ -156,11 +153,10 @@ diagnosis" while a complete root-cause analysis was one scroll away.
    it is the only way your finding reaches someone who lives in the ticket rather than
    in Kiro Crew.
 
-   ```bash
-   curl -sS -X POST "$GATEWAY/api/apps/ops-mission-control/incident/action" \
-     -H 'Content-Type: application/json' \
-     -d '{"id": "INV-7", "action": "comment",
-          "note": "<one paragraph: what broke, why, what to do next>"}'
+   ```
+   ops_mission_control_api(method="POST", path="/incident/action",
+     body_json='{"id": "INV-7", "action": "comment",
+                 "note": "<one paragraph: what broke, why, what to do next>"}')
    ```
 
    **Always attempt it; never work around a refusal.** Under `observe`/`propose`, or

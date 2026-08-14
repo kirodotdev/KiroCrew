@@ -46,7 +46,7 @@ const ROLE_MUTED = new Set(['read'])
 
 /** Small role badge next to an author. Maintainers (owner/member/collaborator)
  * read as accent; first-timers as warn (a triage signal — they may need extra
- * guidance); other associations stay muted. NONE renders nothing. */
+ * help); other associations stay muted. NONE renders nothing. */
 function AssociationBadge({ assoc }: { assoc?: string | null }) {
   if (!assoc || assoc === 'NONE') return null
   // `hasOwnProperty`, not a bare index: `assoc` is provider data, so a value like

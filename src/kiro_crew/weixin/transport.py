@@ -11,8 +11,11 @@ nobody. An unconfigured transport (empty allow-list under ``allowlist``)
 authorizes nobody.
 
 SCAFFOLD NOTES / TODO:
-  * Inbound media (image/voice/file/video) is not yet decrypted+cached -- only
-    the text item is extracted. Port ``_download_and_decrypt_media`` next.
+  * Inbound media (image/voice/file) IS decrypted and ingested -- see
+    ``weixin/media.py`` (CDN + AES-128-ECB) and ``weixin/attachments.py``
+    (shared ingest adapter). Inbound VIDEO is downloaded-then-rejected by the
+    shared pipeline with a visible note; outbound media is still unimplemented
+    (``getuploadurl`` + encrypted CDN PUT).
   * Outbound chunking uses a naive splitter; swap for ``renderer`` once the
     Markdown block splitter lands.
   * Group delivery is intentionally unsupported for now (iLink bot identities
@@ -36,6 +39,7 @@ from kiro_crew.messaging.transport import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.weixin.client import (
+    INBOUND_MEDIA_ITEM_TYPES,
     ITEM_TEXT,
     MESSAGE_DEDUP_TTL_SECONDS,
     RATE_LIMIT_ERRCODE,
@@ -50,18 +54,18 @@ logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
-# iLink renders Markdown natively; DM-only; no threads. Both file directions
-# are False because this transport has NO media path: send_message carries text
-# only (files_outbound=False), and inbound media (image/voice/file/video) is
-# not decrypted or cached (files_inbound=False; see the module docstring).
-# Flip each in the same change that lands that direction's media support --
-# declaring a capability the transport cannot perform makes the contract lie
-# to every future capability-aware caller.
+# iLink renders Markdown natively; DM-only; no threads. ``files_inbound=True``
+# because inbound image/voice/file items are downloaded from the WeChat CDN and
+# AES-128-ECB decrypted (weixin/media.py) then handed to the shared attachment
+# pipeline (weixin/attachments.py). ``files_outbound`` stays False: send_message
+# carries text only — the upload half (getuploadurl + encrypted CDN PUT) is not
+# implemented, and declaring a capability the transport cannot perform makes the
+# contract lie to every future capability-aware caller.
 WEIXIN_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
     reactions=False,
-    files_inbound=False,
+    files_inbound=True,
     files_outbound=False,
     rich_blocks=False,
     threads=False,
@@ -317,13 +321,22 @@ class WeixinTransport(MessagingTransport):
         if msg_id and self._dedup(msg_id):
             return
 
-        # Text only for now — media (voice/file/image/video) is not supported yet.
+        # Text rides in an ITEM_TEXT item; every other item type is a CDN media
+        # reference handed to the attachment pipeline. A media-only message has
+        # no text, so emptiness alone must NOT drop it — that was the bug where a
+        # screenshot vanished with no reply and no log line.
         text = ""
+        media_items: list[Any] = []
         for item in raw_envelope.get("item_list") or []:
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == ITEM_TEXT:
-                text = (item.get("text_item") or {}).get("text", "")
-                break
-        if not text:
+                if not text:
+                    text = (item.get("text_item") or {}).get("text", "")
+                continue
+            if item.get("type") in INBOUND_MEDIA_ITEM_TYPES:
+                media_items.append(item)
+        if not text and not media_items:
             return
 
         msg = InboundMessage(
@@ -331,6 +344,7 @@ class WeixinTransport(MessagingTransport):
             user_id=from_user,
             conversation_id=from_user,  # DM: peer id is the conversation
             text=text,
+            attachments=media_items,
         )
         # Authorize FIRST: an unallowlisted stranger must not be able to mutate
         # any server-side state, so the reply-context write happens only after

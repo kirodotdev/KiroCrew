@@ -23,6 +23,7 @@ from kiro_crew.dashboard.chat_utils import (
     dashboard_slot_key,
     effective_session_key,
     slot_transcript_key,
+    subagent_event_slot,
 )
 from kiro_crew.history import ConversationLog, _safe_key
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
@@ -337,11 +338,77 @@ class TestSurfaceRegistry:
         assert has_dashboard_surface("cron:nightly") is False
         assert dashboard_slot_key("cron:nightly") == ""
 
+    def test_a_cron_session_resolves_to_its_actual_slot_name(self):
+        """A cron-born tab is named ``cron-<id>`` (cron_inject.py), NOT the
+        session key folded (``cron_<id>``). Resolving the fold sent sub-agent
+        completions to a slot that never existed — "parent slot cron_<id>
+        gone, notification only" — so results reached the bell icon but never
+        the open conversation."""
+        set_dashboard_surfaced({"cron:188f71e5"})
+        assert dashboard_slot_key("cron:188f71e5") == "cron-188f71e5"
+
+    def test_a_cron_per_run_key_resolves_to_the_job_tab(self):
+        """Stateless jobs run under ``cron:<job_id>:<run_id>`` and agent
+        sequences under ``cron:<job_id>:<agent>``, but the surface registry
+        only ever holds the slot's linked key (``cron:<job_id>``) — the base
+        key must be retried or those runs stay invisible."""
+        set_dashboard_surfaced({"cron:188f71e5"})
+        assert dashboard_slot_key("cron:188f71e5:a1b2c3") == "cron-188f71e5"
+        assert dashboard_slot_key("cron:188f71e5:worker") == "cron-188f71e5"
+
+    def test_a_cron_session_with_no_tab_still_resolves_to_nothing(self):
+        set_dashboard_surfaced(())
+        assert dashboard_slot_key("cron:188f71e5") == ""
+        assert dashboard_slot_key("cron:188f71e5:a1b2c3") == ""
+
     def test_an_empty_registry_degrades_to_the_prefix_test(self):
         """Fail-safe: no worse than the behaviour it replaced."""
         set_dashboard_surfaced(())
         assert has_dashboard_surface("dashboard:chat-1-99") is True
         assert has_dashboard_surface(SLACK_KEY) is False
+
+
+class TestSubagentEventSlotRouting:
+    """The ``slot`` a per-slot WS event carries must be the TAB's key.
+
+    The frontend routes ``subagent_spawn/tool/done`` (and the reconnect
+    replay) by exact string match against the tab's slot key. A raw
+    ``removeprefix("dashboard:")`` tags frames from cron/channel-born parents
+    with the raw session key, which no tab uses — the Subagents panel then
+    reads "No subagents running" for the entire life of every agent those
+    sessions spawn.
+    """
+
+    def setup_method(self):
+        set_dashboard_surfaced(())
+
+    def teardown_method(self):
+        set_dashboard_surfaced(())
+
+    def test_dashboard_born_parent_keeps_its_slot_key(self):
+        assert subagent_event_slot("dashboard:chat-3-1754") == "chat-3-1754"
+
+    def test_cron_born_parent_routes_to_the_cron_tab(self):
+        """Regression: agents spawned from a cron-born session were invisible
+        in the panel (events carried ``cron:<id>``, the tab is ``cron-<id>``)."""
+        set_dashboard_surfaced({"cron:188f71e5"})
+        assert subagent_event_slot("cron:188f71e5") == "cron-188f71e5"
+
+    def test_cron_per_run_parent_routes_to_the_job_tab(self):
+        """A stateless run's ``cron:<job_id>:<run_id>`` parent must reach the
+        job's tab too — only the linked ``cron:<job_id>`` is ever surfaced."""
+        set_dashboard_surfaced({"cron:188f71e5"})
+        assert subagent_event_slot("cron:188f71e5:a1b2c3") == "cron-188f71e5"
+
+    def test_channel_born_parent_routes_to_its_transcript_stem_tab(self):
+        set_dashboard_surfaced({SLACK_KEY})
+        assert subagent_event_slot(SLACK_KEY) == SLACK_STEM
+
+    def test_no_tab_falls_back_to_the_legacy_raw_key(self):
+        """No tab open: nothing can route anywhere, but external WS consumers
+        and log lines keep the historical payload shape."""
+        assert subagent_event_slot("cron:188f71e5") == "cron:188f71e5"
+        assert subagent_event_slot(SLACK_KEY) == SLACK_KEY
 
 
 class TestA6NoLostOrOutOfOrderTurn:

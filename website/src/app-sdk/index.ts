@@ -303,5 +303,24 @@ export function AppApiProvider({
 
 export { useChatSession } from './useChatSession'
 export { default as ChatPanel } from './ChatPanel'
+// The marker protocol, so an embedding app can interpret `[OPTIONS:]` /
+// `[STEERING …]` without rendering our transcript components.
+export * from './protocol'
 export { default as ChatEmbed } from './ChatEmbed'
 export { default as ChatMessageList } from './ChatMessageList'
+// The transcript's row registry, so an app can add a row type or replace one
+// instead of forking the message list.
+export {
+  defaultMessageRenderers,
+  GROUPED_ROLES,
+  mergeRenderers,
+  resolveRenderer,
+  ToolCallPill,
+} from './messageRenderers'
+export type { MessageRenderer, MessageRenderContext } from './messageRenderers'
+// `useComposerDraft` is deliberately NOT exported here yet. It is owned by this
+// directory and consumed from `./useComposerDraft` by name, which serves every
+// in-tree surface; adding it to this barrel would publish it through the vendor
+// stub to third-party apps and freeze the contract before its richest consumer —
+// the main composer, with configurable send keys and per-slot persisted drafts —
+// has exercised it. Publishing later is additive; un-publishing is a break.

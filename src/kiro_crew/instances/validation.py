@@ -28,32 +28,32 @@ import re
 
 # Host charset: letters, digits, dot, hyphen, underscore, and a single optional
 # ``user@`` prefix. No whitespace, no shell metacharacters. Length-bounded.
-_HOST_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
+_HOST_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*\Z")
 _MAX_HOST_LEN = 255
 
 # remote_bin: an absolute or ~/ path to the kirocrew binary. Allows letters,
 # digits, dot, underscore, slash, hyphen, tilde, and spaces. Crucially excludes
 # ``$`` (no command substitution / var expansion we don't control), quotes,
 # and every shell control character. Length-bounded.
-_REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~ -]{1,512}$")
+_REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~ -]{1,512}\Z")
 
 # ssm_target: an EC2 instance id (i-<hex>) or SSM managed-instance id
 # (mi-<hex>), 8-17 hex chars (AWS has used both the legacy 8-char and current
 # 17-char id lengths). Never embedded in a shell string — passed only as an
 # argv element to ``aws ssm`` — but still charset-bound to its known shape.
-_SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}$")
+_SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}\Z")
 # ssm_run_as: Unix username shape, matching the charset cloud.ssm.run_command
 # validates at the SSM chokepoint. Defaults to the launcher-provisioned AL2023
 # user; other AMIs (e.g. Ubuntu) need their own.
-_SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}\Z")
 _DEFAULT_SSM_RUN_AS = "ec2-user"
 
 # aws_profile: a named profile from ~/.aws/config. Conservative charset (no
 # shell metacharacters, no leading '-' to avoid being parsed as an option).
-_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}\Z")
 
 # aws_region: standard AWS region shape (e.g. us-east-1, us-gov-west-1).
-_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}$")
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z")
 
 
 class SshValidationError(ValueError):

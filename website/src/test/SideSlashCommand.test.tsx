@@ -64,4 +64,23 @@ describe('/side slash command interception', () => {
     })
     window.removeEventListener('mc-start-import', listener)
   })
+
+  it('reports failed when there is no active slot', async () => {
+    const result = await interceptSlashCommand('/side', null, store.dispatch)
+    expect(result).toEqual({ intercepted: true, failed: true })
+  })
+
+  it('reports failed when sideOpen rejects', async () => {
+    mockSideOpen.mockRejectedValueOnce(new Error('boom'))
+    const result = await interceptSlashCommand('/side', SLOT, store.dispatch)
+    expect(result).toEqual({ intercepted: true, failed: true })
+  })
+
+  it('reports failed when sideTurn rejects (e.g. 409 turn in flight)', async () => {
+    mockSideTurn.mockRejectedValueOnce(new Error('409: side turn already in flight'))
+    const result = await interceptSlashCommand('/side my question', SLOT, store.dispatch)
+    expect(result).toEqual({ intercepted: true, failed: true })
+    // The panel still opened — only the turn was rejected.
+    expect(store.getState().chat.activityTab).toBe('side')
+  })
 })

@@ -51,6 +51,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         profile=profile,
         region=region,
         size_key=getattr(args, "size", "") or "",
+        subnet_id=getattr(args, "subnet", "") or "",
         assume_yes=getattr(args, "yes", False),
         force_new=getattr(args, "new", False),
         keep_on_failure=getattr(args, "keep_on_failure", False),

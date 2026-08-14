@@ -28,11 +28,18 @@ interface SettingsToggleProps {
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
+  /** Backend config key this toggle writes (e.g. 'telemetry.beacon_enabled'). Used by the settings registry and SettingRef linking. */
+  configKey?: string
+  /** id of an element describing a CONSEQUENCE of flipping this toggle, rendered
+   *  outside the row (so it is not dimmed with a disabled row). Threaded to the
+   *  switch's `aria-describedby` so assistive tech announces it before the user
+   *  acts, instead of leaving a side effect discoverable only by exploring. */
+  describedBy?: string
 }
 
-export function SettingsToggle({ label, description, checked, onChange, disabled }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, checked, onChange, disabled, configKey, describedBy }: SettingsToggleProps) {
   return (
-    <Clickable data-setting-label={label} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={() => onChange(!checked)} disabled={disabled}>
+    <Clickable data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={() => onChange(!checked)} disabled={disabled}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
         {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
@@ -41,7 +48,7 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
           toggling; the inner Toggle carries all keyboard/AT semantics. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div onClick={e => e.stopPropagation()}>
-        <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} />
+        <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} describedBy={describedBy} />
       </div>
     </Clickable>
   )
@@ -50,12 +57,22 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
 
 /* ── Select ── */
 
-/** Shared field wrapper: label + optional hint + optional description */
-function SettingsField({ label, description, hint, children }: { label: string; description?: string; hint?: string; children: React.ReactNode }) {
+/** Shared field wrapper: label + optional hint + optional description.
+ *
+ * `controlId` is the id of the labelable control rendered inside `children`.
+ * When provided, the caption renders as `<label htmlFor>` so the visible text
+ * becomes the control's programmatic name (unlocking screen-reader
+ * announcement and `getByLabelText` in tests). Without it the caption stays a
+ * `<span>` — a `<label>` with a dangling `htmlFor`, or one wrapping a group of
+ * buttons (SettingsStepper / SettingsButtonGroup), would be wrong. Optional so
+ * the wrappers without a single labelable control keep compiling unchanged. */
+function SettingsField({ label, description, hint, configKey, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; controlId?: string; children: React.ReactNode }) {
   return (
-    <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
+    <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
-        <span className="text-[13px] font-semibold text-text">{label}</span>
+        {controlId
+          ? <label htmlFor={controlId} className="text-[13px] font-semibold text-text">{label}</label>
+          : <span className="text-[13px] font-semibold text-text">{label}</span>}
         {hint && <InfoTip text={hint} />}
       </div>
       {description && <div className="text-[12px] text-muted">{description}</div>}
@@ -76,12 +93,20 @@ interface SettingsSelectProps {
   /** Optional action at top of dropdown (e.g. "+ New workspace…") */
   action?: { label: string; onSelect: () => void }
   disabled?: boolean
+  /** Backend config key this select writes. */
+  configKey?: string
 }
 
-export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled }: SettingsSelectProps) {
+export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey }: SettingsSelectProps) {
+  // Per-instance id pairing the caption's htmlFor with the select trigger, so
+  // the visible caption is the control's programmatic label. The aria-label
+  // below stays as a fallback: it wins the accessible-name computation and
+  // carries the same string, so nothing double-announces.
+  const controlId = React.useId()
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} controlId={controlId}>
       <SimpleSelect
+        id={controlId}
         options={options}
         optionLabels={optionLabels}
         value={value}
@@ -104,6 +129,11 @@ interface SettingsInputProps {
   value: string
   onChange: (value: string) => void
   onBlur?: () => void
+  /** Key handler on the control itself. Needed by panels that commit on blur and
+   *  have no Save button (WeChat), where Enter must commit the value the way it
+   *  would in a form — a `<div>` wrapper cannot carry that without becoming an
+   *  interactive static element. */
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>
   placeholder?: string
   type?: 'text' | 'number'
   min?: number
@@ -112,16 +142,27 @@ interface SettingsInputProps {
   disabled?: boolean
   multiline?: boolean
   'aria-label'?: string
+  /** Backend config key this input writes. */
+  configKey?: string
 }
 
-export function SettingsInput({ label, description, hint, value, onChange, onBlur, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel }: SettingsInputProps) {
+export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
+  // Per-instance id pairing the caption's htmlFor with the control. This is
+  // what gives the single-line branch an accessible name by DEFAULT: it used
+  // to render aria-label={ariaLabel} with ariaLabel undefined unless a caller
+  // duplicated the caption, leaving the input nameless to screen readers.
+  // An explicit aria-label still wins the name computation, so deliberate
+  // overrides keep working.
+  const controlId = React.useId()
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} controlId={controlId}>
       {multiline ? (
         <textarea
+          id={controlId}
           value={value}
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           disabled={disabled}
           rows={3}
@@ -130,10 +171,12 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
         />
       ) : (
         <Input
+          id={controlId}
           type={type}
           value={value}
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           min={min}
           max={max}
@@ -175,9 +218,34 @@ export function SettingsSection({ title, badge, children }: SettingsSectionProps
 
 /* ── Settings Card (thin wrapper around Card with vertical gap) ── */
 
-export function SettingsCard({ children }: { children: React.ReactNode }) {
+/**
+ * Delay step between successive settings cards' entrance animations, in ms.
+ * Matches the stat-tile stagger ladder on the Overview page (`delay={i * 60}`
+ * in `pages/OverviewPage.tsx`) so every Settings section rises with the same
+ * rhythm as Overview.
+ */
+export const SETTINGS_CARD_STAGGER_MS = 60
+
+export function SettingsCard({ index, children }: {
+  /**
+   * Ordinal of this card within its panel (0-based). Maps onto the shared
+   * entrance-stagger ladder: the card's `animate-rise` entrance is delayed by
+   * `index * SETTINGS_CARD_STAGGER_MS`. Omit (or pass 0) for the first card —
+   * it rises immediately, exactly as before this prop existed. Purely
+   * presentational; gaps in the sequence (from conditionally hidden cards)
+   * are harmless. Under `prefers-reduced-motion` the delay is zeroed by the
+   * `.animate-rise` rule in `index.css` (the global reduced-motion rule only
+   * zeroes duration, and `backwards` fill would otherwise hold the card
+   * invisible for its whole delay).
+   */
+  index?: number
+  children: React.ReactNode
+}) {
   return (
-    <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
+    <div
+      className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all"
+      style={index ? { animationDelay: `${index * SETTINGS_CARD_STAGGER_MS}ms` } : undefined}
+    >
       <div className="flex flex-col gap-1">
         {children}
       </div>
@@ -191,17 +259,26 @@ interface SettingsStepperProps {
   label: string
   description?: string
   hint?: string
-  value: number
+  /**
+   * The displayed value. `string` is allowed for an ALREADY-FORMATTED, localised
+   * value — a duration rendered as "0.5 seconds", for instance, where the unit
+   * word is part of the catalog string and cannot be split off into `suffix`
+   * (locales place and inflect it differently). The stepper only interpolates
+   * this, so the numeric state stays with the caller either way.
+   */
+  value: number | string
   onIncrement: () => void
   onDecrement: () => void
   onReset?: () => void
   suffix?: string
   disabled?: boolean
+  /** Backend config key this stepper writes. */
+  configKey?: string
 }
 
-export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, suffix = '', disabled }: SettingsStepperProps) {
+export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, suffix = '', disabled, configKey }: SettingsStepperProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -241,11 +318,13 @@ interface SettingsButtonGroupProps {
   options: { value: string; label: string; icon?: React.ReactNode }[]
   onChange: (value: string) => void
   disabled?: boolean
+  /** Backend config key this button group writes. */
+  configKey?: string
 }
 
-export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled }: SettingsButtonGroupProps) {
+export function SettingsButtonGroup({ label, description, hint, value, options, onChange, disabled, configKey }: SettingsButtonGroupProps) {
   return (
-    <SettingsField label={label} description={description} hint={hint}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       {/* Segmented control: a RECESSED track (`bg-accent`) holding a RAISED
           selected thumb (`bg-elevated` + border + shadow).
 

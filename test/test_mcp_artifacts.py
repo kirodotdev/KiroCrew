@@ -144,7 +144,7 @@ class TestArtifactReferenceLink:
 
     def test_update_non_widget_emits_markdown_link(self) -> None:
         # given an updated text artifact
-        with patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock:
+        with patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "log", "version": 5, "name": "Run Log", "kind": "text"}'
             )
@@ -155,7 +155,7 @@ class TestArtifactReferenceLink:
 
     def test_link_falls_back_to_slug_when_name_missing(self) -> None:
         # given an updated non-widget artifact whose response omits 'name'
-        with patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock:
+        with patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock:
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "anon-doc", "version": 1, "kind": "markdown"}'
             )
@@ -609,7 +609,7 @@ class TestArtifactRevert:
                 "kiro_crew.mcp_core._get",
                 return_value={"slug": "doc", "version": 2, "content": target_content},
             ) as get_mock,
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock,
         ):
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4}'
@@ -651,7 +651,7 @@ class TestArtifactRevert:
                 "kiro_crew.mcp_core._get",
                 return_value={"slug": "doc", "version": 2, "content": "v2"},
             ),
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock,
         ):
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4, "source_path": "/home/u/notes/doc.md"}'
@@ -670,7 +670,7 @@ class TestArtifactRevert:
                 "kiro_crew.mcp_core._get",
                 return_value={"slug": "doc", "version": 2, "content": "v2"},
             ),
-            patch("kiro_crew.mcp_core.urllib.request.urlopen") as urlopen_mock,
+            patch("kiro_crew.mcp_core.loopback_urlopen") as urlopen_mock,
         ):
             urlopen_mock.return_value.__enter__.return_value.read.return_value = (
                 b'{"slug": "doc", "version": 4}'  # no source_path

@@ -61,18 +61,22 @@ DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 # message_thread_id, receive() populates InboundMessage.thread_id, and
 # forum_gate_outcome authorizes on it. (This was previously declared False —
 # wrongly; declarations must match the code, not the DM-only common case.)
-# max_buttons=8 is Telegram's per-row limit; NOTE the renderer does not yet
-# apply it (see the capability ledger — the field is aspirational).
+# max_buttons=25: TOTAL interactive choices per prompt (the renderer packs 2
+# per row -> up to 13 scrollable rows), parity with discord's platform-
+# practical total. Enforced via apply_options_cap; overflow degrades to a
+# numbered text list. The genuinely unbounded keyboard was the defect this
+# closes (huge lists 400); 9-25 choice keyboards worked before and still do.
+# (The old declared 8 was a mislabeled per-row number, never a chosen total.)
 TELEGRAM_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
     reactions=True,  # setMessageReaction — used for the steer-ack receipt
-    files_inbound=False,  # photos/stickers are dropped in receive(), matching prior behavior
+    files_inbound=True,  # photos/documents ingested via telegram/attachments.py
     files_outbound=False,
     rich_blocks=False,
     threads=True,
     max_message_chars=TELEGRAM_CHUNK_LIMIT,
-    max_buttons=8,
+    max_buttons=25,
     supports_proactive_send=True,
 )
 
@@ -210,13 +214,13 @@ class TelegramTransport(MessagingTransport):
         The low-level client long-polls and normalizes updates into
         ``TelegramInbound``; this adapter maps that onto the neutral
         ``InboundMessage``, enforces deny-by-default auth, and hands an
-        authorized message to the turn dispatcher. Non-text updates
-        (photos/stickers) are dropped.
+        authorized message to the turn dispatcher. Attachment-only messages
+        (no text/caption) are accepted; sticker-only messages are dropped.
         """
         if not isinstance(raw_envelope, TelegramInbound):
             return
         inbound = raw_envelope
-        if not inbound.text:
+        if not inbound.text and not inbound.attachments:
             return
         # Chat-type gate (fail closed). A bot added to a group receives every
         # message and its replies land in that chat, so we serve ONLY a real
@@ -252,6 +256,7 @@ class TelegramTransport(MessagingTransport):
             thread_id=(str(inbound.message_thread_id) if inbound.message_thread_id else None),
             message_id=inbound.message_id,
             chat_type=inbound.chat_type,
+            attachments=list(inbound.attachments),
         )
         if not self.authorize(msg):
             return

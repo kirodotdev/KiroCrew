@@ -13,9 +13,11 @@ rotation stay lock-free on their per-PID shards; pruning protects canonical
 writers owned by live PIDs (and recently modified canonical shards), so it
 never unlinks another process's active write.
 
-PRIVACY: attribute values are redacted at the ``MetricsRecorder``
-facade before they reach the SDK, so the serialized data points carry no secrets
-or PII. The directory (0o700) and shards (0o600) are created private -- matching
+PRIVACY: attribute values are redacted at the ``MetricsRecorder`` facade before
+they reach the SDK. That is defence in depth over the call-site requirement to
+pass only low-cardinality constants, not a guarantee that a serialized data
+point carries no secret or PII -- see ``schema.py`` for where redaction reaches.
+The directory (0o700) and shards (0o600) are created private -- matching
 the ``~/.kiro/crew`` file-permission convention -- so no other local user on a
 shared host can read another user's metrics.
 

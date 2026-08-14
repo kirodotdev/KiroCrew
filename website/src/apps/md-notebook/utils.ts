@@ -34,6 +34,101 @@ export function indentPx(ws: string): number {
   return col * INDENT_COL_PX
 }
 
+/** Horizontal alignment a table column asks for, null when it says nothing. */
+export type TableAlign = 'left' | 'center' | 'right' | null
+
+/** A table recognised in the source, and the last line it occupies. */
+export interface ParsedTable {
+  header: string[]
+  align: TableAlign[]
+  rows: string[][]
+  end: number
+}
+
+/** A delimiter-row cell: hyphens, with a colon on either side for alignment. */
+const SEP_CELL_RE = /^:?-+:?$/
+
+/** True when the line has a pipe that is not backslash-escaped. */
+function hasPipe(line: string): boolean {
+  return line.replace(/\\\|/g, '').includes('|')
+}
+
+/**
+ * Split one table row into trimmed cells.
+ *
+ * `\|` is a literal pipe inside a cell, so it must not split — that is how a
+ * note writes a pipe in prose or in `a \| b` code. The leading and trailing
+ * pipes are optional in GFM; when present they produce an empty edge cell that
+ * is delimiter rather than content, so those are dropped.
+ */
+export function splitTableRow(line: string): string[] {
+  const cells: string[] = []
+  let cur = ''
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '\\' && line[i + 1] === '|') {
+      cur += '|'
+      i++
+    } else if (line[i] === '|') {
+      cells.push(cur)
+      cur = ''
+    } else {
+      cur += line[i]
+    }
+  }
+  cells.push(cur)
+  if (cells.length > 1 && cells[0].trim() === '') cells.shift()
+  if (cells.length > 1 && cells[cells.length - 1].trim() === '') cells.pop()
+  return cells.map(c => c.trim())
+}
+
+/**
+ * Per-column alignment when `line` is a delimiter row for `cols` columns, else
+ * null. The cell count has to match the header exactly: that is what separates
+ * a table from a paragraph that happens to contain pipes.
+ */
+export function tableAlignments(line: string, cols: number): TableAlign[] | null {
+  if (!hasPipe(line)) return null
+  const cells = splitTableRow(line)
+  if (cells.length !== cols || !cells.every(c => SEP_CELL_RE.test(c))) return null
+  return cells.map(c => {
+    const left = c.startsWith(':')
+    const right = c.endsWith(':')
+    if (left && right) return 'center'
+    if (right) return 'right'
+    return left ? 'left' : null
+  })
+}
+
+/**
+ * Read the table starting at `start`, or null when there is none there.
+ *
+ * A table is a header line followed by a matching delimiter row, then rows for
+ * as long as they keep carrying pipes. Requiring a pipe in the delimiter row
+ * too keeps a bare `---` under a line of prose an horizontal rule, which is
+ * what it has always rendered as.
+ */
+export function parseTable(lines: readonly string[], start: number): ParsedTable | null {
+  const headerLine = lines[start]
+  if (headerLine === undefined || !hasPipe(headerLine)) return null
+  const sep = lines[start + 1]
+  if (sep === undefined) return null
+  const header = splitTableRow(headerLine)
+  const align = tableAlignments(sep, header.length)
+  if (!align) return null
+
+  const rows: string[][] = []
+  let end = start + 1
+  for (let i = start + 2; i < lines.length; i++) {
+    if (lines[i].trim() === '' || !hasPipe(lines[i])) break
+    const cells = splitTableRow(lines[i])
+    // A body row is padded to the header's width and its overflow dropped, so
+    // every rendered row has exactly as many cells as there are columns.
+    rows.push(Array.from({ length: header.length }, (_, c) => cells[c] ?? ''))
+    end = i
+  }
+  return { header, align, rows, end }
+}
+
 /**
  * Indent (or with `out`, outdent) the list item containing the caret.
  * Returns the rewritten text and new caret position, or null when the caret

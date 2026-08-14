@@ -15,6 +15,7 @@ not been re-audited since 2026-08-03.
 
 | Document | Status | What is actually on main |
 |---|---|---|
+| [rfc-issue-radar-crews.md](rfc-issue-radar-crews.md) | `draft` | Nothing. Design of record only; `crew_brief.md` and `crew_ledger_spec.md` sit beside the Issue Radar backend as companion specs, also unimplemented |
 | [rfc-orchestrator-chat-sessions.md](rfc-orchestrator-chat-sessions.md) | `in-progress` | Nothing yet — all of it is in open PR [#1295](https://github.com/kirodotdev/KiroCrew/pull/1295) (`feat/crew-mode`) |
 | [rfc-channel-plugin-architecture.md](rfc-channel-plugin-architecture.md) | `partial` | Shared turn pipeline shipped; **4 of 7** channels adopted. Registry/seam collapse, telegram+discord, Feishu unstarted |
 | [rfc-local-notification-bus.md](rfc-local-notification-bus.md) | `partial` | Phases 1/3/4 complete. Phase 2 wired but has no producer; Phase 5 shipped 2 of 3 |
@@ -27,8 +28,11 @@ not been re-audited since 2026-08-03.
 | [rfc-tips-kit.md](rfc-tips-kit.md) | `draft` | Nothing. T1 was built and **retracted** ([#775](https://github.com/kirodotdev/KiroCrew/pull/775)); the design section needs revising first |
 | [rfc-update-architecture.md](rfc-update-architecture.md) | `draft` | Nothing — zero of three phases |
 | [rfc-app-sandbox-isolation.md](rfc-app-sandbox-isolation.md) | `draft` | Nothing. Apps still run in-process with full privileges (see `src/kiro_crew/docs/app-platform-trust-model.md`); no isolation code exists |
+| [rfc-issue-radar-dispatch.md](rfc-issue-radar-dispatch.md) | `draft` | Nothing. Issue Radar has Investigate and Review; no verb produces work, and issues carry no link to the change that resolves them |
+| [rfc-perpetual-agent.md](rfc-perpetual-agent.md) | `draft` | Nothing. Verified at `9ac3716a`: no schedule kind self-reschedules, and `binding_key_for` has no `cron:` branch |
 | [rfc-tailnet-dashboard-access.md](rfc-tailnet-dashboard-access.md) | `partial` | Phase 1 landed ([#1761](https://github.com/kirodotdev/KiroCrew/pull/1761), `f8afcff7`) — reports the pin's real scope, does not fix it. Phases 2–4 unstarted; the pin repair is tracked as [#1762](https://github.com/kirodotdev/KiroCrew/issues/1762) |
 | [rfc-pluggable-model-providers.md](rfc-pluggable-model-providers.md) | `draft` | Nothing, by design. `agent.provider` is still fixed to `acp` and `AGENTS.md` lists "Other providers" under *Never re-add*. This document **recommends** supporting provider choice and asks the maintainers to amend that rule; it proposes no design, and an exploratory implementation is shelved pending the answer ([#1693](https://github.com/kirodotdev/KiroCrew/issues/1693)) |
+| [rfc-s3-backup.md](rfc-s3-backup.md) | `draft` | Nothing. Verified at `f4d3327a7`: `VALID_COMPONENTS` carries no session component and no code path writes crew state to a remote store |
 | [version-compliance-framework.md](version-compliance-framework.md) | `draft` | Nothing. Framework doc, not an RFC; premise is pre-fork and stale |
 
 Nothing in this directory is `implemented` or `superseded` today.

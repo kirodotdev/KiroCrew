@@ -6,6 +6,12 @@
  * straight into a dashboard translated into 10 languages, naming a config key
  * with nothing to click. A user who never opens a terminal was simply stuck.
  *
+ * The first fix for that deep-linked to Settings → Security so the user could
+ * flip `apps_allow_third_party`. Per-app trust grants SUPERSEDE that: the same
+ * denial now opens the consent modal and authorises THIS app, so wanting one
+ * app no longer authorises every future one. The deeplink is gone because it
+ * became unreachable — the trust check consumes the identical error code first.
+ *
  * What these tests pin:
  *  1. the affordance keys off the machine-readable `code`, NOT the prose — the
  *     prose is English, unlocalizable, and free to be reworded by the backend;
@@ -13,12 +19,13 @@
  *     registry install RESOLVES a payload carrying `code`, while `enableApp`
  *     REJECTS with an ApiError that keeps the payload as a JSON *string* on
  *     `.body`;
- *  3. an unrelated failure still shows its own message and offers no button —
- *     a stale flag must never mislabel the next error.
+ *  3. an unrelated failure still shows its own message and opens no modal —
+ *     a denial must never be inferred from an arbitrary error.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Routes, Route, useSearchParams } from 'react-router-dom'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const getApp = vi.fn()
 const listRegistry = vi.fn()
@@ -48,8 +55,9 @@ const DENIED_PROSE =
   'blocked by execution policy: third-party app execution is disabled; explicitly set '
   + 'agent.apps_allow_third_party=true to allow Python, backend, and manifest shell code'
 
-const BLOCKED_COPY = /not allowed to run their own code yet/i
-const BUTTON = /open security settings/i
+/** The consent modal's heading ("Trust {{app}} to run its own code?") — the
+ *  affordance that replaced the deeplink. */
+const TRUST_MODAL = /to run its own code\?/i
 
 /** An installed-but-disabled app, so the Enable action is on screen. */
 const INSTALLED_APP = {
@@ -64,27 +72,23 @@ const INSTALLED_APP = {
   manifest: { name: 'launchdarkly', version: '0.2.0', displayName: 'LaunchDarkly' },
 }
 
-/** Renders the search string of the /settings route it landed on.
- *
- *  Asserting only that "settings page" appeared would prove `/settings`
- *  MATCHED and nothing more — a button changed to a bare `/settings` would
- *  still pass while the user lands on the default tab. So surface the query
- *  and assert the tab itself.
- */
-function SettingsProbe() {
-  const [params] = useSearchParams()
-  return <div>settings tab: {params.get('tab') || '(none)'}</div>
-}
-
 function renderDetail() {
+  // `useTrustGate` invalidates the ['trusted-apps'] / ['apps'] queries after a
+  // grant so the Security panel and the App Store cannot serve a pre-grant
+  // snapshot, which means the hook needs a QueryClient in scope. The app root
+  // always provides one; the harness has to as well. `retry: false` keeps a
+  // rejected query from re-firing and slowing the failure assertions.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter initialEntries={[{ pathname: '/apps/detail/launchdarkly' }]}>
-      <Routes>
-        <Route path="/apps/detail/:name" element={<AppDetailPage />} />
-        <Route path="/apps" element={<div>apps list</div>} />
-        <Route path="/settings" element={<SettingsProbe />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[{ pathname: '/apps/detail/launchdarkly' }]}>
+        <Routes>
+          <Route path="/apps/detail/:name" element={<AppDetailPage />} />
+          <Route path="/apps" element={<div>apps list</div>} />
+          <Route path="/settings" element={<div>settings page</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -96,12 +100,12 @@ describe('AppDetailPage — third-party execution denial', () => {
     getApp.mockResolvedValue(INSTALLED_APP)
   })
 
-  it('enable denial (ApiError with JSON body) offers the security-settings button', async () => {
+  it('enable denial (ApiError with JSON body) opens the trust consent modal', async () => {
     // Mirrors the real client: ApiError keeps the payload as a raw JSON STRING
     // on .body, so reading err.code directly finds nothing.
     const err = Object.assign(new Error(DENIED_PROSE), {
       name: 'ApiError',
-      status: 400,
+      status: 403,
       body: JSON.stringify({ ok: false, name: 'launchdarkly', error: DENIED_PROSE, code: 'app_execution_denied' }),
     })
     enableApp.mockRejectedValue(err)
@@ -109,28 +113,27 @@ describe('AppDetailPage — third-party execution denial', () => {
     renderDetail()
     fireEvent.click(await screen.findByRole('button', { name: /enable/i }))
 
-    expect(await screen.findByText(BLOCKED_COPY)).toBeInTheDocument()
+    expect(await screen.findByText(TRUST_MODAL)).toBeInTheDocument()
     // The raw config-key sentence must not be what the user reads.
     expect(screen.queryByText(/apps_allow_third_party/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: BUTTON })).toBeInTheDocument()
   })
 
-  it('the button navigates to the Security settings tab', async () => {
+  it('the superseded security-settings deeplink is gone', async () => {
     enableApp.mockRejectedValue(Object.assign(new Error(DENIED_PROSE), {
-      name: 'ApiError', status: 400,
+      name: 'ApiError', status: 403,
       body: JSON.stringify({ error: DENIED_PROSE, code: 'app_execution_denied' }),
     }))
 
     renderDetail()
     fireEvent.click(await screen.findByRole('button', { name: /enable/i }))
-    fireEvent.click(await screen.findByRole('button', { name: BUTTON }))
+    await screen.findByText(TRUST_MODAL)
 
-    // The TAB is the point — landing on /settings with the default tab would
-    // leave the user hunting for the switch we just told them about.
-    expect(await screen.findByText('settings tab: security')).toBeInTheDocument()
+    // Granting THIS app is the resolution; sending the user to flip the blanket
+    // switch would authorise every third-party app at once.
+    expect(screen.queryByRole('button', { name: /open security settings/i })).not.toBeInTheDocument()
   })
 
-  it('install denial (resolved payload carrying code) offers the same button', async () => {
+  it('install denial (resolved payload carrying code) opens the same modal', async () => {
     getApp.mockResolvedValue(null)
     listRegistry.mockResolvedValue({
       apps: [{ ...INSTALLED_APP, installed: false, enabled: false }],
@@ -143,11 +146,10 @@ describe('AppDetailPage — third-party execution denial', () => {
     renderDetail()
     fireEvent.click(await screen.findByRole('button', { name: /install/i }))
 
-    expect(await screen.findByText(BLOCKED_COPY)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: BUTTON })).toBeInTheDocument()
+    expect(await screen.findByText(TRUST_MODAL)).toBeInTheDocument()
   })
 
-  it('an unrelated failure keeps its own message and offers no button', async () => {
+  it('an unrelated failure keeps its own message and opens no modal', async () => {
     enableApp.mockRejectedValue(Object.assign(new Error('disk on fire'), {
       name: 'ApiError', status: 500, body: JSON.stringify({ error: 'disk on fire' }),
     }))
@@ -156,31 +158,6 @@ describe('AppDetailPage — third-party execution denial', () => {
     fireEvent.click(await screen.findByRole('button', { name: /enable/i }))
 
     expect(await screen.findByText('disk on fire')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument()
-    expect(screen.queryByText(BLOCKED_COPY)).not.toBeInTheDocument()
-  })
-
-  it('dismissing clears the denial so a later error is not mislabelled', async () => {
-    enableApp.mockRejectedValueOnce(Object.assign(new Error(DENIED_PROSE), {
-      name: 'ApiError', status: 400,
-      body: JSON.stringify({ error: DENIED_PROSE, code: 'app_execution_denied' }),
-    }))
-
-    renderDetail()
-    const enableBtn = await screen.findByRole('button', { name: /enable/i })
-    fireEvent.click(enableBtn)
-    await screen.findByRole('button', { name: BUTTON })
-
-    fireEvent.click(screen.getByRole('button', { name: /dismiss error/i }))
-    await waitFor(() => expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument())
-
-    // A different failure now must not inherit the third-party copy.
-    enableApp.mockRejectedValue(Object.assign(new Error('disk on fire'), {
-      name: 'ApiError', status: 500, body: JSON.stringify({ error: 'disk on fire' }),
-    }))
-    fireEvent.click(screen.getByRole('button', { name: /enable/i }))
-
-    expect(await screen.findByText('disk on fire')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument()
+    expect(screen.queryByText(TRUST_MODAL)).not.toBeInTheDocument()
   })
 })

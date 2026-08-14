@@ -9,7 +9,7 @@ Four parts, in the order you will need them:
 
 1. [Run 24/7 on a remote host](#1-run-247-on-a-remote-host): host setup and install
 2. [Reach it from a laptop or phone](#2-reach-it-from-a-laptop-or-phone): SSH
-   tunnels, HTTPS tunnels, session lifetimes
+   tunnels, HTTPS tunnels, session lifetimes, installing as an app
 3. [Keep it alive as a service](#3-keep-it-alive-as-a-service): systemd /
    launchd, plus the awkward-host recipe
 4. [Troubleshooting](#4-troubleshooting)
@@ -21,10 +21,11 @@ Four parts, in the order you will need them:
 ### Host requirements
 
 - **OS**: any modern Linux distribution (Ubuntu 22.04+, Debian 12+, Fedora,
-  Amazon Linux 2023). macOS works too, with launchd instead of systemd.
+  CentOS Stream / RHEL 8+, CentOS 7, Amazon Linux 2 / 2023). macOS works too,
+  with launchd instead of systemd.
 - **Python**: 3.10 or newer (`setup.cfg` sets `python_requires = >=3.10`).
 - **Node.js**: needed to build the dashboard bundle. `website/package.json`
-  declares `"node": "20 || >=22"`; `kirocrew doctor` warns below Node 16.
+  declares `"node": ">=22"`; `kirocrew doctor` warns below Node 22.
 - **RAM**: there is no single published floor, because the footprint scales with
   concurrent sessions, spawned subagents, and MCP servers. Two figures from the
   code give you the shape of it: `acp/runtime.py` recycles a long-lived
@@ -39,14 +40,26 @@ Four parts, in the order you will need them:
 ### Install the basics
 
 ```bash
-# Debian / Ubuntu
+# Debian / Ubuntu (python3-venv is a separate package here)
 sudo apt-get update && sudo apt-get install -y git tmux python3 python3-pip python3-venv
 
-# Fedora / Amazon Linux 2023
-sudo dnf install -y git tmux python3 python3-pip
+# Fedora / CentOS Stream / RHEL 8+ / Amazon Linux 2023 (python3 may be 3.9;
+# python3.11 gives the 3.10+ the backend needs)
+sudo dnf install -y git tmux python3.11 python3.11-pip
+
+# CentOS 7 / RHEL 7 (yum; base repos ship only Python 3.6, which is too old —
+# install a newer interpreter yourself first, e.g. mise; see below)
+sudo yum install -y git tmux
+curl https://mise.run | sh && mise use -g python@3.12
 ```
 
-Install Node.js from your distro, [nodejs.org](https://nodejs.org/), or a
+The `curl … | sh` installer performs this distro Python bootstrap for you. On
+CentOS 7 and older Ubuntu, where no base-repo package supplies Python 3.10+, it
+uses an already-installed [mise](https://mise.jdx.dev/) if you have one and
+otherwise stops with instructions — the signed installer does not pipe an
+unsigned script into a shell, so install mise yourself first
+(`curl https://mise.run | sh`) if you want that path. Install Node.js from your
+distro, [nodejs.org](https://nodejs.org/), or a
 version manager such as [nvm](https://github.com/nvm-sh/nvm). `tmux` is handy
 for a first smoke test before you install the service.
 
@@ -269,6 +282,71 @@ the same and the difference is the whole security story:
   internet, you get TLS and a stable MagicDNS hostname, and who can reach it is
   governed by your tailnet ACLs. This is the better answer for the phone case:
   ```bash
+  kirocrew config set dashboard.tailscale.enabled true   # once per machine
+  kirocrew tailnet up
+  kirocrew restart
+  kirocrew token                                         # the link to open on the phone
+  ```
+  `kirocrew tailnet up` runs `tailscale serve` for you — HTTPS on 443 in front of
+  the dashboard's loopback port — and prints the URL to open on your phone. That is
+  the half that used to be an undocumented command you had to know and type.
+
+  The URL `tailnet up` prints carries **no session**, so opening it alone lands on a
+  login you cannot complete from the phone. `kirocrew token` is the step that hands you
+  one: with the setting on it prints a `https://<your-tailnet-name>/?token=…` line
+  alongside the loopback one. Run it after the restart, since the gateway resolves the
+  trusted origin at startup.
+
+  It prints that line only when **this** dashboard is the verified service behind that
+  name — `tailscale serve` must be proxying 443 to this gateway's port. That URL carries
+  a session, so handing it out while some other service holds the name would deliver your
+  session to it. Since `tailnet up` refuses to overwrite a foreign `443/` handler, a host
+  can legitimately have the setting on and a resolvable name while the mount belongs to
+  something else; in that case `token` says so instead of printing the line.
+
+  It **checks** `dashboard.tailscale.enabled` rather than setting it, and refuses
+  when the flag is off. Two reasons. Publishing a dashboard the gateway will not
+  trust only puts a URL on your tailnet that answers 403, which is the confusing
+  state this command exists to remove — so the check comes before the publish, not
+  after it. And writing that flag from a second process means a read-modify-write of
+  your config file that can silently drop a settings change the dashboard saved a
+  moment earlier; the flag is one-time setup, so paying for it once with an explicit
+  `config set` is cheaper than carrying that risk on every run.
+
+  `tailnet up` also needs to know which port to publish, and it will not guess: it
+  takes `--port`, `KIROCREW_PORT`, or the run marker of a gateway that is actually
+  listening. With none of those it refuses rather than publishing whatever happens to
+  hold the configured port, because `tailscale serve` will expose an unrelated local
+  service to every device on your tailnet just as readily as the dashboard.
+
+  Changing serve configuration is daemon state, so on Linux it usually needs root
+  or a one-time grant: `sudo tailscale set --operator=$USER`. If the publish is
+  refused, the command prints what Tailscale itself said rather than a generic
+  failure.
+
+  `kirocrew tailnet status` shows the three things that are independently
+  required — whether the setting is on, whether a MagicDNS name resolves right
+  now, and whether serve is actually pointing at this dashboard. Any one of them
+  being wrong looks identical from your phone. `kirocrew tailnet down` stops
+  publishing and leaves the setting alone, since the trusted origin is unreachable
+  without serve anyway.
+
+  Both directions refuse rather than clobber: `tailscale serve` **replaces**
+  whatever handler is at `443/`, and `off` removes it — so if you published
+  something else there by hand, `up` and `down` both stop and print the command
+  instead of overwriting or deleting your mapping.
+
+  The setting reads your own MagicDNS name from the local Tailscale daemon once at
+  startup and trusts `https://<that name>` as an origin, so you do **not** have to
+  look the name up and hand-write `dashboard.url`. Because it is resolved once, a
+  restart is needed after publishing — and if the daemon comes up *after* the
+  gateway, nothing is trusted until you restart again. If Tailscale is absent,
+  stopped, or MagicDNS is off it contributes nothing and the dashboard starts
+  exactly as before. It does not widen the network bind and does not change
+  authentication — every request still needs a dashboard session.
+
+  If you would rather do it by hand, the equivalent is:
+  ```bash
   tailscale serve --bg --https 443 http://127.0.0.1:5476
   kirocrew config set dashboard.tailscale.enabled true
   kirocrew restart
@@ -279,6 +357,38 @@ the same and the difference is the whole security story:
   Tailscale is absent, stopped, or MagicDNS is off it contributes nothing and the
   dashboard starts exactly as before. It does not widen the network bind and does
   not change authentication — every request still needs a dashboard session.
+
+  Optionally, opt in to **identity-pinned sessions** so the session pin binds to
+  your device's daemon-verified tailnet identity instead of the tunnel's shared
+  loopback address (and the audit trail names your login instead of
+  `127.0.0.1`):
+  ```json
+  {
+    "dashboard": {
+      "tailscale": {
+        "enabled": true,
+        "trust_identity": true,
+        "allowed_logins": ["you@example.com"],
+        "pin_scope": "node"
+      }
+    }
+  }
+  ```
+  `allowed_logins` is mandatory — `trust_identity` with an empty list is refused
+  at startup, and a verified peer whose login is not listed is denied. The
+  identity is resolved from the local `tailscale whois` daemon, never from a
+  header. When identity cannot be resolved (daemon stopped, Tailscale absent,
+  Windows — where resolution is not yet verified), a NEW login falls back to
+  the ordinary token path, while a session already pinned to a tailnet
+  identity is refused ("tailnet identity unverified") until the daemon
+  answers again — an unverified proxied request can never satisfy an
+  identity pin. `pin_scope: "node"` (the default) means a leaked session cookie is
+  usable only from the original device; `"login"` relaxes that to any device
+  carrying your Tailscale identity. An ACL-tagged node is always pinned at node
+  scope regardless of `pin_scope`, because every tagged device shares the
+  literal `tagged-devices` login. Identity trust does **not** unlock the
+  config-write or secret-reveal surfaces: a tailnet request is still a proxied
+  request and those stay read-only.
 - [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) does the opposite: it
   puts the service **on the public internet**, like cloudflared and ngrok. Use it
   only if you actually want public ingress.
@@ -319,7 +429,10 @@ service installer such as `cloudflared service install`).
 > indefinitely if the browser keeps rotating its refresh cookie. For the same
 > reason the audit trail records the caller as `127.0.0.1` rather than a client
 > address. Security Posture → Dashboard token auth reports which of the two states
-> you are actually in.
+> you are actually in. The one exception is `tailscale serve` **with
+> `trust_identity` configured** (see above): there the pin binds to the
+> daemon-verified peer identity and is per-client again. For cloudflared, ngrok,
+> and Funnel the pin is always shared.
 >
 > So the real control for a tunnelled dashboard is the provider's own auth layer
 > (Cloudflare Access, or `tailscale serve`, which keeps the service inside your
@@ -329,15 +442,16 @@ service installer such as `cloudflared service install`).
 > tunnelled browser that keeps rotating stays authenticated for as long as it
 > keeps being used.
 >
-> **`kirocrew logout` does not end that.** It revokes access sessions, but it does
-> not revoke refresh chains, so a browser still holding a valid refresh cookie can
-> obtain a fresh access cookie afterwards. Restarting the gateway does not end them
-> either: a refresh cookie is self-contained and signed with the persistent
-> `token_signing.key`. Only the dashboard's own sign-out
-> (`POST /api/auth/logout`) revokes a chain, and only the chain belonging to the
-> browser that calls it. **To cut off remote access, revoke at the provider's auth
-> layer or tear the tunnel down.** This is a known gap rather than intended
-> behaviour, so check the current release notes before relying on it.
+> **`kirocrew logout` ends those sessions.** It bumps a persisted revocation
+> generation that both access and refresh tokens embed, so established access
+> cookies and refresh chains alike are rejected on their next request. The
+> dashboard's own sign-out (`POST /api/auth/logout`) is the narrower control:
+> it revokes only the chain belonging to the browser that calls it. Restarting
+> the gateway ends nothing: cookies are self-contained, signed with the
+> persistent `token_signing.key`, and the revocation generation is reloaded
+> unchanged. **To cut off remote access entirely, also revoke at the provider's
+> auth layer or tear the tunnel down** — logout ends Kiro Crew's sessions, not
+> the tunnel itself.
 > Note also that config-write and secret-reveal endpoints refuse tunnelled requests:
 > `is_direct_local_request()` treats any request carrying `Forwarded` /
 > `X-Forwarded-*` / `X-Real-IP` as remote, and every standard tunnel and reverse
@@ -392,13 +506,15 @@ an error. `kirocrew token` defaults straight to `20h`. The 5-minute click window
 is not the session length: it only means a link left sitting in a DM overnight is
 dead and you need a fresh one.
 
-**When you do need a fresh link.** Three things end a refresh chain:
+**When you do need a fresh link.** Four things end a refresh chain:
 
 - **30 days idle** — nothing opened the dashboard inside the window.
 - **Signing out in the dashboard** (`POST /api/auth/logout`) — revokes that
-  browser's chain and denylists its access cookie. `kirocrew logout` is **not**
-  equivalent: it ends access sessions globally but leaves refresh chains live, so
-  a browser still holding one mints a fresh access cookie on its next refresh.
+  browser's chain and denylists its access cookie, leaving other browsers'
+  sessions alive.
+- **`kirocrew logout`** — ends **all** sessions globally, refresh chains
+  included: it bumps a persisted revocation generation that every access and
+  refresh token embeds, so tokens minted before the logout are rejected.
 - **Reuse detection** — a consumed refresh token replayed outside a 60-second
   same-IP grace window (`REFRESH_GRACE_SECS`) auto-revokes the entire chain
   (RFC 6819 §5.2.2.3). The frontend reports `refresh_chain_revoked` and stops
@@ -409,6 +525,66 @@ Chains persist in `~/.kiro/crew/refresh_chains.json` (mode `0600`), so they
 survive a gateway restart. On a gateway old enough to predate the feature,
 `GET /api/auth/me` returns 404; the frontend logs once and falls back to the
 20-hour URL-mint behaviour.
+
+### Install as an app (PWA)
+
+The dashboard ships a web app manifest
+([`website/public/manifest.json`](../../website/public/manifest.json)) and
+registers a service worker, so a phone can install it to the home screen and
+launch it without browser chrome. Nothing needs enabling.
+
+**HTTPS is what the service worker needs** — the install itself is looser.
+Service workers only register in a secure context, so over a plain
+`http://<host>:5476` from another device on the LAN you get the manifest but no
+service worker. On **iOS Safari** that still installs and still launches
+standalone; you only lose the offline shell described below. On **Android
+Chrome** the promoted install flow expects a secure origin, so use HTTPS there
+rather than relying on whatever manual shortcut path the current version offers.
+Any option in [Named HTTPS tunnel (phone)](#named-https-tunnel-phone) provides a
+secure context, and loopback counts as one too, which is why it works untunnelled
+on the gateway host itself.
+
+**On iOS Safari**, open the dashboard, tap Share → *Add to Home Screen*, then
+launch from the new icon. The manifest's `"display": "standalone"` is what drops
+Safari's address bar.
+
+**The service worker provides a limited offline shell.**
+[`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
+`/index.html`. For the paths below the worker declines to intercept, handing them
+straight to the network; every other same-origin `GET` **is** intercepted,
+network-first, but only the shell is ever cached:
+
+| Path | Why the worker declines it |
+|---|---|
+| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
+| `/assets/` | Vite content-hashed bundles — HTTP immutable caching already covers them |
+| `/vendor/`, `/fonts/`, `/sprites/` | Stable filenames, nothing to bust |
+| `/logo.png`, `/static/` | Gateway-served brand assets; caching them strands a broken image across a gateway restart |
+
+So offline you get the shell and its reconnecting state — and only while the
+browser's own HTTP cache still holds the hashed `/assets/` bundles, which the
+worker never caches. After a build that changes those hashes, the cached shell
+references bundle URLs nothing has downloaded yet. Sessions, history, and
+notifications are never served from disk.
+
+**Two current limits**, documented here so they read as boundaries rather than
+bugs:
+
+- **Notifications need the app open.** The dashboard raises them through the
+  foreground `Notification` constructor
+  ([`website/src/hooks/useNativeNotification.ts`](../../website/src/hooks/useNativeNotification.ts))
+  and there is no Web Push subscription, so nothing arrives while the installed
+  app is closed or backgrounded. On iOS that constructor is unavailable inside an
+  installed PWA at all — notifications there require
+  `ServiceWorkerRegistration.showNotification()`. Tracked in
+  [issue #2267](https://github.com/kirodotdev/KiroCrew/issues/2267); the Android
+  symptom is [issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828).
+- **Not edge-to-edge.** The shell sets neither `viewport-fit=cover` nor any
+  `env(safe-area-inset-*)` padding, so on a notched device the installed app
+  renders inside the safe area rather than filling the screen.
+
+Installing changes nothing about authentication: the app carries the same cookies
+the browser holds, on the same clocks as [Session duration](#session-duration).
 
 ### Persistent SSH tunnel on macOS (LaunchAgent)
 

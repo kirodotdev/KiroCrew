@@ -731,7 +731,12 @@ class TestNoCronsFlag:
         from kiro_crew.slack.gateway import run_gateway
 
         cfg = MagicMock()
-        with patch("kiro_crew.slack.gateway.GatewayOrchestrator") as mock_cls:
+        with (
+            # The aggregate-cgroup-ceiling apply shells out to systemctl —
+            # a host-service mutation the rootdir guard refuses; stub it.
+            patch("kiro_crew.slack.gateway.ensure_agents_slice_limits", return_value=True),
+            patch("kiro_crew.slack.gateway.GatewayOrchestrator") as mock_cls,
+        ):
             mock_orch = MagicMock()
             mock_orch.run = AsyncMock()
             mock_cls.return_value = mock_orch

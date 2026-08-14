@@ -29,14 +29,15 @@ const ALLOWED_CSS_VARS = new Set([
   '--bg', '--bg-accent', '--bg-elevated', '--bg-hover',
   '--card', '--card-fg', '--card-hl',
   '--panel', '--panel-strong', '--chrome',
-  '--text', '--text-strong', '--muted', '--muted-strong',
+  '--text', '--text-strong', '--muted', '--muted-strong', '--muted-fg',
   '--border', '--border-strong', '--border-hover',
-  '--accent', '--accent-hover', '--accent-subtle',
+  '--accent', '--accent-fg', '--accent-hover', '--accent-subtle',
   '--accent-glow', '--ring',
-  '--ok', '--ok-subtle', '--warn', '--warn-subtle',
-  '--danger', '--danger-subtle', '--info',
-  '--aim', '--aim-subtle',
+  '--ok', '--ok-fg', '--ok-subtle', '--warn', '--warn-fg', '--warn-subtle',
+  '--danger', '--danger-fg', '--danger-subtle', '--info', '--info-fg',
+  '--aim', '--aim-fg', '--aim-subtle',
   '--clarify', '--clarify-subtle',
+  '--json-key', '--json-str', '--json-num', '--json-bool',
   '--diff-add', '--diff-add-text',
   '--diff-del', '--diff-del-text',
   '--diff-hunk', '--diff-hunk-text', '--diff-meta-text',
@@ -68,15 +69,18 @@ export function buildCustomThemeCss(slug: string, theme: CustomThemeData): strin
       .map(([k, v]) => `${k}:${v}`)
       .join(';')
 
-  // Static defaults (not user-controlled)
+  // Static defaults (not user-controlled). Both font stacks read the role tokens
+  // first: this block sits on the same [data-theme] selector a pack's font CSS
+  // targets, so hardcoding the built-in families here would out-specify :root and
+  // strand a pack's own faces. An unfilled role falls through to Kiro Crew's stack.
   const darkDefaults =
-    '--font-body:var(--script-fallbacks),\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif;' +
-    '--mono:var(--script-fallbacks-mono),\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace;' +
+    '--font-body:var(--theme-font-sans, var(--script-fallbacks),\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif);' +
+    '--mono:var(--theme-font-mono, var(--script-fallbacks-mono),\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace);' +
     '--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;' +
     'color-scheme:dark;'
   const lightDefaults =
-    '--font-body:var(--script-fallbacks),\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif;' +
-    '--mono:var(--script-fallbacks-mono),\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace;' +
+    '--font-body:var(--theme-font-sans, var(--script-fallbacks),\'Space Grotesk\',-apple-system,BlinkMacSystemFont,sans-serif);' +
+    '--mono:var(--theme-font-mono, var(--script-fallbacks-mono),\'JetBrains Mono\',ui-monospace,SFMono-Regular,monospace);' +
     '--radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;' +
     'color-scheme:light;'
 
@@ -109,19 +113,29 @@ export const safeAssetPath = (p: string): string => {
 export const assetUrlValue = (slug: string, rel: string) => `url('${assetBase(slug)}/${rel}')`
 
 /**
- * Build @font-face rules + a --font-body override for an installed theme,
- * scoped to that theme's data-theme selectors. Returns '' when no declared face
- * is usable, so the caller injects no stylesheet at all.
+ * Build @font-face rules + the role font tokens for an installed theme, scoped to
+ * that theme's data-theme selectors. Returns '' when no declared face is usable,
+ * so the caller injects no stylesheet at all.
+ *
+ * A pack tags each face with a role: `sans` faces fill `--theme-font-sans`,
+ * `mono` faces fill `--theme-font-mono`. Those tokens are what the Font Family
+ * preference reads through, which is what keeps the routing honest — a Sans
+ * selection picks up the pack's proportional face, a Mono selection picks up its
+ * monospace face, System stays on the OS face because it reads no token, and an
+ * unfilled role falls back to Kiro Crew's own stack. Writing `--font-body`
+ * directly here instead would be unreachable: the preference applies it as an
+ * inline style on the same <html> element, and inline outranks any selector.
  *
  * `slug` must already be sanitized (see `buildCustomThemeCss`).
  */
 export function buildThemeFontCss(slug: string, theme: CustomThemeData): string {
   const fonts = theme.assets?.fonts || []
   const faces: string[] = []
-  // Track the family of the FIRST face that actually made it into the stylesheet
-  // — fonts[0] may have been skipped (bad family/src/format), in which case
-  // keying --font-body off it would name a family with no @font-face behind it.
-  let firstEmittedFamily = ''
+  // Track, per role, the family of the FIRST face that actually made it into the
+  // stylesheet — an earlier entry may have been skipped (bad family/src/format),
+  // in which case keying a token off it would name a family with no @font-face
+  // behind it.
+  const firstEmitted: { sans: string; mono: string } = { sans: '', mono: '' }
   for (const f of fonts) {
     const fam = _safeFamily(f.family || '')
     const file = (f.src || '').replace(/[^a-z0-9./_-]/gi, '')
@@ -130,19 +144,28 @@ export function buildThemeFontCss(slug: string, theme: CustomThemeData): string 
     if (!fmt) continue
     const weight = typeof f.weight === 'number' && f.weight >= 100 && f.weight <= 900 ? f.weight : 400
     const style = f.style === 'italic' ? 'italic' : 'normal'
+    const role = f.role === 'mono' ? 'mono' : 'sans'
     faces.push(
       `@font-face{font-family:'${fam}';` +
         `src:url('${assetBase(slug)}/${file}') format('${fmt}');` +
         `font-weight:${weight};font-style:${style};font-display:swap;}`
     )
-    if (!firstEmittedFamily) firstEmittedFamily = fam
+    if (!firstEmitted[role]) firstEmitted[role] = fam
   }
   if (!faces.length) return ''
-  const primary = firstEmittedFamily
+  const tokens: string[] = []
+  if (firstEmitted.sans) {
+    tokens.push(`--theme-font-sans:'${firstEmitted.sans}',var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;`)
+  }
+  if (firstEmitted.mono) {
+    tokens.push(`--theme-font-mono:'${firstEmitted.mono}',var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;`)
+  }
+  if (!tokens.length) return faces.join('\n')
   return (
     faces.join('\n') +
     `\n[data-theme="custom-${slug}-dark"],[data-theme="custom-${slug}-light"]{` +
-    `--font-body:'${primary}',var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;}`
+    tokens.join('') +
+    '}'
   )
 }
 
@@ -248,10 +271,120 @@ function _declDenied(block: string): boolean {
   return _DECL_DENY_RE.test(block) || _DECL_DENY_RE.test(_decodeCssEscapes(block))
 }
 
-export function scopeOverridesCss(css: string): { css: string; kept: number; dropped: number } {
+// Mirror of the backend font-pin denylist (`_overrides_font_violation`): a pack's
+// fonts come from theme.json's role-tagged `fonts` list, never from overrides.css.
+// A pin here lands the font on a surface BELOW where the Font Family preference is
+// applied, so the user's Mono/System choice would silently stop working. Install
+// rejects such a pack outright; dropping the rule at runtime too keeps a pack that
+// never went through that check (hand-edited store, pre-upgrade install) from
+// taking the preference away.
+const _FONT_PIN_PROPS = ['--font-body', '--mono', '--theme-font-sans', '--theme-font-mono']
+// Surfaces broad enough that a font-family on them shadows the whole UI. Narrower
+// ones (.topbar, .code-block, button.primary) stay free to set their own face.
+const _BROAD_FONT_SURFACES = new Set(['body', 'html', '*', ':root'])
+
+// Quoted spans are removed before declarations are parsed, so a `;` or `:` inside
+// a string cannot desync the split — the same property the backend's string-aware
+// tokenizer has.
+const _CSS_STRING_RE = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g
+
+/**
+ * The property names a declaration block declares, normalized the way a browser
+ * normalizes them.
+ *
+ * Property NAMES only, not the raw block: a regex over the whole block also
+ * matches text inside a VALUE — a decoded string such as `" \66 ont:"` reads as a
+ * declaration — which would drop a legitimate rule and split this layer from the
+ * install-time one. Decoding runs BEFORE the lowercase pass because `\4F` decodes
+ * to an uppercase letter and property names are ASCII case-insensitive, so
+ * lowercasing first leaves `fOnt` unmatched while the browser applies it as `font`.
+ *
+ * Only a top-level `;` ends a declaration. A `;` nested in a function — the common
+ * shape being a data URL, `--label:url(data:text/plain;base64,…)` — belongs to the
+ * value, and treating it as a separator fabricates a declaration out of the tail,
+ * which drops a rule the backend's own paren-aware tokenizer accepts.
+ */
+function _declaredProps(block: string): string[] {
+  const out: string[] = []
+  const src = block.replace(_CSS_STRING_RE, '""')
+  let depth = 0
+  let buf = ''
+  const flush = () => {
+    // The FIRST colon separates name from value; a property name cannot contain one.
+    const colon = buf.indexOf(':')
+    if (colon >= 0) out.push(_decodeCssEscapes(buf.slice(0, colon)).trim().toLowerCase())
+    buf = ''
+  }
+  for (const ch of src) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth > 0) depth--
+    } else if (ch === ';' && depth === 0) {
+      flush()
+      continue
+    }
+    buf += ch
+  }
+  flush()
+  return out
+}
+
+function _fontPinDenied(prelude: string, block: string): boolean {
+  const props = _declaredProps(block)
+  if (props.some((p) => _FONT_PIN_PROPS.includes(p))) return true
+  // `font` as well as `font-family`: the shorthand sets the family, so matching
+  // only the longhand leaves the guarantee one keyword away from a bypass. The
+  // other font-* longhands (font-weight, font-size, …) set no family and stay
+  // legitimate theming, which exact matching preserves.
+  if (!props.some((p) => p === 'font' || p === 'font-family')) return false
+  return prelude.split(',').some((sel) => {
+    const base = sel
+      .trim()
+      .toLowerCase()
+      .replace(/^(?:html)?\s*\[data-theme[^\]]*\]\s*/i, '')
+      .trim()
+    // The pseudo strip only applies when something remains in front of it —
+    // otherwise it would consume a bare `:root`, itself a broad surface.
+    const withoutPseudo = base.replace(/::?[a-z-]+(?:\([^)]*\))?$/, '').trim()
+    return _BROAD_FONT_SURFACES.has(withoutPseudo || base)
+  })
+}
+
+/**
+ * A human-readable identifier for one dropped rule, for the Settings notice and
+ * the console diagnostic. The selector is what a pack author greps their own
+ * overrides.css for, so it is reported verbatim (trimmed to one line and capped —
+ * this is untrusted pack text headed for the DOM as a React text node, so length
+ * is the only concern). A font pin also names the offending property, because the
+ * selector alone (`body`) does not say what was wrong with the rule.
+ */
+const _DROPPED_ID_MAX = 80
+
+function _droppedRuleId(prelude: string, block: string, fontPin: boolean): string {
+  const sel = prelude.replace(/\s+/g, ' ').trim()
+  let id = sel
+  if (fontPin) {
+    const prop = _declaredProps(block).find(
+      (p) => _FONT_PIN_PROPS.includes(p) || p === 'font' || p === 'font-family',
+    )
+    if (prop) id = `${sel} { ${prop} }`
+  }
+  return id.length > _DROPPED_ID_MAX ? `${id.slice(0, _DROPPED_ID_MAX - 1)}…` : id
+}
+
+export function scopeOverridesCss(css: string): {
+  css: string
+  kept: number
+  dropped: number
+  /** One entry per dropped rule (selector, plus the offending property for a
+   * font pin) so the drop can be REPORTED, not merely counted. Same length as
+   * `dropped`. */
+  droppedRules: string[]
+} {
   const src = css.replace(/\/\*[\s\S]*?\*\//g, '') // strip comments
   let kept = 0
   let dropped = 0
+  const droppedRules: string[] = []
 
   const walk = (input: string): string => {
     const out: string[] = []
@@ -322,14 +455,17 @@ export function scopeOverridesCss(css: string): { css: string; kept: number; dro
           // unaffected — their declarations already passed the identical check at
           // install. Closes the selector-allowlist / declaration-fail-open
           // asymmetry pending the #316 CSSOM consolidation.
-          if (_declDenied(block)) {
+          const fontPin = _fontPinDenied(prelude, block)
+          if (_declDenied(block) || fontPin) {
             dropped++
+            droppedRules.push(_droppedRuleId(prelude, block, fontPin))
           } else {
             kept++
             out.push(`${prelude}{${block}}`)
           }
         } else {
           dropped++
+          droppedRules.push(_droppedRuleId(prelude, block, false))
         }
       } else {
         buf += ch
@@ -339,7 +475,7 @@ export function scopeOverridesCss(css: string): { css: string; kept: number; dro
     return out.join('\n')
   }
 
-  return { css: walk(src), kept, dropped }
+  return { css: walk(src), kept, dropped, droppedRules }
 }
 
 // ── §4.2 pack-relative url() rewriting ──

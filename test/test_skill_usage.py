@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
+from kiro_crew import platform_compat, skill_usage
 from kiro_crew.skill_usage import (
     _MAX_AGE_SECS,
     SkillUsageLedger,
@@ -83,3 +85,69 @@ class TestSkillUsageLedger:
     def test_flush_noop_when_clean(self, tmp_path):
         led = _ledger(tmp_path)
         assert led.flush() is False  # nothing recorded → nothing to write
+
+
+def _quiet(tmp_path) -> SkillUsageLedger:
+    """A ledger whose debounce is armed, so the explicit flush is the only writer.
+
+    ``_last_flush`` starts at 0.0, so the first ``record`` would spawn the
+    background flush thread and race the assertions below — it snapshots under
+    the lock, so it can win the rename carrying a different tally.
+    """
+    led = _ledger(tmp_path)
+    led._last_flush = time.time()
+    return led
+
+
+class TestPersistenceWithoutPosixFchmod:
+    """The ledger has to persist where ``os.fchmod`` does not exist.
+
+    The attribute is hidden rather than these tests being confined to Windows, so
+    the guard runs on the POSIX matrix that carries most of CI. ``IS_POSIX`` is
+    flipped with it because ``fchmod_safe`` only reaches ``os.fchmod`` on POSIX:
+    deleting the name alone would exercise a combination no platform is ever in.
+    """
+
+    @staticmethod
+    def _as_windows(monkeypatch) -> None:
+        monkeypatch.delattr(os, "fchmod", raising=False)
+        assert not hasattr(os, "fchmod"), "precondition: os.fchmod must be hidden"
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+    def test_flush_persists_when_os_fchmod_is_absent(self, tmp_path, monkeypatch):
+        self._as_windows(monkeypatch)
+        led = _quiet(tmp_path)
+        led.record("x")
+        led.record("x")
+
+        assert led.flush() is True, "the tally must reach disk, not be dropped"
+        # Assert the RELOAD, not the in-memory tally: a fresh ledger is what the
+        # ranking consults on the next run, and only that proves persistence.
+        assert _ledger(tmp_path).score("x")[0] == 2.0
+        # Cleared before the write and left cleared on success — a re-armed flag
+        # here would mean a successful write was recorded as failed.
+        assert led._dirty is False
+
+    def test_failed_write_rearms_dirty_so_the_next_flush_retries(self, tmp_path, monkeypatch):
+        self._as_windows(monkeypatch)
+        real = skill_usage.atomic_write
+        attempts: list[object] = []
+
+        def flaky(path, content, **kwargs):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise OSError("transient write failure")
+            return real(path, content, **kwargs)
+
+        monkeypatch.setattr(skill_usage, "atomic_write", flaky)
+        led = _quiet(tmp_path)
+        led.record("x")
+
+        assert led.flush() is False
+        assert led._dirty is True, "a failed write must re-arm, or the tally is lost"
+        assert not (tmp_path / "skill-usage.json").exists()
+
+        assert led.flush() is True
+        assert len(attempts) == 2
+        assert _ledger(tmp_path).score("x")[0] == 1.0

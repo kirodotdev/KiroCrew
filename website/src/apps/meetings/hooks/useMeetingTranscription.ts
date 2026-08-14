@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { MeetingsApiError, meetingsApi } from '../api'
+import { MeetingsApiError, meetingsApi, type TranscriptSegment } from '../api'
 import { reportIfMicDenied } from '../../../hooks/mic'
 
 /** Feature detection mirroring `useStreamingStt` — the dashboard's own hook. */
@@ -60,10 +60,59 @@ const CLOSE_GRACE_MS = 8_000
  */
 const DISPATCH_RETRY_DELAYS_MS = [400, 1_200, 3_000]
 
+/**
+ * How much of the transcript the live caption may carry, in characters.
+ *
+ * The caption element is two lines tall, so this only has to be the right order
+ * of magnitude — the hard bound on the rendered height is the `line-clamp-2` in
+ * `BroadcastBar.tsx`. What this constant guarantees is that the text inside
+ * those lines stays RECENT.
+ */
+export const CAPTION_WINDOW_CHARS = 240
+/** The durable transcript owns history; the caption needs only a bounded tail. */
+export const CAPTION_FINALS_LIMIT = 64
+
+/**
+ * The recent tail of the transcript, for the "Heard: …" caption.
+ *
+ * Trimming from the FRONT is the entire point. The finals array accumulates for
+ * the whole meeting, and the caption used to receive all of it — which read as a
+ * caption that froze on the meeting's opening sentence and never updated again,
+ * because the element clipped its overflow with `text-overflow: ellipsis` and
+ * that shows a string's HEAD. A live caption has to show the newest speech, so
+ * the oldest is what gets dropped.
+ *
+ * Whole segments are kept wherever possible so the caption never begins
+ * mid-sentence; only a single over-long segment is cut, and then at a word
+ * boundary.
+ */
+export function captionWindow(finals: readonly string[], partial = ''): string {
+  const segments = [...finals, partial].map((s) => s.trim()).filter(Boolean)
+  if (segments.length === 0) return ''
+
+  const kept: string[] = []
+  let length = 0
+  for (let i = segments.length - 1; i >= 0; i--) {
+    // +1 for the space this segment would be joined with.
+    const cost = segments[i].length + (kept.length === 0 ? 0 : 1)
+    if (length + cost > CAPTION_WINDOW_CHARS) break
+    kept.unshift(segments[i])
+    length += cost
+  }
+  if (kept.length > 0) return kept.join(' ')
+
+  // Even the newest segment alone overflows the window: keep its tail, cut at a
+  // word boundary so no word is split mid-token. A segment with no spaces at all
+  // is returned as-is rather than mangled.
+  const tail = segments[segments.length - 1].slice(-CAPTION_WINDOW_CHARS)
+  const firstSpace = tail.indexOf(' ')
+  return firstSpace === -1 ? tail : tail.slice(firstSpace + 1)
+}
+
 interface Options {
   /** The meeting whose dispatch endpoint receives each final segment. */
   meetingId: string
-  /** Called with the live caption (accumulated finals + the current partial). */
+  /** Called with the recent tail of the transcript (see `captionWindow`). */
   onCaption: (text: string) => void
   /**
    * Called once per committed final segment, BEFORE it is dispatched.
@@ -79,11 +128,22 @@ interface Options {
    * `void` keeps the caption-only callers working without an opt-in.
    */
   onFinal?: (text: string) => string | boolean | void
+  /** Called with the recognizer's in-flight text; never persisted. */
+  onPartial?: (text: string) => void
+  /** Called after the backend has durably accepted a final segment. */
+  onCommitted?: (segment: TranscriptSegment) => void
   /** Called with a user-facing message when transcription cannot run. */
   onError?: (message: string) => void
 }
 
-export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError }: Options) {
+export function useMeetingTranscription({
+  meetingId,
+  onCaption,
+  onFinal,
+  onPartial,
+  onCommitted,
+  onError,
+}: Options) {
   const [active, setActive] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
@@ -92,6 +152,7 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
   const lastFrameRef = useRef(0)
   const finalsRef = useRef<string[]>([])
   const stoppingRef = useRef(false)
+  const dispatchBlockedRef = useRef(false)
   /** True from entering `start()` until the socket is live (or it gave up). */
   const startingRef = useRef(false)
 
@@ -99,10 +160,18 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
   // latest caller-supplied callbacks, not the ones captured at start().
   const onCaptionRef = useRef(onCaption)
   const onFinalRef = useRef(onFinal)
+  const onPartialRef = useRef(onPartial)
+  const onCommittedRef = useRef(onCommitted)
   const onErrorRef = useRef(onError)
   onCaptionRef.current = onCaption
   onFinalRef.current = onFinal
+  onPartialRef.current = onPartial
+  onCommittedRef.current = onCommitted
   onErrorRef.current = onError
+
+  useEffect(() => {
+    dispatchBlockedRef.current = false
+  }, [meetingId])
 
   /**
    * Send one final segment to the agents, retrying a transient failure.
@@ -117,11 +186,23 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
    */
   const dispatchWithRetry = useCallback(
     async (text: string): Promise<void> => {
+      if (dispatchBlockedRef.current) return
       for (let attempt = 0; ; attempt += 1) {
         try {
-          await meetingsApi.dispatch(meetingId, text)
+          const response = await meetingsApi.dispatch(meetingId, text)
+          onCommittedRef.current?.(response.segment)
           return
         } catch (error) {
+          if (
+            error instanceof MeetingsApiError
+            && error.status === 413
+            && error.code === 'transcript_too_large'
+          ) {
+            dispatchBlockedRef.current = true
+            onPartialRef.current?.('')
+            onErrorRef.current?.('transcript_full')
+            return
+          }
           // Retry ONLY a failure the server explicitly reported. A
           // `MeetingsApiError` carries a status, which means a response arrived and
           // the request was rejected — safe to send again.
@@ -167,6 +248,7 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
     // start that dies partway cannot leave the flag stuck and block every later
     // attempt for the rest of the meeting.
     startingRef.current = false
+    onPartialRef.current?.('')
     setActive(false)
   }, [clearWatchdog])
 
@@ -232,16 +314,20 @@ export function useMeetingTranscription({ meetingId, onCaption, onFinal, onError
       }
       if (msg.type === 'partial') {
         lastPartial = msg.text || ''
-        const prefix = finalsRef.current.join(' ')
-        onCaptionRef.current(prefix ? `${prefix} ${lastPartial}`.trim() : lastPartial)
+        onPartialRef.current?.(lastPartial)
+        onCaptionRef.current(captionWindow(finalsRef.current, lastPartial))
         return
       }
       if (msg.type === 'final') {
         const text = (msg.text || '').trim()
         lastPartial = ''
+        onPartialRef.current?.('')
         if (!text) return
         finalsRef.current.push(text)
-        onCaptionRef.current(finalsRef.current.join(' '))
+        if (finalsRef.current.length > CAPTION_FINALS_LIMIT) {
+          finalsRef.current.splice(0, finalsRef.current.length - CAPTION_FINALS_LIMIT)
+        }
+        onCaptionRef.current(captionWindow(finalsRef.current))
         // The caller's duplicate check gates the dispatch: an overlapping final
         // still belongs in the caption (above), but must not be sent to the
         // agents a second time.

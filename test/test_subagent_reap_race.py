@@ -228,9 +228,19 @@ async def test_cancel_during_subagent_done_still_delivers_once():
     mgr._sessions.reset = _noop_reset
     delivered: list[str] = []
 
+    # Deterministic rendezvous instead of a wall-clock bet: `entered` tells the
+    # test exactly when the shielded report is in flight (so cancelling before
+    # that would race a step that hasn't started, and cancelling after it
+    # completes wouldn't be a cancel-mid-flight at all), and `release` lets the
+    # test decide exactly when the shielded report is allowed to finish, so its
+    # completion can be asserted separately from the awaiter's cancellation.
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
     async def _slow_event(name, _info, _payload=None):
         if name == "subagent_done":
-            await asyncio.sleep(0.05)
+            entered.set()
+            await release.wait()
 
     async def _record_delivery(_info):
         delivered.append("done")
@@ -241,12 +251,14 @@ async def test_cancel_during_subagent_done_still_delivers_once():
     task = asyncio.ensure_future(
         mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped")
     )
-    await asyncio.sleep(0.01)  # let it enter the shielded report
+    await asyncio.wait_for(entered.wait(), timeout=2)  # now inside the shielded report
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # The shielded report survives its awaiter's cancellation.
+    # The shielded report survives its awaiter's cancellation -- release it
+    # and confirm it still completes delivery.
+    release.set()
     await asyncio.wait_for(
         asyncio.gather(*[t for t in mgr._report_tasks if not t.done()]), timeout=2
     )

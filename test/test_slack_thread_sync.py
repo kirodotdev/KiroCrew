@@ -1,6 +1,7 @@
 """Tests for Live Slack thread sync (bidirectional mirroring)."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -110,6 +111,38 @@ class TestDashboardStateLinkSlack:
         assert state._slots["s1"]._slack_thread_ts == "111.000"
         assert state._slots["s2"]._slack_thread_ts == "222.000"
 
+    def test_thread_handoff_persists_inside_one_batch(self, tmp_path):
+        """Both halves of a thread handoff land in a single session-map write.
+
+        Taking a thread from another slot clears the previous owner's link and
+        claims it here. Each of those rewrites the whole map, so as two separate
+        writes the pair is separately interruptible: the thread ends up with no
+        owner (clear landed, claim did not) or with two (the reverse).
+        """
+        state = _make_state(tmp_path)
+        depth = {"n": 0}
+        depth_at_write: list[int] = []
+
+        @contextmanager
+        def batched_save():
+            depth["n"] += 1
+            try:
+                yield
+            finally:
+                depth["n"] -= 1
+
+        state.sessions.batched_save = batched_save
+        state.sessions.set_slack_link = MagicMock(
+            side_effect=lambda *a, **k: depth_at_write.append(depth["n"])
+        )
+        state.get_or_create_slot("s1")
+        state.get_or_create_slot("s2")
+        state.link_slack("s1", "111.000", "C1")
+        # s2 takes the thread s1 holds: clear s1's persisted link, claim for s2.
+        state.link_slack("s2", "111.000", "C1")
+        assert len(depth_at_write) == 3
+        assert depth_at_write == [1, 1, 1]
+
 
 # -- Unit tests: slot restore with slack link --
 
@@ -165,6 +198,10 @@ class TestChannelNeutralSlotLinks:
                 "target": "…767244",
                 "direction": "origin",
                 "live": True,
+                # Present on EVERY row, origin included: the conversation a
+                # session was born in can be disconnected too, so the row needs
+                # a state to render even though nothing here has paused it.
+                "paused": False,
             }
         ]
 
@@ -187,6 +224,7 @@ class TestChannelNeutralSlotLinks:
                 "target": "…767244",
                 "direction": "out",
                 "live": True,
+                "paused": False,
             }
         ]
 

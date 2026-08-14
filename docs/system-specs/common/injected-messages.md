@@ -137,9 +137,14 @@ stop, and the user's Stop button remains the hard breaker.
 
 ## Auto-nudge cycle
 
-The auto-nudge service arms an idle timer when a bound slot's turn completes
-(`HOOK_EVENT_STOP`). If no user input arrives within the configured idle window it
-injects the nudge as the next turn into the same slot:
+The auto-nudge service runs each bound slot's loop against a persistent deadline
+(`next_due_ts`, one full interval after the loop's last cycle). A user message
+cancels the pending fire — a nudge never races a human turn — but does not push
+the deadline back: when the slot's turn completes (`HOOK_EVENT_STOP`) the timer
+resumes toward the same deadline, firing shortly after the turn if it already
+passed. Only the loop's own delivered cycles start a fresh interval (measured
+from the nudge turn's end). When the timer elapses it injects the nudge as the
+next turn into the same slot:
 
 ```
 [auto-nudge cycle <N>]

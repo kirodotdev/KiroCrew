@@ -71,7 +71,7 @@ export function HowItWorks() {
   return (
     <section className="max-w-[800px] mx-auto px-6 pt-24 pb-24" id="how-it-works">
       <FadeUp><h2 className="text-center text-4xl md:text-5xl font-bold mb-3 font-space">Up and running in 3 minutes</h2></FadeUp>
-      <FadeUp delay={0.1}><p className="text-center text-slate-500 dark:text-slate-400 text-lg mb-16 font-space">Prerequisites: Python 3.10+, Node.js 18+, kiro-cli</p></FadeUp>
+      <FadeUp delay={0.1}><p className="text-center text-slate-500 dark:text-slate-400 text-lg mb-16 font-space">Prerequisites: Python 3.10+, Node.js 22+, kiro-cli</p></FadeUp>
       <div className="flex flex-col gap-6">
         {steps.map((s, i) => (
           <FadeUp key={s.n} delay={i * 0.15}>

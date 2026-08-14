@@ -6,10 +6,22 @@
  * these source lines" possible. Fenced code is the one multi-line block.
  */
 import type { CSSProperties, ReactNode } from 'react'
-import { ACCENT, ACCENT_BG, FONT_MONO, RAIL_X } from './constants'
+import {
+  ACCENT,
+  ACCENT_BG,
+  FONT_MONO,
+  HEADING_FG,
+  HEADING_RAIL,
+  HEADING_RAIL_GAP,
+  HEADING_RAIL_INDENT,
+  HEADING_RULE_SOFT,
+  HEADING_RULE_STRONG,
+  RAIL_X,
+} from './constants'
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
-import { FM_RE, LIST_MARKER_RE, indentPx } from './utils'
+import { FM_RE, LIST_MARKER_RE, indentPx, parseTable } from './utils'
+import type { ParsedTable, TableAlign } from './utils'
 import type { EditRange } from './types'
 import { urlTransform } from '../../utils/urlTransform'
 
@@ -87,6 +99,73 @@ export function inline(text: string, key: number | string): ReactNode[] {
 
 const HEADING_SIZES = ['1.802em', '1.602em', '1.424em', '1.266em', '1.125em', '1em']
 
+const CELL_PAD = '5px 8px'
+const CELL_BORDER = '1px solid var(--border)'
+
+/**
+ * Render a parsed table.
+ *
+ * Cells wrap rather than being held on one line: a note's tables carry prose,
+ * and inside an 800px reading column nowrap would push almost every one of them
+ * into horizontal scrolling. The wrapper still scrolls, so a genuinely wide
+ * table stays reachable instead of overflowing the column.
+ */
+function tableNode(t: ParsedTable, key: number): ReactNode {
+  const cell = (align: TableAlign, first: boolean): CSSProperties => ({
+    padding: CELL_PAD,
+    textAlign: align ?? 'left',
+    verticalAlign: 'top',
+    ...(first ? null : { borderLeft: CELL_BORDER }),
+  })
+  return (
+    <div
+      style={{
+        overflowX: 'auto',
+        border: CELL_BORDER,
+        borderRadius: '6px',
+        margin: '6px 0',
+      }}
+    >
+      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        <thead>
+          <tr>
+            {t.header.map((text, c) => (
+              <th
+                key={c}
+                style={{
+                  ...cell(t.align[c], c === 0),
+                  fontWeight: 600,
+                  background: 'var(--card)',
+                  borderBottom: CELL_BORDER,
+                }}
+              >
+                {inline(text, `${key}-h${c}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {t.rows.map((row, r) => (
+            <tr key={r}>
+              {row.map((text, c) => (
+                <td
+                  key={c}
+                  style={{
+                    ...cell(t.align[c], c === 0),
+                    ...(r === 0 ? null : { borderTop: CELL_BORDER }),
+                  }}
+                >
+                  {inline(text, `${key}-${r}-${c}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export interface PreviewProps {
   content: string
   onToggleCheckbox: (line: number) => void
@@ -115,6 +194,8 @@ export function Preview({
   let inCode = false
   let codeBuf: string[] = []
   let codeStart = 0
+  /** Last line swallowed by a multi-line block, so the loop skips past it. */
+  let skipTo = -1
 
   // Stop block-edit activation for interactive children (checkboxes, links).
   const shield = (e: React.MouseEvent) => e.stopPropagation()
@@ -197,6 +278,10 @@ export function Preview({
   }
 
   lines.forEach((line, idx) => {
+    // Lines already consumed by a multi-line block (a table's delimiter row and
+    // body) render as part of that block, not again on their own.
+    if (idx <= skipTo) return
+
     // Any line that is not a list item ends the list, so the rails stop there.
     // Checked up front because headings and code fences return early below.
     if (!LIST_MARKER_RE.test(line)) stack = []
@@ -233,6 +318,20 @@ export function Preview({
     }
     if (inCode) {
       codeBuf.push(line)
+      return
+    }
+
+    // A table is the second multi-line block: clicking it opens the whole
+    // source — header, delimiter and rows — because editing one row of pipes in
+    // isolation from the header it aligns with is not a useful gesture. Enter
+    // stays a literal newline there, so it adds a row instead of splitting the
+    // block, and the editor uses the mono face that keeps the pipes lined up.
+    const table = parseTable(lines, idx)
+    if (table) {
+      skipTo = table.end
+      out.push(
+        blk(idx, table.end, tableNode(table, idx), { fontFamily: FONT_MONO }, { split: false }),
+      )
       return
     }
 
@@ -280,13 +379,39 @@ export function Preview({
         fontSize: HEADING_SIZES[n - 1],
         fontWeight: n <= 2 ? 700 : 600,
         lineHeight: 1.25,
-        margin: n <= 2 ? '14px 0 6px' : '10px 0 4px',
+        color: HEADING_FG,
+        marginTop: n <= 2 ? '14px' : '10px',
+        marginRight: 0,
+        marginBottom: n <= 2 ? '6px' : '4px',
+        // The rail hangs in the column gutter so heading text stays flush with
+        // body text; h1/h2 rule underneath instead and need no offset.
+        marginLeft: n <= 2 ? 0 : `-${HEADING_RAIL_INDENT}px`,
+      }
+      // The accent is chrome, never the text colour — see HEADING_FG.
+      // Longhand rather than the `border-bottom` shorthand on purpose: a
+      // shorthand whose value contains color-mix() is dropped wholesale by a
+      // strict CSS parser (jsdom does exactly that), losing the whole rule
+      // rather than just its colour.
+      if (n <= 2) {
+        style.borderBottomWidth = n === 1 ? '2px' : '1px'
+        style.borderBottomStyle = 'solid'
+        style.borderBottomColor = n === 1 ? HEADING_RULE_STRONG : HEADING_RULE_SOFT
+        style.paddingBottom = n === 1 ? '4px' : '3px'
+      } else {
+        style.borderLeftWidth = '2px'
+        style.borderLeftStyle = 'solid'
+        style.borderLeftColor = HEADING_RAIL
+        style.paddingLeft = `${HEADING_RAIL_GAP}px`
       }
       out.push(
+        // The editor inherits the heading's typography AND colour so the text
+        // does not shift shade on click; the chrome is rendered-only, which is
+        // what distinguishes the two states.
         blk(idx, idx, <Tag style={style}>{inline(head[2], idx)}</Tag>, {
           fontSize: style.fontSize,
           fontWeight: style.fontWeight,
           lineHeight: style.lineHeight,
+          color: style.color,
         }),
       )
       return
@@ -385,6 +510,9 @@ export function Preview({
 
   return (
     <div
+      // Carries the heading accent custom properties declared in `styles.ts`;
+      // without it the chrome resolves to nothing.
+      className="mdnb-note"
       style={{
         fontSize: '13px',
         lineHeight: 1.55,

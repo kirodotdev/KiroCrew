@@ -2,28 +2,40 @@ import * as React from 'react'
 import { cn } from '../../lib/utils'
 
 /**
- * shadcn/ui `table`, themed to this repo's tokens rather than shadcn's stock
- * zinc palette — the same treatment ui/select.tsx and ui/dropdown-menu.tsx got.
+ * shadcn/ui `table`, kept at UPSTREAM typography and spacing.
+ *
+ * Only the COLOURS are re-pointed at this repo's tokens — shadcn's stock palette
+ * names (`--foreground`, `--muted`, `--muted-foreground`) do not exist here, so
+ * every one of them would render as an unstyled fallback. The mapping is
+ * mechanical:
+ *
+ *   text-foreground        -> text-text-strong
+ *   text-muted-foreground  -> text-muted
+ *   hover:bg-muted/50      -> hover:bg-bg-hover
+ *   bg-muted (selected)    -> bg-bg-hover
+ *   bg-muted/50 (footer)   -> bg-bg-elevated
+ *   border                 -> border-border
+ *
+ * Everything else is upstream verbatim, including the two bits this repo used to
+ * drop and now keeps:
+ *
+ *   - `whitespace-nowrap` on `TableHead` / `TableCell`. Upstream never wraps a
+ *     cell; a wide table scrolls horizontally in the wrapper instead. That is a
+ *     real behavioural choice, not decoration — it trades "no cell ever folds
+ *     into four lines" for "the table can extend past the viewport".
+ *   - `[&:has([role=checkbox])]:pr-0` and `[&>[role=checkbox]]:translate-y-[2px]`,
+ *     upstream's padding + 2px optical fix for a checkbox column.
+ *
+ * `data-[state=selected]` is also kept: a caller that marks a row selected gets
+ * the variant instead of hand-rolling its own background class.
  *
  * Pure markup plus `cn()`: unlike the other components in this directory there
  * is no Radix primitive behind a table, so adding it costs no new dependency.
  *
- * Three deliberate deviations from upstream shadcn:
- *
- *   - Each `forwardRef` takes a NAMED function expression, so React derives the
- *     devtools name from it. Upstream assigns `X.displayName = 'X'`, and every
- *     sibling in this directory instead borrows the name from the Radix
- *     primitive it wraps (`SelectPrimitive.Trigger.displayName`). A table has no
- *     primitive to borrow from, and a bare `'Table'` literal trips the i18n
- *     added-lines gate, which cannot tell a debug name from user copy. Naming
- *     the function gets the same devtools output with no literal and no
- *     lint exemption.
- *   - `TableRow` drops `data-[state=selected]`. Nothing in this repo drives a
- *     selection state on a row, and a dangling variant reads as a feature that
- *     exists.
- *   - The wrapper is `overflow-x-auto`, not `overflow-auto`. `overflow-auto`
- *     establishes a scroll container on BOTH axes, which clips any popover or
- *     tooltip a cell renders instead of letting it escape the table.
+ * One unavoidable deviation from upstream: each `forwardRef` takes a NAMED
+ * function expression so React derives the devtools name from it. Upstream
+ * assigns `X.displayName = 'X'`, and a bare `'Table'` literal trips the i18n
+ * added-lines gate, which cannot tell a debug name from user copy.
  */
 
 const Table = React.forwardRef<
@@ -34,7 +46,7 @@ const Table = React.forwardRef<
     <div className="relative w-full overflow-x-auto">
       <table
         ref={ref}
-        className={cn('w-full caption-bottom border-collapse text-[13px]', className)}
+        className={cn('w-full caption-bottom text-sm', className)}
         {...props}
       />
     </div>
@@ -62,7 +74,7 @@ const TableFooter = React.forwardRef<
   return (
     <tfoot
       ref={ref}
-      className={cn('border-t border-border bg-bg-accent font-medium [&>tr]:last:border-b-0', className)}
+      className={cn('border-t border-border bg-bg-elevated font-medium [&>tr]:last:border-b-0', className)}
       {...props}
     />
   )
@@ -75,7 +87,10 @@ const TableRow = React.forwardRef<
   return (
     <tr
       ref={ref}
-      className={cn('border-b border-border transition-colors hover:bg-bg-hover', className)}
+      className={cn(
+        'border-b border-border transition-colors hover:bg-bg-hover data-[state=selected]:bg-bg-hover',
+        className,
+      )}
       {...props}
     />
   )
@@ -89,7 +104,8 @@ const TableHead = React.forwardRef<
     <th
       ref={ref}
       className={cn(
-        'h-9 px-3 text-left align-middle text-[10px] font-semibold uppercase tracking-wider text-muted',
+        'h-10 whitespace-nowrap px-2 text-left align-middle font-medium text-text-strong',
+        '[&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
         className,
       )}
       {...props}
@@ -101,14 +117,24 @@ const TableCell = React.forwardRef<
   HTMLTableCellElement,
   React.TdHTMLAttributes<HTMLTableCellElement>
 >(function TableCell({ className, ...props }, ref) {
-  return <td ref={ref} className={cn('px-3 py-2.5 align-middle', className)} {...props} />
+  return (
+    <td
+      ref={ref}
+      className={cn(
+        'whitespace-nowrap p-2 align-middle',
+        '[&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]',
+        className,
+      )}
+      {...props}
+    />
+  )
 })
 
 const TableCaption = React.forwardRef<
   HTMLTableCaptionElement,
   React.HTMLAttributes<HTMLTableCaptionElement>
 >(function TableCaption({ className, ...props }, ref) {
-  return <caption ref={ref} className={cn('mt-3 text-[12px] text-muted', className)} {...props} />
+  return <caption ref={ref} className={cn('mt-4 text-sm text-muted', className)} {...props} />
 })
 
 export {

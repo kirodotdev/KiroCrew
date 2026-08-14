@@ -1451,6 +1451,26 @@ class TestKiroHooksFiltering:
         result = _kiro_hooks_only(hooks)
         assert set(result.keys()) == _VALID_HOOK_EVENTS
 
+    def test_bundled_defaults_hook_keys_are_classified(self):
+        """Pins the exact set of hook keys in bundled defaults.json.
+
+        _VALID_HOOK_EVENTS derives from bundled keys minus _INTERNAL_HOOK_KEYS, so
+        a new key is auto-accepted as an event by construction -- silent if it was
+        actually meant to be internal (kiro-cli would then reject the whole spec at
+        runtime). This ratchet forces an explicit choice: adding a bundled hook key
+        means updating either this set (a real event) or _INTERNAL_HOOK_KEYS
+        (Kiro-Crew-internal), never neither (#3362 fail-loud guard)."""
+        from kiro_crew.agent import _BUNDLED_CFG_DIR, _load_json
+
+        bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
+        bundled_hook_keys = set((bundled or {}).get("hooks", {}).keys())
+        assert bundled_hook_keys == {"auto_approve_tools", "postToolUse"}, (
+            f"bundled defaults.json hooks keys changed to {bundled_hook_keys} -- "
+            "classify any new key as a real kiro-cli event (covered automatically "
+            "via _VALID_HOOK_EVENTS) or Kiro-Crew-internal (add to "
+            "_INTERNAL_HOOK_KEYS), then update this pinned set."
+        )
+
     def test_sanitize_agent_hooks_repairs_existing_file(self, tmp_path: Path):
         """_sanitize_agent_hooks removes invalid hook keys from existing configs."""
         from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks
@@ -1634,6 +1654,709 @@ class TestToolBloatFixes:
         assert "@kirocrew-core" in config["tools"]
         assert "@kirocrew-cron" not in config["allowedTools"]
         assert "@kirocrew-core" not in config["allowedTools"]
+
+    def test_dashboard_added_remote_server_reaches_the_tools_allowlist(self, tmp_path: Path):
+        """A Connections provider (or any dashboard-added MCP entry) must land in
+        `tools`, not just `mcpServers`.
+
+        `tools` is a CLOSED allowlist with no wildcard, so an entry present in
+        `mcpServers` but absent from `tools` is mounted with none of its tools
+        exposed — the model then truthfully reports it has no such integration
+        even though the provider is fully connected. This shipped unnoticed
+        because nothing asserted the registration; that is what this test pins.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "notion" in config["mcpServers"]
+        assert "@notion" in config["tools"]
+
+    def test_disabled_dashboard_remote_server_is_removed_from_tools(self, tmp_path: Path):
+        """Disconnect must be the inverse: a disabled entry loses its ref, so a
+        disconnected provider cannot keep exposing tools."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp", "disabled": True}}}
+            )
+        )
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        (kiro_dir / "kirocrew.json").write_text(
+            json.dumps({"tools": ["@notion"], "allowedTools": [], "mcpServers": {}})
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "@notion" not in config["tools"]
+
+    def test_removed_oauth_hints_do_not_survive_a_rebuild_of_a_managed_entry(
+        self, tmp_path: Path
+    ):
+        """Row 3 of the ownership table, through the real rebuild.
+
+        The dashboard store owns this name, and the custom-update API removes a
+        hint by DELETING the key. Since the previously-rendered config is the
+        merge base and ``dict.update()`` cannot remove anything, absence has to
+        mean removed here or the last-rendered grant stays in the spec forever.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        # Dashboard store: the hints were removed, so the keys are simply gone.
+        (user_home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
+        )
+        kiro_dir = tmp_path / "kiro_agents"
+        kiro_dir.mkdir(exist_ok=True)
+        # Previous render, still carrying the hints it was built with.
+        (kiro_dir / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "tools": [],
+                    "allowedTools": [],
+                    "mcpServers": {
+                        "notion": {
+                            "url": "https://mcp.notion.com/mcp",
+                            "oauthScopes": ["read", "write"],
+                            "oauth": {"clientId": "stale-id", "issuer": "https://issuer"},
+                        }
+                    },
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["notion"]
+
+        assert "oauthScopes" not in entry
+        assert entry.get("oauth") == {"issuer": "https://issuer"}, "issuer is the user's"
+
+    def test_an_unmanaged_wire_only_entry_keeps_its_oauth_hints(self, tmp_path: Path):
+        """Row 4 of the ownership table, through the real rebuild.
+
+        This server is defined only in kiro-cli's own settings file, hand-authored
+        in the wire spelling. Nothing of ours owns it, so the wire values are the
+        only copy and deleting them destroys configuration we never wrote. The
+        entry is byte-identical to row 3's -- ownership is the ONLY difference.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "handmade": {
+                            "url": "https://mcp.example.com/mcp",
+                            "oauthScopes": ["read:user"],
+                            "oauth": {"clientId": "hand-authored", "issuer": "https://issuer"},
+                        }
+                    }
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["handmade"]
+
+        assert entry["oauthScopes"] == ["read:user"]
+        assert entry["oauth"] == {"clientId": "hand-authored", "issuer": "https://issuer"}
+
+    def test_a_malformed_store_value_does_not_confer_ownership(self, tmp_path: Path):
+        """A non-dict store value must not mark a global entry as ours.
+
+        Membership is not ownership. The merge skips a malformed
+        ``kirocrew_mcp`` value entirely, so it contributes no hints and cannot be
+        the source of truth for any — yet a bare `name in kirocrew_mcp` test
+        would read the collision as "the store owns this" and delete the global
+        entry's hand-authored wire hints on behalf of a store entry that does not
+        really exist.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        # Hand-edited garbage under the same name as the global server below.
+        (user_home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"handmade": "not-a-dict"}})
+        )
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "handmade": {
+                            "url": "https://mcp.example.com/mcp",
+                            "oauthScopes": ["read:user"],
+                            "oauth": {"clientId": "hand-authored", "issuer": "https://issuer"},
+                        }
+                    }
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["handmade"]
+
+        assert entry["oauthScopes"] == ["read:user"]
+        assert entry["oauth"] == {"clientId": "hand-authored", "issuer": "https://issuer"}
+
+    def test_a_globally_disabled_server_is_not_remounted_by_the_store_entry(
+        self, tmp_path: Path
+    ):
+        """An operator disable must survive a same-named dashboard-store entry.
+
+        `POST /api/mcp/toggle enabled:false` writes `disabled: true` into the
+        kiro-global mcp.json ONLY. The store entry for the same name carries no
+        `disabled` key, so a chain that visits the store last would re-mount the
+        server AND auto-approve it -- and auto-approve is the one path that never
+        reaches the PreToolUse gate, so the operator's disable would be silently
+        void for every tool on that server.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        # Store entry: no `disabled` key at all.
+        (user_home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
+        )
+        # Kiro global: the operator's disable lives here and only here.
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "notion": {"url": "https://mcp.notion.com/mcp", "disabled": True}
+                    }
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "@notion" not in config.get("tools", []), "disabled server must not mount"
+        assert "@notion" not in config.get("allowedTools", []), "and must not be auto-approved"
+        # The other half of the same bug: the enabled branch also cleared the flag
+        # off the emitted spec, so kiro-cli itself never saw the disable either.
+        entry = config.get("mcpServers", {}).get("notion")
+        assert entry is None or entry.get("disabled") is True, "the flag must reach the spec"
+
+    def test_a_disabled_server_stays_disabled_when_the_store_uses_the_alias_key(
+        self, tmp_path: Path
+    ):
+        """The tightest-wins gate must compare names in ONE form.
+
+        Agent refs are written as ``@<mcp_server_alias(name)>``, which is
+        many-to-one: ``acme:@acme/notion`` and ``acme-notion`` are different
+        store keys that produce the SAME ``@acme-notion`` ref. A guard that
+        collects raw keys but emits aliased refs therefore misses the
+        equivalence -- the global's disable removes the ref, then the
+        alias-keyed store entry (visited last) re-adds it to tools AND
+        allowedTools, which is the auto-approve path that never reaches the
+        PreToolUse gate.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        # Store entry keyed by the ALIAS form, with no `disabled` key.
+        (user_home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"acme-notion": {"url": "https://mcp.acme.com/mcp"}}})
+        )
+        # Kiro global keyed by the SLASHED form -- the operator's disable.
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "acme:@acme/notion": {
+                            "url": "https://mcp.acme.com/mcp",
+                            "disabled": True,
+                        }
+                    }
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "@acme-notion" not in config.get("tools", []), "disabled server must not mount"
+        assert "@acme-notion" not in config.get(
+            "allowedTools", []
+        ), "and must not be auto-approved"
+
+    def test_an_agent_config_only_server_keeps_its_oauth_hints_verbatim(self, tmp_path: Path):
+        """The agent config is a merge source, so its own entries are preserved.
+
+        A remote server can be defined only in the agent config -- added with
+        ``kiro-cli mcp add --agent kirocrew``, or hand-edited in. No mcp.json scope
+        declares it and no store entry owns it, so the file is the ONLY copy of its
+        OAuth hints. The rebuild merges onto that file, so rewriting the hints here
+        would destroy them with nothing to restore from.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        (tmp_path / "fake_kiro_mcp.json").write_text(json.dumps({"mcpServers": {}}))
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+        hand_added = {
+            "url": "https://mcp.handadded.com/mcp",
+            "oauthScopes": ["hand:read"],
+            "oauth": {"clientId": "hand-client", "issuer": "https://issuer.example"},
+        }
+        config.setdefault("mcpServers", {})["handadded"] = dict(hand_added)
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+        for _ in range(2):
+            path = _run_install(tmp_path, cfg_dir)
+            entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["handadded"]
+            assert entry["oauthScopes"] == ["hand:read"], "the only copy must survive"
+            assert entry["oauth"]["clientId"] == "hand-client"
+            assert entry["oauth"]["issuer"] == "https://issuer.example"
+
+    def test_a_store_clear_persists_across_a_later_rebuild(self, tmp_path: Path):
+        """Narrowing a grant is the store's job, and the rebuild honours it.
+
+        The store states the hints, so it owns them: once it stops stating them the
+        emitted spec stops requesting them, and stays that way on every later
+        rebuild rather than being refilled from the previous render.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fake_kiro_mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        store = user_home / "mcp.json"
+        url = "https://mcp.acme.com/mcp"
+
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "acme": {"url": url, "scopes": ["acme:read"], "clientId": "acme-client"}
+                    }
+                }
+            )
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["acme"]
+        assert entry["oauthScopes"] == ["acme:read"]
+        assert entry["oauth"]["clientId"] == "acme-client"
+
+        # The editor clears both hints: the store entry survives, stating neither.
+        store.write_text(json.dumps({"mcpServers": {"acme": {"url": url}}}))
+        for _ in range(2):
+            path = _run_install(tmp_path, cfg_dir)
+            entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["acme"]
+            assert "oauthScopes" not in entry, "the clear must not be refilled"
+            assert "clientId" not in entry.get("oauth", {}), "nor the client id"
+
+    def test_a_slash_keyed_remote_survives_repeated_rebuilds(self, tmp_path: Path):
+        """Key normalization and the store lookup must agree on the name form.
+
+        ``_normalize_mcp_server_keys`` rewrites a slashed key to its alias, so
+        the NEXT rebuild reads the aliased key off disk while the source still
+        declares the slashed one, and the merge re-inserts the slashed spelling
+        alongside it. Both must converge on one entry carrying the source's hints:
+        an equivalent pair collapses onto the canonical alias, so a repeated
+        rebuild neither grows ``mcpServers`` nor accumulates ``tools`` refs.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "acme:@acme/notion": {
+                            "url": "https://mcp.acme.com/mcp",
+                            "oauthScopes": ["acme:read"],
+                            "oauth": {"clientId": "acme-client"},
+                        }
+                    }
+                }
+            )
+        )
+
+        counts: list[int] = []
+        for _ in range(3):
+            path = _run_install(tmp_path, cfg_dir)
+            config = json.loads(path.read_text(encoding="utf-8"))
+            servers = config.get("mcpServers", {})
+            counts.append(len(servers))
+            entry = servers.get("acme-notion")
+            assert entry is not None, "the aliased server must stay mounted"
+            assert entry.get("oauthScopes") == ["acme:read"], "a live source keeps its scopes"
+            assert entry.get("oauth", {}).get("clientId") == "acme-client"
+            assert not [k for k in servers if k.startswith("acme-notion-")], (
+                f"no duplicate sibling may be minted, got {sorted(servers)}"
+            )
+        assert counts[0] == counts[1] == counts[2], f"entry count must not grow: {counts}"
+
+    def test_a_slashed_store_name_owns_its_aliased_config_entry(self, tmp_path: Path):
+        """The store lookup must use the same name form as the ownership test.
+
+        The store keeps its own raw (slashed) key while normalization rewrites the
+        config key to the alias. Looking the store up by the raw key alone misses
+        the owner of the aliased entry, so it reads as unmanaged and the
+        previously-rendered wire hints are preserved verbatim -- an editor clear
+        answers 200 and never takes effect, and the now-divergent specs stop
+        deduping, minting a fresh sibling on every rebuild.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fake_kiro_mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        store = user_home / "mcp.json"
+        url = "https://mcp.acme.com/mcp"
+
+        # Rebuild 1: the store states scopes, so the emitted spec carries them.
+        store.write_text(
+            json.dumps({"mcpServers": {"acme/notion": {"url": url, "scopes": ["acme:read"]}}})
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["acme-notion"][
+            "oauthScopes"
+        ] == ["acme:read"]
+
+        # The user clears the hints in the editor: the store entry keeps its raw
+        # slashed key and simply no longer states any scopes.
+        store.write_text(json.dumps({"mcpServers": {"acme/notion": {"url": url}}}))
+        path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+
+        assert "oauthScopes" not in servers["acme-notion"], "the cleared scopes must not survive"
+        assert not [k for k in servers if k.startswith("acme-notion-")], (
+            f"no duplicate sibling may be minted, got {sorted(servers)}"
+        )
+
+    def test_a_malformed_exact_name_does_not_hide_a_valid_aliased_owner(self, tmp_path: Path):
+        """A malformed store value contributes nothing -- including no veto.
+
+        The store can hold a usable slashed entry whose alias collides with a
+        malformed value under the alias key itself. The malformed value states
+        nothing, so it must not stand in for the real owner: gating the alias
+        lookup on absence alone lets it shadow that owner, the entry reads as
+        unmanaged, and the previously-rendered hints survive a clear.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fake_kiro_mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        store = user_home / "mcp.json"
+        url = "https://mcp.acme.com/mcp"
+
+        store.write_text(
+            json.dumps(
+                {"mcpServers": {"acme:@acme/notion": {"url": url, "scopes": ["acme:read"]}}}
+            )
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["acme-notion"][
+            "oauthScopes"
+        ] == ["acme:read"]
+
+        # The owner clears its scopes; a malformed value now sits under the alias.
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "acme:@acme/notion": {"url": url},
+                        "acme-notion": "not-a-dict",
+                    }
+                }
+            )
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+
+        assert "oauthScopes" not in servers["acme-notion"], (
+            "the valid aliased owner's clear must apply"
+        )
+        assert not [k for k in servers if k.startswith("acme-notion-")], (
+            f"no duplicate sibling may be minted, got {sorted(servers)}"
+        )
+
+    def test_an_alias_match_binds_hints_only_to_the_same_server(self, tmp_path: Path):
+        """One rule for every alias binding, keyed on the direction of the effect.
+
+        ``mcp_server_alias`` is many-to-one, so two unrelated names can collide on
+        one alias. A binding that GRANTS something (OAuth hints) must therefore
+        also match transport identity -- otherwise a managed server's credentials
+        land on a different, user-owned server. A binding that DENIES something
+        (the disabled guard) deliberately stays name-only: over-matching there
+        merely over-disables, while under-matching would let an operator's disable
+        be missed, which is the hole the tightest-wins rule closes.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        user_url = "https://user.example.com/mcp"
+        managed_url = "https://managed.example.com/mcp"
+
+        # GRANT site: a managed slashed entry aliases onto a user-owned global name.
+        (user_home / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "foo/bar": {
+                            "url": managed_url,
+                            "scopes": ["managed:read"],
+                            "clientId": "managed-client",
+                        }
+                    }
+                }
+            )
+        )
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps({"mcpServers": {"foo-bar": {"url": user_url}}})
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        theirs = next(e for e in servers.values() if e.get("url") == user_url)
+        assert "oauthScopes" not in theirs, "a different server must not receive these scopes"
+        assert "clientId" not in theirs.get("oauth", {}), "nor this client id"
+
+        # GRANT site, legitimate case: the aliased entry IS this server (same url).
+        (user_home / "mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"foo/bar": {"url": user_url, "scopes": ["managed:read"]}}}
+            )
+        )
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps({"mcpServers": {"foo-bar": {"url": user_url}}})
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert any(e.get("oauthScopes") == ["managed:read"] for e in servers.values()), (
+            "the same server's hints must still bind through the alias"
+        )
+
+    def test_the_disabled_guard_stays_name_based_across_an_alias_collision(
+        self, tmp_path: Path
+    ):
+        """Over-denying is safe; under-denying is the hole tightest-wins closes."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"foo/bar": {"url": "https://m.example.com/mcp", "disabled": True}}}
+            )
+        )
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps({"mcpServers": {"foo-bar": {"url": "https://u.example.com/mcp"}}})
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "@foo-bar" not in config.get("tools", []), "the disable reaches the shared ref"
+        assert "@foo-bar" not in config.get("allowedTools", []), "and never auto-approves"
+
+    def test_a_hand_named_suffix_is_not_claimed_by_the_alias_family(self, tmp_path: Path):
+        """A ``-n`` name a user chose is theirs; the family search must not claim it.
+
+        Nothing distinguishes a name normalization minted from one a user typed, so
+        the family search needs corroboration that a mint actually happened. Absent
+        it, a store entry at the same transport would rewrite a hand-authored
+        entry's grant and inject its own client identity into a file we do not own.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        url = "https://mcp.notion.com/mcp"
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {"mcpServers": {"notion-2": {"url": url, "oauthScopes": ["hand:write"]}}}
+            )
+        )
+        (user_home / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "notion": {
+                            "url": url,
+                            "scopes": ["store:read"],
+                            "clientId": "store-client",
+                        }
+                    }
+                }
+            )
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        hand = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["notion-2"]
+        assert hand.get("oauthScopes") == ["hand:write"], f"hand-authored grant rewritten: {hand}"
+        assert "oauth" not in hand, f"store client identity injected: {hand}"
+
+    def test_two_owners_sharing_alias_and_url_keep_their_own_grants(self, tmp_path: Path):
+        """Transport identity alone cannot break a tie between two owners.
+
+        When two store names share both an alias and a url, picking the first
+        candidate is an insertion-order coin flip -- one owner's grant lands in the
+        other's slot. An ambiguous family match must resolve to no owner instead.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fake_kiro_mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        url = "https://shared.example.com/mcp"
+        (user_home / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "foo-bar": {"url": url, "scopes": ["b:read"]},
+                        "foo/bar": {"url": url, "scopes": ["a:read"]},
+                    }
+                }
+            )
+        )
+        counts: list[int] = []
+        for _ in range(3):
+            path = _run_install(tmp_path, cfg_dir)
+            servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+            counts.append(len(servers))
+            grants = [
+                tuple(e["oauthScopes"])
+                for e in servers.values()
+                if e.get("url") == url and "oauthScopes" in e
+            ]
+            assert grants.count(("a:read",)) <= 1, f"a grant duplicated across slots: {servers}"
+            assert grants.count(("b:read",)) <= 1, f"a grant duplicated across slots: {servers}"
+        assert counts[0] == counts[-1] == counts[1], f"entry count must not grow: {counts}"
+
+    def test_a_suffixed_alias_keeps_its_managed_owner(self, tmp_path: Path):
+        """A collision-suffixed entry is still the same server, so still owned.
+
+        When a managed name's alias is already held by a genuinely different
+        server, normalization preserves the managed one under a numeric suffix.
+        That suffixed key matches neither the store key nor its alias, so an
+        ownership lookup that stops there reads the entry as unmanaged and
+        preserves hints the store no longer states -- the clear stops applying to
+        exactly the server the store owns.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        user_url = "https://user.example.com/mcp"
+        managed_url = "https://managed.example.com/mcp"
+        store = user_home / "mcp.json"
+
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps({"mcpServers": {"foo-bar": {"url": user_url}}})
+        )
+        store.write_text(
+            json.dumps(
+                {"mcpServers": {"foo/bar": {"url": managed_url, "scopes": ["managed:read"]}}}
+            )
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert any(
+            e.get("url") == managed_url and e.get("oauthScopes") == ["managed:read"]
+            for e in servers.values()
+        ), "the managed server's hints render somewhere"
+
+        # The store clears the grant; the managed entry lives under the suffix.
+        store.write_text(json.dumps({"mcpServers": {"foo/bar": {"url": managed_url}}}))
+        path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+
+        stale = [
+            k
+            for k, e in servers.items()
+            if e.get("url") == managed_url and "oauthScopes" in e
+        ]
+        assert not stale, f"the owner's clear must reach its suffixed entry, stale in {stale}"
+
+    def test_two_store_owners_sharing_one_alias_both_stay_resolvable(self, tmp_path: Path):
+        """An alias index must not drop an owner just because another shares its alias.
+
+        Two store entries can alias to the same slug, so keying the index by alias
+        alone keeps only one of them. The other server's collision-suffixed entry
+        then finds a candidate whose transport does not match, reads as unmanaged,
+        and keeps a grant its owner cleared -- and because the stale copy no longer
+        dedups against the freshly rendered one, each rebuild mints another sibling.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fake_kiro_mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        store = user_home / "mcp.json"
+        url_a = "https://a.example.com/mcp"
+        url_b = "https://b.example.com/mcp"
+
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "foo/bar": {"url": url_a, "scopes": ["a:read"]},
+                        "foo-bar": {"url": url_b, "scopes": ["b:read"]},
+                    }
+                }
+            )
+        )
+        path = _run_install(tmp_path, cfg_dir)
+        first = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert any(e.get("url") == url_a for e in first.values()), "both servers render"
+        assert any(e.get("url") == url_b for e in first.values())
+
+        # Owner A clears its grant; B keeps its own.
+        store.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "foo/bar": {"url": url_a},
+                        "foo-bar": {"url": url_b, "scopes": ["b:read"]},
+                    }
+                }
+            )
+        )
+        counts: list[int] = []
+        for _ in range(2):
+            path = _run_install(tmp_path, cfg_dir)
+            servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+            counts.append(len(servers))
+            stale = [k for k, e in servers.items() if e.get("url") == url_a and "oauthScopes" in e]
+            assert not stale, f"owner A's clear must apply, stale in {stale}"
+            assert any(
+                e.get("url") == url_b and e.get("oauthScopes") == ["b:read"]
+                for e in servers.values()
+            ), "owner B keeps its own grant"
+        assert counts[0] == counts[1], f"entry count must not grow: {counts}"
+
+    def test_an_enabled_store_server_still_mounts_with_a_global_sibling(self, tmp_path: Path):
+        """The tightest-wins gate must not break the enabled path it guards.
+
+        Same two-scope shape as the test above with nothing disabled anywhere --
+        this is the case the slice exists to fix, so it must keep working.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir(parents=True, exist_ok=True)
+        (user_home / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
+        )
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps({"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        config = json.loads(path.read_text(encoding="utf-8"))
+
+        assert "@notion" in config["tools"]
 
     def test_malformed_allowedtools_entries_are_dropped(self, tmp_path: Path):
         """A non-string allowedTools entry (hand-edited config) must be dropped,
@@ -3238,6 +3961,24 @@ class TestRefreshDynamicFieldsStripsStaleUrl:
         # A genuine remote server is not a managed one — its url must survive.
         assert config["mcpServers"]["deepwiki"]["url"] == "https://mcp.deepwiki.com/mcp"
 
+    def test_non_managed_server_oauth_hints_preserved(self):
+        """scopes/clientId are passthrough — the runtime, not Kiro Crew, uses them."""
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        config = {
+            "mcpServers": {
+                "github": {
+                    "url": "https://api.githubcopilot.com/mcp/",
+                    "scopes": ["read:user", "read:org"],
+                    "clientId": "public-client-id",
+                },
+            }
+        }
+        _refresh_dynamic_fields(config)
+        entry = config["mcpServers"]["github"]
+        assert entry["scopes"] == ["read:user", "read:org"]
+        assert entry["clientId"] == "public-client-id"
+
     def test_refresh_strips_legacy_denied_commands(self):
         # Upgrade path: an existing config injected by an older build carries a
         # stale toolsSettings.deniedCommands + autoAllowReadonly that kiro-cli
@@ -3424,6 +4165,30 @@ class TestRebuildReconcileRetainsEnabledAppServers:
 
 
 class TestMcpMergePriority:
+    def test_the_authorship_marker_never_reaches_the_rendered_spec(self, tmp_path: Path):
+        """A shared-file marker is provenance, not configuration.
+
+        The marker records that Kiro Crew wrote an entry into a file it does NOT
+        own. The rendered spec is ours, so carrying the key through would put a
+        field in front of the runtime that says nothing to it -- and would change
+        the emitted spec for every managed remote, which nothing about recording
+        authorship needs to do.
+        """
+        from kiro_crew.mcp_provenance import MARKER_KEY, stamp
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_cmd = _make_exec(tmp_path, "marked-srv")
+        cc_cmd = _make_exec(tmp_path, "cc-marked-srv")
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={"cc-srv": stamp({"command": cc_cmd})},
+            kiro_servers={"kiro-srv": stamp({"command": kiro_cmd})},
+        )
+        for name in ("kiro-srv", "cc-srv"):
+            assert name in config["mcpServers"], f"{name} must still be merged"
+            assert MARKER_KEY not in config["mcpServers"][name]
+
     def test_kiro_global_outranks_cc_global(self, tmp_path: Path):
         """Same server in both globals → Kiro-global command wins (CC down-ranked)."""
         cfg_dir = _bundled_defaults(tmp_path)

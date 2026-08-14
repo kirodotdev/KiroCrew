@@ -54,13 +54,36 @@ log.
 
 ## Commands
 
+The bot publishes this list through `setMyCommands` at startup, so typing `/`
+in Telegram offers them as autocomplete — `COMMAND_SPEC` in
+`telegram/commands.py` is the single source behind both that menu and `/help`.
+
 - `/new` (or `/start`) — start a fresh conversation
 - `/compact` — free up room when the context fills
+- `/model` — pick the model from an inline-button list. Button-only on purpose:
+  the choices are what this account's backend actually advertised, so there is
+  no model name to guess and no typo to reject mid-conversation. The pick is
+  applied to the running session in place when one is idle, and is remembered
+  for the conversation's later sessions (it outlives `/new`, and is held in
+  memory, so a gateway restart returns to the configured default).
+- `/yolo [on|off|renew]` — report or change the auto-approve grant. This is the
+  SAME process-wide grant the dashboard toggle and Slack's `/kirocrew yolo`
+  drive, so it expires on one clock everywhere. It does not weaken the
+  PreToolUse gate: sensitive-path, governance-ceiling and deny-list blocks still
+  refuse a tool.
+- `/link` / `/unlink` — resume or stop mirroring dashboard replies here; a
+  conversation is its own mirror by default, so `/link` only withdraws an
+  earlier `/unlink`
+- `/stop` (or `/cancel`) — stop the current reply and clear the queue
 - `/steer <msg>` — while a reply is generating, fold this message into it
   (overrides `queue_mode` for this message)
 - `/queue <msg>` — while a reply is generating, hold this message and answer
   it after the current turn (overrides `queue_mode` for this message)
 - `/help` — list the commands
+
+`/steer` and `/queue` are absent from the `/` menu because the Telegram client
+SENDS a menu entry the moment it is tapped, and both need a message body to act
+on — a menu row for them would only ever produce the usage hint.
 
 ## Settings & reference
 

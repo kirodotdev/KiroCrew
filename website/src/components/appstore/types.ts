@@ -18,6 +18,10 @@ export type RegistryApp = {
   author: string
   icon?: string
   iconUrl?: string
+  // Dark-appearance variant of iconUrl. Raster icons have fixed bytes, so an
+  // app that must read well on both backgrounds ships two files; first-party
+  // /app-assets/ SVGs are inlined and repaint from theme tokens instead.
+  iconUrlDark?: string
   tags?: string[]
   highlights?: string[]
   screenshots?: string[]
@@ -30,6 +34,17 @@ export type RegistryApp = {
   branch?: string
   featured?: boolean | number
   _registry?: string
+  /**
+   * Server-computed trust fields — the API trust boundary of
+   * ``/api/apps/registry`` (``_apply_trust_fields`` in ``registry.py``).
+   * Optional only because rows from an older gateway lack them; when
+   * present they are authoritative and the client must not re-derive
+   * trust from ``_registry`` absence.
+   */
+  // 'core' is the pre-migration spelling of 'official'; both mean "an app WE
+  // list", the bundled index being the offline seed of that list.
+  provenance?: 'official' | 'core' | 'external' | 'builtin'
+  verified?: boolean
   installed: boolean
   installedVersion?: string
   enabled?: boolean
@@ -86,6 +101,8 @@ export type InstalledApp = {
     highlights?: string[]
     license?: string
     iconUrl?: string
+    iconUrlDark?: string
+    iconPathDark?: string
     openCommand?: string
     hidden?: boolean
   }
@@ -94,14 +111,28 @@ export type InstalledApp = {
 /**
  * Human label for the registry an app came from (trust provenance).
  *
- * The ``_registry`` tag is checked FIRST: it is applied server-side by
- * ``_load_external_registries`` and cannot be set by index content, whereas
- * ``origin`` is copied verbatim from an index entry for apps that are not yet
- * installed. Testing ``origin`` first would let an external registry publish
- * ``"origin": "builtin"`` and render a "Built-in" provenance label.
+ * The server-computed ``provenance`` field is authoritative
+ * (``_apply_trust_fields`` in ``registry.py`` computes it where the
+ * ``_registry`` tag is applied and overwrites anything an index publishes).
+ * The ``_registry`` tag is still checked FIRST: it is equally
+ * server-attached, and a row carrying it is external by construction — so
+ * a ``provenance`` value smuggled through an OLDER gateway (which copies
+ * index keys verbatim and computes nothing) can never relabel an external
+ * row as built-in or official. The ``origin`` fallback exists only for rows
+ * from older gateways that emit neither field.
+ *
+ * ``'core'`` is the previous spelling of ``'official'`` and is accepted for as
+ * long as a client can meet an older gateway. Both mean "an app WE list": the
+ * bundled ``app-registry.json`` is the offline seed of that list, not a
+ * separate kind of app.
  */
-export function sourceLabel(app: Pick<RegistryApp, '_registry' | 'origin'>): string {
+export function sourceLabel(app: Pick<RegistryApp, '_registry' | 'origin' | 'provenance'>): string {
   if (app._registry) return app._registry
+  if (app.provenance === 'builtin') return i18nT('components.appstore.types.built_in')
+  if (app.provenance === 'official' || app.provenance === 'core') {
+    return i18nT('components.appstore.types.kirocrew_registry')
+  }
+  // Legacy fallback (older gateway: no ``provenance`` field).
   if (app.origin === 'builtin') return i18nT('components.appstore.types.built_in')
   return i18nT('components.appstore.types.kirocrew_registry')
 }
@@ -111,16 +142,21 @@ export function sourceLabel(app: Pick<RegistryApp, '_registry' | 'origin'>): str
  * awardable from manifest or index content: the badge sits next to an Install
  * button that runs setup code with gateway privileges.
  *
- * ``_registry`` is rejected BEFORE any other signal. That tag is attached
- * server-side per configured registry and cannot be forged by index content,
- * while both ``origin`` and ``author`` are copied verbatim from an index entry
- * for a not-yet-installed app — so checking ``origin === 'builtin'`` first
- * would let any added registry self-award the first-party mark. Genuine
- * built-ins are merged client-side from the installed-apps list and never
- * carry ``_registry``.
+ * The server-computed ``verified`` field is authoritative when present
+ * (``_apply_trust_fields`` in ``registry.py`` overwrites anything an index
+ * publishes). ``_registry`` is still rejected BEFORE it: the tag is equally
+ * server-attached and the server never emits ``verified: true`` on a tagged
+ * row, so this order only differs for a ``verified`` smuggled through an
+ * OLDER gateway that copies index keys verbatim — exactly the case that must
+ * lose. The ``origin``/``author`` derivation below is the legacy fallback
+ * for rows from older gateways that emit neither field; genuine built-ins
+ * merged client-side set ``verified: true`` directly and never carry
+ * ``_registry``.
  */
-export function isVerified(app: Pick<RegistryApp, 'origin' | 'author' | '_registry'>): boolean {
+export function isVerified(app: Pick<RegistryApp, 'origin' | 'author' | '_registry' | 'verified'>): boolean {
   if (app._registry) return false
+  if (typeof app.verified === 'boolean') return app.verified
+  // Legacy fallback (older gateway: no ``verified`` field).
   if (app.origin === 'builtin') return true
   return (app.author || '').toLowerCase() === 'kirocrew'
 }

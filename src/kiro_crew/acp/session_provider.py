@@ -34,6 +34,7 @@ from kiro_crew.acp.client import (
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.providers.base import CancelOutcome, LLMEvent, LLMProvider
 
@@ -353,6 +354,10 @@ class AcpSessionProvider(LLMProvider):
         self._session_key = session_key
         self._channel_id = channel_id
         self._runtime._last_activity = time.monotonic()
+        # Parity with AcpClient.rekey: the handle's prompt stats describe the
+        # session this runtime served BEFORE the handoff; leaking them lets
+        # check_context_usage() compact the new, empty session (#2932).
+        self._handle.last_prompt_stats.reset_context_state()
         # Claim-push: re-target every MCP stub connection under the shared
         # runtime's PID to the claiming session (see AcpClient.rekey for the
         # rationale). Fire-and-forget; no-ops without a gateway socket.
@@ -384,8 +389,16 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def backend(self) -> str:
-        """ACP backend identifier. Always empty string for kiro-cli."""
-        return ""
+        """ACP backend identifier, delegated to the runtime that serves it.
+
+        Not a constant: this provider fronts whichever backend ``AcpRuntime``
+        spawned, and it replaces the placeholder ``AcpClient`` on
+        ``AcpProvider._client`` once startup completes — so it is the only
+        remaining place a consumer can read the backend back off a started
+        provider. Reporting kiro unconditionally would persist every KAS
+        session under the kiro label.
+        """
+        return self._runtime.acp_backend
 
     def has_active_turn(self) -> bool:
         """True if a prompt turn is currently in progress.
@@ -472,7 +485,9 @@ class AcpSessionProvider(LLMProvider):
         """Trigger context compaction."""
         await self._guarded(self._handle.compact(context))
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict[str, str]:
+    async def wait_for_compaction(
+        self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
+    ) -> dict[str, str]:
         """Wait for compaction completed/failed event."""
         return await self._guarded(self._handle.wait_for_compaction(timeout))
 
@@ -515,6 +530,17 @@ class AcpSessionProvider(LLMProvider):
     def _model(self, value: str) -> None:
         """Set model name (AcpClient-compatible attribute)."""
         self._handle._model = value
+
+    @property
+    def served_model(self) -> str:
+        """Backend-resolved model id serving this session (``""`` until known).
+
+        Public delegation to :attr:`AcpSessionHandle.served_model` — covers
+        both the explicit ``set_model`` path and the backend-default path
+        (``currentModelId``), unlike ``_model`` which only reflects the
+        former.
+        """
+        return self._handle.served_model
 
     @property
     def _session_id(self) -> str:

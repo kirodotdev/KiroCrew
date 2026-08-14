@@ -84,6 +84,8 @@ ICON_CONTENT_TYPES = frozenset(
 
 _WHITESPACE_RUN = re.compile(r"\s+")
 _META_CHARSET = re.compile(rb"""charset\s*=\s*["']?\s*([\w.:+-]{1,40})""", re.IGNORECASE)
+_COLOR_SCHEME_MEDIA = re.compile(r"prefers-color-scheme\s*:\s*(dark|light)", re.IGNORECASE)
+_MEDIA_NEGATION = re.compile(r"\bnot\b", re.IGNORECASE)
 
 
 class UnfurlRejected(Exception):
@@ -136,7 +138,15 @@ class ExtractedMeta:
     description: str
     site_name: str
     icon_candidates: Tuple[str, ...]
-    """Absolute icon URLs, best first, ``/favicon.ico`` last."""
+    """Absolute icon URLs for a light or unknown surface, best first,
+    ``/favicon.ico`` last. Excludes icons the document scopes to a dark colour
+    scheme — one of those on a light surface is the same invisible-glyph bug as
+    using a light icon on a dark one."""
+    dark_icon_candidates: Tuple[str, ...] = ()
+    """Absolute icon URLs the document declares for
+    ``(prefers-color-scheme: dark)``, best first. Empty for the great majority of
+    sites, which ship one icon; no ``/favicon.ico`` fallback is appended, because
+    a site's generic favicon is not a dark variant of anything."""
     title_complete: bool = False
     """Whether :attr:`title` is a whole, non-empty title rather than a fragment.
 
@@ -351,6 +361,23 @@ def decode_html(body: bytes, content_type: str) -> str:
     return body.decode("utf-8", errors="replace")
 
 
+def icon_color_scheme(media: str) -> str:
+    """``"dark"`` / ``"light"`` when *media* scopes an icon to one colour scheme.
+
+    Returns ``""`` for no media attribute, a media query that says nothing about
+    the colour scheme, and — deliberately — any query carrying ``not``. A
+    negation inverts the match (``not all and (prefers-color-scheme: dark)``
+    applies to LIGHT clients), and this is a single regex, not a media-query
+    engine: guessing at a negation would put an icon in the wrong lane, which is
+    exactly the failure being fixed. Treating it as unscoped keeps such an icon
+    in the default lane, where it stays usable as the ordinary icon.
+    """
+    if not media or _MEDIA_NEGATION.search(media):
+        return ""
+    found = _COLOR_SCHEME_MEDIA.search(media)
+    return found.group(1).lower() if found else ""
+
+
 class _HeadParser(HTMLParser):
     """Collect the meta/title/icon tags from an untrusted document.
 
@@ -375,8 +402,11 @@ class _HeadParser(HTMLParser):
         #: word-fragment here that reads like a real title, and only the parser can
         #: tell the two apart.
         self.title_closed = False
-        self.icons: List[str] = []
-        self._apple_icons: List[str] = []
+        #: Every icon link in document order, as ``(href, colour scheme, is
+        #: apple-touch)``. One list rather than a list per lane because document
+        #: order is the preference order WITHIN a lane, and splitting on arrival
+        #: would only have to be re-merged to preserve it.
+        self._icon_links: List[Tuple[str, str, bool]] = []
         self._in_title = False
 
     # -- HTMLParser hooks ---------------------------------------------------
@@ -409,10 +439,11 @@ class _HeadParser(HTMLParser):
             href = attr.get("href", "").strip()
             if not href:
                 return
-            if "icon" in rels and not any(r.startswith("apple-touch-icon") for r in rels):
-                self.icons.append(href)
-            elif any(r.startswith("apple-touch-icon") for r in rels):
-                self._apple_icons.append(href)
+            is_apple = any(r.startswith("apple-touch-icon") for r in rels)
+            if "icon" in rels and not is_apple:
+                self._icon_links.append((href, icon_color_scheme(attr.get("media", "")), False))
+            elif is_apple:
+                self._icon_links.append((href, icon_color_scheme(attr.get("media", "")), True))
 
     def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -434,13 +465,21 @@ class _HeadParser(HTMLParser):
 
     # -- results ------------------------------------------------------------
 
-    def ordered_icon_hrefs(self) -> List[str]:
-        """``rel=icon`` first, then ``apple-touch-icon``.
+    def ordered_icon_hrefs(self, *, dark: bool = False) -> List[str]:
+        """One lane's hrefs, ``rel=icon`` first, then ``apple-touch-icon``.
 
         Plain ``rel=icon`` is preferred because it is the small one; an
         apple-touch-icon is often 180px+ and more likely to trip the 32 KB cap.
+
+        ``dark=False`` is the default lane: every icon EXCEPT the ones the
+        document scopes to a dark colour scheme. ``dark=True`` is only those.
+        A light-scoped icon therefore sits in the default lane, which is correct
+        — the default lane is what a light or unmeasurable surface uses.
         """
-        return self.icons + self._apple_icons
+        keep = (lambda s: s == "dark") if dark else (lambda s: s != "dark")
+        return [h for h, s, apple in self._icon_links if not apple and keep(s)] + [
+            h for h, s, apple in self._icon_links if apple and keep(s)
+        ]
 
 
 def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
@@ -478,11 +517,20 @@ def extract_meta(html: str, *, base_url: str) -> ExtractedMeta:
     if fallback and fallback not in candidates:
         candidates.append(fallback)
 
+    dark_candidates: List[str] = []
+    for href in parser.ordered_icon_hrefs(dark=True):
+        absolute = _absolutize(href, base_url)
+        # An href listed in both lanes is not a dark VARIANT of anything, so it
+        # would only buy a second fetch of bytes the default lane already has.
+        if absolute and absolute not in dark_candidates and absolute not in candidates:
+            dark_candidates.append(absolute)
+
     return ExtractedMeta(
         title=title,
         description=description,
         site_name=site_name,
         icon_candidates=tuple(candidates),
+        dark_icon_candidates=tuple(dark_candidates),
         # "Complete" requires a title to exist AND to be whole. An `og:title` is
         # whole by construction (an attribute parses atomically or not at all);
         # otherwise the `<title>` element must have closed. The `bool(title)` term

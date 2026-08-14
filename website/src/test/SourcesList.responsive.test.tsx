@@ -84,12 +84,16 @@ describe('SourcesList — mobile layout', () => {
     expect(chip.parentElement!.className).toContain('flex-wrap')
   })
 
-  it('allows the meta/action cluster to wrap on mobile but not from sm up', async () => {
+  it('lets the meta/action cluster wrap at every width so it cannot leave the card', async () => {
+    // The cluster holds a VARIABLE number of figures -- item count, word count,
+    // indexing progress, remaining Kiro requests -- so a nowrap floor pushes the
+    // trailing action button past the card border and squeezes the source name to
+    // nothing at mid widths. It must be free to wrap at any width.
     renderList()
     const items = await screen.findByText('378 items')
     const cluster = items.parentElement!
     expect(cluster.className).toContain('flex-wrap')
-    expect(cluster.className).toContain('sm:flex-nowrap')
+    expect(cluster.className).not.toContain('flex-nowrap')
   })
 
   it('keeps item counts and sync dates on one line', async () => {

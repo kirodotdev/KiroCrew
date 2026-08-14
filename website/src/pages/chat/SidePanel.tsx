@@ -3,7 +3,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, Layers } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, PanelBottom, Layers, ListTree } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
@@ -14,11 +14,14 @@ import FolderPanel from './FolderPanel'
 import WebPreviewPanel from '../../components/WebPreviewPanel'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../../api/client'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import { adoptTab as adoptBottomTerminal } from '../../hooks/useBottomTerminal'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { useSidePanelDock } from '../../hooks/useSidePanelDock'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator
 } from '../../components/ui/dropdown-menu'
@@ -35,8 +38,9 @@ import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
   changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
+  summary: <ListTree size={16} />,
   file: <FileText size={16} />, diff: <GitCompare size={16} />, artifact: <Component size={16} />, folder: <Folder size={16} />,
-  app: <PanelRight size={16} />,
+  app: <PanelRight size={16} />, git: <GitBranch size={16} />,
 }
 
 /**
@@ -55,7 +59,7 @@ const KIND_ICON: Record<TabKind, ReactNode> = {
  * Keyed by `ViewKind | 'terminal'` (not `string`) so adding a view without its
  * label and description is a type error rather than a missing-key render.
  */
-export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
+export const NEW_MENU_LABEL_KEY: Record<ViewKind, string> = {
   changes: 'pages.chat.sidePanel.menu_changes',
   issues: 'pages.chat.sidePanel.menu_issues',
   files: 'pages.chat.sidePanel.menu_files',
@@ -66,10 +70,11 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind | 'terminal', string> = {
   context: 'pages.chat.sidePanel.menu_context',
   side: 'pages.chat.sidePanel.menu_side',
   browser: 'pages.chat.sidePanel.menu_browser',
-  terminal: 'pages.chat.sidePanel.menu_terminal',
+  git: 'pages.chat.sidePanel.menu_git',
+  summary: 'pages.chat.sidePanel.menu_summary',
 }
 
-export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
+export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
   changes: 'pages.chat.sidePanel.menu_changes_desc',
   issues: 'pages.chat.sidePanel.menu_issues_desc',
   files: 'pages.chat.sidePanel.menu_files_desc',
@@ -80,7 +85,8 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
   context: 'pages.chat.sidePanel.menu_context_desc',
   side: 'pages.chat.sidePanel.menu_side_desc',
   browser: 'pages.chat.sidePanel.menu_browser_desc',
-  terminal: 'pages.chat.sidePanel.menu_terminal_desc',
+  git: 'pages.chat.sidePanel.menu_git_desc',
+  summary: 'pages.chat.sidePanel.menu_summary_desc',
 }
 
 /** Views offered by the + menu, in the three semantic groups the menu renders
@@ -94,35 +100,52 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind | 'terminal', string> = {
  *  (rules only): three group headings would add ~90px of chrome to an
  *  eight-row menu for hierarchy the grouping already conveys.
  *
+ *  Each group carries a stable `id`. It is never rendered — it exists to be the
+ *  group's React key. Neither the group's index nor its contents can serve:
+ *  gating rows changes the contents and dropping an emptied group shifts the
+ *  indices, and either shift remounts a group mid-interaction, detaching the
+ *  menu item the user is clicking. The id is fixed at declaration, so a gate
+ *  flipping only re-renders rows within a group that keeps its identity.
+ *
  *  Every key of `NEW_MENU_LABEL_KEY` must appear exactly once across the
  *  groups — `sidePanelAddMenu.test.tsx` pins that partition, so adding a view
  *  without placing it in a group fails rather than silently dropping it. */
-const NEW_MENU_GROUPS: { kind: ViewKind | 'terminal'; icon: ReactNode }[][] = [
+const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[] }[] = [
   // Session output — what this chat referenced or produced. (Changes / Files /
   // Artifacts are auto-pinned and filtered out below; they are listed here so
   // this table stays the complete catalog of views.)
-  [
-    { kind: 'changes', icon: <GitPullRequest size={15} /> },
-    { kind: 'issues', icon: <CircleDot size={15} /> },
-    { kind: 'files', icon: <FileText size={15} /> },
-    { kind: 'artifacts', icon: <Component size={15} /> },
-    { kind: 'subagents', icon: <Bot size={15} /> },
-    { kind: 'workflows', icon: <Workflow size={15} /> },
-  ],
+  {
+    id: 'session-output',
+    items: [
+      { kind: 'summary', icon: <ListTree size={15} /> },
+      { kind: 'changes', icon: <GitPullRequest size={15} /> },
+      { kind: 'issues', icon: <CircleDot size={15} /> },
+      { kind: 'files', icon: <FileText size={15} /> },
+      { kind: 'artifacts', icon: <Component size={15} /> },
+      { kind: 'subagents', icon: <Bot size={15} /> },
+      { kind: 'workflows', icon: <Workflow size={15} /> },
+      { kind: 'git', icon: <GitBranch size={15} /> },
+    ],
+  },
   // Interactive workspaces — the surfaces the user types into.
-  [
-    { kind: 'side', icon: <MessageSquare size={15} /> },
-    { kind: 'browser', icon: <Globe size={15} /> },
-    { kind: 'terminal', icon: <TerminalSquare size={15} /> },
-  ],
+  {
+    id: 'workspaces',
+    items: [
+      { kind: 'side', icon: <MessageSquare size={15} /> },
+      { kind: 'browser', icon: <Globe size={15} /> },
+    ],
+  },
   // Diagnostics.
-  [
-    { kind: 'logs', icon: <ScrollText size={15} /> },
-    { kind: 'context', icon: <Layers size={15} /> },
-  ],
+  {
+    id: 'diagnostics',
+    items: [
+      { kind: 'logs', icon: <ScrollText size={15} /> },
+      { kind: 'context', icon: <Layers size={15} /> },
+    ],
+  },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git', 'summary'])
 
 /** Views behind the Developer Mode consent gate (Settings > Developer) — the
  *  same gate the standalone Developer page uses. Both are raw instrumentation
@@ -131,28 +154,37 @@ const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 
  *  belongs in a non-developer's menu. Gating BOTH empties the diagnostics group
  *  outright when Developer Mode is off — which is exactly the empty-group case
  *  `newMenuSections` drops. */
-const DEV_ONLY_VIEWS = new Set<ViewKind | 'terminal'>(['logs', 'context'])
+const DEV_ONLY_VIEWS = new Set<ViewKind>(['logs', 'context'])
 
-/** Which `+`-menu entries are offered, given the two gates that hide entries:
- *  Terminal is hidden when the feature is disabled server-side, and the
- *  diagnostics views (Logs, Context breakdown) are hidden unless Developer Mode
- *  is on. The auto-managed pinned views (Changes / Files / Artifacts) are never
- *  listed; they appear on their own when they have content.
+/** Which `+`-menu entries are offered, given the gates that hide entries:
+ *  the diagnostics views (Logs, Context breakdown) are hidden unless Developer
+ *  Mode is on, and **Summary is hidden while session summaries are disabled**.
+ *  The auto-managed pinned views (Changes / Files / Artifacts) are never listed;
+ *  they appear on their own when they have content.
+ *
+ *  Summary is gated because the feature is opt-in and its settings toggle ships
+ *  separately: advertising the entry while `session_summary.enabled` is false
+ *  sends every reader to a panel that explains it is off and offers no way to
+ *  change that. Hiding the row is the only option that removes the dead end
+ *  rather than wording around it, and it reverses itself the moment the flag
+ *  flips.
  *
  *  Grouped, and **emptied groups are dropped**: with Developer Mode off the
- *  whole diagnostics group disappears, and Terminal disabled shrinks Workspaces
- *  to two rows — a group that filtered down to nothing would otherwise render
- *  as a separator with no rows after it. */
+ *  whole diagnostics group disappears. A group that filtered down to nothing
+ *  would otherwise render as a separator with no rows after it. */
 export function newMenuSections(
-  opts: { devMode: boolean; terminalEnabled: boolean },
-): { kind: ViewKind | 'terminal'; icon: ReactNode }[][] {
+  opts: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean },
+): { id: string; items: { kind: ViewKind; icon: ReactNode }[] }[] {
   return NEW_MENU_GROUPS
-    .map(group => group.filter(item =>
-      (opts.terminalEnabled || item.kind !== 'terminal')
-      && (opts.devMode || !DEV_ONLY_VIEWS.has(item.kind))
-      && !(PINNED_VIEWS as string[]).includes(item.kind),
-    ))
-    .filter(group => group.length > 0)
+    .map(group => ({
+      id: group.id,
+      items: group.items.filter(item =>
+        (opts.devMode || !DEV_ONLY_VIEWS.has(item.kind))
+        && (opts.summaryEnabled || item.kind !== 'summary')
+        && !(PINNED_VIEWS as string[]).includes(item.kind),
+      ),
+    }))
+    .filter(group => group.items.length > 0)
 }
 
 interface SidePanelProps {
@@ -198,6 +230,11 @@ interface SidePanelProps {
    *  clamp and the user's persisted width, and retires the resize handle —
    *  there is nothing to resize against. Undefined = beside mode. */
   fillWidth?: number
+  /** Whether this frame can host the bottom dock (the main App shell has a
+   *  bottom grid row; embed/popout/artifact frames do not). When false, the
+   *  panel always renders as the right column and the dock toggle is hidden,
+   *  regardless of the global dock preference. */
+  canDockBottom?: boolean
 }
 
 /**
@@ -295,7 +332,7 @@ export default function SidePanel({
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
-  inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth,
+  inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth, canDockBottom = true,
 }: SidePanelProps) {
   const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned, openFolder } = tabsCtl
   // EVERY app frame, every slot, rendered from one stable-keyed list below so a
@@ -310,16 +347,32 @@ export default function SidePanel({
   const toolLog = useAppSelector(s => selectSlotToolLog(s, slot))
   const terminalEnabled = useTerminalEnabled()
   const devMode = useDevMode()
+  // Whether to offer the Summary row at all. Read from the panel's OWN endpoint
+  // and under the SAME query key the Summary tab uses, so this is one cheap
+  // request per slot that doubles as that tab's prefetch rather than a second
+  // source of truth. The endpoint is read-only and never triggers generation.
+  //
+  // Fails OPEN (`!== false`): while the flag is unknown the row is offered, so a
+  // slow request can never hide a feature that IS enabled. The reverse default
+  // would make the panel look missing, which is worse than the brief window it
+  // would close.
+  const { data: summaryMeta } = useQuery({
+    queryKey: ['session-summary', slot],
+    queryFn: () => api.sessionSummary(slot),
+    staleTime: Infinity,
+    retry: false,
+  })
+  const summaryEnabled = summaryMeta?.enabled !== false
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side and Context breakdown unless Developer Mode is on, and
   // never list the auto-managed pinned views (Changes / Files / Artifacts) —
   // those appear on their own when they have content (see the syncPinned
   // reconcile below).
-  const menuSections = newMenuSections({ devMode, terminalEnabled })
+  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
-  const menuItems = menuSections.flat()
+  const menuItems = menuSections.flatMap(section => section.items)
   // Files / Artifacts / Changes are ALWAYS present — pinned to the front,
   // non-closable, and never in the + menu — regardless of whether they
   // currently have content.
@@ -371,15 +424,36 @@ export default function SidePanel({
     return !isNaN(v) && v >= MIN_W ? v : 460
   })
   const widthRef = useRef(width); widthRef.current = width
+  // Dock position (right column vs bottom row). Bottom dock is height-
+  // resizable instead of width-resizable, so it carries its own persisted
+  // dimension. Kept separate from width so flipping back and forth restores
+  // each orientation's last size.
+  const [dock, setDock] = useSidePanelDock()
+  const HEIGHT_KEY = 'mc-side-panel-height'
+  const MIN_H = 200
+  const [height, setHeight] = useState(() => {
+    const v = parseInt(localStorage.getItem(HEIGHT_KEY) || '', 10)
+    return !isNaN(v) && v >= MIN_H ? v : 360
+  })
+  const heightRef = useRef(height); heightRef.current = height
   // Responsive clamp: the user's chosen width is persisted untouched, but the
   // rendered width yields to the window so the chat keeps its reserved
   // minimum. On mobile the panel simply takes the full width. Re-measured on
   // window resize AND when the header clusters change size (e.g. the readout
   // capsule expanding), since the header's content need is part of the reserve.
   const isMobile = useIsMobile()
+  // Bottom dock only applies on desktop; mobile always renders as the
+  // full-width inline panel regardless of the stored preference.
+  const isBottom = canDockBottom && dock === 'bottom' && !isMobile
   const [maxW, setMaxW] = useState(() => window.innerWidth - measureSidePanelReservedW())
+  // Bottom-dock height cap: leave the topbar row + a usable chat minimum
+  // visible above the panel. Re-measured on resize.
+  const [maxH, setMaxH] = useState(() => Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
   useEffect(() => {
-    const recalc = () => setMaxW(window.innerWidth - measureSidePanelReservedW())
+    const recalc = () => {
+      setMaxW(window.innerWidth - measureSidePanelReservedW())
+      setMaxH(Math.max(MIN_H, Math.round(window.innerHeight * 0.85)))
+    }
     recalc()
     window.addEventListener('resize', recalc)
     // Observe the header's clusters (their intrinsic width is independent of
@@ -392,6 +466,7 @@ export default function SidePanel({
     return () => { window.removeEventListener('resize', recalc); ro.disconnect() }
   }, [])
   const effectiveWidth = sidePanelEffectiveWidth({ fillWidth, isMobile, expanded, width, maxW })
+  const effectiveHeight = Math.max(MIN_H, Math.min(height, maxH))
   // While the user drags the resize handle, every mousemove shifts the whole
   // panel's viewport position (the handle is on the LEFT edge; the right edge
   // is pinned to the window). Framer's layout projection on each Reorder.Item
@@ -410,13 +485,36 @@ export default function SidePanel({
     },
     onEnd: () => { setResizing(false); safeSetItem(WIDTH_KEY, String(widthRef.current)) },
   })
+  // Top-edge resize for the bottom dock: drag up to grow the panel's height.
+  // The bottom edge is pinned to the window, so a negative dy (dragging up)
+  // widens the panel.
+  const startHRef = useRef(0)
+  const panelResizeV = usePointerDrag({
+    threshold: 0,
+    onStart: () => { startHRef.current = heightRef.current; setResizing(true) },
+    onMove: ({ dy }) => {
+      const max = Math.max(MIN_H, Math.round(window.innerHeight * 0.85))
+      setHeight(Math.max(MIN_H, Math.min(startHRef.current - dy, max)))
+    },
+    onEnd: () => { setResizing(false); safeSetItem(HEIGHT_KEY, String(heightRef.current)) },
+  })
 
   return (
-    <div className="shrink-0 min-h-0 mt-0 mb-2 flex flex-col bg-bg overflow-hidden relative border-l border-t border-b border-border rounded-l-xl" style={{ width: effectiveWidth, maxWidth: '100vw' }}>
-      {/* Left-edge resize handle */}
-      {fillWidth == null && <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
-        <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
-      </div>}
+    <div
+      className={`shrink-0 flex flex-col bg-bg overflow-hidden relative ${isBottom ? 'min-w-0 w-full border-t border-border' : 'min-h-0 mt-0 mb-2 border-l border-t border-b border-border rounded-l-xl'}`}
+      style={isBottom ? { height: effectiveHeight, maxHeight: '85vh', width: '100%' } : { width: effectiveWidth, maxWidth: '100vw' }}
+    >
+      {isBottom ? (
+        /* Top-edge resize handle — drag up/down to size the bottom dock. */
+        <div role="separator" aria-orientation="horizontal" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 right-0 top-0 h-[6px] cursor-row-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResizeV}>
+          <div className="absolute left-0 right-0 top-0 h-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
+        </div>
+      ) : fillWidth == null ? (
+        /* Left-edge resize handle */
+        <div role="separator" aria-orientation="vertical" aria-label={i18nT('pages.chat.sidePanel.resize_panel')} className="absolute left-0 top-0 bottom-0 w-[6px] cursor-col-resize z-30 group/drag" style={{ touchAction: 'none' }} {...panelResize}>
+          <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
+        </div>
+      ) : null}
       {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
           Per Figma "left-nav" (7328:10637): the row is a rounded elevated card
           (bg-elevated, 12px radius, 8px padding) floating above the content,
@@ -432,6 +530,16 @@ export default function SidePanel({
         >
           <PanelRightLight size={15} />
         </button>
+        {canDockBottom && !isMobile && (
+          <button
+            className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+            onClick={() => setDock(isBottom ? 'right' : 'bottom')}
+            title={isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}
+            aria-label={isBottom ? i18nT('pages.chat.sidePanel.dock_right') : i18nT('pages.chat.sidePanel.dock_bottom')}
+          >
+            {isBottom ? <PanelRight size={15} /> : <PanelBottom size={15} />}
+          </button>
+        )}
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0" />
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. Wrapped in a
@@ -491,12 +599,13 @@ export default function SidePanel({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
             {menuSections.map((section, i) => (
-              // Keyed by the group's first surviving row, not the index: a gate
-              // that empties a whole group changes what index i means, and a
-              // stale index key would let React reuse the wrong group's rows.
-              <Fragment key={section[0].kind}>
+              // Keyed by the group's stable declared id — see NEW_MENU_GROUPS.
+              // Keying on contents (the first surviving row) or on the index
+              // makes the key move when a gate resolves, and React then remounts
+              // the group, detaching the row mid-click.
+              <Fragment key={section.id}>
                 {i > 0 && <DropdownMenuSeparator />}
-                {section.map(item => (
+                {section.items.map(item => (
                   <DropdownMenuItem
                     key={item.kind}
                     className="gap-2.5 py-2"
@@ -575,7 +684,7 @@ export default function SidePanel({
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side'}
+                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git' | 'summary'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
                   files={files}

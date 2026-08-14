@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import gc
 import logging
 import os
@@ -20,7 +21,7 @@ from kiro_crew.config.loader import (
     read_config_for_update,
     write_config_atomically,
 )
-from kiro_crew.constants import BANNER, DATA_WARNING
+from kiro_crew.constants import BANNER, DATA_WARNING, MIN_NODE_MAJOR
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -63,22 +64,22 @@ def _tui(args: argparse.Namespace) -> None:
         print("  (or use: kirocrew chat  /  kirocrew gateway)")
         sys.exit(1)
 
-    # Check node >= 20
+    # Check node against the shared floor
     if not shutil.which("node"):
-        print("Node.js not found. Install Node.js >= 20.")
+        print(f"Node.js not found. Install Node.js >= {MIN_NODE_MAJOR}.")
         sys.exit(1)
     try:
         ret = subprocess.call(
             [
                 "node",
                 "-e",
-                "process.exit(Number(process.version.slice(1).split('.')[0]) < 20 ? 1 : 0)",
+                f"process.exit(Number(process.version.slice(1).split('.')[0]) < {MIN_NODE_MAJOR} ? 1 : 0)",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         if ret != 0:
-            print("Node.js >= 20 required. Current version is too old.")
+            print(f"Node.js >= {MIN_NODE_MAJOR} required. Current version is too old.")
             sys.exit(1)
     except FileNotFoundError:
         print("Node.js not found.")
@@ -110,17 +111,28 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider: LLMProvider = build_provider_factory(cfg)(
         "cli_chat", agent=agent_name, channel_id=channel_id
     )
-    await provider.start()
+    try:
+        await provider.start()
 
-    if message:
-        await _send_and_print(provider, message)
-    else:
-        await _interactive(provider, cfg)
+        if message:
+            await _send_and_print(provider, message)
+        else:
+            await _interactive(provider, cfg)
+    finally:
+        try:
+            await provider.shutdown()
+        finally:
+            # Force GC so subprocess transports are collected while the loop is
+            # still open, avoiding "Event loop is closed" noise on exit.
+            gc.collect()
 
-    await provider.shutdown()
-    # Force GC so subprocess transports are collected while the loop is
-    # still open, avoiding "Event loop is closed" noise on exit.
-    gc.collect()
+
+def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
+    """Run chat at the sync CLI boundary and render SIGINT as a clean exit."""
+    try:
+        asyncio.run(_chat(message, model, agent=agent))
+    except KeyboardInterrupt:
+        print("\nBye! 👻")
 
 
 async def _send_and_print(provider: LLMProvider, message: str) -> None:

@@ -29,14 +29,19 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS, _archive_dir
+from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir, is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import (
     discover_servers_to_sync,
     register_servers_for_cc,
     sync_to_agent_config,
 )
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    configured_sandbox_mode,
+    create_subprocess_limited,
+    wrap_argv,
+)
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
 
@@ -115,7 +120,24 @@ async def api_sessions_health(request: web.Request) -> web.Response:
 _usage_cache: dict[str, object] = {}
 _usage_cache_ts: float = 0.0
 _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
+# Ceiling on ONE whole refresh. Sized above the sum of the inner bounded steps
+# (whoami ≤30s + the billed scrape ≤60s, plus the unbounded API read between
+# them) so a healthy slow refresh still completes, while a wedged one is
+# guaranteed to release the in-flight guard instead of parking it forever.
+_USAGE_FETCH_DEADLINE_SECS = 180
 _usage_fetching = False
+_MAX_BONUS_GRANTS = 32
+_MAX_BONUS_NAME_CHARS = 100
+_MAX_BONUS_CREDITS = 1_000_000.0
+_MAX_BONUS_DAYS_LEFT = 3_650
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_BONUS_DASH_RE = re.compile(
+    r"^([\d.]+)/([\d.]+)\s+used\s+\((\d+)\s+days?\s+left\)$"
+)
+_BONUS_COLON_RE = re.compile(
+    r"^(.+?):\s*([\d.]+)/([\d.]+)\s*\(expires\s+in\s+(\d+)\s+days?\)$",
+    re.IGNORECASE,
+)
 
 # --- Text-scrape gate ------------------------------------------------------
 # The `/usage` text scrape is a REAL billed kiro-cli chat turn, unlike the
@@ -227,9 +249,11 @@ def _cache_without_scrape(api_usage: object, identity: dict[str, object]) -> Non
     if _usage_cache.get("credits_plan") is not None and _same_identity(_usage_cache, identity):
         _usage_cache = {**_usage_cache, "stale": True}
     else:
-        partial = {k: _redact_strings(v) for k, v in api_usage.items()} if (
-            isinstance(api_usage, dict)
-        ) else {}
+        partial = (
+            {k: _redact_strings(v) for k, v in api_usage.items()}
+            if (isinstance(api_usage, dict))
+            else {}
+        )
         partial.pop("_profile_arn", None)
         _usage_cache = {**partial, "available": False}
     _usage_cache_ts = time.time()
@@ -243,9 +267,17 @@ def _safe_float(text: str) -> float | None:
         return None
 
 
+def _safe_int(text: str) -> int | None:
+    """Parse a regex-constrained integer without letting huge input raise."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _parse_usage(raw: str) -> dict[str, object]:
     """Parse structured fields from kiro-cli /usage output."""
-    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw)
+    clean = _ANSI_ESCAPE_RE.sub("", raw)
     result: dict[str, object] = {"raw": ""}
 
     lines = clean.splitlines()
@@ -297,33 +329,61 @@ def _parse_usage(raw: str) -> dict[str, object]:
                 if rate is not None:
                     result["overage_rate"] = rate
 
-    # Bonus / promotional credits are a separate pool kiro-cli lists in its own
-    # section after the plan, e.g.:
-    #     Bonus Credits:
-    #       Welcome bonus: 386.34/500 (expires in 15 days)
-    # This pool is drawn down BEFORE the plan, so while it lasts the plan meter
-    # barely moves — which looked like a frozen counter until we surfaced it.
-    # Capture the first bonus line (first-wins) so the dashboard can pool it into
-    # the header total and show it in the credits modal.
-    in_bonus = False
-    for line in usage_lines:
-        if "Bonus Credits" in line:
-            in_bonus = True
+    # Kiro CLI has shipped both "name: used/total (expires in N days)" and
+    # "name - used/total used (N days left)". Parse both bounded formats and
+    # retain every active grant; one malformed line must not poison the rest.
+    bonus_credits: list[dict[str, object]] = []
+    in_bonus_section = False
+    for raw_line in usage_lines:
+        line = raw_line.strip()
+        if "bonus credits:" in line.casefold():
+            in_bonus_section = True
             continue
-        if not in_bonus or "bonus_limit" in result:
+        if not in_bonus_section:
             continue
-        m = re.search(r"([A-Za-z][A-Za-z0-9 ]*?):\s*([\d.]+)\s*/\s*([\d.]+)", line)
-        if not m:
+        if line.startswith("Credits") or line.startswith("Overages:"):
+            break
+        if not line:
             continue
-        used = _safe_float(m.group(2))
-        limit = _safe_float(m.group(3))
-        if used is not None and limit is not None and limit > 0:
-            result["bonus_label"] = m.group(1).strip()
-            result["bonus_used"] = used
-            result["bonus_limit"] = limit
-            exp = re.search(r"\(([^)]*expires[^)]*)\)", line, re.IGNORECASE)
-            if exp:
-                result["bonus_expires_label"] = exp.group(1).strip()
+        if " - " in line:
+            name, usage_text = line.rsplit(" - ", 1)
+            match = _BONUS_DASH_RE.fullmatch(usage_text.strip())
+            values = match.groups() if match else None
+        else:
+            match = _BONUS_COLON_RE.fullmatch(line)
+            if match:
+                name = match.group(1)
+                values = match.group(2), match.group(3), match.group(4)
+            else:
+                name = ""
+                values = None
+        name = name.strip()
+        if not values or not name or len(name) > _MAX_BONUS_NAME_CHARS:
+            continue
+        used = _safe_float(values[0])
+        total = _safe_float(values[1])
+        days_left = _safe_int(values[2])
+        if (
+            used is None
+            or total is None
+            or days_left is None
+            or used < 0
+            or total <= 0
+            or used > _MAX_BONUS_CREDITS
+            or total > _MAX_BONUS_CREDITS
+            or days_left > _MAX_BONUS_DAYS_LEFT
+            or not name.isprintable()
+        ):
+            continue
+        bonus_credits.append(
+            {"name": name, "used": used, "total": total, "days_left": days_left}
+        )
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
+    # Preserve an observed empty section as an explicit empty list, so callers
+    # can distinguish "no active grants" from an output format with no section.
+    if in_bonus_section:
+        result["bonus_credits"] = bonus_credits
     return result
 
 
@@ -375,6 +435,7 @@ def _same_identity(cached: dict[str, object], identity: dict[str, object]) -> bo
     same-email-different-org case — without it, preserving the prior cache would
     leak the previous account's data.
     """
+
     def _red(v: object) -> object:
         return _redact_strings(v) if isinstance(v, str) else v
 
@@ -423,16 +484,16 @@ def _text_scrape_regresses_api_value(
     prev_resets = prev.get("resets")
     new_resets = new.get("resets")
     if not (
-        isinstance(prev_resets, str) and prev_resets
-        and isinstance(new_resets, str) and new_resets
+        isinstance(prev_resets, str)
+        and prev_resets
+        and isinstance(new_resets, str)
+        and new_resets
         and prev_resets == new_resets
     ):
         return False
     prev_used = prev.get("credits_used")
     new_used = new.get("credits_used")
-    if not isinstance(prev_used, (int, float)) or not isinstance(
-        new_used, (int, float)
-    ):
+    if not isinstance(prev_used, (int, float)) or not isinstance(new_used, (int, float)):
         return False
     return prev_used > new_used
 
@@ -452,6 +513,13 @@ def _redact_strings(value: object) -> object:
     if isinstance(value, list):
         return [_redact_strings(v) for v in value]
     return value
+
+
+def _publish_usage(payload: dict[str, object]) -> None:
+    """Atomically replace the cache served by ``/api/sessions/usage``."""
+    global _usage_cache, _usage_cache_ts
+    _usage_cache = payload
+    _usage_cache_ts = time.time()
 
 
 def _cache_transient_failure() -> None:
@@ -475,6 +543,47 @@ def _cache_transient_failure() -> None:
     _usage_cache_ts = time.time()
 
 
+def _wrap_argv_at_configured_tier(argv: list[str]) -> tuple[list[str], str | None]:
+    """Sandbox-wrap a one-shot ``kiro-cli`` argv at the configured tier.
+
+    BLOCKING on two counts, which is why both callers hand it to an executor
+    rather than calling it inline: :func:`configured_sandbox_mode` stats (and on a
+    cache miss re-reads and revalidates) ``config.json``, and ``wrap_argv`` ->
+    ``detect_backend`` can cold-probe the sandbox backend with a synchronous
+    ``subprocess.run(..., timeout=5)``. Both reads must therefore happen in the
+    worker thread — resolving the mode on the loop and passing it in would leave
+    half the blocking work behind.
+
+    Exists so the mode resolution and the wrap cannot drift apart between the
+    identity fetch and the usage scrape: they spawn the same binary and must take
+    the same tier.
+
+    ``is_kiro_cli=True`` is explicit because ``_spawns_kiro_cli``'s basename test
+    only matches a literal ``kiro-cli``: a Windows ``kiro-cli.exe``, a wrapper
+    shim, or a ``KIROCREW_KIRO_BIN`` pointing at a nonstandard launch path all
+    read as "not kiro-cli". On macOS with ``agent.sandbox="off"`` that
+    misclassification skips the delegation branch — and with it the credential-env
+    scrub — so the child would inherit the sensitive environment. Both callers
+    here spawn kiro-cli by construction, and both ACP spawn paths pass the same
+    flag for the same reason.
+    """
+    return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
+
+
+def _wrap_argv_usage_scrape(kiro_bin: str) -> tuple[list[str], str | None]:
+    """Executor entrypoint for the ``/usage`` scrape's wrap (see
+    :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
+    return _wrap_argv_at_configured_tier(
+        [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"]
+    )
+
+
+def _wrap_argv_whoami(kiro_bin: str) -> tuple[list[str], str | None]:
+    """Executor entrypoint for the ``whoami`` identity fetch's wrap (see
+    :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
+    return _wrap_argv_at_configured_tier([kiro_bin, "whoami", "--format", "json"])
+
+
 async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     """Return the signed-in identity from ``kiro-cli whoami --format json``.
 
@@ -492,7 +601,17 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
     proc = None
     cleanup = None
     try:
-        argv, cleanup = wrap_argv([kiro_bin, "whoami", "--format", "json"], mode="standard")
+        # Configured tier, not a hardcoded "standard": this is the same binary
+        # chat spawns, so it must not demand stricter isolation than chat does.
+        # Where the operator set agent.sandbox="off" (isolation deferred to
+        # kiro-cli's own internal sandbox) on a host with no backend, the pinned
+        # "standard" fail-closed and silently dropped the identity this readout
+        # labels the credit numbers with — failure here is non-fatal by design,
+        # so the symptom is a permanently blank email, not an error.
+        # Off the loop: see _wrap_argv_at_configured_tier for the two blocking reads.
+        argv, cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _wrap_argv_whoami, kiro_bin
+        )
         argv = cgroup_scope_argv(argv)
         proc = await create_subprocess_limited(
             *argv,
@@ -577,11 +696,7 @@ def _identity_matches_account(api_arn: object, identity: dict[str, object]) -> b
     identity is a cosmetic gap; mislabelling whose overage bill this is, is not.
     """
     whoami_arn = identity.get("_profile_arn")
-    return (
-        isinstance(api_arn, str)
-        and isinstance(whoami_arn, str)
-        and api_arn == whoami_arn
-    )
+    return isinstance(api_arn, str) and isinstance(whoami_arn, str) and api_arn == whoami_arn
 
 
 async def _fetch_usage_bg() -> None:
@@ -597,13 +712,16 @@ async def _fetch_usage_bg() -> None:
     # backoff — an API-path error or a missing kiro-cli says nothing about
     # whether the scrape works.
     scrape_attempted = False
-    try:
+
+    async def _refresh() -> None:
+        nonlocal proc, sandbox_cleanup, kiro_bin, scrape_attempted
+        global _usage_cache, _usage_cache_ts
+
         kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
             # kiro-cli absent (non-Kiro provider): cache an unavailable marker so
             # the dashboard hides the credit pill instead of polling forever.
-            _usage_cache = {"available": False}
-            _usage_cache_ts = time.time()
+            _publish_usage({"available": False})
             return
         # Identity FIRST, because it is the anchor for credential selection.
         # ``whoami`` is kiro-cli's own account, and it costs no credits; passing
@@ -646,14 +764,9 @@ async def _fetch_usage_bg() -> None:
             # still carries the no-ARN (Builder ID) case on its own.
             if identity and _identity_matches_account(api_arn, identity):
                 api_usage.update(
-                    {
-                        k: _redact_strings(v)
-                        for k, v in identity.items()
-                        if not k.startswith("_")
-                    }
+                    {k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")}
                 )
-            _usage_cache = api_usage
-            _usage_cache_ts = time.time()
+            _publish_usage(api_usage)
             logger.info(
                 "Kiro usage refreshed (api): %s / %s credits",
                 api_usage.get("credits_used", "?"),
@@ -678,10 +791,24 @@ async def _fetch_usage_bg() -> None:
             return
         scrape_attempted = True
         # Route through the OS-level sandbox, consistent with how the main agent
-        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv).
-        argv, sandbox_cleanup = wrap_argv(
-            [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"],
-            mode="standard",
+        # kiro-cli process is spawned (AcpClient._spawn -> wrap_argv) — including
+        # the TIER. This is a `kiro-cli chat` invocation, so a hardcoded
+        # "standard" asks for stricter isolation than the very same chat binary
+        # gets on the interactive path, and fail-closes wherever no backend
+        # exists. Doubly wasteful here: the scrape is a BILLED turn, so the
+        # refusal also fed the backoff counter that eventually parks it.
+        #
+        # OFF the loop, for two blocking reads: `configured_sandbox_mode()` stats
+        # (and on a cache miss re-reads + revalidates) config.json, and
+        # `wrap_argv` -> `detect_backend` can cold-probe the sandbox backend with
+        # a synchronous `subprocess.run(..., timeout=5)`. The gate above already
+        # offloads its own config read for the same reason; doing one of the two
+        # on the loop would leave the freeze this refresh's timer reintroduces
+        # every interval. Same form and reason as `papyrus/backend/latex._run`.
+        argv, sandbox_cleanup = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            _wrap_argv_usage_scrape,
+            kiro_bin,
         )
         argv = cgroup_scope_argv(argv)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
@@ -736,14 +863,9 @@ async def _fetch_usage_bg() -> None:
             # identity's ARN mismatch the accepted credential's and the email is
             # simply dropped.
             parsed.update(
-                {
-                    k: _redact_strings(v)
-                    for k, v in fresh_identity.items()
-                    if not k.startswith("_")
-                }
+                {k: _redact_strings(v) for k, v in fresh_identity.items() if not k.startswith("_")}
             )
-            _usage_cache = parsed
-            _usage_cache_ts = time.time()
+            _publish_usage(parsed)
             logger.info(
                 "Kiro usage refreshed (text): %s credits used",
                 parsed.get("credits_used", "?"),
@@ -754,6 +876,18 @@ async def _fetch_usage_bg() -> None:
             # blanking the pill; only hide when we have nothing to show.
             _record_scrape_outcome(False)
             _cache_transient_failure()
+
+    try:
+        # ONE deadline over the whole refresh. Every await inside is either
+        # already bounded or an executor call that can block on DNS or a wedged
+        # TLS handshake; without a ceiling on the total, one such hang means
+        # this coroutine never reaches its `finally`, `_usage_fetching` stays
+        # True for the process lifetime, and every later refresh returns at the
+        # guard above — so the cache is never populated and the dashboard's
+        # credit pill shows "Checking usage..." forever with nothing logged.
+        # A timeout here lands in the handler below, which keeps the last good
+        # value or marks usage unavailable, so the pill always resolves.
+        await asyncio.wait_for(_refresh(), timeout=_USAGE_FETCH_DEADLINE_SECS)
     except asyncio.TimeoutError:
         # Transient hang — keep the last good value (stale) instead of blanking.
         logger.debug("Background usage fetch timed out")
@@ -864,7 +998,9 @@ async def api_sessions(request: web.Request) -> web.Response:
 _SUMMARIZE_MAX_SESSIONS = 8  # bound cost/latency: only the top-N get an LLM pass
 _SUMMARIZE_MODEL = "auto"  # inherit the governed default; a hardcoded id 400s where unavailable
 _SUMMARIZE_MSG_LIMIT = 12  # messages fed to the summarizer per session
-_SUMMARIZE_TIMEOUT_SECS = 30  # per-session deadline so one stalled prompt can't pin the shared _bg session
+_SUMMARIZE_TIMEOUT_SECS = (
+    30  # per-session deadline so one stalled prompt can't pin the shared _bg session
+)
 _SUMMARIZE_PROMPT = (
     "Summarize the following conversation in ONE terse line (max 18 words), "
     "describing what the user and assistant are working on. No preamble, no "
@@ -906,7 +1042,7 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     meta = await loop.run_in_executor(None, log.get_metadata, key)
     # Defense in depth: never summarize an incognito/temporary session even if a
     # caller somehow passes its key.
-    if str(meta.get("memory_mode", "")).lower() in INCOGNITO_MEMORY_MODES:
+    if is_incognito_transcript(meta.get("memory_mode")):
         return ""
     # Cache: a summary persisted in a sidecar file is reusable as long as the
     # session file hasn't changed since it was generated. session_mtime advances
@@ -1071,13 +1207,16 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
     """
     from kiro_crew.dashboard.state import _normalize_slot_key
 
+    stripped = key
+    if stripped.startswith("dashboard:"):
+        stripped = stripped[len("dashboard:") :]
+    while stripped.startswith("dashboard_"):
+        stripped = stripped[len("dashboard_") :]
+    normalized = _normalize_slot_key(key)
+    pin_slot_keys = {key, stripped, "dashboard_" + key, normalized}
+
     slot = state._slots.pop(key, None)
     if not slot:
-        stripped = key
-        if stripped.startswith("dashboard:"):
-            stripped = stripped[len("dashboard:") :]
-        while stripped.startswith("dashboard_"):
-            stripped = stripped[len("dashboard_") :]
         slot = state._slots.pop(stripped, None)
     if not slot:
         # Reverse: history key has no prefix, but slot was stored with one
@@ -1087,7 +1226,31 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         # charset, which none of the prefix probes above produce. Without
         # this the slot outlives its deleted history and keeps a kiro-cli
         # process alive.
-        slot = state._slots.pop(_normalize_slot_key(key), None)
+        slot = state._slots.pop(normalized, None)
+    if slot:
+        pin_slot_keys.add(slot.key)
+    # Crew persists independently of the transcript, so a permanent delete has to
+    # reach into it too: its durable queue holds the user's own request texts and
+    # its dispatched subagents keep running whether or not a tab is open. Purging
+    # every candidate key rather than just the slot's, because the slot may already
+    # be gone (closed tab, restart) while the store on disk is not.
+    crew = getattr(state, "crew", None)
+    if crew is not None:
+        # Deferred: `handlers.sessions` loads with the dashboard package, which the
+        # gateway imports on its boot path. Crew is dashboard-only, and a delete
+        # with no live crew never needs the class at all.
+        from kiro_crew.crew_chat import CrewOrchestrator
+    if crew is not None and isinstance(crew, CrewOrchestrator):
+        for candidate in pin_slot_keys:
+            try:
+                await crew.purge_slot(candidate)
+            except Exception:
+                logger.warning("History delete: crew purge failed for %s",
+                               candidate, exc_info=True)
+    try:
+        await state.remove_chat_pins_for_slots(pin_slot_keys)
+    except Exception:
+        logger.warning("History delete: pin cleanup failed for %s", key, exc_info=True)
     if slot:
         # A pending ask_question is owned by the slot's running turn, but its
         # future lives in DashboardState rather than on slot.task. History
@@ -1234,6 +1397,12 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
 
     Authenticated via X-Internal-Secret; session is selected via the
     X-Session-Key header that all MCP subprocesses already send.
+
+    Doubles as the sleeping `wait` tool's only inbound channel. When the body
+    names a ``wait_id`` the reply may carry ``end_wait: <wait_id>``, which the
+    tool treats as "return early, keep the turn". The body is optional and every
+    field in it is advisory: a caller that sends ``{}`` gets the original
+    touch-only behaviour.
     """
     state: DashboardState = request.app["state"]
     session_key = request.headers.get("X-Session-Key", "").strip()
@@ -1242,6 +1411,17 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
     provider = state.sessions.get_provider(session_key)
     if provider is None:
         return web.json_response({"error": "session not found"}, status=404)
+    body: dict = {}
+    try:
+        if request.can_read_body:
+            parsed = await request.json()
+            if isinstance(parsed, dict):
+                body = parsed
+    except Exception:
+        # A malformed body must never cost the session its keepalive — that is
+        # the half of this route that keeps the watchdog from killing the ACP
+        # subprocess mid-wait.
+        body = {}
     try:
         provider.touch_activity()
     except Exception as exc:
@@ -1258,7 +1438,129 @@ async def api_session_keepalive(request: web.Request) -> web.Response:
             touched(session_key)
     except Exception:
         logger.debug("last_used touch failed for %s", session_key, exc_info=True)
-    return web.json_response({"ok": True})
+    reply: dict = {"ok": True}
+    wait_id = str(body.get("wait_id") or "").strip()[:64]
+    if wait_id:
+        _service_wait_ping(state, session_key, wait_id, body, reply)
+    return web.json_response(reply)
+
+
+def _service_wait_ping(
+    state: DashboardState,
+    session_key: str,
+    wait_id: str,
+    body: dict,
+    reply: dict,
+) -> None:
+    """Track an in-flight `wait` sleep and hand back any early-end request.
+
+    Mutates ``reply`` in place, adding ``end_wait`` when the user asked to end
+    this exact wait. Silent no-op when the calling session has no dashboard tab
+    (a Slack/cron session can call `wait` too — it just has nothing to render a
+    countdown on).
+    """
+    # Local import: this module's other chat_utils uses are function-local for
+    # the same circular-import reason (handlers/__init__ re-exports this module).
+    from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+    slot_name = dashboard_slot_key(session_key)
+    slot = state.get_slot(slot_name) if slot_name else None
+    if slot is None:
+        return
+    now = time.time()
+    # How stale the incumbent's last ping must be before its sleep is presumed
+    # gone. 2.5 intervals tolerates one dropped ping plus scheduling jitter
+    # without tolerating a sleep that is simply still running.
+    try:
+        interval = float(body.get("interval") or 5.0)
+    except (TypeError, ValueError):
+        interval = 5.0
+    window = max(2.0, min(60.0, interval) * 2.5)
+    if body.get("wait_done"):
+        # Only the wait that owns the state may retire it, so a late final ping
+        # from a previous sleep cannot blank the countdown of the current one.
+        if slot._wait_state and slot._wait_state.get("wait_id") == wait_id:
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_last_ping = 0.0
+            state.push_slots_update()
+        return
+    # ── Ambiguous-identity guard ──
+    # `_resolve_session_key()` answers per RUNTIME, not per ACP session: with the
+    # MCP gateway disabled (the default) KIROCREW_SESSION_KEY is unset and one MCP
+    # process serves the whole runtime, so a subagent's `wait` and its parent's
+    # resolve to the SAME session key and land on this one slot. Taking the newer
+    # wait over would then attribute one sleep's countdown to the other's pill,
+    # and worse, hand the user's End-wait click to whichever sleep polled next.
+    #
+    # The ping doubles as a heartbeat, which makes the ambiguity detectable: a
+    # second wait_id arriving while the incumbent is still pinging means two
+    # sleeps genuinely share this slot. There is no way to tell which one the
+    # user is looking at, so track neither, and stay that way for the rest of the
+    # turn (see the latch below -- a self-expiring window flapped the hole back
+    # open). Deliberately a containment, not a cure: the cure is per-session
+    # identity, which this cannot synthesize.
+    # Tracked in https://github.com/kirodotdev/KiroCrew/issues/2347, which also
+    # lists this guard among the things to delete once identity is fixed.
+    if slot._wait_contested:
+        # Latched for the REST OF THE TURN, not for a fixed window. An expiring
+        # window reopened the hole it was built to close: both sleeps keep
+        # pinging, so on expiry whichever pinged first re-minted state, and for
+        # up to one ping interval that wait's id and deadline were published and
+        # painted onto the OTHER one's pill -- with a live button that would end
+        # the wrong sleep. Re-detection closed it again a ping later, so the
+        # attribution flapped open every window instead of staying shut.
+        if slot._wait_state is not None or slot._end_wait_request is not None:
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_last_ping = 0.0
+            state.push_slots_update()
+        return
+    prev = slot._wait_state
+    if prev and prev.get("wait_id") != wait_id:
+        if now - slot._wait_last_ping < window:
+            slot._wait_contested = True
+            slot._wait_state = None
+            slot._end_wait_request = None
+            slot._wait_last_ping = 0.0
+            logger.info("two concurrent waits share session %s; countdown suppressed", session_key)
+            state.push_slots_update()
+            return
+        # The incumbent stopped pinging: its sleep is over (a missed wait_done, a
+        # killed MCP process, a hard stop). Safe to hand the slot to this one.
+    if not prev or prev.get("wait_id") != wait_id:
+        try:
+            remaining = max(0, min(1800, int(body.get("remaining") or 0)))
+            total = max(0, min(1800, int(body.get("seconds") or 0)))
+        except (TypeError, ValueError):
+            remaining, total = 0, 0
+        slot._wait_state = {
+            "wait_id": wait_id,
+            "seconds": total,
+            # Absolute deadline on the DASHBOARD's clock, derived once on first
+            # sight from the tool's own remaining budget. Two reasons not to
+            # recompute it every ping: the countdown would jitter by one
+            # round-trip each tick, and the tool's monotonic clock has no shared
+            # epoch it could send instead.
+            "deadline_ts": now + remaining,
+        }
+        # A brand-new wait cannot inherit an end request aimed at an older one.
+        slot._end_wait_request = None
+        slot._wait_last_ping = now
+        state.push_slots_update()
+    else:
+        # Heartbeat only. Held OFF the wire payload so the deadline the browser
+        # counts down against stays byte-identical between pushes.
+        slot._wait_last_ping = now
+    if slot._end_wait_request and slot._end_wait_request == wait_id:
+        # Consume exactly once. Leaving it set would make the NEXT wait in this
+        # session return instantly, which is the failure mode a session-scoped
+        # boolean flag would have had.
+        slot._end_wait_request = None
+        slot._wait_state = None
+        slot._wait_last_ping = 0.0
+        reply["end_wait"] = wait_id
+        state.push_slots_update()
 
 
 async def api_session_tool_policy(request: web.Request) -> web.Response:
@@ -1288,14 +1590,14 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
 
     # Dashboard slot
     if session_key.startswith("dashboard:"):
-        slot_key = session_key[len("dashboard:"):]
+        slot_key = session_key[len("dashboard:") :]
         slot = state.get_slot(slot_key)
         if slot:
             agent_name = slot.agent
     # Subagent — look up in SubagentManager
     elif session_key.startswith("subagent:"):
         if state.subagents:
-            subagent_id = session_key[len("subagent:"):]
+            subagent_id = session_key[len("subagent:") :]
             info = state.subagents.get(subagent_id)
             if info:
                 agent_name = info.agent
@@ -1380,7 +1682,8 @@ async def _reset_all_sessions(request: web.Request) -> int:
     if count > 0 or pool_providers:
         logger.info(
             "Reset %d session(s) + %d pool process(es) after config change",
-            count, len(pool_providers),
+            count,
+            len(pool_providers),
         )
 
     state.broadcast_ws("sessions_restarting", {"status": "restarting"})
@@ -1526,7 +1829,5 @@ async def api_session_archive_read(request: web.Request) -> web.Response:
         logger.warning("Failed to read archive %s: %s", name, exc)
         return web.json_response({"error": "unreadable archive"}, status=422)
     # Archives contain LLM output; redact credentials and exfiltration URLs before serving.
-    redacted = await asyncio.to_thread(
-        lambda: redact(raw)
-    )
+    redacted = await asyncio.to_thread(lambda: redact(raw))
     return web.Response(text=redacted, content_type="application/x-ndjson")

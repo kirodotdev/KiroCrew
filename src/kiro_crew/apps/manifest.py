@@ -18,10 +18,16 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
+
 # ---------------------------------------------------------------------------
 # Nested manifest types
 # ---------------------------------------------------------------------------
 
+# `$` matches at the true end of the string AND just before a trailing newline,
+# so this pattern only carries its intended grammar under ``fullmatch``:
+# ``KEBAB_RE.match("demo\n")`` succeeds. Any caller gating an identity on it must
+# use ``fullmatch`` — see ``app_name_error``.
 KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([+-]|$)")
 
@@ -30,6 +36,60 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([+-]|$)")
 # reserved system channels (e.g. "system.approval"). Rejected at manifest
 # validation AND defense-in-depth at the push endpoint.
 RESERVED_APP_NAMES = frozenset({"system"})
+
+# App names that are not safe portable filesystem identities. An app name becomes
+# a directory (``apps/<name>/``, plus ``apps/<name>/data`` at first startup), and
+# Windows reserves these stems as device names by naming contract.
+#
+# Only ``nul`` has a measured failure here — ``mkdir`` raises WinError 3 on
+# Windows 11 26200 via CPython — while the other stems created usable directories
+# on that same path. They are refused anyway, as policy rather than reproduction:
+# the reservation is a documented Windows naming rule whose observable behaviour
+# differs across Windows APIs and builds, so one host's success does not make the
+# name portable. An app name is a PERSISTENT published identity, which makes the
+# directions asymmetric: admitting a stem is the one-way door, since tightening
+# later invalidates an app already published and installed, while relaxing an
+# over-strict rule costs nothing.
+#
+# Rejected on all platforms, not only Windows. Resource paths in this file are
+# already validated under both path flavours for the same reason (see
+# ``_has_dotdot_segment``), and ``is_valid_followup_branch`` applies this same
+# vocabulary to git branch names on every platform so that grammar does not
+# depend on where the gateway runs.
+#
+# The set is lowercase and ``KEBAB_RE`` already forces lowercase, so membership
+# is tested directly with no case folding.
+UNPORTABLE_APP_NAMES = WINDOWS_DEVICE_STEMS
+
+
+def app_name_error(name: str) -> str | None:
+    """Return why *name* is inadmissible as an app identifier, else ``None``.
+
+    The single app-name contract. Every path that admits a new app funnels
+    through here — manifest validation (install, update, discovery), external
+    self-registration, and builtin registration — so that a name refused at one
+    door cannot be admitted at another. The name is an identity AND a directory
+    component, so the same string has to satisfy both roles.
+    """
+    if not name:
+        return "app name must not be empty"
+    # fullmatch, not match: the pattern's `$` also matches before a trailing
+    # newline, so `match` admits "demo\n" — and the reserved-name comparisons
+    # below test the exact string, so "nul\n" and "system\n" would evade those
+    # too and reach a backend that stores and joins the RAW name.
+    if not KEBAB_RE.fullmatch(name):
+        return f"app name must be kebab-case (lowercase alphanumeric + hyphens): {name!r}"
+    if name in RESERVED_APP_NAMES:
+        return (
+            f"app name {name!r} is reserved (would shadow the "
+            f"{name}.* notification channel namespace)"
+        )
+    if name in UNPORTABLE_APP_NAMES:
+        return (
+            f"app name {name!r} is not portable: Windows reserves it as a device name, "
+            f"so the app directory is not safe to create there"
+        )
+    return None
 
 
 def _is_rooted_path(rel_path: str) -> bool:
@@ -817,7 +877,11 @@ class NotificationsConfig:
             if not ch.id:
                 errors.append("notifications.channels: channel missing required field: id")
                 continue
-            if not KEBAB_RE.match(ch.id):
+            # fullmatch, not match: KEBAB_RE ends in `$`, which also matches
+            # just before a trailing newline, so `match` accepts an id with one
+            # trailing. The id is joined into a channel name ("<app>.<id>") and
+            # used as a subscription key, so the newline survives into both.
+            if not KEBAB_RE.fullmatch(ch.id):
                 errors.append(f"notifications.channels: channel id must be kebab-case: {ch.id!r}")
             if ch.id in seen:
                 errors.append(f"notifications.channels: duplicate channel id: {ch.id!r}")
@@ -942,15 +1006,10 @@ class AppManifest:
         # Required fields
         if not self.name:
             errors.append("missing required field: name")
-        elif not KEBAB_RE.match(self.name):
-            errors.append(
-                f"name must be kebab-case (lowercase alphanumeric + hyphens), got: {self.name!r}"
-            )
-        elif self.name in RESERVED_APP_NAMES:
-            errors.append(
-                f"app name {self.name!r} is reserved (would shadow the "
-                f"{self.name}.* notification channel namespace)"
-            )
+        else:
+            name_error = app_name_error(self.name)
+            if name_error:
+                errors.append(name_error)
 
         if not self.version:
             errors.append("missing required field: version")

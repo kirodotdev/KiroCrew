@@ -16,8 +16,16 @@ superseded-by: []
 - Status: partial — **Phase 1 landed** as PR #1761 (merged commit `f8afcff7`):
   `is_proxied_request()`, the per-binding `proxied` flag, the tri-state Security
   Posture row, and the guide correction across all three tunnel providers.
-  Phases 2–4 have no implementation. Phase 1 reports the pin's real scope; it
-  does **not** repair the pin, which is Phase 3 and is tracked as issue #1762.
+  **Phase 3 landed** (issue #1762): `resolve_forwarded_peer()` in
+  `dashboard/tailnet.py`, the peer-keyed session pin and login allowlist in
+  `dashboard/token_auth.py`, and audit attribution to the resolved login —
+  POSIX-only per OQ4 (Windows resolution is unverified and degrades to the
+  token path). One shape divergence from §3: the implemented peer keys are
+  `ts:node:<login>|<node>` / `ts:login:<login>` — the scope tag and the `|`
+  separator (forbidden inside either component) exist because logins are
+  emails and contain `@`, so the bare shapes in §3 are ambiguous. Phase 2's explicit half
+  (`dashboard.tailscale.enabled` origin derivation) is implemented; its
+  inferred signal (§4 signal 2) and Phase 4 are not.
   Pin scope was settled after review: configurable, defaulting to `node` (§3.1).
 - Author: zezhexu
 - Created: 2026-08-06

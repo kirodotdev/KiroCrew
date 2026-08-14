@@ -34,10 +34,15 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Awaitable, Callable
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
+
+from kiro_crew import hooks, model_registry
+from kiro_crew.apps.manager import is_app_enabled
 
 logger = logging.getLogger("kirocrew.app.code-review-sage")
 
@@ -54,8 +59,11 @@ if str(_APP_ROOT) not in sys.path:
 # module load, so this resolves on first import.
 from sage_lib import (  # noqa: E402,E501
     adapters,
+    chat_session,
+    discovery,
     learning,
     pipeline,
+    report,
     results,
     review_driver,
     review_pool,
@@ -68,16 +76,42 @@ from sage_lib import (  # noqa: E402,E501
 _RUNS: list[dict[str, Any]] = []
 _RUNS_MAX = 25
 _LOCK = asyncio.Lock()
-# Serializes whole review runs. run_review clears + writes the SHARED data/results
-# dir and the report index, so two overlapping runs (from /review and /review-repo,
-# or two /review-repo calls) would clobber each other's records/report. Concurrent
-# starts queue on this lock instead of interleaving.
+# Guards the claim/dedup step below. Runs themselves are NOT serialized: each run
+# owns a private ``data/runs/<run_id>/`` subtree (results + report), so several
+# reviews can be in flight at once. What still needs mutual exclusion is the
+# moment a run decides WHICH changes it owns.
+# Serializes whole runs. Workers hand results back through a directory shared
+# ACROSS runs, so overlapping runs would mean two writers to one path.
 _RUN_LOCK = asyncio.Lock()
+
+# Serialises "start a consolidation" against "delete this namespace". Both are
+# short critical sections; holding one lock across each removes the interleaving
+# rather than trying to place checks around the awaits.
+_NS_OPS_LOCK = asyncio.Lock()
+# reviewed-key -> run_id for every change a LIVE run has claimed. Two runs must
+# never review and post to the same PR concurrently: the old whole-run lock
+# prevented that by refusing to overlap at all; this claim registry gets the same
+# guarantee while letting unrelated runs proceed in parallel. It also closes a gap
+# the old lock never covered — a pasted-link run overlapping a repo run.
+_INFLIGHT: dict[str, str] = {}
+# staging-key -> the reviewed key that owns it. `_INFLIGHT` alone cannot express
+# this: exempting a run's own claims (needed so re-claiming is idempotent) also
+# exempted a SECOND change in the same run whose lossy id collapsed onto the same
+# staging file — both were kept, both workers wrote one path, and one review was
+# adopted under the wrong pull request. Ownership is per CHANGE, not per run.
+_STAGE_OWNER: dict[str, str] = {}
+# Run ids the user asked to cancel. The driver polls this between changes.
+_CANCELLED: set[str] = set()
 # Guards copy-on-write updates to a run's per-change ``progress`` map, which the
 # (threaded) driver writes and the /runs handler reads concurrently.
 _PROGRESS_LOCK = threading.Lock()
 # Keep strong refs to background tasks so they aren't garbage-collected mid-flight.
 _TASKS: set[asyncio.Task] = set()  # type: ignore[type-arg]
+# Dashboard state, captured at route registration. A finished run notifies the
+# bell feed, and that happens in a background task with no ``request`` in scope —
+# so the state has to be reachable without one. Populated lazily and treated as
+# optional everywhere (tests register routes on a bare aiohttp app).
+_APP_STATE: dict[str, Any] = {}
 
 
 def _make_progress(run: dict):
@@ -127,7 +161,18 @@ def _save_runs() -> None:
 def _load_runs() -> None:
     """Load persisted runs on startup. Any run still marked ``running`` is
     re-marked ``interrupted`` — its in-process driver thread did not survive the
-    restart, so it can't be resumed and must not show as live."""
+    restart, so it can't be resumed and must not show as live.
+
+    The posting phase needs the same recovery for the same reason, and it is a
+    separate flag: ``posting`` is persisted while the delivery task runs, but that
+    task is an ``asyncio`` task in this process, so a restart leaves the flag set
+    with nothing driving it. Left alone the run is stranded for good — the post
+    endpoint 409s on ``already_posting``, ``_is_live`` keeps retention from
+    evicting it, and delete refuses it. Clearing the flag here is safe because
+    ``posted_keys`` is only written on delivery evidence, so whatever actually
+    landed stays recorded and ``_pending_comment_count`` offers exactly the
+    remainder on the next post.
+    """
     global _RUNS
     try:
         f = _runs_file()
@@ -137,77 +182,241 @@ def _load_runs() -> None:
         if not isinstance(data, list):
             return
         for r in data:
-            if isinstance(r, dict) and r.get("status") == "running":
+            if not isinstance(r, dict):
+                continue
+            if r.get("status") == "running":
                 r["status"] = "interrupted"
                 r["error"] = "Interrupted by a gateway restart — re-run the review."
                 r.setdefault("finished_at", _now())
+            if r.get("posting"):
+                r["posting"] = False
+                r["post_error"] = (
+                    "Posting was interrupted by a gateway restart — comments already "
+                    "delivered are marked as sent; post again to send the rest.")
         _RUNS = data[:_RUNS_MAX]
     except Exception:  # pragma: no cover - defensive
         logger.warning("failed to load runs.json", exc_info=True)
 
 
+def _is_live(run: dict) -> bool:
+    """True while a run still owns its on-disk subtree.
+
+    Two phases are live, and they are NOT the same condition. ``status ==
+    "running"`` covers the review; posting happens AFTER the run reaches a terminal
+    status, so a run that is mid-delivery reports a terminal status while
+    ``posting`` is true. The delete handler has always checked both (its own
+    comment: "Posting runs on a TERMINAL run, so the status check above does not
+    cover it"); retention checked only the first, so an actively-posting run could
+    be evicted and have its directory deleted while the poster was still writing to
+    the pull request — losing the record of what landed.
+
+    One predicate so the two callers cannot drift apart again.
+    """
+    return str(run.get("status") or "") == "running" or bool(run.get("posting"))
+
+
 async def _record(run: dict) -> None:
     async with _LOCK:
         _RUNS.insert(0, run)
-        del _RUNS[_RUNS_MAX:]
+        # Runs that fall off the end of the registry take their on-disk subtree
+        # with them. Without this, every review would leave a results+report dir
+        # behind forever — the registry is bounded but the disk would not be.
+        #
+        # Retention is by POSITION, so with enough concurrent reviews the oldest
+        # entry past the cap can still be LIVE. Evicting it deleted the subtree
+        # underneath a live review: its endpoints started 404ing and the report it
+        # was about to write was orphaned. Only terminal runs are evictable; a live
+        # one is kept even if that pushes the registry past the cap, and it becomes
+        # evictable on the next _record after it finishes.
+        keep: list[dict] = []
+        evicted: list[str] = []
+        for i, r in enumerate(_RUNS):
+            if i < _RUNS_MAX or _is_live(r):
+                keep.append(r)
+            else:
+                evicted.append(str(r.get("run_id") or ""))
+        _RUNS[:] = keep
         _save_runs()
+    for run_id in evicted:
+        if run_id:
+            await asyncio.to_thread(store.remove_run_dir, run_id)
 
 
-def _dedup_changes_under_lock(run: dict, changes: list[str]) -> list[str]:
-    """Re-filter a repo-review run's ``changes`` against the CURRENT reviewed index,
-    dropping any PR already reviewed at the exact head SHA this run intended to
-    review. Called under ``_RUN_LOCK`` to close the TOCTOU where two concurrent
-    repo-reviews both deduped against a stale index before the lock (the second
-    would otherwise re-review + re-post a PR the first just delivered).
+def _find_run(run_id: str) -> dict | None:
+    """Locate a run in the registry by id (exact match)."""
+    for r in _RUNS:
+        if str(r.get("run_id") or "") == run_id:
+            return r
+    return None
 
-    No-op for forced runs and pasted-link runs (no ``head_shas``). Keeps
-    ``run['changes'|'change_ids'|'head_shas']`` consistent with the kept subset so
-    ``_record_reviewed`` still round-trips. Sync (reads the index) — call via a
-    thread from the event loop.
+
+def _reap_orphan_run_dirs() -> int:
+    """Delete run subtrees with no corresponding registry entry.
+
+    Covers the crash window where a run dir was created but the registry write
+    that would own it never landed, and any residue from an older layout. Called
+    once at startup; never raises."""
+    try:
+        known = {store.safe_run_id(str(r.get("run_id") or "")) for r in _RUNS}
+        removed = 0
+        for on_disk in store.list_run_ids():
+            if on_disk not in known:
+                if store.remove_run_dir(on_disk):
+                    removed += 1
+        return removed
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("code-review-sage: orphan run-dir reap failed", exc_info=True)
+        return 0
+
+
+def _stage_key(change_id: str) -> str:
+    """The identity the SHARED staging path collapses a change id down to.
+
+    ``results.safe_change_id`` maps every character outside ``[A-Za-z0-9._-]`` to
+    ``_``, so two DIFFERENT changes can name one staging file — e.g. ``owner/repo#5``
+    and ``owner_repo#5`` both stage as ``owner_repo_5.json``. The reviewed key is
+    faithful, so claiming on it alone would let both run at once and let one
+    worker's record be adopted by the other's run: the silent-empty-report failure
+    this module exists to prevent. Claim this coarser identity as well, so changes
+    that share a staging path are serialized while everything else stays parallel.
     """
+    return "stage:" + results.safe_change_id(change_id)
+
+
+def _claim_changes_under_lock(run: dict, changes: list[str]) -> list[str]:
+    """Decide which changes this run OWNS, and claim them.
+
+    Two filters, both required, applied while ``_RUN_LOCK`` is held:
+
+    1. **Already in flight.** Drop any change another LIVE run has claimed, under
+       either its faithful reviewed key or its (lossy) staging key. Runs execute
+       concurrently now, so without this two runs started seconds apart against the
+       same repo would both review and both post to the same PR.
+    2. **Already reviewed at this head.** Re-filter against the CURRENT reviewed
+       index, dropping PRs a run that finished after this one was queued has since
+       delivered. (Skipped for forced runs and pasted-link runs, which carry no
+       ``head_shas``.)
+
+    Keeps ``run['changes'|'change_ids'|'head_shas']`` consistent with the kept
+    subset so ``_record_reviewed`` still round-trips. Sync (reads the index) — call
+    via a thread from the event loop.
+    """
+    run_id = str(run.get("run_id") or "")
     head_shas = run.get("head_shas") or {}
-    if run.get("force") or not head_shas:
-        return changes
-    index = results.read_reviewed()
+    forced = bool(run.get("force"))
+    index = {} if (forced or not head_shas) else results.read_reviewed()
+
     kept: list[str] = []
     kept_shas: dict[str, str] = {}
+    seen_rkeys: set[str] = set()
+    skipped_inflight = 0
     for url in changes:
         rkey = review_driver.reviewed_key_for(url)
-        intended = head_shas.get(rkey, "")
-        rec = index.get(rkey) or {}
-        if intended and rec.get("head_sha") == intended:
-            continue   # a concurrent run already reviewed this exact head
+        skey = _stage_key(review_driver.change_id_for(url))
+        # Drop a change this batch already kept. The claim checks below all
+        # (correctly) let the SAME run re-claim a key it owns, so without this a
+        # repeated URL -- or two spellings that map to one reviewed key -- passes
+        # every gate and lands in `kept` twice. Two workers then review one change
+        # through one staging path, and the second write overwrites or consumes the
+        # first, so the run reports success with a report missing a change.
+        #
+        # Not counted as `skipped_inflight`: that number means another run holds the
+        # claim, and surfacing a caller's duplicate as contention would misreport
+        # why a change was dropped.
+        if rkey in seen_rkeys:
+            continue
+        seen_rkeys.add(rkey)
+        # A live claim on the faithful reviewed key by ANOTHER run blocks it.
+        rkey_owner = _INFLIGHT.get(rkey)
+        if rkey_owner is not None and rkey_owner != run_id:
+            skipped_inflight += 1
+            continue
+        # Then the staging key across runs. This read matters on its own: the
+        # POSTING path claims `_INFLIGHT[skey]` without recording a
+        # `_STAGE_OWNER` (it holds a change id, not a reviewed key), so checking
+        # only `_STAGE_OWNER` let a review claim a change whose staging file a
+        # live post was mid-round-trip through — the two then swapped records.
+        skey_owner = _INFLIGHT.get(skey)
+        if skey_owner is not None and skey_owner != run_id:
+            skipped_inflight += 1
+            continue
+        # Finally the staging key WITHIN this run: exempt only for the SAME change
+        # re-claiming it, so two changes sharing a staging path still collide.
+        stage_owner = _STAGE_OWNER.get(skey)
+        if stage_owner is not None and stage_owner != rkey:
+            skipped_inflight += 1
+            continue
+        if head_shas and not forced:
+            intended = head_shas.get(rkey, "")
+            rec = index.get(rkey) or {}
+            if intended and rec.get("head_sha") == intended:
+                continue   # a concurrent run already reviewed this exact head
+        _INFLIGHT[rkey] = run_id
+        _INFLIGHT[skey] = run_id
+        _STAGE_OWNER[skey] = rkey
         kept.append(url)
         if rkey in head_shas:
             kept_shas[rkey] = head_shas[rkey]
+
     run["changes"] = kept
     run["change_ids"] = [review_driver.change_id_for(c) for c in kept]
     run["head_shas"] = kept_shas
+    if skipped_inflight:
+        run["skipped_inflight"] = skipped_inflight
     return kept
+
+
+def _release_claims(run: dict) -> None:
+    """Drop this run's in-flight claims. Must run for EVERY terminal path —
+    including failure and cancellation — or the claimed PRs become permanently
+    unreviewable until the gateway restarts."""
+    run_id = str(run.get("run_id") or "")
+    for key, owner in list(_INFLIGHT.items()):
+        if owner == run_id:
+            _INFLIGHT.pop(key, None)
+            # Staging ownership is released with the claim it belongs to,
+            # otherwise the path stays permanently unclaimable.
+            _STAGE_OWNER.pop(key, None)
 
 
 async def _run_review_bg(run: dict, changes: list[str]) -> None:
     """Run the (blocking) driver in a worker thread; update the run record.
 
-    The driver owns the whole lifecycle: gate task -> Python phase switch ->
-    deep task -> report -> archive -> clean. Each task is dispatched to the
-    shared, reusable worker pool (``review_pool``) — long-lived ACP sessions,
-    not per-CR ``/api/spawn`` sub-agents — so reviews run silently (no agent
-    card, no ``:lock:``, no Slack relay) and warm workers are reused across CRs
-    with a clean-slate reset between them. We just surface the driver's summary."""
+    The driver owns the whole lifecycle: review task -> report -> archive ->
+    clean. Each task is dispatched to the shared, reusable worker pool
+    (``review_pool``) — long-lived ACP sessions, not per-CR ``/api/spawn``
+    sub-agents — so reviews run silently (no agent card, no ``:lock:``, no Slack
+    relay) and warm workers are reused across CRs with a clean-slate reset
+    between them.
+
+    Whole runs ARE serialized against each other, and reviews within a run run one
+    at a time. Neither is a performance choice: results come back through
+    ``data/results/<change_id>.json``, which is SHARED across runs, so two live runs
+    are two writers to one path and a prompt-injected worker could get its findings
+    adopted by the other run. Run-scoped subtrees narrow that window but do not
+    close it, because the hand-back still crosses the shared path. Serializing is
+    what makes adoption attributable.
+
+    The cost is real and worth stating: a second review waits for the first. The
+    exchange is a shared-path race for latency, and until the hand-back stops going
+    through a shared path, latency is the right thing to give up."""
+    run_id = str(run.get("run_id") or "")
     try:
-        # Serialize whole runs (see _RUN_LOCK): concurrent starts queue here rather
-        # than interleaving over the shared results dir / report index.
         async with _RUN_LOCK:
-            # TOCTOU guard: the dedup in _handle_review_repo ran
-            # BEFORE this lock, so a concurrent repo-review that finished first may
-            # have just recorded some of these PRs. Re-dedup against the now-current
-            # reviewed index under the lock so we never re-review + re-post a PR that
-            # another run already delivered. No-op for forced / pasted-link runs.
-            changes = await asyncio.to_thread(_dedup_changes_under_lock, run, changes)
+            # Serialize the WHOLE run, not just the claim. Workers hand results back
+            # through `data/results/<change_id>.json`, which is shared across runs
+            # (`publish_to_shared` writes to `results_dir(root, None)`), so two live runs
+            # means two writers to one path. The claim cannot substitute for this: it
+            # coordinates honest runs, while a prompt-injected worker writes whatever
+            # change id it likes and a concurrent run then adopts findings it did not
+            # produce. Concurrent starts queue here instead of interleaving.
+            # Inner guard, still worth holding: two runs reviewing the same PR, and
+            # re-reviewing a head a just-finished run already delivered.
+            changes = await asyncio.to_thread(_claim_changes_under_lock, run, changes)
             if not changes:
                 run["summary"] = {"ok": True, "changes": 0,
-                                  "note": "all PRs already reviewed by a concurrent run"}
+                                  "note": "all PRs already reviewed or in flight "
+                                          "in a concurrent run"}
                 run["status"] = "done"
                 return
             # Bridge the threaded driver to the async pool running on THIS (gateway)
@@ -218,20 +427,53 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
 
             # Bracket the batch: begin_batch() lazily spawns the ONE shared runtime;
             # end_batch() (in finally) kills it once this run's reviews all drain — so
-            # the subprocess (and its memory) lives exactly as long as the batch.
+            # the subprocess (and its memory) lives exactly as long as the batch. The
+            # holder is reference-counted, so overlapping runs share one runtime and the
+            # last one out tears it down.
             await pool.begin_batch()
             try:
                 summary = await asyncio.to_thread(
                     review_driver.run_review, changes,  # type: ignore[attr-defined]
                     dispatch=dispatch, progress=_make_progress(run),
+                    run_id=run_id, cancelled=lambda: run_id in _CANCELLED,
+                    # One reviewer at a time. Workers share the staging directory and
+                    # each has shell and file tools, so two running at once means one
+                    # can write another change's record between that change's slot
+                    # being cleared and its own worker writing -- attacker-controlled
+                    # findings attributed to the victim pull request. Serializing makes
+                    # "the record in this slot" mean "written by the worker just
+                    # dispatched". Restoring parallelism needs per-dispatch staging
+                    # whose path a sibling worker cannot guess.
+                    concurrency=1,
                 )
             finally:
                 await pool.end_batch()
             run["summary"] = summary
+            _collect_delivered(run, summary)
             run["report_slug"] = summary.get("report_slug") or run.get("report_slug")
-            # "done" even if some changes failed — the failures are surfaced in the
-            # summary; "error" is reserved for the driver itself blowing up.
-            run["status"] = "done" if summary.get("ok") else "error"
+            recorded = int(summary.get("result_records") or 0)
+            deep = int(summary.get("deep_reviewed") or 0)
+            attempted = int(summary.get("changes") or 0) - int(summary.get("cancelled") or 0)
+            if run_id in _CANCELLED:
+                run["status"] = "cancelled"
+            elif not summary.get("ok"):
+                run["status"] = "error"
+            elif attempted > 0 and (recorded == 0 or deep == 0):
+                # run_review returns ok=True for any run with >=1 change, so a run
+                # whose every change failed used to report "done" with an empty
+                # report. Nothing was reviewed; say so rather than letting the UI
+                # claim success and then show an empty report.
+                #
+                # `deep == 0` is checked as well as `recorded == 0`: a change can
+                # persist a record and still never be deep-reviewed, which cleared the
+                # record count while leaving the report with no findings in it. Both
+                # are the same "claimed success, delivered nothing" failure.
+                run["status"] = "error"
+                run["error"] = _first_change_error(summary) or (
+                    "the reviewer produced no result record")
+            else:
+                # "done" even if SOME changes failed — those are surfaced per change.
+                run["status"] = "done"
             if not summary.get("ok"):
                 run["error"] = summary.get("error", "review failed")
             else:
@@ -242,11 +484,88 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
     except Exception as exc:  # pragma: no cover - defensive
         run["status"] = "error"
         run["error"] = str(exc)
-        logger.warning("code-review-sage run %s failed: %s", run.get("run_id"), exc, exc_info=True)
+        logger.warning("code-review-sage run %s failed: %s", run_id, exc, exc_info=True)
     finally:
         run["finished_at"] = _now()
+        # Claims MUST be released on every terminal path, or the PRs this run
+        # touched stay unreviewable for the life of the process.
+        async with _RUN_LOCK:
+            _release_claims(run)
+        _CANCELLED.discard(run_id)
         async with _LOCK:
             _save_runs()
+        await _notify_finished(run)
+
+
+def _first_change_error(summary: dict) -> str:
+    """The most useful per-change failure reason, for a run-level error message."""
+    for rec in summary.get("per_change") or []:
+        for key in ("deep_error", "gate_error", "skipped_reason"):
+            val = str(rec.get(key) or "").strip()
+            if val:
+                return {
+                    "no_review_recorded": "the reviewer finished but wrote no "
+                                          "findings record",
+                    "review_failed": "the review turn failed",
+                }.get(val, val)
+    return ""
+
+
+def _run_headline(run: dict) -> str:
+    """One-line human description of a run, for notifications and thread titles."""
+    repo = run.get("repo")
+    n = len(run.get("changes") or [])
+    if repo:
+        return f"{repo} · {n} PR{'s' if n != 1 else ''}"
+    changes = run.get("changes") or []
+    if n == 1 and changes:
+        link = str(changes[0])
+        try:
+            host, owner, name, number = adapters.github_pr_ref(link)
+        except adapters.AdapterError:
+            return link.rsplit("github.com/", 1)[-1]
+        # github.com stays host-less (the unambiguous common case); a GitHub
+        # Enterprise PR carries its host so two instances' PRs read apart.
+        prefix = "" if host == "github.com" else f"{host}/"
+        return f"{prefix}{owner}/{name}/pull/{number}"
+    return f"{n} PR{'s' if n != 1 else ''}"
+
+
+async def _notify_finished(run: dict) -> None:
+    """Push a bell notification when a run reaches a terminal state.
+
+    This is the answer to "there's no way to know when the review is done": the
+    page polls while you are looking at it, but a review takes minutes and you
+    will be elsewhere by the time it lands. Best-effort — a notification failure
+    must never affect the run. Cancelled runs stay silent (the user just cancelled
+    it; telling them it stopped is noise)."""
+    status = run.get("status")
+    if status not in ("done", "error"):
+        return
+    state = _APP_STATE.get("state")
+    if state is None or not hasattr(state, "notify"):
+        return
+    bands = ((run.get("summary") or {}).get("report") or {}).get("bands") or {}
+    red, yellow = int(bands.get("red", 0) or 0), int(bands.get("yellow", 0) or 0)
+    if status == "error":
+        title = "Code review failed"
+        body = f"{_run_headline(run)} — {run.get('error') or 'the run did not complete'}"
+    else:
+        parts = []
+        if red:
+            parts.append(f"{red} needs review")
+        if yellow:
+            parts.append(f"{yellow} worth a glance")
+        title = "Code review ready"
+        body = f"{_run_headline(run)} — " + (", ".join(parts) if parts else "nothing flagged")
+    try:
+        # state.notify() is the never-raises legacy adapter over the notification
+        # bus; run it off the event loop because its delivery sink persists to disk.
+        await asyncio.to_thread(
+            state.notify, "agent", title, body,
+        )
+    except Exception:  # pragma: no cover - best effort
+        logger.debug("code-review-sage: run-finished notification failed", exc_info=True)
 
 
 async def _handle_review(request: web.Request) -> web.Response:
@@ -271,7 +590,7 @@ async def _handle_review(request: web.Request) -> web.Response:
 
     if not changes:
         return web.json_response(
-            {"error": "no reviewable changes — paste one or more PR/CR links"},
+            {"code": "no_reviewable_changes", "error": "no reviewable changes — paste one or more PR/CR links"},
             status=400,
         )
 
@@ -295,6 +614,19 @@ async def _handle_review(request: web.Request) -> web.Response:
     return web.json_response(
         {"run_id": run["run_id"], "changes": changes, "status": "running"}
     )
+
+
+def _posting_expected(rec: dict) -> int:
+    """How many comments this change had to deliver to count as reviewed.
+
+    `rec.get("posting_expected") or 1` could not tell an ABSENT field from a
+    legitimate 0 — and 0 is exactly what the default (non-posting) path writes, so
+    `0 or 1` became 1, `0 >= 1` was false, the change never entered reviewed.json,
+    and every unchanged PR was re-reviewed forever. Absent still means 1, for
+    records written before the field existed.
+    """
+    raw = rec.get("posting_expected")
+    return 1 if raw is None else int(raw)
 
 
 def _record_reviewed(run: dict) -> None:
@@ -334,7 +666,7 @@ def _record_reviewed(run: dict) -> None:
         cid_to_rkey.get(r.get("change_id"))
         for r in per_change
         if r.get("deep_reviewed") and r.get("post_ok")
-        and (r.get("posted_comments") or 0) >= (r.get("posting_expected") or 1)
+        and (r.get("posted_comments") or 0) >= _posting_expected(r)
     }
     reviewed_ok.discard(None)
     now = _now()
@@ -350,12 +682,14 @@ def _record_reviewed(run: dict) -> None:
 
 
 async def _list_repo_prs(repo: str) -> tuple[str, list[dict]]:
-    """Resolve owner/repo from a repo URL and enumerate its OPEN PRs (via `gh`).
-    Returns ``("<owner>/<repo>", prs)``. Raises ValueError for a bad URL and
-    RuntimeError for a `gh` failure (mapped to 400/502 by the handlers)."""
-    owner, name = adapters.parse_repo_url(repo)   # raises on non-GitHub / no owner/repo
-    prs = await asyncio.to_thread(pipeline.list_open_prs, owner, name)
-    return f"{owner}/{name}", prs
+    """Resolve host/owner/repo from a repo URL and enumerate its OPEN PRs (via
+    `gh`). Returns ``("<owner>/<repo>", prs)`` (host-qualified for a GitHub
+    Enterprise host). Raises ValueError for a bad URL and RuntimeError for a
+    `gh` failure (mapped to 400/502 by the handlers)."""
+    host, owner, name = adapters.parse_repo_ref(repo)  # raises on unknown host / no owner/repo
+    prs = await asyncio.to_thread(pipeline.list_open_prs, owner, name, host=host)
+    slug = f"{owner}/{name}" if host == "github.com" else f"{host}/{owner}/{name}"
+    return slug, prs
 
 
 async def _handle_repo_prs(request: web.Request) -> web.Response:
@@ -363,14 +697,19 @@ async def _handle_repo_prs(request: web.Request) -> web.Response:
     reviewed / not-reviewed / stale (by head SHA). Does NOT start a review."""
     repo = (request.query.get("repo") or "").strip()
     if not repo:
-        return web.json_response({"error": "missing ?repo=<github repo url>"}, status=400)
+        return web.json_response({"code": "repo_required", "error": "missing ?repo=<github repo url>"}, status=400)
     try:
         slug, prs = await _list_repo_prs(repo)
     except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
-        return web.json_response({"error": f"invalid repo url: {e}"}, status=400)
+        return web.json_response({"code": "invalid_repo_url", "error": f"invalid repo url: {e}"}, status=400)
     except Exception as e:  # gh not authed / network / repo not found
         logger.warning("repo PR list failed: %s", e, exc_info=True)
-        return web.json_response({"error": "upstream service error"}, status=502)
+        # The provider's text can carry repo paths and token hints, so it is logged
+        # for the operator and never returned; the code is what a client branches on.
+        return web.json_response(
+            {"code": "provider_unavailable", "error": "upstream service error"},
+            status=502,
+        )
     index = await asyncio.to_thread(results.read_reviewed)
     out = []
     for pr in prs:
@@ -410,14 +749,18 @@ async def _handle_review_repo(request: web.Request) -> web.Response:
     # costly review of every open PR.
     force = body.get("force") is True
     if not repo:
-        return web.json_response({"error": "missing 'repo' (a github repo url)"}, status=400)
+        return web.json_response({"code": "repo_required", "error": "missing 'repo' (a github repo url)"}, status=400)
     try:
         slug, prs = await _list_repo_prs(repo)
     except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
-        return web.json_response({"error": f"invalid repo url: {e}"}, status=400)
+        return web.json_response({"code": "invalid_repo_url", "error": f"invalid repo url: {e}"}, status=400)
     except Exception as e:
         logger.warning("repo review-repo failed: %s", e, exc_info=True)
-        return web.json_response({"error": "upstream service error"}, status=502)
+        # Same treatment as the PR-list path: log the provider text, return only a code.
+        return web.json_response(
+            {"code": "provider_unavailable", "error": "upstream service error"},
+            status=502,
+        )
 
     index = await asyncio.to_thread(results.read_reviewed)
     changes: list[str] = []
@@ -489,6 +832,645 @@ async def _handle_runs(request: web.Request) -> web.Response:
     return web.json_response({"runs": runs, "pool": pool, "reviewer": reviewer})
 
 
+# --- Per-run endpoints -------------------------------------------------------
+# One review = one thread in the UI. These let the page open a specific thread,
+# read its report INLINE (no artifact round-trip), stop it, and dismiss it.
+
+def _run_id_param(request: web.Request) -> str:
+    """The ``{run_id}`` path param, **validated** rather than repaired.
+
+    Path params are user input even when the ids we mint are not, and this value
+    reaches the filesystem. Sanitizing alone is not enough: ``safe_run_id``
+    collapses unsafe characters to ``_`` and strips them from the ends, so
+    ``<valid-id>!`` would come back as ``<valid-id>`` -- two different URLs
+    addressing the same run, and a mangled id quietly acting on a real run's
+    report instead of failing. Require the param to already BE its safe form and
+    404 otherwise; every id we mint (``uuid4().hex[:12]``) already is.
+
+    404 rather than 400 so a malformed id is indistinguishable from an unknown
+    one -- the endpoint reveals nothing about which ids exist.
+    """
+    raw = (request.match_info.get("run_id") or "").strip()
+    if not raw or store.safe_run_id(raw) != raw:
+        raise web.HTTPNotFound(
+            text=json.dumps({"code": "run_not_found", "error": f"no such run {raw!r}"}),
+            content_type="application/json",
+        )
+    return raw
+
+
+async def _handle_run_detail(request: web.Request) -> web.Response:
+    """GET .../runs/{run_id} — one run, with its report summary if it has one."""
+    run_id = _run_id_param(request)
+    async with _LOCK:
+        run = _find_run(run_id)
+        run = dict(run) if run else None
+    if run is None:
+        return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+    return web.json_response({"run": run})
+
+
+async def _handle_run_report(request: web.Request) -> web.Response:
+    """GET .../runs/{run_id}/report — the run's Focus Report, as data.
+
+    This is what makes the report viewable INSIDE the app. The rows come from the
+    run's own ``report.json`` (already redacted by ``report.build_report``), so
+    reading a report never depends on the artifact store — a run whose artifact
+    archive failed still renders here."""
+    run_id = _run_id_param(request)
+    async with _LOCK:
+        run = _find_run(run_id)
+        known = run is not None
+        status = str((run or {}).get("status") or "")
+    if not known:
+        return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+    payload = await asyncio.to_thread(report.read_report, None, run_id)
+    if payload is None:
+        # Not an error: a running run has no report yet, and the page renders
+        # progress instead. Say so explicitly rather than 404-ing a live run.
+        return web.json_response({
+            "run_id": run_id, "status": status, "ready": False,
+            "bands": {"red": 0, "yellow": 0, "green": 0}, "rows": [],
+            "generated_at": "", "total": 0, "report_slug": None,
+        })
+    return web.json_response({"run_id": run_id, "status": status, "ready": True, **payload})
+
+
+async def _handle_run_cancel(request: web.Request) -> web.Response:
+    """POST .../runs/{run_id}/cancel — stop a running review.
+
+    Cancellation is COOPERATIVE and the response says so: changes that have not
+    started are dropped, but a change already mid-review finishes, because its
+    worker session owns an in-flight model turn that cannot be torn down without
+    corrupting the shared pool. The UI must not promise an instant stop."""
+    run_id = _run_id_param(request)
+    async with _LOCK:
+        run = _find_run(run_id)
+        if run is None:
+            return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+        if run.get("status") != "running":
+            return web.json_response(
+                {"code": "run_not_running", "error": f"run is {run.get('status')}, not running"}, status=409)
+        _CANCELLED.add(run_id)
+        run["cancel_requested_at"] = _now()
+        _save_runs()
+    return web.json_response({
+        "ok": True, "run_id": run_id, "status": "cancelling",
+        "message": "queued changes dropped; a review already in progress will finish",
+    })
+
+
+async def _handle_run_delete(request: web.Request) -> web.Response:
+    """DELETE .../runs/{run_id} — dismiss a finished thread and delete its data."""
+    run_id = _run_id_param(request)
+    async with _LOCK:
+        run = _find_run(run_id)
+        if run is None:
+            return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+        if run.get("status") == "running":
+            # Deleting a live run's dir underneath the driver would corrupt the
+            # run in progress — cancel it first.
+            return web.json_response(
+                {"code": "run_still_running", "error": "run is still running — cancel it first"}, status=409)
+        if run.get("posting"):
+            # Posting runs on a TERMINAL run, so the status check above does not
+            # cover it. The poster is mid-flight through the shared staging dir and
+            # may still be delivering to the pull request; removing the run now
+            # loses the record of what landed and lets the poster recreate an
+            # orphan run dir after the delete.
+            return web.json_response(
+                {"code": "run_posting",
+                 "error": "this review is still posting its comments — wait for "
+                          "it to finish"},
+                status=409)
+        _RUNS.remove(run)
+        _save_runs()
+    await asyncio.to_thread(store.remove_run_dir, run_id)
+    return web.json_response({"ok": True, "run_id": run_id})
+
+
+async def _post_comments_bg(run_id: str, run: dict,
+                            change_id: str = "",
+                            keys: list[str] | None = None,
+                            groups: dict[str, list[str] | None] | None = None) -> None:
+    """Publish a finished run's recorded findings to its pull request(s).
+
+    Runs on the same worker pool as a review: the poster is a separate, minimal
+    turn that publishes the Python-redacted envelope VERBATIM (``gh api``), which
+    is what keeps LLM free-text out of the pull request. Nothing here composes
+    comment text.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        pool = review_pool.get_pool()
+        dispatch = review_pool.make_sync_dispatch(loop, pool)
+        await pool.begin_batch()
+        try:
+            results_out = []
+            for i, link in enumerate(run.get("changes") or []):
+                cid = (run.get("change_ids") or [None] * (i + 1))[i] \
+                    or results.safe_change_id(link)
+                # A selection names comments on ONE change, so the others are left
+                # alone rather than having an unrelated key list applied to them.
+                # With `groups`, each change carries its own key list and the
+                # changes it does not name are skipped the same way.
+                if groups is not None:
+                    if cid not in groups:
+                        continue
+                    sel = groups[cid]
+                elif change_id and cid != change_id:
+                    continue
+                else:
+                    sel = keys
+                out = await asyncio.to_thread(
+                    review_driver.post_recorded, cid, link,
+                    dispatch=dispatch, run_id=run_id, keys=sel)
+                out["change_id"] = cid
+                results_out.append(out)
+        finally:
+            await pool.end_batch()
+
+        posted = sum(len(r.get("posted_keys") or []) for r in results_out)
+        failed = [r for r in results_out if not r.get("post_ok")]
+        async with _LOCK:
+            run["posting"] = False
+            # Which comments are on the pull request, per change. The UI reads this
+            # to mark individual findings as sent, and it is what makes a partial
+            # post legible instead of an all-or-nothing "posted" flag.
+            delivered = dict(run.get("posted_keys") or {})
+            # WHICH pending draft carries them, so the publish action can tell this
+            # run's draft from one a later run put in its place.
+            draft_ids = dict(run.get("posted_review_ids") or {})
+            for r in results_out:
+                if r.get("posted_keys"):
+                    delivered[str(r.get("change_id"))] = list(r["posted_keys"])
+                if r.get("posted_review_id"):
+                    draft_ids[str(r.get("change_id"))] = str(r["posted_review_id"])
+            run["posted_keys"] = delivered
+            run["posted_review_ids"] = draft_ids
+            # Only a run with nothing left unposted counts as fully posted.
+            remaining = await asyncio.to_thread(_pending_comment_count, run_id, run)
+            run["posted_at"] = _now() if remaining == 0 else None
+            run["posted_comments"] = posted
+            run["post_error"] = "; ".join(
+                str(r.get("post_error") or "post failed") for r in failed) or None
+            # A successful retry must repair the per-change delivery evidence, not
+            # just the run-level counters. `_record_reviewed` reads ONLY
+            # `summary.per_change`, so a record still showing the original failure
+            # keeps this PR out of the dedup index and the next repo review reviews
+            # and posts it a second time. Same helper the first attempt used.
+            per_change = (run.get("summary") or {}).get("per_change") or []
+            by_cid = {str(r.get("change_id")): r for r in per_change}
+            for r in results_out:
+                rec = by_cid.get(str(r.get("change_id")))
+                if rec is not None:
+                    review_driver.apply_post_outcome(rec, r)
+            _save_runs()
+        # Indexing is what stops the re-review; do it on the retry path too, and
+        # only after the records above reflect what actually landed.
+        await asyncio.to_thread(_record_reviewed, run)
+        await _notify_posted(run, posted, bool(failed))
+    except Exception as e:
+        logger.exception("posting comments failed")
+        async with _LOCK:
+            run["posting"] = False
+            run["post_error"] = str(e)
+            _save_runs()
+    finally:
+        # Same contract as a review's claims: release on EVERY terminal path, or
+        # the change stays unreviewable until the gateway restarts.
+        async with _RUN_LOCK:
+            _release_claims(run)
+
+
+async def _notify_posted(run: dict, posted: int, failed: bool) -> None:
+    """Tell the user their comments landed. Posting is minutes of pool work, so
+    they will be elsewhere by the time it finishes. Best-effort, as with
+    ``_notify_finished``."""
+    state = _APP_STATE.get("state")
+    if state is None or not hasattr(state, "notify"):
+        return
+    if failed:
+        title = "Posting review comments failed"
+        body = f"{_run_headline(run)} — {run.get('post_error') or 'the post did not complete'}"
+    else:
+        title = "Review comments posted"
+        body = (f"{_run_headline(run)} — {posted} comment"
+                f"{'' if posted == 1 else 's'} on the pull request")
+    try:
+        await asyncio.to_thread(
+            state.notify, "agent", title, body)
+    except Exception:
+        logger.debug("post notification failed", exc_info=True)
+
+
+async def _handle_run_post(request: web.Request) -> web.Response:
+    """POST .../runs/{run_id}/post — publish this run's findings to the PR.
+
+    Reviews are NOT posted automatically (see ``review.auto_post``, default off):
+    writing to a pull request is a side effect the user opts into, so it is a
+    deliberate action taken after reading the review. Refused when the run is
+    still going, when its records have been cleared, or when it already posted —
+    a duplicate post is not undoable from here.
+    """
+    run_id = _run_id_param(request)
+    force = request.query.get("force", "").lower() in ("1", "true", "yes")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    raw_keys = body.get("keys")
+    keys = ([str(k) for k in raw_keys if isinstance(k, (str, int))]
+            if isinstance(raw_keys, list) else None)
+    change_id = str(body.get("change_id") or "")
+    # A deliberate multi-change selection arrives as ONE request carrying a group
+    # per change, because `posting` is a per-RUN flag: a client that sent one
+    # request per group had every group after the first refused with
+    # `already_posting`, since this handler returns as soon as it fires the
+    # background task and the flag is still set. Sequencing the client's requests
+    # does not help — only the poster clears the flag. One request, one posting
+    # cycle, and the per-change key scoping is preserved inside it.
+    raw_groups = body.get("groups")
+    groups: dict[str, list[str] | None] | None = None
+    if isinstance(raw_groups, list) and raw_groups:
+        parsed: dict[str, list[str] | None] = {}
+        for g in raw_groups:
+            if not isinstance(g, dict):
+                continue
+            cid = str(g.get("change_id") or "")
+            if not cid:
+                continue
+            gk = g.get("keys")
+            parsed[cid] = ([str(k) for k in gk if isinstance(k, (str, int))]
+                           if isinstance(gk, list) else None)
+        groups = parsed or None
+    async with _LOCK:
+        run = _find_run(run_id)
+        if run is None:
+            return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+        if run.get("status") == "running":
+            return web.json_response(
+                {"code": "run_still_running", "error": "this review is still running; wait for it to finish"},
+                status=409)
+        if run.get("posting"):
+            return web.json_response(
+                {"code": "already_posting", "error": "already posting this review"}, status=409)
+        # A selection is always allowed through: "already posted" is now a
+        # per-comment fact, and post_recorded drops the keys that already landed.
+        if run.get("posted_at") and keys is None and not force:
+            return web.json_response({
+                "code": "already_posted", "error": "this review was already posted",
+                "posted_at": run.get("posted_at"),
+                "posted_comments": run.get("posted_comments"),
+            }, status=409)
+        if groups:
+            counts = [
+                await asyncio.to_thread(
+                    _pending_comment_count, run_id, run, gk, cid)
+                for cid, gk in groups.items()
+            ]
+            pending = sum(counts)
+        else:
+            pending = await asyncio.to_thread(
+                _pending_comment_count, run_id, run, keys, change_id)
+        if pending == 0:
+            return web.json_response({
+                "code": "nothing_to_post",
+                "error": "nothing to post — those comments are already on the "
+                         "pull request, this review recorded no findings, or its "
+                         "records were cleared when the report was archived",
+            }, status=409)
+        # Posting round-trips the record through the SHARED staging dir
+        # (publish_to_shared -> poster turn -> adopt_from_shared). The run is
+        # terminal, so its review-time claims are long released — a forced
+        # re-review of the same change could be staging there right now, and the
+        # two would trade records. Hold the same claim posting needs, refusing
+        # rather than interleaving; released in `_post_comments_bg`'s finally.
+        posting_cids = [
+            cid for cid in (run.get("change_ids") or [])
+            if cid in groups
+        ] if groups else [
+            cid for cid in (run.get("change_ids") or [])
+            if not change_id or cid == change_id
+        ]
+        async with _RUN_LOCK:
+            blocked = [
+                cid for cid in posting_cids
+                if (_INFLIGHT.get(_stage_key(cid)) or run_id) != run_id
+            ]
+            if blocked:
+                return web.json_response(
+                    {"code": "change_review_in_flight",
+                     "error": "a review of this change is in flight; posting now "
+                              "would collide with it — try again when it "
+                              "finishes"},
+                    status=409)
+            for cid in posting_cids:
+                _INFLIGHT[_stage_key(cid)] = run_id
+        run["posting"] = True
+        run["post_error"] = None
+        _save_runs()
+
+    # Keep a strong ref like the review path does, so the poster cannot be
+    # garbage-collected mid-flight and leave `posting` set with nothing to clear
+    # it — which would 409 every later post and refuse delete for this run.
+    task = asyncio.create_task(
+        _post_comments_bg(run_id, run, change_id, keys, groups))
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
+    return web.json_response({
+        "ok": True, "run_id": run_id, "posting": True, "pending": pending,
+    })
+
+
+def _collect_delivered(run: dict, summary: dict) -> None:
+    """Carry a run's per-change delivery evidence onto the run itself.
+
+    The explicit posting action records which findings landed as
+    ``run["posted_keys"][change_id]``; the opt-in ``review.auto_post`` path delivers
+    inside the run and so must record it the same way. The publish action reads that
+    map to decide whether the PENDING review on the pull request came from THIS run,
+    and an auto-posted draft with no entry reads as somebody else's — delivered, then
+    refused.
+
+    A change that delivered nothing is left ABSENT rather than written as an empty
+    list. Absent and empty both read as not-delivered, and not writing the key keeps
+    a later successful retry from having to distinguish them.
+    """
+    delivered = dict(run.get("posted_keys") or {})
+    draft_ids = dict(run.get("posted_review_ids") or {})
+    for rec in summary.get("per_change") or []:
+        if rec.get("posted_keys"):
+            delivered[str(rec.get("change_id"))] = list(rec["posted_keys"])
+        # The id of the draft this delivery actually created. A view that offers to
+        # publish compares it against what is pending now; a mismatch means a later
+        # run replaced the draft and this run's view must not publish it.
+        if rec.get("posted_review_id"):
+            draft_ids[str(rec.get("change_id"))] = str(rec["posted_review_id"])
+    if delivered:
+        run["posted_keys"] = delivered
+    if draft_ids:
+        run["posted_review_ids"] = draft_ids
+
+
+def _pending_comment_count(run_id: str, run: dict,
+                           keys: list[str] | None = None,
+                           change_id: str = "") -> int:
+    """How many comments this run WOULD still post.
+
+    Read-only: it builds the same draft bodies the poster publishes without
+    dispatching anything, so the UI can label the button honestly and the endpoint
+    can refuse a no-op. Comments already on the pull request are excluded, which is
+    what lets a partially-posted review keep offering the rest.
+    """
+    total = 0
+    changes = run.get("changes") or []
+    ids = run.get("change_ids") or []
+    delivered = run.get("posted_keys") or {}
+    for i, link in enumerate(changes):
+        cid = ids[i] if i < len(ids) else results.safe_change_id(link)
+        if change_id and cid != change_id:
+            continue
+        rec = results.read_result(cid, None, run_id)
+        if not rec:
+            continue
+        already = set(rec.get("posted_keys") or delivered.get(cid) or [])
+        try:
+            for entry in pipeline.build_pending_comments(rec):
+                key = str(entry.get("key"))
+                if key in already:
+                    continue
+                if keys is not None and key not in set(keys):
+                    continue
+                total += 1
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("pending count failed for %s", cid, exc_info=True)
+    return total
+
+
+async def _handle_run_archive(request: web.Request) -> web.Response:
+    """POST .../runs/{run_id}/archive — publish this run's report as an artifact.
+
+    Reports are archived automatically when a run finishes; this is the retry /
+    share path for a run whose archive failed (or one archived before the artifact
+    was pruned). The report itself lives in the run dir either way."""
+    run_id = _run_id_param(request)
+    async with _LOCK:
+        run = _find_run(run_id)
+        if run is None:
+            return web.json_response({"code": "run_not_found", "error": f"no such run {run_id!r}"}, status=404)
+        existing = run.get("report_slug")
+    if existing:
+        return web.json_response({"ok": True, "run_id": run_id, "report_slug": existing,
+                                  "created": False})
+    rd = store.run_dir(run_id) / "report" / "focus-report.html"
+
+    def _archive() -> str | None:
+        # Not `read_text`: the report dir is worker-reachable, so a planted
+        # symlink at this name would be followed and a local file the dashboard
+        # must never see would be archived as a shareable artifact. The shared
+        # helper opens O_NOFOLLOW within the reports dir and returns None on a
+        # plant, which lands on the same 502 as a missing report.
+        html_body = report.read_within_reports(rd, None, run_id)
+        if html_body is None:
+            return None
+        return review_driver.archive_report(html_body)
+
+    slug = await asyncio.to_thread(_archive)
+    if not slug:
+        return web.json_response(
+            {"code": "report_archive_failed",
+             "error": "could not archive this report (no report on disk, or the "
+                      "artifact API rejected it)"}, status=502)
+    await asyncio.to_thread(report.set_report_slug, slug, None, run_id)
+    async with _LOCK:
+        run = _find_run(run_id)
+        if run is not None:
+            run["report_slug"] = slug
+        _save_runs()
+    return web.json_response({"ok": True, "run_id": run_id, "report_slug": slug,
+                              "created": True})
+
+
+# --- Repo + PR discovery -----------------------------------------------------
+# So the user picks a PR instead of pasting a URL.
+
+async def _handle_recent_repos(request: web.Request) -> web.Response:
+    """GET .../recent-repos[?days=N] — repos the ``gh`` user recently worked on.
+
+    Each row is annotated with ``pinned`` so the picker can show what is already
+    in the sidebar. A host without a usable/authenticated ``gh`` returns 200 with
+    ``setup_required`` rather than an error status: "you need to set up gh" is a
+    normal first-run state for this panel, not a failure."""
+    raw_days = (request.query.get("days") or "").strip()
+    days = discovery.CONTRIB_WINDOW_DAYS
+    if raw_days:
+        try:
+            days = int(raw_days)
+        except ValueError:
+            return web.json_response({"code": "invalid_days", "error": "days must be an integer"}, status=400)
+        if days < 0 or days > discovery.MAX_WINDOW_DAYS:
+            return web.json_response(
+                {"code": "invalid_days", "error": f"days must be between 0 and {discovery.MAX_WINDOW_DAYS}"},
+                status=400)
+
+    def _load() -> dict:
+        pinned = discovery.read_repos()
+        pinned_keys = {f"{r['owner']}/{r['repo']}".lower() for r in pinned}
+        try:
+            login = discovery.current_login()
+        except discovery.GhSetupError as exc:
+            return {"repos": [], "pinned": pinned, "setup_required": True,
+                    "error": str(exc)}
+        if not login:
+            return {"repos": [], "pinned": pinned, "login": None}
+        rows, truncated = discovery.list_contributed_repos(login, within_days=days)
+        for row in rows:
+            row["pinned"] = row["full_name"].lower() in pinned_keys
+        return {"repos": rows, "pinned": pinned, "login": login,
+                "truncated": truncated}
+
+    try:
+        return web.json_response(await asyncio.to_thread(_load))
+    except discovery.GhSetupError as exc:
+        return web.json_response({"repos": [], "pinned": [], "setup_required": True,
+                                  "error": str(exc)})
+    except discovery.GhError as exc:
+        return web.json_response({"code": "provider_unavailable", "error": str(exc)}, status=502)
+
+
+async def _handle_my_repos(request: web.Request) -> web.Response:
+    """GET .../my-repos — every repo the ``gh`` user can reach, newest push first.
+
+    The companion to ``/recent-repos``: that one answers "what have I touched
+    lately", this one answers "what can I reach at all", which is what you need
+    for a repo you own but have not pushed to inside the activity window. Rows are
+    annotated with ``pinned``. A host without a usable/authenticated ``gh`` returns
+    200 with ``setup_required`` — an unconfigured CLI is a normal first-run state
+    for this panel, and the UI still offers manual entry."""
+
+    def _load() -> dict:
+        pinned = discovery.read_repos()
+        pinned_keys = {f"{r['owner']}/{r['repo']}".lower() for r in pinned}
+        try:
+            rows, truncated = discovery.list_user_repos()
+        except discovery.GhSetupError as exc:
+            return {"repos": [], "pinned": pinned, "setup_required": True,
+                    "error": str(exc)}
+        for row in rows:
+            row["pinned"] = row["full_name"].lower() in pinned_keys
+        return {"repos": rows, "pinned": pinned, "truncated": truncated}
+
+    try:
+        return web.json_response(await asyncio.to_thread(_load))
+    except discovery.GhSetupError as exc:
+        return web.json_response({"repos": [], "pinned": [], "setup_required": True,
+                                  "error": str(exc)})
+    except discovery.GhError as exc:
+        return web.json_response({"code": "provider_unavailable", "error": str(exc)}, status=502)
+
+
+def _pull_request_ref(link: str) -> dict | None:
+    """Parse a pasted GitHub PR URL into the repo plus the PR's identity.
+
+    Returns None for anything that is not a PR link, so the caller can fall back
+    to repo-URL parsing. Deliberately tolerant about what it accepts and strict
+    about what it returns: every field here is produced by the same validated
+    parser the review path uses, never by string slicing.
+    """
+    if "/pull/" not in (link or ""):
+        return None
+    try:
+        host, owner, repo, number = adapters.github_pr_ref(link)
+    except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError):
+        return None
+    return {
+        "host": host,
+        "owner": owner,
+        "repo": repo,
+        "number": int(number),
+        "url": f"https://{host}/{owner}/{repo}/pull/{number}",
+        "change_id": adapters.github_change_id(owner, repo, number, host=host),
+    }
+
+
+async def _handle_repos(request: web.Request) -> web.Response:
+    """GET/POST/DELETE .../repos — the pinned-repo list the sidebar renders.
+
+    POST/DELETE body: ``{"owner": "...", "repo": "..."}`` or ``{"repo": "<url>"}``
+    (a repo URL, parsed by the same validator the review path uses)."""
+    if request.method == "GET":
+        repos = await asyncio.to_thread(discovery.read_repos)
+        return web.json_response({"repos": repos})
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    owner = str(body.get("owner") or "").strip()
+    name = str(body.get("repo") or "").strip()
+    pr: dict | None = None
+    if owner and name:
+        # An owner/repo pair supplied directly still has to satisfy the same
+        # character allowlist as a parsed URL — this value becomes a path segment
+        # in a `gh api` call and (via full_name) a stored identifier.
+        try:
+            owner, name = adapters.parse_repo_url(f"https://github.com/{owner}/{name}")
+        except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
+            return web.json_response({"code": "invalid_repo", "error": f"invalid repo: {e}"}, status=400)
+    elif name:
+        # A PASTED PR LINK is the common case here: the field is the only place in
+        # the app you can type, so that is where a URL from the clipboard lands.
+        # Rejecting it and pointing at the paste box was unhelpful — that box only
+        # exists once a repo is already picked, which is the thing being asked for.
+        # Pin the PR's repo and report the PR back so the caller can open it.
+        pr = _pull_request_ref(name)
+        if pr is not None:
+            # The pinned-repo store carries no host and is enumerated against the
+            # gh default host, so pinning a GitHub Enterprise repo would silently
+            # target the wrong instance later. GHE PRs review fine when pasted in
+            # the PR box; refuse the pin with that pointer instead.
+            if pr.get("host") != "github.com":
+                return web.json_response(
+                    {"code": "unsupported_repo_host",
+                     "error": "GitHub Enterprise repos can't be pinned; paste the "
+                              "PR link in the review box instead"}, status=400)
+            owner, name = pr["owner"], pr["repo"]
+        else:
+            try:
+                repo_host, owner, name = adapters.parse_repo_ref(name)
+            except (adapters.AdapterParseError, adapters.UnsupportedPlatform,
+                    ValueError) as e:
+                return web.json_response({"code": "invalid_repo_url", "error": f"invalid repo url: {e}"},
+                                         status=400)
+            if repo_host != "github.com":
+                return web.json_response(
+                    {"code": "unsupported_repo_host",
+                     "error": "GitHub Enterprise repos can't be pinned; paste the "
+                              "PR link in the review box instead"}, status=400)
+    else:
+        return web.json_response(
+            {"code": "repo_required", "error": "missing 'owner'+'repo' or a repo url in 'repo'"}, status=400)
+
+    if request.method == "POST":
+        repos = await asyncio.to_thread(discovery.add_repo, owner, name)
+    else:
+        repos = await asyncio.to_thread(discovery.remove_repo, owner, name)
+    out: dict[str, Any] = {"ok": True, "repos": repos}
+    if request.method == "POST":
+        # Which repo was just added. The caller previously guessed at repos[0],
+        # which is only right if the store happens to prepend.
+        out["added"] = {"owner": owner, "repo": name}
+    if request.method == "POST" and pr is not None:
+        # The caller uses this to open the pasted pull request instead of leaving
+        # the user to find it in the list.
+        out["pull_request"] = pr
+    return web.json_response(out)
+
+
 # --- Settings (model / effort / active namespaces) ---------------------------
 # These let the dashboard read + write the review knobs that live in config.json
 # under the "review" section. The generic GET /api/apps/{name}/config already
@@ -508,7 +1490,6 @@ def _load_known_models() -> list[str]:
     both pass validation AND match what ``review_pool`` writes into the worker's
     cli.json overlay. Empty on failure; the UI still offers 'Default (agent config)'."""
     try:
-        from kiro_crew import model_registry
         return [row["model_name"] for row in model_registry.display_list("claude_code")]
     except Exception:  # pragma: no cover - defensive
         return []
@@ -673,12 +1654,12 @@ async def _handle_settings(request: web.Request) -> web.Response:
         # Bad client input (e.g. unknown model) — a 4xx, not a server fault.
         # Audit the rejected attempt (security-relevant: invalid model injection).
         await _audit_settings("denied")
-        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        return web.json_response({"code": "invalid_request", "ok": False, "error": str(exc)}, status=400)
     except Exception as exc:
         corr = uuid.uuid4().hex[:12]
         logger.warning("settings write failed [%s]: %s", corr, exc, exc_info=True)
         return web.json_response(
-            {"ok": False, "error": "internal error", "id": corr}, status=500
+            {"code": "internal_error", "ok": False, "error": "internal error", "id": corr}, status=500
         )
 
 
@@ -714,7 +1695,7 @@ async def _handle_namespaces(request: web.Request) -> web.Response:
         body = {}
     name = str((body or {}).get("name", "")).strip()
     if not name:
-        return web.json_response({"ok": False, "error": "name required"}, status=400)
+        return web.json_response({"code": "name_required", "ok": False, "error": "name required"}, status=400)
 
     # Audit namespace create/delete (filesystem ops that change the learning
     # scope). log_api_access does synchronous file IO (appends to the audit
@@ -737,22 +1718,49 @@ async def _handle_namespaces(request: web.Request) -> web.Response:
         await _audit("create_namespace", bool(res.get("ok")))
         return web.json_response(res, status=200 if res.get("ok") else 400)
     if request.method == "DELETE":
-        # Drop it from active_namespaces first so reviews don't reference a gone
-        # ns. Both the read AND the conditional write are synchronous file IO, so
-        # run the whole prune in one offloaded helper (never on the event loop).
-        def _prune_ns_from_active() -> None:
-            sec = _load_review_section()
-            if name in (sec.get("active_namespaces") or []):
-                remaining = [n for n in sec["active_namespaces"] if n != name]
-                _write_review_section({"active_namespaces": remaining or ["default"]})
-        try:
-            await asyncio.to_thread(_prune_ns_from_active)
-        except Exception:
-            logger.debug("could not prune deleted ns from active list", exc_info=True)
-        res = await asyncio.to_thread(learning.delete_namespace, name)
+        # Deleting a namespace and starting a consolidation for it are mutually
+        # exclusive, and BOTH sides take `_NS_OPS_LOCK` so there is no interleaving
+        # to reason about. Two earlier shapes of this guard were wrong in ways worth
+        # recording: a single check before the prune left a window during the
+        # prune's await, and adding a SECOND check after the prune closed that
+        # window but could reject the delete with the namespace already pruned from
+        # the active list -- refusing the request while silently deactivating the
+        # namespace it refused to delete. Holding the lock across check + prune +
+        # rmtree removes the window instead of splitting it.
+        async with _NS_OPS_LOCK:
+            if name in _CONSOLIDATING:
+                return web.json_response(
+                    {"code": "consolidation_in_progress",
+                     "error": "a consolidation is running for this namespace — "
+                              "wait for it to finish, then delete"},
+                    status=409)
+
+            # Delete FIRST, prune only on success -- one offloaded helper, since both
+            # halves are synchronous file IO that must never run on the event loop.
+            # Order matters: `delete_namespace` refuses the default namespace, an
+            # invalid name, an out-of-tree path and a missing directory, and none of
+            # those refusals depend on the active list. Pruning first would therefore
+            # deactivate a namespace the API then reports it could not delete --
+            # reviews quietly stop using it while the caller is told nothing changed.
+            def _delete_then_prune() -> dict:
+                res = learning.delete_namespace(name)
+                if not res.get("ok"):
+                    return res
+                try:
+                    sec = _load_review_section()
+                    if name in (sec.get("active_namespaces") or []):
+                        remaining = [n for n in sec["active_namespaces"] if n != name]
+                        _write_review_section(
+                            {"active_namespaces": remaining or ["default"]})
+                except Exception:
+                    logger.debug("could not prune deleted ns from active list",
+                                 exc_info=True)
+                return res
+
+            res = await asyncio.to_thread(_delete_then_prune)
         await _audit("delete_namespace", bool(res.get("ok")))  # destructive rmtree
         return web.json_response(res, status=200 if res.get("ok") else 400)
-    return web.json_response({"error": "method not allowed"}, status=405)
+    return web.json_response({"code": "method_not_allowed", "error": "method not allowed"}, status=405)
 
 
 async def _handle_learnings(request: web.Request) -> web.Response:
@@ -777,7 +1785,10 @@ async def _handle_learnings(request: web.Request) -> web.Response:
             candidate = learning.list_candidate(namespace=ns)
         except Exception:
             candidate = []
-        return {"namespace": ns, "patterns": patterns, "candidate": candidate}
+        state = dict(_CONSOLIDATE_STATE.get(ns) or {})
+        return {"namespace": ns, "patterns": patterns, "candidate": candidate,
+                "consolidating": bool(state.get("running")),
+                "consolidate_error": state.get("error")}
 
     try:
         # Namespace-scoped file reads + markdown parse are synchronous IO — keep
@@ -785,7 +1796,512 @@ async def _handle_learnings(request: web.Request) -> web.Response:
         return web.json_response(await asyncio.to_thread(_build))
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("learnings view failed for ns=%s: %s", ns, exc, exc_info=True)
-        return web.json_response({"namespace": ns, "patterns": [], "candidate": []})
+        return web.json_response({"namespace": ns, "patterns": [], "candidate": [],
+                                  "consolidating": False, "consolidate_error": None})
+
+
+# Namespaces with a merge in flight. Consolidation replaces the whole ruleset, so
+# two concurrent merges could interleave writes and lose patterns; the claim is
+# held for the life of the request rather than per-write.
+# A consolidated ruleset is a handful of short patterns; anything larger is not
+# a merge result. Bounds the read of an LLM-written file.
+_MERGE_MAX_BYTES = 256 * 1024
+
+_CONSOLIDATING: set[str] = set()
+
+# Last outcome per namespace, so a merge that finished while the page was closed
+# still reports itself instead of looking like it never ran.
+_CONSOLIDATE_STATE: dict[str, dict] = {}
+
+
+async def _consolidate_bg(ns: str) -> None:
+    """Run the one-shot AI merge, then apply it deterministically.
+
+    The worker writes a candidate merge to a scratch file; this reads that file
+    and hands it to ``learning.consolidate_apply``, which refuses empty content.
+    The model never writes ``learned-patterns.md`` itself, so a truncated or
+    chatty turn cannot destroy the ruleset — it just fails to produce a merge.
+    """
+    out_path = ""
+    try:
+        ns_dir = await asyncio.to_thread(learning._namespace_dir, ns, None)
+        live = await asyncio.to_thread(learning.common_file, None, ns)
+        cand = await asyncio.to_thread(learning.candidate_file, None, ns)
+        out_path = str(Path(ns_dir) / "learned-patterns.merge.md")
+        # The candidates this merge is allowed to consume, captured BEFORE the
+        # worker runs. A review that stages a learning while the merge is in
+        # flight must not have it cleared by that merge — the worker never saw it,
+        # so it is not represented in the merged ruleset and a blanket clear would
+        # destroy the only copy.
+        # One element per staged entry, not a set: duplicate ids are legitimate
+        # (same title+scope re-learned) and the COUNT is what tells
+        # clear_candidate how many occurrences this merge is entitled to drop.
+        cand_ids = [
+            p["id"] for p in await asyncio.to_thread(
+                learning.list_candidate, None, ns)
+        ]
+        # Clear any residue BEFORE dispatching. The worker writes this path and
+        # the backend applies it afterwards; a crash between those two steps
+        # leaves a stale merge on disk, and the next consolidation whose
+        # worker produces nothing would apply that stale output over the live
+        # ruleset and clear the candidate that was never merged.
+        try:
+            Path(out_path).unlink()
+        except OSError:
+            pass
+
+        loop = asyncio.get_running_loop()
+        pool = review_pool.get_pool()
+        dispatch = review_pool.make_sync_dispatch(loop, pool)
+        await pool.begin_batch()
+        try:
+            spawn = await asyncio.to_thread(
+                dispatch,
+                review_driver.build_consolidation_task(
+                    ns, str(live), str(cand), out_path),
+            )
+        finally:
+            await pool.end_batch()
+
+        # The merge file is written by the WORKER, which has shell and file
+        # tools, so both its path and its content are LLM-influenced. Reading it
+        # with a plain open() would follow a symlink planted at that path and
+        # copy whatever it points at into learned-patterns.md — a file that is
+        # rendered in the UI and injected into every later review prompt. Route
+        # the read through the hooks chokepoint, which opens with O_NOFOLLOW,
+        # validates the opened inode against the app's own data root, rejects
+        # sensitive paths and hardlinks, and caps the size.
+        merged = ""
+        try:
+            raw = await asyncio.to_thread(
+                hooks.safe_read_file_bytes_nolink,
+                out_path,
+                str(ns_dir),
+                max_bytes=_MERGE_MAX_BYTES,
+            )
+        except Exception:
+            logger.debug("merge read rejected", exc_info=True)
+            raw = None
+        if raw is not None:
+            merged = raw.decode("utf-8", errors="replace")
+
+        if not merged.strip():
+            why = str(spawn.get("error") or "").strip()
+            _CONSOLIDATE_STATE[ns] = {
+                "running": False,
+                "error": why or "the merge produced no file; the ruleset is unchanged",
+            }
+            return
+
+        # A file on disk is not evidence the merge SUCCEEDED. The worker can fail
+        # partway — timeout, cancellation, a tool error — after writing some of the
+        # ruleset, and whatever it managed to emit parses fine. Applying that
+        # replaces the full ruleset with a truncated one and clears the staged
+        # candidates, so the omitted rules are gone from both copies. `spawn["ok"]`
+        # was only consulted on the empty path above; a partial file skipped it.
+        if not spawn.get("ok"):
+            why = str(spawn.get("error") or "").strip()
+            _CONSOLIDATE_STATE[ns] = {
+                "running": False,
+                "error": (why or "the merge did not finish")
+                + "; the ruleset and the staged candidates are unchanged",
+            }
+            return
+
+        # Non-empty is not the same as usable. The merge worker is an LLM, so it
+        # can answer in prose ("nothing to merge here") instead of the pattern
+        # format. That text is non-empty, so the emptiness check above passes it
+        # through, and consolidate_apply would then replace the ENTIRE ruleset
+        # with commentary and clear the staged candidates that were the only copy
+        # of the pending learnings. Require at least one parseable pattern.
+        if not await asyncio.to_thread(learning.parse_patterns, merged):
+            _CONSOLIDATE_STATE[ns] = {
+                "running": False,
+                "error": ("the merge produced no recognizable patterns; "
+                          "the ruleset and the staged candidates are unchanged"),
+            }
+            return
+
+        # No existence re-check here on purpose. Every learning writer mkdirs its
+        # parents, so a late apply WOULD resurrect a deleted namespace -- but the
+        # `_CONSOLIDATING` claim already brackets this worker's entire lifetime: the
+        # handler adds it before its first await and only this function's `finally`
+        # releases it, and the delete handler refuses with 409 for that whole span.
+        # A second check here would be unreachable, and an unreachable guard implies
+        # protection that never actually runs.
+        applied = await asyncio.to_thread(
+            learning.consolidate_apply, merged, None, ns, cand_ids)
+        _CONSOLIDATE_STATE[ns] = {
+            "running": False,
+            "error": None if applied.get("ok") else str(applied.get("error") or "merge rejected"),
+            "patterns_now": applied.get("patterns_now"),
+            "consolidated_from_candidate": applied.get("consolidated_from_candidate"),
+        }
+    except Exception as exc:
+        logger.exception("consolidation failed for ns=%s", ns)
+        _CONSOLIDATE_STATE[ns] = {"running": False, "error": str(exc)}
+    finally:
+        _CONSOLIDATING.discard(ns)
+        if out_path:
+            # The scratch merge is an intermediate; leaving it behind would make
+            # the next run's "did the worker write a file?" check read a stale one
+            # as success.
+            try:
+                await asyncio.to_thread(Path(out_path).unlink, True)
+            except OSError:
+                pass
+
+
+async def _handle_consolidate(request: web.Request) -> web.Response:
+    """POST .../learnings/consolidate — merge staged candidates into the ruleset.
+
+    The merge is a judgment call (is this candidate already covered? do two rules
+    collapse?), so it runs as one worker turn on the same pool reviews use. The
+    APPLY is deterministic and refuses empty content, which is what keeps a bad
+    merge from wiping the reviewer's memory.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    ns = str(body.get("namespace") or learning.DEFAULT_NAMESPACE)
+    if not (ns == learning.DEFAULT_NAMESPACE or learning._is_valid_ns_name(ns)):
+        return web.json_response({"code": "invalid_namespace", "error": f"invalid namespace {ns!r}"}, status=400)
+    # Claim the namespace BEFORE the first await. Checking membership and then
+    # awaiting the staged count left a window where two concurrent requests for
+    # one namespace both passed the guard, then both dispatched a merge against
+    # the same scratch path — the second overwriting or unlinking the first's
+    # output. The check-and-add below has no await between its two halves, so on
+    # the single event loop it is atomic; the claim is given back on every early
+    # return.
+    async with _NS_OPS_LOCK:
+        if ns in _CONSOLIDATING:
+            return web.json_response(
+                {"code": "consolidation_in_progress",
+                 "error": "a consolidation is already running for this namespace"},
+                status=409)
+        # Taken under the lock so an in-flight DELETE cannot land between this
+        # check and the claim; the delete handler holds the same lock across its
+        # whole check + prune + rmtree.
+        _CONSOLIDATING.add(ns)
+    try:
+        staged = await asyncio.to_thread(learning.candidate_count, None, ns)
+    except Exception:
+        _CONSOLIDATING.discard(ns)
+        raise
+    if staged == 0:
+        _CONSOLIDATING.discard(ns)
+        return web.json_response(
+            {"code": "nothing_to_consolidate", "error": "nothing to consolidate — no learnings are staged"}, status=409)
+
+    _CONSOLIDATE_STATE[ns] = {"running": True, "error": None}
+    # Strong ref, as with the review and post paths: a collected merge task would
+    # leave `_CONSOLIDATING` claimed with nothing to release it, locking this
+    # namespace out of consolidation until a restart.
+    task = asyncio.create_task(_consolidate_bg(ns))
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
+    return web.json_response({"ok": True, "namespace": ns, "staged": staged,
+                              "running": True})
+
+
+# --- post-review chat -------------------------------------------------------
+# The reviewer that produced a report can be asked about it, on the very session
+# that produced it (see ``sage_lib/chat_session.py``). History is on disk so an
+# archived run still shows what was discussed; ``live`` says whether the composer
+# can be used at all.
+
+# A question is one prompt, not a document. Bounded so a paste cannot become an
+# unbounded turn on the shared reviewer subprocess.
+_CHAT_MSG_MAX = 8000
+
+# How often idle chats are swept. The lease pins a kiro-cli subprocess, and a
+# closed browser tab sends nothing, so this cannot be lazy: without a timer an
+# abandoned chat would hold the subprocess until the app is disabled.
+_CHAT_SWEEP_INTERVAL = 300.0
+
+# Serializes transcript persistence. Read-merge-write is not atomic, so two tabs
+# finishing prompts at once would both merge against the SAME history and the
+# later write would silently drop an exchange.
+#
+# One lock for all chats rather than one per key: `MAX_CHAT_SESSIONS` is 4 and a
+# write is a small file, so the contention is negligible — and a per-key registry
+# would need its own lifecycle to avoid leaking an entry per chat ever opened.
+_CHAT_PERSIST_LOCK = asyncio.Lock()
+
+
+def _chat_params(run_id: str, change_id: str) -> str:
+    """Validate the pair identifying a chat. Returns an error code, or ""."""
+    if not run_id or not change_id:
+        return "chat_params_required"
+    return ""
+
+
+_ChatHandler = Callable[[web.Request], Awaitable[web.Response]]
+
+
+def _require_enabled(handler: _ChatHandler) -> _ChatHandler:
+    """Deny when the app is disabled.
+
+    Routes are registered once at gateway startup, so a disabled app's endpoints
+    stay reachable — the platform's convention is that handlers check enabled
+    state themselves. Without this the chat surface of a disabled app stays
+    promptable and tool-capable, which no teardown hook can retroactively prevent
+    for a request already in flight.
+
+    ``is_app_enabled`` reads ``installed.json`` synchronously, so it runs off the
+    event loop. Deny-by-default: an unreadable state file disables the surface
+    rather than opening it.
+    """
+
+    @wraps(handler)
+    async def _wrapped(request: web.Request) -> web.Response:
+        if not await asyncio.to_thread(is_app_enabled, "code-review-sage"):
+            return web.json_response(
+                {"code": "app_disabled",
+                 "error": "code-review-sage is disabled"}, status=403)
+        return await handler(request)
+
+    return _wrapped
+
+
+@_require_enabled
+async def _handle_chat_get(request: web.Request) -> web.Response:
+    """GET .../chat?run_id=&change_id= — transcript plus whether it is still live.
+
+    200 even with no history: "this review was never discussed" is a normal state
+    for the panel, not an error.
+    """
+    run_id = (request.query.get("run_id") or "").strip()
+    change_id = (request.query.get("change_id") or "").strip()
+    bad = _chat_params(run_id, change_id)
+    if bad:
+        return web.json_response(
+            {"code": bad, "error": "missing run_id or change_id"}, status=400)
+    turns = await asyncio.to_thread(
+        chat_session.read_transcript, run_id, change_id)
+    registry = chat_session.peek_registry()
+    key = chat_session.chat_key(run_id, change_id)
+    state = registry.status(key) if registry is not None else {
+        "live": False, "busy": False}
+    return web.json_response({
+        "run_id": run_id,
+        "change_id": change_id,
+        "live": bool(state.get("live")),
+        "busy": bool(state.get("busy")),
+        "turns": turns,
+        # Told to the UI so it can explain WHY the composer is disabled instead
+        # of rendering an input that silently fails.
+        "idle_ttl_secs": chat_session.CHAT_IDLE_TTL_SECS,
+        # Whether a question could be answered at all right now. A turn is refused
+        # outright without the safety override, because an agent spec's
+        # allowedTools pre-approves tools that then run with no permission event —
+        # so the UI must say so BEFORE a question is typed rather than after.
+        "can_ask": chat_session.can_ask(),
+    })
+
+
+@_require_enabled
+async def _handle_chat_post(request: web.Request) -> web.Response:
+    """POST .../chat {run_id, change_id, message} — ask the reviewer one thing."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    run_id = str(body.get("run_id") or "").strip()
+    change_id = str(body.get("change_id") or "").strip()
+    message = body.get("message")
+    bad = _chat_params(run_id, change_id)
+    if bad:
+        return web.json_response(
+            {"code": bad, "error": "missing run_id or change_id"}, status=400)
+    if not isinstance(message, str) or not message.strip():
+        return web.json_response(
+            {"code": "chat_message_required",
+             "error": "message must be a non-empty string"}, status=400)
+    if len(message) > _CHAT_MSG_MAX:
+        return web.json_response(
+            {"code": "chat_message_too_long",
+             "error": f"message exceeds {_CHAT_MSG_MAX} characters"}, status=400)
+
+    registry = chat_session.peek_registry()
+    if registry is None:
+        return web.json_response(
+            {"code": "chat_expired",
+             "error": "no live reviewer session for this review"}, status=409)
+    key = chat_session.chat_key(run_id, change_id)
+
+    # The chat outlives its review, so the run can be deleted while this chat is
+    # still live. Check under the same lock the registry mutates under, and close
+    # the chat rather than answering into a run that no longer exists — otherwise
+    # persistence recreates the directory deletion just removed.
+    async with _LOCK:
+        run_known = _find_run(run_id) is not None
+    if not run_known:
+        registry = chat_session.peek_registry()
+        if registry is not None:
+            await registry.close(key)
+        return web.json_response(
+            {"code": chat_session.ERR_RUN_GONE,
+             "error": "the review this conversation belongs to was deleted"},
+            status=409)
+
+    result = await registry.ask(key, message.strip())
+    if not result.get("ok"):
+        code = str(result.get("error") or "chat_turn_failed")
+        # Literal-status returns rather than one computed `status=`: the
+        # error-code contract gate cannot statically verify a site whose status is
+        # a variable, so a dynamic status reads as non-compliant even when the
+        # body carries a `code`.
+        if code == chat_session.ERR_NEEDS_OVERRIDE:
+            # Not a failure — a refusal. The turn was never sent, because tool use
+            # on this session cannot be gated without the safety override.
+            return web.json_response(
+                {"code": code,
+                 "error": "tool use cannot be gated without the safety override"},
+                status=409)
+        if code in ("chat_expired", "chat_busy"):
+            # A state the user can act on — start a new review, or wait for the
+            # question in flight — so the request itself was well-formed.
+            return web.json_response(
+                {"code": code,
+                 "error": "the reviewer cannot take this question right now"},
+                status=409)
+        return web.json_response(
+            {"code": code, "error": "the reviewer failed to answer"}, status=502)
+
+    new_turns = list(result.get("turns") or [])
+
+    # Append to what is on disk rather than dumping the live session's list: a
+    # gateway restart ends the session but keeps the file, and a later chat on
+    # the same run must not erase the earlier conversation.
+    def _persist() -> list[dict]:
+        # The STRICT reader: `read_transcript` reads an unreadable or oversized
+        # file as "no history", which on this append path would overwrite the
+        # whole conversation with just this exchange.
+        history = chat_session.read_transcript_for_merge(run_id, change_id)
+        merged = history + new_turns
+        chat_session.write_transcript(run_id, change_id, merged)
+        return merged
+
+    try:
+        # Held across the whole read-merge-write, not just the write: the race is
+        # two readers seeing the same history, not two writers.
+        async with _CHAT_PERSIST_LOCK:
+            turns = await asyncio.to_thread(_persist)
+    except chat_session.TranscriptUnreadable:
+        # Refuse rather than clobber: the answer is reported as unsaved and the
+        # existing transcript stays intact on disk for the operator to inspect.
+        logger.warning("chat transcript unreadable; refusing to overwrite",
+                       exc_info=True)
+        return web.json_response(
+            {"code": "chat_persist_failed",
+             "error": "the answer could not be saved"}, status=500)
+    except FileNotFoundError:
+        # The run's directory went away between the check above and the write, or
+        # an ancestor of the transcript path is a link and the write was refused.
+        # Report it rather than returning an answer whose record was discarded.
+        registry = chat_session.peek_registry()
+        if registry is not None:
+            await registry.close(key)
+        return web.json_response(
+            {"code": chat_session.ERR_RUN_GONE,
+             "error": "the review this conversation belongs to was deleted"},
+            status=409)
+    except Exception:
+        # Reporting 200 here loses the exchange silently: the answer is not on
+        # disk, so the next poll refetches the OLD history and the question the
+        # user just asked disappears with no error anywhere. A full or unwritable
+        # data directory is exactly when that would happen.
+        logger.warning("chat transcript persist failed", exc_info=True)
+        return web.json_response(
+            {"code": "chat_persist_failed",
+             "error": "the answer could not be saved"}, status=500)
+    return web.json_response({"ok": True, "turns": turns})
+
+
+@_require_enabled
+async def _handle_chat_close(request: web.Request) -> web.Response:
+    """POST .../chat-close {run_id, change_id} — end the chat, free the lease."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    run_id = str(body.get("run_id") or "").strip()
+    change_id = str(body.get("change_id") or "").strip()
+    bad = _chat_params(run_id, change_id)
+    if bad:
+        return web.json_response(
+            {"code": bad, "error": "missing run_id or change_id"}, status=400)
+    registry = chat_session.peek_registry()
+    closed = False
+    if registry is not None:
+        closed = await registry.close(chat_session.chat_key(run_id, change_id))
+    # 200 either way: "already gone" is the state the caller wanted.
+    return web.json_response({"ok": True, "closed": closed})
+
+
+async def _chat_sweep_loop() -> None:
+    """Close idle chats forever, so an abandoned one cannot pin the subprocess."""
+    while True:
+        try:
+            await asyncio.sleep(_CHAT_SWEEP_INTERVAL)
+            registry = chat_session.peek_registry()
+            if registry is None:
+                continue
+            closed = await registry.sweep()
+            if closed:
+                logger.info("code-review-sage: swept %d idle chat(s)", closed)
+        except asyncio.CancelledError:  # pragma: no cover - shutdown
+            raise
+        except Exception:  # pragma: no cover - never let the sweeper die
+            logger.debug("code-review-sage: chat sweep failed", exc_info=True)
+
+
+def on_disable(app: object) -> None:
+    """Close every retained review chat when the app is disabled.
+
+    Disabling an app has to withdraw its RUNTIME, not just its UI. A retained chat
+    holds a live ACP session and a batch lease on the shared kiro-cli subprocess,
+    so without this the process stays pinned and the session stays promptable — a
+    disabled app that can still run tools.
+
+    Defined HERE rather than in the package ``__init__`` because module identity is
+    load-bearing: the app dir is hyphenated, so its siblings are reached through
+    the ``sys.path`` shim above as top-level ``sage_lib.*``. That makes
+    ``sage_lib.chat_session`` and ``...code_review_sage.sage_lib.chat_session`` two
+    distinct ``sys.modules`` entries with separate ``_REGISTRY`` globals. The
+    runtime populates the short-name one (this module and ``review_pool`` both
+    import it that way), so a hook reading the fully-qualified one would always see
+    ``None`` and close nothing.
+
+    ``apps/routes.py`` calls this on the disable path, which is synchronous, so the
+    close is scheduled on the running loop; with no loop there is no registry
+    holding anything either.
+    """
+    registry = chat_session.peek_registry()
+    if registry is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # pragma: no cover - no loop (CLI/teardown)
+        logger.debug("no running loop; retained chats close with the process")
+        return
+
+    def _report(task: "asyncio.Task") -> None:
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("closing retained review chats on disable failed: %s",
+                           exc)
+
+    # Fire-and-forget: the disable response must not block on subprocess teardown.
+    loop.create_task(registry.close_all()).add_done_callback(_report)
 
 
 def register_routes(app: web.Application) -> None:
@@ -799,16 +2315,78 @@ def register_routes(app: web.Application) -> None:
     except Exception:  # pragma: no cover - never break gateway startup
         logger.warning("code-review-sage: ensure_layout failed at startup", exc_info=True)
     _load_runs()  # restore durable job status (mark orphaned 'running' as 'interrupted')
+    # A run dir with no registry entry is unreachable residue (crash between the
+    # two writes, or an older layout) — reap it once at startup, but OFF the event
+    # loop. `register_routes` is a sync function called from `start_dashboard`,
+    # which is a coroutine, so everything here runs on the loop: this reap walks
+    # every run dir and deletes the unreferenced ones, and its cost grows with
+    # accumulated residue, so on a host with stale runs it stalled gateway startup.
+    # `ensure_layout` and `_load_runs` above stay inline deliberately — they are
+    # bounded, and the routes cannot answer correctly until they have run (an empty
+    # `_RUNS` or missing `resolved_paths` is what the UI renders as a perpetual
+    # "Initializing…"). Cleanup has no such ordering requirement, so it is the one
+    # that can wait.
+
+    async def _reap_on_startup(_app: web.Application) -> None:
+        try:
+            reaped = await asyncio.to_thread(_reap_orphan_run_dirs)
+            if reaped:
+                logger.info("code-review-sage: reaped %d orphan run dir(s)", reaped)
+        except Exception:  # pragma: no cover - never break startup
+            logger.debug("code-review-sage: orphan reap failed", exc_info=True)
+
+    app.on_startup.append(_reap_on_startup)
+
+    async def _start_chat_sweeper(_app: web.Application) -> None:
+        # Runs on the gateway loop, so this is where the loop is knowable;
+        # the review driver's worker threads need it to schedule a close.
+        chat_session.bind_loop(asyncio.get_running_loop())
+        task = asyncio.create_task(_chat_sweep_loop())
+        _TASKS.add(task)
+        task.add_done_callback(_TASKS.discard)
+
+    app.on_startup.append(_start_chat_sweeper)
+    # Cache the dashboard state so a finished run can push a bell notification
+    # from a background task (no request in scope there). Absent in tests that
+    # register routes on a bare app — every read site treats it as optional.
+    try:
+        state = app.get("state")
+        if state is not None:
+            _APP_STATE["state"] = state
+    except Exception:  # pragma: no cover - defensive
+        pass
+    app.router.add_get("/api/apps/code-review-sage/chat", _handle_chat_get)
+    app.router.add_post("/api/apps/code-review-sage/chat", _handle_chat_post)
+    app.router.add_post("/api/apps/code-review-sage/chat-close", _handle_chat_close)
     app.router.add_post("/api/apps/code-review-sage/review", _handle_review)
     app.router.add_post("/api/apps/code-review-sage/review-repo", _handle_review_repo)
     app.router.add_get("/api/apps/code-review-sage/repo-prs", _handle_repo_prs)
+    app.router.add_get("/api/apps/code-review-sage/recent-repos", _handle_recent_repos)
+    app.router.add_get("/api/apps/code-review-sage/my-repos", _handle_my_repos)
+    app.router.add_get("/api/apps/code-review-sage/repos", _handle_repos)
+    app.router.add_post("/api/apps/code-review-sage/repos", _handle_repos)
+    app.router.add_delete("/api/apps/code-review-sage/repos", _handle_repos)
     app.router.add_get("/api/apps/code-review-sage/runs", _handle_runs)
+    # Per-run (one thread in the UI). Registered AFTER /runs so the static path
+    # is matched first and never shadowed by the {run_id} pattern.
+    app.router.add_get("/api/apps/code-review-sage/runs/{run_id}", _handle_run_detail)
+    app.router.add_delete("/api/apps/code-review-sage/runs/{run_id}", _handle_run_delete)
+    app.router.add_get(
+        "/api/apps/code-review-sage/runs/{run_id}/report", _handle_run_report)
+    app.router.add_post(
+        "/api/apps/code-review-sage/runs/{run_id}/cancel", _handle_run_cancel)
+    app.router.add_post(
+        "/api/apps/code-review-sage/runs/{run_id}/archive", _handle_run_archive)
+    app.router.add_post(
+        "/api/apps/code-review-sage/runs/{run_id}/post", _handle_run_post)
     app.router.add_get("/api/apps/code-review-sage/settings", _handle_settings)
     app.router.add_put("/api/apps/code-review-sage/settings", _handle_settings)
     app.router.add_get("/api/apps/code-review-sage/namespaces", _handle_namespaces)
     app.router.add_post("/api/apps/code-review-sage/namespaces", _handle_namespaces)
     app.router.add_delete("/api/apps/code-review-sage/namespaces", _handle_namespaces)
     app.router.add_get("/api/apps/code-review-sage/learnings", _handle_learnings)
+    app.router.add_post(
+        "/api/apps/code-review-sage/learnings/consolidate", _handle_consolidate)
 
     async def _shutdown_pool(_app: web.Application) -> None:
         """Retire the reusable review workers when the gateway shuts down."""

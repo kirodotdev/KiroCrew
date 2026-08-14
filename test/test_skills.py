@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig, SkillsConfig
+from kiro_crew.skill_usage import SkillUsageLedger
 from kiro_crew.skills import _SHORT_DESC_CHARS, SkillsLoader
 
 
@@ -33,6 +34,142 @@ def _create_skill(skills_dir, name, content):
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(content)
+
+
+class TestNoteToolRead:
+    """Only content-delivering reads credit the ledger."""
+
+    def _loader(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        _create_skill(
+            skills_dir, "alpha", "---\nname: alpha\ndescription: A\n---\n# Alpha\n"
+        )
+        _create_skill(
+            skills_dir, "beta", "---\nname: beta\ndescription: B\n---\n# Beta\n"
+        )
+        loader = SkillsLoader(skills_path=skills_dir, install_builtins=False)
+        loader._usage = SkillUsageLedger(tmp_path / "skill-usage.json")
+        return loader, skills_dir
+
+    def _read(self, loader, **kw):
+        """Resolve then credit, the way the ACP layer does across two events."""
+        keys = loader.resolve_tool_read_keys(**kw)
+        loader.credit_skill_reads(keys)
+        return keys
+
+    def test_read_tool_path_credits_a_hit(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        assert self._read(loader, tool_name="fs_read", raw_params={"path": path}) == [
+            "alpha"
+        ]
+        assert loader._usage.score("alpha")[0] == 1.0
+        assert loader._usage.score("beta")[0] == 0.0
+
+    def test_shell_cat_credits_a_hit(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        cmd = f"cat {skills_dir / 'beta' / 'SKILL.md'}"
+        assert self._read(loader, command=cmd) == ["beta"]
+        assert loader._usage.score("beta")[0] == 1.0
+
+    def test_resolution_alone_records_nothing(self, tmp_path):
+        # The ACP layer resolves at call time and credits only once the tool
+        # reports completion, so resolving must have no side effect.
+        loader, skills_dir = self._loader(tmp_path)
+        cmd = f"cat {skills_dir / 'alpha' / 'SKILL.md'}"
+        assert loader.resolve_tool_read_keys(command=cmd) == ["alpha"]
+        assert loader._usage.snapshot() == {}
+
+    def test_one_command_naming_a_file_twice_counts_once(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "alpha" / "SKILL.md"
+        assert self._read(loader, command=f"cat {p} && cat {p}") == ["alpha"]
+        assert loader._usage.score("alpha")[0] == 1.0
+
+    def test_non_read_shell_verbs_are_not_credited(self, tmp_path):
+        # A tool call that merely NAMES a skill is not a delivery. Crediting it
+        # would be the same mention-as-use conflation the searches tally avoids:
+        # a maintenance session could push an unread skill up the ranking.
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "alpha" / "SKILL.md"
+        for cmd in (
+            f"rm {p}",
+            f"mv {p} /tmp/x",
+            f"wc -l {p}",
+            f"grep -l foo {p}",
+            f"chmod 600 {p}",
+            f"cp {p} /tmp/x",
+            f"stat {p}",
+        ):
+            assert loader.resolve_tool_read_keys(command=cmd) == [], cmd
+        assert loader._usage.snapshot() == {}
+
+    def test_a_read_verb_in_another_segment_does_not_launder_a_delete(self, tmp_path):
+        # `cat` applies to its OWN segment only; without per-segment verb
+        # attribution this would credit the deleted skill.
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "alpha" / "SKILL.md"
+        assert loader.resolve_tool_read_keys(command=f"cat /etc/hosts && rm {p}") == []
+
+    def test_read_verb_variants_are_credited(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        p = skills_dir / "beta" / "SKILL.md"
+        for cmd in (f"head -20 {p}", f"tail -5 {p}", f"/bin/cat {p}", f"LC_ALL=C cat {p}"):
+            assert loader.resolve_tool_read_keys(command=cmd) == ["beta"], cmd
+
+    def test_non_read_tool_name_is_not_credited(self, tmp_path):
+        # Structured tools are allowlisted: an edit/write tool carrying a path
+        # must not be mistaken for a delivery.
+        loader, skills_dir = self._loader(tmp_path)
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        assert loader.resolve_tool_read_keys("fs_write", {"path": path}) == []
+        assert loader.resolve_tool_read_keys("grep", {"path": path}) == []
+        assert loader.resolve_tool_read_keys("fs_read", {"path": path}) == ["alpha"]
+
+    def test_unrelated_tool_call_records_nothing(self, tmp_path):
+        loader, _ = self._loader(tmp_path)
+        assert self._read(loader, tool_name="fs_read", raw_params={"path": "/etc/hosts"}) == []
+        assert self._read(loader, command="ls -la /tmp") == []
+        assert loader._usage.snapshot() == {}
+
+    def test_path_outside_the_skills_tree_is_not_credited(self, tmp_path):
+        # A file that merely shares the basename must not be attributed to a skill.
+        decoy = tmp_path / "elsewhere"
+        decoy.mkdir()
+        (decoy / "SKILL.md").write_text("---\nname: fake\n---\n")
+        loader, _ = self._loader(tmp_path)
+        assert loader.resolve_tool_read_keys("fs_read", {"path": str(decoy / "SKILL.md")}) == []
+
+    def test_malformed_params_do_not_raise(self, tmp_path):
+        loader, _ = self._loader(tmp_path)
+        assert loader.resolve_tool_read_keys("fs_read", {"path": 42}) == []
+        assert loader.resolve_tool_read_keys("fs_read", {"paths": [None, 7]}) == []
+        assert loader.resolve_tool_read_keys("fs_read", "not-a-dict") == []  # type: ignore[arg-type]
+
+    def test_read_without_a_ledger_is_a_noop(self, tmp_path):
+        loader, skills_dir = self._loader(tmp_path)
+        loader._usage = None
+        path = str(skills_dir / "alpha" / "SKILL.md")
+        assert loader.resolve_tool_read_keys("fs_read", {"path": path}) == []
+
+    def test_symlinked_skill_credits_the_canonical_key(self, tmp_path):
+        # Reading through a symlinked skill must credit the same key the budget
+        # screen shows, or one file's cost splits across two rows.
+        loader, skills_dir = self._loader(tmp_path)
+        link_dir = skills_dir / "alpha-alias"
+        link_dir.mkdir()
+        try:
+            (link_dir / "SKILL.md").symlink_to(skills_dir / "alpha" / "SKILL.md")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform")
+        loader._iter_cache = None  # re-walk so the alias is served
+        recorded = self._read(
+            loader, tool_name="fs_read", raw_params={"path": str(link_dir / "SKILL.md")}
+        )
+        canonical = loader._served_key_by_realpath()[
+            str((skills_dir / "alpha" / "SKILL.md").resolve())
+        ]
+        assert recorded == [canonical] == ["alpha"]
 
 
 class TestSkillsLoader:
@@ -309,10 +446,19 @@ class TestRelocatedSkillCleanup:
         assert second.read_text(encoding="utf-8").endswith("SECOND rollback copy")
         assert not (old / "SKILL.md").exists()
 
-    def test_flat_copy_untouched_when_nested_missing(self, tmp_path: Path) -> None:
+    def test_flat_copy_untouched_when_nested_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Fail-safe: if the nested replacement never synced, the flat copy is
         # the ONLY working copy — it must stay discoverable.
+        #
+        # The empty source dir is what makes "never synced" real. Relying on a
+        # relocated skill simply not being packaged would stop testing this the
+        # moment that skill ships.
+        from kiro_crew import skills as skills_mod
         from kiro_crew.skills import _ensure_builtin_skills
+
+        monkeypatch.setattr(skills_mod, "_BUILTIN_SKILLS_DIR", tmp_path / "no-builtins")
 
         base = tmp_path / "skills"
         old = base / "babysit"

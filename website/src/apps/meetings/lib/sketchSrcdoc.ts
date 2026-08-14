@@ -458,9 +458,13 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
   // createElement from a fixed path — so it is not something the scrub below
   // could remove even in principle, and it is the only `<script src>` in the
   // document.
-  const mermaidScript = doc.createElement('script')
-  mermaidScript.setAttribute('src', scriptOrigin + MERMAID_RUNTIME_PATH)
-  head.appendChild(mermaidScript)
+  // NOTE: uses a placeholder <meta> instead of a live <script> to avoid
+  // happy-dom's eager script loading (ECONNREFUSED in CI). See widgetSrcdoc.ts
+  // for the full rationale — same pattern.
+  const mermaidPlaceholder = doc.createElement('meta')
+  mermaidPlaceholder.setAttribute('name', 'x-script-placeholder')
+  mermaidPlaceholder.setAttribute('data-src', scriptOrigin + MERMAID_RUNTIME_PATH)
+  head.appendChild(mermaidPlaceholder)
 
   // Model HTML, adopted as typed DOM nodes — see the doc comment above.
   const range = doc.createRange()
@@ -494,5 +498,15 @@ export function buildSketchSrcdoc(html: string, scriptOrigin: string): string {
 
   // The one remaining template literal holds the static DOCTYPE plus the
   // SERIALIZED DOM tree, whose model content was already adopted as nodes.
-  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  // Post-serialization: replace the SINGLE trusted placeholder with the real
+  // <script> tag. No `g` flag — only the one placeholder we inserted into
+  // <head> is replaced. Model-authored content in <body> cannot produce a
+  // matching placeholder because: (1) scrubModelDocument strips all <meta>
+  // from model fragments (FORBIDDEN list), and (2) attribute serialization
+  // HTML-escapes quotes regardless. Non-global replace is defense-in-depth.
+  const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  return serialized.replace(
+    /<meta name="x-script-placeholder" data-src="([^"]*)">/,
+    (_match, src) => `<script src="${src}"></script>`,
+  )
 }

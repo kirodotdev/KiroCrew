@@ -1,6 +1,6 @@
 /**
- * `selectSubagentActivityCount` — the cross-page "agents are working" signal
- * behind the Sessions rail dot. It must sum STARTED agents across every slot
+ * `selectSubagentActivityCount` — the cross-page "agents are working" count
+ * shown in the expanded Sessions rail. It must sum STARTED agents across every slot
  * (active map + slotActivity for background slots, without double-counting the
  * aliased active slot) PLUS accepted-but-queued agents, which have no per-agent
  * entry at all and were therefore invisible everywhere outside the composer chip.

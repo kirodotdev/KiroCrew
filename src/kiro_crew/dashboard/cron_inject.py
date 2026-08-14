@@ -6,6 +6,7 @@ gateway.py and dashboard.handlers.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import DashboardState
@@ -16,11 +17,70 @@ if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
 
 
+def context_meter_reading(client: object) -> dict[str, Any] | None:
+    """Best-effort context-meter reading from a live provider, or ``None``.
+
+    The cron executor resets its agent session the moment the run finishes, so
+    by the time the user opens the injected ``cron-{id}`` slot there is no
+    resident provider for the slot-detail open path to read and no snapshot
+    either — ``broadcast_context_usage`` (the meter's single writer) is only
+    reached by dashboard-driven turns. The bar therefore rendered 0% for a
+    session with a full transcript. This helper captures the reading while the
+    provider is still alive; :func:`inject_cron_result_to_dashboard` routes it
+    through the single writer so the open path serves it like any other
+    cold-session snapshot.
+
+    Mirrors ``chat_runner._context_usage_payload``'s accessor discipline: the
+    provider's PUBLIC accessors only (``last_prompt_stats`` lives on the inner
+    AcpClient and would always miss on the pooled provider), and token counts
+    ship only when both are measured — ``used == 0`` means "not measured", and
+    asserting a false "0 / W tokens" is worse than omitting the pair.
+
+    Returns ``None`` when nothing was measured (``pct <= 0``): a provider that
+    just ran a turn always occupies context (the prompt itself), so a
+    zero/absent pct here means "not reported", never "measured empty" — the
+    same contract as ``_context_reading`` on the read side. Skipping the write
+    also deliberately preserves an earlier run's real snapshot rather than
+    overwriting it with an unmeasured zero (which would recreate the 0%-bar
+    symptom this helper exists to fix); the genuine post-compaction 0% reset
+    frame is emitted by the session manager's compact callback for live
+    sessions, not by this capture path. Never raises — this feeds best-effort
+    display state and must not fail the cron delivery that calls it.
+    """
+    try:
+        # Deferred: dashboard.handlers.__init__ imports this module, so a
+        # top-level import of handlers.usage would close a circular import.
+        from kiro_crew.dashboard.handlers.usage import read_context_tokens
+
+        pct_fn = getattr(client, "context_usage_pct", None)
+        pct = float(pct_fn()) if callable(pct_fn) else 0.0
+        if not math.isfinite(pct) or pct <= 0:
+            return None
+        used, window = read_context_tokens(client)
+        reading: dict[str, Any] = {"pct": round(pct, 1)}
+        if used > 0 and window > 0:
+            reading["used_tokens"] = used
+            reading["window_tokens"] = window
+        return reading
+    except Exception:
+        return None
+
+
 def inject_cron_result_to_dashboard(
     state: DashboardState, job: "CronJob", result_text: str,
     history: list[dict[str, Any]] | None = None,
+    context_reading: dict[str, Any] | None = None,
 ) -> None:
-    """Inject cron result into linked dashboard chat slot (shared by to-chat and auto-inject)."""
+    """Inject cron result into linked dashboard chat slot (shared by to-chat and auto-inject).
+
+    ``context_reading`` is the run's context-meter reading captured by
+    :func:`context_meter_reading` while the cron's provider was still resident.
+    When present it is routed through ``broadcast_context_usage`` — the meter's
+    single writer — so an open tab updates live and the slot-detail open path
+    can serve it after the executor resets the session. ``None`` (the to-chat
+    replay path, or a run that measured nothing) records nothing and keeps
+    whatever snapshot an earlier run stored.
+    """
     slot_name = f"cron-{job.id}"
     slot = state.get_or_create_slot(name=slot_name, agent=job.agent_id or "")
     safe_name, _ = redact_exfiltration_urls(job.name)
@@ -33,6 +93,16 @@ def inject_cron_result_to_dashboard(
         else:
             messages = history
         hydrate_slot_from_history(slot, messages)
+    # Publish the (possibly just-created) tab to the dashboard-surface registry
+    # BEFORE anything routes against it. Every gate that asks "does this session
+    # have a tab?" — dashboard_slot_key for sub-agent event routing and
+    # completion injection, widget/question/approval delivery — reads that
+    # registry, and a created-but-unpublished slot silently fails those gates
+    # until some unrelated slot change happens to republish. (Same invariant as
+    # channel_slots.reconcile — see the comment there.)
+    from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
+
+    _sync_dashboard_slots(state)
     if result_text:
         safe_result, _ = redact_exfiltration_urls(result_text)
         safe_result, _ = redact_credentials(safe_result)
@@ -70,6 +140,18 @@ def inject_cron_result_to_dashboard(
                     context,
                     agent=job.agent_id or None,
                 )
+    if context_reading:
+        # Same frame shape as chat_runner._context_usage_payload. `reset` when
+        # the counts are unknown is load-bearing: the frontend stores pct and
+        # token counts in independent slices, and a bare {slot, pct} frame
+        # would leave stale counts beside a fresh percentage.
+        payload: dict[str, Any] = {"slot": slot.key, "pct": context_reading["pct"]}
+        if context_reading.get("window_tokens"):
+            payload["used_tokens"] = context_reading.get("used_tokens", 0)
+            payload["window_tokens"] = context_reading["window_tokens"]
+        else:
+            payload["reset"] = True
+        state.broadcast_context_usage(slot.key, payload)
     state.push_slots_update()
 
 

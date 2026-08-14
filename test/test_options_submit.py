@@ -195,6 +195,68 @@ class TestHandleOptionsSubmit:
             mock_hm.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_delete_failure_keeps_the_record_for_a_later_turn(self, orch, monkeypatch):
+        """A failed delete leaves the original buttons on screen — keep the record.
+
+        update_message fails, the fallback post succeeds, then delete_message
+        fails. The original OPTIONS message is therefore still in the channel and
+        still clickable, so forgetting its record here would strand it: nothing
+        later could ever expire it. That is the exact defect this PR removes, so
+        the record has to survive the submit.
+        """
+        import asyncio as _aio
+
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "_orch", orch)
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
+        orch.slack.delete_message = AsyncMock(side_effect=Exception("cant_delete"))
+
+        forgotten: list[str] = []
+        monkeypatch.setattr(
+            interactions,
+            "_forget_options_control",
+            lambda ts, msg=None, keys=None: forgotten.append(ts),
+        )
+
+        payload = _make_payload(["A"], ["A", "B"])
+        with patch.object(interactions, "handle_message", new_callable=AsyncMock):
+            await interactions._handle_options_submit(payload, "CH1", "msg1")
+            await _aio.sleep(0)
+
+        orch.slack.delete_message.assert_called_once_with("CH1", "msg1")
+        assert forgotten == []
+
+    @pytest.mark.asyncio
+    async def test_successful_edit_does_forget_the_record(self, orch, monkeypatch):
+        """Companion to the above, so the retention check cannot pass vacuously.
+
+        When the edit lands, the buttons are genuinely gone and the record SHOULD
+        be dropped.
+        """
+        import asyncio as _aio
+
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "_orch", orch)
+        monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+
+        forgotten: list[str] = []
+        monkeypatch.setattr(
+            interactions,
+            "_forget_options_control",
+            lambda ts, msg=None, keys=None: forgotten.append(ts),
+        )
+
+        payload = _make_payload(["A"], ["A", "B"])
+        with patch.object(interactions, "handle_message", new_callable=AsyncMock):
+            await interactions._handle_options_submit(payload, "CH1", "msg1")
+            await _aio.sleep(0)
+
+        assert forgotten == ["t1"]
+
+    @pytest.mark.asyncio
     async def test_post_blocks_failure_aborts(self, orch, monkeypatch):
         """When update fails AND post_blocks fallback also returns None, abort."""
         from kiro_crew.slack import interactions

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
-import { InstancesPanel } from '../pages/settings/InstancesPanel'
+import { InstancesPanel, humanizeSecs } from '../pages/settings/InstancesPanel'
 
 vi.mock('../api/client', () => {
   class ApiError extends Error {
@@ -134,5 +134,54 @@ describe('InstancesPanel', () => {
     expect(trigger).toHaveTextContent('AWS SSM Session Manager')
     expect(screen.getByLabelText('SSM target (instance id)')).toBeInTheDocument()
     expect(screen.queryByLabelText('SSH host / alias')).not.toBeInTheDocument()
+  })
+
+  it('formats a token lifetime down to the unit that reads naturally', () => {
+    // Drives the header's "expires in …" text, so a wrong unit here is a user
+    // reading the wrong deadline for a credential.
+    expect(humanizeSecs(3 * 3600 + 12 * 60)).toMatch(/3\s*h.*12\s*m/)
+    expect(humanizeSecs(2 * 3600)).toMatch(/2\s*h/)
+    expect(humanizeSecs(45 * 60)).toMatch(/45\s*m/)
+    expect(humanizeSecs(30)).toMatch(/30\s*s/)
+    // Non-positive is not an error state to hide: an expired token reads "0".
+    expect(humanizeSecs(0)).toMatch(/0\s*s/)
+    expect(humanizeSecs(-5)).toMatch(/0\s*s/)
+  })
+
+  it('reports a connect that came back not-connected instead of claiming success', async () => {
+    // The mutation resolves either way; only `state` says whether the tunnel is
+    // up, so treating a resolved promise as success would show a crew as
+    // connected while its forward never opened.
+    const inst = {
+      id: 'i1', name: 'box', ssh_host: 'box', remote_port: 7777, local_port: 7801,
+      ttl: '20h', connection_method: 'ssh', ssm_target: '', aws_profile: '', aws_region: '',
+      ssm_run_as: '', remote_bin: '', was_connected: false,
+      status: { state: 'disconnected' as const },
+    }
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [inst], warm_set_cap: 5 } as never)
+    ;vi.mocked(api.connectInstance).mockResolvedValue({ state: 'error', error: 'ssh exited 255' } as never)
+    const u = userEvent.setup()
+    renderWithProviders(<InstancesPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /^Connect$/i }))
+    expect(await screen.findByText(/ssh exited 255/i)).toBeInTheDocument()
+  })
+
+  it('surfaces a diagnosis reason on the row that asked for it', async () => {
+    const inst = {
+      id: 'i1', name: 'box', ssh_host: 'box', remote_port: 7777, local_port: 7801,
+      ttl: '20h', connection_method: 'ssh', ssm_target: '', aws_profile: '', aws_region: '',
+      ssm_run_as: '', remote_bin: '', was_connected: false,
+      status: { state: 'disconnected' as const },
+    }
+    ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [inst], warm_set_cap: 5 } as never)
+    ;vi.mocked(api.instanceStatus).mockResolvedValue({
+      state: 'disconnected', diagnosis: { code: 'remote_down', reason: 'remote dashboard down' },
+    } as never)
+    const u = userEvent.setup()
+    renderWithProviders(<InstancesPanel />)
+
+    await u.click(await screen.findByRole('button', { name: /Diagnose box/i }))
+    expect(await screen.findByText(/remote dashboard down/i)).toBeInTheDocument()
   })
 })

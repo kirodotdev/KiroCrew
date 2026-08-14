@@ -34,7 +34,7 @@ function SuggestedPills({ setInput }: { setInput: (v: string) => void }) {
     i18nT('components.welcomeView.suggestion_pipeline_status'),
     i18nT('components.welcomeView.suggestion_triage_tickets'),
     i18nT('components.welcomeView.suggestion_search_code'),
-    i18nT('components.welcomeView.suggestion_summarize_slack'),
+    i18nT('components.welcomeView.suggestion_summarize_chat'),
     i18nT('components.welcomeView.suggestion_write_design_doc'),
     i18nT('components.welcomeView.suggestion_review_cr'),
   ]

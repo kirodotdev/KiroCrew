@@ -374,11 +374,15 @@ class TestLivenessIsNegotiated:
         ].default is False
 
     def test_gatewayd_advertises_the_capability(self) -> None:
-        """The stub's gate is only reachable if the daemon actually offers it."""
-        from pathlib import Path
+        """The stub's gate is only reachable if the daemon actually offers it.
 
-        src = Path("src/kiro_crew/mcp_gateway/gatewayd.py").read_text(encoding="utf-8")
-        assert '"capabilities": ["ensure_backend", "bridge_ping"]' in src
+        Asserted against the advertised set rather than gatewayd's source text:
+        a grep for one literal breaks whenever an unrelated capability is added,
+        and passes if the list is built but never sent.
+        """
+        from kiro_crew.mcp_gateway.gatewayd import REGISTERED_CAPABILITIES
+
+        assert "bridge_ping" in REGISTERED_CAPABILITIES
 
     def test_liveness_path_does_not_exec(self) -> None:
         """The degrade path must fail fast, not exec a fresh server.

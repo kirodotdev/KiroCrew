@@ -34,7 +34,8 @@ class FileReader:
     SUPPORTED = {
         '', '.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go',
         '.html', '.htm', '.docx', '.pdf',
-        '.csv', '.log', '.json', '.yaml', '.yml', '.sh', '.rb', '.c', '.cpp', '.h',
+        '.csv', '.log', '.json', '.jsonl', '.ndjson', '.yaml', '.yml',
+        '.sh', '.rb', '.c', '.cpp', '.h',
     }
 
     _DISPATCH = {

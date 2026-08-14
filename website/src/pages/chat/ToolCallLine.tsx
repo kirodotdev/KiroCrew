@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -8,16 +8,18 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { pickToolLabel } from '../../utils/toolLabel'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
 import { registerToolPill } from '../../store/toolPillRegistry'
 import { extractToolFilePath } from '../../utils/toolFilePath'
+import { isWaitToolTitle } from '../../utils/waitToolTitle'
 import { isSafePath } from '../../utils/safePath'
 import { fileReadUrl } from '../../utils/fileReadUrl'
 import McpAppFrame from '../../components/McpAppFrame'
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields } from '../../i18n/format'
+import { fmtDateFields, fmtDuration as fmtDurationParts, fmtUnit } from '../../i18n/format'
+import { api } from '../../api/client'
 
 // Tool-call ids that have already played their one-shot `.ft-block-reveal`
 // entrance fade. A CSS animation re-fires on every DOM *mount*, and a pill
@@ -32,6 +34,56 @@ import { fmtDateFields } from '../../i18n/format'
 // (Same philosophy as the `.ft-word` streaming reveal: already-revealed nodes
 // don't re-fire.)
 const revealedToolIds = new Set<string>()
+
+// ── Row slide (height easing) ──
+// The transcript is pinned to the bottom, and the virtualizer's pin is
+// deliberately INSTANT (a smooth pin chases the moving bottom while output
+// streams, so it never converges). Every height change therefore lands in a
+// single frame: a tool row mounting at its full height, or its status line
+// unmounting, teleports everything above it by that many pixels.
+//
+// Easing the ROW's height instead of the scroll leaves the pin instant and
+// spreads the same movement over ~13 frames, which reads as the content sliding.
+// It rides the path streaming growth already uses — the ResizeObserver reports
+// each frame's height and re-pins — so no new scroll machinery is involved.
+//
+// Kept short and cheap: this fires on every tool call, and each animated frame
+// costs one scrollTop write.
+const SLIDE_DURATION = 0.22
+const SLIDE_EASE = [0.4, 0, 0.2, 1] as const
+
+/**
+ * A tool row's secondary status line (shell elapsed time, `wait` countdown).
+ *
+ * Appears and disappears by easing its own height rather than mounting at full
+ * height, so the transcript above slides instead of stepping. The clip is only
+ * needed while the height is mid-animation, but it is harmless at rest: the box
+ * settles at its content height, so nothing is ever cut off.
+ *
+ * `children` are constructed by the caller even while hidden (ordinary JSX
+ * evaluation) — they must therefore stay cheap and side-effect free, which the
+ * two status lines are.
+ */
+function StatusRow({ show, children }: { show: boolean; children: ReactNode }) {
+  const reduce = useReducedMotion()
+  return (
+    <AnimatePresence initial={false}>
+      {show && (
+        <motion.div
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={reduce
+            ? { duration: 0 }
+            : { height: { duration: SLIDE_DURATION, ease: SLIDE_EASE }, opacity: { duration: 0.15 } }}
+          style={{ overflow: 'hidden' }}
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
 
 /** Inline tool call pill. Click toggles an expanded panel below the pill that
  *  shows purpose / input / output. */
@@ -53,7 +105,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon.
-  const { effectiveId, isDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, hasEntry } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, hasEntry, isShell, toolName, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -116,6 +168,14 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           auto: !!e.auto,
           ts: e.ts || 0,
           hasEntry: true,
+          // Older ACP update frames may omit is_shell; execute is the stable
+          // tool-kind value used by the transport and keeps those frames live.
+          isShell: e.is_shell === true || e.kind === 'execute' || e.text.startsWith('Running:'),
+          // Raw transport tool name, kept separate from the display `label`:
+          // the label is simplified/localized for humans, so gating behaviour on
+          // it would break under `useSimplifiedToolNames` or a translated UI.
+          toolName: e.text || '',
+          fromLog: true,
         }
       }
     }
@@ -141,8 +201,22 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       // Treat the message as having an entry when persisted I/O is available,
       // so the empty-state copy only shows for truly bare historical messages.
       hasEntry: !!(metaInput || metaOutput),
+      isShell: false,
+      // Historical rows have no log entry; the message content is the only
+      // carrier. Harmless either way — a replayed wait is never in flight.
+      toolName: message.content.replace(/^🔧\s*/, ''),
+      // No live tool-log entry backs this row. `isDone` above is a REPLAY
+      // default, not an observation, so anything that needs real liveness must
+      // consult server state instead of trusting it (see the wait countdown).
+      fromLog: false,
     }
   }, shallowEqual)
+
+  // The tool log is authoritative here: its output/rejection/turn-running
+  // state survives the ACP initial-call → update handoff, while the parent
+  // `running` prop is not present on every historical/live rendering path.
+  const isDone = logIsDone
+  const turnRunning = !isDone
 
   // Check if this specific tool has a pending (unresolved) permission matching its tool_call_id.
   // Only match when tool_call_id is present on both sides — prevents batched approvals from
@@ -158,6 +232,155 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     }
     return false
   })
+
+  // Shell commands do not expose a reliable total, so their live indicator is
+  // deliberately indeterminate. The existing tool output remains the source
+  // of truth; this status only makes an in-flight command visible while its
+  // details panel is collapsed after approval.
+  const showShellActivity = isShell && turnRunning && !hasPendingPerm
+
+  // ── `wait` countdown ──
+  // Matched to this pill by tool NAME, not by id: the wait_id is minted inside
+  // the MCP subprocess and never appears on the ACP tool_call frame, so there is
+  // nothing to join on. The title has to go through isWaitToolTitle rather than
+  // `=== 'wait'` because the transport decides its shape (`wait`,
+  // `kirocrew-core___wait`, `wait (mcp)`) — see that helper.
+  //
+  // `slot.wait_state` is the ONLY liveness signal consulted, and deliberately so.
+  // The backend mints it on the sleep's first keepalive ping and clears it on the
+  // final one (and again at turn end as a backstop), so its presence means a wait
+  // is genuinely sleeping right now. The row's own `isDone` cannot stand in for
+  // that: after a mid-wait reload the runtime tool log is empty, the historical
+  // branch defaults `isDone` to true, and gating on it would blank the countdown
+  // in exactly the case the server-side deadline exists to serve. `isDone` is
+  // still honoured while a real log entry backs the row, so a wait that finishes
+  // in a live session stops ticking on the tool_result rather than waiting for
+  // the slots push.
+  //
+  // The deadline likewise comes from the slots payload, not the tool input: it is
+  // minted on the backend clock (the log entry's `ts` is browser-side and is
+  // reset by ACP's second tool_call frame) and re-seeds from GET /api/chat/slots.
+  //
+  // The `running` and newest-tool-row guards below are containment for a session
+  // identity that resolves per RUNTIME rather than per ACP session; the cure is
+  // tracked in https://github.com/kirodotdev/KiroCrew/issues/2347.
+  const isWaitTool = isWaitToolTitle(toolName)
+  const waitSlotKey = useAppSelector(s => slot ?? s.chat.activeSlot)
+  const waitState = useAppSelector(s => {
+    if (!isWaitTool || hasPendingPerm) return null
+    if (fromLog && isDone) return null
+    const found = waitSlotKey ? s.dashboard.slots.find(x => x.key === waitSlotKey) : undefined
+    const ws = found?.wait_state
+    if (!ws) return null
+    // The turn must actually be running. Cheap on its own, but load-bearing for
+    // a replayed row: the historical branch cannot observe liveness, so without
+    // this an idle slot's old wait pill would count down against a deadline
+    // belonging to some other sleep the backend is tracking.
+    if (!found?.running) return null
+    const bg = slot && slot !== s.chat.activeSlot ? slot : null
+    const msgs = bg ? (s.chat.slotMessages[bg] ?? []) : s.chat.messages
+    // Exactly one pill owns the countdown, and it must be the transcript's
+    // newest TOOL call of any kind -- not merely its newest wait. Scanning only
+    // for waits would let a completed wait from earlier in the turn light up
+    // while the agent is busy in some later tool, which is the shape a sleep
+    // belonging to a different ACP session on this same slot would take.
+    for (let j = msgs.length - 1; j >= 0; j--) {
+      const m = msgs[j]
+      if (m.role !== 'tool') continue
+      if (m.meta?.tool_call_id !== toolCallId) return null
+      return isWaitToolTitle(m.content.replace(/^🔧\s*/, '')) ? ws : null
+    }
+    return null
+  }, shallowEqual)
+  const showWaitCountdown = !!waitState && waitState.deadline_ts > 0
+  const [activityNow, setActivityNow] = useState(() => Date.now())
+  // Seed from the tool log's start timestamp so the elapsed clock survives
+  // unmount/remount (e.g. navigating away and back). Falls back to Date.now()
+  // only when no persisted timestamp is available (first mount of a brand-new
+  // tool call before the log entry arrives).
+  const activityStartRef = useRef(ts || Date.now())
+  const wasPendingRef = useRef(hasPendingPerm)
+  // Tracks whether approval resolved during this mount — once set, the ts
+  // re-anchor effect is suppressed so the post-approval Date.now() anchor
+  // is not overwritten by the pre-approval ts.
+  const approvalResolvedRef = useRef(false)
+  const [endingWait, setEndingWait] = useState(false)
+
+  // Re-arm the button for a NEW sleep. Left latched otherwise: after a
+  // successful request the row lives on for up to one poll interval, and a
+  // re-enabled button there would invite a second click the backend answers 409.
+  const endedWaitIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    const id = waitState?.wait_id ?? null
+    if (id !== endedWaitIdRef.current) {
+      endedWaitIdRef.current = id
+      setEndingWait(false)
+    }
+  }, [waitState?.wait_id])
+
+  const endWaitNow = useCallback(() => {
+    if (!waitSlotKey || !waitState || endingWait) return
+    setEndingWait(true)
+    void api.endWait(waitSlotKey, waitState.wait_id).catch(() => {
+      // Roll back so a transport failure is retryable. A 409 also lands here,
+      // and re-enabling is still right: the countdown it referred to is gone.
+      setEndingWait(false)
+    })
+  }, [waitSlotKey, waitState, endingWait])
+
+  useEffect(() => {
+    if (hasPendingPerm) {
+      wasPendingRef.current = true
+      return
+    }
+    if (wasPendingRef.current) {
+      activityStartRef.current = Date.now()
+      wasPendingRef.current = false
+      approvalResolvedRef.current = true
+      setActivityNow(Date.now())
+    }
+  }, [hasPendingPerm])
+
+  // When the tool log timestamp arrives (or on remount with a persisted ts),
+  // re-anchor the elapsed clock so it reflects real wall time since the tool
+  // started — not time since the component mounted. Skip if approval just
+  // resolved in this mount — the post-approval Date.now() is the correct anchor
+  // for approved commands (the pre-approval ts would inflate the timer by the
+  // entire approval wait).
+  useEffect(() => {
+    if (ts && !hasPendingPerm && !approvalResolvedRef.current) {
+      activityStartRef.current = ts
+    }
+  }, [ts, hasPendingPerm])
+
+  useEffect(() => {
+    if (!showShellActivity && !showWaitCountdown) return
+    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [showShellActivity, showWaitCountdown])
+
+  const elapsedSeconds = Math.max(0, Math.floor((activityNow - activityStartRef.current) / 1000))
+  const elapsedLabel = fmtDurationParts(
+    [[Math.floor(elapsedSeconds / 60), 'minute'], [elapsedSeconds % 60, 'second']],
+    { dropZero: true },
+  )
+
+  // Remaining time on the sleeping wait. Ceil so the label reads "1s" for the
+  // final fractional second instead of flashing "0s" while the tool is still
+  // asleep, and clamp at zero: the sleep can outlast its own deadline by up to
+  // one poll interval, and a negative countdown is worse than a parked "0s".
+  const remainingSeconds = waitState
+    ? Math.max(0, Math.ceil((waitState.deadline_ts * 1000 - activityNow) / 1000))
+    : 0
+  // Minutes are dropped below 60s but the seconds place is NEVER dropped above
+  // it, so the label steps 2m 1s → 2m 0s → 59s instead of collapsing to a bare
+  // "2m" for one tick. Same reasoning as fmtTurnElapsed's "2m 0s" comment.
+  const remainingLabel = remainingSeconds < 60
+    ? fmtUnit(remainingSeconds, 'second', { maximumFractionDigits: 0 })
+    : fmtDurationParts([
+      [Math.floor(remainingSeconds / 60), 'minute'],
+      [remainingSeconds % 60, 'second'],
+    ])
 
   // Inline expansion state.
   //
@@ -372,10 +595,46 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   const [revealPlayed, setRevealPlayed] = useState(false)
   const revealing = animateEntrance && !revealPlayed
 
+  // Height half of the entrance (see SLIDE_DURATION): grow from 0 so the rows
+  // above slide up instead of stepping. Same one-shot decision as the fade —
+  // a remount must not replay it — but tracked separately because the two have
+  // different lengths, and the height must be released as soon as IT finishes:
+  // a lingering inline px height would freeze the row at its entrance size and
+  // clip everything that grows later (details panel, MCP app iframe).
+  //
+  // `revealId` is REQUIRED, unlike for the fade. An id-less pre-persistence
+  // historical row cannot be recorded in `revealedToolIds`, so its
+  // `animateEntrance` is permanently true and the virtualizer would replay the
+  // grow every time the row re-enters the mounted window — shifting layout under
+  // a reader scrolling back through history. Replaying an opacity fade there
+  // moves nothing, so the fade keeps its id-less fallback; replaying a height
+  // does, so the slide takes stable identity or nothing.
+  const reduceMotion = useReducedMotion()
+  const [slidePlayed, setSlidePlayed] = useState(false)
+  const sliding = !!revealId && animateEntrance && !slidePlayed && !reduceMotion
+  // Release from the effect rather than from the completion callback alone, so
+  // the inline values are cleared however `sliding` ends — the animation
+  // finishing, or the OS reduced-motion preference flipping mid-flight, which
+  // drops `animate` while framer's `height: 0px` is still on the node and would
+  // otherwise leave the row collapsed forever.
+  useEffect(() => {
+    if (sliding) return
+    const el = containerRef.current
+    if (!el) return
+    el.style.height = ''
+    el.style.overflow = ''
+  }, [sliding])
+  const endSlide = useCallback(() => setSlidePlayed(true), [])
+
   return (
-    <div
+    <motion.div
       ref={containerRef}
       className={revealing ? 'ft-block-reveal' : undefined}
+      initial={sliding ? { height: 0 } : false}
+      animate={sliding ? { height: 'auto' } : undefined}
+      transition={{ height: { duration: SLIDE_DURATION, ease: SLIDE_EASE } }}
+      onAnimationComplete={sliding ? endSlide : undefined}
+      style={sliding ? { overflow: 'hidden' } : undefined}
       onAnimationEnd={revealing
         ? (e) => { if (e.target === e.currentTarget) setRevealPlayed(true) }
         : undefined}
@@ -440,6 +699,45 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       )}
       </div>
 
+      <StatusRow show={showShellActivity}>
+        <div className="ml-3 mt-1 text-[12px] text-muted">
+          <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
+          <span aria-hidden="true" className="tabular-nums font-mono">
+            {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
+          </span>
+        </div>
+      </StatusRow>
+      <StatusRow show={showWaitCountdown}>
+        <div className="ml-3 mt-1 flex items-center gap-2 text-[12px] text-muted" data-testid="wait-countdown">
+          {/* The status word is announced once; the digits are aria-hidden so a
+              screen reader is not re-read every second. Same split as the shell
+              activity row above. */}
+          <span className="sr-only" aria-live="polite">{i18nT('pages.chat.toolCallLine.wait_status')}</span>
+          {/* tabular-nums only, no font-mono: the fixed-width digits are what
+              stops the label jittering as it ticks, but a mono FACE next to the
+              pill's body-font label reads as a different kind of text. */}
+          <span aria-hidden="true" className="tabular-nums">
+            {i18nT('pages.chat.toolCallLine.wait_status')} · {i18nT('pages.chat.toolCallLine.wait_remaining', { time: remainingLabel })}
+          </span>
+          {/* stopPropagation is defensive, not load-bearing for the pill: this
+              row is a SIBLING of the pill button, not inside its click target.
+              It guards against an ancestor click handler (TurnBlock and the
+              collapsed-group wrapper both bind one) treating the press as a
+              request to expand or collapse the surrounding block. */}
+          <button
+            type="button"
+            disabled={endingWait}
+            data-testid="wait-end-now"
+            className="px-2 py-0.5 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={e => { e.stopPropagation(); endWaitNow() }}
+          >
+            {endingWait
+              ? i18nT('pages.chat.toolCallLine.wait_ending')
+              : i18nT('pages.chat.toolCallLine.wait_end_now')}
+          </button>
+        </div>
+      </StatusRow>
+
       <AnimatePresence initial={false}>
         {effectivelyExpanded && (
           <motion.div
@@ -476,6 +774,6 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           </button>
         )
         : <McpAppFrame payload={mcpApp} />)}
-    </div>
+    </motion.div>
   )
 })

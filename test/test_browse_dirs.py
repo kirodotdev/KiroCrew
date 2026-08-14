@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import api_browse_dirs
+from kiro_crew.dashboard.handlers.files import _browse_dirs_sync
 
 
 def _make_app() -> web.Application:
@@ -98,3 +100,29 @@ class TestBrowseDirs:
                 assert data["dirs"] == []
         finally:
             restricted.chmod(0o755)
+
+    @pytest.mark.asyncio
+    async def test_scan_does_not_run_on_the_event_loop(self, tmp_path, mock_sel):
+        """The directory walk must execute off the loop thread.
+
+        Moving a scan into a thread preserves behaviour exactly, so no assertion on
+        the response body can tell the offload from an inline walk — a plain revert
+        keeps every other test in this file green. Record the thread the scan really
+        runs on and compare it against the loop's own thread instead.
+        """
+        (tmp_path / "alpha").mkdir()
+        loop_thread = threading.get_ident()
+        ran_on: list[int] = []
+
+        def spy(base: str, skip: set[str]) -> list[dict]:
+            ran_on.append(threading.get_ident())
+            return _browse_dirs_sync(base, skip)
+
+        with patch("kiro_crew.dashboard.handlers.files._browse_dirs_sync", spy):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/browse-dirs?path={tmp_path}")
+                assert resp.status == 200
+                names = {d["name"] for d in (await resp.json())["dirs"]}
+                assert names == {"alpha"}
+        assert ran_on, "the scan helper was never called"
+        assert ran_on[0] != loop_thread

@@ -10,6 +10,8 @@ on edit, and SEL audit logging.  No network, no real home directory.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -134,6 +136,80 @@ class TestCustomAdd:
         finally:
             await client.close()
 
+    async def test_remote_spec_keeps_scopes_and_client_id(self, sandbox, fake_sel):
+        """A Connect writes the card's promised access; the entry must carry it."""
+        spec = {
+            "url": "https://api.githubcopilot.com/mcp/",
+            "scopes": ["read:user", "read:org"],
+            "clientId": "public-client-id",
+        }
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"github": spec}})
+            assert resp.status == 200
+            entry = _written(sandbox)["github"]
+            assert entry["scopes"] == ["read:user", "read:org"]
+            assert entry["clientId"] == "public-client-id"
+        finally:
+            await client.close()
+
+    async def test_remote_spec_drops_empty_oauth_hints(self, sandbox, fake_sel):
+        """Empty optionals are dropped, matching args/env — no noise keys on disk."""
+        spec = {"url": "https://mcp.example.com/sse", "scopes": [], "clientId": ""}
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 400, "an empty clientId is malformed, not an omission"
+            spec.pop("clientId")
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            entry = _written(sandbox)["remote"]
+            assert "scopes" not in entry
+            assert "clientId" not in entry
+        finally:
+            await client.close()
+
+    async def test_remote_spec_keeps_headers(self, sandbox, fake_sel):
+        """The remote shape accepts headers so an authenticated server is
+        authorable in one step, matching what the runtime and probe honor."""
+        spec = {
+            "url": "https://mcp.example.com/sse",
+            "headers": {"Authorization": "Bearer fresh-secret", "X-Api-Key": "k"},
+        }
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            entry = _written(sandbox)["remote"]
+            assert entry["headers"] == spec["headers"]
+        finally:
+            await client.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+    async def test_store_is_owner_only_after_credential_write(self, sandbox, fake_sel):
+        """A fresh store created by a headers add must not be world-readable —
+        header values are credentials another local user could otherwise read."""
+        spec = {"url": "https://mcp.example.com/sse", "headers": {"Authorization": "Bearer s"}}
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            mode = stat.S_IMODE(sandbox.kirocrew_json.stat().st_mode)
+            assert mode == 0o600, f"store mode {oct(mode)} leaks credentials"
+        finally:
+            await client.close()
+
+    async def test_remote_spec_drops_empty_headers(self, sandbox, fake_sel):
+        """An empty headers object is an omission, like empty args/env."""
+        spec = {"url": "https://mcp.example.com/sse", "headers": {}}
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            assert "headers" not in _written(sandbox)["remote"]
+        finally:
+            await client.close()
+
     async def test_multi_add_writes_all(self, sandbox, fake_sel):
         client = await _client()
         try:
@@ -198,6 +274,31 @@ class TestCustomAdd:
             ({"command": "npx", "env": {"K": 1}}, "string values"),
             ({"url": "ftp://mcp.example.com"}, "http(s)"),
             ({"url": "https://x.example", "env": {"K": "v"}}, "not valid on a remote"),
+            ({"url": "https://x.example", "scopes": "read"}, "list of non-empty strings"),
+            ({"url": "https://x.example", "scopes": ["read", 7]}, "list of non-empty strings"),
+            ({"url": "https://x.example", "scopes": ["read", ""]}, "list of non-empty strings"),
+            ({"url": "https://x.example", "clientId": ""}, "'clientId' must be a non-empty"),
+            ({"url": "https://x.example", "clientId": "   "}, "'clientId' must be a non-empty"),
+            ({"url": "https://x.example", "clientId": 42}, "'clientId' must be a non-empty"),
+            ({"command": "npx", "scopes": ["read"]}, "not valid on a stdio"),
+            ({"command": "npx", "clientId": "public-id"}, "not valid on a stdio"),
+            ({"command": "npx", "headers": {"A": "b"}}, "not valid on a stdio"),
+            ({"url": "https://x.example", "headers": "Bearer x"}, "object of string values"),
+            ({"url": "https://x.example", "headers": {"A": 7}}, "object of string values"),
+            ({"url": "https://x.example", "headers": {"": "v"}}, "object of string values"),
+            ({"url": "https://x.example", "headers": {" ": "v"}}, "object of string values"),
+            (
+                {"url": "https://x.example", "headers": {"A": "[REDACTED: credential]"}},
+                "redacted",
+            ),
+            (
+                {"url": "https://x.example", "headers": {"A": "v\r\nX-Evil: y"}},
+                "control characters",
+            ),
+            (
+                {"url": "https://x.example", "headers": {"A\n": "v"}},
+                "control characters",
+            ),
             ("npx -y thing", "must be an object"),
         ],
     )
@@ -338,6 +439,72 @@ class TestCustomUpdate:
         finally:
             await client.close()
 
+    async def test_put_can_author_headers_when_none_stored(self, sandbox, fake_sel):
+        """An entry without stored headers accepts them like a fresh add —
+        there is no prior credential a redacted round-trip could clobber."""
+        entry = {"url": "https://mcp.example.com/sse", "disabled": True}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            spec = {"url": entry["url"], "headers": {"Authorization": "Bearer fresh"}}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 200
+            written = _written(sandbox)["remote"]
+            assert written["headers"] == {"Authorization": "Bearer fresh"}
+            assert written["disabled"] is True, "editing is not consent to run"
+        finally:
+            await client.close()
+
+    async def test_put_can_author_headers_over_an_empty_stored_map(self, sandbox, fake_sel):
+        """An empty stored headers map carries no credential — presence alone
+        must not make the entry permanently header-unauthorable."""
+        entry = {"url": "https://mcp.example.com/sse", "headers": {}}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            spec = {"url": entry["url"], "headers": {"Authorization": "Bearer fresh"}}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 200
+            assert _written(sandbox)["remote"]["headers"] == {"Authorization": "Bearer fresh"}
+        finally:
+            await client.close()
+
+    async def test_put_modifying_stored_headers_is_refused(self, sandbox, fake_sel):
+        """Stored values are shown redacted, so an edited value cannot be
+        distinguished from a mangled marker — refuse rather than guess."""
+        raw_headers = {"Authorization": "Bearer old-secret"}
+        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            spec = (await resp.json())["spec"]
+            spec["headers"]["Authorization"] = "Bearer new-secret"
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["code"] == "stored_headers_not_editable"
+            assert _written(sandbox)["remote"]["headers"] == raw_headers
+        finally:
+            await client.close()
+
+    async def test_put_rejects_redaction_marker_as_fresh_header_value(self, sandbox, fake_sel):
+        """A spec pasted from another server's read payload carries the marker;
+        writing it would store a nonsense credential that fails auth silently."""
+        from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE
+
+        entry = {"url": "https://mcp.example.com/sse"}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            spec = {"url": entry["url"], "headers": {"Authorization": MCP_REDACTED_HEADER_VALUE}}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            assert "redacted" in (await resp.json())["error"]
+            assert "headers" not in _written(sandbox)["remote"]
+        finally:
+            await client.close()
+
 
 # ---------------------------------------------------------------------------
 # GET /api/mcp/custom/{name} — raw spec for the edit modal
@@ -358,6 +525,89 @@ class TestCustomGet:
             assert body["enabled"] is False
             assert body["spec"]["env"] == {"KEY": ""}  # env preserved for prefill
             assert "disabled" not in body["spec"]
+        finally:
+            await client.close()
+
+    async def test_oauth_hints_round_trip_without_echoing_authorization(
+        self, sandbox, fake_sel
+    ):
+        """scopes/clientId survive GET→PUT unchanged, alongside a header entry."""
+        entry = {
+            "url": "https://api.githubcopilot.com/mcp/",
+            "headers": {"Authorization": "Bearer custom-secret"},
+            "scopes": ["read:user"],
+            "clientId": "public-client-id",
+        }
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"github": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/github")
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["spec"]["scopes"] == ["read:user"]
+            assert body["spec"]["clientId"] == "public-client-id"
+
+            resp = await client.put("/api/mcp/custom/github", json={"spec": body["spec"]})
+            assert resp.status == 200
+            written = _written(sandbox)["github"]
+            assert written["scopes"] == ["read:user"]
+            assert written["clientId"] == "public-client-id"
+            assert written["headers"] == {"Authorization": "Bearer custom-secret"}
+        finally:
+            await client.close()
+
+    async def test_redacted_headers_round_trip_without_overwriting_values(
+        self, sandbox, fake_sel
+    ):
+        raw_headers = {
+            "Authorization": "Bearer custom-secret",
+            "X-Api-Key": "custom-api-key",
+        }
+        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            assert resp.status == 200
+            body = await resp.json()
+            assert set(body["spec"]["headers"]) == set(raw_headers)
+            assert set(body["spec"]["headers"].values()) == {"[REDACTED: credential]"}
+            assert "custom-secret" not in json.dumps(body)
+            assert "custom-api-key" not in json.dumps(body)
+
+            resp = await client.put(
+                "/api/mcp/custom/remote", json={"spec": body["spec"]}
+            )
+            assert resp.status == 200
+            assert _written(sandbox)["remote"]["headers"] == raw_headers
+        finally:
+            await client.close()
+
+    async def test_url_change_with_stored_headers_is_refused(self, sandbox, fake_sel):
+        """A credential is scoped to the host it was typed for.
+
+        The PUT restore path puts the on-disk header values back verbatim, so
+        accepting a url-only edit would silently point the stored secret at a
+        different origin and the next probe would send it there.
+        """
+        raw_headers = {"Authorization": "Bearer custom-secret"}
+        entry = {"url": "https://old.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            assert resp.status == 200
+            spec = (await resp.json())["spec"]
+
+            spec["url"] = "https://new.example.net/sse"
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["code"] == "url_change_with_stored_headers"
+            # Nothing was written: the secret still sits beside its own host.
+            written = _written(sandbox)["remote"]
+            assert written["url"] == "https://old.example.com/sse"
+            assert written["headers"] == raw_headers
         finally:
             await client.close()
 
@@ -453,6 +703,50 @@ class TestCarriedKeyRoundTrip:
         finally:
             await client.close()
 
+    async def test_the_authorship_marker_is_the_one_carried_key_not_preserved(
+        self, sandbox, fake_sel
+    ):
+        """A hand-added marker in the store cannot ride a save back out.
+
+        Every other non-allowlisted key round-trips, because dropping one would
+        silently change behaviour the editor does not own. The marker is the
+        exception: it records that Kiro Crew wrote an entry into a file it does
+        NOT own, so it is meaningless in the store, and preserving it here would
+        let a hand-edit volunteer the entry for management on a shared surface.
+        """
+        from kiro_crew.mcp_provenance import MARKER_KEY
+
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {**self._ENTRY, MARKER_KEY: {"managed": True}},
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            got = await (await client.get("/api/mcp/custom/weather")).json()
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": got["spec"]})
+            assert resp.status == 200
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
+            assert MARKER_KEY not in entry
+            assert entry["disabledTools"] == ["dangerous_tool"], "real carried keys still survive"
+
+            # A FRESH add tolerates no such key, so a pasted block cannot claim
+            # management for a server the dashboard has never written.
+            resp = await client.post(
+                "/api/mcp/custom",
+                json={"servers": {"pasted": {"command": "npx", MARKER_KEY: {"managed": True}}}},
+            )
+            assert resp.status == 400
+            assert MARKER_KEY in (await resp.json())["error"]
+        finally:
+            await client.close()
+
     async def test_removing_carried_key_still_preserves_it(self, sandbox, fake_sel):
         self._seed(sandbox)
         client = await _client()
@@ -480,6 +774,311 @@ class TestCarriedKeyRoundTrip:
             assert "managed by other flows" in (await resp.json())["error"]
             entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
             assert entry["disabledTools"] == ["dangerous_tool"]
+        finally:
+            await client.close()
+
+    async def test_clearing_oauth_hints_defeats_a_carried_wire_sibling(self, sandbox, fake_sel):
+        """An explicit clear must actually stop the grant being requested.
+
+        The scope-toggle preservation rule copies a global server's spec into the
+        store verbatim, so the entry can hold the WIRE spelling. Those keys sit
+        outside the editable set, so carried-key restoration puts them back
+        untouched -- and with the internal key absent from disk the reader falls
+        through to the sibling, so the cleared grant keeps being requested while
+        the API answers 200 and looks like it worked.
+        """
+        from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes
+
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {
+                            "url": "https://mcp.acme.com/mcp",
+                            "oauthScopes": ["acme:read"],
+                            "oauth": {"clientId": "acme-client", "issuer": "https://iss"},
+                        }
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            resp = await client.put(
+                "/api/mcp/custom/weather",
+                json={"spec": {"url": "https://mcp.acme.com/mcp", "scopes": []}},
+            )
+            assert resp.status == 200
+            entry = _written(sandbox)["weather"]
+            assert kiro_entry_scopes(entry) == [], "the cleared scopes must not come back"
+            assert kiro_entry_client_id(entry) == "", "nor the cleared client id"
+            assert entry.get("oauth", {}).get("issuer") == "https://iss", (
+                "a sibling sub-key we never owned still survives"
+            )
+        finally:
+            await client.close()
+
+    async def test_clearing_oauth_hints_also_drops_the_nested_wire_sibling(
+        self, sandbox, fake_sel
+    ):
+        """The reader falls through to ``oauth.oauthScopes`` too, so a clear must reach it."""
+        from kiro_crew.mcp_utils import kiro_entry_scopes
+
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {
+                            "url": "https://mcp.acme.com/mcp",
+                            "oauth": {
+                                "oauthScopes": ["acme:read"],
+                                "issuer": "https://iss",
+                            },
+                        }
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            resp = await client.put(
+                "/api/mcp/custom/weather",
+                json={"spec": {"url": "https://mcp.acme.com/mcp"}},
+            )
+            assert resp.status == 200
+            entry = _written(sandbox)["weather"]
+            assert kiro_entry_scopes(entry) == [], "a nested wire sibling must not survive"
+            assert entry.get("oauth", {}).get("issuer") == "https://iss", (
+                "an unrelated oauth sub-key still survives"
+            )
+        finally:
+            await client.close()
+
+    async def test_malformed_wire_oauth_fields_are_rejected_like_internal_ones(
+        self, sandbox, fake_sel
+    ):
+        """Both spellings of a hint answer to one shape rule.
+
+        The wire spellings are editable on this path, so tolerating them by name
+        (so an unmodified round trip still saves) must not also skip their shape
+        check -- otherwise the same field is accepted or rejected depending only
+        on which spelling the caller used, and an invalid value reaches disk
+        under a 200.
+        """
+        url = "https://mcp.acme.com/mcp"
+        for bad in (
+            {"oauthScopes": [123]},
+            {"oauthScopes": "not-a-list"},
+            {"oauthScopes": [""]},
+            {"oauth": {"clientId": {}}},
+            {"oauth": {"clientId": ""}},
+            {"oauth": "not-a-dict"},
+        ):
+            sandbox.kirocrew_json.write_text(
+                json.dumps({"mcpServers": {"weather": {"url": url}}})
+            )
+            client = await _client()
+            try:
+                resp = await client.put(
+                    "/api/mcp/custom/weather", json={"spec": {"url": url, **bad}}
+                )
+                assert resp.status == 400, f"{bad} must be rejected, got {resp.status}"
+                assert _written(sandbox)["weather"] == {"url": url}, "disk must be untouched"
+            finally:
+                await client.close()
+
+    async def test_valid_wire_oauth_fields_still_round_trip(self, sandbox, fake_sel):
+        """The shape check must not break the preservation path it guards."""
+        url = "https://mcp.acme.com/mcp"
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {
+                            "url": url,
+                            "oauthScopes": ["acme:read"],
+                            "oauth": {"clientId": "acme-client", "issuer": "https://iss"},
+                        }
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            got = await (await client.get("/api/mcp/custom/weather")).json()
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": got["spec"]})
+            assert resp.status == 200
+            entry = _written(sandbox)["weather"]
+            assert entry["oauthScopes"] == ["acme:read"]
+            assert entry["oauth"]["clientId"] == "acme-client"
+            assert entry["oauth"]["issuer"] == "https://iss"
+        finally:
+            await client.close()
+
+    async def test_editing_a_wire_sibling_value_persists(self, sandbox, fake_sel):
+        """Stated-is-authoritative covers a VALUE change, not just presence.
+
+        A preserved entry can hold the wire spelling, so the editor's only way to
+        narrow that grant is to change the wire value. Honouring absence but
+        dropping an edit would be the same silent 200 as a dropped clear.
+        """
+        url = "https://mcp.acme.com/mcp"
+        for before, submit, expect_scopes in (
+            # nested wire sibling edited in place
+            (
+                {"oauth": {"oauthScopes": ["a"], "issuer": "https://iss"}},
+                {"oauth": {"oauthScopes": ["b"], "issuer": "https://iss"}},
+                ["b"],
+            ),
+            # top-level wire spelling edited in place
+            ({"oauthScopes": ["a"]}, {"oauthScopes": ["b"]}, ["b"]),
+        ):
+            sandbox.kirocrew_json.write_text(
+                json.dumps({"mcpServers": {"weather": {"url": url, **before}}})
+            )
+            client = await _client()
+            try:
+                resp = await client.put(
+                    "/api/mcp/custom/weather", json={"spec": {"url": url, **submit}}
+                )
+                assert resp.status == 200, f"{submit} rejected: {await resp.text()}"
+                entry = _written(sandbox)["weather"]
+                from kiro_crew.mcp_utils import kiro_entry_scopes
+
+                assert kiro_entry_scopes(entry) == expect_scopes, (
+                    f"{submit} must persist, got {entry}"
+                )
+            finally:
+                await client.close()
+
+    async def test_editing_a_nested_client_id_persists(self, sandbox, fake_sel):
+        """Same rule for the other hint, and unrelated sub-keys survive."""
+        from kiro_crew.mcp_utils import kiro_entry_client_id
+
+        url = "https://mcp.acme.com/mcp"
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {
+                            "url": url,
+                            "oauth": {"clientId": "old-client", "issuer": "https://iss"},
+                        }
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            resp = await client.put(
+                "/api/mcp/custom/weather",
+                json={
+                    "spec": {
+                        "url": url,
+                        "oauth": {"clientId": "new-client", "issuer": "https://iss"},
+                    }
+                },
+            )
+            assert resp.status == 200
+            entry = _written(sandbox)["weather"]
+            assert kiro_entry_client_id(entry) == "new-client"
+            assert entry["oauth"]["issuer"] == "https://iss"
+        finally:
+            await client.close()
+
+    async def test_editing_a_non_hint_oauth_subkey_is_rejected_not_silently_reverted(
+        self, sandbox, fake_sel
+    ):
+        """A sub-key we do not own follows the carried-key rule: refuse, don't revert.
+
+        ``issuer`` is written by other flows, so it is not editable here -- but the
+        answer must say so. Silently restoring the on-disk value would report
+        success for a change that never happened.
+        """
+        url = "https://mcp.acme.com/mcp"
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {
+                            "url": url,
+                            "oauth": {"clientId": "c", "issuer": "https://old"},
+                        }
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            resp = await client.put(
+                "/api/mcp/custom/weather",
+                json={"spec": {"url": url, "oauth": {"clientId": "c", "issuer": "https://new"}}},
+            )
+            assert resp.status == 400, f"expected refusal, got {resp.status}"
+            entry = _written(sandbox)["weather"]
+            assert entry["oauth"]["issuer"] == "https://old", "disk must be untouched"
+        finally:
+            await client.close()
+
+    async def test_adding_a_non_hint_oauth_subkey_is_refused_not_dropped(self, sandbox, fake_sel):
+        """A stated sub-key we cannot store must be refused, not accepted and dropped.
+
+        The editor is a raw JSON field, so a sub-key with no prior value on disk is
+        reachable. Base answered 400 for an unknown key; accepting it and writing
+        nothing turns that explicit refusal into a silent no-op.
+        """
+        url = "https://mcp.acme.com/mcp"
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": {"url": url}}}))
+        client = await _client()
+        try:
+            resp = await client.put(
+                "/api/mcp/custom/weather",
+                json={"spec": {"url": url, "oauth": {"issuer": "https://new"}}},
+            )
+            assert resp.status == 400, f"expected refusal, got {resp.status}"
+            assert "oauth" not in _written(sandbox)["weather"]
+        finally:
+            await client.close()
+
+    async def test_an_internal_clear_outranks_a_round_tripped_wire_sibling(self, sandbox, fake_sel):
+        """Stating the internal spelling settles BOTH wire spellings.
+
+        The editor prefills the whole spec, so a user clearing scopes submits
+        ``scopes: []`` next to the nested wire hint the GET handed them. Copying
+        that sibling back would let the reader fall through to it and resurrect the
+        grant the submission just cleared.
+        """
+        from kiro_crew.mcp_utils import kiro_entry_scopes
+
+        url = "https://mcp.acme.com/mcp"
+        sandbox.kirocrew_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "weather": {
+                            "url": url,
+                            "oauth": {"oauthScopes": ["stale:read"], "issuer": "https://iss"},
+                        }
+                    }
+                }
+            )
+        )
+        client = await _client()
+        try:
+            resp = await client.put(
+                "/api/mcp/custom/weather",
+                json={
+                    "spec": {
+                        "url": url,
+                        "scopes": [],
+                        "oauth": {"oauthScopes": ["stale:read"], "issuer": "https://iss"},
+                    }
+                },
+            )
+            assert resp.status == 200, await resp.text()
+            entry = _written(sandbox)["weather"]
+            assert kiro_entry_scopes(entry) == [], f"clear did not take effect: {entry}"
+            assert entry["oauth"]["issuer"] == "https://iss", "unowned sub-key must survive"
         finally:
             await client.close()
 

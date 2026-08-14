@@ -50,12 +50,20 @@ class TestStatusSnapshot:
         state.subagents = None
         assert state.status_snapshot()["subagents"] == 0
 
-    def test_slack_connected_reflects_client(self, state: DashboardState) -> None:
+    def test_slack_connected_reflects_socket_outcome(self, state: DashboardState) -> None:
         # No Slack client wired up (pure-dashboard / Slack disabled).
         assert state.slack_client is None
         assert state.status_snapshot()["slack_connected"] is False
-        # Gateway wires up a live Slack client once Socket Mode connects.
+        # Tokens were present at boot (client wired) but the socket connect
+        # failed, e.g. invalid_auth or a network error. The badge must NOT show
+        # green: slack_client alone only proves tokens existed, not that Socket
+        # Mode came up. This is the reported bug (#1770): a green "Connected"
+        # over a Slack that never received an event.
         state.slack_client = MagicMock()
+        state.slack_socket_connected = False
+        assert state.status_snapshot()["slack_connected"] is False
+        # Socket Mode actually connected this session.
+        state.slack_socket_connected = True
         assert state.status_snapshot()["slack_connected"] is True
 
     def test_new_fields_propagate_to_all_callers(self, state: DashboardState) -> None:

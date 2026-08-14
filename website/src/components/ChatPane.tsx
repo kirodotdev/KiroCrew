@@ -6,8 +6,7 @@ import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
-import ToolCallLine from '../pages/chat/ToolCallLine'
-import type { ChatMessage } from '../types'
+import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
@@ -18,12 +17,16 @@ import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
 import { useAgents } from '../hooks/useAgents'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
-import { useAppSelector, useAppDispatch } from '../store'
-import { selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
+import { useAppSelector, useAppDispatch, store } from '../store'
+import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage } from '../store/chatSlice'
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
+import { classifyDrop } from '../utils/dropClassify'
+import { serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -53,6 +56,9 @@ export default function ChatPane({
 }) {
   const dispatch = useAppDispatch()
   const provider = useProvider()
+  // Same gate the main chat uses: hide a Connections-owned OAuth banner only
+  // while the card that owns that flow is reachable.
+  const connectionsUiOn = useConnectionsUiEnabled()
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   const [dragOver, setDragOver] = useState(false)
@@ -105,7 +111,7 @@ export default function ChatPane({
   // Subscribes to the store's global refresh so a default-agent write in ANY pane (or
   // in single chat) lands here too; a per-hook refresh would leave sibling pickers stale.
   const agentsRefreshTrigger = useAppSelector((s) => s.dashboard.refreshTrigger ?? 0)
-  const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger)
+  const { agents: installedAgents, defaultAgent } = useAgents(agentsRefreshTrigger, slotKey)
   const navigate = useNavigate()
   const [defaultAgentFailed, setDefaultAgentFailed] = useState(false)
   // Same contract as ChatPage: set-only, clearing lives on the Templates page.
@@ -205,23 +211,73 @@ export default function ChatPane({
     uploadMutation.mutate(files)
   }, [uploadMutation])
 
+  // Classify BEFORE acting (issue #743): a dropped folder inserts its path
+  // into the composer as an `@path/` token instead of taking the upload
+  // route, which cannot ingest a directory. Files keep uploading; a mixed
+  // drop takes both routes. The pane has no project context, so the token
+  // keeps the absolute path (the picker's own out-of-root fallback form),
+  // appended — the pane does not track a live composer caret. In a plain
+  // browser no real path is visible, so classifyDrop leaves folders on the
+  // upload route there (today's behaviour).
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false)
+    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    if (dirPaths.length) setInput((prev) => spliceDirTokens(prev, null, dirPaths).value)
+    if (files.length) uploadFiles(files)
+  }, [uploadFiles])
+
   const doSend = useCallback(() => {
     const text = input.trim()
     if (!text && !pendingFiles.length) return
+    // Capture the stateless card pending at ENTRY (before any state updates
+    // or yields): this send consumes the answer channel of the card the user
+    // saw when they hit send. Retired only after the server confirms it
+    // accepted the message (ok or queued) — the optimistic append below must
+    // not do it, or a failed send (offline, 5xx) deletes the card while the
+    // session never moved on.
+    const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, slotKey)
+    // A blocking card is resolved over the network, not in the store — an agent
+    // is parked on its request.
+    const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, slotKey)
     setInput('')
     const files = pendingFiles
     setPendingFiles([])
+    // Folder tokens take the same wire/bubble split ChatPage uses: the wire
+    // text carries `[attached_dir N] path` markers the agent can resolve, the
+    // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
+    // marker N to dirPaths[N-1] for lossless history replay. The pane has no
+    // project context, so tokens are absolute and serialize as-is.
+    const { llm, dirPaths } = serializeDirTokens(text, '')
+    // sendId correlation (same contract as ChatPage): the wire text differs
+    // from the bubble text whenever a folder token serialized, so the store's
+    // content-equality fallback can never reconcile the server echo against
+    // the optimistic bubble — without this id the echo appends a SECOND user
+    // bubble carrying the raw marker.
+    const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running) — the backend returns a "queued" message instead, avoiding a duplicate.
+    const meta = {
+      ...(files.length ? { files } : {}),
+      ...(dirPaths.length ? { dirs: dirPaths } : {}),
+      sendId,
+    }
     if (!busy && (text || files.length)) {
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(files.length ? { meta: { files } } : {}) },
+        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
       }))
     }
-    const meta = files.length ? { files } : undefined
-    api.sendChat(text, slotKey, undefined, undefined, meta).catch(() => undefined)
+    api.sendChat(llm, slotKey, undefined, undefined, meta)
+      .then(async (r) => {
+        if (!cardAtSend && !askAtSend) return
+        const body = await r.json().catch(() => ({}))
+        // `ok` only: a QUEUED acceptance is still cancellable — the queued
+        // path retires at its queue_pop instead (removeQueuedMessage).
+        if (body.ok && !body.queued && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
+        void resolveAskAfterSend(body, askAtSend, dispatch)
+      })
+      .catch(() => undefined)
   }, [input, pendingFiles, busy, slotKey, dispatch])
 
   const onStop = useCallback(() => { dispatch(requestStop({ slotId: slotKey, force: false })) }, [dispatch, slotKey])
@@ -230,14 +286,59 @@ export default function ChatPane({
     api.cancelQueuedMessage(slotKey, queueId).catch(() => undefined)
   }, [dispatch, slotKey])
   const onInterruptQueued = useCallback((queueId: string) => { api.interruptSlot(slotKey, queueId).catch(() => undefined) }, [slotKey])
-  // Split-view panes render tool calls with the full ToolCallLine (purpose / input /
-  // output / live status) instead of the SDK's bare pill. ToolCallLine's slot-aware
-  // selectors read THIS slot's per-slot tool log, so a background pane shows the same
-  // live tool detail as the main chat view. Injected as a render prop so
-  // app-sdk/ChatMessageList stays Redux-free for the embed SDK.
-  const renderTool = useCallback((m: ChatMessage) => <ToolCallLine message={m} running={running} slot={slotKey} />, [slotKey, running])
+  const onReorderQueued = useCallback((queueId: string, direction: 'next' | 'later') => {
+    // Build the order from ALL queued messages in the slot, not just the
+    // interactive ones QueueStack renders: hidden system deliveries and
+    // recovery continuations are queued too, and submitting only the visible
+    // ids would let the backend append the omitted ones at the tail, silently
+    // demoting automation. The swap happens between adjacent VISIBLE cards but
+    // is expressed inside the complete id sequence.
+    const fullIds = allMessages
+      .filter(m => m.role === 'queued')
+      .map(m => m.meta?.queueId as string)
+      .filter(Boolean)
+    const visibleIds = queuedMessages.map(m => m.meta?.queueId as string).filter(Boolean)
+    const vFrom = visibleIds.indexOf(queueId)
+    const vTo = direction === 'next' ? vFrom - 1 : vFrom + 1
+    if (vFrom < 0 || vTo < 0 || vTo >= visibleIds.length) return
+    const a = fullIds.indexOf(visibleIds[vFrom])
+    const b = fullIds.indexOf(visibleIds[vTo])
+    if (a < 0 || b < 0) return
+    const next = [...fullIds]
+    ;[next[a], next[b]] = [next[b], next[a]]
+    // No optimistic dispatch: the server commits and broadcasts queue_reorder
+    // to every client including this one, and that WS event is the
+    // authoritative store update. A local dispatch with rollback-on-failure
+    // could restore a stale order when the server committed but the HTTP
+    // response was lost, leaving this client in conflict with execution order.
+    api.reorderQueuedMessages(slotKey, next).catch(() => undefined)
+  }, [slotKey, allMessages, queuedMessages])
+  // Split-view panes draw the SAME transcript rows as the single-chat surface,
+  // through the SDK's row registry: the live ToolCallLine (purpose / input /
+  // output / live status), the workflow and sub-agent launch cards, thinking
+  // traces, sent files, auto-nudge turns, recovery injects, workflow
+  // completions. The SDK's built-in registry is store-free by design and so
+  // draws weaker rows — or nothing at all — for most of these; the
+  // store-connected set is supplied here as host entries instead, which is the
+  // registry's intended extension path and keeps app-sdk/ChatMessageList
+  // Redux-free for the embed SDK.
+  //
+  // The tool rows' expanded state is held ABOVE the rows: a row remounts
+  // whenever the message list updates, and would otherwise forget it.
+  const [toolDisclosure, setToolDisclosure] = useState<Record<string, boolean>>({})
+  const setToolDisclosureFor = useCallback((key: string, expanded: boolean) => {
+    setToolDisclosure((prev) => ({ ...prev, [key]: expanded }))
+  }, [])
+  const renderers = useMemo(
+    () => createTranscriptRenderers({
+      slot: slotKey,
+      toolDisclosure,
+      onToolDisclosureChange: setToolDisclosureFor,
+    }),
+    [slotKey, toolDisclosure, setToolDisclosureFor],
+  )
 
-  const ddInputCls = 'w-full px-2 py-1 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus:border-accent'
+  const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus:border-accent'
 
   return (
     <SlotProvider slotId={slotKey}>
@@ -287,7 +388,7 @@ export default function ChatPane({
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
-          <ChatMessageList messages={messages} running={running} renderTool={renderTool} />
+          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
           <div ref={endRef} />
         </div>
 
@@ -295,7 +396,7 @@ export default function ChatPane({
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onReorder={onReorderQueued} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the
@@ -342,7 +443,7 @@ export default function ChatPane({
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}
-          onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = Array.from(e.dataTransfer.files); if (f.length) uploadFiles(f) }}
+          onDrop={handleDrop}
           dragOver={dragOver}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
           onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false) }}

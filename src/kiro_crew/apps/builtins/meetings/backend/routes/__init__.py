@@ -187,6 +187,9 @@ def register_routes(app: web.Application) -> None:
     router.add_get(
         BASE + "/meetings/{meeting_id}", route(lifecycle_routes.handle_get_meeting)
     )
+    router.add_delete(
+        BASE + "/meetings/{meeting_id}", route(lifecycle_routes.handle_delete_meeting)
+    )
     router.add_post(
         BASE + "/meetings/{meeting_id}/init", route(lifecycle_routes.handle_meeting_init)
     )
@@ -198,6 +201,10 @@ def register_routes(app: web.Application) -> None:
     )
     router.add_post(
         BASE + "/meetings/{meeting_id}/stop", route(lifecycle_routes.handle_stop_meeting)
+    )
+    router.add_get(
+        BASE + "/meetings/{meeting_id}/transcript",
+        route(lifecycle_routes.handle_get_transcript),
     )
     router.add_get(
         BASE + "/meetings/{meeting_id}/outputs", route(lifecycle_routes.handle_get_outputs)

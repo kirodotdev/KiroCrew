@@ -44,6 +44,11 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
+/** The chip's title now names the panel and the modifier escape hatch. Built
+ *  here rather than matched loosely, so the tooltip's promise is asserted too.
+ *  `platformShortcut` is deterministic under jsdom: navigator.platform is '',
+ *  so the non-mac branch yields 'Ctrl+click'. */
+const chipTitle = (url: string) => `Open ${url} in the side panel (Ctrl+click to open it in the browser)`
 const ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/701'
 const MR_ISSUE_URL = 'https://gitlab.com/acme/service/-/issues/8'
 const PR_URL = 'https://github.com/kirodotdev/KiroCrew/pull/634'
@@ -109,7 +114,7 @@ describe('ChatSidebar – issue chips', () => {
     expect(chip.tagName).toBe('A')
     expect(chip).toHaveAttribute('href', ISSUE_URL)
     expect(chip).toHaveAttribute('target', '_blank')
-    expect(chip).toHaveAttribute('title', `Open ${ISSUE_URL}`)
+    expect(chip.getAttribute('title')).toContain(`Open ${ISSUE_URL} in the side panel`)
     expect(chip.getAttribute('rel')).toContain('noopener')
     expect(chip).toHaveTextContent('#701')
     // The PR chip's CI / merge markers carry aria-labels; an issue chip has none.
@@ -131,12 +136,12 @@ describe('ChatSidebar – issue chips', () => {
 
   it('keeps the PR chip decorated, including when kind is absent', () => {
     renderSidebar()
-    const pr = screen.getByTitle(`Open ${PR_URL}`)
+    const pr = screen.getByTitle(chipTitle(PR_URL))
     expect(pr).toHaveTextContent('#634')
     expect(pr.querySelector('[aria-label="Checks failed"]')).not.toBeNull()
 
     // `kind` absent === 'change': the merged marker still renders.
-    const legacy = screen.getByTitle(`Open ${LEGACY_PR_URL}`)
+    const legacy = screen.getByTitle(chipTitle(LEGACY_PR_URL))
     expect(legacy).toHaveTextContent('#500')
     expect(legacy.querySelector('[aria-label="Merged"]')).not.toBeNull()
   })

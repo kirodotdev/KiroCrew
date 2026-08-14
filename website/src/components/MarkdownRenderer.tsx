@@ -1,10 +1,14 @@
-import { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
+import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
-import { Paperclip, X, Download, Plus, Minus, Search, Folder } from 'lucide-react'
+import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkCjkFriendly from 'remark-cjk-friendly'
+import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import remarkMath from 'remark-math'
+import remarkParse from 'remark-parse'
+import { unified } from 'unified'
 import rehypeRaw from 'rehype-raw'
 import rehypeKatex from 'rehype-katex'
 import type { PluggableList } from 'unified'
@@ -30,8 +34,13 @@ import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
-import { useLinkMeta } from '../lib/linkMeta'
+import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
+import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
+import { JiraHostsCtx } from '../lib/jiraHosts'
+import JiraLogo from './icons/JiraLogo'
+import GithubLogo from './icons/GithubLogo'
+import GitlabLogo from './icons/GitlabLogo'
 import DiffBlock from './DiffBlock'
 import MonacoCodeBlock from './MonacoCodeBlock'
 import { SmoothResize } from './SmoothResize'
@@ -151,6 +160,24 @@ export const BasePathCtx = createContext<string | null>(null)
  * images keep the full inline size. Default false = full size.
  */
 export const CompactImagesCtx = createContext<boolean>(false)
+
+/**
+ * A per-message token appended to local image URLs.
+ *
+ * `/api/file-raw?path=…` addresses a file by PATH, so every impression of a file
+ * an agent rewrites across turns resolves to one URL — and a browser treats one
+ * URL in one document as one resource. The second `<img>` is then served from the
+ * in-document memory cache with no network request at all, so the new message
+ * paints the OLD bytes. Measured in Chrome: without a distinct URL the edited
+ * file is never re-fetched, and no HTTP cache header changes that — `ETag`,
+ * `Cache-Control: no-cache` and even `no-store` are not consulted, because the
+ * request is never made.
+ *
+ * Making the URL per-message gives each impression its own cache entry, so a new
+ * message shows the current bytes while an earlier one keeps what it fetched.
+ * Stable within a message, so re-renders and streaming do not re-request.
+ */
+export const ImageVersionCtx = createContext<string | null>(null)
 
 /**
  * Per-consumer override for rendered markdown LINKS.
@@ -304,6 +331,7 @@ function initMermaid(mermaid: MermaidApi): void {
 
 import { CodeBlock } from './CodeBlock'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
+import DiagramLightbox from './DiagramLightbox'
 
 /** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
  *  rendered element. Used in every MD_COMPONENTS override; returns an
@@ -318,6 +346,11 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const id = useId().replace(/:/g, '_')
   const renderedRef = useRef('')
+  // Rendered SVG markup, kept for the enlarge viewer. Empty until a successful
+  // render and reset on failure, so the enlarge affordance only ever exists
+  // for (and targets) the diagram currently on screen.
+  const [svg, setSvg] = useState('')
+  const [enlarged, setEnlarged] = useState(false)
 
   useEffect(() => {
     if (!ref.current || renderedRef.current === code) return
@@ -333,6 +366,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       range.selectNodeContents(ref.current)
       range.deleteContents()
       ref.current.appendChild(range.createContextualFragment(svg))
+      setSvg(svg)
     }).catch(() => {
       if (!ref.current) return
       const pre = document.createElement('pre')
@@ -340,10 +374,37 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       pre.textContent = code
       ref.current.textContent = ''
       ref.current.appendChild(pre)
+      setSvg('')
+      setEnlarged(false)
     })
   }, [code, id])
 
-  return <div ref={ref} className="my-3 flex justify-center overflow-x-auto min-h-[60px]" />
+  return (
+    <div className="relative group my-3">
+      {/* Pointer convenience: clicking the rendered diagram opens the viewer.
+          Keyboard and AT users reach the same viewer through the real button
+          below — the same pairing the image lightbox uses (clickable <img>,
+          focusable controls elsewhere). */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events */}
+      <figure
+        className={`m-0 ${svg ? 'cursor-zoom-in' : ''}`}
+        onClick={svg ? () => setEnlarged(true) : undefined}
+      >
+        <div ref={ref} className="flex justify-center overflow-x-auto min-h-[60px]" />
+      </figure>
+      {svg && (
+        <button
+          aria-label={i18nT('components.diagramLightbox.enlarge_diagram')}
+          title={i18nT('components.diagramLightbox.enlarge_diagram')}
+          className="absolute top-1.5 right-1.5 p-1.5 rounded-md bg-bg-elevated/90 border border-border text-muted hover:text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer"
+          onClick={() => setEnlarged(true)}
+        >
+          <Maximize2 className="lucide-inline" aria-hidden="true" />
+        </button>
+      )}
+      {enlarged && svg && <DiagramLightbox svg={svg} onClose={() => setEnlarged(false)} />}
+    </div>
+  )
 })
 
 /** Generate a URL-safe slug from heading children (handles nested elements) */
@@ -380,9 +441,69 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   // the unfurl gate for a claimed href also means a claimed link is never
   // fetched, so the priority holds at the network boundary, not just visually.
   const claimed = href && override ? override({ href, children }) : null
-  const target = useUnfurlHref(claimed ? null : href)
+  // Jira, GitHub, and GitLab issue / PR / MR URLs chip synchronously from the
+  // URL alone (provider mark + reference) — no fetch, unlike the unfurl chip
+  // below, so these chips render in user messages and with `link_previews`
+  // off. Jira instances sit behind auth, so an unfurl of one can never
+  // succeed; GitHub/GitLab pages unfurl fine but only in assistant messages
+  // and only when the operator opted in, which left forge links as raw text
+  // in most contexts (#2579). The parser matches hostnames EXACTLY
+  // (`github.com` / `gitlab.com`, `www.` stripped) — a lookalike host such as
+  // `evil-github.com.attacker.test` falls through to the plain anchor.
+  // Self-hosted Jira instances come through `JiraHostsCtx` from the operator
+  // allowlist. Forge chips additionally require `safeHttpUrl`: the chip keeps
+  // the AUTHORED href (preserving e.g. `#issuecomment` fragments the parser's
+  // canonical url drops), so a credential-smuggling `user:pass@github.com`
+  // href must never be dressed up as a trusted-looking chip.
+  const jiraHosts = useContext(JiraHostsCtx)
+  const source = useMemo(() => {
+    if (!href || claimed) return null
+    const link = parseSourceLinkUrl(href, [], jiraHosts)
+    if (!link) return null
+    if (link.provider === 'jira') return link
+    return safeHttpUrl(href) ? link : null
+  }, [href, claimed, jiraHosts])
+  // A chipped link is never handed to the unfurl gate — mirroring `claimed`,
+  // so the no-fetch guarantee holds at the network boundary, not just visually.
+  const target = useUnfurlHref(claimed || source ? null : href)
   const meta = useLinkMeta(target ?? undefined, target !== null)
   if (claimed) return <>{claimed}</>
+  if (source?.provider === 'jira') {
+    const jira = source
+    return (
+      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
+        <a
+          href={jira.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={href}
+          className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
+        >
+          <JiraLogo size={12} className="shrink-0" />
+          <span className="truncate max-w-[24ch]">{`${jira.repo}-${jira.number}`}</span>
+        </a>
+      </span>
+    )
+  }
+  const forgeLabel = source ? forgeChipLabel(source) : null
+  if (source && forgeLabel) {
+    return (
+      <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={href}
+          className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
+        >
+          {source.provider === 'github'
+            ? <GithubLogo size={12} className="shrink-0" />
+            : <GitlabLogo size={12} className="shrink-0" />}
+          <span className="truncate max-w-[32ch]">{forgeLabel}</span>
+        </a>
+      </span>
+    )
+  }
   if (target && meta) return <LinkChip meta={meta} href={target}>{children}</LinkChip>
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
@@ -589,20 +710,75 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
  * (see `MdAnchor`), a link standing alone is a card. `LinkCard` replaces the
  * `<p>` rather than nesting inside it, so the card is a block-level sibling of
  * the surrounding paragraphs.
+ *
+ * Jira issue URLs take a synchronous branch of the same rule, mirroring
+ * `MdAnchor`'s chip: Jira instances sit behind auth, so the unfurl fetch can
+ * never be relied on to produce a preview for them. The card is built from the
+ * URL alone (provider mark, issue key, instance host) with NO request, and
+ * recognition is the same allowlist-gated parse as the chip (`JiraHostsCtx`).
+ * It obeys the same `enabled`/`live` gate as the fetched card, so ungated
+ * surfaces (file previews, artifact pages, sourcePos mode) and streaming tails
+ * keep today's inline chip.
  */
 function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphElement> & ExtraProps) {
   const override = useContext(LinkOverrideCtx)
+  const { enabled: cardsOn, live } = useContext(LinkUnfurlCtx)
+  const jiraHosts = useContext(JiraHostsCtx)
   const sole = soleLinkInParagraph(node)
-  const target = useUnfurlHref(sole?.href)
+  const jira = useMemo(() => {
+    if (!sole?.href || !cardsOn || live) return null
+    const link = parseSourceLinkUrl(sole.href, [], jiraHosts)
+    return link?.provider === 'jira' ? link : null
+  }, [sole?.href, cardsOn, live, jiraHosts])
+  // A recognized Jira link never reaches the unfurl machinery: its card is
+  // synchronous, so handing the href on would only add a fetch whose result
+  // is discarded.
+  const target = useUnfurlHref(jira ? null : sole?.href)
   // Same priority rule as MdAnchor: a link the override owns stays an in-app
   // affordance inside an ordinary paragraph, never a card. The provider is a
   // pure render prop (Issue Radar's returns a RefLink element), and the probe
   // only runs when a card is otherwise on the table.
-  const claimed = !!(target && override && override({ href: target, children: sole?.text }))
+  const cardHref = jira ? sole?.href ?? null : target
+  const claimed = !!(cardHref && override && override({ href: cardHref, children: sole?.text }))
   const unfurl = claimed ? null : target
   const meta = useLinkMeta(unfurl ?? undefined, unfurl !== null)
+  if (jira && !claimed) {
+    // `jira.url` (the parser's canonical form), NEVER `sole.href`: this branch
+    // sits before the `safeHttpUrl()` rejection the unfurl path gets, so the
+    // raw href could still carry Basic-auth userinfo. The canonical URL is
+    // rebuilt from hostname+port alone — credentials cannot survive into it —
+    // and it is the same target the inline chip's anchor already uses.
+    return (
+      <LinkCard
+        meta={jiraCardMeta(jira)}
+        href={jira.url}
+        icon={<JiraLogo size={18} className="shrink-0" />}
+      />
+    )
+  }
   if (unfurl && meta) return <LinkCard meta={meta} href={unfurl} />
   return <p {...sp(node)} className="my-1.5 leading-relaxed">{children}</p>
+}
+
+/**
+ * Synthetic `LinkMeta` for the Jira card, from the parsed URL alone: the issue
+ * key is the title and the instance host is the domain — the same information
+ * the inline chip carries, in card layout. No description on purpose: main has
+ * no Jira issue fetch, and inventing one here would put this card behind auth.
+ */
+function jiraCardMeta(link: PullRequestLink): LinkMeta {
+  let domain = ''
+  try { domain = new URL(link.url).host } catch { /* unreachable: link.url came out of the parser */ }
+  return {
+    url: link.url,
+    title: `${link.repo}-${link.number}`,
+    description: '',
+    siteName: '',
+    domain,
+    icon: '',
+    iconDark: '',
+    fetchedAt: 0,
+  }
 }
 
 const MD_COMPONENTS: Components = {
@@ -683,6 +859,7 @@ function ImgWithFallback({
   const [loaded, setLoaded] = useState(false)
   const basePath = useContext(BasePathCtx)
   const compact = useContext(CompactImagesCtx)
+  const version = useContext(ImageVersionCtx)
   if (!src) return null
   const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.')
     || (basePath && !src.startsWith('http'))
@@ -694,6 +871,10 @@ function ImgWithFallback({
     } else {
       url = `/api/file-raw?path=${encodeURIComponent(src)}`
     }
+    // See ImageVersionCtx: without this every impression of a rewritten file
+    // shares one cache entry and a new message renders the previous bytes. The
+    // backend reads only `path`, so the extra parameter is inert server-side.
+    if (version) url += `&v=${encodeURIComponent(version)}`
   } else {
     url = src
   }
@@ -1001,8 +1182,127 @@ export function rehypeSanitize() {
   }
 }
 
-const REMARK_PLUGINS: PluggableList = [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]
-const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex]
+// CommonMark has a known emphasis defect (commonmark/commonmark-spec#650): a
+// closing `**` is only right-flanking when it is NOT preceded by punctuation, or
+// IS followed by whitespace/punctuation. `**中文（带括号）。**这句` fails both —
+// preceded by `。`, followed by the letter `这` — so it renders as literal
+// asterisks. English prose sidesteps this by putting a space after the `**`; CJK
+// cannot, because a space there is visibly wrong.
+//
+// `remark-cjk-friendly` implements the CJK-friendly flanking amendment. ORDER IS
+// LOAD-BEARING: it must run BEFORE remark-gfm (it changes how emphasis
+// delimiters are classified), and the strikethrough companion AFTER, because it
+// extends gfm's own `~~` construct.
+const REMARK_PLUGINS: PluggableList = [
+  remarkCjkFriendly,
+  remarkGfm,
+  remarkCjkFriendlyGfmStrikethrough,
+  [remarkMath, { singleDollarTextMath: false }],
+]
+
+/**
+ * HTML block-level elements that cannot legally nest inside `<p>`. When
+ * `rehype-raw` parses raw HTML embedded in markdown, it may produce a HAST tree
+ * with a block element inside a `<p>` (e.g. `<p><div>…</div></p>`). The
+ * browser's HTML parser auto-corrects this by closing the `<p>` before the
+ * block element, moving the block out — but React's VDOM still thinks the block
+ * is inside the `<p>`. On the next reconciliation React tries to `removeChild`
+ * from `<p>`, the node is no longer there, and we get:
+ *   "Failed to execute 'removeChild' on 'Node': The node to be removed is not
+ *    a child of this node."
+ *
+ * This plugin mirrors the browser's correction at the HAST level so React's
+ * tree matches reality from the first render.
+ */
+const BLOCK_ELEMENTS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'dd',
+  'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'li',
+  'main', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'ul',
+])
+
+function rehypeUnwrapBlocks() {
+  return (tree: HastRoot) => {
+    const walk = (parent: HastRoot | HastElement) => {
+      if (!parent.children) return
+      for (let i = 0; i < parent.children.length; i++) {
+        const child = parent.children[i]
+        if (child.type === 'element') walk(child)
+      }
+      // Only `<p>` elements need unwrapping (that's the only element the
+      // browser auto-closes when it encounters a block child).
+      if (parent.type !== 'element' || parent.tagName !== 'p') return
+      const hasBlock = parent.children.some(
+        c => c.type === 'element' && BLOCK_ELEMENTS.has(c.tagName),
+      )
+      if (!hasBlock) return
+
+      // Split: children before a block go into a <p>, the block becomes a
+      // sibling, children after go into the next iteration's bucket. We
+      // rebuild the parent's slot in-place by replacing it in the grandparent.
+      // Since we're walking depth-first and only mutate the CURRENT parent's
+      // children list at the grandparent level, we handle this by returning
+      // replacement nodes and letting the outer walk splice them.
+      const replacement: RootContent[] = []
+      let bucket: RootContent[] = []
+      const flushBucket = () => {
+        // Only emit a <p> wrapper if the bucket has non-whitespace content.
+        const hasContent = bucket.some(n =>
+          n.type === 'element' || (n.type === 'text' && n.value.trim()),
+        )
+        if (hasContent) {
+          replacement.push({
+            type: 'element',
+            tagName: 'p',
+            properties: { ...(parent as HastElement).properties },
+            children: bucket as HastElement['children'],
+            // Preserve source position so rehypeSourcepos can stamp
+            // data-sourcepos on the synthesized wrappers (needed for
+            // inline-comment anchoring).
+            position: (parent as HastElement).position,
+          })
+        }
+        bucket = []
+      }
+      for (const child of parent.children) {
+        if (child.type === 'element' && BLOCK_ELEMENTS.has(child.tagName)) {
+          flushBucket()
+          replacement.push(child as RootContent)
+        } else {
+          bucket.push(child as RootContent)
+        }
+      }
+      flushBucket()
+      // Stash the replacement so the caller can splice it.
+      ;(parent as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement = replacement
+    }
+
+    // Two-pass: first walk marks <p> elements that need splitting, then we
+    // splice replacements into their parents top-down. A single pass that
+    // mutates children while iterating would skip indices.
+    const splice = (node: HastRoot | HastElement) => {
+      if (!node.children) return
+      let i = 0
+      while (i < node.children.length) {
+        const child = node.children[i]
+        if (child.type === 'element') splice(child)
+        const rep = (child as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement
+        if (rep) {
+          delete (child as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement
+          ;(node.children as RootContent[]).splice(i, 1, ...rep)
+          i += rep.length
+        } else {
+          i++
+        }
+      }
+    }
+
+    walk(tree)
+    splice(tree)
+  }
+}
+
+const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing
 // space before the break doesn't survive as its own text node. Mirrors the
@@ -1077,7 +1377,7 @@ function rehypeSourcepos() {
     walk(tree)
   }
 }
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
@@ -1328,6 +1628,336 @@ function rehypeStreamingCaret() {
   }
 }
 
+// ── CJK autolink boundaries ────────────────────────────────────────────────
+//
+// GFM's autolink-literal extension ends a bare `https://…` run only at ASCII
+// whitespace or `<`. CJK punctuation written directly after a URL — the way
+// Chinese and Japanese prose actually writes it, with no space — is therefore
+// swallowed INTO the href:
+//
+//   （https://example.com/pull/1，`abc`）：`ready`
+//   -> href="https://example.com/pull/1%EF%BC%8C%60abc%60…"
+//
+// The wrong href is the smaller half of the damage. The run also eats the
+// OPENING backtick of the code span that follows, which shifts every later
+// backtick pairing in the paragraph by one: prose renders as inline code and
+// real code renders with literal backticks. One missing space corrupts the
+// rest of the message.
+//
+// This has to be fixed at the SOURCE level, not on the mdast: re-splitting the
+// link node after the fact cannot restore the code-span pairing, because the
+// pairing is decided while micromark tokenizes the whole paragraph. So force
+// the boundary before parsing by re-emitting the URL head as an angle autolink
+// `<url>`, which has an explicit end and renders identically.
+//
+// The cut is EVIDENCE-BASED, not character-based — see cjkCutIndex. CJK
+// punctuation reaches real URLs raw (`…/wiki/苹果（公司）`), so cutting on the
+// character alone would break links that render correctly today.
+//
+// Which regions are off-limits is read off remark's OWN parse (see
+// autolinkLiteralSpans) rather than a hand-rolled scanner: only a real GFM
+// autolink-literal node is ever touched, so code, existing links, raw HTML and
+// math are excluded by construction instead of by a mask that has to re-derive
+// every CommonMark block and inline rule correctly.
+//
+// Scope: only `http(s)://` runs. Scheme-less `www.` literals have the same flaw
+// but cannot be closed with `<…>` (angle autolinks require a scheme).
+
+// Punctuation classes. CJK punctuation is NOT by itself proof that a URL ended:
+// real page titles contain it, and they reach the URL raw —
+// `https://zh.wikipedia.org/wiki/苹果（公司）`, `https://zh.wikipedia.org/wiki/我，机器人`,
+// `https://ja.wikipedia.org/wiki/モーニング娘。`. Cutting on the character alone
+// would break links that render correctly today, so a cut needs EVIDENCE.
+const CJK_PUNCT_RE =
+  /[\u00b7\u2018\u2019\u201c\u201d\u2026\u3000-\u303f\u30fb\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/
+const CJK_OPEN_BRACKETS = '\u3008\u300a\u300c\u300e\u3010\u3014\u3016\u3018\u301a\uff08\uff3b\uff5b\uff5f\uff62'
+const CJK_CLOSE_BRACKETS = '\u3009\u300b\u300d\u300f\u3011\u3015\u3017\u3019\u301b\uff09\uff3d\uff5d\uff60\uff63'
+// Sentence-ending CJK punctuation. These are NEVER treated as a URL boundary,
+// because real page titles end in them and reach the URL raw —
+// `…/wiki/モーニング娘。`, `…/wiki/魔法先生ネギま！`, `…/wiki/そして誰もいなくなった…`.
+// A separator like `，` or `、` does not end a title, so it stays eligible.
+const CJK_SENTENCE_ENDERS = '\u3002\uff0e\uff01\uff1f\u2026\uff61'
+// The one character that makes markdown do something AND cannot appear in a
+// raw-written URL. RFC 3986 excludes the backtick, so browsers percent-encode
+// it — while `*`, `[` and `]` are all legal and common in query strings
+// (`?q=foo，*test`, `?filter[name]=x`), so they are NOT evidence. The backtick
+// is also the character whose loss does the real damage: the run eats an opening
+// code-span delimiter and every later backtick pairing in the paragraph shifts.
+const MD_ACTIVE_RE = /`/
+
+// Where a bare URL may START, and the run GFM's tokenizer would take from there
+// (everything up to ASCII whitespace or `<`). Only needed for a SECOND URL
+// inside one autolink node's own run.
+const URL_START_RE = /https?:\/\//g
+const URL_RUN_AT_RE = /^https?:\/\/[^\s<]*/
+
+// GFM only autolinks a host containing a dot, and neither of the last two
+// labels may contain `_`. Wrapping a run GFM would NOT have linked would CREATE
+// a link the author never wrote, so the head has to clear the same bar.
+const AUTOLINKABLE_HOST_RE = /^https?:\/\/([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)(?::\d+)?(?:[/?#]|$)/
+
+// Which regions are off-limits (code, existing links, raw HTML, math) is NOT
+// decided by hand-rolled scanning — it is read off remark's own parse of the
+// source. Anything inside a fence, an indented block, an inline-code span
+// (including a multi-line one), an existing link/image, an angle autolink, a raw
+// HTML tag, or a math span simply never becomes an autolink-literal node, so it
+// is unreachable here by construction. Built from the SAME `REMARK_PLUGINS` the
+// render pipeline uses, so a future plugin addition cannot make the span-finder
+// and the renderer disagree about what a link is.
+const AUTOLINK_PARSER = unified().use(remarkParse).use(REMARK_PLUGINS).freeze()
+
+type MdastNode = {
+  type: string
+  url?: string
+  value?: string
+  children?: MdastNode[]
+  position?: { start: { offset?: number }; end: { offset?: number } }
+}
+
+// Node types whose source text is not prose. A bracket inside one of them is
+// part of a URL, a code sample, a tag or a formula — never the `（` that wraps a
+// following URL — so they are excluded from the bracket-balance prefix.
+const NON_PROSE_TYPES = new Set([
+  'inlineCode',
+  'code',
+  'link',
+  'linkReference',
+  'image',
+  'imageReference',
+  'html',
+  'math',
+  'inlineMath',
+  'definition',
+  'footnoteDefinition',
+])
+
+/**
+ * Source offsets of every GFM autolink LITERAL in `content` — a bare
+ * `http(s)://…` run that remark turned into a link on its own — plus a mask
+ * marking every character that belongs to a non-prose node.
+ *
+ * Excludes `<https://…>` angle autolinks and `[text](url)` links from the
+ * literal list, which already carry explicit boundaries: both can also satisfy
+ * `text === url`, so the test is on the source text at the node's start, not on
+ * the node shape alone.
+ */
+function autolinkLiteralSpans(content: string): {
+  literals: Array<[number, number]>
+  nonProse: Uint8Array
+} {
+  let tree: MdastNode
+  try {
+    tree = AUTOLINK_PARSER.parse(content) as unknown as MdastNode
+  } catch {
+    // A parse failure must not take the message down with it — the unfixed
+    // render is strictly better than no render.
+    return { literals: [], nonProse: new Uint8Array(content.length) }
+  }
+  const literals: Array<[number, number]> = []
+  const nonProse = new Uint8Array(content.length)
+  const visit = (node: MdastNode): void => {
+    const start = node.position?.start.offset
+    const end = node.position?.end.offset
+    const positioned = typeof start === 'number' && typeof end === 'number'
+    if (node.type === 'link' && positioned) {
+      const text =
+        node.children?.length === 1 && node.children[0].type === 'text' ? node.children[0].value : undefined
+      if (text !== undefined && text === node.url && /^https?:\/\//.test(content.slice(start, end))) {
+        // Deliberately NOT masked here. A greedy literal run can hold several
+        // URLs with real prose between them (`（…/1）和【…/2】` is ONE run), and
+        // that prose is where the second URL's bracket context lives. The caller
+        // masks each URL's own characters as it consumes them instead.
+        literals.push([start as number, end as number])
+        return
+      }
+    }
+    if (positioned && NON_PROSE_TYPES.has(node.type)) nonProse.fill(1, start, end)
+    for (const child of node.children ?? []) visit(child)
+  }
+  visit(tree)
+  return { literals, nonProse }
+}
+
+/**
+ * Index in `run` where the URL demonstrably stops, or -1 when there is no
+ * evidence that it does. `prefix` is the source text before the URL on its own
+ * line — it decides whether a closing bracket had an opener to close.
+ *
+ * Two things count as evidence:
+ *
+ *  1. A CJK closing bracket that closes an opener SURROUNDING the URL — one left
+ *     unclosed in `prefix` and not opened inside the run. This is GFM's own ASCII
+ *     paren-balancing rule, generalised. `（https://x.com/a）` and
+ *     `（见 https://x.com/a）` cut; `https://x.com/苹果（公司）` does not (the
+ *     opener is inside the URL), and neither does `https://x.com/search?q=foo）`
+ *     (nothing to close, so the bracket is plausibly part of the query).
+ *  2. A SEPARATOR-class CJK punctuation mark IMMEDIATELY followed by a BACKTICK.
+ *     That is the destructive case (the run eats an opening code-span delimiter
+ *     and shifts every later pairing) and the backtick is the one character that
+ *     cannot appear in a raw-written URL. `…/2137，`96ed647b`）` cuts.
+ *
+ *     Sentence-enders (`。．！？…｡`) are EXCLUDED from this rule: real page titles
+ *     end in them and reach the URL raw, so `…/wiki/モーニング娘。`紹介`` must not
+ *     cut. Separators like `，`、`、`、`；`、`：` do not end titles, so they stay
+ *     eligible. `…/wiki/我，机器人`简介`` is still safe for a different reason —
+ *     its comma is followed by more title, not by the backtick.
+ *
+ * Deliberately NOT covered: `…/pull/1，然后` — a bare CJK sentence continuing
+ * off a URL with no space and no markup. It is character-for-character
+ * indistinguishable from a legitimate `…/wiki/我，机器人`, so it keeps today's
+ * behaviour rather than risking a correct link.
+ */
+function cjkCutIndex(run: string, prefix: string): number {
+  // Openers left unclosed before the URL, per bracket type: only those have
+  // something for a closer inside the run to close.
+  const pending = new Map<string, number>()
+  for (const ch of prefix) {
+    const open = CJK_OPEN_BRACKETS.indexOf(ch)
+    if (open >= 0) {
+      pending.set(ch, (pending.get(ch) ?? 0) + 1)
+      continue
+    }
+    const close = CJK_CLOSE_BRACKETS.indexOf(ch)
+    if (close >= 0) {
+      const opener = CJK_OPEN_BRACKETS[close]
+      const n = pending.get(opener) ?? 0
+      if (n > 0) pending.set(opener, n - 1)
+    }
+  }
+  let depth = 0
+  for (let i = 1; i < run.length; i++) {
+    const ch = run[i]
+    if (CJK_OPEN_BRACKETS.includes(ch)) {
+      depth++
+      continue
+    }
+    const close = CJK_CLOSE_BRACKETS.indexOf(ch)
+    if (close >= 0) {
+      if (depth > 0) {
+        depth--
+        continue
+      }
+      if ((pending.get(CJK_OPEN_BRACKETS[close]) ?? 0) > 0) return i
+      // No opener to close — the bracket is plausibly part of the URL itself.
+      continue
+    }
+    if (depth > 0 || !CJK_PUNCT_RE.test(ch)) continue
+    // Sentence-enders are never a boundary — a real title can end in one. This
+    // also means a mixed run like `。，` cuts at the `，`, leaving the `。` inside
+    // the URL, because the loop reaches the separator on a later iteration.
+    if (CJK_SENTENCE_ENDERS.includes(ch)) continue
+    // Walk the contiguous punctuation run — `、，` before a backtick is one
+    // boundary, not two — and require the evidence to sit directly after it.
+    let end = i
+    while (end < run.length && CJK_PUNCT_RE.test(run[end])) end++
+    if (end < run.length && MD_ACTIVE_RE.test(run[end])) return i
+  }
+  return -1
+}
+
+function isAutolinkableHost(head: string): boolean {
+  const m = AUTOLINKABLE_HOST_RE.exec(head)
+  if (!m) return false
+  // GFM: `_` is not allowed in either of the last two domain labels.
+  return m[1].split('.').slice(-2).every((label) => !label.includes('_'))
+}
+
+/**
+ * Drop the trailing characters GFM strips from an autolink literal but an angle
+ * autolink would keep, so `…/1.，`b`` links `…/1` and leaves `.` as prose.
+ */
+function trimGfmAutolinkTail(s: string): string {
+  let out = s
+  for (let guard = 0; guard < s.length; guard++) {
+    const next = out.replace(/[?!.,:*_~]+$/, '')
+    if (next.endsWith(')')) {
+      const open = (next.match(/\(/g) ?? []).length
+      const close = (next.match(/\)/g) ?? []).length
+      // GFM keeps a `)` that closes a `(` from inside the URL itself.
+      if (close > open) {
+        out = next.slice(0, -1)
+        continue
+      }
+    }
+    if (next === out) return out
+    out = next
+  }
+  return out
+}
+
+/**
+ * The PROSE text before `at` on its own line, with every non-prose character
+ * blanked out. Only this text can supply the opener a closing bracket inside the
+ * URL closes — a `（` sitting in an earlier URL's query string, a code sample or
+ * an HTML attribute is not bracket context for the URL that follows.
+ *
+ * Line-scoped on purpose: a paragraph-wide scan would be less conservative, and
+ * a cut is the risky direction.
+ */
+function prosePrefix(content: string, nonProse: Uint8Array, at: number): string {
+  const lineStart = content.lastIndexOf('\n', at - 1) + 1
+  let out = ''
+  for (let i = lineStart; i < at; i++) out += nonProse[i] ? ' ' : content[i]
+  return out
+}
+
+/**
+ * Close a bare `http(s)://` run where CJK punctuation shows the URL has ended,
+ * by re-emitting its head as an angle autolink. Returns `content` unchanged when
+ * there is no such evidence.
+ *
+ * NOT safe to run when `data-sourcepos` is in play: it inserts two characters
+ * per fixed URL, which shifts every later column on that line and would
+ * mis-anchor an inline comment. Callers gate on that (see MarkdownBlock).
+ */
+export function fixCjkAutolinkBoundaries(content: string): string {
+  if (!content.includes('://') || !CJK_PUNCT_RE.test(content)) return content
+  const { literals, nonProse } = autolinkLiteralSpans(content)
+  const inserts: Array<[number, string]> = []
+  for (const [start, end] of literals) {
+    // Everything of this node already accounted for. A `https://` nested in the
+    // URL's own path (`?u=https://…`) must not be cut separately — that would
+    // corrupt the outer URL and emit out-of-order inserts.
+    let consumedTo = start
+    URL_START_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = URL_START_RE.exec(content.slice(start, end))) !== null) {
+      const at = start + m.index
+      if (at < consumedTo) continue
+      const run = URL_RUN_AT_RE.exec(content.slice(at, end))?.[0] ?? ''
+      const cut = cjkCutIndex(run, prosePrefix(content, nonProse, at))
+      if (cut < 0) {
+        // The whole run is one URL — mask it, so a bracket in its query string
+        // cannot pose as prose context for a later URL.
+        nonProse.fill(1, at, at + run.length)
+        consumedTo = at + run.length
+        continue
+      }
+      const head = trimGfmAutolinkTail(run.slice(0, cut))
+      if (!isAutolinkableHost(head)) {
+        nonProse.fill(1, at, at + run.length)
+        consumedTo = at + run.length
+        continue
+      }
+      inserts.push([at, '<'], [at + head.length, '>'])
+      // Resume right after the head: a second URL inside the same autolink node
+      // (`（https://a/1）和【https://b/2】` is ONE run) still needs its own
+      // boundary. Only the head just consumed is masked — the text between the
+      // two URLs is real prose, and it is where the next bracket's opener lives.
+      nonProse.fill(1, at, at + head.length)
+      consumedTo = at + head.length
+    }
+  }
+  if (inserts.length === 0) return content
+  let out = ''
+  let pos = 0
+  for (const [at, ch] of inserts) {
+    out += content.slice(pos, at) + ch
+    pos = at
+  }
+  return out + content.slice(pos)
+}
+
 export function fixCodeFences(s: string): string {
   // Escape bare "N." lines so markdown doesn't render them as ordered lists.
   // CommonMark: 0-3 leading spaces = list item, 4+ = indented code block.
@@ -1492,9 +2122,22 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
     if (smooth) tail.push(rehypeStreamingReveal)
     rehypePlugins = [...baseRehype, ...tail]
   }
+  // `fixCodeFences` runs FIRST: its later passes CREATE code blocks the raw
+  // source did not have (blank line before a fence glued to preceding text,
+  // splitting a closing fence glued to trailing text). Rewriting boundaries
+  // before that would judge such a region as prose and leave a literal `<…>`
+  // inside what ends up displayed as code.
+  //
+  // `sourcePos` mode maps a DOM selection back to source coordinates through
+  // `data-sourcepos` for inline commenting. fixCjkAutolinkBoundaries inserts two
+  // characters per fixed URL, which shifts every later column on that line and
+  // would anchor a comment to the wrong occurrence — so that surface keeps the
+  // unfixed (but coordinate-accurate) render.
+  const fenced = fixCodeFences(clean)
+  const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fenced)
   const md = (
     <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-      {fixCodeFences(clean)}
+      {prepared}
     </ReactMarkdown>
   )
   const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
@@ -1696,6 +2339,10 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           lightbox scoping on the div above is unaffected) and lives in this module
           so a caller that mocks it in tests never needs to re-export the context. */}
       <CompactImagesCtx.Provider value={compactImages}>
+      {/* ImageVersionCtx: scopes local image URLs to this message so an agent
+          rewriting one file across turns is not served the previous bytes from
+          the in-document resource cache. */}
+      <ImageVersionCtx.Provider value={messageTs ?? null}>
         {blocks.map((block, i) => (
           // Key on startLine (stable across streaming) instead of block.type, so
           // a code -> diff reclassification mid-stream doesn't unmount the
@@ -1720,6 +2367,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
             softBreaks={softBreaks}
           />
         ))}
+      </ImageVersionCtx.Provider>
       </CompactImagesCtx.Provider>
       </PathActionCtx.Provider>
       </PathProbeCtx.Provider>

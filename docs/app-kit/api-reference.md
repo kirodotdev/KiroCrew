@@ -45,6 +45,196 @@ paths your `app.json` declares. The host injects auth automatically.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
+## Chat Marker Protocol
+
+An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
+has to interpret them, because the backend deliberately leaves the complete marker in the stream for
+a frontend consumer to extract:
+
+| Marker | Meaning |
+|---|---|
+| `[OPTIONS: a \| b]` | follow-up choices, several may be picked |
+| `[OPTION: a \| b]` | follow-up choices, one only |
+| `[STEERING steer-<id>: …]` | the agent acknowledging a mid-turn steer |
+
+Two failure modes matter, and both are the consumer's responsibility. Render the text unparsed and
+the user reads machine syntax. Strip the marker without offering the choices and the user's options
+are **deleted** — worse than leaving them visible, because the text is gone too.
+
+The parsers live in one React-free module so every surface reads the protocol from the same place:
+
+```
+website/src/app-sdk/protocol/
+  optionMarker.ts   the marker pattern (in-tree only) + stripPartialOptionMarker
+  options.ts        parseOptions, deriveFollowUpOptions
+  steering.ts       extractSteeringAcks
+```
+
+### Using it from an app
+
+Apps resolve `@kirocrew/app-sdk` through the host import map, the same way they get the hooks:
+
+```tsx
+import { parseOptions, extractSteeringAcks, deriveFollowUpOptions } from '@kirocrew/app-sdk'
+import type { ChatMessage, ParsedOptions } from '@kirocrew/app-sdk'
+
+function AgentTurn({ message }: { message: ChatMessage }) {
+  // Strip the steer acknowledgement first, then the option marker: the text you render is
+  // whatever is left, and the pieces you pulled out become your own affordances.
+  const { cleaned, acks } = extractSteeringAcks(message.content ?? '')
+  const { text, options, multi }: ParsedOptions = parseOptions(cleaned)
+
+  return (
+    <>
+      <p>{text}</p>
+      {acks.map(a => <SteeredChip key={a} summary={a} />)}
+      {options.length > 0 && <MyChoiceButtons options={options} multi={multi} />}
+    </>
+  )
+}
+```
+
+To decide whether choices still apply to the *conversation* rather than to one message, use
+`deriveFollowUpOptions(messages, isStreaming)`. It walks back to the most recent real assistant turn
+and returns none while streaming, after a user reply, or after a queued send — so stale buttons do
+not linger:
+
+```tsx
+const { followUpOptions } = deriveFollowUpOptions(messages, running)
+```
+
+The module imports no React and no dashboard component, so it is also usable from a worker, a test,
+or a non-React renderer.
+
+### Using it from a core dashboard page
+
+A page inside `website/src/` imports the same barrel by relative path — there is no second
+implementation and no dashboard-only variant:
+
+```tsx
+import { parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
+```
+
+`stripPartialOptionMarker` exists for the streaming case: mid-stream the text can end with a
+half-arrived `[OPTIONS: …` that the full-marker regex cannot match yet, and showing it would let raw
+syntax type itself out in front of the user. Apply it to the parsed text while a turn is streaming.
+
+The regex itself is **not** part of the app surface. It carries the global-flag `lastIndex` state, so
+handing it out lets an app's `.test()` call make this module's own scan start mid-string and miss the
+marker — the exact failure the module exists to prevent. Apps get functions; the pattern stays in-tree.
+
+### Exports
+
+| Export | Kind | Purpose |
+|---|---|---|
+| `parseOptions(content)` | function | split prose from choices; returns `ParsedOptions` |
+| `deriveFollowUpOptions(messages, isStreaming)` | function | the choices that still apply to the conversation |
+| `extractSteeringAcks(content)` | function | pull `[STEERING …]` out, returning `{ cleaned, acks }` |
+| `stripPartialOptionMarker(text)` | function | hide a half-streamed marker |
+| `ParsedOptions` | type | `{ text, options, multi, isPlan }` |
+| `FollowUpDerivation` | type | `{ followUpOptions, followUpIsPlan }` |
+| `ChatMessage` | type | the message shape `deriveFollowUpOptions` consumes |
+
+The module must stay free of React and of anything under `pages/` or `components/`: a parser that
+lives in a component is only available to surfaces that render that component, which is what made a
+transcript print raw marker text. `website/src/test/chatProtocolBoundary.test.ts` asserts that, and
+also that no other non-test source defines the markers a second time.
+
+## Chat Transcript Rendering
+
+`ChatMessageList` renders a transcript. Which component draws a given row is a **registry** keyed by
+the message's `role`, so you add a row type or replace one instead of forking the list.
+
+```jsx
+import { ChatMessageList } from '@kirocrew/app-sdk'
+
+<ChatMessageList messages={messages} running={running} />
+```
+
+That renders the built-in rows. To change one, pass `renderers`.
+
+### Adding a row the transcript does not draw
+
+Four roles are deliberately undrawn — `thinking`, `system`, `done` and `queued` — because the
+dashboard shows them through other affordances. `file` is undrawn too. Claim one and it is yours:
+
+```jsx
+const renderers = [{
+  id: 'queued-card',
+  roles: ['queued'],
+  render: (m, ctx) => ctx.row(<div className="queued">{m.content}</div>),
+}]
+
+<ChatMessageList messages={messages} running={running} renderers={renderers} />
+```
+
+### Limitation: two roles are grouped before your entry is consulted
+
+`thinking` and `permission` (exported as `GROUPED_ROLES`, a frozen array) are assembled into one
+collapsible "worked through N steps" group **before** rows are resolved. An entry claiming either is
+still consulted, but it renders **inside** that group, and the group keeps its own summary and
+approval affordance — so you cannot yet use the registry to replace the built-in approval UI with
+your own. Substituting the group itself is not an extension point today — tracked in #2940.
+
+### Replacing a built-in row
+
+Reuse the built-in's `id`:
+
+```jsx
+const renderers = [{
+  id: 'error',                       // replaces the built-in error row
+  roles: ['error'],
+  render: (m, ctx) => ctx.row(<MyErrorCard text={m.content} />),
+}]
+```
+
+Import `defaultMessageRenderers` if you need to read what the built-ins do, and `resolveRenderer` /
+`mergeRenderers` if you are composing a registry yourself rather than handing one to
+`ChatMessageList`.
+
+### What a renderer is handed
+
+| Field | Purpose |
+|---|---|
+| `index`, `messages` | position and the whole transcript, for a row that must look ahead |
+| `running` | whether the session is producing output |
+| `key` | the row's stable React key |
+| `wrapper(children, isUser)` | bubble layout; `isUser` right-aligns |
+| `row(children, tight)` | full-width layout for cards, pills and banners |
+| `onFileOpen` | open a path, when the host supports it |
+| `autoDeniedIds` | tool calls a policy or hook blocked |
+| `renderTool` | the host's tool row, if it passed one |
+
+Two rules the registry relies on:
+
+- **Shape beats role.** Resolution is first-match, and your entries sit between the two built-ins
+  recognised by message *shape* — a stop event and a sub-agent completion, which claim `'*'` and gate
+  on a `match` predicate — and the role-keyed ones. This matters because a stop event reaches the
+  transcript as role `system`, which is also a role you are invited to claim: were a role claim
+  allowed to outrank a `kind` check, claiming `system` would swallow the stop card and pressing Stop
+  would draw your row instead. A role claim cannot know about `kind`, so it does not outrank one.
+  Replacing a shape-matched row is still possible and stays explicit — reuse its `id`.
+- **Returning `null` is different from not claiming a role.** An entry that exists and draws nothing
+  says "no row by design"; no entry at all says "nothing handles this". Both look identical on
+  screen, so `website/src/test/messageRenderers.test.ts` pins which is which.
+
+### Exports
+
+| Export | Kind | Purpose |
+|---|---|---|
+| `ChatMessageList` | component | the transcript |
+| `defaultMessageRenderers` | value | the built-in registry, in resolution order |
+| `mergeRenderers(extra)` | function | shape-matched defaults, then host entries, then the rest |
+| `resolveRenderer(message, renderers)` | function | first entry that claims the message |
+| `ToolCallPill` | component | the store-free tool row the default registry uses |
+| `GROUPED_ROLES` | value | frozen array of the roles grouped before per-row resolution (see the limitation above) |
+| `MessageRenderer` | type | `{ id, roles, match?, render }` |
+| `MessageRenderContext` | type | what `render` is handed |
+
+The registry takes no store and no router dependency, and reads live state only through the context
+it is handed — an app runs outside the dashboard's React root and has no store to select from. A row
+that genuinely needs live app state is supplied by the host as an entry.
+
 ## Gateway API Surface
 
 The sections below document the canonical Gateway API surface as exposed by the

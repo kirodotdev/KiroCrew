@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { micAudioConstraints, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
+import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
 import type { AudioSample } from './mic'
 import { i18nT } from '../i18n/t'
 
@@ -12,6 +12,10 @@ import { i18nT } from '../i18n/t'
  * AudioWorklet or WebSocket support — callers should then use the
  * batch hook.
  */
+
+/** Wire frame that tells the backend to end the Transcribe stream. Protocol,
+ *  not copy — it is never shown to anyone. */
+const STOP_FRAME = JSON.stringify({ type: 'stop' })
 
 export const streamingSupported =
   typeof window !== 'undefined' &&
@@ -28,8 +32,11 @@ interface Opts {
   onError?: (msg: string) => void
   /** Live input level in [0,1] for the recording meter. */
   onLevel?: (v: number) => void
-  /** Active capture device label (e.g. "MacBook Pro Microphone"). */
-  onDevice?: (label: string) => void
+  /** Active capture device: human label + the live track's deviceId. The id is
+   *  what makes the source picker data-driven (checkmark on the device that is
+   *  ACTUALLY capturing); it may be `''` when permission-scoped redaction hides
+   *  it, in which case consumers fall back to the label. */
+  onDevice?: (label: string, id: string) => void
   /** Fired when the backend semantic endpointer judges the utterance complete. */
   onEndpoint?: () => void
   /** Unthrottled per-frame audio features for canvas consumers (see mic.ts). */
@@ -54,6 +61,20 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   // discard instead of delivering. Per-session, not a shared boolean, so a
   // socket superseded by a restart can never mistake a new session for its own.
   const sessionRef = useRef<{ cancelled: boolean } | null>(null)
+
+  // `ready` itself lives in start()'s closure, but stop() has to know whether
+  // the PCM it would be ending is still sitting in the local buffer. These two
+  // refs are the only channel between them.
+  //
+  // Why it matters: capture begins (and `recording` goes true) as soon as the
+  // worklet connects, but PCM cannot be SENT until the server's `ready` frame
+  // lands ~2-3s later. A stop frame sent inside that window ends the Transcribe
+  // stream while the user's speech is still local, so it is transcribed as
+  // silence -- which is the normal case for a short push-to-talk tap, not an
+  // edge case.
+  const readyRef = useRef(false)
+  const pendingStopRef = useRef(false)
+  const pendingStopTimerRef = useRef<number | null>(null)
   // Keep callback refs fresh so the long-lived WS handlers (`ws.onmessage`
   // / `ws.onclose`) always invoke the latest caller-supplied callbacks,
   // not the versions captured when `start()` was invoked.
@@ -73,6 +94,12 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   const cleanup = useCallback(() => {
     try { levelStopRef.current?.() } catch { /* ignore */ }
     levelStopRef.current = null
+    if (pendingStopTimerRef.current !== null) {
+      clearTimeout(pendingStopTimerRef.current)
+      pendingStopTimerRef.current = null
+    }
+    readyRef.current = false
+    pendingStopRef.current = false
     try { wsRef.current?.close() } catch { /* ignore */ }
     wsRef.current = null
     try { streamRef.current?.getTracks().forEach(t => t.stop()) } catch { /* ignore */ }
@@ -80,11 +107,28 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     try { ctxRef.current?.close() } catch { /* ignore */ }
     ctxRef.current = null
     onLevelRef.current?.(0)
-    onDeviceRef.current?.('')
+    onDeviceRef.current?.('', '')
     setRecording(false)
   }, [])
 
   useEffect(() => () => { cleanup() }, [cleanup])
+
+  /** Send the stop frame and hand the socket to the backend to drain. */
+  const commitStop = useCallback((ws: WebSocket) => {
+    try { ws.send(STOP_FRAME) } catch { /* ignore */ }
+    // Do NOT call ws.close() here — let the backend flush any in-flight
+    // finals from Transcribe and close the socket itself. Our onclose
+    // handler joins finalsRef and fires onFinal. If the backend hangs,
+    // force-cleanup after 8s so the UI never gets stuck. Must exceed
+    // the backend's 3s handler-drain timeout + a safety margin for
+    // end_stream() and network RTT.
+    window.setTimeout(() => {
+      if (wsRef.current === ws) {
+        try { ws.close() } catch { /* ignore */ }
+        cleanup()
+      }
+    }, 8000)
+  }, [cleanup])
 
   const start = useCallback(async () => {
     if (!streamingSupported || wsRef.current) return
@@ -99,7 +143,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     sessionRef.current = session
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+      stream = await acquireMicStream()
     } catch (e) {
       // Only the still-current start surfaces the error; a superseded one is moot.
       if (sessionRef.current === session) onErrorRef.current?.(humanizeMicError(e))
@@ -112,7 +156,7 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
       return
     }
     streamRef.current = stream
-    onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '')
+    onDeviceRef.current?.(stream.getAudioTracks()[0]?.label || '', activeDeviceId(stream))
     levelStopRef.current = createLevelMeter(stream, v => onLevelRef.current?.(v), sampleRef)
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -268,29 +312,66 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     buffer.length = 0
     bufferedBytes = 0
     ready = true
-  }, [cleanup, sampleRef])
+    readyRef.current = true
+    // The user may already have released the key while we were waiting. The
+    // buffered speech has just gone out, so NOW the stop frame is safe to send:
+    // the Transcribe stream ends after the audio rather than before it.
+    if (pendingStopRef.current) {
+      pendingStopRef.current = false
+      if (pendingStopTimerRef.current !== null) {
+        clearTimeout(pendingStopTimerRef.current)
+        pendingStopTimerRef.current = null
+      }
+      if (ws.readyState === WebSocket.OPEN) commitStop(ws)
+      else cleanup()
+    }
+  }, [cleanup, commitStop, sampleRef])
 
   const stop = useCallback(() => {
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
-      try { ws.send('{"type":"stop"}') } catch { /* ignore */ }
-      // Do NOT call ws.close() here — let the backend flush any in-flight
-      // finals from Transcribe and close the socket itself. Our onclose
-      // handler joins finalsRef and fires onFinal. If the backend hangs,
-      // force-cleanup after 8s so the UI never gets stuck. Must exceed
-      // the backend's 3s handler-drain timeout + a safety margin for
-      // end_stream() and network RTT.
-      window.setTimeout(() => {
-        if (wsRef.current === ws) {
-          try { ws.close() } catch { /* ignore */ }
-          cleanup()
+      if (!readyRef.current) {
+        // Pre-`ready`: the speech is still in start()'s local buffer, so
+        // sending stop NOW would end the Transcribe stream before a single
+        // frame of it had been sent. Record the intent instead; the flush in
+        // start() commits it the moment `ready` lands.
+        pendingStopRef.current = true
+        // Deferring the FRAME must not defer the END OF CAPTURE. The worklet
+        // handler appends to the same buffer while `ready` is false, so leaving
+        // it attached would keep recording the room after the user let go and
+        // ship all of it on flush -- extra words in the transcript, and audio
+        // captured after release sent to the transcriber. Freeze the buffer at
+        // release: detach the handler, stop the level meter, and release the
+        // mic. The socket and the already-buffered PCM deliberately survive,
+        // because they are what the flush still has to send.
+        try {
+          if (workletRef.current) workletRef.current.port.onmessage = null
+        } catch { /* ignore */ }
+        try { levelStopRef.current?.() } catch { /* ignore */ }
+        levelStopRef.current = null
+        onLevelRef.current?.(0)
+        try { streamRef.current?.getTracks().forEach(t => t.stop()) } catch { /* ignore */ }
+        // Ceiling, because a `ready` that never arrives would otherwise leave
+        // the mic hot forever. 8s matches the buffer cap: past that point the
+        // oldest audio is already being dropped FIFO, so waiting longer cannot
+        // preserve a whole utterance anyway.
+        if (pendingStopTimerRef.current === null) {
+          pendingStopTimerRef.current = window.setTimeout(() => {
+            pendingStopTimerRef.current = null
+            if (wsRef.current === ws && pendingStopRef.current) {
+              pendingStopRef.current = false
+              cleanup()
+            }
+          }, 8000)
         }
-      }, 8000)
+        return
+      }
+      commitStop(ws)
     } else {
       // WS never opened or already closing — cleanup directly.
       cleanup()
     }
-  }, [cleanup])
+  }, [cleanup, commitStop])
 
   /**
    * Swap the capture device WITHOUT ending the transcription session.
@@ -312,8 +393,9 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
 
     // Nothing to do when we are ALREADY capturing from that device. Decided here,
     // not in the menu: the menu only knows the saved preference, and re-picking the
-    // checked entry is meaningful precisely when the `ideal` constraint silently
-    // fell back — that tap is the user's retry. Keying on the live track makes it a
+    // checked entry is meaningful precisely when the session STARTED on a fallback
+    // device (start()'s acquire falls back when the saved one is gone or busy) —
+    // that tap is the user's retry. Keying on the live track makes it a
     // no-op only when it truly is one, so a redundant tap costs no audio and a
     // corrective tap still re-acquires.
     //
@@ -335,7 +417,11 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
 
     let next: MediaStream
     try {
-      next = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+      // EXPLICIT pick ⇒ `exact`, no fallback (see acquireMicStream): a switch
+      // that cannot be honored fails loudly here and the old source keeps
+      // running, instead of `ideal` silently handing back the previous device
+      // while the picker claimed the switch happened.
+      next = await acquireMicStream(deviceId)
     } catch (e) {
       // Keep the old source running — a failed switch must not end the session.
       // Only the newest attempt owns the error surface; a superseded one is moot.
@@ -359,14 +445,14 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     source.connect(worklet)
     sourceRef.current = source
     streamRef.current = next
-    // Report the ACTUAL device: the `ideal` constraint falls back silently, so the
-    // trigger label must come from the live track rather than from what was asked
-    // for. The saved preference is deliberately NOT rewritten to the fallback — a
-    // device that enumerates but cannot be opened right now (busy, held by another
-    // app) would otherwise have the user's explicit pick permanently replaced by
-    // whatever answered instead, so it would never be tried again once free. The
-    // pick stays; the label tells the truth about this session.
-    onDeviceRef.current?.(next.getAudioTracks()[0]?.label || '')
+    // Report the ACTUAL device off the live track. With `exact` acquisition a
+    // success genuinely IS the requested device, but the session-start fallback
+    // path can still land elsewhere, so the track stays the single source of
+    // truth. The saved preference is deliberately NOT rewritten on failure — a
+    // device that enumerates but cannot be opened right now (busy, held by
+    // another app) would otherwise have the user's explicit pick permanently
+    // replaced, so it would never be tried again once free.
+    onDeviceRef.current?.(next.getAudioTracks()[0]?.label || '', activeDeviceId(next))
     levelStopRef.current = createLevelMeter(next, v => onLevelRef.current?.(v), sampleRef)
     // Stop the old tracks LAST: releasing them before the replacement is live
     // would surrender the mic and can drop the device's hardware clock.

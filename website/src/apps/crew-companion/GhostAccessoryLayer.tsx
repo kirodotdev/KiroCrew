@@ -60,9 +60,25 @@ const GhostAccessoryLayer: React.FC<GhostAccessoryLayerProps> = ({ id, pose }) =
   if (id === 'none') return null
 
   const es = GHOST_EYE_MAP[pose] || GHOST_EYE_MAP.primary
+  /*
+   * POSITION follows the eyes; SIZE does not.
+   *
+   * Every prop below is measured in `span` units, and `span` used to be the CURRENT
+   * pose's eye distance. But the poses are expressions, not different heads: `primary`
+   * spans 15.5% of the box while `4th` (the celebrate squint) spans 11.5%, so every
+   * prop rendered a quarter smaller during a celebration than at rest — a party hat
+   * that shrank when the companion was happy, and shades that changed size with the
+   * expression behind them. A hat is a physical object; it does not resize because the
+   * face under it squinted.
+   *
+   * So the anchor (mx, my) still comes from the live pose — a prop must follow the
+   * face it sits on — while every LENGTH is measured against a fixed reference span.
+   * `primary` is that reference because the props were authored against it.
+   */
   const mx = (es[0].x + es[1].x) / 2
   const my = (es[0].y + es[1].y) / 2
-  const span = Math.abs(es[1].x - es[0].x)
+  const ref = GHOST_EYE_MAP.primary
+  const span = Math.abs(ref[1].x - ref[0].x)
 
   /** Percentage-positioned box centred on (left, top). */
   const box = (left: number, top: number, width: number): React.CSSProperties => ({

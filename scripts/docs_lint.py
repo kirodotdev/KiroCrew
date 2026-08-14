@@ -148,7 +148,13 @@ CODE_SUFFIXES: frozenset[str] = frozenset(
 # External repositories whose own docs/ layout is cited from our source. A path
 # qualified with one of these names is a correct cross-repo reference, not a dangling
 # link into this tree.
-_EXTERNAL_REPO_MARKERS: tuple[str, ...] = ("KiroCrewPublishCDK", "electron.git")
+_EXTERNAL_REPO_MARKERS: tuple[str, ...] = (
+    "KiroCrewPublishCDK",
+    "electron.git",
+    # The app catalog's publisher. Its distribution contract is documented in
+    # that repo, and the client cites it to explain the base URL it fetches.
+    "KiroCrewApps",
+)
 
 # ── Code-coupled documentation filenames ───────────────────────────────────────
 #
@@ -158,12 +164,12 @@ _EXTERNAL_REPO_MARKERS: tuple[str, ...] = ("KiroCrewPublishCDK", "electron.git")
 # coupling is a one-line change here and is impossible to forget silently.
 CODE_COUPLED_DOCS: dict[str, tuple[str, ...]] = {
     "src/kiro_crew/docs/discord-integration.md": ("website/src/pages/settings/DiscordPanel.tsx",),
+    "src/kiro_crew/docs/slack-integration.md": ("website/src/pages/settings/SlackPanel.tsx",),
     "src/kiro_crew/docs/teams-integration.md": ("website/src/pages/settings/TeamsPanel.tsx",),
     "src/kiro_crew/docs/telegram-integration.md": ("website/src/pages/settings/TelegramPanel.tsx",),
     "src/kiro_crew/docs/webex-integration.md": ("website/src/pages/settings/WebexPanel.tsx",),
     "src/kiro_crew/docs/wecom-integration.md": ("website/src/pages/settings/WeComPanel.tsx",),
     "src/kiro_crew/docs/weixin-integration.md": ("website/src/pages/settings/WeixinPanel.tsx",),
-    "docs/guides/slack-setup.md": ("website/src/pages/settings/SlackPanel.tsx",),
     "docs/architecture/security-deep-dive.md": ("website/src/pages/settings/SecurityPanel.tsx",),
     "website/docs/theming-contract.md": ("website/scripts/check-theme-colors.mjs",),
 }

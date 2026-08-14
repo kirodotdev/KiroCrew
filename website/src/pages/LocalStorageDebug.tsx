@@ -18,6 +18,7 @@ interface StorageGroup {
 
 const PREFIX_PATTERNS: [RegExp, string][] = [
   [/^vc_heights_/, 'vc_heights_*'],
+  [/^vc_anchor_/, 'vc_anchor_'],
   [/^kirocrew:touched-files:/, 'kirocrew:touched-files:*'],
   [/^mc-cmt-read:/, 'mc-cmt-read:*'],
   [/^mimir-tasks:/, 'mimir-tasks:*'],
@@ -106,7 +107,9 @@ export default function LocalStorageDebug() {
     let removed = 0
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i)
-      if (k && k.startsWith('vc_heights_')) { localStorage.removeItem(k); removed++ }
+      if (k && (k.startsWith('vc_heights_') || k.startsWith('vc_anchor_'))) {
+        localStorage.removeItem(k); removed++
+      }
     }
     refresh()
     return removed

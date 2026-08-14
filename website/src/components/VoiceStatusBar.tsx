@@ -10,6 +10,8 @@ interface Props {
   level: number
   /** Active capture device label (e.g. "MacBook Pro Microphone"). */
   deviceLabel?: string
+  /** deviceId of the track actually capturing — see MicSourceMenu.activeDeviceId. */
+  deviceId?: string
   /** Human-readable mic error, or null when none. */
   error?: string | null
   /** Dismiss the error. */
@@ -26,7 +28,7 @@ interface Props {
  * dot + input-level meter + active microphone name) while capturing. Renders
  * nothing when idle and error-free.
  */
-export default function VoiceStatusBar({ recording, level, deviceLabel, error, onDismissError, onSelectDevice, deviceSwitchIsLive }: Props) {
+export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId, error, onDismissError, onSelectDevice, deviceSwitchIsLive }: Props) {
   if (error) {
     return (
       <div
@@ -75,6 +77,7 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, error, o
       </span>
       <MicSourceMenu
         deviceLabel={deviceLabel}
+        activeDeviceId={deviceId}
         onSelect={onSelectDevice}
         recording
         liveSwitch={deviceSwitchIsLive}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { ChatMessage } from '../types'
-import { deriveFollowUpOptions } from '../utils/deriveFollowUpOptions'
+import { deriveFollowUpOptions } from '../app-sdk/protocol'
 
 const user = (content: string): ChatMessage => ({ role: 'user', content, cls: 'msg msg-u' })
 const assistant = (content: string): ChatMessage => ({ role: 'assistant', content, cls: 'msg msg-a' })
@@ -53,5 +53,46 @@ describe('deriveFollowUpOptions', () => {
 
   it('returns no options when there is no assistant turn', () => {
     expect(deriveFollowUpOptions([user('hi')], false).followUpOptions).toEqual([])
+  })
+
+  // Regression: Quick Send while the slot is busy appends a 'queued' bubble
+  // instead of an optimistic 'user' bubble. Options must still vanish.
+  it('clears options when a queued message follows the options turn', () => {
+    const queued: ChatMessage = { role: 'queued', content: 'Alpha', cls: 'msg msg-queued', meta: { queueId: 'q1' } }
+    const msgs = [user('go'), assistant(OPTIONS_MSG), queued]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+  })
+
+  it('clears options when a queued message follows a compaction notice after options', () => {
+    const queued: ChatMessage = { role: 'queued', content: 'Beta', cls: 'msg msg-queued', meta: { queueId: 'q2' } }
+    const msgs = [user('go'), assistant(OPTIONS_MSG), compactionLive(), queued]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
+  })
+
+  // An `ask_question` card and the pills would otherwise offer the same choices
+  // at once, in the same band above the composer. Only the card can answer the
+  // blocked tool call, so the pills yield to it.
+  it('returns no options while a question card is pending', () => {
+    const msgs = [user('go'), assistant(OPTIONS_MSG)]
+    expect(deriveFollowUpOptions(msgs, false, true).followUpOptions).toEqual([])
+  })
+
+  it('restores options once the pending question resolves', () => {
+    const msgs = [user('go'), assistant(OPTIONS_MSG)]
+    expect(deriveFollowUpOptions(msgs, false, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
+  // Surfaces that never mount a card omit the argument; suppressing there would
+  // leave them with no way to answer.
+  it('offers options when the pending flag is omitted', () => {
+    const msgs = [user('go'), assistant(OPTIONS_MSG)]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
+  it('suppresses the plan flag along with the options while a card is pending', () => {
+    const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]')
+    const derived = deriveFollowUpOptions([user('go'), plan], false, true)
+    expect(derived.followUpOptions).toEqual([])
+    expect(derived.followUpIsPlan).toBe(false)
   })
 })

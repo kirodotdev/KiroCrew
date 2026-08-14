@@ -200,10 +200,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
         <div className="flex gap-3 mb-3">
           <div className="flex-1">
-            <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.idle_seconds_before_nudge')}</div>
+            <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.seconds_between_nudges')}</div>
             <input
               type="number"
-              aria-label={i18nT('components.autoNudgePopover.idle_seconds_before_nudge')}
+              aria-label={i18nT('components.autoNudgePopover.seconds_between_nudges')}
               min={15}
               max={86400}
               value={idleInput}

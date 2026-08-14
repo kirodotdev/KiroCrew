@@ -12,6 +12,14 @@ writing.
 
 The config module (`kiro_crew/config/loader.py`) loads runtime configuration from `~/.kiro/crew/config.json` using stdlib dataclasses with sensible defaults.
 
+A feature whose section spends tokens on the user's behalf defaults to off and
+documents its knobs in its own spec — `session_summary` is the current example
+(see [session-summary.md](session-summary.md)), following the shape
+`SkillsConfig` established: every field carries `_meta` label/help for the config
+surfaces, out-of-range values are clamped with a warning rather than raising, and
+a malformed section degrades to defaults so a hand-edited file cannot prevent the
+gateway from starting.
+
 ## Data Home Location & Migration
 
 KiroCrew's data root nests **under kiro-cli's own `~/.kiro/` base** so all
@@ -349,22 +357,43 @@ a per-agent model pin (per-agent pin > global default). Reads only the kiro
 `kiro_agents_dir()`.
 
 ### `kiro_agents_dir() -> Path` (`config/paths.py`)
-Leaf helper returning `~/.kiro/agents`. Lives in the leaf module so `loader.py`
-(and `_resolve_named_agent_model`'s `agents_dir` DI seam) can locate installed
-agent JSONs without importing `kiro_crew.agent` — which imports `config.loader`
-and would create an import cycle.
+Leaf helper returning `~/.kiro/agents` — the **user-level** scope. Lives in the leaf
+module so `loader.py` (and `_resolve_named_agent_model`'s `agents_dir` DI seam) can
+locate installed agent JSONs without importing `kiro_crew.agent` — which imports
+`config.loader` and would create an import cycle.
 
-### `resolve_agent_bindings(config, agent_name=None) -> ResolvedBindings`
+Deliberately **single-valued**: it is the WRITE target as well as a read scope
+(`bridges._register_agents` and `agent.rebuild_agent_config` both write here), so it
+is never widened into a search path.
+
+### `project_agents_dir(project_dir)` / `project_kiro_dir(project_dir)` (`config/paths.py`)
+The **project** scope, read-only: `<project>/.kiro/agents` (kiro-cli's own workspace
+agents dir) and `<project>/.kiro` (which holds Kiro Crew's older
+`*.agent-spec.json` convention). kiro-cli resolves `--agent` against
+`$PWD/.kiro/agents` before the user-level dir with **no upward walk**, and Kiro Crew
+spawns kiro-cli with the session's project directory as its cwd, so this is exactly
+the directory the backend searches for that session.
+
+Only `.kiro/agents/*.json` is **dispatchable**: kiro-cli does not read
+`*.agent-spec.json`, so `agent_discovery.project_agent_files()` excludes it unless
+the caller opts in with `include_legacy=True` (only the Slack handler does, for its
+own pre-existing listing/resolution). Offering a legacy-only name on a dispatch
+surface would have it accepted by the picker and by `spawn_run`, then fail at
+`session/set_mode`.
+
+### `resolve_agent_bindings(config, agent_name=None, project_dir=None) -> ResolvedBindings`
 Resolves the workspace, memory store and **kiro agent** a session runs under.
 Resolution order:
 
 1. `agent_name` is a key in `config.agents` — use that alias's bindings.
-2. `agent_name` is a **materialized kiro agent config** — a `~/.kiro/agents/*.json`
-   whose **declared `name`** matches (the filename stem only when the config
-   declares no name) — take the *default* alias's workspace/memory bindings but
-   dispatch **that agent itself**. `kiro-cli agent list` enumerates agents by
-   declared name, so a namespaced filename stem such as `mochi--mochi` is NOT a
-   name kiro-cli can resolve and must not be treated as dispatchable.
+2. `agent_name` is a **materialized kiro agent config** — a `*.json` under
+   `~/.kiro/agents/` or, when `project_dir` is given, under
+   `<project>/.kiro/agents/` — whose **declared `name`** matches (the filename stem
+   only when the config declares no name) — take the *default* alias's
+   workspace/memory bindings but dispatch **that agent itself**. `kiro-cli agent
+   list` enumerates agents by declared name, so a namespaced filename stem such as
+   `mochi--mochi` is NOT a name kiro-cli can resolve and must not be treated as
+   dispatchable.
 3. otherwise `config.default_agent`, then the first available alias, then bare
    defaults.
 
@@ -375,9 +404,50 @@ to `config.agents`** — that mapping is authored by setup / the user. Without i
 app-bound session fell through to `default_agent` and the DEFAULT agent answered
 while the slot still advertised the requested name, with none of the app's MCP
 tools. The rung is deliberately wider than app agents: **any** parseable config in
-that directory dispatches with default bindings, because the directory *is* the
+those directories dispatches with default bindings, because they *are* the
 kiro-cli agent registry and narrowing to app-registered names would require
-provenance it does not record.
+provenance they do not record.
+
+`project_dir` must be the directory the session actually runs in (the same value
+passed as the kiro-cli cwd).
+
+**Neither scope touches the filesystem on the event loop.** The user-level scope is
+served from the process-wide materialized snapshot (refreshed off-loop by the
+writer); the project scope differs per session, so it is served by
+`agent_discovery.project_agent_names()` — a per-project name set revalidated by a
+stat-only signature, so a repeat scan costs two `scandir` walks rather than
+re-reading every spec. `_project_declares_agent` splits on whether a loop is running:
+off-loop it scans, on-loop it reads `cached_project_agent_names()`, which performs
+**no syscalls at all** and reports "not declared" on a cold cache so the caller falls
+back — exactly as the cold-snapshot user-level path does. Bounding the file *count*
+is not the same guarantee as bounding *latency*: this runs on every turn of a
+project-bound session, so a network or otherwise slow checkout would become a
+recurring gateway stall the loop-stall watchdog blames on chat.
+
+Async callers therefore **warm the cache before resolving**:
+`agent_discovery.warm_project_agent_names()` runs the scan on
+`executors.discovery_executor()` (the pool `/api/agents/installed` uses), after which
+the on-loop read is a hit. `chat_runner._run_chat` and the side-turn handler both do
+this.
+
+`subagent._validate_agent` cannot warm — `spawn()` is synchronous and already on the
+loop — so it reads the project scope from `cached_project_agent_names()` only. A
+project agent is accepted once that project's cache is warm (any session that
+resolved bindings for it has warmed it); a cold cache reports the name unknown, which
+is fail-closed and matches that function's existing rule of refusing an unknown name
+rather than silently running the default. Widening its pre-existing user-level scan to
+a second directory instead would stall the gateway.
+
+`slack/handler._resolve_agent_name` runs on the loop too, so it prefilters on the
+**filename** and reads at most the one matching spec — resolving every spec's declared
+name would stall Slack on a checkout with many agents.
+
+**Only the warm is offloaded — never `resolve_agent_bindings` itself.** The resolver
+can raise `StopIteration` (its defensive `next(iter(config.agents))` branch on a
+malformed config), and `StopIteration` cannot be delivered through a `Future`:
+asyncio rejects it, so an awaiting caller hangs instead of seeing the error, and the
+`except Exception` that callers rely on never runs. Keeping resolution synchronous
+preserves its exception contract for every call site.
 
 `ResolvedBindings` additionally reports `requested_resolved` (whether the
 requested name was honored — False means the default answered) and
@@ -536,6 +606,15 @@ name:
   seeds managed-state on a fresh/clean install (never clobbering a frozen pick).
 - `_refresh_dynamic_fields()` sources managed-state from the sidecar and strips
   any stray `model_managed`/`cc_model` from the spec (steady-state self-heal).
+  A **managed** spec's `model` is set on every refresh to the shipped default,
+  or to the `"auto"` sentinel when the shipped template pins none — never left
+  as-is. That is what makes the global `agent.model` reversible: the global is
+  propagated into the spec when it is a concrete pick, and because a spec pin
+  outranks the global in `resolve_effective_model`, returning the global to
+  `"auto"` must take the pin back off or `"auto"` is unreachable from the
+  configuration surface. Ownership decides who may clear: `model_managed=false`
+  (an explicit user pick) and an **absent** sidecar entry (legacy status, owner
+  unknown) both keep their pin untouched.
 - `migrate_agent_specs()` runs at startup (top of `rebuild_agent_config`): lifts
   the keys out of every `~/.kiro/agents/*.json` into the sidecar and removes
   them (idempotent), fixing installs polluted by older builds.
@@ -569,6 +648,8 @@ class AgentConfig:
     subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 200]
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
+    chat_turn_timeout_secs: int = 7200  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
+    tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
 
 @dataclass
 class SessionConfig:
@@ -591,12 +672,12 @@ class MemoryConfig:
 class KnowledgeConfig:
     # Knowledge Library ingestion toggles. Embedding/retrieval settings live
     # under MemoryConfig (shared via create_embedder_from_config).
-    auto_add_documents: bool = True                     # agent adds documents it reads (aggregate "Auto-added" source); legacy spelling auto_ingest_doc_links accepted
-    auto_register_project_docs: bool = True             # register each worked-in project's documents as a folder source (document filter only)
+    auto_add_documents: bool = False                    # opt-in; agent adds documents it reads (aggregate "Auto-added" source); legacy spelling auto_ingest_doc_links accepted
+    auto_register_project_docs: bool = False            # opt-in; register each worked-in project's documents as a folder source (document filter only)
     auto_ingest_chunk_budget: int = 150                 # chunks per sweep for auto-registered sources; 0 = unbounded
     folder_ingest_chunk_budget: int = 300               # chunks per sweep for hand-added folder sources; per-source chunk_budget overrides; 0 = unbounded
     dedup_every_n_sweeps: int = 12                      # full dedup pass cadence; 0 disables
-    auto_ingest_artifacts: bool = True                  # on by default; ingest local artifacts into the KB (aggregate "Artifacts" source)
+    auto_ingest_artifacts: bool = False                 # opt-in; ingest local artifacts into the KB (aggregate "Artifacts" source)
     auto_ingest_artifact_kinds: list[str] = ["markdown", "text", "html", "json"]  # reader-extractable kinds (widget/svg excluded)
     embed_timeout_secs: float = 10.0                    # per-request embed timeout; 0/unset -> built-in TIMEOUT (10s)
     embed_content_budget: int = 0                       # chunk-content fold budget (chars); 0/unset -> built-in _EMBED_CONTENT_BUDGET
@@ -759,8 +840,8 @@ screenshot.
 
 ### Security-Bounded Config Clamp
 
-Three resource-limit knobs are clamped to hard ceilings **at load time**, not just
-at the dashboard write gate. The ceilings are the single source of truth in
+Resource-limit and timeout knobs are clamped to hard ceilings **at load time**, not
+just at the dashboard write gate. The ceilings are the single source of truth in
 `loader.py`:
 
 | Constant | Value | Field |
@@ -768,6 +849,8 @@ at the dashboard write gate. The ceilings are the single source of truth in
 | `SUBAGENT_AUTO_MAX_CEILING` | 64 | `agent.subagent_auto_max`, `agent.max_subagents` |
 | `SUBAGENT_MAX_TURNS_CEILING` | 200 | `agent.subagent_max_turns` |
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
+| `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 86400 | `agent.chat_turn_timeout_secs` |
+| `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |
 
 `_SECURITY_BOUNDED_FIELDS` lists each `(section, key, min, max)`; the mins match
 the existing runtime floors (0/1) so a legitimate in-range value is never
@@ -777,6 +860,23 @@ serve clamped values. It clamps out-of-range real integers in place (a JSON
 `true`/`false` bool or any non-int is skipped and left to dataclass
 coercion/defaults), logs a WARNING, and emits a best-effort `config_bounds_clamped`
 SEL security event (never fatal — config loading must not raise).
+
+Two **cross-field** clamps run after that generic pass, so both operands are
+already in range:
+
+- `agent.max_subagents`: 0 is the auto-size sentinel, so an explicit pin below
+  `MAX_SUBAGENTS_FIXED_FLOOR` (3) is raised UP to the floor.
+- `agent.tool_approval_timeout_secs` is pulled to `APPROVAL_TURN_MARGIN_SECS`
+  (60) below `agent.chat_turn_timeout_secs`. An approval window that reaches the
+  turn ceiling can never fire: the turn is cut first and reports itself as a turn
+  timeout, so the unanswered approval is never named and an unattended run burns
+  the whole ceiling on every prompt. `dashboard/turn_dispatch.py`
+  `tool_approval_timeout_secs()` repeats the cap against the **resolved** ceiling,
+  which the ACP prompt timeout can lower below the configured one, and then
+  against the budget REMAINING in the running turn (`_TURN_DEADLINE`, published by
+  `_bounded_turn`). The arm-time bound is the one that makes the invariant hold
+  for a prompt arming late in a long turn; with under a margin left it returns
+  `0.0` and the runner declines without waiting.
 
 Why load-time (not just the API): the REST API rejects out-of-range writes, but a
 direct edit of `config.json` (any process running as the same OS user — including
@@ -823,15 +923,23 @@ OS — so naming the browser was wrong on that surface. The row annotates itself
 with the language Auto actually resolves to ("Auto — Deutsch"), which answers the
 question accurately on every surface.
 
-The backend validates **shape only** (`_LANGUAGE_TAG_RE`, a conservative BCP-47
-subset), not membership in the set of shipped catalogs. That keeps "which
-languages exist" a pure frontend data change: add `locales/<tag>.json`, register
-the picker entry in `SUPPORTED_LANGUAGES`, and add the static import plus
-`AUTHORED_CATALOGS` entry in `i18n/index.ts`. No backend edit is required; a
-well-formed tag with no catalog falls back to detection client-side.
+The backend's **write path** validates **shape only** (`_LANGUAGE_TAG_RE`, a
+conservative BCP-47 subset), not membership in the set of shipped catalogs — a
+well-formed tag with no catalog stays writable and falls back to detection
+client-side. The **agent-injection read path** additionally requires catalog
+membership: `context.ui_language_tag()` checks the tag against
+`context._UI_LANGUAGE_CATALOGS` (a mirror of the non-dev-only
+`SUPPORTED_LANGUAGES` entries) and treats a non-catalog tag exactly like
+`""`/Auto — no `[UI LANGUAGE]` steer is emitted, so the agent is never steered
+to a language the chrome cannot render (#1130). Adding a language is therefore
+the three frontend edits — add `locales/<tag>.json`, register the picker entry
+in `SUPPORTED_LANGUAGES`, and add the static import plus `AUTHORED_CATALOGS`
+entry in `i18n/index.ts` — **plus one mechanical backend entry** in
+`_UI_LANGUAGE_CATALOGS`, which the drift gate in
+`test/test_context_ui_language.py` names explicitly on failure.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
-order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `it`. Right-to-left
+order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`. Right-to-left
 languages are deliberately **not** shipped yet: the catalogs would translate
 fine, but the dashboard's layout uses physical-direction utilities (`pl-*`,
 `left-*`, `text-left`) and unmirrored directional icons, so an RTL locale would
@@ -840,22 +948,24 @@ logical-property conversion first.
 
 All catalogs are **statically bundled**, so `t()` stays synchronous (see the
 rationale in `website/src/i18n/index.ts`). The cost is that every user downloads
-every language: at 8315 keys the catalogs share one chunk that is **~165 KB gzip
-per catalog, ~1.8 MB gzip for the eleven combined** (`npm run analyze`, then gzip
+every language: at 8592 keys the catalogs share one chunk that is **~173 KB gzip
+per catalog, ~2.0 MB gzip for the twelve combined** (`npm run analyze`, then gzip
 the `assets/t-*.js` chunk). This is tolerable only because the dashboard is served
 from a loopback gateway — over a network it is already past the point of
-justification, and each further catalog adds another ~165 KB to every user's first
+justification, and each further catalog adds another ~173 KB to every user's first
 load regardless of the language they read.
 
 The documented next step is therefore to keep `en` static and lazily fetch the
 active non-English catalog. That seam is already isolated to
 `website/src/i18n/index.ts` plus a `<Suspense>` boundary in `main.tsx`; no call
-site changes. **Re-measure before adding catalog #12** — the figure above is what
-tells you whether the seam is still deferrable.
+site changes. **Catalog #13 belongs behind that seam**: Korean is #12 and the last
+one this chunk absorbs in front of it. Re-measure when the seam lands — the figure
+above is what says whether it worked.
 
 #### The tag reaches the agent, too
 
-`context.py::_build_ui_language_section` injects the configured tag into session
+`context.py::_build_ui_language_section` injects the configured tag — after the
+catalog-membership gate described above — into session
 context as a `[UI LANGUAGE] <tag>` block (next to `[CURRENT AGENT]`/`[RUNTIME]`,
 and in `minimal_context` mode as well). It exists for one string: the tool-call
 purpose (`__tool_use_purpose`), which the dashboard paints as the tool-call pill
@@ -1009,9 +1119,9 @@ Returns the effective config for a channel:
     "history_max_days": 365
   },
   "knowledge": {
-    "auto_add_documents": true,
-    "auto_register_project_docs": true,
-    "auto_ingest_artifacts": true,
+    "auto_add_documents": false,
+    "auto_register_project_docs": false,
+    "auto_ingest_artifacts": false,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
     "embed_timeout_secs": 10.0,
     "embed_content_budget": 0
@@ -1038,6 +1148,19 @@ Returns the effective config for a channel:
 The `dashboard.url` field controls where the dashboard is reachable. From it, the system derives the port to bind on, the bind address (`0.0.0.0` for non-loopback hosts, `127.0.0.1` otherwise), and the allowed origins for CSRF/WebSocket checks. When omitted, defaults to `localhost:5476`.
 
 A **malformed** `dashboard.url` (e.g. an unterminated IPv6 literal `http://[::1` or a non-numeric port `http://host:notaport`) does **not** abort startup: `parse_dashboard_url` degrades to the defaults (`""` host, port `5476`) and logs a warning, so a single typo in the config can never take the gateway down on boot. `KIROCREW_PORT` still overrides the port regardless.
+
+Once the dashboard's TCP site is listening, the gateway **exports the
+actually-bound port as `KIROCREW_BOUND_PORT`** into its own environment, so
+every child it spawns (kiro-cli sessions and their MCP stdio servers) inherits
+the truth instead of re-deriving a guess from `dashboard.url` — a portless URL
+would otherwise collapse to the default port in the child even when the
+gateway is bound elsewhere (including `--port auto`, where the OS assigns the
+port and no config field ever names it). It is a **distinct variable from
+`KIROCREW_PORT`** on purpose: `KIROCREW_PORT` means operator intent and is
+persisted by `service_environment()` into unit files, while
+`KIROCREW_BOUND_PORT` is ephemeral observed truth that must never be frozen
+into persistent config. Clients read it via `port_resolution.resolve_client_port`,
+one precedence step below the operator override.
 
 ## Model Resolution Chain
 

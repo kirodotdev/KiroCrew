@@ -125,6 +125,21 @@ same posture as running the tool yourself in a shell. Config is read live, so no
 gateway restart is needed. Without it, the affected paths answer a clear 422 naming
 the remedy rather than failing obscurely.
 
+**The model picker and the credit pill follow chat's posture, not their own.**
+`/api/models`, the credit pill's `whoami` identity fetch and its `/usage` scrape
+spawn the same `kiro-cli` binary chat does, at the same `agent.sandbox` tier — so
+on this platform they succeed and fail together with chat, rather than one working
+while the other 503s. Concretely:
+
+- **Default install** (`agent.sandbox` unset → `"auto"`): Windows has no backend,
+  so chat *and* these reads all need the opt-in above. Without it `/api/models`
+  answers 503 with `code: "model_list_sandbox_unavailable"` and a log line naming
+  the remedy, and the picker falls back to offering only `auto`.
+- **`agent.sandbox` explicitly `"off"`** (isolation deferred to kiro-cli's own
+  internal sandbox): all of them run, and none of them need the opt-in. Note that
+  an explicit `"off"` now logs a one-time `SECURITY` warning where no OS-level
+  isolation ends up active.
+
 ## Per-feature status on Windows
 
 | Feature | Status on Windows |
@@ -135,11 +150,12 @@ the remedy rather than failing obscurely.
 | Command cron jobs (`sh -c "…"`) | not supported on Windows — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. The job fails-closed with an explanation. Use a **script cron** or an LLM `message` cron on this platform |
 | Script hooks (Settings → Hooks) | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above (like script crons — the hook command routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists; without it the hook returns that message as its `error`). With the opt-in they run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
-| Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
+| Browser automation (`playwright-cli`) | works (`npm install -g @playwright/cli@latest`, needs Node.js 20 or newer) |
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present **and** the `agent.sandbox_allow_unsandboxed_exec` opt-in above is set — the `aws polly` spawn routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it synthesis returns no audio and the log names that setting |
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
+| MCP server tool listing (dashboard MCP page, `kirocrew doctor`) | **built-in servers work, no opt-in** — `kirocrew-core` / `-cron` / `-computer` are probed for real: their command line is derived entirely inside the package (never user-config text), so the first-party carve-out spawns the handshake probe unconfined (env-scrubbed, SEL-audited as `unconfined`) even with no sandbox backend. When that probe cannot run (a transient sandbox failure, a governance sandbox floor, or a customized command for the server), the listing falls back to reading the package's own tool declaration and logs a WARNING noting that `ok` then means "declared" rather than "handshake succeeded". A **third-party** server has no declaration to read and never gets the carve-out, so its listing needs the `agent.sandbox_allow_unsandboxed_exec` opt-in — its binary is named by config and spawning it is what the sandbox exists to confine. The third-party server itself is unaffected: kiro-cli launches it from the agent config without this probe, so its tools still work in chat |
 | MCP gateway (opt-in, OFF by default) | works — a named-pipe transport replaces the AF_UNIX socket, and the peer check uses `GetNamedPipeClientProcessId` + a SID comparison in place of `SO_PEERCRED`. Still opt-in: set `mcp_gateway.enabled` to turn it on |
 | Papyrus (LaTeX editor, opt-in builtin) | works, **but compiling and git need the `agent.sandbox_allow_unsandboxed_exec` opt-in above** — like chat, its spawns route through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it, compile and clone/commit/push/pull answer a clear 422 (`compiler_sandbox_unavailable` / `git_sandbox_unavailable`) naming the remedy rather than a bare "internal error". The managed Tectonic compiler is Windows-pinned (`x86_64-pc-windows-msvc`); Windows-on-ARM has no upstream asset and keeps the manual install path |
 

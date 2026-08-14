@@ -9,16 +9,27 @@
   recovery, no-ops when no banner exists.
 * `_ChatSlot.update_message` — patches a message in place and marks the slot
   dirty.
+* `_drain_session_init_oauth_requests` / `_connections_managed_mcp_names` —
+  every buffered session-init request is emitted, and the ones a rendered
+  Connections card owns carry a `card_owned` annotation for the render layer.
+  The lookup behind that annotation reads files, so it runs off the event loop.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import json
+import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
 from oauth_url_corpus import LEGIT_OAUTH_URLS
 
+from kiro_crew import mcp_discovery
+from kiro_crew.connections import get_all_registry_providers, get_visible_providers
+from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import (
+    _connections_managed_mcp_names,
+    _drain_session_init_oauth_requests,
     _emit_mcp_oauth_request,
     _is_safe_oauth_url,
     _mark_mcp_oauth_completed,
@@ -26,6 +37,7 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.mcp_utils import mcp_server_alias
 
 # ── _is_safe_oauth_url ──
 
@@ -419,3 +431,311 @@ class TestOAuthParamCredentialScan:
             "&code_challenge_method=S256&response_type=code"
         )
         assert _oauth_url_contains_credential(url) is False
+
+
+# ── session-init OAuth requests: always emitted, card ownership annotated ──
+
+
+class _FakeAcpClient:
+    """Stands in for AcpClient's pending-oauth buffer."""
+
+    def __init__(self, pending):
+        self._pending = list(pending)
+
+    def pop_pending_oauth_requests(self):
+        out, self._pending = self._pending, []
+        return out
+
+
+class _FakeProviderClient:
+    """Mirrors the ``client.client`` nesting chat_runner reaches through."""
+
+    def __init__(self, pending):
+        self.client = _FakeAcpClient(pending)
+
+
+# A real registry slug with a rendered card, and a real slug whose launch gate is
+# closed. Read from the registry rather than hardcoded so a gate flip fails here
+# instead of silently changing which requests get annotated.
+CARDED_SLUG = "notion"
+GATED_SLUG = "github"
+
+
+def _own(tmp_path, monkeypatch, servers) -> None:
+    """Point discovery's kirocrew scope at a temp store holding ``servers``.
+
+    Patches the real read path rather than stubbing ``kirocrew_managed_names``, so
+    the store's own parsing (and its fail-open branches) is what the annotation is
+    tested against. An unrecognized path buckets as ``SCOPE_KIROCREW``, which is
+    the scope Connect writes to.
+    """
+    path = tmp_path / "mcp.json"
+    path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (path,))
+
+
+def _pending(*names):
+    return _FakeProviderClient(
+        [{"serverName": n, "oauthUrl": f"https://{n}.example.com/authorize?client_id=x"}
+         for n in names]
+    )
+
+
+def _owned_flags(slot) -> list[bool]:
+    """``card_owned`` per emitted message, absent read as False."""
+    return [bool(m["meta"].get("card_owned")) for m in slot.messages]
+
+
+class TestRegistrySlugsNeedNoAliasWidening:
+    def test_every_slug_is_its_own_alias(self):
+        """The annotation matches slugs verbatim; this is why that is sufficient.
+
+        kiro-cli reports ``mcp_server_alias(key)`` as the ``serverName``. Registry
+        slugs are validated slash-free, so the alias IS the slug and no widening is
+        needed. A slug that ever gained a slash would break the match silently, so
+        the property is pinned rather than assumed.
+        """
+        for provider in get_all_registry_providers():
+            slug = provider["slug"]
+            assert mcp_server_alias(slug) == slug
+
+
+class TestEveryPendingRequestIsEmitted:
+    """The drain never drops a request — not even one a card owns.
+
+    The ``mcp_oauth`` message is the Connections card's approval-URL feed
+    (``latestOAuthByServer`` reads ``meta.oauth_url`` off chat messages), so
+    dropping one strips the user's only path to authorize. These tests pin
+    emission for every row of the matrix; ownership only changes the annotation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_carded_provider_is_emitted_and_annotated(self, tmp_path, monkeypatch):
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
+        assert len(slot.messages) == 1
+        meta = slot.messages[0]["meta"]
+        assert meta["card_owned"] is True
+        # The URL the card reads must survive the annotation.
+        assert meta["oauth_url"] == f"https://{CARDED_SLUG}.example.com/authorize?client_id=x"
+        assert meta["server_name"] == CARDED_SLUG
+
+    @pytest.mark.asyncio
+    async def test_custom_server_in_our_own_store_is_not_annotated(self, tmp_path, monkeypatch):
+        """Store ownership alone must NOT annotate.
+
+        The dashboard's add-custom-server API writes to the same store as Connect,
+        so a hand-added remote is equally "managed" while having no card anywhere.
+        Annotating it would let the render layer hide its only prompt.
+        """
+        _own(tmp_path, monkeypatch, {"my-custom-remote": {"url": "https://mine.example.com/mcp"}})
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending("my-custom-remote"))
+        assert len(slot.messages) == 1
+        assert "card_owned" not in slot.messages[0]["meta"]
+
+    @pytest.mark.asyncio
+    async def test_launch_gated_provider_is_not_annotated(self, tmp_path, monkeypatch):
+        """No card is rendered behind a closed launch gate, so chat stays the prompt."""
+        assert GATED_SLUG not in {p["slug"] for p in get_visible_providers()}
+        _own(tmp_path, monkeypatch, {GATED_SLUG: {"url": "https://api.githubcopilot.com/mcp/"}})
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(GATED_SLUG))
+        assert _owned_flags(slot) == [False]
+
+    @pytest.mark.asyncio
+    async def test_server_outside_our_store_is_not_annotated(self, tmp_path, monkeypatch):
+        """A card alone must not annotate either — we must have written the entry."""
+        _own(tmp_path, monkeypatch, {})
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
+        assert _owned_flags(slot) == [False]
+
+    @pytest.mark.asyncio
+    async def test_mixed_batch_annotates_only_the_carded_one(self, tmp_path, monkeypatch):
+        _own(
+            tmp_path,
+            monkeypatch,
+            {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}, "handmade": {"url": "https://h"}},
+        )
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(
+            MagicMock(), slot, _pending(CARDED_SLUG, "handmade")
+        )
+        assert [m["meta"]["server_name"] for m in slot.messages] == [CARDED_SLUG, "handmade"]
+        assert _owned_flags(slot) == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_rejected_url_is_emitted_unannotated_for_a_carded_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """A rejected URL is a security notice, not a consent prompt.
+
+        No card can act on "this server sent an unsafe URL", so the notice must
+        never be annotated — it stays visible wherever banners render.
+        """
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        slot = _ChatSlot("s1")
+        client = _FakeProviderClient(
+            [{"serverName": CARDED_SLUG, "oauthUrl": "javascript:alert(1)"}]
+        )
+        await _drain_session_init_oauth_requests(MagicMock(), slot, client)
+        assert len(slot.messages) == 1
+        assert slot.messages[0]["meta"]["rejected_url"] is True
+        assert "card_owned" not in slot.messages[0]["meta"]
+
+
+class TestAnnotationFailsOpen:
+    """Any failure resolving ownership yields un-annotated messages.
+
+    Un-annotated is today's behavior: every surface renders every banner. The
+    opposite direction would let a broken store file hide a prompt.
+    """
+
+    @pytest.mark.asyncio
+    async def test_malformed_store_file_fails_open(self, tmp_path, monkeypatch):
+        path = tmp_path / "mcp.json"
+        path.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (path,))
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
+        assert _owned_flags(slot) == [False]
+
+    @pytest.mark.asyncio
+    async def test_missing_store_file_fails_open(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mcp_discovery, "_MCP_JSON_PATHS", (tmp_path / "absent.json",))
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
+        assert _owned_flags(slot) == [False]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("broken", ["kirocrew_managed_names", "get_visible_providers"])
+    async def test_either_lookup_raising_fails_open(self, tmp_path, monkeypatch, broken):
+        """Both halves of the predicate must fail open, not just the store read."""
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        slot = _ChatSlot("s1")
+        with patch(
+            f"kiro_crew.dashboard.chat_runner.{broken}", side_effect=RuntimeError("boom")
+        ):
+            await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
+        assert _owned_flags(slot) == [False]
+
+
+class TestDrainDoesNoBlockingWorkOnTheLoop:
+    """The drain runs on the event loop; its ownership lookup reads files.
+
+    Both facts are pinned behaviorally rather than by asserting a call to
+    ``asyncio.to_thread``, so the guarantee survives a refactor to any other
+    off-loop mechanism.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ownership_lookup_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        seen: list[str] = []
+        real = chat_runner._connections_managed_mcp_names
+
+        def _record():
+            seen.append(threading.current_thread().name)
+            return real()
+
+        monkeypatch.setattr(chat_runner, "_connections_managed_mcp_names", _record)
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _pending(CARDED_SLUG))
+        assert seen, "ownership lookup never ran"
+        assert seen[0] != threading.current_thread().name
+        # The annotation still lands despite the thread hop.
+        assert _owned_flags(slot) == [True]
+
+    @pytest.mark.asyncio
+    async def test_lookup_is_skipped_entirely_when_nothing_is_pending(
+        self, tmp_path, monkeypatch
+    ):
+        """Session init is the hot path and the common case is zero requests."""
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        calls: list[int] = []
+        monkeypatch.setattr(
+            chat_runner,
+            "_connections_managed_mcp_names",
+            lambda: calls.append(1) or frozenset(),
+        )
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, _FakeProviderClient([]))
+        assert slot.messages == []
+        assert calls == []
+
+
+class TestDrainEdgeCases:
+    @pytest.mark.asyncio
+    async def test_client_without_pending_buffer_is_a_noop(self):
+        """A provider client with no ACP buffer (e.g. a non-ACP backend)."""
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(MagicMock(), slot, object())
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
+    async def test_non_dict_request_entry_is_skipped(self, tmp_path, monkeypatch):
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"}})
+        slot = _ChatSlot("s1")
+        await _drain_session_init_oauth_requests(
+            MagicMock(), slot, _FakeProviderClient(["not-a-dict"])
+        )
+        assert slot.messages == []
+
+
+class TestMidTurnRequestsAreNeverAnnotated:
+    """The mid-turn EVENT_MCP_OAUTH_REQUEST path fires when a live token expires.
+
+    The turn is already blocked on it and no card is watching, so it must reach
+    every surface. Pinned at the emitter's default rather than through the event
+    handler, because the default is what makes every existing call site safe.
+    """
+
+    def test_emit_defaults_to_unannotated(self):
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(MagicMock(), slot, "acme", LEGIT_OAUTH_URLS[0][1])
+        assert "card_owned" not in slot.messages[0]["meta"]
+
+    def test_annotation_is_opt_in_per_call(self):
+        slot = _ChatSlot("s1")
+        _emit_mcp_oauth_request(
+            MagicMock(), slot, "acme", LEGIT_OAUTH_URLS[0][1], card_owned=True
+        )
+        assert slot.messages[0]["meta"]["card_owned"] is True
+
+
+class TestConnectionsManagedMcpNames:
+    """The predicate CONSUMES the two deciding facilities; it re-derives neither."""
+
+    def test_intersects_store_ownership_with_carded_providers(self, tmp_path, monkeypatch):
+        _own(
+            tmp_path,
+            monkeypatch,
+            {
+                CARDED_SLUG: {"url": "https://mcp.notion.com/mcp"},
+                GATED_SLUG: {"url": "https://api.githubcopilot.com/mcp/"},
+                "my-custom-remote": {"url": "https://mine.example.com/mcp"},
+            },
+        )
+        assert _connections_managed_mcp_names() == frozenset({CARDED_SLUG})
+
+    def test_ownership_discriminator_is_not_reimplemented(self, tmp_path, monkeypatch):
+        """A malformed store value is not ownership — decided by the shared function.
+
+        Pinned so the annotation can never drift into its own, laxer rule.
+        """
+        _own(tmp_path, monkeypatch, {CARDED_SLUG: "not-a-dict"})
+        assert CARDED_SLUG not in mcp_discovery.kirocrew_managed_names()
+        assert _connections_managed_mcp_names() == frozenset()
+
+    def test_a_scope_we_do_not_own_confers_nothing(self):
+        """A slug present only in a scope we do not own stays un-annotated."""
+        with patch(
+            "kiro_crew.mcp_discovery._load_mcp_json_by_source",
+            return_value={
+                mcp_discovery.SCOPE_KIROCREW: {},
+                mcp_discovery.SCOPE_KIRO_GLOBAL: {CARDED_SLUG: {"url": "https://n"}},
+            },
+        ):
+            assert _connections_managed_mcp_names() == frozenset()

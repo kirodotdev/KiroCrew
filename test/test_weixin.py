@@ -38,18 +38,20 @@ from kiro_crew.weixin.transport import WeixinTransport
 
 
 # ── protocol headers ──────────────────────────────────────────────────────────
-def test_declared_capabilities_do_not_promise_files_without_a_media_path():
-    """``files`` must stay False while the transport has no media path.
+def test_declared_capabilities_match_the_directions_actually_implemented():
+    """Each ``files`` flag must track a real code path, per direction.
 
     The flag is a contract read by capability-aware callers (and, per the
-    channel-plugin RFC, eventually by the agent's own tool surface). iLink's
-    send path carries text only and inbound media is never decrypted or cached,
-    so declaring files=True advertises a capability the transport cannot
-    perform. Flip this together with the media implementation, not before.
+    channel-plugin RFC, eventually by the agent's own tool surface), so it is
+    wrong in BOTH directions: claiming a capability the transport lacks, and
+    denying one it has. Inbound landed (``weixin/media.py`` CDN download +
+    AES-128-ECB decrypt, fed through ``weixin/attachments.py``); outbound still
+    carries text only, because the ``getuploadurl`` + encrypted CDN PUT half is
+    unimplemented. Flip ``files_outbound`` in the change that lands it.
     """
     from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 
-    assert WEIXIN_CAPABILITIES.files_inbound is False
+    assert WEIXIN_CAPABILITIES.files_inbound is True
     assert WEIXIN_CAPABILITIES.files_outbound is False
 
 
@@ -63,6 +65,19 @@ def test_headers_carry_required_ilink_fields():
     # Content-Length must be the UTF-8 byte length, not the char count.
     assert h["Content-Length"] == "7"
     assert h["X-WECHAT-UIN"]
+
+
+def test_headers_reuse_one_uin_across_requests():
+    """iLink binds the bot session to the UIN seen at authorization.
+
+    Re-rolling ``X-WECHAT-UIN`` per request made the first ``getupdates``
+    long-poll after a QR login come back ``-14`` (session expired), so every
+    request in a process must present the same UIN.
+    """
+    first = _headers("abc123", "{}")["X-WECHAT-UIN"]
+    assert all(_headers("abc123", "{}")["X-WECHAT-UIN"] == first for _ in range(5))
+    # Independent of token/body, since it identifies the client, not the call.
+    assert _headers(None, '{"k":1}')["X-WECHAT-UIN"] == first
 
 
 def test_headers_omit_authorization_without_credential():

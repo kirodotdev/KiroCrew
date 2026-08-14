@@ -566,6 +566,20 @@ class TestIntegrity:
 
 
 class TestSecurity:
+    def test_data_filter_drops_sel_hmac_key_at_trust_path(self):
+        """The SEL key moved to trust/sel_hmac.key; NEVER_SNAPSHOT_FILES is
+        matched by BASENAME so the key must be dropped from a bundle at BOTH
+        the new and the legacy location."""
+        from kiro_crew.snapshot import _data_filter
+
+        legacy = tarfile.TarInfo(name="snap/sel_hmac.key")
+        assert _data_filter(legacy) is None
+        new = tarfile.TarInfo(name="snap/trust/sel_hmac.key")
+        assert _data_filter(new) is None
+        # An unrelated file in a trust/ dir is NOT dropped (basename match only).
+        other = tarfile.TarInfo(name="snap/trust/notes.txt")
+        assert _data_filter(other) is not None
+
     def test_symlink_filtered_out(self, env, monkeypatch):
         """TEST 30 — symlinks are silently dropped by _data_filter."""
         src, _, _, tmp_path = env

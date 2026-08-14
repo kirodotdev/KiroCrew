@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Trans } from 'react-i18next'
 
 import { i18nT } from '../i18n/t'
+import { SettingRef } from '../components/settingRef/SettingRef'
 interface ArchiveEntry {
   name: string
   key: string
@@ -78,7 +80,7 @@ export default function SessionArchive() {
         {loading && <div className="text-muted text-[13px]">{i18nT('pages.sessionArchive.loading')}</div>}
         {error && <div className="text-red-500 text-[13px]">{error}</div>}
         <div className="overflow-auto flex-1">
-          {archives.length === 0 && !loading && !error && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.no_archives_archives_are_created_when_session_fi')}</div>}
+          {archives.length === 0 && !loading && !error && <div className="text-muted text-[13px] p-2 break-words min-w-0"><Trans i18nKey="pages.sessionArchive.no_archives_with_compaction_hint" components={{ settingRef: <SettingRef configKey="session.autocompact_pct" /> }} /></div>}
           {archives.length > 0 && visible.length === 0 && !error && <div className="text-muted text-[13px] p-2">{i18nT('pages.sessionArchive.no_matches_for_query', { query: filterKey })}</div>}
           {visible.map(a => (
             <div

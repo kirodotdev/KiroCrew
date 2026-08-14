@@ -1,4 +1,4 @@
-import { useState, memo } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, MessageSquare } from 'lucide-react'
 
@@ -26,9 +26,15 @@ interface QuestionCardProps {
   /** True while a submission is in flight: both controls lock so a second
    *  click cannot produce a duplicate resolution or a duplicate chat turn. */
   busy?: boolean
+  /** Flips of "the user has an answer in progress" — a non-empty custom
+   *  input OR a pending option selection. All of that state lives only in
+   *  this component; publishing the boolean lets the store refuse to
+   *  auto-retire (unmount) a card whose half-entered answer would be
+   *  silently destroyed by a turn-consuming frame. */
+  onDraftChange?: (active: boolean) => void
 }
 
-function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: QuestionCardProps) {
+function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftChange }: QuestionCardProps) {
   const [selections, setSelections] = useState<Record<number, Set<string>>>({})
   const [customInputs, setCustomInputs] = useState<Record<number, string>>({})
   const reduceMotion = useReducedMotion()
@@ -71,6 +77,24 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false }: Question
 
   const toggleCollapsed = (qIdx: number) =>
     setCollapsed(prev => ({ ...prev, [qIdx]: !prev[qIdx] }))
+
+  /* Publish "answer in progress" to the store — pending option selections
+     count exactly like typed custom text: both are component-local work a
+     turn-consuming frame would silently destroy if the card auto-retired.
+     One effect observes EVERY mutation path (option toggles, custom-input
+     edits, the question-set reset above) instead of instrumenting each
+     handler, and the cleanup clears the flag on unmount so a card removed
+     for any other reason (self-answer, dismiss, resolution) cannot leave a
+     stale draftActive behind blocking a future card's retirement. */
+  const draftActive =
+    Object.values(selections).some(s => s.size > 0) ||
+    Object.values(customInputs).some(v => v.trim() !== '')
+  const draftRef = useRef(onDraftChange)
+  draftRef.current = onDraftChange
+  useEffect(() => {
+    draftRef.current?.(draftActive)
+  }, [draftActive])
+  useEffect(() => () => { draftRef.current?.(false) }, [])
 
   const toggleOption = (qIdx: number, label: string, multi: boolean) => {
     const wasSelected = !!selections[qIdx]?.has(label)

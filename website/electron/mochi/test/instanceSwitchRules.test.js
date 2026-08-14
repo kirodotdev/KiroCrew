@@ -61,37 +61,26 @@ test("remote -> self and self -> remote are both switched", () => {
 });
 
 /**
- * Mirror of the FIRST decision in resolveMochiTarget: settings -> keep | choice.
+ * Mirror of the FIRST decision in resolveMochiTarget: the stored pointer -> target.
  *
- * `mochiSettings()` returns null for every non-answer (5s timeout, non-200, lost
- * token, malformed JSON), and none of those mean "the user chose self". An OBJECT
- * without `petInstance` is a real answer and does mean self.
+ * The pointer now comes from the SHELL's own store (machineStore), not from the
+ * gateway's Mochi settings — so there is no "could not read it" case left at this
+ * step, which is exactly what lets a remote pet outlive a local disable. `self` and
+ * anything blank still mean this computer.
  */
-function settingsOutcome(settings) {
-  if (settings === null || settings === undefined) return "keep";
-  return typeof settings.petInstance === "string" ? settings.petInstance || "self" : "self";
+function pointerOutcome(choice) {
+  return typeof choice === "string" && choice.trim() ? choice : "self";
 }
 
-test("a non-answer about the settings keeps the current target", () => {
-  for (const nonAnswer of [null, undefined]) {
-    assert.strictEqual(
-      settingsOutcome(nonAnswer),
-      "keep",
-      "a timed-out settings read flipped the target and tore down the panel",
-    );
+test("a blank or absent pointer resolves to self", () => {
+  for (const blank of [null, undefined, "", "   ", 42]) {
+    assert.strictEqual(pointerOutcome(blank), "self", `${JSON.stringify(blank)}`);
   }
 });
 
-test("settings that ANSWER without a chosen instance resolve to self", () => {
-  // The distinction the null guard must not blur: read fine, nothing chosen.
-  assert.strictEqual(settingsOutcome({}), "self");
-  assert.strictEqual(settingsOutcome({ petInstance: "" }), "self");
-  assert.strictEqual(settingsOutcome({ petInstance: "self" }), "self");
-  assert.strictEqual(settingsOutcome({ petInstance: 42 }), "self");
-});
-
 test("a chosen instance id is carried through", () => {
-  assert.strictEqual(settingsOutcome({ petInstance: "abc" }), "abc");
+  assert.strictEqual(pointerOutcome("abc"), "abc");
+  assert.strictEqual(pointerOutcome("self"), "self");
 });
 
 // ── source guards: the real code must still make these decisions ──────────
@@ -103,7 +92,7 @@ test("resolveMochiTarget still has a keep outcome for non-answers", () => {
   assert.ok(start !== -1, "resolveMochiTarget must exist");
   const body = MAIN.slice(start, MAIN.indexOf("\n}", start));
   assert.ok(body.includes("keep: true"), "the keep outcome was removed");
-  // Both non-answer sites must still return keep rather than self.
+  // Both remaining non-answer sites must still return keep rather than self.
   assert.ok(
     body.includes("!listed.known"),
     "an unreadable instance list must not fall back to self",
@@ -112,15 +101,153 @@ test("resolveMochiTarget still has a keep outcome for non-answers", () => {
     body.includes("!conn.known"),
     "an unanswered connect must not fall back to self",
   );
-  // The FIRST non-answer is the settings read itself: `mochiSettings()` returns
-  // null for a timeout, a non-200, a lost token and malformed JSON. Collapsing
-  // that to an empty choice fell through to `return self` — the same flip, with
-  // the user's unsent draft in the panel it tore down.
-  const nullGuard = body.indexOf("settings === null");
-  assert.ok(nullGuard !== -1, "a null settings read must return keep, not self");
+});
+
+test("the pointer comes from the SHELL's store, never from a gateway read", () => {
+  // The move that fixes three defects at once (one-way door, pointer dying with
+  // the app, no restart survival). Asserted on the shipped source because all
+  // three failures were architectural: a future edit that reads `petInstance`
+  // back off `mochiSettings()` restores every one of them while the behavioural
+  // tests above keep passing.
   assert.ok(
-    nullGuard < body.indexOf("settings.petInstance"),
-    "the null check must come BEFORE the choice is read, or it cannot prevent the fallback",
+    /resolveMochiTarget\(petInstanceOf\(machineStore\)\)/.test(MAIN),
+    "reconcile must resolve from the shell store's pointer",
+  );
+  assert.ok(
+    !/settings\.petInstance/.test(MAIN),
+    "index.js must not read petInstance out of the gateway's Mochi settings again",
+  );
+  // `mochiSettings()` survives for ONE purpose only — the one-shot migration.
+  const settingsCalls = MAIN.match(/await mochiSettings\(\)/g) || [];
+  assert.strictEqual(
+    settingsCalls.length,
+    1,
+    "the only remaining gateway settings read should be the one-shot migration",
+  );
+  assert.ok(
+    /migrateMachinePrefs\(machineStore, await mochiSettings\(\)\)/.test(MAIN),
+    "the surviving settings read must be the migration one",
+  );
+});
+
+test("teardown is decided AFTER the resolve, not before it", () => {
+  // The ordering IS the bug: deciding on the host's disabled flag first and
+  // resolving second is what let a local disable remove a pet that a remote was
+  // still serving. Nothing about the resolve needs the host's Mochi to be on —
+  // core's /api/instances and the remote's own /api/apps are both outside that
+  // gate — so there is no reason left to decide first.
+  const resolveAt = MAIN.indexOf("const target = await resolveMochiTarget(");
+  const teardownAt = MAIN.indexOf('state === "disabled" && hostDisabledMeansTeardown(');
+  assert.ok(resolveAt !== -1, "the resolve call must exist");
+  assert.ok(teardownAt !== -1, "the teardown must be gated on hostDisabledMeansTeardown");
+  assert.ok(
+    resolveAt < teardownAt,
+    "resolving after the teardown decision cannot inform it — that is the original defect",
+  );
+});
+
+test("a REFUSED accelerator is not persisted over the working one", () => {
+  // Registration is the only availability test, so a rebind must bind before it
+  // stores. Persisting first left the store holding a key the OS rejected: the
+  // action then had no working accelerator at all, and closing Settings kept it
+  // that way. Keeping the previous value means the next drift check rebinds
+  // something that works.
+  const applyAt = MAIN.indexOf('ipcMain.handle("mochi-shortcuts:apply"');
+  assert.ok(applyAt !== -1, "the shortcuts apply handler must exist");
+  const body = MAIN.slice(applyAt, applyAt + 2500);
+  const bindAt = body.indexOf("applyMochiShortcuts({ ...prev, ...desired })");
+  const persistAt = body.indexOf("setShortcutsIn(machineStore, keep,");
+  assert.ok(bindAt !== -1, "the rebind must be attempted over the previous values");
+  assert.ok(persistAt !== -1, "only the accepted values may be written back");
+  assert.ok(bindAt < persistAt, "binding must come first — it is the availability test");
+  assert.ok(
+    /keep = mergeAcceptedShortcuts\(/.test(body),
+    "the write-back set must come from mergeAcceptedShortcuts, which tolerates an unset store",
+  );
+  assert.ok(
+    !/prev\[action\]/.test(body),
+    "indexing `prev` inline throws when the store has no accelerators yet",
+  );
+  assert.ok(
+    !/setShortcutsIn\(machineStore, desired,/.test(body),
+    "writing the raw request back would store a refused key",
+  );
+});
+
+test("a switch reports where the pet LANDED, not that reconcile returned", () => {
+  // Almost every way a switch fails is a silent, non-throwing return: reconcile
+  // bails out when the host's enabled-state probe is unreadable, and
+  // resolveMochiTarget falls back to self when the chosen instance is
+  // listed-but-down, unlisted, unusable, or has Mochi off. A hardcoded ok:true
+  // therefore closed Settings over a pet that never moved — the success-path
+  // twin of the failure message that used to claim nothing was saved.
+  const setAt = MAIN.indexOf('ipcMain.handle("mochi-instances:set"');
+  assert.ok(setAt !== -1, "the set handler must exist");
+  // Generous window: the handler carries a long rationale comment, and slicing
+  // too tightly would pass by simply not reaching the return statement.
+  const body = MAIN.slice(setAt, setAt + 4000);
+  assert.ok(
+    /return \{ ok: mochiPetInstanceId === saved, petInstance: saved \}/.test(body),
+    "the handler must compare the SHOWN instance against the saved pointer",
+  );
+  assert.ok(
+    !/return \{ ok: true, petInstance: saved \}/.test(body),
+    "an unconditional ok:true cannot distinguish a switch from a silent fallback",
+  );
+});
+
+test("the accelerators are bound from the shell store too", () => {
+  // Same argument as the pointer, and leaving this one behind would reproduce the
+  // bug in miniature: custom keys would silently revert to defaults the moment the
+  // host's Mochi was switched off.
+  assert.ok(
+    /applyMochiShortcuts\(shortcutsOf\(machineStore\)\)/.test(MAIN),
+    "reconcile must bind the shell store's accelerators",
+  );
+  assert.ok(
+    !/mochiShortcutsOf\(/.test(MAIN),
+    "the gateway-backed shortcuts reader should be gone, not merely unused",
+  );
+});
+
+test("the instance list keeps its four states across the IPC boundary", () => {
+  // `disabled` (multi-instance off) and `inactive` (needs restart) carry the ONLY
+  // guidance this pane gives. An earlier version returned {known, instances} and
+  // let the renderer rebuild the view, which erased both — so every desktop user
+  // with the feature off saw just "This computer" and no way forward. Asserted on
+  // the shipped source because the loss was silent: the pane still rendered, just
+  // without the two states that tell the user what to do.
+  const start = MAIN.indexOf("function fetchInstances(");
+  assert.ok(start !== -1, "fetchInstances must exist");
+  const body = MAIN.slice(start, MAIN.indexOf("\n}", start));
+  for (const state of ["disabled", "inactive", "ready", "error"]) {
+    assert.ok(body.includes(`"${state}"`), `fetchInstances stopped reporting "${state}"`);
+  }
+  // 403 is the "feature is off" answer, and `active:false` is "needs restart" —
+  // both must map to their own state rather than to an empty ready list.
+  assert.ok(/statusCode === 403[\s\S]{0,160}"disabled"/.test(body), "403 must map to disabled");
+  assert.ok(/active === false[\s\S]{0,80}"inactive"/.test(body), "active:false must map to inactive");
+  // The handler must pass the state through rather than re-deriving it.
+  assert.ok(
+    /state: listed\.state/.test(MAIN),
+    "the list IPC must forward fetchInstances' state, not recompute it",
+  );
+});
+
+test("both IPC write paths record the write as user intent", () => {
+  // The migration guard is only as good as the intent it can see: an IPC write
+  // that forgot `byUser` would look imported, and a delayed migration would
+  // happily revert it.
+  assert.ok(
+    /setPetInstanceIn\(machineStore, instanceId, \{ byUser: true \}\)/.test(MAIN),
+    "the set-instance IPC must mark the write as user intent",
+  );
+  assert.ok(
+    // `keep`, not `desired`: the handler writes back only the accelerators the
+    // OS accepted (see the refused-accelerator test above). What matters here is
+    // that whatever it does write is still marked as user intent.
+    /setShortcutsIn\(machineStore, keep, \{ byUser: true \}\)/.test(MAIN),
+    "the shortcuts-apply IPC must mark the write as user intent",
   );
 });
 

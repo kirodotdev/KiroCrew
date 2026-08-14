@@ -13,11 +13,12 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   issueRadarApi, DEFAULT_REPO_SETTINGS,
-  type ConnectedRepo, type Issue, type PullRequest, type RepoLabel, type RepoMember, type RepoPermissions, type RepoSettings,
+  type ConnectedRepo, type Crew, type CrewCounts, type CrewSettings, type Issue, type PullRequest, type RepoLabel, type RepoMember, type RepoPermissions, type RepoSettings,
 } from './api'
 import type {
-  ActiveRepo, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
+  ActiveRepo, CrewFilter, CrewSortKey, CrewView, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
+import { CREW_FILTERS, CREW_SORT_KEYS, CREW_VIEW_KINDS } from './lib/types'
 import { repoScopeKey } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
@@ -31,6 +32,77 @@ import type { RepoRef } from './lib/refLinks'
  * in sync with the backend's ``_MEMBER_ASSOC_RANK`` and the detail badge's
  * "maintainer" grouping. */
 const MEMBER_ASSOCS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
+
+/* ── Persisted crews UI state ──────────────────────────────────────────────
+ *
+ * Kept on its OWN localStorage key rather than folded into `PersistedUiState`
+ * (lib/format.ts). Two reasons: `saveUiState` takes the whole blob, so the crews
+ * surface would have to widen a type five other surfaces write, and — unlike the
+ * blob's fields — a persisted crew SELECTION cannot be validated on read alone.
+ * `{kind:'crew', id}` is only meaningful while that crew still exists in THIS
+ * repo, which is known one fetch later, so the check lives beside the query that
+ * answers it (see the drop-unknown-crew effect below). `mainView` itself stays in
+ * the shared blob, so a reload still returns to the crews page.
+ */
+const CREW_UI_KEY = 'kc:issue-radar:crew-ui'
+
+interface PersistedCrewUi {
+  crewView: CrewView
+  crewFilter: CrewFilter
+  crewSortKey: CrewSortKey
+  crewSortDir: SortDir
+}
+
+/** Structural validation of a persisted `CrewView`: the kind must still be one
+ * the app offers, and `crew` must carry a non-empty id. Anything else falls back
+ * to the unselected state, which the roster effect below re-points at the first
+ * crew as soon as one is known to exist. */
+function coerceCrewView(value: unknown): CrewView {
+  if (!value || typeof value !== 'object') return { kind: 'none' }
+  const kind = (value as { kind?: unknown }).kind
+  if (!(CREW_VIEW_KINDS as readonly unknown[]).includes(kind)) return { kind: 'none' }
+  if (kind === 'crew') {
+    const id = (value as { id?: unknown }).id
+    return typeof id === 'string' && id !== '' ? { kind: 'crew', id } : { kind: 'none' }
+  }
+  return { kind: 'none' }
+}
+
+/** Same idea for the chip filter: one that has been removed since it was written
+ * must not survive, or the list renders a filtered slice with no matching chip
+ * highlighted (and no way to see it is filtered). */
+function coerceCrewFilter(value: unknown): CrewFilter {
+  return (CREW_FILTERS as readonly string[]).includes(value as string) ? (value as CrewFilter) : 'all'
+}
+
+/** Same for the sort field and its direction. A retired sort key must not
+ * survive either: the rail highlights the ACTIVE field, so an unknown one would
+ * order the roster by a rule with nothing marked in the UI. Default `status`
+ * ascending — the roster opens on whatever is making progress first. */
+function coerceCrewSortKey(value: unknown): CrewSortKey {
+  return (CREW_SORT_KEYS as readonly string[]).includes(value as string) ? (value as CrewSortKey) : 'status'
+}
+
+function coerceCrewSortDir(value: unknown): SortDir {
+  return value === 'asc' || value === 'desc' ? value : 'asc'
+}
+
+function loadCrewUi(): PersistedCrewUi {
+  try {
+    const raw = localStorage.getItem(CREW_UI_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return {
+      crewView: coerceCrewView(parsed?.crewView),
+      crewFilter: coerceCrewFilter(parsed?.crewFilter),
+      crewSortKey: coerceCrewSortKey(parsed?.crewSortKey),
+      crewSortDir: coerceCrewSortDir(parsed?.crewSortDir),
+    }
+  } catch {
+    // Corrupt value, or storage blocked (private mode) — the defaults are a
+    // usable page, exactly as loadUiState treats the same failure.
+    return { crewView: { kind: 'none' }, crewFilter: 'all', crewSortKey: 'status', crewSortDir: 'asc' }
+  }
+}
 
 export interface IssueRadarContextValue {
   // ── repos ──
@@ -222,7 +294,35 @@ export interface IssueRadarContextValue {
   settingsTarget: SettingsTarget
   expanded: ExpandedSection
   setExpanded: (s: ExpandedSection) => void
-}
+
+  // ── crews ──
+  /** Every non-retired crew in the active repo. */
+  crews: Crew[]
+  /** The server's roster tallies. Read from the response rather than counted
+   * here: they are computed from each crew's OPEN WORK ITEMS, which this payload
+   * does not carry, so there is nothing client-side to derive them from. */
+  crewCounts: CrewCounts
+  /** Repo-wide crew protocol settings (claim TTL, commit trailer); null until
+   * the roster loads. Deliberately part of THIS query's result rather than a
+   * second fetch — the one route answers both. */
+  crewSettings: CrewSettings | null
+  crewsLoading: boolean
+  crewsError: Error | null
+  /** Which crews page the main area is showing (one crew, or nothing yet). */
+  crewView: CrewView
+  setCrewView: (v: CrewView) => void
+  /** Which chip filter the crew list is applying. */
+  crewFilter: CrewFilter
+  setCrewFilter: (f: CrewFilter) => void
+  /** Active roster sort field and direction, and the cycler the rail drives:
+   * clicking the active field flips the direction, another switches to it. */
+  crewSortKey: CrewSortKey
+  crewSortDir: SortDir
+  cycleCrewSort: (key: CrewSortKey) => void
+  /** Open the crews surface, optionally jumping straight to a page — the same
+   * shape as `openSettings(target?)`, so a rail row can navigate in one call
+   * instead of setting the page and the view separately. */
+  openCrews: (view?: CrewView) => void}
 
 const Ctx = createContext<IssueRadarContextValue | null>(null)
 
@@ -292,6 +392,13 @@ export function IssueRadarProvider({
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget>(restored.settingsTarget ?? { kind: 'general', anchor: 'account' })
   const [expanded, setExpanded] = useState<ExpandedSection>('dashboards')
 
+  // ── crews view state (its own store — see CREW_UI_KEY) ──
+  const [restoredCrewUi] = useState(loadCrewUi)
+  const [crewView, setCrewView] = useState<CrewView>(restoredCrewUi.crewView)
+  const [crewFilter, setCrewFilter] = useState<CrewFilter>(restoredCrewUi.crewFilter)
+  const [crewSortKey, setCrewSortKey] = useState<CrewSortKey>(restoredCrewUi.crewSortKey)
+  const [crewSortDir, setCrewSortDir] = useState<SortDir>(restoredCrewUi.crewSortDir)
+
   // ── pull-request view state (parallels the issue filters/sort/selection) ──
   const [prQuery, setPrQuery] = useState(restored.prQuery ?? '')
   const [prSelectedLabels, setPrSelectedLabels] = useState<Set<string>>(() => new Set(restored.prSelectedLabels ?? []))
@@ -331,12 +438,24 @@ export function IssueRadarProvider({
     dashboard: 'dashboards',
     issues: 'filters',
     pulls: 'pulls',
+    crews: 'crews',
     settings: 'settings',
   }
   useEffect(() => {
     setExpanded(SECTION_FOR_VIEW[mainView])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mainView])
+
+  // Persist the crews page + chip filter on their own key (see CREW_UI_KEY), for
+  // the same reason the blob below is persisted: leaving Issue Radar and coming
+  // back should land on the crew you were reading.
+  useEffect(() => {
+    try {
+      localStorage.setItem(CREW_UI_KEY, JSON.stringify({ crewView, crewFilter, crewSortKey, crewSortDir }))
+    } catch {
+      /* quota exceeded / private mode — persistence is best-effort */
+    }
+  }, [crewView, crewFilter, crewSortKey, crewSortDir])
 
   // Persist the view / filter / selection state on every change so navigating
   // away from Issue Radar and back restores the same page (see loadUiState).
@@ -475,6 +594,44 @@ export function IssueRadarProvider({
     queryFn: () => issueRadarApi.getSettings(active),
   })
   const repoSettings = settingsQuery.data?.settings ?? DEFAULT_REPO_SETTINGS
+
+  // ── crews ──
+  //
+  // Deliberately NOT gated on the crews surface being open, unlike the PR list.
+  // The route reads the LOCAL crew store (a directory walk plus a JSON read per
+  // open work item — no provider call, no rate budget), and the roster is what
+  // the rail's Crews section navigates into, so it has to be loaded before the
+  // user gets there.
+  const crewsQuery = useQuery({
+    queryKey: ['issue-radar', 'crews', scopeKey],
+    queryFn: () => issueRadarApi.crews(active),
+    refetchInterval: refreshPrefs.listPollMs,
+    refetchIntervalInBackground: refreshPrefs.pollInBackground,
+    staleTime: refreshPrefs.staleTimeMs,
+  })
+  const crews = useMemo(() => asArray<Crew>(crewsQuery.data?.crews), [crewsQuery.data])
+  const crewCounts: CrewCounts = crewsQuery.data?.counts
+    ?? { on_duty: 0, working: 0, paused: 0 }
+
+  // Keep the selected page pointing at a crew that exists in THIS repo, and open
+  // the first crew when nothing valid is selected.
+  //
+  // Both halves are one decision: a crew id is REPO-SCOPED and a crew can be
+  // retired between visits, so a restored `{kind:'crew'}` is only meaningful once
+  // the roster confirms it — structural coercion at load cannot do this, because
+  // the roster is not fetched yet. And the main area has no page of its own now,
+  // so leaving the selection empty would render an empty column beside a populated
+  // roster. Gated on `isSuccess`, which is false while a repo switch refetches
+  // (this query keeps no cross-repo placeholder), so the previous repo's roster can
+  // never re-point this repo's selection.
+  useEffect(() => {
+    if (!crewsQuery.isSuccess) return
+    setCrewView((prev) => {
+      if (prev.kind === 'crew' && crews.some((c) => c.id === prev.id)) return prev
+      const first = crews[0]
+      return first ? { kind: 'crew', id: first.id } : { kind: 'none' }
+    })
+  }, [crewsQuery.isSuccess, crews])
 
   // Pull requests. 'merged' and 'closed' both fetch the CLOSED set from GitHub
   // (the split is client-side on merged_at), so the fetch key collapses them to
@@ -698,6 +855,26 @@ export function IssueRadarProvider({
     setSettingsTarget(target ?? { kind: 'general', anchor: 'account' })
     setMainView('settings')
   }, [])
+
+  // `view` is optional so a rail row can navigate in ONE call. Omitting it keeps
+  // whatever page was last open (persisted), which is what a section header click
+  // should do — the same reason openDashboard restores `dashboardTab`.
+  const openCrews = useCallback((view?: CrewView) => {
+    if (view) setCrewView(view)
+    setMainView('crews')
+  }, [])
+
+  /** Click the active sort field to flip its direction, another to switch to it —
+   * the same contract as `cyclePrSort`, including navigating to the surface the
+   * sort applies to so a click from a collapsed-to-visible rail is not silent.
+   * Switching fields keeps the current direction rather than resetting it: the
+   * direction is the user's stated reading order (newest-first, most-urgent-first)
+   * and re-asserting it on every field change is the more surprising behaviour. */
+  const cycleCrewSort = useCallback((key: CrewSortKey) => {
+    setMainView('crews')
+    if (key === crewSortKey) setCrewSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else setCrewSortKey(key)
+  }, [crewSortKey])
 
   const toggleLabel = useCallback((name: string) => {
     setMainView('issues')
@@ -926,6 +1103,12 @@ export function IssueRadarProvider({
     setSelectedPull(null)
     setPrQuery('')
     clearPrFilters()
+    // A crew id names a crew in ONE repo's store, so carrying the selection over
+    // would address the new repo's crews page at a record it does not have. The
+    // roster effect above re-points it a fetch later; doing it here means the
+    // wrong page is never rendered at all. The chip FILTER is a view
+    // preference, not an identity, so it survives — like the sort order.
+    setCrewView({ kind: 'none' })
     onSwitch(r)
   }, [clearFilters, clearPrFilters, onSwitch])
 
@@ -1039,6 +1222,15 @@ export function IssueRadarProvider({
     refStack, openRef, popRef, closeRefs,
     mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
     expanded, setExpanded,
+    crews, crewCounts,
+    crewSettings: crewsQuery.data?.settings ?? null,
+    // No `crews.length === 0` guard, unlike the issue list: an empty roster is the
+    // common FIRST state here (a repo with no crews yet), and treating it as
+    // "still loading" would hold a skeleton where the empty state belongs.
+    crewsLoading: crewsQuery.isLoading,
+    crewsError: (crewsQuery.error as Error) ?? null,
+    crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
+    crewSortKey, crewSortDir, cycleCrewSort,
   }), [
     repos, active, switchRepo, onAddRepo, activePermissions, canWrite,
     me, issues, repoLabels, issuesQuery.isLoading, issuesQuery.error, issuesQuery.dataUpdatedAt,
@@ -1066,6 +1258,9 @@ export function IssueRadarProvider({
     refStack, openRef, popRef, closeRefs,
     mainView, dashboardTab, openDashboard, openIssues, openPulls, openSettings, settingsTarget,
     expanded, setExpanded,
+    crews, crewCounts, crewsQuery.data, crewsQuery.isLoading, crewsQuery.error,
+    crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
+    crewSortKey, crewSortDir, cycleCrewSort,
   ])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

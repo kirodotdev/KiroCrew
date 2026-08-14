@@ -1,7 +1,201 @@
-import { afterEach } from 'vitest'
+import { afterEach, vi } from 'vitest'
 import '@testing-library/jest-dom'
 import { server } from './mocks/server'
 import { initI18n, i18next } from '../src/i18n'
+
+// --- happy-dom teardown AbortError guard -------------------------------------
+// happy-dom navigates a live `<iframe src>` by scheduling an async fetch task on
+// DOM insertion. When a fork worker tears the window down between files, vitest's
+// teardownWindow calls AsyncTaskManager.abortAll(), which rejects any still
+// in-flight iframe/sub-resource Fetch with `DOMException [AbortError]`. The test
+// that mounted the iframe has already finished, so nothing awaits that rejection:
+// it surfaces as a run-level unhandled rejection and fails the whole shard with
+// zero failing tests — a teardown-timing race whose exposure shifts with worker
+// and file count. The blob-iframe path is closed by stubbing createObjectURL
+// (below), but a direct `<iframe src="http://host/...">` (e.g. InstancesViewport,
+// InstanceTabBar) still schedules a real fetch task. Swallow ONLY happy-dom's
+// teardown abort — every other unhandled rejection still propagates and fails
+// the run as it should.
+process.on('unhandledRejection', (reason) => {
+  const isTeardownAbort =
+    reason instanceof Error &&
+    reason.name === 'AbortError' &&
+    typeof reason.stack === 'string' &&
+    reason.stack.includes('onAsyncTaskManagerAbort')
+  if (isTeardownAbort) return  // orphaned iframe fetch aborted during window teardown
+
+  // ECONNREFUSED from a stale happy-dom async fetch that fires AFTER msw's
+  // server.close() — the request escapes interception, dials the real TCP stack,
+  // and gets refused because no gateway is listening on the test-document origin
+  // (localhost:6776). Same teardown-timing race, different symptom: AggregateError
+  // wrapping ECONNREFUSED from node:net instead of AbortError from happy-dom.
+  // Scoped to port 6776 (the test document origin pinned in vite.config.ts) so a
+  // genuine test dial to an unexpected port still fails the run.
+  const isPostMswDial =
+    reason instanceof Error &&
+    (reason as NodeJS.ErrnoException).code === 'ECONNREFUSED' &&
+    String(reason).includes('6776')
+  if (isPostMswDial) return  // orphaned fetch hit real TCP after msw closed
+
+  throw reason  // re-raise anything else so the run still fails on a real leak
+})
+
+// lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
+// being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That
+// interval belongs to no AnimationItem, so neither `anim.destroy()` nor RTL
+// `cleanup()` can clear it, and it self-clears only on its first tick ~100ms
+// after import. A vitest worker that tears happy-dom down inside that window
+// leaves the tick to fire with no `document`; the resulting
+// `ReferenceError: document is not defined` is counted as an unhandled error and
+// fails the run with 0 failing tests -- a race whose exposure shifts with worker
+// count and file count. Mock BOTH runtime specifiers (the light player and the
+// full build are separate modules, each creating its own interval) so the real
+// bundle never loads under test. Components only use `loadAnimation` and the
+// returned item's destroy/addEventListener/removeEventListener; a test that
+// needs richer behavior can install its own per-test mock, which overrides this.
+// Declared as a hoisted `function` so the hoisted vi.mock calls can reach it.
+function lottiePlayerMock() {
+  return {
+    default: {
+      loadAnimation: vi.fn(() => ({
+        destroy: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        play: () => {},
+        pause: () => {},
+        stop: () => {},
+      })),
+      destroy: () => {},
+      setQuality: () => {},
+    },
+  }
+}
+vi.mock('lottie-web', lottiePlayerMock)
+vi.mock('lottie-web/build/player/lottie_light', lottiePlayerMock)
+
+// --- Node-timer leak guard ---------------------------------------------------
+// The mock above removes the known lottie instance; this guard covers the wider
+// hazard: a timer registered through the global `setTimeout` / `setInterval` /
+// `setImmediate` that dereferences DOM globals after environment teardown.
+// (Not the full class: `node:timers/promises` and `AbortSignal.timeout()`
+// schedule through Node internals the wrappers never see -- a leak through
+// those still needs its own fix.)
+//
+// Why `happyDOM.abort()` (which vitest's own environment teardown already calls)
+// cannot do it: vitest's happy-dom environment copies window properties onto
+// `globalThis` from a fixed key list, and the timer functions are not in it --
+// Node's raw implementations stay. So a timer registered by test-loaded code is
+// a plain Node `Timeout`, invisible to happy-dom's async task manager (the CI
+// trace shows `Timeout.checkReady`, Node's class). The only teardown that can
+// reach such timers is one that tracked their handles at creation.
+//
+// Wrap the global timer functions to record live handles; `clearLeakedTimers()`
+// clears whatever is still pending and flips the wrappers into teardown mode,
+// where a late registration (e.g. an un-awaited promise continuation scheduling
+// a timer after the last afterAll) is cancelled on the spot. One-shot callbacks
+// self-evict from the ledger when they fire, so the Set tracks live timers, not
+// total creations. `vi.useFakeTimers()` composes cleanly: it replaces the
+// globals with fakes (fake timers never leak into teardown) and restores these
+// wrappers on `useRealTimers()`.
+// Each handle is stored with ITS OWN clear function: Node's clearImmediate is
+// not a safe no-op on a Timeout (both types carry the internal fields it
+// mutates), so cross-type clearing is never attempted.
+const liveTimerHandles = new Map<unknown, (handle: never) => void>()
+let timersTearingDown = false
+const realSetTimeout = globalThis.setTimeout
+const realSetInterval = globalThis.setInterval
+const realSetImmediate = globalThis.setImmediate
+const realClearTimeout = globalThis.clearTimeout
+const realClearInterval = globalThis.clearInterval
+const realClearImmediate = globalThis.clearImmediate
+
+type AnyTimerFn = (...args: never[]) => unknown
+
+function wrapTimerCreate<T extends AnyTimerFn>(
+  real: T,
+  clear: (handle: never) => void,
+  options: { oneShot: boolean },
+): T {
+  const wrapped = ((...args: unknown[]) => {
+    let callArgs = args
+    if (options.oneShot && typeof args[0] === 'function') {
+      // A fired one-shot Timeout still pins its callback closure (and whatever
+      // it captured) until cleared, so keeping fired handles in the ledger
+      // would grow it with TOTAL creations -- thousands in userEvent-heavy
+      // files. Self-evict on fire instead, so the Set holds only live timers.
+      const original = args[0] as (...cb: unknown[]) => unknown
+      const selfEvicting = (...cbArgs: unknown[]) => {
+        liveTimerHandles.delete(handle)
+        return original(...cbArgs)
+      }
+      callArgs = [selfEvicting, ...args.slice(1)]
+    }
+    const handle = (real as (...a: unknown[]) => unknown)(...callArgs)
+    if (timersTearingDown) {
+      // Registration after the teardown sweep: nothing will sweep again, so
+      // letting it live re-opens the fire-into-torn-down-document window.
+      clear(handle as never)
+      return handle
+    }
+    liveTimerHandles.set(handle, clear)
+    return handle
+  }) as unknown as T
+  // Preserve the callable's extra own properties (e.g. Node's
+  // `util.promisify.custom` symbol on setTimeout) so `promisify(setTimeout)`
+  // keeps working through the wrapper.
+  for (const key of Reflect.ownKeys(real)) {
+    if (key === 'length' || key === 'name' || key === 'prototype') continue
+    const desc = Object.getOwnPropertyDescriptor(real, key)
+    if (desc) Object.defineProperty(wrapped, key, desc)
+  }
+  return wrapped
+}
+
+function wrapTimerClear<T extends AnyTimerFn>(real: T): T {
+  return ((handle: unknown) => {
+    if (handle !== undefined && handle !== null) liveTimerHandles.delete(handle)
+    return (real as (h: unknown) => unknown)(handle)
+  }) as unknown as T
+}
+
+globalThis.setTimeout = wrapTimerCreate(realSetTimeout, realClearTimeout, { oneShot: true })
+globalThis.setInterval = wrapTimerCreate(realSetInterval, realClearInterval, { oneShot: false })
+globalThis.setImmediate = wrapTimerCreate(realSetImmediate, realClearImmediate, { oneShot: true })
+globalThis.clearTimeout = wrapTimerClear(realClearTimeout)
+globalThis.clearInterval = wrapTimerClear(realClearInterval)
+globalThis.clearImmediate = wrapTimerClear(realClearImmediate)
+
+/**
+ * Clear every live Node timer created through the test globals. Returns how
+ * many pending handles were cleared. Safe to call mid-file (does not flip
+ * teardown mode). Exported so the regression test can exercise the exact sweep
+ * the teardown relies on.
+ */
+export function clearLeakedTimers(): number {
+  const count = liveTimerHandles.size
+  for (const [handle, clear] of liveTimerHandles) clear(handle as never)
+  liveTimerHandles.clear()
+  return count
+}
+
+/**
+ * The teardown entry point: sweep pending timers AND flip the wrappers into
+ * teardown mode, so a late registration (an un-awaited promise continuation
+ * scheduling a timer after the last afterAll) is cancelled on the spot instead
+ * of surviving into environment teardown.
+ */
+export function beginTimerTeardown(): number {
+  timersTearingDown = true
+  return clearLeakedTimers()
+}
+
+// Registered FIRST on purpose: vitest runs after-hooks in reverse registration
+// order, so this executes after the msw `server.close()` below -- immediately
+// before environment teardown, when anything still pending is by definition a
+// leak about to fire into a torn-down document.
+afterAll(() => {
+  beginTimerTeardown()
+})
 
 // Initialize i18n for EVERY test file, pinned to English.
 //
@@ -299,12 +493,21 @@ if (typeof (globalThis as unknown as { WebGL2RenderingContext?: unknown }).WebGL
 // revokes it on unmount. Without these stubs the iframe body throws
 // "URL.createObjectURL is not a function" — an uncaught commit-phase error that
 // only surfaces under some orderings (e.g. --coverage sharding on the fleet).
-if (typeof URL.createObjectURL !== 'function') {
-  URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL
-}
-if (typeof URL.revokeObjectURL !== 'function') {
-  URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL
-}
+//
+// Override UNCONDITIONALLY, not just when the function is absent: happy-dom
+// (unlike jsdom) DOES implement createObjectURL and returns a real
+// `blob:nodedata:<uuid>` URL backed by its internal Blob store. When that URL is
+// set as an `<iframe src>`, happy-dom schedules an async fetch task to load the
+// blob page. That task is still in-flight when a fork worker tears the window
+// down between files: vitest's teardownWindow calls AsyncTaskManager.abortAll(),
+// which rejects the pending Fetch with `DOMException [AbortError]`. Nothing
+// awaits that rejection (the test that mounted the iframe already finished), so
+// it lands as a run-level unhandled rejection and fails the whole shard with
+// zero failing tests — a teardown-timing race whose exposure shifts with worker
+// and file count. Returning a static, non-blob string means happy-dom never
+// creates a loadable blob page, so no iframe fetch task is ever scheduled.
+URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL
+URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL
 
 // Start MSW server before all tests
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }))

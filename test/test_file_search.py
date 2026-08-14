@@ -188,7 +188,13 @@ class TestFileSearch:
         (sub / "utils.py").write_text("x")          # path matches "myfeature"
         (tmp_path / "myfeature.py").write_text("x")  # filename matches "myfeature"
         async with TestClient(TestServer(_make_app())) as client:
-            resp = await client.get(f"/api/file-search?q=myfeature&project={tmp_path}")
+            # kinds=files: this asserts name-match vs path-match ranking among
+            # files. The "myfeature" directory itself is a legitimate hit under
+            # the default kinds=all, so it is excluded here to keep the
+            # assertion about the ranking rule under test.
+            resp = await client.get(
+                f"/api/file-search?q=myfeature&kinds=files&project={tmp_path}"
+            )
             results = (await resp.json())["results"]
             assert results[0]["name"] == "myfeature.py"  # filename match ranked first
             assert any(r["name"] == "utils.py" for r in results)  # path match included

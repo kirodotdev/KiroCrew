@@ -39,12 +39,61 @@ isolates the agent, and stacking a second sandbox would break it.
 
 Set via `kirocrew config set agent.sandbox auto`.
 
+## ACP Backend
+
+`agent.acp_backend` selects which ACP agent Kiro Crew drives. `agent.provider`
+stays `acp` either way — the backend is a choice *within* ACP, not a different
+provider.
+
+| Value | Agent | Status |
+|-------|-------|--------|
+| `""` (default) | kiro-cli | full support |
+| `kas` | kiro-agent (KAS) | runs chat; some surfaces still missing |
+
+**What works on `kas`:** normal chat — your configured agent, its prompt, its tool
+allowlist, and session resume.
+
+**What does not, yet:**
+
+- Native subagent progress reporting (subagents run; their live progress does not
+  surface in the UI).
+- Context-usage percentage, compaction status, and agent-switch echoes — KAS
+  reports these differently and the mapping is not wired up.
+- Slash-command execution.
+- Auto-approve (`allowedTools`) is not carried over, so KAS applies its own
+  default approval policy.
+- `spawn_continue` works for runs started with an explicit keep, but not for
+  opportunistically-retained shared subagents.
+- Model selection is unverified: KAS advertises no model list on an
+  unauthenticated session, and Kiro Crew only sends a model the session
+  advertised, so a session may simply run KAS's own default model.
+
+**KAS gets its token from kiro-cli.** Kiro Crew launches KAS with
+`--auth=acp-callback`, so KAS keeps no credential of its own: whenever it needs
+an access token it calls back over ACP (`_kiro/auth/getAccessToken`) and Kiro
+Crew answers by shelling out to `kiro-cli chat _ get-kas-token`, which
+resolves-and-refreshes the token. The refresh token never leaves kiro-cli's own
+store, and this process only ever holds a short-lived access token in transit —
+never cached, never logged. This works on any machine where `kiro-cli login` has
+succeeded; a machine that is not signed in gets an auth error on the first
+prompt (the session still starts cleanly). Sign in with kiro-cli before
+switching.
+
+It also needs a KAS bundle already extracted on the machine by kiro-cli; set
+`KIROCREW_KAS_NODE` / `KIROCREW_KAS_SCRIPT` to point elsewhere.
+
+An unrecognized value logs a warning and falls back to the default backend, so a
+typo costs you a line in the log rather than a gateway that will not start.
+
+Set via `kirocrew config set agent.acp_backend kas`.
+
 ## Key Settings
 
 ```json
 {
   "agent": {
     "provider": "acp",
+    "acp_backend": "",
     "approval_mode": "auto",
     "model": "auto",
     "reasoning_effort": "",
@@ -99,9 +148,9 @@ Set via `kirocrew config set agent.sandbox auto`.
     "max_triggered": 0
   },
   "knowledge": {
-    "auto_ingest_artifacts": true,
-    "auto_add_documents": true,
-    "auto_register_project_docs": true,
+    "auto_ingest_artifacts": false,
+    "auto_add_documents": false,
+    "auto_register_project_docs": false,
     "auto_ingest_artifact_kinds": ["markdown", "text", "html", "json"],
     "auto_ingest_chunk_budget": 150,
     "folder_ingest_chunk_budget": 300,
@@ -173,6 +222,9 @@ Only the owner (`KIROCREW_OWNER_ID`) is authorized to interact over Slack.
 Multi-user access and open channels are refused regardless of what these lists
 contain, so treat them as bookkeeping rather than an access grant.
 
+Other channels (Discord, Telegram, Teams, Webex, WeCom, WeChat) are configured
+from the dashboard — see each channel's doc for keys and credentials.
+
 ### Speech-to-text
 
 | Key | Description | Default |
@@ -213,10 +265,10 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `knowledge.auto_ingest_artifacts` | Auto-ingest content-bearing local artifacts into the Knowledge Library as a searchable "Artifacts" source, kept in sync and removed when the artifact is deleted (see [Knowledge Library](knowledge-library-how-it-works.md)) | `true` |
+| `knowledge.auto_ingest_artifacts` | Auto-ingest content-bearing local artifacts into the Knowledge Library as a searchable "Artifacts" source, kept in sync and removed when the artifact is deleted (see [Knowledge Library](knowledge-library-how-it-works.md)). Opt-in: enabling it backfills the artifacts you already have | `false` |
 | `knowledge.auto_ingest_artifact_kinds` | Artifact kinds eligible for auto-ingest. `widget` is excluded as UI rather than a document; `svg` is excluded because the file reader has no support for it | `["markdown", "text", "html", "json"]` |
-| `knowledge.auto_add_documents` | Let the agent add documents it reads while working to the Knowledge Library (one aggregate "Auto-added" source). The agent fetches the content with its own tools under your approval; Kiro Crew fetches nothing, so `doc_ingest_hosts` does not apply. Renamed from `auto_ingest_doc_links`, which is still accepted on read | `true` |
-| `knowledge.auto_register_project_docs` | Register the documents of each project you work in as a Knowledge source automatically. Documents only (`.md`/`.pdf`/`.docx`/`.org` above a size floor, excluding agent instructions, generated files and repository boilerplate) — never source code | `true` |
+| `knowledge.auto_add_documents` | Let the agent add documents it reads while working to the Knowledge Library (one aggregate "Auto-added" source). The agent fetches the content with its own tools under your approval; Kiro Crew fetches nothing, so `doc_ingest_hosts` does not apply. Renamed from `auto_ingest_doc_links`, which is still accepted on read | `false` |
+| `knowledge.auto_register_project_docs` | Register the documents of each project you work in as a Knowledge source automatically. Documents only (`.md`/`.pdf`/`.docx`/`.org` above a size floor, excluding agent instructions, generated files and repository boilerplate) — never source code. Opt-in: once on it applies to every project you open, with no per-project confirmation | `false` |
 | `knowledge.auto_ingest_chunk_budget` | Chunks an automatically-registered source may ingest per watcher sweep. Each chunk is one LLM extraction call, so this bounds the cost; newest documents land first and the rest follow on later sweeps. 0 removes the bound | `150` |
 | `knowledge.folder_ingest_chunk_budget` | Chunks a folder you add by hand may ingest per watcher sweep, including the first scan started by confirming the source. Nothing is skipped — newest files land first and the rest continue on later sweeps — so this paces spend rather than limiting what is ingested. Higher than the auto-ingest budget because you asked for the folder explicitly. 0 removes the bound; a per-source `chunk_budget` property overrides it for one folder | `300` |
 | `knowledge.dedup_every_n_sweeps` | Run a full duplicate-collapsing pass every Nth watcher sweep (the per-write gate only catches byte-identical documents). 0 disables | `12` |
@@ -256,7 +308,8 @@ A per-job `timezone` on a cron job wins over this global value.
 
 ## Credentials
 
-`~/.kiro/crew/.env` holds the Slack tokens and owner ID:
+`~/.kiro/crew/.env` holds messaging-channel credentials and the owner ID. For
+Slack:
 
 ```
 SLACK_APP_TOKEN=xapp-...

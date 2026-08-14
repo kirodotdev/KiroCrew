@@ -18,9 +18,84 @@ Source: `src/kiro_crew/metrics/` — `schema.py`, `recorder.py`, `provider.py`,
 |------|---------|
 | `schema.py` | Namespace constants (`NS_CORE = "kirocrew."`, `NS_GENAI = "gen_ai."`, `NS_APP_PREFIX = "app."`) + `validate_name` / `validate_attrs` / `redact` guardrails. Documents the low-cardinality contract. |
 | `recorder.py` | `MetricsRecorder` — facade over the OTEL `Meter`. Every metric passes namespace + privacy guardrails BEFORE reaching an instrument. Instrument-cache creation is lock-guarded (atomic check-then-create). Best-effort: a telemetry failure never propagates to the caller. `meter=None` = no-op recorder. |
-| `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `_HISTOGRAM_BUCKETS_MS`, each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
+| `provider.py` | Consent gate + process-global recorder (`get_recorder()`) + graceful `shutdown()` / `reset_for_testing()`. `get_recorder()` serves a memoized recorder and re-resolves the `telemetry.enabled` consent value every `_CONSENT_RECHECK_SECS` (30s), rebuilding when it moved — see "Recorder lifecycle & threading" below. Public consent surface: `env_pin()` / `TELEMETRY_ENV_VAR`. When enabled, wires a `PeriodicExportingMetricReader` to the local JSONL exporter. Installs **one `View` per instrument** from `_HISTOGRAM_BUCKETS_MS`, each with its own `ExplicitBucketHistogramAggregation` boundaries (see below) — deliberately NOT a catch-all `instrument_type=Histogram` View. |
 | `local_exporter.py` | `JsonlMetricExporter` — appends one JSON line per export cycle to `<dir>/metrics-YYYY-MM-DD-<pid>.jsonl` (default dir `~/.kiro/crew/metrics`). Per-PID single-writer shards keep append + rotation lock-free, so concurrent exporters do not lose DELTA cycles. A private `.metrics.lock` serializes only retention sweeps; pruning skips canonical shards owned by live PIDs or modified within the safety window. **Bounded retention (rec #14):** shards rotate before an append exceeds `max_total_mb`; closed/expired shards are pruned directly by age and oldest-first size. Pruning is throttled to at most once per 300s and fully best-effort. Dir mode is 0o700, file mode 0o600, and nothing egresses the host. Declares DELTA `preferred_temporality` for Counter/UpDownCounter/Histogram so daily aggregation is an element-wise sum across cycles/PIDs. |
 | `http_metrics.py` | Gateway HTTP observability (rec #1): `record_boot_to_ready()` (boot-to-ready histogram) + `make_route_latency_middleware()` (per-route latency, wired as the outermost middleware on both `start_dashboard`/`start_api_server`). Bounds `route_template` cardinality via `collect_route_templates()` (build-time snapshot) + `route_template()` (`__unknown__` fallback); clamps `method` to a fixed allowlist and `status_class` to `1xx`..`5xx`/`other`. Upgraded WebSocket connections and `text/event-stream` SSE responses are excluded because their handler elapsed time is connection/turn lifetime, not HTTP request latency. Best-effort — a telemetry failure never alters a response. |
+
+## Recorder lifecycle & threading
+
+`get_recorder()` returns a memoized recorder on a fast path guarded by a
+monotonic clock (`_consent_recheck_due`): once a recorder exists it is handed back
+directly until the recheck window elapses. Every `_CONSENT_RECHECK_SECS` (30s) the
+call hands a consent check to a worker (`_schedule_consent_check_locked` ->
+`_consent_worker`), which re-reads `telemetry.enabled` and rebuilds when it moved.
+That is what makes `kirocrew config set telemetry.enabled true` — a write from a
+SEPARATE process — take effect without a gateway restart. A caller that changed the
+setting itself calls `shutdown()` to skip the wait. A config that cannot be READ
+yields "no change" rather than `False`, so a transient read error never tears down a
+working recorder; the worker stamps the recheck clock either way, so an unreadable
+config cannot turn every metric call into a fresh file read.
+
+**`get_recorder()` itself never reads config and never builds anything**, apart
+from the very first build of the process, which has nothing to serve in the
+meantime. `KiroCrewConfig.load()` is a fingerprint-cache hit in the steady state
+(~0.3ms) but a full read plus schema validation when the file actually changed
+(~14ms), and the rebuild costs ~57ms of SDK import — neither belongs on the event
+loop, which the route-latency middleware drives on every HTTP request. The
+consequence to know: the recheck is eventual in BOTH directions. A change is
+noticed at the window boundary and lands a thread hop later, which is immaterial
+against the window it already sits behind. `_check_in_flight` keeps a busy window
+from spawning one worker per request, and is cleared in the worker's `finally` so a
+crash costs one window rather than stranding the check.
+
+Consent resolution is env-first: `env_pin()` reads `TELEMETRY_ENV_VAR`
+(`KIROCREW_TELEMETRY`) and, when set, decides the effective state regardless of the
+config flag; `_consent_enabled()` falls back to `telemetry.enabled`.
+
+**`_lock` is never held across a provider or reader shutdown.**
+`_take_provider_locked()` clears the globals under the lock and RETURNS the
+provider; the flush happens after release. A provider shutdown joins each reader's
+export thread (30s deadline) and, with `telemetry.otlp_endpoint` set, ends in a
+synchronous network POST — holding the lock across it would stall `get_recorder()`
+on lock ACQUISITION, and the route-latency middleware calls `get_recorder()` on the
+event loop for every HTTP request. This applies to every path that reaches a
+teardown, including the one that discards a superseded build.
+
+**Which thread flushes depends on who dropped the recorder.** The consent worker
+flushes on its own thread, after releasing the lock. `shutdown()` flushes on the
+CALLER's thread, so process teardown and the config route (which calls it via
+`asyncio.to_thread`) both observe completion — still not under the lock.
+Partially-constructed readers from a failed init are reaped off-thread the same way
+(`_reap_readers_detached`), because a reader shutdown performs a final export.
+
+**`_build_recorder()` writes no module state.** It returns a `_Build` tuple
+(recorder, provider, resolved consent) that a caller installs under the lock via
+`_install_locked()`, so only the install is a critical section. Consent is recorded
+alongside the recorder even on a host that can never record (OTel absent), because
+leaving it unset would make every recheck window see a difference and rebuild a
+no-op recorder in a loop.
+
+**A `_build_generation` counter makes a mid-build disable stick.** Each rebuild
+captures the counter and rechecks it before installing; `_take_provider_locked()`
+bumps it, so a disable that lands while a build is in flight is not undone by the
+build finishing afterwards — the superseded build's provider is flushed (outside the
+lock) and discarded instead. Every consent change starts its own worker rather than
+skipping when one is already running: skipping would leave the recorded consent
+updated while the recorder stayed a no-op, and the next recheck would then find no
+difference and never retry.
+
+**Only the FIRST build of a process is synchronous** (`_ever_built` is still
+False), because there is no recorder to serve in the meantime and that path is not
+a steady-state request path. Every later build is a REbuild and goes off-thread,
+including one after `shutdown()` cleared the state — otherwise the config route's
+own write would put the SDK import back on the event loop. `reset_for_testing()`
+clears `_ever_built`, so a test's next build is synchronous and assertable without
+polling.
+
+One consequence of the detached flush: while it is still in its join, a re-enable
+can put a second exporter on the same per-PID shard, which the local exporter's
+single-writer assumption does not cover. Both sides swallow their IO errors, so the
+worst case is one dropped export cycle rather than a corrupt shard.
 
 ## Guardrails (contract C4)
 
@@ -47,7 +122,7 @@ Source: `src/kiro_crew/metrics/` — `schema.py`, `recorder.py`, `provider.py`,
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `enabled` | `false` | Main switch. Off = no-op recorder, nothing written. |
+| `enabled` | `false` | Main switch. Off = no-op recorder, nothing written. Editable from the dashboard (Settings → Privacy) as well as the config file, `kirocrew config set`, and the env var; re-resolved live, so a change takes effect without a restart. |
 | `local_dir` | `""` | JSONL shard dir; empty = `~/.kiro/crew/metrics`. `~` expansion supported. |
 | `export_interval_seconds` | `60` | Flush interval (floored to 1). |
 | `retention_days` | `0` | Age pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive day window to opt in (rec #14). |
@@ -66,13 +141,31 @@ and no file is written. Even once local collection is enabled, `otlp_endpoint`
 defaults empty, so **no data ever leaves the machine unless the operator
 explicitly sets an OTLP endpoint.**
 
-**Easy opt-in (two equivalent ways):**
+**Easy opt-in (four equivalent ways):**
 - **Config flag:** set `"telemetry": {"enabled": true}` in `~/.kiro/crew/config.json`.
+- **CLI:** `kirocrew config set telemetry.enabled true`.
+- **Dashboard:** the recording switch in Settings → Privacy, which writes the same
+  key through `PATCH /api/config/kirocrew` (`telemetry.enabled` is in
+  `_EDITABLE_CONFIG`). That route refuses `true` with **HTTP 409** when
+  `telemetry.otlp_endpoint` is set: `_build_recorder` attaches an OTLP reader
+  whenever an endpoint is configured, so enabling from a switch offered as
+  local-only would start network egress. The endpoint is chosen in the config
+  file, so that is where enabling on such a host is done. Disabling is always
+  allowed — a narrower local choice always composes. An unreadable config also
+  fails closed with a 409. On a successful write the route calls
+  `provider.shutdown()` via `asyncio.to_thread`, so the value applies on the very
+  next metric rather than at the next recheck.
 - **Env var:** export `KIROCREW_TELEMETRY=1` (also accepts `true`/`yes`/`on`;
   `0`/`false`/`no`/`off` force-disables). The env var overrides the config flag
   and is handy for CI / containers / one-off debugging. It gates **local
-  collection only** — it never enables network egress. Resolved by
-  `provider._consent_enabled()`.
+  collection only** — it never enables network egress. Resolved by the public
+  `provider.env_pin()` and consumed by `provider._consent_enabled()`.
+
+None of these requires a gateway restart: `get_recorder()` re-resolves consent
+every `_CONSENT_RECHECK_SECS` (30s) and rebuilds when it moved (see "Recorder
+lifecycle & threading"). The gateway process is where the session/turn/HTTP
+metrics are recorded; other kirocrew processes pick the value up on their own
+recheck or at their next start.
 
 **External OTLP egress (opt-in, off by default):** setting `otlp_endpoint` adds a
 second `PeriodicExportingMetricReader` alongside the local JSONL sink
@@ -80,10 +173,11 @@ second `PeriodicExportingMetricReader` alongside the local JSONL sink
 `pip install "kirocrew[otlp]"`. If the endpoint is set but the package extra is
 not installed, telemetry
 degrades to local-only with a warning instead of crashing. The OTLP exporter
-only ever sees the same redacted, low-cardinality data points as the local sink
-(the `MetricsRecorder` facade sanitises attributes before they reach ANY
-reader), so opting in cannot leak prompts, content, tokens, paths, user ids, or
-secrets.
+sees the same data points as the local sink: the `MetricsRecorder` facade
+sanitises attributes before they reach ANY reader, and call sites are required
+to pass low-cardinality constants rather than prompts, content, tokens, paths or
+user ids. That sanitisation is defence in depth over the requirement, not a
+substitute for it, so egress is only as safe as the call sites feeding it.
 
 **Bounded local retention (rec #14, explicit opt-in):** both destructive caps
 default to `0`, so upgrading cannot delete existing telemetry history. Operators
@@ -118,13 +212,19 @@ can opt in independently to age and/or size bounds:
   dates, symlinks, and the lock sidecar are excluded. It is fully best-effort —
   a rotation/prune failure is logged and swallowed, never breaking export.
 
-**Never recorded:** prompts, message/tool content, token counts, filesystem
-paths, user ids, and secrets. `telemetry.otlp_endpoint` is schema-sensitive so
-credential-bearing collector URLs are masked by config API/UI consumers as well
-as omitted from logs. Enforced structurally at the `MetricsRecorder`
-facade via the `schema.py` guardrails (see below) — call sites emit only
-low-cardinality enum-like attribute values, and any string that looks like a
-credential/PII is redacted to `"[REDACTED]"` before it reaches an instrument.
+**Must never be recorded:** prompts, message/tool content, token counts,
+filesystem paths, user ids, and secrets. `telemetry.otlp_endpoint` is
+schema-sensitive so credential-bearing collector URLs are masked by config
+API/UI consumers as well as omitted from logs.
+
+That is a contract on call sites — they emit only low-cardinality enum-like
+attribute values — backed at the `MetricsRecorder` facade by the `schema.py`
+guardrails (see below), which redact a string matching a known credential shape,
+or clearing the entropy backstop, to `"[REDACTED]"` before it reaches an
+instrument. Namespace validation is exhaustive; attribute redaction is defence
+in depth with a bounded reach (`schema.py` documents where the entropy backstop
+can and cannot fire), so it narrows the blast radius of a call site that breaks
+the contract rather than making one impossible.
 
 Tests: `test/metrics/test_local_exporter.py` (retention: direct age cap,
 oldest-first size cap, live-writer protection, live-shard rotation, non-blocking
@@ -132,7 +232,15 @@ prune lock, append survives prune contention, both-disabled,
 broad-prefix/malformed shard lookalikes ignored, export-then-prune never raises),
 `test/metrics/test_provider.py` (default-off, env-var opt-in/opt-out,
 OTLP `None` by default = no egress, OTLP reader built when endpoint set, degrade
-when extra missing), `test/metrics/test_schema.py` (redaction / namespace).
+when extra missing, plus `TestConsentRecheck`: out-of-band enable/disable, the
+rebuild and the flush both off the calling thread, a mid-rebuild disable not
+undone by the build, the hot path not reading config every call, an unreadable
+config keeping the live recorder, `shutdown()` applying a change without waiting
+out the window and without holding the lock across the flush, and the env pin
+still winning after a config edit), `test/test_collection_status_endpoint.py`
+(`GET /api/telemetry/collection`: effective state, env/overlay pins, endpoint
+presence without the endpoint string),
+`test/metrics/test_schema.py` (redaction / namespace).
 
 ## Instrumented signals
 
@@ -142,6 +250,7 @@ when extra missing), `test/metrics/test_schema.py` (redaction / namespace).
 | `kirocrew.session.pool.decision` | counter | `outcome` (`hit` / `miss_empty` / `bypass_resume` / `bypass_stateless` / `bypass_cwd` / `bypass_env` / `disabled` / `other`), `channel` | `session.py::SessionManager._record_pool_decision`, one point per `get_or_create` warm-pool decision. Exactly one reason is reported per decision — the disqualifiers form a disjunction, so branch order picks the reported reason, not the outcome. Deliberately a counter rather than an attribute on the startup histogram: "was the pool used" and "how long did startup take" are separate questions, and crossing them would multiply every phase series. `bypass_resume` quantifies how often a `resume_sid` disqualifies a session from the pool. Values are pinned by `session.POOL_DECISIONS`. |
 | `kirocrew.session.resume.outcome` | counter | `outcome` (`loaded` / `fallback_replay` / `no_session_file`), `channel` | `providers/acp.py::_emit_kiro_startup_metric`, emitted only when a resume was attempted. Distinguishes a lossless native resume from the degraded fallback (fresh `session/new` plus history replay on the Kiro Crew side, taken when `session/load` exhausts `_RESUME_MAX_ATTEMPTS` against a stale lock) and from a resume skipped because the session file was gone. |
 | `kirocrew.turn.duration` | histogram (ms) | `outcome` (`ok` / `timeout` / `error`), `session_source` (via `validation.infer_use_case`) | `dashboard/chat_runner.py::_emit_turn_metric`, called at EVENT_COMPLETE after `persist_token_record_async`. `_turn_outcome` maps stop_reason (`""`/`end_turn`/`stop`/`completed` → ok). One histogram powers turn latency p50/p90 AND fault rate. The value is `duration_ms or elapsed_ms`: the acp provider always reports `TurnUsage.duration_ms == 0` (only claude_code fills it), so the caller must pass the locally measured wall clock as `elapsed_ms` or nothing is ever emitted. A still-zero value skips the emit deliberately — absence renders as "no data", whereas a recorded 0 would render as a plausible 0ms p50. **What it measures:** the wall clock starts at turn start, so a turn parked on an interactive tool-approval prompt counts operator thinking time. No finer-grained source exists on the acp path, so this is "turn wall-clock", not pure model latency — a high p90 can mean slow approvals rather than a slow model. |
+| `kirocrew.context.section.duration` | histogram (ms) | `section` (one fixed label per assembled block: `preamble` / `profile` / `workspace` / `docs` / `steering` / `thread_history` / `stop_notes` / `memory` / `skills` / `lessons` / `provenance` / `finalize`, plus `episodic` from the `build_message` site), `custom` (bool) | Two sites, both first-turn only. `context.py::ContextBuilder.build_session_context` emits one point per section from monotonic checkpoints taken as each block is appended; `context.py::ContextBuilder.build_message` emits `section=episodic` for the query-dependent episodic retrieval that runs as that method's sibling rather than one of its sections. **Why per-section:** the block is assembled AFTER the user's message arrives and the caller awaits it before dispatching the prompt, so every section lands directly on time-to-first-token; as one opaque interval the cost is unattributable and diagnosis degrades to guess-and-rebuild. The spread within a single build is the widest of any instrument here — string appends under a millisecond alongside a query-embedding section reaching seconds — which is why it takes `_FAST_BUCKETS_MS` (0.5ms..60s) rather than a startup ladder. `custom` is a bool rather than the agent name deliberately: a populated install has dozens of agents, and one series per agent per section would multiply series count for no diagnostic gain. Sections under 1ms are still recorded as points but omitted from the companion INFO line to keep it readable. |
 | `kirocrew.mcp.backend.acquire.duration` | histogram (ms) | `warm` (bool — `not was_spawned`) | `mcp_gateway/gatewayd.py::_emit_backend_acquire_metric` — ensure_backend pre-flight + lazy-spawn paths; acquire-only duration captured before attach_stub/create_task overhead. |
 | `kirocrew.mcp.lazy_load.count` / `.duration` | counter + histogram (ms) | `transport` (`stdio`) | `mcp_gateway/gatewayd.py::_emit_lazy_load_metrics` — legacy lazy-spawn path (also emits backend.acquire). |
 | `kirocrew.mcp.warm_pool.acquire` | counter | `result` (`hit` / `miss`) | `mcp_gateway/prewarm.py::HotKeyStore.record_outcome` (emitted outside the lock). |
@@ -277,6 +386,31 @@ user-configurable `telemetry.local_dir` and each shard pass `validate_file_path`
 the ACP/gateway processes, so reading the durable shards is the only correct
 path (an in-memory reservoir in the dashboard process would never see them).
 
+**`GET /api/telemetry/collection`** (`api_collection_status`) is the small
+companion route behind the recording switch. It reports the effective `enabled`
+state, the metrics directory (`metrics_dir`), whether an env var (`env_pinned` /
+`env_var`) or a `config.local.json` overlay (`overlay_override`) pins the setting,
+and whether an OTLP endpoint is configured (`otlp_configured`). It is deliberately
+separate from `/api/telemetry/startup`, which parses every metric shard in the
+window to aggregate percentiles — far too much work for a panel that only needs to
+know whether a switch is on. `otlp_configured` reports only THAT an endpoint
+exists: the endpoint string never leaves `_telemetry_cfg()`, because it can carry
+credentials in userinfo or query parameters. It is what lets the panel disable the
+enable direction rather than offering a write that comes back 409, while leaving
+disable available — which is where an opt-out matters most. Nothing on this route
+is an egress control, so unlike the beacon there is no governance ceiling to
+report.
+
+**Both routes report the EFFECTIVE state, not the stored config flag.**
+`_telemetry_cfg()` resolves consent the way the collector does — `env_pin()` from
+`metrics/provider.py` overrides `telemetry.enabled` — so `enabled` on
+`/api/telemetry/startup` and `/api/telemetry/collection` cannot read "off" while
+metrics are being written, or "on" while nothing is. The pin comes from the
+provider rather than a second read of the env var here, because two resolutions are
+two things to keep in sync and a control that disagrees with the collector about
+what "on" means is worse than no control. `env_pinned` is what lets the panel's
+switch disable itself instead of offering a write the collector ignores.
+
 **`other` histogram splits (`_OTHER_SPLIT_ATTRS`).** An `other` histogram also
 carries a `splits` map (`"attr=value"` -> the same stats shape) for a NAMED set
 of low-cardinality attributes — currently `warm` only. This exists so one side of
@@ -357,14 +491,14 @@ Each row (`_build_token_record`) carries:
 | `ts` | str | ISO-8601 local timestamp of the turn |
 | `slot` | str | chat slot / session key |
 | `provider` | str | LLM backend (`acp` / `claude_code` / `bedrock` / …), `""` if unknown |
-| `model` | str | model id for the turn |
+| `model` | str | resolved model id for the turn; `"auto"` when the completed turn only exposes the Auto request; `""` if no model source is available |
 | `input` / `output` | int | prompt / completion tokens (structurally `0` on the ACP backend — kiro-cli bills credits only) |
 | `cache_create` / `cache_read` | int | cache-write / cache-read tokens |
 | `cost` | float | provider-reported USD cost (`0.0` on ACP) |
 | `credits` | float | kiro-cli per-turn credit spend (float-coerced) |
 | `turns` | int | provider `num_turns` |
 | `duration_ms` | int | provider-reported turn duration (`0` on ACP) |
-| `surface` | str | **(#647)** dispatch origin — `dashboard`, `cron`, `subagent`, `monitor`, `heartbeat`, `webhook`, `task_runner`, `workflow`; `""` if unset |
+| `surface` | str | **(#647, #1551)** canonical dispatch/session source. Dashboard-backed turns derive the source from the effective session key through `telemetry_channel_of` (so linked Slack/Telegram sessions retain their transport); Task Runner writes `taskrunner`; other writers use their dispatch origin (`cron`, `subagent`, `monitor`, `heartbeat`, `webhook`, `workflow`, …). `""` if unset |
 | `agent` | str | **(#647)** agent id resolved for the turn; `""` if unset |
 | `context_used` | int | **(#647)** context-window tokens occupied after the turn (int-coerced) |
 | `context_window` | int | **(#647)** served context-window size in tokens (int-coerced) |
@@ -383,10 +517,11 @@ are read from the provider at the persist call site via
 `acp/session_provider.py`) behind `getattr` guards and returns `(0, 0)` on any
 missing accessor or exception — so non-ACP providers and test doubles record
 zeros and the analytics helper never breaks the turn it measures. `surface`
-lets background turn-dispatch surfaces (cron/subagent/monitor/heartbeat/webhook/
-task_runner/workflow) attribute their spend; zero-token surfaces (cron
-`script=`/`command=` modes, heartbeat maintenance ticks) never call a model and
-must not write a row.
+lets channel-backed turns and background dispatch surfaces (cron/subagent/
+monitor/heartbeat/webhook/taskrunner/workflow) retain their canonical source;
+`context_occupancy` normalizes the historical `task_runner` spelling to
+`taskrunner` when rows are read. Zero-token surfaces (cron `script=`/`command=`
+modes, heartbeat maintenance ticks) never call a model and must not write a row.
 
 **Per-turn injection breakdown (`ctx_blocks` / `phase`).** `ctx_blocks` is
 produced by `context_blocks.split_blocks(prompt, user_chars=…)`, which attributes
@@ -514,13 +649,29 @@ from fields the row store already carries — no new instrumentation:
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
 | `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
 
-**Channel comes from the slot key, not from `surface`.** `surface` cannot
-separate transports: `chat_runner` stamps `surface="dashboard"` for every turn
-that flows through it regardless of where the message arrived from, so a
-Telegram turn is booked as dashboard spend (observable in the row store as a
-`telegram_*` slot carrying `surface="dashboard"`). The slot key is assigned by
-the transport that created the session and is therefore the only field that
-distinguishes them.
+**Channel comes from the slot key, not from `surface`.** New writes now derive
+`surface` from the effective session identity, but historical rows may contain a
+wrong, non-empty value (for example a Telegram turn stamped `dashboard`). The
+row format has no schema version or writer/trust marker that distinguishes those
+legacy values from corrected writes. Cost/category attribution therefore keeps
+the slot key authoritative; preferring a non-empty `surface` would silently
+misattribute existing history. The stored slot/session key remains stable across
+the write-side correction and is still the compatibility boundary for this
+reader.
+
+**A conversation's `title` is attached by the endpoint, from two sources in
+order.** `cost_breakdown` names nothing — slot keys are all the row store holds.
+`handlers/telemetry._with_conversation_titles` resolves the live slot's
+`display_title` first, so a rename shows before it has been flushed; a session
+with no live slot falls back to the `title` on its transcript's metadata line,
+read through `ConversationLog.get_metadata` off the event loop and keyed by
+`slot_transcript_key(slot)`, which is what folds a channel-born slot onto the
+channel's own transcript. Only an explicit metadata title counts: `list_sessions`
+would answer with the first user message and then with the session key, which
+turns a ranking label into prompt text and leaves no way to tell a named
+conversation from an unnamed one. A row with neither source reports an absent
+title rather than its key. Both sources pass the same two scanners on the way
+out, so where a title came from cannot change what leaves the endpoint.
 
 **The growth slope is fitted per segment, never across the window.** Occupancy
 is a sawtooth: a compaction drops it back toward empty, and 7 of the 8
@@ -541,11 +692,18 @@ two or three points.
 Tests: `test/test_usage.py` (`TestReadContextTokens`,
 `TestBuildTokenRecordContextFields`, `TestBuildTokenRecordCtxBlocks`,
 `TestPersistTokenRecord*`), `test/metrics/test_context_occupancy.py`
-(aggregation, skips, latest-turn wins), `test/metrics/test_cost_breakdown.py`
+(aggregation, skips, latest-turn wins, historical Task Runner spelling),
+`test/metrics/test_cost_breakdown.py`
 (channel attribution incl. the bare dashboard slot form, no-truncation,
 prior-window deltas, band bucketing, post-compaction slope, growth
-withholding, non-finite rejection) and `test/metrics/test_telemetry_titles.py`
-(title redaction + cache purity), plus the `context-trace` endpoint.
+withholding, non-finite rejection), `test/test_dashboard_chat.py` (effective
+session source at the dashboard write site),
+`test/test_turn_duration_task_runner.py` (canonical Task Runner writes), and
+`test/metrics/test_telemetry_titles.py`
+(title redaction + cache purity, and the closed-conversation fallback: the
+canonical transcript key, live-wins-over-persisted, one read per shared
+transcript, and no title where the metadata line names none), plus the
+`context-trace` endpoint.
 
 ## Circular-import rule
 
@@ -904,8 +1062,11 @@ always matches and the suppression would never fire (a real bug caught by
 `TestDefaultHomeDetection`).
 
 `kirocrew telemetry status | disable | enable` — `status` prints the exact
-payload and never materializes an id (`install_id(create=False)`); `disable`
-persists to `config.json` so the choice survives a new shell.
+payload and never materializes an id (`install_id(create=False)`). Its numbered,
+choose-one opt-out list leads with `kirocrew telemetry disable` because that choice
+persists to `config.json` and survives a new shell. Each method is a separate visual
+block: the environment override groups separately labelled macOS/Linux, PowerShell,
+and Command Prompt syntax, followed by the equivalent config key.
 
 `beacon.is_env_opted_out()` is the public probe for "the env var pins this off".
 It exists so the dashboard can distinguish *off because the stored flag is false*
@@ -992,7 +1153,11 @@ consent flow:
 - The durable surface distinguishes local usage/context records from optional
   performance metrics. Performance metrics are off by default and remain local
   when enabled, with one explicit exception: they egress only when the operator
-  configures an OTLP endpoint.
+  configures an OTLP endpoint. It also carries the **recording switch** over
+  `telemetry.enabled` — a second, independent control from the beacon toggle above
+  — fed by `GET /api/telemetry/collection` and disabled when an env var, a
+  `config.local.json` overlay, or a configured OTLP endpoint means the write
+  cannot take effect (or would start egress).
 - The panel renders a **stable `reason_code`** (`beacon.REASONS`), never the
   sibling `reason` string. `reason` is untranslated operator prose
   (`already sent today (2026-08-04)`) kept for logs and bug reports; interpolating

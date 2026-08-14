@@ -47,13 +47,17 @@ class _FakeSessions:
         # Every (agent, model, cwd) identity a cold-started worker was created
         # with — so a test can assert per-call overrides reach get_or_create.
         self.created_identities: list[tuple] = []
+        # extra_env seen on each cold start (issue #2207) — index-aligned with
+        # created_identities so a test can assert the run-level env pin threads through.
+        self.created_extra_env: list = []
 
-    async def get_or_create(self, key, *, agent=None, model=None, cwd=None):
+    async def get_or_create(self, key, *, agent=None, model=None, cwd=None, extra_env=None):
         # A live key returns instantly (SessionManager's warm per-key fast path).
         if key in self.live:
             return (self.live[key],)
         self.cold_starts += 1
         self.created_identities.append((agent, model, cwd))
+        self.created_extra_env.append(extra_env)
         prov = _FakeProvider(tag=key)
         self.live[key] = prov
         self.keys_seen.add(key)
@@ -307,7 +311,7 @@ class _ClockSessions:
         self.cold_starts = 0
         self.live: dict[str, "_ClockProvider"] = {}
 
-    async def get_or_create(self, key, *, agent=None, model=None, cwd=None):
+    async def get_or_create(self, key, *, agent=None, model=None, cwd=None, extra_env=None):
         if key in self.live:
             return (self.live[key],)
         self.cold_starts += 1
@@ -507,6 +511,38 @@ async def test_worker_pool_send_timeout_reaches_worker(monkeypatch):
             await wp.send("wedged")
     finally:
         await wp.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_extra_env_pin_reaches_all_three_pool_call_sites():
+    """Issue #2207: a run-level extra_env pin threads into every get_or_create the
+    pooled adapter makes — the warm pooled worker, the named-session bypass, and
+    the identity-cap unpooled overflow."""
+    env = {"CORRELATION_ID": "xyz", "MC_ENDPOINT": "https://example.test"}
+    sessions = _FakeSessions()
+    # max_identities=1 so a second distinct identity overflows to the unpooled path.
+    agent_fn, pool = build_pooled_agent_fn(
+        sessions, run_id="renv", max_workers=1, max_identities=1, extra_env=env
+    )
+
+    await agent_fn("pooled default", {})                 # warm pooled worker
+    await agent_fn("named chain", {"session": "chain-A"})  # named-session bypass
+    await agent_fn("overflow", {"model": "other-model"})   # unpooled overflow valve
+
+    # All three cold starts carried the run-level env pin.
+    assert sessions.created_extra_env, "no sessions were created"
+    assert all(e == env for e in sessions.created_extra_env), sessions.created_extra_env
+    await pool.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_no_extra_env_pin_stays_none():
+    """Default (no pin) must not inject env — no accidental leakage."""
+    sessions = _FakeSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="rnone", max_workers=1)
+    await agent_fn("p", {})
+    assert sessions.created_extra_env == [None]
+    await pool.shutdown()
 
 
 def test_max_turns_constant_is_shared_with_agent_exec():

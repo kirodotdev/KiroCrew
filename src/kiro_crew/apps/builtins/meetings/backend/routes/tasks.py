@@ -70,6 +70,17 @@ logger = logging.getLogger("kirocrew.app.meetings")
 #: registry would need. Held only across local file IO, never across an await.
 _TASKS_LOCK = threading.Lock()
 
+
+def task_mutation_transaction() -> "threading.Lock":
+    """Return the lock that serializes task writes with meeting deletion.
+
+    Hold it only from a worker thread. Meeting deletion takes the same lock so
+    an in-flight mutation either finishes before the directory is removed or
+    observes that the meeting no longer exists.
+    """
+    return _TASKS_LOCK
+
+
 #: Serializes the whole prepare -> provider-create -> record sequence of a filing.
 #:
 #: `_TASKS_LOCK` cannot do this job: it is a `threading.Lock` held only across local
@@ -84,6 +95,12 @@ _TASKS_LOCK = threading.Lock()
 #: inside it is the other half: the lock orders the two filings, and the re-read is
 #: what makes the SECOND one a no-op instead of a duplicate.
 _FILING_LOCK = asyncio.Lock()
+
+
+def task_filing_transaction() -> "asyncio.Lock":
+    """Return the lock spanning an external filing and its local record."""
+    return _FILING_LOCK
+
 
 _MAX_TASKS = 500
 _MAX_DESCRIPTION = 2000
@@ -227,6 +244,10 @@ def _append_task(meeting_id: str, body: dict[str, Any], root: Any) -> dict[str, 
     ``_common.guarded``.
     """
     with _TASKS_LOCK:
+        if store.read_meeting_meta(meeting_id, root) is None:
+            raise store.MeetingsPathError(
+                "meeting not found", status=404, code="meeting_not_found"
+            )
         description = field_str(body, "description", required=True, max_len=_MAX_DESCRIPTION)
         tasks = read_normalized(meeting_id, root)
         if len(tasks) >= _MAX_TASKS:

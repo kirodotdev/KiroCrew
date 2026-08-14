@@ -61,6 +61,7 @@ from typing import Any, Iterator
 
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX, OBS_SCREENSHOT, Snapshot
 from kiro_crew.config.paths import config_dir
+from kiro_crew.loopback_http import loopback_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,7 @@ def _post_frame(payload: dict[str, Any]) -> None:
             method="POST",
         )
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- see the Request() justification directly above  # noqa: E501
-        with urllib.request.urlopen(request, timeout=FRAME_POST_TIMEOUT_SECS):
+        with loopback_urlopen(request, timeout=FRAME_POST_TIMEOUT_SECS):
             pass
     except Exception:
         logger.debug("computer-use live frame POST failed", exc_info=True)

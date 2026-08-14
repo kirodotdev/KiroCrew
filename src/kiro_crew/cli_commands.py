@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
+import importlib
 import importlib.util
 import inspect
 import json
@@ -25,6 +27,7 @@ from kiro_crew.apps.bridges import (
     deregister_app,
     deregister_app_crons_from_service,
     register_app,
+    register_app_crons_with_service,
 )
 from kiro_crew.apps.manager import (
     disable_app,
@@ -32,27 +35,34 @@ from kiro_crew.apps.manager import (
     get_app,
     install_app,
     list_apps,
+    trust_grant_removal_blocked,
     uninstall_app,
 )
 from kiro_crew.apps.scaffold import scaffold_app
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.cli_server import _marker_port, resolve_client_port
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
+    ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
     WorkspaceConfig,
     build_provider_factory,
+    config_local_path,
     config_path,
+    read_config_for_update,
+    update_config_locked,
 )
 from kiro_crew.cron import CronSchedule, CronService, format_schedule
 from kiro_crew.cron_trigger import trigger_cron_job
+from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.security import (
     BUILTIN_DENY_PATTERNS,
     is_sensitive_path,
@@ -172,7 +182,7 @@ def _spawn(args: argparse.Namespace) -> None:
             headers={"X-Internal-Secret": _internal_secret()},
         )
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with loopback_urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             try:
@@ -212,7 +222,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             result = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         try:
@@ -240,7 +250,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         _time.sleep(2)
         poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with urllib.request.urlopen(poll_req, timeout=5) as resp:
+            with loopback_urlopen(poll_req, timeout=5) as resp:
                 status = json.loads(resp.read())
         except Exception:
             print("Error: lost connection to gateway", file=sys.stderr)
@@ -518,6 +528,48 @@ def _cleanup_app_crons_from_scheduler(app_name: str) -> int:
     return removed
 
 
+def _register_app_crons_to_scheduler(app_name: str) -> list[str]:
+    """Promote the enabled app's cron definitions into the shared scheduler store.
+
+    Mirrors ``_cleanup_app_crons_from_scheduler`` for the enable direction: the
+    HTTP enable route promotes app crons into the running CronService via
+    ``hooks_integration.on_app_enable``, but the CLI runs in a separate process
+    with no handle on the gateway's service — so without a store write here, an
+    app enabled from the CLI has its crons lie dormant until the next gateway
+    restart. Writing through a store-backed CronService closes that gap: the
+    running gateway's timer tick re-syncs ``crons.json`` by content digest at
+    least every ``_TIMER_POLL_SECS``, picking up externally-added jobs by
+    design. ``register_app_crons_with_service`` applies the same trust gate and
+    command/script vetting as the gateway paths and is idempotent (jobs already
+    present by name are skipped). Returns the newly registered job names.
+    """
+    svc = CronService(base_dir=config_dir())
+    svc._load()
+    try:
+        # register_app_crons_with_service is async (routes through the async
+        # CronSDK mutators). The CLI is a loop-less process, so drive it with a
+        # one-shot event loop. No scheduler is running here, so nothing is armed.
+        registered = asyncio.run(register_app_crons_with_service(app_name, svc))
+        sel().log_api_access(
+            caller="cli",
+            operation="app_crons_register",
+            outcome="completed",
+            resources=f"app={app_name} crons={registered}",
+        )
+    except Exception as exc:
+        sel().log_api_access(
+            caller="cli",
+            operation="app_crons_register",
+            outcome="failed",
+            resources=app_name,
+            error=str(exc),
+        )
+        raise
+    if registered:
+        print(f"  registered {len(registered)} cron job(s) with scheduler")
+    return registered
+
+
 def _run_app_mcp_server(app_name: str) -> None:
     """Run the named app's stdio MCP server in this process.
 
@@ -594,6 +646,7 @@ def _handle_app(args: argparse.Namespace) -> None:
                 print(f"   Agents registered: {len(reg.agents)}")
             if reg.skills:
                 print(f"   Skills registered: {len(reg.skills)}")
+            _register_app_crons_to_scheduler(args.name)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
@@ -609,6 +662,21 @@ def _handle_app(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     elif action == "uninstall":
+        # Precondition before anything destructive: the same reason the dashboard
+        # handler checks here rather than inside uninstall_app. deregister_app()
+        # below is irreversible, so a grant that cannot be dropped has to abort
+        # while the app is still whole.
+        blocked = trust_grant_removal_blocked(args.name)
+        if blocked:
+            print(
+                f"❌ not uninstalling {args.name!r}: its third-party execution "
+                f"grant could not be removed ({blocked}). The grant is keyed on "
+                f"the name, so removing the app while it stands would let any "
+                f"future app installed under this name run code without asking. "
+                f"Nothing has been changed — clear the cause and retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _cleanup_app_crons_from_scheduler(args.name)
         deregister_app(args.name)
         keep_data = not getattr(args, "purge_data", False)
@@ -810,7 +878,7 @@ def _cron(args: argparse.Namespace) -> None:
 
     elif action == "update":
         kwargs: dict = {}
-        for field in ("name", "message", "every_secs", "cron_expr", "channel"):
+        for field in ("name", "message", "every_secs", "cron_expr", "channel", "timeout_secs"):
             val = getattr(args, field, None)
             if val is not None:
                 if field == "channel":
@@ -841,7 +909,11 @@ def _cron(args: argparse.Namespace) -> None:
         if "every_secs" in kwargs and "cron_expr" in kwargs:
             print("Provide --every or --cron, not both")
             return
-        updated = svc.update_job(args.job_id, **kwargs)
+        try:
+            updated = svc.update_job(args.job_id, **kwargs)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
         if updated:
 
             audit_resources = f"job_id={args.job_id} fields={','.join(sorted(kwargs))}"
@@ -1102,7 +1174,12 @@ def _policy(args: argparse.Namespace) -> None:
     effective ceiling.  No mutation — purely diagnostic, so it is MCP-safe.
     """
     from kiro_crew.platform.context import current_context
-    from kiro_crew.platform.governance import SCOPE_CATALOG, gate_decision, resolve
+    from kiro_crew.platform.governance import (
+        CAPABILITY,
+        SCOPE_CATALOG,
+        gate_decision,
+        resolve,
+    )
     from kiro_crew.platform.governance_profiles import (
         get_store_profile,
         resolve_active_scope,
@@ -1136,6 +1213,31 @@ def _policy(args: argparse.Namespace) -> None:
             print("Policy: none (editable secure-defaults) — nothing to validate.")
         else:
             print(f"Policy: v{ceiling.version} OK ({len(ceiling.controls)} governed scopes).")
+            # A capability the policy does not name is UNGOVERNED, and an
+            # ungoverned control is permitted — omission never denies (see the
+            # CAPABILITY-DEFAULT CONTRACT in platform/governance.py). That is the
+            # same rule every other archetype follows, but it is the one authors
+            # most often get wrong, because a partial `capabilities` block LOOKS
+            # like a complete statement. Report the gap so an unpinned row reads
+            # as a choice instead of an oversight.
+            unnamed = sorted(
+                scope
+                for scope, spec in SCOPE_CATALOG.items()
+                if spec.kind == CAPABILITY and scope not in ceiling.controls
+            )
+            if unnamed and len(unnamed) < sum(
+                1 for spec in SCOPE_CATALOG.values() if spec.kind == CAPABILITY
+            ):
+                print(
+                    f"   ⚠️  governs capabilities but leaves {len(unnamed)} "
+                    "row(s) UNGOVERNED (therefore permitted):"
+                )
+                for scope in unnamed:
+                    print(f"        {scope}")
+                print(
+                    "      Omission does not deny. Name each row explicitly "
+                    "(enabled true or false) if you meant to decide it."
+                )
         # Force-load every profile; the store records invalid ones as deny-all.
         from kiro_crew.platform.governance_profiles import _profiles_dir
 
@@ -1314,7 +1416,11 @@ def _learn(args: argparse.Namespace) -> None:
                     category=category,
                     negative=negative,
                 )
-                jsonl_store.save(lesson)
+                # save_or_enrich, not save: `learn add --negative` is explicit user
+                # intent, so a re-submitted rule should get the clause attached
+                # rather than be skipped as a duplicate. save() keeps the skip
+                # semantics for automatic writers.
+                jsonl_store.save_or_enrich(lesson)
                 neg = f" ({lesson.negative})" if lesson.negative else ""
                 print(f"Saved: {lesson.rule}{neg} [{lesson.category}]")
 
@@ -1390,7 +1496,11 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(
                 f"  Episodic: {stats['episodic_active']} active, {stats['episodic_deleted']} deleted"
             )
-            print(f"  FAISS index: {stats['faiss_index_size']} vectors")
+            print(f"  Embedded: {stats['embedded_count']}/{stats['episodic_active']}")
+            if stats["faiss_available"]:
+                print(f"  FAISS accelerator: {stats['faiss_index_size']} vectors indexed")
+            else:
+                print("  FAISS accelerator: not installed — stdlib cosine fallback (exact)")
             print(f"  Audit events: {stats['events_count']}")
 
         elif action == "audit":
@@ -1463,7 +1573,7 @@ def _artifact(args: argparse.Namespace) -> None:
             h["Content-Type"] = "application/json"
         req = urllib.request.Request(f"{base}{path}", data=data, headers=h, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with loopback_urlopen(req, timeout=30) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
@@ -1625,6 +1735,282 @@ def _pod(args: argparse.Namespace) -> None:
     dispatch(args)
 
 
+def _container_valued_sections() -> dict[str, type]:
+    """Top-level config keys the model expects to be a JSON object or array.
+
+    Derived from the dataclass rather than hardcoded, so a section added to
+    ``KiroCrewConfig`` later is covered without anyone remembering to edit this.
+    Both shapes matter: a nested-config or mapping field must be an object, and a
+    ``list[...]`` field must be an array — the loader *iterates* the latter, so a
+    scalar there is an uncaught ``TypeError`` rather than a merge that loses data.
+    """
+    out: dict[str, type] = {}
+    for field in dataclasses.fields(KiroCrewConfig):
+        ann = field.type
+        if isinstance(ann, str):  # from __future__ import annotations
+            if ann.startswith("list"):
+                out[field.name] = list
+            elif ann.endswith("Config") or ann.startswith("dict"):
+                out[field.name] = dict
+            continue
+        origin = getattr(ann, "__origin__", None)
+        if origin is list:
+            out[field.name] = list
+        elif origin is dict or ann is dict:
+            out[field.name] = dict
+        elif dataclasses.is_dataclass(ann):
+            out[field.name] = dict
+    return out
+
+
+def _assert_config_sections_are_objects(raw: dict) -> None:
+    """Refuse a config whose section values have the wrong shape, before anything loads it.
+
+    Not just the sections this command writes: this runs ahead of
+    ``KiroCrewConfig.load()``, and ``load()`` is itself destructive on a file it
+    cannot parse — its migration write-back **rewrites the file**, so a section it
+    chokes on is replaced by defaults merely because a read-only command like
+    ``tailnet status`` was run. ``{"slack": 5}`` was enough to destroy the operator's
+    Slack settings that way, and ``{"registries": 5}`` is worse: the loader iterates
+    that field, so a scalar ends the command in an uncaught ``TypeError``.
+
+    Coercing a wrong type would discard whatever the operator had there and still
+    report success, so a wrong shape is a refusal, never something to normalise.
+    """
+    for name, expected in sorted(_container_valued_sections().items()):
+        value = raw.get(name)
+        if value is None or isinstance(value, expected):
+            continue
+        want = "an object" if expected is dict else "an array"
+        raise ConfigReadError(
+            f'"{name}" is {type(value).__name__}, not {want}; refusing to run '
+            "because loading this file would replace it with defaults"
+        )
+    tailscale = (raw.get("dashboard") or {}).get("tailscale")
+    if tailscale is not None and not isinstance(tailscale, dict):
+        raise ConfigReadError(
+            f'"dashboard.tailscale" is {type(tailscale).__name__}, not an object; '
+            "refusing to replace it"
+        )
+
+
+def _tailnet(args: argparse.Namespace) -> None:
+    """Publish, withdraw, or inspect tailnet dashboard access (``kirocrew tailnet``).
+
+    The command that was missing. Reaching the dashboard from another device on
+    your tailnet has always taken **two** independent steps — publish it with
+    ``tailscale serve``, and tell the gateway to trust the resulting origin — and
+    Kiro Crew only ever did the second. Doing one without the other is the failure
+    this exists to remove: publish without trusting and every request is refused
+    by the Origin check with a bare 403; trust without publishing and there is
+    nothing on the tailnet to open.
+
+    So ``up`` does both, in the order that cannot leave a half-state visible: it
+    publishes first and only records the config once publishing succeeded. A
+    config write followed by a failed publish would leave a host claiming tailnet
+    access is on with nothing serving it.
+    """
+    action = getattr(args, "tailnet_action", None) or "status"
+    # Validate the raw file BEFORE anything calls ``KiroCrewConfig.load()``, for
+    # EVERY action. ``load()`` performs a migration write-back, so a config that is
+    # valid JSON but wrongly typed (``{"dashboard": 5}``) gets normalised — and
+    # therefore silently rewritten — by the mere act of reading it. That makes even
+    # ``status`` a write, which is indefensible for a command that reports state.
+    #
+    # An earlier revision guarded only ``up``, reasoning that refusing to *report* or
+    # to *withdraw* over a malformed config would be the worse failure. That reasoning
+    # had a hole: both paths need the dashboard port, which resolves through
+    # ``resolve_client_port`` → ``KiroCrewConfig.load()``, so there is no version of
+    # them that reads the file without rewriting it. Given the choice between
+    # rewriting the operator's config and declining, declining wins — and withdrawal
+    # stays ACHIEVABLE because the refusal prints the exact daemon command.
+    #
+    # BOTH files, not just the base one. ``load()`` merges ``config.local.json`` over
+    # ``config.json``, so a wrongly-typed section in the overlay reaches the loader
+    # just as surely -- `config set --local registries 5` is enough -- and a scalar
+    # where a list is expected is iterated, ending the command in a traceback rather
+    # than a refusal. Guarding only the base file left the overlay as an open door to
+    # the very failure the guard exists to prevent.
+    bad_path: Path | None = None
+    try:
+        for candidate in (config_path(), config_local_path()):
+            bad_path = candidate
+            if candidate.exists():
+                _assert_config_sections_are_objects(read_config_for_update(candidate))
+        bad_path = None
+    except ConfigReadError as exc:
+        print(
+            f"❌ {bad_path} is not usable ({exc}); refusing to continue, because "
+            "even reading it would rewrite it. Fix that file, then retry.",
+            file=sys.stderr,
+        )
+        if action == "down":
+            print(
+                "   To withdraw right now without touching the config, run: "
+                f"`tailscale serve --https {tailnet_serve.SERVE_HTTPS_PORT} "
+                f"--set-path={tailnet_serve.SERVE_MOUNT} off`",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+    cfg = KiroCrewConfig.load()
+    # Evidence before intent. ``resolve_client_port`` ranks the configured
+    # ``dashboard.url`` ABOVE the run marker, which is right for a client that wants
+    # to talk to the dashboard the operator configured — and wrong here. If the
+    # configured port was occupied and the gateway moved (``--port``), publishing in
+    # front of the configured port aims `tailscale serve` at whatever unrelated
+    # loopback service now holds it, exposing it on the tailnet. So the verified run
+    # marker wins: it only reports a port where a Kiro Crew gateway process is actually
+    # listening (`_gateway_owns_port`, and it refuses when several are up), which is
+    # evidence, whereas ``dashboard.url`` is a statement of intent.
+    #
+    # An explicit ``--port``/``KIROCREW_PORT`` still wins over both, because that is
+    # the operator naming the target directly — hence the marker is consulted only
+    # when neither is set.
+    # An explicit --port outranks everything: it is the operator naming the target,
+    # which no discovery heuristic should override.
+    port = int(getattr(args, "port", None) or 0)
+    port_source = "the --port you gave" if port else ""
+    if not port and os.environ.get("KIROCREW_PORT") is not None:
+        port_source = "KIROCREW_PORT"
+    if not port and not port_source:
+        try:
+            port = _marker_port() or 0
+        except Exception:  # pragma: no cover - discovery must never break the command
+            port = 0
+        if port:
+            port_source = "the running gateway's run marker"
+    if not port:
+        # ``resolve_client_port`` also carries the guard for a non-string
+        # ``dashboard.url`` (user-editable JSON can hold ``"url": 123``, and urlparse
+        # raises TypeError on it), so it stays the fallback rather than a hand-rolled
+        # parse that would have to repeat that guard.
+        port = resolve_client_port(None)
+    enabled = bool(cfg.dashboard.tailscale.enabled)
+
+    if action == "up" and not port_source:
+        # Publishing needs EVIDENCE about the port, not a default. Every source above
+        # is evidence -- an explicit flag/env is the operator naming the target, and
+        # the run marker only reports a port a Kiro Crew gateway is actually listening
+        # on. `resolve_client_port` is not: it falls back to the configured
+        # `dashboard.url` (or the built-in default) whether or not anything answers
+        # there. `tailscale serve` does not care what is behind the port -- so if the
+        # gateway is down, or moved after its configured port was taken, publishing
+        # that number puts WHATEVER now holds it on the tailnet, for every device on
+        # it. A private service exposed tailnet-wide is not a recoverable mistake, so
+        # this refuses rather than guesses. `status` and `down` still accept the
+        # fallback: one only reports, and the other checks mount ownership before
+        # removing anything.
+        print(
+            f"❌ Cannot tell which port the dashboard is on, so refusing to publish "
+            f"{port} — nothing is verified to be listening there, and `tailscale "
+            f"serve` would expose whatever is. Start the dashboard "
+            f"(`kirocrew dashboard`) and re-run, or name the port yourself with "
+            f"`kirocrew tailnet up --port <port>`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if action == "status":
+        pinned = tailnet.is_governance_pinned_off()
+        # A LIVE read is correct here and would be wrong in the dashboard's status
+        # endpoint. This command reports what the machine can do next; the
+        # endpoint reports what the running server already trusts, which is the
+        # startup value. Conflating them is how "resolvable" gets rendered as
+        # "in the allowlist".
+        name = tailnet.self_dns_name()
+        state = tailnet_serve.serve_state(port)
+        print("👻 Tailnet dashboard access")
+        if pinned:
+            print(
+                "   Policy:     PINNED OFF by your administrator " "(capabilities.tailnet_origin)"
+            )
+        print(
+            f"   Trust:      {'enabled' if enabled else 'disabled'} "
+            f"(dashboard.tailscale.enabled)"
+        )
+        print(f"   Name:       {name or '— (no tailnet name resolvable right now)'}")
+        published = state.published
+        label = {True: "yes", False: "no", None: "unknown"}[published]
+        print(f"   Published:  {label} — {state.detail}")
+        if name and published is True:
+            print(f"   URL:        https://{name}")
+        if name and enabled and published is not True:
+            print("   Next:       kirocrew tailnet up")
+        return
+
+    if action not in ("up", "down"):
+        print(f"❌ Unknown tailnet action: {action}", file=sys.stderr)
+        sys.exit(1)
+
+    if action == "down":
+        result = tailnet_serve.unpublish(port)
+        print(("✅ " if result.ok else "❌ ") + result.detail)
+        if result.ok:
+            # The trust setting is deliberately left ON. It contributes one origin
+            # that nothing can reach while serve is off, so clearing it would be
+            # an unrequested second change — and would force a gateway restart to
+            # undo a withdrawal that took effect immediately.
+            print(
+                "   dashboard.tailscale.enabled is unchanged; the trusted origin "
+                "is unreachable while serve is off."
+            )
+        sys.exit(0 if result.ok else 1)
+
+    if not enabled:
+        # Checked BEFORE publishing, and never written. Three reasons this is a
+        # check rather than the config write it used to be:
+        #
+        # 1. A read-modify-write of the shared config cannot be made atomic from a
+        #    second process. Every construction tried here -- a caller-side
+        #    fingerprint, a lock plus compare-and-swap inside the shared writer, a
+        #    lock plus digest local to this command -- leaves some window where a
+        #    dashboard save landing mid-flight is replaced by our older snapshot, or
+        #    (when the lock went into the shared writer) blocks the gateway's event
+        #    loop. Closing it needs one primitive that ALL ~29 writers take, which is
+        #    #2147, not this feature.
+        # 2. Failing here beats the alternative ordering. Writing after publishing
+        #    left a published-but-untrusted dashboard whenever the write failed --
+        #    reachable on the tailnet and answering 403, which is the confusing state
+        #    this command exists to eliminate.
+        # 3. The cost is paid once per machine, not per invocation. After the operator
+        #    enables the setting, `kirocrew tailnet up` is a single command forever;
+        #    the one-time step is the same `config set` they would run anyway.
+        #
+        # `cfg` is the EFFECTIVE value, so an overlay in config.local.json that
+        # disables this is caught here too -- printing "published" while the gateway
+        # will still refuse the origin is the exact false promise to avoid.
+        print(
+            "❌ dashboard.tailscale.enabled is false, so the gateway would refuse "
+            "your tailnet origin even once published — refusing to publish a "
+            "dashboard that would answer 403.\n"
+            "   Enable it once, then re-run this command:\n"
+            "     kirocrew config set dashboard.tailscale.enabled true\n"
+            "   (If config.local.json disables it, set it there instead: "
+            "`kirocrew config set --local dashboard.tailscale.enabled true`.)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    result = tailnet_serve.publish(port)
+    if not result.ok:
+        print(f"❌ {result.detail}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ {result.detail}")
+
+    name = tailnet.self_dns_name()
+    if name:
+        print(f"👻 URL:        https://{name}")
+    else:
+        print(
+            "⚠️  No tailnet name is resolvable right now, so the gateway will not "
+            "trust anything on restart. Check `tailscale status`."
+        )
+    # Said unconditionally, including when the switch was already on: the origin
+    # is resolved once at startup, so a gateway that booted before this command
+    # has an allowlist that does not contain the name yet.
+    print("👻 Restart the gateway for the tailnet origin to be trusted.")
+
+
 def _telemetry(args: argparse.Namespace) -> None:
     """Inspect or toggle the anonymous usage beacon (``kirocrew telemetry``).
 
@@ -1676,77 +2062,76 @@ def _telemetry(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
     path = config_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    if not isinstance(data, dict):
-        # Refuse rather than replace. Coercing to {} would make this toggle
-        # silently overwrite the whole file (a JSON array, string, or number is
-        # not a config we can merge into) and then print success — destroying
-        # whatever the user had. A toggle must never be a data-loss path.
-        print(
-            f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
-            "overwrite it. Fix or move the file, then retry.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Same rule as the whole-file check above, applied per section: coercing a
-    # non-object section to {} would DISCARD whatever the user had there and then
-    # print success. Absent is fine (create it); present-but-wrong-type is a
-    # refusal, because this command cannot know what the value was meant to be.
-    sections: dict[str, dict[str, object]] = {}
-    for name in ("telemetry", "dashboard"):
-        existing = data.get(name)
-        if existing is None:
-            sections[name] = {}
-            continue
-        if not isinstance(existing, dict):
+
+    def _mutate_telemetry(data: dict) -> dict:
+        """Apply telemetry toggle inside the config lock."""
+        if not isinstance(data, dict):
+            # Should not happen (read_config_for_update rejects non-objects),
+            # but guard defensively.
             print(
-                f"❌ {path} has a non-object \"{name}\" value "
-                f"({type(existing).__name__}); refusing to overwrite it. Fix or "
-                "remove it, then retry.",
+                f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
+                "overwrite it. Fix or move the file, then retry.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        sections[name] = existing
+        # Same rule as the whole-file check above, applied per section: coercing a
+        # non-object section to {} would DISCARD whatever the user had there and then
+        # print success. Absent is fine (create it); present-but-wrong-type is a
+        # refusal, because this command cannot know what the value was meant to be.
+        sections: dict[str, dict[str, object]] = {}
+        for name in ("telemetry", "dashboard"):
+            existing = data.get(name)
+            if existing is None:
+                sections[name] = {}
+                continue
+            if not isinstance(existing, dict):
+                print(
+                    f'❌ {path} has a non-object "{name}" value '
+                    f"({type(existing).__name__}); refusing to overwrite it. Fix or "
+                    "remove it, then retry.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            sections[name] = existing
 
-    sections["telemetry"]["beacon_enabled"] = want
-    data["telemetry"] = sections["telemetry"]
-    # Running this command IS the informed choice the first-run chapter exists to
-    # collect, so record the ack. Otherwise `telemetry enable` on a fresh
-    # headless install would write beacon_enabled: true and still send nothing,
-    # because the first-egress gate would keep waiting for a dashboard screen the
-    # user may never open.
-    sections["dashboard"]["privacy_acked"] = True
-    data["dashboard"] = sections["dashboard"]
-    # Preserve the existing permissions. atomic_write creates a NEW file and
-    # renames it over the old one, so without this an operator's tightened mode
-    # is silently replaced by the umask default (0600 -> 0644 on a typical host).
-    # config.json can hold inline credentials, so a telemetry toggle must never
-    # widen who can read it. Default 0o600 for a file we are creating.
+        sections["telemetry"]["beacon_enabled"] = want
+        data["telemetry"] = sections["telemetry"]
+        # Running this command IS the informed choice the first-run chapter exists to
+        # collect, so record the ack. Otherwise `telemetry enable` on a fresh
+        # headless install would write beacon_enabled: true and still send nothing,
+        # because the first-egress gate would keep waiting for a dashboard screen the
+        # user may never open.
+        sections["dashboard"]["privacy_acked"] = True
+        data["dashboard"] = sections["dashboard"]
+        return data
+
     try:
-        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
-    except OSError:
-        mode = 0o600
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # atomic_write, never path.write_text: this rewrites the user's WHOLE
-        # config.json, so a disk-full or interrupted write would truncate it and
-        # every later load would silently discard their configuration. Temp file
-        # + rename means the old file survives any failure. fsync so the rename
-        # is durable across a power loss.
-        atomic_write(path, json.dumps(data, indent=2) + "\n", fsync=True, mode=mode)
-        # atomic_write's `mode` is POSIX-only — it routes through fchmod_safe,
-        # which is a documented NO-OP on Windows. So on Windows the replacement
-        # file inherits the DIRECTORY's ACL, and a permissive data home would make
-        # a config.json holding inline credentials readable by other local users.
-        # restrict_to_owner applies an owner-only DACL there (and 0600 on POSIX),
-        # and is fail-loud, so a lockdown that cannot be applied surfaces below
-        # rather than silently leaving the file wide open.
+        update_config_locked(path, mutate=_mutate_telemetry, fsync=True, stamp_meta=False)
+        # restrict_to_owner: the atomic write creates a NEW inode, so without
+        # this an operator's tightened mode is silently replaced by the umask
+        # default.  config.json can hold inline credentials, so a telemetry
+        # toggle must never widen who can read it.  The locked helper preserves
+        # mode on POSIX; restrict_to_owner applies the owner-only DACL on
+        # Windows (and 0600 on POSIX for new files). Fail-loud so a lockdown
+        # that cannot be applied surfaces rather than silently leaving the file
+        # wide open.
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+        except OSError:
+            mode = 0o600
         if not platform_compat.IS_POSIX or mode == 0o600:
             platform_compat.restrict_to_owner(path)
+    except ConfigReadError as exc:
+        err_str = str(exc)
+        if "not a JSON object" in err_str:
+            print(
+                f"❌ {path} is not a JSON object; refusing to "
+                "overwrite it. Fix or move the file, then retry.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
     except OSError as exc:
         print(f"❌ Could not write {path}: {exc}", file=sys.stderr)
         sys.exit(1)

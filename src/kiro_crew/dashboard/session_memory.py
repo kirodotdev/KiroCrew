@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 import time
 from collections import deque
@@ -36,6 +35,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from kiro_crew.acp.runtime import _get_rss_tree_mb, _iter_descendant_pids
 from kiro_crew.dashboard.handlers_system import _get_static_system_info
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session import BACKGROUND_KEY
@@ -66,102 +66,6 @@ def _read_cmdline(pid: int) -> str:
             return fh.read().replace("\0", " ")
     except OSError:
         return ""
-
-
-#: Command-line signatures of an agent runtime. Deliberately the same pair
-#: ``handlers_system`` scans for when it counts ``mcp_total``, so "runtime" means
-#: one thing across the dashboard rather than two slightly different populations.
-_RUNTIME_SIGNATURES = ("kirocrew_sandbox", "kiro-cli")
-
-_PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
-
-
-def _all_runtime_pids() -> Optional[set[int]]:
-    """Every agent-runtime process on this machine, or None where /proc is absent.
-
-    None is not an empty set: it means the platform cannot be asked, so the caller
-    must render "cannot determine" rather than "none found".
-    """
-    if sys.platform != "linux":
-        return None
-    found: set[int] = set()
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return None
-    for name in entries:
-        if not name.isdigit():
-            continue
-        cmd = _read_cmdline(int(name))
-        if any(sig in cmd for sig in _RUNTIME_SIGNATURES):
-            found.add(int(name))
-    return found
-
-
-def _rss_mb_for_pid(pid: int) -> Optional[float]:
-    """Resident set size of ONE process, in MB. Per-pid rather than per-tree: an
-    orphan set can contain a parent and its child, and summing trees would count
-    the child twice."""
-    try:
-        with open(f"/proc/{pid}/statm") as fh:
-            resident = int(fh.read().split()[1])
-    except (OSError, IndexError, ValueError):
-        return None
-    return resident * _PAGE_SIZE / (1024.0 * 1024.0)
-
-
-def _process_uptime_s(pid: int) -> Optional[float]:
-    """Seconds since this process started, from its start time against boot time."""
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            fields = fh.read().rsplit(") ", 1)[-1].split()
-        # `starttime` is field 22 of the full line; after splitting off the
-        # comm field (which may itself contain spaces) it is index 19.
-        started_ticks = int(fields[19])
-        with open("/proc/uptime") as fh:
-            up = float(fh.read().split()[0])
-    except (OSError, IndexError, ValueError):
-        return None
-    age = up - started_ticks / _CLK_TCK
-    return age if age >= 0 else None
-
-
-def _unattributed(owned: set[int], self_pid: int) -> Optional[dict[str, object]]:
-    """Agent runtimes alive on this machine that this gateway does not own.
-
-    The stale-runtime leak: a previous gateway generation's kiro-cli processes
-    keep their memory long after the session that spawned them is gone, and
-    nothing in the owned set can point at them precisely because their owner
-    is what disappeared.
-
-    A pod's runtimes land here too. A pod is a separate gateway with its own
-    data home, so its processes genuinely are not owned by THIS one — hence
-    "not owned by this gateway" rather than "leaked".
-    """
-    every = _all_runtime_pids()
-    if every is None:
-        return None
-    mine = set(owned) | set(_iter_descendant_pids(self_pid))
-    orphans = sorted(every - mine)
-    rss = 0.0
-    sampled_any = False
-    oldest: Optional[float] = None
-    for pid in orphans:
-        mb = _rss_mb_for_pid(pid)
-        if mb is not None:
-            rss += mb
-            sampled_any = True
-        age = _process_uptime_s(pid)
-        if age is not None and (oldest is None or age > oldest):
-            oldest = age
-    return {
-        "procs": len(orphans),
-        "rss_mb": round(rss, 1) if sampled_any else None,
-        "oldest_uptime_s": round(oldest, 1) if oldest is not None else None,
-    }
-
-
-# ── per-slot spend (delegated to the single-path aggregator in usage.py) ───
 
 
 def _spend_for_session(
@@ -329,7 +233,6 @@ class SessionMemorySampler:
 
         return {
             "per_pid": out,
-            "unattributed": _unattributed(owned, os.getpid()),
             "spend": slot_spend(),
         }
 
@@ -348,8 +251,14 @@ class SessionMemorySampler:
     ) -> dict[str, object]:
         """Build the full payload: session rows, task rows, totals, history.
 
-        Session sampling is offloaded with ``asyncio.to_thread``; task rows are
-        read from samples the reaper already took, so they need no offload.
+        Session sampling runs on the dedicated ``subprocess_executor`` (``mc-subproc``)
+        rather than ``asyncio.to_thread``, which would use the DEFAULT executor —
+        the pool the event loop also hands ``getaddrinfo`` and every other
+        ``run_in_executor(None, ...)`` call. This sampling is browser-triggered on
+        a 5s poll and spawns ``ps`` on platforms without ``/proc``, so parking it
+        in the shared pool is what let a slow sample stall unrelated requests;
+        task rows are read from samples the reaper already took, so they need no
+        offload.
         ``get_slot`` resolves display titles (see :func:`session_title`); without
         it rows fall back to their raw keys.
 
@@ -361,7 +270,9 @@ class SessionMemorySampler:
         though the spend exists. Omitting it degrades to the direct join.
         """
         rows = sessions.runtime_pids()
-        samples = await asyncio.to_thread(self._blocking_sample, rows)
+        samples = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), self._blocking_sample, rows
+        )
         per_pid = samples["per_pid"]
         assert isinstance(per_pid, dict)
         spend = samples["spend"]
@@ -458,8 +369,4 @@ class SessionMemorySampler:
                 "rss_is_upper_bound": True,
             },
             "history": self.series(),
-            # Agent runtimes this gateway does not own. `null` (not a zero
-            # record) where the platform cannot enumerate processes, so the UI
-            # can tell "none found" apart from "cannot look".
-            "unattributed": samples["unattributed"],
         }

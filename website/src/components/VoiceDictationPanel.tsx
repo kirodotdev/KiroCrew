@@ -42,6 +42,8 @@ interface Props {
   partial?: string
   /** Active capture device label. */
   deviceLabel?: string
+  /** deviceId of the track actually capturing — see MicSourceMenu.activeDeviceId. */
+  deviceId?: string
   /** Change the capture device. Receives a deviceId, or '' for system default. */
   onSelectDevice: (deviceId: string) => void
   /** True when a switch applies immediately rather than to the next recording. */
@@ -59,7 +61,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, onSelectDevice, deviceSwitchIsLive, streaming }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -91,6 +93,7 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
             <span className="pointer-events-auto max-w-[40%] min-w-0 flex items-center">
               <MicSourceMenu
                 deviceLabel={deviceLabel}
+                activeDeviceId={deviceId}
                 onSelect={onSelectDevice}
                 recording
                 liveSwitch={deviceSwitchIsLive}

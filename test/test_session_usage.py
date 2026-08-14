@@ -5,6 +5,7 @@ _fetch_usage_bg gating/redaction logic.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +28,15 @@ SAMPLE_USAGE = (
     "resets on 2026-07-01 | KIRO POWER\n"
     "Est. cost: $1.50\n"
     "Overage billed at $0.04 per credit\n"
+)
+
+SAMPLE_USAGE_WITH_BONUS = (
+    "Estimated Usage | resets on 2026-08-01 | KIRO PRO+\n"
+    "Bonus Credits:\n"
+    "   Welcome bonus - 500.00/500 used (13 days left)\n"
+    "   Amb-Kiro-crew-test - 185.84/2000 used (153 days left)\n"
+    "Credits (635.58 of 2000 covered in plan)\n"
+    "Overages: Disabled\n"
 )
 
 
@@ -74,13 +84,33 @@ class TestParseUsage:
         )
         r = _parse_usage(raw)
         assert r["credits_plan"] == 1000.0
-        assert r["bonus_label"] == "Welcome bonus"
-        assert r["bonus_used"] == 386.34
-        assert r["bonus_limit"] == 500.0
-        assert r["bonus_expires_label"] == "expires in 15 days"
+        assert r["bonus_credits"] == [
+            {"name": "Welcome bonus", "used": 386.34, "total": 500.0, "days_left": 15}
+        ]
 
     def test_no_bonus_fields_without_section(self):
-        assert "bonus_limit" not in _parse_usage(SAMPLE_USAGE)
+        assert "bonus_credits" not in _parse_usage(SAMPLE_USAGE)
+
+    def test_parses_every_bounded_bonus_grant_in_dash_format(self):
+        assert _parse_usage(SAMPLE_USAGE_WITH_BONUS)["bonus_credits"] == [
+            {"name": "Welcome bonus", "used": 500.0, "total": 500.0, "days_left": 13},
+            {
+                "name": "Amb-Kiro-crew-test",
+                "used": 185.84,
+                "total": 2000.0,
+                "days_left": 153,
+            },
+        ]
+
+    def test_skips_malformed_or_unbounded_bonus_grants(self):
+        raw = (
+            "Estimated Usage\nBonus Credits:\n"
+            f"{'x' * 101} - 1/10 used (2 days left)\n"
+            "Negative - -1/10 used (2 days left)\n"
+            "Huge - 1/1000001 used (2 days left)\n"
+            "Malformed - nope\nCredits (1 of 10 covered in plan)\n"
+        )
+        assert _parse_usage(raw)["bonus_credits"] == []
 
 
 class TestTransientFailureCache:
@@ -352,6 +382,90 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache == {"available": False}
         proc.kill.assert_called_once()
         proc.wait.assert_awaited_once()  # reaped (FDs closed) on the error path
+
+
+class TestFetchUsageDeadline:
+    """A hung refresh must release the in-flight guard, not park it forever.
+
+    `_usage_fetching` gates every refresh, and it is only cleared in
+    `_fetch_usage_bg`'s `finally`. That `finally` does run on cancellation — but
+    not on a hang, so without an overall deadline one wedged call leaves the
+    guard True for the process lifetime: the cache is never populated and the
+    dashboard's credit pill shows "Checking usage..." indefinitely.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset(self, monkeypatch):
+        _reset_usage_globals()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        yield
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_hung_api_read_still_clears_the_guard(self, monkeypatch):
+        # Short deadline so the test does not wait on the production ceiling.
+        # raising=False keeps the test independent of the constant existing, so
+        # on unfixed code it exercises the real hang instead of erroring on a
+        # missing attribute.
+        monkeypatch.setattr(
+            sessions_mod, "_USAGE_FETCH_DEADLINE_SECS", 0.2, raising=False
+        )
+        released = threading.Event()
+
+        def _hang(*_args, **_kwargs):
+            # Blocks like a wedged TLS handshake or a DNS lookup with no
+            # resolver: urlopen's own timeout does not cover either.
+            released.wait(30)
+            return None
+
+        try:
+            with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+                 patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
+                 patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang):
+                # The outer wait_for is the assertion: unfixed, _fetch_usage_bg
+                # never returns and this raises instead of hanging the suite.
+                await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+        finally:
+            released.set()
+
+        assert sessions_mod._usage_fetching is False, "in-flight guard was left set"
+        # The pill must resolve rather than spin: no credit plan was obtained, so
+        # usage is reported unavailable.
+        assert sessions_mod._usage_cache.get("available") is False
+        assert sessions_mod._usage_cache_ts > 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_after_a_hang_can_still_succeed(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod, "_USAGE_FETCH_DEADLINE_SECS", 0.2, raising=False
+        )
+        released = threading.Event()
+
+        def _hang(*_args, **_kwargs):
+            released.wait(30)
+            return None
+
+        try:
+            with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+                 patch.object(sessions_mod, "_fetch_whoami", AsyncMock(return_value={})), \
+                 patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits", _hang):
+                await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+        finally:
+            released.set()
+
+        api_dict = {"credits_used": 12.0, "credits_plan": 100.0, "source": "api"}
+        arn = "arn:aws:codewhisperer:us-east-1:1:profile/A"
+        with patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value="/bin/kiro"), \
+             patch.object(sessions_mod, "_fetch_whoami",
+                          AsyncMock(return_value={"email": "me@corp.com", "_profile_arn": arn})), \
+             patch.object(sessions_mod.kiro_usage_api, "fetch_usage_limits",
+                          return_value={**api_dict, "_profile_arn": arn}):
+            await asyncio.wait_for(sessions_mod._fetch_usage_bg(), timeout=10)
+
+        assert sessions_mod._usage_cache.get("credits_plan") == 100.0
 
 
 class TestNormalizeTextUsage:

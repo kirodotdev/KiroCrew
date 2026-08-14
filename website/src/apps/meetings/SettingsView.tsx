@@ -37,7 +37,10 @@ interface Props {
 
 export default function SettingsView({ onBack, notify }: Props) {
   const queryClient = useQueryClient()
-  const configQuery = useQuery({ queryKey: ['meetings', 'config'], queryFn: meetingsApi.config })
+  // `patch()` builds a full-replace PUT from this cache, so a backgrounded tab
+  // with stale cache would silently revert settings changed from another tab.
+  // Finite staleTime lets focus-refetch fire here (global default is Infinity).
+  const configQuery = useQuery({ queryKey: ['meetings', 'config'], queryFn: meetingsApi.config, staleTime: 30_000 })
   const dictionaryQuery = useQuery({
     queryKey: ['meetings', 'dictionary'],
     queryFn: meetingsApi.dictionary,

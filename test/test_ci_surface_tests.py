@@ -45,6 +45,7 @@ def test_script_exists_and_is_executable() -> None:
 # set. Audited 2026-08-06; extend this list when a new guard is added.
 _BACKEND_GUARDS = (
     "test/test_redaction_mirror_parity.py",
+    "test/test_theme_css_security.py",
     "test/test_dashboard_security_headers.py",
     "test/test_model_registry_parity.py",
     "test/test_builtin_app_assets.py",
@@ -235,6 +236,7 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_harness.py",
         "test_sandbox_argv.py",
         "test_sandbox_cc_mode.py",
+        "test_sandbox_nested_tier.py",
         "test_pid_lifecycle.py",
         "test_pid_sweep_helpers.py",
         "test_process_tree_kill.py",

@@ -19,6 +19,7 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -41,7 +42,7 @@ from ._shared import (
     _get_lessons,
     _get_memory,
     _is_restricted_session,
-    _session_has_persisted_history,
+    _probe_persisted_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -699,11 +700,12 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         #     flush (which only lands after the LLM turn completes), so a
         #     namespace fast-path avoids a spurious HTTP 400 until the
         #     transcript is on disk; and
-        #   * the ``_session_has_persisted_history`` fallback below cannot
+        #   * the ``_probe_persisted_session`` fallback below cannot
         #     rescue a channel key anyway — ``slot_name`` is
         #     ``sk.split(":", 1)[-1]`` (inner colons kept, channel prefix
         #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
-        #     colons folded to ``_``, so no probed name ever matches.
+        #     colons folded to ``_``, so no probed name ever matches (and a
+        #     colon is now rejected outright by ``_persisted_session_path``).
         # Before this, only ``slack:`` was accepted, so learn_add failed with
         # HTTP 400 "unknown session" from every OTHER channel (Telegram /
         # Discord / Webex / WeCom) even though the session is fully identified
@@ -713,26 +715,56 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # concept), so widening the namespace does not widen memory writes to
         # ephemeral sessions.
         is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
-        # Only consult the on-disk JSONL when the cheaper in-memory
-        # checks all fail. ``_session_has_persisted_history()`` performs
-        # synchronous filesystem I/O (up to two ``Path.exists()`` calls),
-        # so evaluating it eagerly on every ``learn_add`` request would
-        # block the event loop on the common (live-slot) path. Deferring
-        # it keeps the fallback semantics identical while making the
-        # happy path allocation-free.
+        # Only consult the on-disk JSONL when the cheaper in-memory checks all
+        # fail. ``_probe_persisted_session()`` performs synchronous filesystem
+        # I/O (path resolution plus a bounded metadata head read), so it runs
+        # via ``asyncio.to_thread`` — never on the event loop (AUTOSDE
+        # ``no-blocking-call-on-event-loop``) — and only on this rare recovery
+        # path, leaving the common live-slot path free of both I/O and a thread
+        # hop. One composed call answers BOTH questions (does the session
+        # exist, and may it write memory) from a single path resolution, so the
+        # two decisions can never be made about different files.
         if not (in_slots or in_restricted or is_channel_ns):
-            if not _session_has_persisted_history(slot_name):
+            exists, persisted_mode = await asyncio.to_thread(
+                _probe_persisted_session, slot_name
+            )
+            if not exists:
                 # Slot may have been evicted from memory (idle sweep,
                 # gateway restart) while the MCP subprocess keeps its
-                # original KIROCREW_SESSION_KEY env var. Ephemeral
-                # (incognito/temporary) sessions never write JSONL, so
-                # the absence of a session JSONL here means the key
-                # genuinely does not belong to any established session.
+                # original KIROCREW_SESSION_KEY. No session JSONL means
+                # the key genuinely does not belong to any established
+                # session. (Presence does NOT imply the session is
+                # non-ephemeral — every memory_mode writes a transcript —
+                # which is what ``persisted_mode`` below settles.)
                 _sel().log_api_access(
                     caller=sk, operation="learn_add", outcome="denied",
                     source="dashboard", resources="unknown_session",
                 )
                 return web.json_response({"error": "unknown session"}, status=400)
+            if persisted_mode is None or is_incognito_transcript(persisted_mode):
+                # Archiving a tab drops the slot AND discards its
+                # ``_restricted_keys`` entry while leaving the transcript —
+                # and its ``memory_mode`` marker — on disk, so the two
+                # in-memory checks above cannot see that this session is
+                # ephemeral. The persisted mode is the only remaining
+                # evidence. ``None`` means the header was unreadable, which
+                # is NOT evidence that writes are allowed: append() writes
+                # the metadata line at file creation, so a normal session
+                # always has one. Fail closed.
+                _sel().log_api_access(
+                    caller=sk, operation="learn_add", outcome="denied",
+                    source="dashboard", resources="restricted_session_block",
+                )
+                return web.json_response(
+                    {
+                        "error": "Memory writes are not allowed in this session mode.",
+                        # Machine-readable per the error-code contract; matches
+                        # the code already used for this condition at
+                        # handlers/memory.py's restricted-session refusal.
+                        "code": "restricted_session",
+                    },
+                    status=403,
+                )
             # JSONL-fallback is the sole reason the call is permitted.
             # Audit it as an allow decision so session-recovery
             # authorization is traceable alongside the deny path above.
@@ -800,6 +832,11 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "rule is required"}, status=400)
     category = cleaned.get("category", "knowledge")
     scope = cleaned.get("scope", "global")
+    # LEARN_ADD_SCHEMA accepts and validates ``negative``, but both write paths
+    # below discarded it -- write_lesson got a literal None and the JSONL Lesson
+    # omitted the kwarg -- so every NOT-clause sent to this route, from the
+    # learn_add MCP tool, the dashboard, or the CLI, was silently lost.
+    negative = cleaned.get("negative") or None
     # Write to vector store if available, else JSONL
     vs = _get_memory(state).vector_store
     if vs:
@@ -821,36 +858,54 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # for a lesson that was actually saved (and re-saved on every retry).
         # Writing first, then sweeping in the background, keeps the slow LLM call
         # off the request path.
-        await asyncio.to_thread(
+        wrote = await asyncio.to_thread(
             vs.write_lesson,
             rule,
             category,
-            None,
+            negative,
             "user_explicit",
             rule_emb,
             rule_emb_generation,
         )
-        candidates = await asyncio.to_thread(
-            vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
-        )
-        if candidates:
-            # Fire-and-forget via this module's _background_tasks
-            # pattern. The sweep only supersedes OTHER (older) lessons, never
-            # the one just written (self-match scores ~1.0, above the 0.85
-            # candidate ceiling), so deferring it is safe. No retry/queue: a
-            # missed sweep self-heals on the next learn_add touching the topic.
-            task = asyncio.create_task(
-                _resolve_and_supersede(state, sk, rule, candidates, vs)
+        # Sweep ONLY when the lesson actually landed. write_lesson returns False
+        # for a value its preflight refuses (reachable now that ``negative`` is
+        # forwarded here at all -- this call site passed a literal None before) and
+        # for a dedup refusal. The return value used to be discarded, so a refused
+        # write still ran the sweep below, and _resolve_and_supersede would
+        # delete_semantic an older contradicted lesson whose "replacement" was never
+        # stored -- destroying a lesson on a request that persisted nothing, under
+        # HTTP 200. Superseding on the authority of a write that did not happen is
+        # wrong for BOTH False cases, so gate on the result rather than the cause.
+        if wrote:
+            candidates = await asyncio.to_thread(
+                vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb
             )
-            state._background_tasks.add(task)
-            task.add_done_callback(state._background_tasks.discard)
+            if candidates:
+                # Fire-and-forget via this module's _background_tasks
+                # pattern. The sweep only supersedes OTHER (older) lessons, never
+                # the one just written (self-match scores ~1.0, above the 0.85
+                # candidate ceiling), so deferring it is safe. No retry/queue: a
+                # missed sweep self-heals on the next learn_add touching the topic.
+                task = asyncio.create_task(
+                    _resolve_and_supersede(state, sk, rule, candidates, vs)
+                )
+                state._background_tasks.add(task)
+                task.add_done_callback(state._background_tasks.discard)
     else:
-        lesson = Lesson(rule=rule, category=category, ts=datetime.now(timezone.utc).isoformat())
-        if scope == "workspace":
-            ws = cleaned.get("workspace")
-            _get_lessons(state, ws).save(lesson)
-        else:
-            state.lessons.save(lesson)
+        lesson = Lesson(
+            rule=rule,
+            category=category,
+            negative=negative,
+            ts=datetime.now(timezone.utc).isoformat(),
+        )
+        store = _get_lessons(state, cleaned.get("workspace")) if scope == "workspace" else (
+            state.lessons
+        )
+        # save_or_enrich, not save: a re-submit of a stored rule carrying a new
+        # NOT-clause has to attach it rather than be skipped as a duplicate.
+        # Off the loop because it reads the file and rewrites it whole -- the
+        # same reason dashboard/ws.py offloads load_all.
+        await asyncio.to_thread(store.save_or_enrich, lesson)
     state.push_refresh("lessons")
     return web.json_response({"ok": True})
 
@@ -882,15 +937,18 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     scope = body.get("scope", "global")
     # Delete from vector store if active, else JSONL
     vs = _get_memory(state).vector_store
-    vs_lessons = vs.get_lessons() if vs else None
+    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
-        ok = vs.delete_lesson(rule_sub)
+        ok = await asyncio.to_thread(vs.delete_lesson, rule_sub)
     else:
-        if scope == "workspace":
-            ws = body.get("workspace")
-            ok = _get_lessons(state, ws).remove(rule_sub)
-        else:
-            ok = state.lessons.remove(rule_sub)
+        store = _get_lessons(state, body.get("workspace")) if scope == "workspace" else (
+            state.lessons
+        )
+        # Off the loop. remove() now takes the store's shared lock, which a worker
+        # thread can be holding across file I/O for a concurrent save_or_enrich --
+        # so calling it inline would let one lessons write stall every task on the
+        # event loop. Same reason api_lessons_create offloads its write.
+        ok = await asyncio.to_thread(store.remove, rule_sub)
     if ok:
         state.push_refresh("lessons")
     return web.json_response({"ok": ok})
@@ -1084,7 +1142,7 @@ async def api_lessons(request: web.Request) -> web.Response:
     workspace = request.query.get("workspace")
     # Read from vector store if it has lessons, else JSONL
     vs = _get_memory(state).vector_store
-    vs_lessons = vs.get_lessons() if vs else None
+    vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
         data = []
         for e in vs_lessons[-50:]:

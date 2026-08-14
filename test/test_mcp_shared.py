@@ -535,7 +535,7 @@ class TestCallToolWithLoggingRedaction:
         assert "slug" in captured.get("resources", "")
 
 
-# --- run_mcp_stdio_loop busy-queue behavior (Mesh-3020) ----------------------
+# --- run_mcp_stdio_loop busy-queue behavior ----------------------------------
 #
 # A tools/call arriving while a worker is busy used to be silently dropped:
 # no response was ever written, so the client waited forever. These tests
@@ -876,9 +876,7 @@ class TestPerSessionToolPolicy:
 
             return _Resp(body)
 
-        import urllib.request
-
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(mcp_shared, "loopback_urlopen", fake_urlopen)
         monkeypatch.setattr(
             mcp_shared.KiroCrewConfig,
             "load",

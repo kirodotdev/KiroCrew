@@ -21,10 +21,17 @@ export interface TermTab {
   cwd?: string
 }
 
+/** Where the terminal panel is docked — like VS Code's Panel position. */
+export type TerminalPosition = 'bottom' | 'right'
+
 interface BottomTerminalState {
   open: boolean
-  /** Panel height in px (resizable via the top grip). */
+  /** Panel height in px (resizable via the top grip, used when position = 'bottom'). */
   height: number
+  /** Panel width in px (resizable via the left grip, used when position = 'right'). */
+  width: number
+  /** Docking position of the terminal panel. */
+  position: TerminalPosition
   /** Terminal tabs, left → right. */
   tabs: TermTab[]
   /** Active (visible) tab. */
@@ -36,14 +43,19 @@ const STORAGE_KEY = 'mc-bottom-terminal'
 export const MIN_HEIGHT = 120
 /** Default panel height on first open. */
 const DEFAULT_HEIGHT = 300
+/** Min panel width in px; the grip can't drag below this (right position). */
+export const MIN_WIDTH = 200
+/** Default panel width when first docked right. */
+const DEFAULT_WIDTH = 420
 /** Max concurrent terminal tabs (each is a live PTY). */
 export const MAX_TERMINALS = 8
 
 const mintId = () => Math.random().toString(36).slice(2, 14)
 const clampHeight = (h: number) => Math.max(MIN_HEIGHT, Math.round(h))
+const clampWidth = (w: number) => Math.max(MIN_WIDTH, Math.round(w))
 
 function loadPersisted(): BottomTerminalState {
-  const base: BottomTerminalState = { open: false, height: DEFAULT_HEIGHT, tabs: [], activeId: null }
+  const base: BottomTerminalState = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
   if (typeof localStorage === 'undefined') return base
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -58,6 +70,8 @@ function loadPersisted(): BottomTerminalState {
       // with no tabs would render an empty panel on boot.
       open: p.open === true && tabs.length > 0,
       height: typeof p.height === 'number' ? clampHeight(p.height) : DEFAULT_HEIGHT,
+      width: typeof p.width === 'number' ? clampWidth(p.width) : DEFAULT_WIDTH,
+      position: p.position === 'right' ? 'right' : 'bottom',
       tabs,
       activeId: tabs.some(t => t.id === p.activeId) ? (p.activeId as string) : (tabs[0]?.id ?? null),
     }
@@ -165,6 +179,23 @@ export function setBottomTerminalHeight(px: number): void {
   set({ ...state, height })
 }
 
+export function setBottomTerminalWidth(px: number): void {
+  const width = clampWidth(px)
+  if (width === state.width) return
+  set({ ...state, width })
+}
+
+/** Toggle the terminal panel between bottom and right docking. */
+export function setTerminalPosition(position: TerminalPosition): void {
+  if (position === state.position) return
+  set({ ...state, position })
+}
+
+/** Toggle position (bottom ↔ right). */
+export function toggleTerminalPosition(): void {
+  setTerminalPosition(state.position === 'bottom' ? 'right' : 'bottom')
+}
+
 /* ── React binding ── */
 
 function subscribe(cb: () => void): () => void {
@@ -186,9 +217,15 @@ export function useBottomTerminalOpen(): boolean {
   return useSyncExternalStore(subscribe, getOpenSnapshot, getOpenSnapshot)
 }
 
+/** Selector for just the `position` field. */
+function getPositionSnapshot(): TerminalPosition { return state.position }
+export function useTerminalPosition(): TerminalPosition {
+  return useSyncExternalStore(subscribe, getPositionSnapshot, getPositionSnapshot)
+}
+
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetBottomTerminal(): void {
-  state = { open: false, height: DEFAULT_HEIGHT, tabs: [], activeId: null }
+  state = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
   emit()
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }

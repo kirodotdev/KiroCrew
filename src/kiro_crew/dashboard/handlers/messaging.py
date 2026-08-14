@@ -13,26 +13,26 @@ from typing import Any, Callable
 
 from aiohttp import web
 
-from kiro_crew import platform_compat
-from kiro_crew.browser.auth import ensure as browser_auth_ensure
-from kiro_crew.browser.command_bus import (
-    DEFAULT_COMMAND_TIMEOUT_MS,
-    DEFAULT_DRAIN_WAIT_MS,
-    NoPanelError,
-    QueueFullError,
-    get_command_bus,
-)
-from kiro_crew.browser.screencast import BROWSER_FRAME_EVENT, build_frame_payload
-from kiro_crew.browser.setup import (
-    get_extension_token,
-    has_playwright_extension,
-    register_playwright_proxy,
-)
+from kiro_crew.browser_cli import install as browser_cli_install
+from kiro_crew.browser_cli import token as browser_cli_token
+from kiro_crew.browser_cli import view as browser_cli_view
 from kiro_crew.cron import CronStoreBusy
+from kiro_crew.dashboard.channel_folders import (
+    LIVE_RELOAD_FIELDS,
+    clean_session_folder,
+    ensure_channel_folder,
+    stored_folder_name,
+)
 from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
-from kiro_crew.dashboard.chat_utils import _remove_queued_by_id, dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import (
+    _remove_queued_by_id,
+    dashboard_slot_key,
+    mint_options_token,
+    remember_slack_options,
+    slack_options_owner_key,
+)
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.origin import is_direct_local_request, is_loopback
+from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
@@ -43,8 +43,9 @@ from kiro_crew.notifications.bus import (
     NotificationValidationError,
 )
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-from kiro_crew.session_pid_sig import verify_session_pid
 from kiro_crew.slack.format import build_options_blocks, extract_options
+from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
+from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -55,6 +56,14 @@ from kiro_crew.validation import (
     validate_tool_args,
 )
 
+#: Seconds to wait for Slack when verifying a pasted token at save time.
+_TOKEN_VERIFY_TIMEOUT = 8
+
+#: Public field name -> .env credential key for the two Slack secrets.
+_SLACK_SECRET_FIELDS = {
+    "bot_token": "SLACK_BOT_TOKEN",
+    "app_token": "SLACK_APP_TOKEN",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -91,6 +100,9 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "max_turns": body.get("max_turns", 0),
                 "cwd": body.get("cwd", ""),
                 "model": body.get("model", ""),
+                "include_memory": body.get("include_memory", True),
+                "include_lessons": body.get("include_lessons", True),
+                "include_project": body.get("include_project", True),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -134,6 +146,10 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
     except (TypeError, ValueError):
         batch_total = 0
+    # The async moment preceding the synchronous spawn(): warm here so the
+    # on-loop, cache-only agent validation inside spawn() is a hit.
+    if agent:
+        await warm_project_agents_for_spawn(state, cwd)
     info = state.subagents.spawn(
         task,
         parent_session_key=parent_session,
@@ -146,6 +162,9 @@ async def api_spawn(request: web.Request) -> web.Response:
         batch_id=batch_id,
         batch_total=batch_total,
         keep=keep,
+        include_memory=cleaned.get("include_memory", True) is not False,
+        include_lessons=cleaned.get("include_lessons", True) is not False,
+        include_project=cleaned.get("include_project", True) is not False,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -201,6 +220,12 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
     except (TypeError, ValueError):
         max_turns = 0
+    # The run's own cwd, resolved OFF the event loop: a continuation has to run
+    # where the run ran (a project-local agent does not resolve against the pool
+    # project), but reading state.json and probing the path are blocking calls and
+    # `continue_conversation` is synchronous. Doing it here keeps the gateway
+    # responsive even when the recorded path lives on a stalled mount.
+    resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
     info = state.subagents.continue_conversation(
         conv_id,
         task,
@@ -208,6 +233,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         agent=agent,
         model=model or None,
         max_turns=max_turns,
+        cwd=resumed_cwd,
     )
     if not info:
         return web.json_response(
@@ -235,7 +261,12 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
 
 
 async def api_spawn_steer(request: web.Request) -> web.Response:
-    """POST /api/spawn/{agent_id}/steer — inject into a RUNNING run's turn."""
+    """POST /api/spawn/{agent_id}/steer — inject into a RUNNING run's turn.
+
+    Body: ``{message, mode?}``. ``mode="interrupt"`` (default) injects into
+    the running turn; ``mode="follow_up"`` queues the message for delivery as
+    a continuation AFTER the run's current turn completes (never interrupts).
+    """
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response(
@@ -254,7 +285,16 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "message is required", "code": "message_required"}, status=400
         )
-    ok, detail = await state.subagents.steer_run(agent_id, message)
+    mode = str(body.get("mode", "") or "interrupt").strip()
+    if mode not in ("interrupt", "follow_up"):
+        return web.json_response(
+            {"error": "mode must be 'interrupt' or 'follow_up'", "code": "invalid_mode"},
+            status=400,
+        )
+    if mode == "follow_up":
+        ok, detail = await state.subagents.follow_up_run(agent_id, message)
+    else:
+        ok, detail = await state.subagents.steer_run(agent_id, message)
     if not ok:
         if detail == "not_found":
             return web.json_response(
@@ -276,7 +316,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": detail, "code": "steer_failed"}, status=502
         )
-    return web.json_response({"id": agent_id, "status": "steered"})
+    return web.json_response(
+        {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
+    )
 
 
 async def api_spawn_release(request: web.Request) -> web.Response:
@@ -534,6 +576,19 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             entry["turns"] = info.turns
             entry["last_tool"] = _redact(info.last_tool)
             entry["elapsed"] = round(time.time() - info.started)
+        # Present only when a group was actually withheld, so the default
+        # (everything on) payload is unchanged.
+        withheld = [
+            group
+            for group, on in (
+                ("memory", info.include_memory),
+                ("lessons", info.include_lessons),
+                ("project", info.include_project),
+            )
+            if not on
+        ]
+        if withheld:
+            entry["context_withheld"] = withheld
         agents.append(entry)
     return web.json_response({"agents": agents})
 
@@ -568,6 +623,12 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
             {"error": f"only failed agents can be retried (outcome={old.outcome})"},
             status=409,
         )
+    # Same validated warm as the primary spawn handler. old.cwd was validated
+    # at the ORIGINAL spawn, but the allowlist may have changed since (and a
+    # gateway restart leaves the cache cold), so it is re-checked against the
+    # current config before any discovery read.
+    if old.agent:
+        await warm_project_agents_for_spawn(state, old.cwd or "")
     info = state.subagents.spawn(
         old._raw_task or old.task,
         parent_session_key=old.parent_session_key,
@@ -577,6 +638,11 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         model=old.model or None,
         approval_mode=old.approval_mode or None,
         silent=old.silent,
+        # A retry must see the SAME context scope as the run it replaces —
+        # otherwise the retried agent is a different experiment.
+        include_memory=old.include_memory,
+        include_lessons=old.include_lessons,
+        include_project=old.include_project,
     )
     if not info:
         return web.json_response(
@@ -1125,7 +1191,11 @@ async def api_send_message(request: web.Request) -> web.Response:
             resources=f"target_user={target_user}",
         )
         return web.json_response(
-            {"error": "user not in allowlist — configure allowed_users in config.json"}, status=403
+            {
+                "error": "user not in allowlist — configure allowed_users in config.json",
+                "code": "user_not_in_allowlist",
+            },
+            status=403,
         )
 
     sent_slack = False
@@ -1282,12 +1352,53 @@ async def api_send_message(request: web.Request) -> web.Response:
                             )
                             if options:
                                 try:
-                                    await state.slack_client.post_blocks(
+                                    # Asker is the thread's owner: an out-of-band
+                                    # post has no running session of its own, so
+                                    # the conversation that receives the reply is
+                                    # the right subject.
+                                    _sm_o = slack_options_owner_key(state, thread_ts or "")
+                                    _sm_t = (
+                                        await asyncio.to_thread(mint_options_token, state, _sm_o)
+                                        if _sm_o
+                                        else None
+                                    )
+                                    option_blocks = build_options_blocks(
+                                        options, staleness_token=_sm_t
+                                    )
+                                    # Fallback text is the SAFE stub, not the
+                                    # message body. Slack parses entities in a
+                                    # message's top-level `text` -- which is what
+                                    # notifications render -- so an agent-authored
+                                    # body containing `<!channel>` would ping the
+                                    # whole channel, and the expiry would ping it
+                                    # AGAIN every time it replays this text on its
+                                    # edit. Nothing is lost: the body was already
+                                    # posted as its own message just above, so here
+                                    # it was pure duplication. This is the same stub
+                                    # the other three posting paths use.
+                                    option_ts = await state.slack_client.post_blocks(
                                         channel,
-                                        build_options_blocks(options),
-                                        text,
+                                        option_blocks,
+                                        OPTIONS_FALLBACK_TEXT,
                                         thread_ts=thread_ts,
                                     )
+                                    # A thread IS a conversation, so bind the
+                                    # control to whichever session owns that
+                                    # thread — a dashboard session mirroring into
+                                    # it, or the Slack-born one. Without a thread
+                                    # there is no conversation to supersede it, so
+                                    # nothing is recorded.
+                                    if thread_ts and option_ts:
+                                        remember_slack_options(
+                                            state,
+                                            slack_options_owner_key(state, str(thread_ts)),
+                                            PostedOptions(
+                                                channel=channel,
+                                                ts=option_ts,
+                                                choices=tuple(options),
+                                                blocks=tuple(option_blocks),
+                                            ),
+                                        )
                                 except Exception:
                                     logger.debug(
                                         "send_message: failed to post OPTIONS blocks",
@@ -1694,519 +1805,282 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     return web.json_response({"profile": profile})
 
 
-async def api_browser_event(request: web.Request) -> web.Response:
-    """POST /api/browser-event — receive browser activity events from MCP and broadcast via WS."""
-    state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    event_type = body.get("event", "")
-    if not event_type:
-        return web.json_response({"error": "event is required"}, status=400)
-    # Broadcast to all connected WS clients
-    payload = {"type": "browser_event", "event": event_type, "ts": time.time()}
-    # Forward all extra fields from the body, redacting string values
-    for k, v in body.items():
-        if k not in ("type", "event", "ts"):
-            if isinstance(v, str):
-                v, _ = redact_credentials(v)
-                v, _ = redact_exfiltration_urls(v)
-            payload[k] = v
-    state.broadcast_ws("browser_event", payload)
-    _sel().log_tool_invocation(
-        session_key="dashboard",
-        tool_name="browser_event",
-        outcome="completed",
-        downstream_service="browser",
-    )
-    return web.json_response({"ok": True})
+def _deny_non_owner_browser_request(
+    request: web.Request, operation: str
+) -> web.Response | None:
+    """Require the dashboard owner on browser MUTATION endpoints. 403 or None.
 
+    The caller must be the configured owner (``is_owner_dashboard_request``):
+    app tokens, non-owner dashboard users, and callers with no identity are all
+    refused. This is the same predicate used for MCP-app calls, source-provider
+    mutations, and agent-question endpoints — one definition of "owner" across
+    the dashboard.
 
-def _resolve_browse_session_key(host_pid: Any) -> str:
-    """Resolve the authoritative session key for a browse frame from the posting
-    proxy's ``host_pid``, walking process ancestors and verifying each one's
-    gateway-signed ``session_pid_<pid>.txt`` sidecar.
+    The mutations guarded here are security-sensitive:
 
-    Warm-pool ``kiro-cli`` workers are pre-spawned before a slot is assigned, so
-    ``KIROCREW_SESSION_KEY`` is never in their env and the Playwright proxy's
-    frozen-env key (``session_key`` in the POST body) is empty. The reliable
-    source is the signed pid->key mapping the gateway publishes on session claim
-    — the same per-turn mechanism every managed MCP tool resolves (see
-    ``kiro_crew.mcp_core._resolve_session_key``). The proxy's immediate parent
-    (``kiro-cli-chat``) has no PID file, so we walk up to the ``kiro-cli`` worker
-    that does. ``verify_session_pid`` requires the HMAC sidecar (agents cannot
-    forge it) and binds the pid into the MAC, so a wrong/forged pid can't cross a
-    session boundary. Returns ``""`` when no ancestor has a verifiable mapping.
+    * installing the CLI globally ACTIVATES browser auto-approval, so a
+      non-owner could hand the agent an unprompted browser on a host that had
+      none;
+    * the attach token is a stored credential that silences the browser's own
+      per-attach approval prompt — the last human checkpoint before a program
+      drives the user's logged-in session;
+    * a browser download writes to the machine;
+    * the view endpoints return an unauthenticated dashboard URL, i.e. control
+      of a logged-in browser.
+
+    Reads (``api_browser_install_get``) stay open: knowing whether browsing
+    exists is not a capability. Mirrors the ComputerUse keystone precedent.
     """
-    try:
-        pid = int(host_pid)
-    except (TypeError, ValueError):
-        return ""
-    seen: set[int] = set()
-    steps = 0
-    # Bounded walk: guards against a cycle (seen) or a pathological chain (steps).
-    while pid > 1 and pid not in seen and steps < 40:
-        seen.add(pid)
-        steps += 1
-        key = verify_session_pid(pid)
-        if key:
-            return key
-        try:
-            pid = platform_compat.get_ppid(pid)
-        except Exception:
-            break
-    return ""
-
-
-async def api_browser_frame(request: web.Request) -> web.Response:
-    """POST /api/browser/frame — receive a browse screenshot and rebroadcast it.
-
-    The Playwright MCP proxy POSTs each screenshot it already captured (loopback
-    only) as ``{"data": "<base64>", "format": "jpeg", ...}``; we normalize it and
-    broadcast a ``browser_frame`` WS event for the BrowserLiveView panel. No CDP
-    debug port is involved — this rides the proxy's existing capture path.
-
-    Loopback-gated: the proxy runs on the same host, and frames carry a live view
-    of the (authenticated) browse session, so off-host posts are refused.
-    """
-    if not is_loopback(request.remote or ""):
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_frame",
-            outcome="denied",
-            downstream_service="browser",
-            resources="non-loopback",
-        )
-        return web.json_response({"error": "loopback only"}, status=403)
-    state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_frame",
-            outcome="invalid_input",
-            downstream_service="browser",
-            resources="invalid-json",
-        )
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    payload = build_frame_payload(body if isinstance(body, dict) else {})
-    if payload is None:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_frame",
-            outcome="invalid_input",
-            downstream_service="browser",
-            resources="no-frame-data",
-        )
-        return web.json_response({"error": "no frame data"}, status=400)
-    # Stamp the AUTHORITATIVE session key resolved from the posting proxy's host
-    # pid (gateway-signed session_pid sidecar), overriding the proxy's frozen-env
-    # key which is empty under the warm pool. This is what lets the client-side
-    # panel (scoped by frameSessionKey === sessionKey) render the mirror and
-    # keeps a background session's frames from surfacing in the wrong panel. When
-    # no ancestor has a verifiable mapping we leave the proxy-provided fallback
-    # (empty on warm pool → client drops it, same as before — never worse).
-    resolved_key = await asyncio.to_thread(
-        _resolve_browse_session_key,
-        body.get("host_pid") if isinstance(body, dict) else None,
+    # Deferred import: source_providers imports chat state helpers from this
+    # module's sibling, so a top-level import would close a cycle.
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
     )
-    if resolved_key:
-        # verify_session_pid returns the FULL namespaced session key
-        # (e.g. "dashboard:chat-70-<ts>"), but the client panel filters frames
-        # by `frame.session_key === activeSlot`, where activeSlot is the BARE
-        # slot key ("chat-70-<ts>"). Without stripping the "dashboard:" prefix
-        # every frame is dropped on the mismatch and the mirror never renders.
-        # (Same normalization as the Slack slot-key resolution below.)
-        payload["session_key"] = resolved_key.removeprefix("dashboard:")
-    state.broadcast_ws(BROWSER_FRAME_EVENT, payload)
-    # Label the audit event by frame origin so the proxy's active pump frames are
-    # distinguishable from agent-initiated screenshots. Bounded to a known set so
-    # the SEL field can't carry arbitrary caller-supplied text.
-    frame_source = body.get("source") if isinstance(body, dict) else None
-    _sel().log_tool_invocation(
-        session_key="dashboard",
-        tool_name="browser_frame",
-        outcome="completed",
-        downstream_service="browser",
-        source=frame_source if frame_source in ("agent", "pump") else "agent",
-    )
-    # Report the live WS-client count so the proxy's active pump can back off
-    # (stop self-issuing screenshots) when no dashboard is actually watching.
-    return web.json_response({"ok": True, "subscribers": state.ws_client_count()})
 
-
-async def api_browser_pump_audit(request: web.Request) -> web.Response:
-    """POST /api/browser/pump-audit — audit a proxy active-pump screenshot injection.
-
-    The active pump (``mcp_playwright_proxy``) injects its own
-    ``browser_take_screenshot`` into the Playwright subprocess to keep the live
-    mirror current between agent screenshots. That proxy is a stdlib-only stdio
-    subprocess and cannot reach ``sel.py``, so it reports each injection here and
-    the gateway emits the SEL tool-invocation event on its behalf — keeping
-    proxy-internal tool calls auditable. Loopback-gated; the ``X-Internal-Secret``
-    is enforced by the token_auth middleware (this path is in ``internal_paths``).
-    """
-    if not is_loopback(request.remote or ""):
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_take_screenshot",
-            outcome="denied",
-            downstream_service="browser",
-            source="pump",
-            resources="non-loopback",
+    if is_owner_dashboard_request(request):
+        # A permission DECISION is audited whichever way it goes. Recording only
+        # refusals leaves the log unable to answer "who armed browsing on this
+        # host", which is the question an investigation actually asks: the
+        # damaging path here is an ALLOWED install or token write, not a blocked
+        # one.
+        _sel().log_api_access(
+            caller=str(request.get("user") or "owner"),
+            operation=operation,
+            outcome="allowed",
+            source="browser_api",
+            resources=request.path,
         )
-        return web.json_response({"error": "loopback only"}, status=403)
-    _sel().log_tool_invocation(
-        session_key="dashboard",
-        tool_name="browser_take_screenshot",
-        outcome="injected",
-        downstream_service="browser",
-        source="pump",
-    )
-    return web.json_response({"ok": True})
-
-
-async def api_browser_command(request: web.Request) -> web.Response:
-    """POST /api/browser/command — run one op against the native browser panel.
-
-    Called by the Playwright MCP proxy. Body:
-    ``{"op": str, "host_pid": int, "session_key"?: str, "args"?: object, "timeout_ms"?: int}``.
-    The session is resolved from ``host_pid`` (signed session_pid sidecar, same as
-    ``api_browser_frame``); ``session_key`` is only a fallback for per-session
-    spawns. Enqueues the op on the command bus and awaits the native panel's
-    result.
-
-    Responses:
-    - 200 ``{"id", "ok": true, "result": <any>}`` — op ran and succeeded;
-    - 200 ``{"id", "ok": false, "error": str}`` — op ran but failed;
-    - 503 ``{"error": "no-native-panel", "code": "no_native_panel"}`` — no Electron poller registered for
-      ``session_key`` (returned FAST, no wait, so the proxy falls back to
-      Playwright);
-    - 504 ``{"error": "timeout", "code": "timeout"}`` — the panel did not answer in time.
-
-    Loopback-gated like ``api_browser_frame``, AND requires proven
-    ``X-Internal-Secret`` auth. Membership in the strict-internal path set is NOT
-    sufficient on its own: that middleware still admits a loopback dashboard
-    *cookie* caller, so a browser-credentialed page could otherwise drive,
-    intercept or forge native-browser operations. ``request["internal_auth"]`` is
-    set only on the validated ``X-Internal-Secret`` path — exactly the transport
-    the MCP proxy and the Electron main process use.
-    """
-    if not is_loopback(request.remote or "") or request.get("internal_auth") is not True:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="denied",
-            downstream_service="browser",
-            resources="non-loopback",
-        )
-        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if not isinstance(body, dict):
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="invalid_input",
-            downstream_service="browser",
-            resources="invalid-json",
-        )
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    fallback_key = body.get("session_key")
-    op = body.get("op")
-    args = body.get("args")
-    timeout_ms = body.get("timeout_ms")
-    if not isinstance(op, str) or not op:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="invalid_input",
-            downstream_service="browser",
-            resources="missing op",
-        )
-        return web.json_response({"error": "op required", "code": "op_required"}, status=400)
-    if args is not None and not isinstance(args, dict):
-        return web.json_response({"error": "args must be an object", "code": "args_must_be_object"}, status=400)
-    if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
-        timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS
-    # Resolve the AUTHORITATIVE session key from the posting proxy's host pid
-    # (gateway-signed session_pid sidecar), overriding the proxy's frozen-env key
-    # which is EMPTY under the warm pool -- the same resolution api_browser_frame
-    # does. Strip the "dashboard:" prefix so the key matches the BARE slot key the
-    # Electron panel registers via command-drain and dispatches on (see
-    # api_browser_frame for the identical normalization). The proxy-provided
-    # session_key is only a fallback for per-session spawns whose pid does not
-    # resolve.
-    resolved_key = await asyncio.to_thread(
-        _resolve_browse_session_key,
-        body.get("host_pid"),
-    )
-    if resolved_key:
-        session_key = resolved_key.removeprefix("dashboard:")
-    elif isinstance(fallback_key, str):
-        session_key = fallback_key
+        return None
+    # Derive a meaningful caller identity for the SEL record: app tokens
+    # audit as "app:<name>"; dashboard users audit as their subject; callers
+    # with no identity audit as "anonymous".
+    app_name = request.get("app", "")
+    if app_name:
+        caller = f"app:{app_name}"
     else:
-        session_key = ""
-    if not session_key:
-        # No identifiable session -> no panel we could address. Answer like the
-        # no-panel case (503) so the proxy falls back to Playwright, NOT 400: a
-        # 400 surfaces a hard MCP error to the agent instead of the graceful
-        # mirror path, and a warm-pool worker on a remote/non-Electron host (no
-        # sidecar to resolve) legitimately reaches here on every browser_* call.
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="no_panel",
-            downstream_service="browser",
-            resources=op,
-        )
-        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
-    bus = get_command_bus()
-    try:
-        outcome = await bus.submit(session_key, op, args or {}, timeout_ms=timeout_ms)
-    except NoPanelError:
-        # Fast path: no live native panel. The proxy falls back to Playwright.
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="no_panel",
-            downstream_service="browser",
-            resources=op,
-        )
-        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
-    except QueueFullError:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="queue_full",
-            downstream_service="browser",
-            resources=op,
-        )
-        return web.json_response({"error": "queue-full", "code": "queue_full"}, status=429)
-    except asyncio.TimeoutError:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command",
-            outcome="timeout",
-            downstream_service="browser",
-            resources=op,
-        )
-        return web.json_response({"error": "timeout", "code": "timeout"}, status=504)
-    _sel().log_tool_invocation(
-        session_key="dashboard",
-        tool_name="browser_command",
-        outcome="completed" if outcome.get("ok") else "failed",
-        downstream_service="browser",
-        resources=op,
-    )
-    response: dict[str, Any] = {"id": outcome.get("id"), "ok": bool(outcome.get("ok"))}
-    if outcome.get("ok"):
-        response["result"] = outcome.get("result")
-    else:
-        response["error"] = outcome.get("error") or "error"
-    return web.json_response(response)
-
-
-async def api_browser_command_drain(request: web.Request) -> web.Response:
-    """POST /api/browser/command-drain — long-poll for a queued browser command.
-
-    Called by the Electron main process. Body:
-    ``{"session_keys": [str, ...], "wait_ms"?: int}``.
-
-    SIDE EFFECT: registers ``session_keys`` as having a live native panel (TTL
-    ~2x ``wait_ms``); this registration is what ``/api/browser/command`` checks
-    to decide whether to 503.
-
-    Responses:
-    - 200 ``{"id", "session_key", "op", "args"}`` — a command is available;
-    - 204 empty — nothing arrived within ``wait_ms``.
-
-    Loopback-gated exactly like ``api_browser_frame``.
-    """
-    if not is_loopback(request.remote or "") or request.get("internal_auth") is not True:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command_drain",
-            outcome="denied",
-            downstream_service="browser",
-            resources="non-loopback",
-        )
-        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    session_keys = body.get("session_keys")
-    if not isinstance(session_keys, list) or not all(isinstance(k, str) for k in session_keys):
-        return web.json_response({"error": "session_keys must be a list of strings", "code": "session_keys_invalid"}, status=400)
-    wait_ms = body.get("wait_ms")
-    if not isinstance(wait_ms, int) or isinstance(wait_ms, bool) or wait_ms <= 0:
-        wait_ms = DEFAULT_DRAIN_WAIT_MS
-    bus = get_command_bus()
-    command = await bus.drain(session_keys, wait_ms=wait_ms)
-    if command is None:
-        return web.Response(status=204)
-    return web.json_response(command)
-
-
-async def api_browser_command_result(request: web.Request) -> web.Response:
-    """POST /api/browser/command-result — post a native browser command's result.
-
-    Called by the Electron main process. Body:
-    ``{"id": str, "ok": bool, "result"?: <any>, "error"?: str}``.
-
-    Responses:
-    - 200 ``{"ok": true}`` — the result was matched to a waiting command;
-    - 404 ``{"error": "unknown-command", "code": "unknown_command"}`` — the id already timed out or never
-      existed.
-
-    Loopback-gated exactly like ``api_browser_frame``.
-    """
-    if not is_loopback(request.remote or "") or request.get("internal_auth") is not True:
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_command_result",
-            outcome="denied",
-            downstream_service="browser",
-            resources="non-loopback",
-        )
-        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    command_id = body.get("id")
-    if not isinstance(command_id, str) or not command_id:
-        return web.json_response({"error": "id required", "code": "id_required"}, status=400)
-    ok = bool(body.get("ok"))
-    result = body.get("result")
-    error = body.get("error")
-    if error is not None and not isinstance(error, str):
-        error = str(error)
-    bus = get_command_bus()
-    matched = await bus.complete(command_id, ok, result=result, error=error)
-    if not matched:
-        return web.json_response({"error": "unknown-command", "code": "unknown_command"}, status=404)
-    return web.json_response({"ok": True})
-
-
-async def api_browser_auth_retry(request: web.Request) -> web.Response:
-    """POST /api/browser-auth-retry — retry browser auth."""
-    state: DashboardState = request.app["state"]
-    try:
-        result = await asyncio.to_thread(browser_auth_ensure)
-        state.broadcast_browser_event("auth_retry", result)
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_auth_retry",
-            outcome="completed",
-            downstream_service="browser",
-            resources="auth_retry",
-        )
-        return web.json_response(result)
-    except Exception as exc:
-        logger.warning("browser-auth-retry failed: %s", exc, exc_info=True)
-        _sel().log_tool_invocation(
-            session_key="dashboard",
-            tool_name="browser_auth_retry",
-            outcome="error",
-            downstream_service="browser",
-            resources=f"error={exc}",
-        )
-        return web.json_response({"error": str(exc)}, status=500)
-
-
-async def api_browser_config_get(request: web.Request) -> web.Response:
-    """GET /api/browser/config — get browser extension mode and token status."""
-    _sel().log_tool_invocation(
-        session_key="dashboard",
-        tool_name="browser_config_get",
-        outcome="completed",
-        downstream_service="browser",
+        caller = str(request.get("user") or "anonymous")
+    # Permission denial on a security boundary — audited before the response
+    # (backend-security-controls: every denial emits SEL).
+    _sel().log_api_access(
+        caller=caller,
+        operation=operation,
+        outcome="denied",
+        source="browser_api",
+        resources=request.path,
+        error="browser mutations require the dashboard owner",
     )
     return web.json_response(
-        {
-            "extension_mode": has_playwright_extension(),
-            "token": get_extension_token() is not None,
-        }
+        {"error": "dashboard user required",
+         "code": "dashboard_user_required"},
+        status=403,
     )
 
 
-async def api_browser_config_save(request: web.Request) -> web.Response:
-    """PUT /api/browser/config — save browser extension mode and token."""
-    from kiro_crew.config.loader import data_home  # noqa: F811
+async def api_browser_token_put(request: web.Request) -> web.Response:
+    """PUT /api/browser/token -- set or clear the optional attach token.
 
-    body = await request.json()
-    kirocrew_dir = data_home()
-    kirocrew_dir.mkdir(parents=True, exist_ok=True)
-    flag_file = kirocrew_dir / "playwright-extension-mode"
-    token_file = kirocrew_dir / "playwright-extension-token"
+    The response reports only WHETHER a token is set. A value that exists to reach a
+    child process's environment has no reason to travel back out, and echoing it
+    would put it in dashboard traffic and browser memory for no gain.
 
-    extension_mode = body.get("extension_mode", False)
-    token = body.get("token", "")
-
-    if extension_mode:
-        flag_file.touch()
-        if token:
-            fd = os.open(str(token_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(token)
-    else:
-        flag_file.unlink(missing_ok=True)
-        token_file.unlink(missing_ok=True)
-
-    # Re-register through register_playwright_proxy rather than the patch
-    # primitives: it holds the shared mcp.json lock (so a concurrent app-bridge or
-    # dashboard MCP write is not clobbered), refuses to overwrite a user-authored
-    # non-proxy entry under the canonical key, and creates the file when a fresh
-    # install has no kiro settings yet. Blocking (file lock + disk I/O), so it
-    # runs off the event loop.
-    #
-    # The mode preference above is already persisted, so an mcp.json-level failure
-    # is reported in the payload rather than raised — a 500 here would tell the
-    # user nothing was saved when the flag/token files were in fact written.
+    Re-publishes the environment on the way out: a child reads the environment it
+    was handed, so a token written without this would not reach any shell until the
+    next gateway start.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_token_set")
+    if denied is not None:
+        return denied
     try:
-        _, mcp_status = await asyncio.to_thread(register_playwright_proxy)
-    except OSError as exc:
-        logger.warning("browser config: MCP registration failed: %s", exc)
-        mcp_status = "registration-failed"
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    # Valid-but-non-object JSON ([], null, "str") would AttributeError on
+    # body.get below -- an unintended 500 instead of a validation 400. Same
+    # guard, same reason, as the other body-reading handlers in this file.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    value = body.get("token")
+    if not isinstance(value, str):
+        return web.json_response({"error": "token must be a string"}, status=400)
+    await asyncio.to_thread(browser_cli_token.set_token, value)
+    # Re-project onto the gateway's own environment, and DELETE the key when the
+    # token was cleared: the agent inherits this env, so writing the file alone
+    # would leave a revoked token live for every later invocation.
+    #
+    # Residual, stated rather than implied: a child process that ALREADY started
+    # holds the value it inherited at spawn time, so an agent session running
+    # right now keeps using the old token until it restarts. Revoking that would
+    # mean killing live sessions on a settings write, which is a worse trade than
+    # the window it closes.
+    if browser_cli_token.has_token():
+        os.environ.update(browser_cli_token.cli_env_overrides())
+    else:
+        os.environ.pop(browser_cli_token.TOKEN_ENV, None)
+    return web.json_response({"ok": True, "token": browser_cli_token.has_token()})
 
-    _sel().log_tool_invocation(
-        session_key="dashboard",
-        tool_name="browser_config_save",
-        outcome="completed",
-        downstream_service="browser",
-        resources=f"extension_mode={extension_mode} mcp={mcp_status}",
-    )
-    # ``mcp_status`` is "kept-user-entry" when the caller's own hand-authored
-    # Playwright server was left in place — the mode preference was still saved,
-    # but KiroCrew's proxy was deliberately NOT written over their config.
-    return web.json_response({"ok": True, "mcp_status": mcp_status})
+
+async def api_browser_install_get(request: web.Request) -> web.Response:
+    """GET /api/browser/install -- whether browsing is available, and why not.
+
+    Reports `installing` separately from the detection fields so the card can show
+    progress for an install already in flight, including one started by a different
+    dashboard tab: the job lives on the gateway, not in a page.
+    """
+    state: DashboardState = request.app["state"]
+    payload = dict(await asyncio.to_thread(browser_cli_install.detect))
+    task = getattr(state, "_browser_install_task", None)
+    payload["installing"] = bool(task and not task.done())
+    payload["token"] = browser_cli_token.has_token()
+    payload["last_error"] = getattr(state, "_browser_install_error", None)
+    return web.json_response(payload)
 
 
-# ── Slack configuration API ──
-# Secrets (bot/app token, owner id) live in config_dir/.env (0600). Non-secret
-# config (slash command, allowlists, behavior toggles) lives in config.json
-# under the "slack" key. GET returns masked previews + presence booleans.
-# Raw token values are write-only: no API path returns them (rotate at
-# api.slack.com or read .env on the machine itself if ever needed).
+async def api_browser_install_start(request: web.Request) -> web.Response:
+    """POST /api/browser/install -- install the Playwright CLI in the background.
 
-#: Public field name → .env credential key for the two Slack secrets.
-_SLACK_SECRET_FIELDS = {
-    "bot_token": "SLACK_BOT_TOKEN",
-    "app_token": "SLACK_APP_TOKEN",
-}
+    Returns immediately with the same shape as the GET. The install downloads a
+    browser, which takes long enough that holding the request open would read as a
+    hung dashboard, so progress is observed by re-reading rather than awaited here.
 
-#: Seconds to wait for Slack when verifying a pasted token at save time.
-_TOKEN_VERIFY_TIMEOUT = 8
+    Concurrent clicks are folded into the one running job: npm and the browser
+    installer are not safe to run twice over the same target at once.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_cli_install")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    task = getattr(state, "_browser_install_task", None)
+    if not (task and not task.done()):
+
+        async def _run() -> None:
+            state._browser_install_error = None
+            try:
+                result = await asyncio.to_thread(browser_cli_install.install)
+                failed = [s for s in result.get("steps", []) if not s.get("ok")]
+                if failed:
+                    first = failed[0]
+                    # `stderr`, not `error`: install steps only ever carry
+                    # `stderr` (see browser_cli.install._step), so reading
+                    # `error` discarded the npm / download output and left the
+                    # operator with a bare "failed" -- which cannot tell a
+                    # registry auth error apart from a blocked download, the two
+                    # cases the panel renders this string to explain.
+                    # Redacted before it reaches the panel. npm failures routinely
+                    # quote the command's own environment back at you: a registry
+                    # line carrying `_authToken=`, or a proxy URL with inline
+                    # credentials. This string is rendered verbatim in Settings and
+                    # is the thing an operator screenshots into a bug report, so it
+                    # goes through the same two-pass redaction as every other
+                    # external surface.
+                    detail = first.get("stderr") or first.get("error") or "failed"
+                    state._browser_install_error = _redact(
+                        f"{first.get('name', 'install')}: {str(detail).strip()}"
+                    )[:2000]
+            except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+                state._browser_install_error = _redact(str(exc))[:2000]
+
+        state._browser_install_task = asyncio.create_task(_run())
+    return await api_browser_install_get(request)
+
+
+async def api_browser_engine_install(request: web.Request) -> web.Response:
+    """POST /api/browser/engine -- download one engine's browser build.
+
+    Body: ``{"engine": "chromium" | "firefox" | "webkit"}``.
+
+    Shares the ONE ``_browser_install_task`` slot with the CLI install rather than
+    taking its own: both drive the same browser installer, which is not safe to run
+    twice over the same cache at once, and sharing the slot means the panel's single
+    "installing" flag stays true for whichever download is in flight.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_engine_install")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - a malformed body is a client error, not a crash
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    # `(body or {})` absorbs [] and null but NOT a non-empty non-dict ([1],
+    # "abc", 5), which would AttributeError into a 500. Check the type instead
+    # of leaning on falsiness.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    engine = str(body.get("engine", "")).strip()
+    # Validated here as well as in install_browser: rejecting at the boundary
+    # keeps an unknown value out of the background task entirely, so the operator
+    # gets a 400 instead of an error they have to go re-read the status to find.
+    if engine not in browser_cli_install.BROWSER_ENGINES:
+        return web.json_response(
+            {"error": "unknown engine", "code": "unknown_engine"}, status=400
+        )
+    task = getattr(state, "_browser_install_task", None)
+    if task and not task.done():
+        # 409, NOT a folded success. Folding is right for the CLI install, which
+        # has one target: a second click means the same work. Engines are three
+        # DISTINCT targets sharing one slot, so answering 200 while a different
+        # engine installs makes the panel show WebKit downloading when Firefox
+        # actually is. Refuse and say why.
+        return web.json_response(
+            {"error": "an install is already running", "code": "install_already_running"},
+            status=409,
+        )
+
+    async def _run() -> None:
+        state._browser_install_error = None
+        try:
+            result = await asyncio.to_thread(browser_cli_install.install_browser, engine)
+            failed = [s for s in result.get("steps", []) if not s.get("ok")]
+            if failed:
+                first = failed[0]
+                state._browser_install_error = _redact(
+                    f"{first.get('name', 'install-browser')}: "
+                    f"{first.get('stderr') or first.get('error') or 'failed'}"
+                )[:2000]
+        except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+            state._browser_install_error = _redact(str(exc))[:2000]
+
+    state._browser_install_task = asyncio.create_task(_run())
+    return await api_browser_install_get(request)
+
+
+async def api_browser_view_get(request: web.Request) -> web.Response:
+    """GET /api/browser/view -- where the Playwright CLI dashboard is served.
+
+    Reports without starting anything, so polling the panel never launches a
+    browser dashboard the operator did not ask for.
+
+    App-token denied like the install and token routes: the reply carries the
+    dashboard URL, and that URL is served WITHOUT authentication, so handing it
+    to an app is handing over control of a logged-in browser. Read-only on this
+    gateway is not read-only on the browser.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_view_status")
+    if denied is not None:
+        return denied
+    return web.json_response(await asyncio.to_thread(browser_cli_view.status))
+
+
+async def api_browser_view_start(request: web.Request) -> web.Response:
+    """POST /api/browser/view/start -- ensure the CLI dashboard is serving.
+
+    Idempotent, and off-loaded to a thread because starting the dashboard waits on
+    a child process becoming healthy, which would otherwise stall the event loop
+    and with it every other dashboard request.
+
+    App-token denied: this both LAUNCHES a browser process and returns the
+    unauthenticated dashboard URL, so it is the stronger half of the same hole
+    the GET carries.
+    """
+    denied = _deny_non_owner_browser_request(request, "browser_view_start")
+    if denied is not None:
+        return denied
+    await asyncio.to_thread(browser_cli_view.ensure_running)
+    return web.json_response(await asyncio.to_thread(browser_cli_view.status))
 
 
 async def _validate_slack_token(key: str, token: str) -> str | None:
@@ -2334,28 +2208,23 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     alias substituted, and the comment-stripped YAML is URL-encoded into
     Slack's new-app deep link. Serves only the public template — no secrets.
     """
-    import re  # noqa: F811
-    from importlib.resources import files as _pkg_files
-    from urllib.parse import quote
+    from kiro_crew import slack_manifest
 
     # Default to a non-identifying alias: $USER is a host account name and
     # should not be volunteered to every authenticated client.
     alias = request.query.get("alias", "").strip() or "kirocrew"
-    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", alias):
+    if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
     try:
-        template = _pkg_files("kiro_crew").joinpath("slack-manifest.yaml").read_text("utf-8")
+        rendered = slack_manifest.render(alias)
+        create_url = slack_manifest.deep_link(alias)
     except FileNotFoundError:
         return web.json_response({"error": "manifest template missing"}, status=500)
-    rendered = template.replace("{{ALIAS}}", alias)
-    # Strip comment lines to keep the deep link short (same as the CLI).
-    lines = [ln for ln in rendered.splitlines() if not ln.lstrip().startswith("#")]
-    encoded = quote("\n".join(lines).strip() + "\n", safe="")
     return web.json_response(
         {
             "alias": alias,
             "manifest": rendered,
-            "create_url": f"https://api.slack.com/apps?new_app=1&manifest_yaml={encoded}",
+            "create_url": create_url,
         }
     )
 
@@ -2401,6 +2270,7 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "allowed_enterprise_ids": list(slack.allowed_enterprise_ids),
             "reactions_enabled": slack.reactions_enabled,
             "show_thinking": slack.show_thinking,
+            "session_folder": slack.session_folder,
         }
     )
 
@@ -2544,6 +2414,15 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged[key] = val
             applied.append(key)
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(slack_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
     # where the user can act on it — instead of being stored and silently
@@ -2579,6 +2458,18 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     if staged:
         slack_cfg.update(staged)
         _atomic_json_write(path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = stored_folder_name(slack_cfg.get("session_folder"))
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(
+                    _state, "slack", _folder_name,
+                    relabel="session_folder" in staged,
+                )
 
     _sel().log_api_access(
         caller=caller,
@@ -2672,6 +2563,7 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
             "allowed_user_ids": [str(u) for u in dc.allowed_user_ids],
             "allowed_thread_ids": [str(t) for t in dc.allowed_thread_ids],
             "soft_threshold_pct": int(dc.soft_threshold_pct),
+            "session_folder": dc.session_folder,
         }
     )
 
@@ -2820,6 +2712,15 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(dc_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     # ── Phase 1.5: verify a newly pasted token against Discord before storing.
     # A token Discord rejects fails the save right here, where the user can
     # act on it. Network failure is NOT a rejection: the save proceeds with a
@@ -2850,6 +2751,18 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         dc_cfg.update(staged)
         _atomic_json_write(path, data)
 
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = stored_folder_name(dc_cfg.get("session_folder"))
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(
+                    _state, "discord", _folder_name,
+                    relabel="session_folder" in staged,
+                )
+
     _sel().log_api_access(
         caller=caller,
         operation="discord.config.update",
@@ -2862,7 +2775,8 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged),
+            "restart_required": bool(env_updates)
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -2934,6 +2848,7 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
             # accepts digit strings and stores canonical ints.
             "allowed_user_ids": [str(u) for u in tg.allowed_user_ids],
             "soft_threshold_pct": int(tg.soft_threshold_pct),
+            "session_folder": tg.session_folder,
             # Forum per-topic config. chat_ids are serialized as strings for
             # the tag editor UI; they are NEGATIVE (e.g. "-1001234567890"),
             # so the save path accepts a leading minus (not a digits-only check).
@@ -3071,6 +2986,15 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(tg_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     if "allow_forum" in body:
         val = body.get("allow_forum")
         if not isinstance(val, bool):
@@ -3143,6 +3067,18 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         # Off-loop: the atomic write (temp file + fsync + replace) must not
         # block the gateway event loop.
         await asyncio.to_thread(_atomic_json_write, path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = stored_folder_name(tg_cfg.get("session_folder"))
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(
+                    _state, "telegram", _folder_name,
+                    relabel="session_folder" in staged,
+                )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3168,7 +3104,8 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged),
+            "restart_required": bool(env_updates)
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3276,6 +3213,7 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
             "enabled": cfg.teams.enabled,
             "tenant_id": cfg.teams.tenant_id,
             "allowed_emails": list(cfg.teams.allowed_emails),
+            "session_folder": cfg.teams.session_folder,
         }
     )
 
@@ -3372,6 +3310,12 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             return _deny(str(exc))
         staged["allowed_emails"] = new_ids
 
+    if "session_folder" in body:
+        try:
+            staged["session_folder"] = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+
     # ── Phase 2: commit under the repo-wide config lock (read fresh, merge only
     # the teams section, write atomic) so a concurrent save is never clobbered.
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -3397,6 +3341,10 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             "allowed_emails", []
         ):
             changes["allowed_emails"] = staged["allowed_emails"]
+        if "session_folder" in staged and staged["session_folder"] != str(
+            teams_cfg.get("session_folder", "") or ""
+        ):
+            changes["session_folder"] = staged["session_folder"]
         applied = list(changes.keys())
         # The secret is env-only; if a legacy plaintext app_password ever landed
         # in config.json, purge it so it can't shadow or outlive the .env value.
@@ -3407,6 +3355,18 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
         if changes:
             teams_cfg.update(changes)
             _atomic_json_write(path, data)
+
+        # Create the configured session folder now, on this user-initiated save,
+        # so the reconcile path never has to write the folder store. Best-effort:
+        # a failure leaves conversations unfiled until the next save.
+        _folder_name = stored_folder_name(teams_cfg.get("session_folder"))
+        if _folder_name:
+            _state = request.app.get("state")
+            if _state is not None:
+                await ensure_channel_folder(
+                    _state, "teams", _folder_name,
+                    relabel="session_folder" in changes,
+                )
         if env_updates:
             # Off-loop: restrict_to_owner spawns whoami/icacls subprocesses on
             # Windows, which would stall the gateway loop if run inline.
@@ -3427,7 +3387,8 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(applied),
+            "restart_required": bool(env_updates)
+            or bool(set(applied) - LIVE_RELOAD_FIELDS),
             "verify_warning": "",
         }
     )
@@ -3462,6 +3423,7 @@ async def api_webex_config_get(request: web.Request) -> web.Response:
             "bot_token_preview": _mask_secret(token),
             "enabled": cfg.webex.enabled,
             "allowed_emails": list(cfg.webex.allowed_emails),
+            "session_folder": cfg.webex.session_folder,
         }
     )
 
@@ -3540,6 +3502,12 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             return _deny(str(exc))
         staged["allowed_emails"] = new_emails
 
+    if "session_folder" in body:
+        try:
+            staged["session_folder"] = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+
     # ── Phase 1.5: verify a newly pasted token against Webex before storing.
     # Network failure is NOT a rejection: the save proceeds with a warning so
     # being offline never blocks config. Mirrors the Slack token verification.
@@ -3581,6 +3549,10 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             "allowed_emails", []
         ):
             changes["allowed_emails"] = staged["allowed_emails"]
+        if "session_folder" in staged and staged["session_folder"] != str(
+            webex_cfg.get("session_folder", "") or ""
+        ):
+            changes["session_folder"] = staged["session_folder"]
         applied = list(changes.keys())
         # Any token set/clear also purges the legacy config.json
         # ``webex.bot_token`` fallback so a stale plaintext copy can't shadow
@@ -3594,6 +3566,18 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
         if changes:
             webex_cfg.update(changes)
             _atomic_json_write(path, data)
+
+        # Create the configured session folder now, on this user-initiated save,
+        # so the reconcile path never has to write the folder store. Best-effort:
+        # a failure leaves conversations unfiled until the next save.
+        _folder_name = stored_folder_name(webex_cfg.get("session_folder"))
+        if _folder_name:
+            _state = request.app.get("state")
+            if _state is not None:
+                await ensure_channel_folder(
+                    _state, "webex", _folder_name,
+                    relabel="session_folder" in changes,
+                )
         if env_updates:
             _write_env_updates(env_updates)
             # Keep the live process environment in sync (see the Slack save path).
@@ -3614,7 +3598,8 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(applied),
+            "restart_required": bool(env_updates)
+            or bool(set(applied) - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3692,6 +3677,7 @@ async def api_wecom_config_get(request: web.Request) -> web.Response:
             # stored display names to surviving entries.
             "allowed_user_ids": userids,
             "soft_threshold_pct": int(wc.soft_threshold_pct),
+            "session_folder": wc.session_folder,
         }
     )
 
@@ -3853,6 +3839,15 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    if "session_folder" in body:
+        try:
+            new_folder = clean_session_folder(body.get("session_folder"))
+        except ValueError as exc:
+            return _deny(str(exc))
+        if new_folder != str(wc_cfg.get("session_folder", "") or ""):
+            staged["session_folder"] = new_folder
+            applied.append("session_folder")
+
     # No Phase 1.5 credential verification: validating WeCom credentials
     # requires opening the AI-bot WebSocket long-connection (no cheap REST
     # "whoami" like Telegram's getMe), so credentials are stored as given and
@@ -3864,6 +3859,18 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         # Off-loop: the atomic write (temp file + fsync + replace) must not
         # block the gateway event loop.
         await asyncio.to_thread(_atomic_json_write, path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = stored_folder_name(wc_cfg.get("session_folder"))
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(
+                    _state, "wecom", _folder_name,
+                    relabel="session_folder" in staged,
+                )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3888,7 +3895,8 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates) or bool(staged),
+            "restart_required": bool(env_updates)
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": "",
         }
     )

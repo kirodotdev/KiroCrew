@@ -15,7 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
-from kiro_crew.acp.types import TurnUsage
+from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.hooks import fire_tool_hooks, get_global_hook_store
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -76,6 +76,13 @@ _TRANSIENT_MARKERS = (
     # would resurrect the pointless retry loop #1550 removed.
     "is unavailable on the backend",
     "is unavailable on bedrock",
+    # kiro-cli >= 2.16 nameless capacity wording ("The model you've selected
+    # is temporarily unavailable..."). The formatter now rewrites it into the
+    # "on the backend" prose above, but a transcript or history line written
+    # by a pre-rewrite gateway carries the raw passthrough — this marker keeps
+    # those classifying. Deliberately skips the "you've" apostrophe so
+    # straight and typographic quotes both match the substring.
+    "selected is temporarily unavailable",
     "transient error (http 5xx)",  # _format_acp_error's generic-5xx message
 )
 
@@ -251,9 +258,19 @@ async def run_bg_oneliner(
     sel_source: str = "bg_oneliner",
     sel_session_key: str = "_bg",
     timeout: float | None = None,
+    strict_model: bool = False,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
+
+    ``strict_model=True`` makes the requested ``model`` a hard requirement
+    rather than a preference: a failed ``set_model`` override raises instead
+    of silently degrading to the session default, and the reactive
+    rejected-model fallback below is disabled. Callers whose RESULT is only
+    meaningful on that exact model (e.g. the poisoned-conversation canary in
+    chat_runner, which uses a success as evidence to discard a conversation
+    served by that same model) must set it; ordinary best-effort callers
+    (title/nav/folder generation) keep the default lenient behavior.
 
     Consolidates the identical "acquire a ``_bg`` session -> best-effort pin the
     cheap model -> drive the event loop -> ``destroy()`` in ``finally``" skeleton
@@ -297,14 +314,40 @@ async def run_bg_oneliner(
         # a hardcoded/unentitled id, or "auto" on a partition that does not serve
         # it, is swapped for the first advertised model instead of
         # reaching the wire and failing mid-prompt with Invalid model ID.
-        # Best-effort: a failed override falls back to the default.
+        # Best-effort: a failed override falls back to the default — unless
+        # strict_model, where running on any other model would make the
+        # result meaningless (see docstring), so the failure propagates.
         if model_to_use and set_model is not None:
             try:
                 await set_model(model_to_use)
             except Exception:
+                if strict_model:
+                    raise
                 logger.debug(
                     "bg oneliner: model override to %s failed; using default", model_to_use
                 )
+            else:
+                if strict_model:
+                    # POST-CONDITION, not just no-exception: the substitute-style
+                    # set_model seam can silently inherit the session default
+                    # when the requested id is absent from the advertised set
+                    # (resolve_usable_model returns "" → no-op, no raise). A
+                    # strict caller (the poisoned-conversation canary) must
+                    # never run on any other model — verify the session now
+                    # SERVES the requested id and refuse otherwise. Unreadable
+                    # served model ⇒ cannot verify ⇒ refuse.
+                    served = str(getattr(session, "served_model", "") or "").strip()
+                    if served != model_to_use:
+                        raise RuntimeError(
+                            "run_bg_oneliner(strict_model=True): session serves "
+                            f"{served or 'unknown'!r}, not the required {model_to_use!r}"
+                        )
+        elif strict_model and model_to_use and set_model is None:
+            # No override seam at all: cannot guarantee the model — refuse
+            # rather than silently answer from the session default.
+            raise RuntimeError(
+                "run_bg_oneliner(strict_model=True) requires a session with set_model()"
+            )
         async for event in session.prompt(prompt):
             if event.kind == EVENT_TEXT_CHUNK:
                 text += event.text
@@ -356,7 +399,11 @@ async def run_bg_oneliner(
             # classifier tagged a rejected model AND named an advertised set.
             rejected = getattr(exc, "rejected_model", None)
             advertised = getattr(exc, "advertised", None) or []
-            fallback = _first_advertised_fallback(advertised, rejected) if rejected else None
+            fallback = (
+                _first_advertised_fallback(advertised, rejected)
+                if rejected and not strict_model
+                else None
+            )
             if not fallback:
                 raise
             logger.warning(
@@ -401,6 +448,8 @@ async def stream_and_collect(
     hooks: HookManager | None = None,
     on_chunk: Callable[[str], None] | None = None,
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
+    on_steer_consumed: Callable[[str], None] | None = None,
+    on_tool_gate: Callable[[str, bool, bool], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
     session_key: str = "",
@@ -419,6 +468,26 @@ async def stream_and_collect(
         hooks: HookManager for HOOK_BASED approval policy.
         on_chunk: Optional callback invoked with each text chunk (for progress).
         on_tool_approval: Optional async callback for interactive approval.
+        on_steer_consumed: Optional callback invoked with the backend's
+            ``steering_consumed`` echo text. A mid-turn steer is a
+            fire-and-forget write, so this echo is the ONLY authoritative signal
+            that the backend injected it; a caller that steers must observe this
+            to know which of its steers to requeue when the turn ends.
+        on_tool_gate: Optional callback invoked once per tool permission
+            decision with ``(tool_title, approved, security_blocked)``. Lets a
+            caller tell "the model did work" apart from "every tool the model
+            attempted was blocked" — a distinction the returned text cannot
+            carry, because a model whose tools were all refused still returns
+            plausible prose. ``security_blocked`` is True only for the
+            unconditional deny checks (sensitive path, sensitive bash, a deny
+            pattern); a governance ``TOOL_DENY`` and an unattended-approval
+            timeout are refusals that say nothing about the job, so they arrive
+            with ``approved=False`` and ``security_blocked=False``.
+            Delivered when the attempt settles, not mid-stream, and decisions
+            from an abandoned retry attempt are discarded: they describe work
+            the final turn never did. ``tool_title`` is LLM-authored: redact it
+            before display or persistence. Raising from the callback is
+            swallowed; observing a gate decision must never fail the turn.
         retry_transient: When True (default), transient backend errors are
             retried in-place with bounded backoff. Set False from callers that
             already own an outer transient-retry loop, so the inner arm doesn't
@@ -448,6 +517,26 @@ async def stream_and_collect(
     while True:
         result_text = ""
         tool_call_count = 0
+        # Consumption is committed on every exit EXCEPT a retry. A retry re-sends the
+        # original message without the steer, so committing there would mark a steer
+        # delivered that the model never saw. Every other exit — success or failure — is
+        # terminal for this steer: the backend already consumed it, and `consumed` is what
+        # suppresses the requeue, so dropping the acknowledgement makes the cleanup hand an
+        # already-answered question back and ask it twice. Re-initialised per attempt.
+        consumed_this_attempt: list[str] = []
+        # Same per-attempt discipline as the steer acknowledgements above, and for the
+        # same reason: a retry re-sends the original message, so decisions from an
+        # abandoned attempt describe work the final turn never did. Committing them
+        # would let a refusal from a discarded attempt outvote a clean retry and fail
+        # a healthy job.
+        gate_this_attempt: list[tuple[str, bool, bool]] = []
+        # Tool calls that reached the gate, and tool calls that actually ran.
+        # A tool auto-approved upstream never raises a permission request, so it
+        # executes without a gate decision: correlating the two by
+        # ``tool_call_id`` is what lets a caller see that work happened.
+        gate_decided_ids: set[str] = set()
+        executed_calls: list[tuple[str, str]] = []
+        retrying = False
         try:
             async for event in provider.stream(message):
                 if event.kind == EVENT_TEXT_CHUNK:
@@ -455,6 +544,11 @@ async def stream_and_collect(
                     if on_chunk:
                         on_chunk(event.text)
                 elif event.kind == EVENT_PERMISSION_REQUEST:
+                    # Captures this decision's outcome and mechanism, so a hard
+                    # security block is distinguishable from a governance denial
+                    # or an unattended-approval timeout. Only the former says
+                    # anything about the job itself.
+                    _decision: list[tuple[str, str]] = []
                     approved = await _resolve_permission(
                         provider,
                         event,
@@ -464,11 +558,21 @@ async def stream_and_collect(
                         session_key=session_key,
                         agent=agent,
                         app=app,
+                        on_decision=lambda outcome, mech: _decision.append((outcome, mech)),
                     )
+                    if on_tool_gate:
+                        _mech = _decision[-1][1] if _decision else ""
+                        gate_this_attempt.append(
+                            (event.title or "", approved, _mech.startswith("always_deny"))
+                        )
+                        if event.tool_call_id:
+                            gate_decided_ids.add(event.tool_call_id)
                     if not approved:
                         continue
                 elif event.kind == EVENT_TOOL_CALL:
                     tool_call_count += 1
+                    if on_tool_gate:
+                        executed_calls.append((event.tool_call_id or "", event.title or ""))
                     if max_turns is not None and tool_call_count > max_turns:
                         logger.warning(
                             "max_turns=%d exceeded (%d tool calls), breaking",
@@ -497,6 +601,8 @@ async def stream_and_collect(
                         event.title,
                         event.tool_input,
                     )
+                elif event.kind == EVENT_STEER_CONSUMED:
+                    consumed_this_attempt.append(event.text or "")
                 elif event.kind == EVENT_COMPLETE:
                     break
             return result_text
@@ -540,6 +646,7 @@ async def stream_and_collect(
                     logger.debug("Cancel before retry failed", exc_info=True)
                 await asyncio.sleep(_PROMPT_BUSY_DELAY * (2**attempt))
                 attempt += 1
+                retrying = True
                 continue
 
             # ── Case 2: transient backend (Bedrock 5xx / throttle / stream) ──
@@ -571,10 +678,37 @@ async def stream_and_collect(
                     exc,
                 )
                 await asyncio.sleep(delay)
+                retrying = True
                 continue
 
             # ── Case 3: fatal (auth, validation, exhausted retries) — propagate. ──
             raise
+        finally:
+            # Runs before the value reaches the caller on success, and before the exception
+            # propagates on failure, so the acknowledgement always precedes the cleanup that
+            # would otherwise requeue the question.
+            if not retrying and on_steer_consumed:
+                for consumed_text in consumed_this_attempt:
+                    on_steer_consumed(consumed_text)
+            if not retrying and on_tool_gate:
+                for gate_title, gate_approved, gate_blocked in gate_this_attempt:
+                    try:
+                        on_tool_gate(gate_title, gate_approved, gate_blocked)
+                    except Exception:
+                        # A caller's bookkeeping must never abort the turn.
+                        logger.debug("on_tool_gate callback failed", exc_info=True)
+                # A tool that executed without a matching gate decision was
+                # permitted upstream, so it counts as an approval: work happened.
+                # An id-less execution cannot be correlated, so it counts too —
+                # over-reporting work risks a missed detection, under-reporting
+                # it fails a job that did something.
+                for _exec_id, _exec_title in executed_calls:
+                    if _exec_id and _exec_id in gate_decided_ids:
+                        continue
+                    try:
+                        on_tool_gate(_exec_title, True, False)
+                    except Exception:
+                        logger.debug("on_tool_gate callback failed", exc_info=True)
 
 
 async def stream_and_collect_json(
@@ -602,12 +736,33 @@ async def _resolve_permission(
     session_key: str = "",
     agent: str = "",
     app: str = "",
+    on_decision: Callable[[str, str], None] | None = None,
 ) -> bool:
-    """Resolve a tool permission request. Returns True if approved."""
+    """Resolve a tool permission request. Returns True if approved.
+
+    *on_decision*, when given, receives ``(outcome, mechanism)`` for the single
+    decision this call makes — the same pair that reaches the SEL audit row.
+    ``mechanism`` is one of ``"always_deny"`` / ``"always_deny_input"`` (the
+    unconditional checks), ``"always_deny_hook"`` (a HookManager security deny),
+    ``"policy_deny"`` (the governance ceiling, whether reached through the hook
+    gate or through a regex-tier rule that only a governance PIN put back into
+    the effective set), or ``""`` for an approval or an interactive rejection.
+    The ``always_deny`` prefix is therefore what marks a refusal as "the attempt
+    itself was the problem"; everything else describes policy state or an absent
+    approver. Note that the same regex match can land under either label — what
+    decides it is whether the rule survives without its pin.
+    """
     from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
     from kiro_crew.sel import sel
 
     def _log(outcome: str, **extra):
+        # Single funnel for every decision path, so the sink cannot miss one.
+        if on_decision is not None:
+            _meta = extra.get("metadata") or {}
+            try:
+                on_decision(outcome, str(_meta.get("mechanism") or ""))
+            except Exception:
+                logger.debug("on_decision sink failed", exc_info=True)
         sel().log_tool_invocation(
             session_key=session_key,
             agent=agent,
@@ -651,10 +806,42 @@ async def _resolve_permission(
     # re-introduce "disabled but still blocked" on every non-dashboard surface.
     # No HookManager (rare) → None → fail-closed default (all built-ins).
     _denied_regexes = hooks.effective_denied_regexes() if hooks is not None else None
+
+    def _regex_deny_mechanism(probe: str, unconditional: str) -> str:
+        """Classify an already-decided regex-tier deny by its provenance.
+
+        A governance pin re-adds a built-in rule the user disabled, so the SAME
+        match can mean either "this host enforces this rule" or "policy
+        currently overrides this host's opt-out". Only the former says anything
+        about the tool being attempted; treating the latter as a security block
+        durably auto-pauses a cron that a later policy loosening cannot revive,
+        because clearing the pause never restores ``enabled``.
+
+        Re-runs the match against the pin-free set — deny path only, so the
+        common allow path pays nothing — and reports a match that survives ONLY
+        with pins as policy state.
+        """
+        if hooks is None:
+            return unconditional
+        try:
+            _unpinned = hooks.effective_denied_regexes(include_governance_pins=False)
+        except Exception:
+            # Classification must never change the deny itself. An unresolvable
+            # opt-out state falls back to the unconditional label: over-counting
+            # a block is recoverable by an operator, silently not counting one
+            # restores the runaway this gate exists to catch.
+            logger.debug("deny provenance unresolved; reporting unconditional", exc_info=True)
+            return unconditional
+        return unconditional if is_denied(probe, denied_regexes=_unpinned) else "policy_deny"
+
     _deny_reason = is_denied(normalized, denied_regexes=_denied_regexes)
     if _deny_reason:
         await provider.reject_tool(event.request_id)
-        _log("denied", error=_deny_reason, metadata={"mechanism": "always_deny"})
+        _log(
+            "denied",
+            error=_deny_reason,
+            metadata={"mechanism": _regex_deny_mechanism(normalized, "always_deny")},
+        )
         return False
 
     # Defense-in-depth: also inspect event.tool_input for sensitive paths/commands.
@@ -682,7 +869,11 @@ async def _resolve_permission(
             _input_deny = is_denied(s, denied_regexes=_denied_regexes)
             if _input_deny:
                 await provider.reject_tool(event.request_id)
-                _log("denied", error=_input_deny, metadata={"mechanism": "always_deny_input"})
+                _log(
+                    "denied",
+                    error=_input_deny,
+                    metadata={"mechanism": _regex_deny_mechanism(s, "always_deny_input")},
+                )
                 return False
 
     if policy == ToolApprovalPolicy.HOOK_BASED and hooks:
@@ -698,7 +889,19 @@ async def _resolve_permission(
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)
-            _log("denied", error=tool_result.reason)
+            # A hook deny is either a hard security check or the governance
+            # ceiling. Only the former says the attempt itself was the problem,
+            # and the distinction rides on the result's own field rather than
+            # its reason text.
+            _log(
+                "denied",
+                error=tool_result.reason,
+                metadata={
+                    "mechanism": (
+                        "always_deny_hook" if tool_result.security_deny else "policy_deny"
+                    )
+                },
+            )
             return False
         if tool_result.action == TOOL_AUTO_APPROVE:
             await provider.approve_tool(event.request_id)
@@ -848,8 +1051,17 @@ async def save_conversation_turn_off_loop(
     source_thread: str | None = None,
     source_user: str | None = None,
     agent: str | None = None,
-) -> None:
+) -> str | None:
     """Save a turn without blocking (or fail-fast-dropping on) the event loop.
+
+    Returns the ``ts`` of the row this turn ended on, read back INSIDE the atomic
+    hold so it is this turn's own row and not some later writer's. A caller that
+    stamps something with "how far the conversation had got" needs that value, and
+    re-reading the tail afterwards is not the same thing: the permit for this
+    session is released before the caller gets here, so a queued second turn can
+    land its rows in between and the re-read would return ITS position. Taking the
+    value under the lock we already hold costs nothing and removes the window
+    rather than narrowing it.
 
     :func:`save_conversation_turn` makes TWO ``ConversationLog.append`` calls, and
     append acquires a cross-process flock and writes to disk -- ~12 ms each on a
@@ -881,7 +1093,7 @@ async def save_conversation_turn_off_loop(
     inherited.
     """
 
-    def _write() -> None:
+    def _write() -> str | None:
         with log.atomic_appends(key):
             save_conversation_turn(
                 log,
@@ -892,5 +1104,10 @@ async def save_conversation_turn_off_loop(
                 source_user=source_user,
                 agent=agent,
             )
+            # Reentrant for the same key on the same thread (see
+            # ``atomic_appends``), so this reuses the hold rather than
+            # deadlocking on it -- and reading it here rather than after the
+            # hold is released is the whole point.
+            return log.last_row_ts(key)
 
-    await asyncio.to_thread(_write)
+    return await asyncio.to_thread(_write)

@@ -42,6 +42,7 @@ import {
   PANEL_MIN_WIDTH,
   SAVE_DEBOUNCE_MS,
   SORTS,
+  collapsedKey,
   pinnedKey,
 } from './constants'
 import { MDNB_CSS } from './styles'
@@ -113,7 +114,13 @@ export default function MdNotebookPage() {
   const [dirty, setDirty] = useState(false)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchHit[]>([])
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Seeded from storage for the vault that will be restored, so returning to the
+  // app keeps the tree the user shaped. An empty set means every folder open, so
+  // initialising blind is what re-expanded the whole tree on every mount.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    const vault = loadPref<string | null>(LS.activeVault, null)
+    return new Set(vault ? loadPref<string[]>(collapsedKey(vault), []) : [])
+  })
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [editBlock, setEditBlock] = useState<EditRange | null>(null)
@@ -441,8 +448,10 @@ export default function MdNotebookPage() {
     savePref(LS.activeVault, activeVaultId)
     setLastSync(loadPref<number | null>(`mdnb-last-sync-${activeVaultId}`, null))
     // Pins are per-vault, so they are re-read here rather than carried over —
-    // a path pinned in one vault means nothing in another.
+    // a path pinned in one vault means nothing in another. Collapsed folders
+    // are per-vault for the same reason: the trees are unrelated.
     setPinned(new Set(loadPref<string[]>(pinnedKey(activeVaultId), [])))
+    setCollapsed(new Set(loadPref<string[]>(collapsedKey(activeVaultId), [])))
     setRenamingPath(null)
     void loadNotes()
   }, [activeVaultId, loadNotes])
@@ -616,6 +625,12 @@ export default function MdNotebookPage() {
   const writePinned = useCallback((next: Set<string>) => {
     setPinned(next)
     if (vaultRef.current) savePref(pinnedKey(vaultRef.current), [...next])
+  }, [])
+
+  /** Persist a new collapsed-folder set for the ACTIVE vault. Same shape as pins. */
+  const writeCollapsed = useCallback((next: Set<string>) => {
+    setCollapsed(next)
+    if (vaultRef.current) savePref(collapsedKey(vaultRef.current), [...next])
   }, [])
 
   const isPinned = useCallback((path: string) => pinned.has(path), [pinned])
@@ -1078,14 +1093,13 @@ export default function MdNotebookPage() {
   )
 
   const toggle = useCallback(
-    (name: string) =>
-      setCollapsed(prev => {
-        const next = new Set(prev)
-        if (next.has(name)) next.delete(name)
-        else next.add(name)
-        return next
-      }),
-    [],
+    (name: string) => {
+      const next = new Set(collapsed)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      writeCollapsed(next)
+    },
+    [collapsed, writeCollapsed],
   )
 
   const togglePanel = useCallback(() => {

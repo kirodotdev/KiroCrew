@@ -153,3 +153,73 @@ class TestAgentOrderingFallback:
         order = [a["name"] for a in data["agents"]]
         assert order == CONFIG_ORDER
         assert data["default_agent"] == DEFAULT_AGENT
+
+
+class TestProjectScopeRoster:
+    """/api/agents surfaces the session project's agents (#1684's headline).
+
+    Rows carry ``scope``: config aliases are ``"global"``, project discoveries
+    ``"project"``. A name in both scopes lists once, as the alias — dispatch
+    resolves aliases first, so the alias is what would answer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_project_agent_appears_with_project_scope(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from kiro_crew.agent_discovery import clear_project_agent_cache
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        (proj / ".kiro" / "agents" / "repo-bot.json").write_text(_json.dumps({"name": "repo-bot"}))
+        clear_project_agent_cache()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: str(proj),
+        )
+        state = _make_state(tmp_path)
+
+        data = await _get_agents(state, CONFIG_ORDER)
+
+        rows = {a["name"]: a for a in data["agents"]}
+        assert "repo-bot" in rows, f"project agent missing from roster: {list(rows)}"
+        assert rows["repo-bot"]["scope"] == "project"
+        assert rows["alpha"]["scope"] == "global"
+
+    @pytest.mark.asyncio
+    async def test_alias_shadows_project_agent_of_same_name(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from kiro_crew.agent_discovery import clear_project_agent_cache
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        (proj / ".kiro" / "agents" / "alpha.json").write_text(_json.dumps({"name": "alpha"}))
+        clear_project_agent_cache()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: str(proj),
+        )
+        state = _make_state(tmp_path)
+
+        data = await _get_agents(state, CONFIG_ORDER)
+
+        alphas = [a for a in data["agents"] if a["name"] == "alpha"]
+        assert len(alphas) == 1, "alias + project twin must list once"
+        assert alphas[0]["scope"] == "global"
+
+    @pytest.mark.asyncio
+    async def test_no_project_dir_keeps_roster_global_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.active_project_dir",
+            lambda state, key: "",
+        )
+        state = _make_state(tmp_path)
+
+        data = await _get_agents(state, CONFIG_ORDER)
+
+        assert [a["name"] for a in data["agents"]] == CONFIG_ORDER
+        assert all(a["scope"] == "global" for a in data["agents"])

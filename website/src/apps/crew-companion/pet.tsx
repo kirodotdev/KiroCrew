@@ -52,9 +52,8 @@ import { useMood } from './useMood'
 import { useEdgeHide } from './useEdgeHide'
 import { useWalking } from './useWalking'
 import { useIdleFidget } from './useIdleFidget'
-import { useRandomClips, type RandomBehaviors } from './useRandomClips'
-import { activeAnimFor, CELEBRATE_MS, CELEBRATE_PROP_HOLD_MS } from './petAnim'
-import { ALL_MOODS } from './appearanceTypes'
+import { normaliseCustomRandomNames, useRandomClips } from './useRandomClips'
+import { activeAnimFor, CELEBRATE_MS, CELEBRATE_PROP_HOLD_MS, type PetAnim } from './petAnim'
 
 /** Well inside the backend's 90s presence TTL, so one dropped request is harmless. */
 /**
@@ -255,17 +254,11 @@ function Companion() {
    * desktop app gates it.
    */
   const [isDefaultPack, setIsDefaultPack] = useState(true)
-  /**
-   * The random behaviours the ACTIVE custom pack ships, for `useRandomClips`. Empty
-   * for the built-in ghost, which fidgets through `useIdleFidget` instead. `extras` is
-   * left empty: this build's `PetAvatar` renders by state slot, not by arbitrary
-   * author-named clips, so there is nothing to play them through yet.
-   */
-  const [customBehaviors, setCustomBehaviors] = useState<RandomBehaviors>({
-    walking: false, moods: [], extras: [],
-  })
+  /** Uploaded random moments replace only Kiro's idle-motion pool. */
+  const [customRandomNames, setCustomRandomNames] = useState<string[]>([])
+  const hasCustomRandomPool = !isDefaultPack && customRandomNames.length > 0
   const motionEnabledRef = useRef(true)
-  motionEnabledRef.current = isDefaultPack
+  motionEnabledRef.current = isDefaultPack || !hasCustomRandomPool
   useEffect(() => {
     const release = () => window.crewCompanion?.panelHold?.(false)
     // Window-level: a drag usually ends with the pointer well away from the companion.
@@ -307,18 +300,15 @@ function Companion() {
         const isDefault = packId === 'kiro-ghost'
         setIsDefaultPack(isDefault)
         if (isDefault) {
-          setCustomBehaviors({ walking: false, moods: [], extras: [] })
+          setCustomRandomNames([])
           return
         }
         const detail = await petBridge.galleryGetPackDetail?.(packId).catch(() => null)
         if (!alive) return
         const anims = detail?.animations ?? {}
-        const has = (k: string) => Object.prototype.hasOwnProperty.call(anims, k)
-        setCustomBehaviors({
-          walking: has('walking'),
-          moods: (ALL_MOODS as readonly string[]).filter((m) => has(m)),
-          extras: [],
-        })
+        // Walking is stored under either states or random depending on pack format.
+        // Normalize both shapes once so it receives exactly one pool entry.
+        setCustomRandomNames(normaliseCustomRandomNames(anims, detail?.randomNames))
       }).catch(() => {})
     }
     read()
@@ -338,9 +328,24 @@ function Companion() {
   const [petState, setPetState] = useState<PetState>('idle')
   const stateTimer = useRef<number | null>(null)
 
+  /**
+   * A per-reaction counter, bumped every time a fresh reaction is triggered.
+   *
+   * Handed to PetAvatar, which folds it into the animated span's React key. Without
+   * it the span is keyed only on the motion NAME, so a reaction that repeats the same
+   * motion — a second completion is `celebrate` again, and a `happy` mood already
+   * resolves to `celebrate` — reuses the same DOM node and never re-fires the CSS
+   * keyframes, so the hop is silently skipped. Bumping this forces the remount that
+   * replays the keyframes on every finish (and every error shake).
+   */
+  const [reactionEpoch, setReactionEpoch] = useState(0)
+  const bumpReaction = useCallback(() => setReactionEpoch((n) => n + 1), [])
+
   /** Show a reaction, then return to idle. */
   const react = useCallback((next: PetState, holdMs: number) => {
     if (stateTimer.current !== null) window.clearTimeout(stateTimer.current)
+    // A fresh reaction always replays its keyframes, even if it repeats the last one.
+    setReactionEpoch((n) => n + 1)
     setPetState(next)
     stateTimer.current = window.setTimeout(() => setPetState('idle'), holdMs)
   }, [])
@@ -673,6 +678,7 @@ function Companion() {
         text: result.show,
       })
       // Curious, not alarmed: activeAnimFor turns a curious mood into the head-cock.
+      bumpReaction()
       setMood('curious')
     },
     /*
@@ -686,7 +692,7 @@ function Companion() {
       if (slotRef.current?.sticky) slotRef.current = null
       setBubble((b) => (b && isSticky(b.kind) ? null : b))
     },
-  }), [react, setMood, celebrateWithProp])
+  }), [react, setMood, celebrateWithProp, bumpReaction])
 
   /** Presence: silence is read as "nobody is there", so this must not stop. */  useEffect(() => {
     void post(PRESENCE_PATH)
@@ -847,6 +853,7 @@ function Companion() {
            * the head instead — curious, not alarmed — and the mood is what drives it,
            * so no `react` here: `activeAnimFor` turns a curious mood into the head-cock.
            */
+          bumpReaction()
           setMood('curious')
         } else {
           react('done', 2_400)
@@ -867,6 +874,7 @@ function Companion() {
       stopped = true
       window.clearInterval(t)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: starts poll loop once, deps are stable refs/callbacks
   }, [])
 
 
@@ -910,21 +918,78 @@ function Companion() {
     menuAt === null && !reducedMotion
 
   // Built-in ghost: small in-place hop / brief mood flicker.
+  /*
+   * The idle fidget currently playing, if any.
+   *
+   * Held in state rather than derived, because a fidget is something the companion
+   * DECIDED to do at a random moment -- nothing about the current state or mood
+   * implies it. It clears itself after the motion's own length so the companion
+   * returns to still without needing another signal.
+   */
+  const [idleAnim, setIdleAnim] = useState<PetAnim>(null)
+  const idleAnimTimer = useRef<number | null>(null)
+
+  const playFidget = useCallback((anim: PetAnim, holdMs: number) => {
+    if (idleAnimTimer.current !== null) window.clearTimeout(idleAnimTimer.current)
+    // Same epoch bump as a reaction: without it, drawing the SAME fidget twice in a
+    // row would reuse the DOM node and the keyframes would never restart.
+    bumpReaction()
+    setIdleAnim(anim)
+    idleAnimTimer.current = window.setTimeout(() => setIdleAnim(null), holdMs)
+  }, [bumpReaction])
+
+  useEffect(() => () => {
+    if (idleAnimTimer.current !== null) window.clearTimeout(idleAnimTimer.current)
+  }, [])
+
+  /*
+   * The author-named random clip currently playing on a CUSTOM pack, if any.
+   *
+   * The custom-pack counterpart of `idleAnim`: `useRandomClips` picks a name from the
+   * pack's own extras (wave / waiting / run for a PetDex import), and this holds it
+   * while it plays. Duration is a fixed hold rather than the clip's own length,
+   * because a sprite strip loops forever — there is no "end" to wait for. Cleared
+   * back to the state slot afterwards.
+   */
+  const [activeClip, setActiveClip] = useState<string | undefined>(undefined)
+  const clipTimer = useRef<number | null>(null)
+  const CLIP_HOLD_MS = 3_000
+
+  const showIdleClip = useCallback(() => {
+    if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
+    clipTimer.current = null
+    setActiveClip(undefined)
+  }, [])
+
+  const playExtraClip = useCallback((name: string) => {
+    if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
+    // Same epoch bump as every other one-off motion: repeating the SAME clip must
+    // remount and replay, not silently reuse the DOM node.
+    bumpReaction()
+    setActiveClip(name)
+    clipTimer.current = window.setTimeout(() => setActiveClip(undefined), CLIP_HOLD_MS)
+  }, [bumpReaction])
+
+  useEffect(() => () => {
+    if (clipTimer.current !== null) window.clearTimeout(clipTimer.current)
+  }, [])
+
   useIdleFidget({
-    enabled: isDefaultPack && settled,
+    enabled: settled && !hasCustomRandomPool,
     getPos: () => pos,
     walkPath,
     setMood,
+    allowMood: isDefaultPack,
+    playFidget,
   })
 
-  // Custom packs: only the random content the pack itself ships.
   useRandomClips({
-    enabled: !isDefaultPack && settled,
-    getBehaviors: () => customBehaviors,
+    enabled: settled && hasCustomRandomPool,
+    getClips: () => customRandomNames,
     getPos: () => pos,
     walkPath,
-    setMood,
-    playExtra: () => {},
+    showIdle: showIdleClip,
+    playClip: playExtraClip,
   })
 
   // Report the companion's and bubble's hitboxes to the main process; it polls the
@@ -962,6 +1027,7 @@ function Companion() {
     mood,
     docked: hideEdge !== null,
     walking: isWalking,
+    idleAnim,
   })
 
   return (
@@ -992,7 +1058,6 @@ function Companion() {
           <Bubble
             text={bubble.text}
             kind={bubble.kind}
-            arrowLeft={placement?.arrowX}
             onDismiss={dismiss}
             onAction={(action) => {
               // The breathing nudge's CTA opens the exercise, which is the whole
@@ -1113,6 +1178,12 @@ function Companion() {
             mood={mood}
             docked={hideEdge !== null}
             anim={activeAnim}
+            animEpoch={reactionEpoch}
+            /*
+             * A playing clip must never mask a real reaction: done/error outrank it.
+             * `petState` returning to idle is what lets the held clip show.
+             */
+            clipName={petState === 'idle' ? activeClip : undefined}
             trackCursor
             flipX={facingRight}
             accessory={celebrateProp ?? savedProp}

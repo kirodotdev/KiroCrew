@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -206,3 +207,93 @@ def probe(cfg: object | None = None) -> ResourceStatus:
         pressure_gb=pressure_gb,
         critical_gb=critical_gb,
     )
+
+
+# ── pytest-xdist auto-worker cap ─────────────────────────────────────────────
+#
+# The one place resource awareness SHAPES agent work instead of only advising
+# on it. pytest-xdist resolves ``-n auto`` / ``-n logical`` to the CPU count,
+# ignoring memory entirely — on a many-core host each worker's interpreter +
+# fixtures cost ~1 GB, so one full-suite run claims 12-16 GB and two concurrent
+# agent runs can exhaust an unswapped host. xdist honors the
+# ``PYTEST_XDIST_AUTO_NUM_WORKERS`` environment variable when resolving *auto*
+# (https://pytest-xdist.readthedocs.io/en/stable/distribution.html), so seeding
+# it into every agent child env caps ONLY auto resolution: explicit ``-n N``,
+# non-xdist runs, and venvs without xdist are untouched.
+
+#: Env var pytest-xdist consults when resolving ``-n auto`` / ``-n logical``.
+XDIST_AUTO_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+
+#: Assumed steady-state memory of one xdist worker (GB). Deliberately a
+#: constant, not a config key — ``xdist_auto_cap`` is the single operator knob.
+_XDIST_PER_WORKER_GB = 1.0
+
+#: Fraction of *currently available* memory one test run may claim. Half, so
+#: two concurrent agent sessions sizing themselves at the same instant cannot
+#: jointly commit more than what was free.
+_XDIST_MEMORY_SHARE = 0.5
+
+
+def compute_xdist_auto_workers(
+    available_gb: float,
+    cpu_count: int,
+    *,
+    per_worker_gb: float = _XDIST_PER_WORKER_GB,
+    share: float = _XDIST_MEMORY_SHARE,
+) -> int:
+    """Memory-aware worker count for ``-n auto``: never more than the CPUs,
+    never more than ``available_gb * share / per_worker_gb``, never below 1.
+
+    The floor of 1 keeps a low-memory host running the suite serially rather
+    than failing the run; the CPU ceiling means this can only tighten xdist's
+    own default, never exceed it.
+    """
+    cpus = max(1, cpu_count)
+    by_memory = int(max(0.0, available_gb) * share / per_worker_gb)
+    return max(1, min(cpus, by_memory))
+
+
+def _xdist_cap_config() -> int:
+    """Resolve ``resource_limits.xdist_auto_cap`` from the raw config.
+
+    Semantics: ``-1`` (default) = auto-compute from available memory;
+    ``0`` = disabled, inject nothing (passthrough to xdist's own default);
+    ``N > 0`` = fixed cap. Junk values fall back to the default. Reads the
+    same raw ``resource_limits`` block as :func:`security.apply_resource_limits`
+    and ``sandbox._cgroup_limits_from_config``; the import is function-level
+    for the same reason theirs is (no import cycle through the config loader).
+    """
+    try:
+        from kiro_crew.config.loader import _raw_config
+
+        rl = _raw_config().get("resource_limits")
+        if isinstance(rl, dict):
+            v = rl.get("xdist_auto_cap")
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and int(v) >= -1:
+                return int(v)
+    except Exception:  # pragma: no cover - defensive; config must never break a spawn
+        logger.debug("xdist auto cap: config unavailable, using default", exc_info=True)
+    return -1
+
+
+def inject_xdist_auto_cap(env: MutableMapping[str, str]) -> None:
+    """Seed ``PYTEST_XDIST_AUTO_NUM_WORKERS`` into an agent child environment.
+
+    Called at the agent spawn boundary (``acp/client.py`` / ``acp/runtime.py``)
+    after the child env has been assembled. Only affects how pytest-xdist
+    resolves ``-n auto`` — see the section comment above. Never overrides a
+    value already present (operator/user wins), never raises, and injects
+    nothing when disabled via config or when the memory probe is unavailable.
+    """
+    if env.get(XDIST_AUTO_ENV):
+        return  # already set by the operator/user — respect it
+    cap = _xdist_cap_config()
+    if cap == 0:
+        return  # disabled: leave xdist's own auto resolution untouched
+    if cap > 0:
+        env[XDIST_AUTO_ENV] = str(cap)
+        return
+    available_gb = _read_available_gb()
+    if available_gb < 0:
+        return  # probe unavailable — fail open to xdist's default
+    env[XDIST_AUTO_ENV] = str(compute_xdist_auto_workers(available_gb, os.cpu_count() or 1))

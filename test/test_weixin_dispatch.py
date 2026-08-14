@@ -368,6 +368,184 @@ def test_busy_session_does_not_start_a_second_turn(tmp_path):
     assert any("稍后" in s["text"] for s in client.sent)
 
 
+# ── mid-turn attachments ──────────────────────────────────────────────────────
+
+
+def _media_msg(text="look at this", user="userA"):
+    msg = _msg(text=text, user=user)
+    msg.attachments = [{"type": 2, "image_item": {"media": {"encrypt_query_param": "p1"}}}]
+    return msg
+
+
+def test_a_mid_turn_attachment_is_refused_instead_of_ingested(tmp_path, monkeypatch):
+    """Ingesting mid-turn would hand the model a path to a deleted file.
+
+    ``steer()`` sends raw text and returns before the running turn consumes it,
+    so this frame's cleanup deletes the temp file first. Refusing up front and
+    asking for a resend is the only shape that never lies to the model.
+    """
+    import kiro_crew.weixin.transport_dispatch as td
+
+    async def _must_not_run(*_a, **_kw):
+        raise AssertionError("attachments must not be ingested while a turn is live")
+
+    monkeypatch.setattr(td, "process_weixin_attachments", _must_not_run)
+    d, client, _ = _make(tmp_path, busy=True)
+    msg = _media_msg()
+    asyncio.run(d.handle_message(msg))
+
+    assert msg.attachments == []
+    assert any("重新发送" in s["text"] for s in client.sent)
+
+
+def test_a_mid_turn_caption_still_reaches_the_running_turn(tmp_path, monkeypatch):
+    """Refusing the attachment must not also swallow the text beside it."""
+    import kiro_crew.weixin.transport_dispatch as td
+
+    async def _must_not_run(*_a, **_kw):
+        raise AssertionError("attachments must not be ingested while a turn is live")
+
+    monkeypatch.setattr(td, "process_weixin_attachments", _must_not_run)
+
+    class Steering(FakeProvider):
+        supports_steer = True
+
+        def __init__(self):
+            super().__init__()
+            self.steered: list[str] = []
+
+        def has_active_turn(self):
+            return True
+
+        async def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    provider = Steering()
+    d, client, _ = _make(tmp_path, provider=provider, busy=True)
+    asyncio.run(d.handle_message(_media_msg(text="what is this error")))
+
+    assert provider.steered == ["what is this error"]
+    assert any("重新发送" in s["text"] for s in client.sent)
+
+
+def test_a_media_only_mid_turn_message_ends_after_the_refusal(tmp_path, monkeypatch):
+    """With no caption there is nothing to steer, so no turn is touched."""
+    import kiro_crew.weixin.transport_dispatch as td
+
+    async def _must_not_run(*_a, **_kw):
+        raise AssertionError("attachments must not be ingested while a turn is live")
+
+    monkeypatch.setattr(td, "process_weixin_attachments", _must_not_run)
+    provider = FakeProvider()
+    d, client, sessions = _make(tmp_path, provider=provider, busy=True)
+    asyncio.run(d.handle_message(_media_msg(text="")))
+
+    assert provider.prompts == []
+    assert sessions.acquired is False
+    assert [s["text"] for s in client.sent] == [
+        s["text"] for s in client.sent if "重新发送" in s["text"]
+    ]
+
+
+def test_a_turn_starting_during_the_download_still_refuses_the_attachment(tmp_path, monkeypatch):
+    """A CDN download takes real time, so busy can flip while it is in flight.
+
+    Without the recheck the already-downloaded path is inlined into a steer whose
+    file this frame then deletes — the failure the first check exists to prevent.
+    """
+    import kiro_crew.weixin.transport_dispatch as td
+    from kiro_crew.messaging.attachments import IngestResult
+
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    class Steering(FakeProvider):
+        supports_steer = True
+
+        def __init__(self):
+            super().__init__()
+            self.steered: list[str] = []
+
+        def has_active_turn(self):
+            return True
+
+        async def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    provider = Steering()
+    d, client, sessions = _make(tmp_path, provider=provider, busy=False)
+
+    async def _slow_ingest(items, **_kw):
+        # The turn starts while the download is in flight.
+        sessions._busy = True
+        result = IngestResult()
+        result.text_blocks.append(f"[Image] {shot}")
+        result.image_paths.append(str(shot))
+        return result
+
+    monkeypatch.setattr(td, "process_weixin_attachments", _slow_ingest)
+    asyncio.run(d.handle_message(_media_msg(text="what is this error")))
+
+    # Only the original caption was steered — no path to a file we then deleted.
+    assert provider.steered == ["what is this error"]
+    assert str(shot) not in "".join(provider.steered)
+    # And the download was discarded rather than left behind.
+    assert not shot.exists()
+    assert any("重新发送" in s["text"] for s in client.sent)
+
+
+def test_an_attachment_riding_a_command_is_named_not_dropped(tmp_path, monkeypatch):
+    """`/new` with an image attached still resets, but says the image was skipped.
+
+    The command path runs no turn, so the object is not downloaded — but silence
+    here would be the same failure this channel's media support removes.
+    """
+    import kiro_crew.weixin.transport_dispatch as td
+
+    async def _must_not_run(*_a, **_kw):
+        raise AssertionError("a command message must not spend a CDN round trip")
+
+    monkeypatch.setattr(td, "process_weixin_attachments", _must_not_run)
+    provider = FakeProvider()
+    d, client, _ = _make(tmp_path, provider=provider)
+    asyncio.run(d.handle_message(_media_msg(text="/new")))
+
+    assert provider.prompts == []
+    assert any("附件未读取" in s["text"] for s in client.sent)
+    assert any("已开始新对话" in s["text"] for s in client.sent)
+
+
+def test_a_plain_command_says_nothing_about_attachments(tmp_path):
+    """The notice is scoped to messages that actually carried media."""
+    d, client, _ = _make(tmp_path)
+    asyncio.run(d.handle_message(_msg("/new")))
+    assert not any("附件" in s["text"] for s in client.sent)
+
+
+def test_an_idle_session_still_ingests_the_attachment(tmp_path, monkeypatch):
+    """The refusal is scoped to the busy path; the normal path is unchanged."""
+    import kiro_crew.weixin.transport_dispatch as td
+    from kiro_crew.messaging.attachments import IngestResult
+
+    calls: list[list] = []
+
+    async def _fake_ingest(items, **_kw):
+        calls.append(list(items))
+        result = IngestResult()
+        result.text_blocks.append("[Image] /tmp/shot.png")
+        return result
+
+    monkeypatch.setattr(td, "process_weixin_attachments", _fake_ingest)
+    provider = FakeProvider()
+    d, _client, _sessions = _make(tmp_path, provider=provider, busy=False)
+    asyncio.run(d.handle_message(_media_msg(text="explain")))
+
+    assert len(calls) == 1
+    assert provider.prompts and "/tmp/shot.png" in provider.prompts[0]
+
+
 def test_turn_failure_records_failure_and_still_releases(tmp_path):
     class Boom(FakeProvider):
         async def stream(self, message):

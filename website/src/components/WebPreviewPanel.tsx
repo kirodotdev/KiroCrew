@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop, MousePointerClick } from 'lucide-react'
+import { Globe, RotateCw, ExternalLink, ArrowLeft, ArrowRight, Expand, Minimize, Smartphone, Monitor, Check, Crop, Play, Loader2, AlertTriangle, MoreHorizontal } from 'lucide-react'
 
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuSeparator,
+} from './ui/dropdown-menu'
 import { safeSetItem } from '../utils/safeStorage'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
 import { useIsMobile } from '../hooks/useIsMobile'
-import { useBrowserFrame } from '../hooks/useBrowserFrame'
+import { useBrowserView } from '../hooks/useBrowserView'
 import { useNativeBrowser } from '../hooks/useNativeBrowser'
 
 import { i18nT } from '../i18n/t'
-import { fmtTimeNumeric } from '../i18n/format'
 /**
  * WebPreviewPanel — a docked, session-scoped **live web preview** of a URL the
  * user is serving locally (a dev server / static server for the project they're
@@ -19,10 +22,13 @@ import { fmtTimeNumeric } from '../i18n/format'
  * chosen by where the browser runs: when a native Chromium view is available
  * (Electron shell) it OWNS the panel (`nativeOpen`) — a chat-opened page lands
  * in the real, human- and agent-operable browser; otherwise (remote gateway /
- * plain browser) the read-only Playwright screenshot mirror is the FALLBACK
- * (`showMirror`, gated on `isLive` AND no native view). Unlike either agent
- * surface, the iframe is a real embedded browser view: the dev server's own HMR
- * live-reloads it as the user edits, and Reload covers static servers.
+ * plain browser) the Playwright CLI's own loopback dashboard is framed
+ * (`showBrowserView`, driven by `useBrowserView`). Unlike the native view, that
+ * one is served by another process — but it is NOT read-only: the CLI dashboard
+ * carries its own tab bar, navigation and full remote mouse/keyboard input, so
+ * the frame is the control surface and nothing may be layered over it.
+ * The dev-server iframe is a real embedded browser view: the dev server's own
+ * HMR live-reloads it as the user edits, and Reload covers static servers.
  *
  * Session-scoped: the chosen URL is remembered PER chat slot (`sessionKey`), so
  * each session keeps its own preview target. Frontend-only — no gateway round
@@ -55,24 +61,6 @@ export const PREVIEW_FOCUS_EVENT = 'kirocrew-preview-focus'
  * crop button just asks for it via this event rather than duplicating capture.
  */
 export const PREVIEW_SNIP_EVENT = 'kirocrew-web-preview-snip'
-/**
- * Window event: the panel requests enabling "Let the agent use the browser" (operate mode) so the
- * agent may actively drive the browser. ChatPage listens and turns browse mode
- * on for the active slot. Fired by the live mirror's "Let the agent act" button.
- */
-export const PREVIEW_ENABLE_BROWSE_EVENT = 'kirocrew-enable-browse'
-/**
- * Window event: ChatPage broadcasts the current per-slot browse-mode state so
- * the panel can reflect it — the "Let the agent act" button shows only while
- * browse mode is OFF.
- */
-export const BROWSE_MODE_EVENT = 'kirocrew-browse-mode'
-/**
- * How long after the last agent-browse frame we keep the live mirror on screen
- * before falling back to the preview body. Frames arrive only when the agent
- * screenshots, so a generous window keeps the view up between captures.
- */
-const LIVE_FRAME_TTL_MS = 90_000
 /** Common local dev-server ports offered as one-click starting points. */
 const COMMON_PORTS = [3000, 5173, 8080, 4321, 8000]
 /** iframe sandbox — permissive enough for real apps + HMR, but still a sandbox. */
@@ -198,6 +186,52 @@ function isLoopbackHost(h: string): boolean {
   return LOOPBACK_HOSTS.has(h) || h === 'localhost' || h.endsWith('.localhost')
 }
 
+/** A URL's port as the browser resolves it, so `:80` and an absent port on
+ *  `http://` compare equal. */
+function effectivePort(u: URL): string {
+  if (u.port) return u.port
+  return u.protocol === 'https:' ? '443' : '80'
+}
+
+/**
+ * True when `url` points back at the gateway serving this dashboard.
+ *
+ * Such a target can never render in the preview iframe, and the panel would
+ * otherwise show a blank frame with no explanation. The gateway answers every
+ * request with `X-Frame-Options: SAMEORIGIN` and CSP `frame-ancestors 'self'`,
+ * and `isolatePreviewHost` deliberately swaps the host to the *other* loopback
+ * name for cookie isolation — so the frame is always cross-origin to the
+ * dashboard by construction, and always refused. (Keeping the host identical to
+ * pass `'self'` is not an option: that is the cookie leak the swap exists to
+ * prevent.) Reporting it beats framing it.
+ *
+ * Both sides must be loopback: when the dashboard is reached over a tunnel or a
+ * LAN address, a loopback target is the *user's own* machine — an ordinary dev
+ * server — not this gateway. Ports are compared because the host strings
+ * legitimately differ (`localhost` vs `127.0.0.1`) for one and the same server.
+ * `dashboardOrigin` defaults to the current document location (overridable for
+ * tests).
+ *
+ * Same port on loopback therefore means the same server, with one exception: a
+ * dev server bound to a DIFFERENT loopback interface (`::1`) on the gateway's own
+ * port is a distinct listener that this reports as self. That target degrades to
+ * the explanatory state plus its open-in-browser link rather than to a blank
+ * frame, so the misread costs a click and never silently swallows a page.
+ */
+export function isDashboardOrigin(url: string, dashboardOrigin?: string): boolean {
+  let target: URL
+  try { target = new URL(url) } catch { return false }
+  let origin = dashboardOrigin
+  if (origin == null) {
+    try { origin = typeof window !== 'undefined' ? window.location.href : '' } catch { origin = '' }
+  }
+  if (!origin) return false
+  let self_: URL
+  try { self_ = new URL(origin) } catch { return false }
+  if (!isLoopbackHost(target.hostname) || !isLoopbackHost(self_.hostname)) return false
+  return effectivePort(target) === effectivePort(self_)
+}
+
 /**
  * Normalize a loopback preview URL's host so it is both reachable under the
  * dashboard CSP and cookie-isolated from the dashboard. Two rewrites, in order:
@@ -248,6 +282,21 @@ export function isolatePreviewHost(url: string, dashboardHost?: string): string 
 }
 
 /**
+ * Isolate a host only for a target the panel will actually FRAME.
+ *
+ * The host swap in `isolatePreviewHost` exists to keep the dashboard's
+ * host-scoped cookie out of a framed server. A target that is this gateway is
+ * never framed — it renders the explanatory state instead — so the swap buys no
+ * safety there and actively misreports the target: someone who typed
+ * `127.0.0.1:6776` would be told `localhost:6776` "is the dashboard's own
+ * server", at the exact moment the panel is explaining itself. Show what they
+ * entered.
+ */
+function isolateFrameTarget(url: string): string {
+  return isDashboardOrigin(url) ? url : isolatePreviewHost(url)
+}
+
+/**
  * Feed a URL into a session's Web Preview tab from OUTSIDE the panel — e.g.
  * ChatPage auto-detecting a dev-server URL (or the agent's `kirocrew:preview`
  * marker) in chat. Persists it as the session's preview target (so the panel
@@ -261,7 +310,7 @@ export function setSessionPreviewUrl(sessionKey: string, rawUrl: string, open = 
   if (!sessionKey) return null
   const norm = normalizeUrl(rawUrl)
   if (!norm) return null
-  const isolated = isolatePreviewHost(norm)
+  const isolated = isolateFrameTarget(norm)
   safeSetItem(`${URL_KEY_PREFIX}${sessionKey}`, isolated)
   if (open) {
     window.dispatchEvent(new CustomEvent(PREVIEW_URL_EVENT, { detail: { slot: sessionKey, url: isolated } }))
@@ -281,9 +330,11 @@ export function setSessionPreviewUrl(sessionKey: string, rawUrl: string, open = 
  * Chat-fed URLs are additionally **loopback-only**: agent output (which can be
  * prompt-injected by browsed/read content) can only ever offer a LOCAL dev
  * server, never an external host — the feature's whole purpose is local
- * previews, so this costs nothing. The manual URL bar is not restricted (typing
- * a URL is the user's own action). Returns the normalized+isolated URL, or null
- * when unusable or non-loopback.
+ * previews, so this costs nothing. A URL pointing back at this gateway is
+ * rejected too: it can never be framed (see `isDashboardOrigin`), so offering it
+ * would only produce a Load button that leads to a blank panel. The manual URL
+ * bar is not restricted (typing a URL is the user's own action). Returns the
+ * normalized+isolated URL, or null when unusable, non-loopback, or self.
  */
 export function setSessionPreviewPending(sessionKey: string, rawUrl: string): string | null {
   if (!sessionKey) return null
@@ -294,6 +345,7 @@ export function setSessionPreviewPending(sessionKey: string, rawUrl: string): st
   } catch {
     return null
   }
+  if (isDashboardOrigin(norm)) return null
   const isolated = isolatePreviewHost(norm)
   safeSetItem(`${PENDING_KEY_PREFIX}${sessionKey}`, isolated)
   window.dispatchEvent(new CustomEvent(PREVIEW_PENDING_EVENT, { detail: { slot: sessionKey, url: isolated } }))
@@ -340,8 +392,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   const [expanded, setExpanded] = useState(false)
   // Viewport preset (responsive desktop vs a fixed device size).
   const [deviceId, setDeviceId] = useState('responsive')
-  const [deviceMenuOpen, setDeviceMenuOpen] = useState(false)
-  const deviceMenuRef = useRef<HTMLDivElement>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
+  // The native address-bar input. The view-URL sync effect reads its focus so a
+  // view-initiated navigation never overwrites the field while the user types.
+  const nativeInputRef = useRef<HTMLInputElement>(null)
 
   const url = nav.index >= 0 ? nav.stack[nav.index] : ''
   const canBack = nav.index > 0
@@ -355,44 +409,33 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // non-macOS remote gateway (whose native /api/screenshot fallback wouldn't work).
   const canSnip = isScreenSnipSupported() && !isMobile
 
-  // ── Live agent-browse mirror ──────────────────────────────────────────────
-  // The same Browser panel also shows the read-only Playwright screenshot stream
-  // (the `web-browse` skill / [BROWSE] mode). No manual mode toggle: when browse
-  // frames are arriving, the live mirror takes precedence over the iframe; when
-  // they go stale (LIVE_FRAME_TTL_MS) we fall back to the preview body.
-  const { frame, lastTs, sessionKey: frameSessionKey, sessionName } = useBrowserFrame()
-  const [nowTick, setNowTick] = useState(() => Date.now())
-  // Whether "Let the agent use the browser" (operate) is currently on — broadcast by ChatPage so
-  // the mirror can show "Let the agent act" only while it's off.
-  const [browseOn, setBrowseOn] = useState(false)
-  useEffect(() => {
-    const onMode = (e: Event) => setBrowseOn(!!(e as CustomEvent<{ on?: boolean }>).detail?.on)
-    window.addEventListener(BROWSE_MODE_EVENT, onMode)
-    return () => window.removeEventListener(BROWSE_MODE_EVENT, onMode)
-  }, [])
-  // While frames are live, re-evaluate staleness on an interval so the mirror
-  // auto-retires after the agent stops browsing (frames only push on capture).
-  useEffect(() => {
-    if (!frame || !lastTs) return
-    setNowTick(Date.now())
-    const id = setInterval(() => {
-      const now = Date.now()
-      setNowTick(now)
-      // Stop ticking once the mirror has gone stale — a new frame (lastTs
-      // change) re-runs this effect and re-arms the interval. Prevents a
-      // perpetual 5s re-render for the panel's lifetime after the first frame.
-      if (now - lastTs >= LIVE_FRAME_TTL_MS) clearInterval(id)
-    }, 5000)
-    return () => clearInterval(id)
-  }, [frame, lastTs])
-  // Session-scoped: only surface the mirror when the streaming frame belongs to
-  // THIS panel's session. useBrowserFrame is global (latest frame from ANY
-  // session); without this check a background session's browse would render in —
-  // and, via "Let the agent act" below, authorize [BROWSE] on — the wrong
-  // session's panel. `sessionKey` must be present and equal the frame's key.
-  const isLive = !!frame && !!lastTs && !!sessionKey && frameSessionKey === sessionKey
-    && nowTick - lastTs < LIVE_FRAME_TTL_MS
-
+  // ── Playwright CLI browser view ───────────────────────────────────────────
+  // The same Browser panel also frames the Playwright CLI's own loopback
+  // dashboard (`show --port`), which is where an agent's browsing is watched AND
+  // driven. There is no per-frame push to subscribe to any more: the view is a
+  // process with a URL, so the panel polls its status and frames the URL.
+  const view = useBrowserView(active)
+  // Validate the server-reported URL before it becomes an iframe `src`. The
+  // contract promises `http://127.0.0.1:<port>/`, and `normalizeUrl` rejects
+  // anything that is not http(s) — so a malformed or hostile value degrades to
+  // the explanatory state instead of being navigated.
+  //
+  // Deliberately NOT run through `isolatePreviewHost`: that swaps a loopback host
+  // matching the dashboard's onto the other alias, and the CLI binds ONE
+  // interface (`--host 127.0.0.1`). Swapping `127.0.0.1` to `localhost` can
+  // resolve to `::1`, where nothing is listening — the exact IPv6 trap the
+  // explicit bind exists to avoid. The view's URL is used verbatim.
+  const viewUrl = useMemo(
+    () => (view.data?.url ? normalizeUrl(view.data.url) : null),
+    [view.data?.url],
+  )
+  const viewRunning = view.data?.status === 'running' && !!viewUrl
+  // Whether the browser view OWNS the panel. Null = follow the view itself (it
+  // takes over as soon as it is running, which is how the old frame mirror
+  // behaved); true/false = the user overrode that with the toggle, so they can
+  // get back to a dev-server preview while a browser session is up, and can open
+  // the view deliberately to see WHY it is not running.
+  const [viewOverride, setViewOverride] = useState<boolean | null>(null)
   // ── Transport selection ──
   // The browsing surface has two backends, chosen by WHERE the browser actually
   // runs — and the NATIVE view wins whenever it exists:
@@ -400,38 +443,31 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   //   • A real Chromium view is available in THIS process (Electron shell) ->
   //     embed it natively. A chat-opened page lands in the real, human- and
   //     agent-operable browser, not a read-only screenshot. Native OWNS the
-  //     panel; the mirror is suppressed even if a stray Playwright frame arrives.
+  //     panel; the CLI view is suppressed even if its server is up.
   //   • Otherwise (remote gateway / plain browser, where `useNativeBrowser`
-  //     reports `available: false`) -> the browser lives in another process and
-  //     only streamed frames can show it, so the mirror is the FALLBACK.
+  //     reports `available: false`) -> the browser lives in another process, and
+  //     the Playwright CLI's own dashboard is what shows AND drives it.
   //
-  // `agentActEnabled: browseOn` wires the Globe toggle ("Let the agent use the
-  // browser") to the native view's agent-control gate: on -> acquire (LIGHT),
-  // off -> release. Scoped by sessionKey: each Browser panel owns its own view
-  // and authorization. `enabled` is just `active` now (native no longer yields
-  // to streaming frames), so switching side-panel tabs hides — never destroys —
-  // the view.
-  const native = useNativeBrowser(sessionKey || '', active, {
-    agentActEnabled: browseOn,
-  })
+  // Scoped by sessionKey: each Browser panel owns its own native view. `enabled`
+  // is just `active` (native no longer yields to streaming frames), so switching
+  // side-panel tabs hides — never destroys — the view. Authorization for the
+  // agent to drive the view is Browser Mode itself (the Settings toggle),
+  // enforced in the Electron main process (browser-control.js `canAgentControl`);
+  // the panel no longer carries a per-session agent-act toggle.
+  const native = useNativeBrowser(sessionKey || '', active)
   // Native wins when available. Its view is "open" once a page has been loaded
   // into it; until then the panel shows the ordinary iframe preview.
   const nativeOpen = native.available && !!native.state?.open
-  // The live screenshot mirror is the fallback whenever no native view is
-  // actually OWNING the surface. Gating it on `!native.available` was wrong:
-  // availability only means Electron's preload bridge exists, so on the desktop
-  // app before any page is opened natively (and for a remote gateway's frames
-  // arriving into a desktop shell) the mirror was suppressed while the native
-  // view had nothing to show -- a blank panel. `!nativeOpen` is the real
-  // condition: a native view that is open owns the surface, otherwise mirror.
-  const showMirror = isLive && !nativeOpen
-  const requestInteraction = useCallback(() => {
-    // Target the session whose page is on screen — which is THIS panel's
-    // session, since isLive required a session_key match — never a global or
-    // active-slot fallback. Carrying the slot keeps the grant attributed to the
-    // browsing session even if the active slot differs.
-    window.dispatchEvent(new CustomEvent(PREVIEW_ENABLE_BROWSE_EVENT, { detail: { slot: sessionKey } }))
-  }, [sessionKey])
+  // The CLI browser view is the surface whenever no native view is actually
+  // OWNING the panel. `!nativeOpen` is the real condition (not
+  // `!native.available`): availability only means Electron's preload bridge
+  // exists, so on the desktop app before any page is opened natively the native
+  // view has nothing to show and gating on availability left a blank panel.
+  const showBrowserView = !nativeOpen && (viewOverride ?? viewRunning)
+  /** Flip the browser view on or off, taking over from whatever it follows now. */
+  const toggleBrowserView = useCallback(() => {
+    setViewOverride(v => !(v ?? viewRunning))
+  }, [viewRunning])
 
   const persist = useCallback((u: string) => {
     if (storageKey && u) safeSetItem(storageKey, u)
@@ -447,7 +483,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     }
     // Isolate defensively in case a legacy same-host value was persisted before
     // isolatePreviewHost existed.
-    saved = saved ? isolatePreviewHost(saved) : ''
+    saved = saved ? isolateFrameTarget(saved) : ''
     let pend = ''
     if (pendingKey) {
       try { pend = localStorage.getItem(pendingKey) || '' } catch { /* ignore */ }
@@ -465,6 +501,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       setDraft(saved)
     }
     setDeviceId('responsive')
+    // Drop any manual show/hide of the browser view: the override is a decision
+    // about THIS session's panel, and carrying it into another session would hide
+    // a running view (or pin an explanatory card) the user never asked for there.
+    setViewOverride(null)
   }, [storageKey, pendingKey])
 
   // Live external feed: ChatPage (or any caller of setSessionPreviewUrl) can
@@ -496,20 +536,31 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     return () => window.removeEventListener(PREVIEW_PENDING_EVENT, onPending)
   }, [sessionKey])
 
-  // Close the device menu on outside click.
+  // Reflect view-initiated navigation (agent browser_navigate, in-page link
+  // clicks, redirects) into the native address bar. `did-navigate` already
+  // updates `native.state.url`, but the input is bound to `draft`, which
+  // otherwise only changes on typing or back/forward — so an agent-opened page
+  // left the bar empty and showing its placeholder. Mirror the live URL into
+  // `draft`, but never while the user is editing the field, so a slow redirect
+  // cannot overwrite what they are typing.
+  //
+  // Display only — deliberately does NOT persist. `native.state` carries no
+  // session tag, and on a slot switch this component instance is reused (its
+  // `sessionKey` changes) while `useNativeBrowser` may still hold the previous
+  // slot's state until `getState` resolves; persisting here would write that
+  // stale URL into the NEW slot's storage. User-typed navigation persists via
+  // `commitNative`; view-initiated navigation stays display-only, as before.
   useEffect(() => {
-    if (!deviceMenuOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (deviceMenuRef.current && !deviceMenuRef.current.contains(e.target as Node)) setDeviceMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [deviceMenuOpen])
+    const u = native.state?.url
+    if (!nativeOpen || !u) return
+    if (document.activeElement === nativeInputRef.current) return
+    setDraft(u)
+  }, [nativeOpen, native.state?.url])
 
   const commit = useCallback((raw: string) => {
     const norm = normalizeUrl(raw)
     if (!norm) return
-    const isolated = isolatePreviewHost(norm)
+    const isolated = isolateFrameTarget(norm)
     setNav(n => pushNav(n, isolated))
     setDraft(isolated)
     persist(isolated)
@@ -598,6 +649,11 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     [url],
   )
 
+  // A URL pointing back at this gateway is refused by its own frame-ancestors
+  // policy, which the liveness probe below cannot see (the server is up, so the
+  // probe passes) — detect it so we explain instead of framing a blank page.
+  const selfOrigin = useMemo(() => !!url && isDashboardOrigin(url), [url])
+
   // Liveness probe: a cross-origin iframe cannot tell us its server died — it
   // just keeps showing the last document. While a URL is actually framed (loaded,
   // embeddable, tab active) poll it with a no-cors GET; a connection-refused error
@@ -605,7 +661,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // unreachable and unmount the iframe (clearing the stale page). A later success
   // auto-restores it. (Two strikes tolerates a brief HMR/dev-server restart.)
   useEffect(() => {
-    if (!url || mixedContent || pending || !active) return
+    if (!url || mixedContent || selfOrigin || pending || !active) return
     setUnreachable(false)
     let fails = 0
     let cancelled = false
@@ -628,57 +684,124 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
     void probe()
     const id = setInterval(() => { void probe() }, 5000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [url, reloadKey, mixedContent, pending, active])
+  }, [url, reloadKey, mixedContent, selfOrigin, pending, active])
 
   const iconBtn = 'flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text '
     + 'hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 '
     + 'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-muted'
 
-  // Live agent-browse mirror — the FALLBACK transport, shown only when no native
-  // view is available (see `showMirror`). Rendered as an OVERLAY (not an early
-  // return) so the preview subtree below stays mounted; its iframe document +
-  // any unsaved form/SPA state survive a browse frame arriving mid-preview.
-  const liveMirror = (
+  // The Playwright CLI browser view — the agent-browse surface for the case where
+  // the browser runs in another process. Rendered as an OVERLAY (not an early
+  // return) so the preview subtree below stays mounted; its iframe document + any
+  // unsaved form/SPA state survive the view taking over mid-preview.
+  //
+  // Nothing is layered over the frame. The CLI dashboard's own remote mouse and
+  // keyboard input IS the control surface, so a scrim, a hint bar or a
+  // click-to-focus catcher over it would swallow exactly the events that make the
+  // view useful. Chrome goes in the header above it, never on top.
+  const browserView = (
     <div className="absolute inset-0 z-10 flex flex-col h-full min-h-0 bg-bg">
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
-          <Monitor size={14} className="shrink-0 text-muted" />
-          <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_live')}</span>
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border shrink-0" style={{ backgroundColor: 'var(--bg-elevated)' }}>
+        <Monitor size={14} className="shrink-0 text-muted" />
+        <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_view')}</span>
+        {viewRunning && (
           <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
-          {sessionName ? (
-            <span className="flex-1 min-w-0 truncate text-[12px] text-muted" title={sessionName}>· {sessionName}</span>
-          ) : (
-            <div className="flex-1" />
-          )}
-          {browseOn ? (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.the_agent_can_click_type_and_navigate_this_page')}>
-              <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.agent_can_act')}
-            </span>
-          ) : (
+        )}
+        <div className="flex-1" />
+        {viewUrl && (
+          <a
+            href={viewUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-center w-6 h-6 rounded text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0 no-underline"
+            title={i18nT('components.webPreviewPanel.open_in_browser')}
+            aria-label={i18nT('components.webPreviewPanel.open_in_browser')}
+          >
+            <ExternalLink size={13} />
+          </a>
+        )}
+        {/* Same toggle as the one in the URL bar, in its pressed state — the bar
+            is inert while this overlay is up, so the way back has to live here. */}
+        <button
+          type="button"
+          onClick={toggleBrowserView}
+          className="flex items-center justify-center w-6 h-6 rounded text-accent bg-accent-subtle hover:text-accent transition-colors border-none cursor-pointer shrink-0"
+          title={i18nT('components.webPreviewPanel.browser_view')}
+          aria-label={i18nT('components.webPreviewPanel.browser_view')}
+          aria-pressed
+        >
+          <Monitor size={13} />
+        </button>
+      </div>
+      <div className="relative flex-1 min-h-0 bg-bg-elevated">
+        {view.pending || view.starting ? (
+          <div className="flex flex-col items-center justify-center h-full gap-2 px-6 text-center">
+            <Loader2 size={18} className="text-muted animate-spin" aria-hidden />
+            <span className="text-[11px] text-muted">{i18nT('components.webPreviewPanel.loading_the_browser_view')}</span>
+          </div>
+        ) : viewRunning ? (
+          // The CLI dashboard, framed. It brings its own session grid, tab bar,
+          // navigation and remote input, so the panel adds no controls of its own.
+          <iframe
+            src={viewUrl as string}
+            title={i18nT('components.webPreviewPanel.live_browser_session')}
+            className="absolute inset-0 w-full h-full border-0 bg-bg-elevated"
+            sandbox={SANDBOX}
+          />
+        ) : view.data?.status === 'stopped' ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            <Monitor size={22} className="text-muted" />
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_view_is_not_running')}</div>
+            <div className="text-[11px] text-muted max-w-[320px] leading-snug">
+              {i18nT('components.webPreviewPanel.start_it_to_watch_and_drive_the_agent_s_browser')}
+            </div>
+            {view.data.reason && (
+              <div className="text-[11px] text-muted max-w-[320px] leading-snug">{view.data.reason}</div>
+            )}
             <button
               type="button"
-              onClick={requestInteraction}
-              className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
-              title={i18nT('components.webPreviewPanel.lets_the_agent_click_type_and_navigate_this_page')}
+              onClick={view.start}
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 transition-opacity cursor-pointer border-none"
             >
-              <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.let_the_agent_act')}
+              <Play size={13} /> {i18nT('components.webPreviewPanel.start_browser_view')}
             </button>
-          )}
-        </div>
-        <div className="relative bg-black flex-1 min-h-0 flex items-center justify-center">
-          {frame ? (
-            <img src={frame} alt={i18nT('components.webPreviewPanel.live_browser_session')} className="max-w-full max-h-full object-contain" />
-          ) : (
-            <div className="flex flex-col items-center gap-2 py-8 text-muted">
-              <Monitor size={18} />
-              <span className="text-[11px]">{i18nT('components.webPreviewPanel.waiting_for_the_browser_to_take_a_screenshot')}</span>
+            {(!!view.startError || view.startDidNotTake) && (
+              <div className="flex items-center gap-1.5 text-[11px] max-w-[320px] leading-snug" style={{ color: 'var(--error)' }}>
+                <AlertTriangle size={13} className="shrink-0" aria-hidden />
+                <span>
+                  {i18nT('components.webPreviewPanel.couldn_t_start_the_browser_view')}
+                  {view.startError instanceof Error ? ` ${view.startError.message}` : ''}
+                </span>
+              </div>
+            )}
+          </div>
+        ) : (
+          // `unavailable`, an unusable URL on a `running` status, or a failed
+          // status read. All three mean the same thing to the user — there is
+          // nothing to frame — and all three must SAY so rather than leave a black
+          // rectangle that reads as a hung browser.
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            <Monitor size={22} className="text-muted" />
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_view_unavailable')}</div>
+            <div className="text-[11px] text-muted max-w-[320px] leading-snug">
+              {/* The server's own words when it gave any (never translated — it
+                  reports the real cause, e.g. that the CLI is not installed);
+                  our generic copy only when it did not. */}
+              {view.data?.reason
+                || (view.error instanceof Error ? view.error.message : null)
+                || i18nT('components.webPreviewPanel.the_browser_view_isn_t_available_on_this_gateway')}
             </div>
-          )}
-        </div>
-        <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted flex items-center justify-between gap-2">
-          <span className="truncate">{i18nT('components.webPreviewPanel.view_only_clicks_here_don_t_reach_the_page')}</span>
-          {lastTs && <span className="shrink-0">{i18nT('components.webPreviewPanel.updated')} {fmtTimeNumeric(lastTs)}</span>}
-        </div>
+            <button
+              type="button"
+              onClick={view.refresh}
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
+            >
+              <RotateCw size={13} /> {i18nT('components.webPreviewPanel.reload')}
+            </button>
+          </div>
+        )}
       </div>
+    </div>
   )
 
   // Native browse surface — the counterpart to `liveMirror` for the case where
@@ -693,25 +816,6 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         <span className="shrink-0 text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.browser_live')}</span>
         <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'var(--ok)' }} aria-hidden />
         <div className="flex-1" />
-        {/* Globe toggle ("Let the agent use the browser") wiring: turning it on
-            acquires in-process (LIGHT) agent control of THIS native view; off
-            releases it. `requestInteraction` asks ChatPage to flip the toggle on
-            for this session — the hook (agentActEnabled: browseOn) then drives
-            setControlOwner. Reuses the live-mirror's keys, no new strings. */}
-        {browseOn ? (
-          <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-accent/12 text-accent font-medium" title={i18nT('components.webPreviewPanel.the_agent_can_click_type_and_navigate_this_page')}>
-            <MousePointerClick size={12} /> {i18nT('components.webPreviewPanel.agent_can_act')}
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={requestInteraction}
-            className="shrink-0 inline-flex items-center gap-1 text-[12px] px-2.5 py-1 rounded-md border border-border text-text hover:bg-bg-hover transition-colors cursor-pointer bg-transparent"
-            title={i18nT('components.webPreviewPanel.lets_the_agent_click_type_and_navigate_this_page')}
-          >
-            <MousePointerClick size={13} /> {i18nT('components.webPreviewPanel.let_the_agent_act')}
-          </button>
-        )}
       </div>
       {/* Address bar. The preview subtree below (which owns the other URL form)
           is hidden while the native surface is up, so without this the user
@@ -722,6 +826,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
       >
         <div className="flex-1 min-w-0 flex items-center gap-0.5 h-7 pl-1 pr-1 rounded-md bg-bg-elevated border border-border focus-within:border-accent transition-colors">
           <input
+            ref={nativeInputRef}
             type="text"
             value={draft}
             onChange={e => setDraft(e.target.value)}
@@ -752,10 +857,10 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
 
   return (
     <div className="relative flex flex-col h-full min-h-0 bg-bg">
-      {/* Preview subtree stays MOUNTED even while the live mirror overlays it,
-          so the iframe document + unsaved form/SPA state survive an isLive
-          toggle — visually hidden, never unmounted. */}
-      <div className={`flex flex-col h-full min-h-0 ${showMirror || nativeOpen ? 'invisible pointer-events-none' : ''}`} aria-hidden={showMirror || nativeOpen || undefined}>
+      {/* Preview subtree stays MOUNTED even while the browser view overlays it,
+          so the iframe document + unsaved form/SPA state survive the view being
+          shown — visually hidden, never unmounted. */}
+      <div className={`flex flex-col h-full min-h-0 ${showBrowserView || nativeOpen ? 'invisible pointer-events-none' : ''}`} aria-hidden={showBrowserView || nativeOpen || undefined}>
       {/* URL bar: [back][forward]  ( [reload] input )  [open][expand] | [device] */}
       <form
         className="flex items-center gap-1 px-2 py-1.5 border-b border-border shrink-0"
@@ -804,6 +909,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <ExternalLink size={13} />
           </a>
         </div>
+        {/* Expand toggle — a frequently used action, stays in the row. */}
         <button
           type="button"
           onClick={toggleExpand}
@@ -816,44 +922,53 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         </button>
         {/* Divider */}
         <span aria-hidden="true" className="w-px h-5 bg-border shrink-0 mx-0.5" />
-        {/* Dimension selector: responsive desktop vs a fixed device size. */}
-        <div className="relative shrink-0" ref={deviceMenuRef}>
-          <button
-            type="button"
-            onClick={() => setDeviceMenuOpen(v => !v)}
-            className={`flex items-center h-7 px-1.5 rounded-md transition-colors bg-transparent border-none cursor-pointer ${
-              isDeviceSized ? 'text-accent bg-accent-subtle hover:text-accent' : 'text-muted hover:text-text hover:bg-bg-hover'
-            }`}
-            title={`${i18nT('components.webPreviewPanel.preview_size')}: ${deviceLabel(device)}`}
-            aria-label={i18nT('components.webPreviewPanel.preview_size')}
-            aria-haspopup="menu"
-            aria-expanded={deviceMenuOpen}
-          >
-            {isDeviceSized ? <Smartphone size={14} /> : <Monitor size={14} />}
-          </button>
-          {deviceMenuOpen && (
-            <div
-              role="menu"
-              className="absolute top-9 right-0 z-50 min-w-[210px] py-1.5 rounded-xl bg-bg-elevated border border-border shadow-lg animate-rise"
+        {/* Overflow menu — collapses browser-view toggle AND device-size presets
+            into a single trigger so the row stays at 4 sibling controls
+            (back / forward / expand / overflow), matching the base-branch count.
+            `max-two-buttons-per-row` grandfathers a 4-control row but forbids
+            growth; collapsing is the prescribed remedy. The trigger icon reflects
+            the active device size so the state is visible without opening. */}
+        <DropdownMenu open={moreOpen} onOpenChange={setMoreOpen}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className={`${iconBtn} ${viewRunning || isDeviceSized ? 'text-accent' : ''}`}
+              title={i18nT('components.webPreviewPanel.more_actions')}
+              aria-label={i18nT('components.webPreviewPanel.more_actions')}
             >
-              {DEVICE_PRESETS.map(d => (
-                <button
-                  key={d.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={d.id === deviceId}
-                  className="flex items-center gap-2.5 w-full px-3 py-2 text-[13px] text-text hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors bg-transparent border-none cursor-pointer text-left"
-                  onClick={() => { setDeviceId(d.id); setDeviceMenuOpen(false) }}
-                >
-                  <span className="text-muted shrink-0">{d.w ? <Smartphone size={14} /> : <Monitor size={14} />}</span>
-                  <span className="flex-1">{deviceLabel(d)}</span>
-                  {d.w && <span className="text-[10px] text-muted font-mono shrink-0">{d.w}×{d.h}</span>}
-                  {d.id === deviceId && <Check size={13} className="text-accent shrink-0" />}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+              {isDeviceSized ? <Smartphone size={14} /> : <MoreHorizontal size={14} />}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[210px]">
+            <DropdownMenuItem onSelect={toggleBrowserView}>
+              <Monitor size={13} className="shrink-0 text-muted" />
+              <span>{i18nT('components.webPreviewPanel.browser_view')}</span>
+              {viewRunning && <Check size={13} className="ml-auto shrink-0 text-accent" />}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                {isDeviceSized ? <Smartphone size={13} className="shrink-0 text-muted" /> : <Monitor size={13} className="shrink-0 text-muted" />}
+                <span>{i18nT('components.webPreviewPanel.preview_size')}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="min-w-[210px]">
+                {DEVICE_PRESETS.map(d => (
+                  <DropdownMenuItem
+                    key={d.id}
+                    role="menuitemradio"
+                    aria-checked={d.id === deviceId}
+                    onSelect={() => setDeviceId(d.id)}
+                  >
+                    <span className="text-muted shrink-0">{d.w ? <Smartphone size={14} /> : <Monitor size={14} />}</span>
+                    <span className="flex-1">{deviceLabel(d)}</span>
+                    {d.w && <span className="text-[10px] text-muted font-mono shrink-0">{d.w}×{d.h}</span>}
+                    {d.id === deviceId && <Check size={13} className="ml-auto text-accent shrink-0" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {/* Screenshot an area of the preview into the chat input. Gated to
             clients where the snip pipeline actually works (see canSnip). */}
         {canSnip && (
@@ -927,15 +1042,40 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
             <div className="text-[11px] text-muted max-w-[320px] leading-snug">
               {i18nT('components.webPreviewPanel.this_dashboard_is_served_over_https_so_the_brows')}
               <span className="font-mono"> {i18nT('components.webPreviewPanel.http')} </span>
-              {i18nT('components.webPreviewPanel.page_mixed_content_open_it_in_a_new_tab_instead')}
+              {i18nT('components.webPreviewPanel.page_mixed_content')}
             </div>
+            <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+              {url}
+            </code>
             <a
               href={url}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors no-underline"
             >
-              <ExternalLink size={13} /> {i18nT('components.webPreviewPanel.open')} {url}
+              <ExternalLink size={13} /> {i18nT('components.webPreviewPanel.open_in_browser')}
+            </a>
+          </div>
+        ) : selfOrigin ? (
+          // Points back at this gateway, which refuses to be framed. The probe
+          // can't surface this (the server is up), so say so here rather than
+          // leaving an unexplained blank frame.
+          <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
+            <Globe size={22} className="text-muted" />
+            <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.can_t_preview_this_dashboard_here')}</div>
+            <div className="text-[11px] text-muted max-w-[320px] leading-snug">
+              {i18nT('components.webPreviewPanel.this_url_is_the_dashboard_s_own_server_which_ref')}
+            </div>
+            <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
+              {url}
+            </code>
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-[12px] px-3 py-1.5 rounded-md border border-border text-text hover:bg-bg-hover transition-colors no-underline"
+            >
+              <ExternalLink size={13} /> {i18nT('components.webPreviewPanel.open_in_browser')}
             </a>
           </div>
         ) : unreachable ? (
@@ -978,7 +1118,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
         )}
       </div>
       </div>
-      {nativeOpen ? nativeSurface : showMirror ? liveMirror : null}
+      {nativeOpen ? nativeSurface : showBrowserView ? browserView : null}
     </div>
   )
 }

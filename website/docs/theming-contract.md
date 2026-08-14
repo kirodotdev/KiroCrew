@@ -30,22 +30,29 @@ with the theme CSS custom properties or Tailwind classes mapped to them,
 <div className="bg-[var(--card)] text-[var(--card-fg)]" />
 ```
 
-The 43 CSS variables are the single source of truth for color. They are the
+The 54 CSS variables are the single source of truth for color. They are the
 customization surface a theme (built-in, custom, or installed) can set.
+Theme blocks in `index.css` also set a few non-color properties that are
+deliberately NOT on the allowlist: the font tokens (`--font-body`, `--mono`)
+and radii are injected as fixed defaults by `buildCustomThemeCss` (fonts are a
+pack-level L1 surface, not per-color-mode data), and the `--search-highlight*`
+trio is an internal find-in-page surface not exposed to theme packs.
 
 ## Adding a new color role
 
 When you genuinely need a new color role, add the variable to **both** sides in
 parity (a parity test guards drift), then define it in **every** built-in theme:
 
-- Frontend: `ALLOWED_CSS_VARS` in `src/hooks/useTheme.tsx`
+- Frontend: `ALLOWED_CSS_VARS` in `src/hooks/themeCss.ts`
 - Backend: `_THEME_CSS_VARS_SET` (built from `_THEME_CSS_VARS`) in
   `src/kiro_crew/dashboard/theme_validate.py`
 
 Never introduce a one-off literal instead of a variable.
 
-Both sides are checked from Python: `test/test_theme_css_security.py`
-(`TestCssVarsSetSync`) asserts the required roles and the shadow roles are in the
+Both sides are checked from Python: in `test/test_theme_css_security.py`,
+`TestAllowlistParity` parses `ALLOWED_CSS_VARS` out of `themeCss.ts` and
+asserts set equality with the backend `_THEME_CSS_VARS_SET`;
+`TestCssVarsSetSync` asserts the required roles and the shadow roles are in the
 backend set and that an unknown name is not, and `TestThemeVarsFilter` asserts the
 filter keeps known keys, drops unknown ones, and drops unsafe values. The CSS
 parsers on the two sides are pinned against each other by a shared fixture,
@@ -65,13 +72,60 @@ otherwise always win and silently ignore the active theme.
 
 | Tier | Surface |
 |---|---|
-| **L0 Color** | the 43 CSS vars (dark + light) |
+| **L0 Color** | the 54 CSS vars (dark + light) |
 | **L1 Brand** | logo, favicon, wordmark, botName, fonts, scoped `overrides.css` |
 | **L2 Experience** | sandboxed overlays, topbar, audio, persona |
 
 Out of contract: app structure/routing, functional-control behavior, security
 chrome, and anything outside the CSS-var set + the `overrides.css` selector
 allowlist.
+
+## Fonts
+
+A pack ships faces in `theme.json`'s `fonts` list, tagging each with the **role**
+it feeds — `sans` (proportional) or `mono`. Absent means `sans`, so a pack written
+before roles existed keeps its meaning.
+
+```json
+"fonts": [
+  { "family": "Manrope",       "file": "manrope-400.ttf", "weight": 400, "role": "sans" },
+  { "family": "Manrope",       "file": "manrope-600.ttf", "weight": 600, "role": "sans" },
+  { "family": "IBM Plex Mono", "file": "plex-400.ttf",    "weight": 400, "role": "mono" }
+]
+```
+
+Files live under `styles/fonts/` as `.woff2` or `.ttf`, at most
+`_THEME_MAX_FONTS` faces across both roles, each within the per-file cap.
+
+Each role fills a token — `--theme-font-sans`, `--theme-font-mono` — and
+Settings → Display → **Font Family** reads through them:
+
+| Option | Resolves to |
+|---|---|
+| Sans | the pack's `sans` face, else Kiro Crew's own proportional stack |
+| Mono | the pack's `mono` face, else Kiro Crew's own monospace stack |
+| System | the OS face — no token, so a pack cannot reach the body font here |
+
+`--mono` reads the mono token too, so code blocks, inline code and diffs follow a
+pack's monospace face without the user having to switch the whole UI to
+monospace. That applies under every option, System included — System governs the
+body font, not the code font. The terminal is separate: it reads its family from a
+Settings field, not from CSS, so a pack never changes it.
+
+**`overrides.css` must not declare a font.** Declaring `--font-body`, `--mono`,
+either role token, or `font` / `font-family` on a whole-UI surface (`body`,
+`html`, `*`, `:root`) is **rejected at install** and dropped at runtime. Such a
+pin lands the font below where the Font Family preference is applied, so the
+user's Mono/System choice would silently stop working with nothing on screen
+explaining why. A `font-family` on ONE allowlisted surface (`.topbar`,
+`.code-block`, `button.primary`) is fine — that is theming, not a pin.
+
+A pack **already installed** with such a pin keeps working: the rule is applied when
+a pack is *installed*, not when an installed pack is re-read, so the theme still
+loads and keeps its colours. Its font pin is dropped when the stylesheet is scoped,
+so the typeface falls back to the built-in stack until the face moves into the
+`fonts` list. Re-installing the pack surfaces the rejection message that explains
+what to change.
 
 ## Stable hooks
 
@@ -229,6 +283,10 @@ wrapper for the same reason.
 
 Registration is read at module load (see `src/extensions.ts`); registering after
 the shell has rendered does not take effect until the next theme switch.
+
+Authoring a compiled (edition) theme end to end — CSS specificity against the
+core palette, module resolution, typechecking — is covered in
+[extension-seams § Authoring an edition](extension-seams.md#authoring-an-edition-the-build-pitfalls).
 
 ## Checker (advisory)
 

@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from kiro_crew.loopback_http import loopback_urlopen
+
 _JOB_ID_RE = re.compile(r"[a-f0-9]{6,12}")
 _TIMEOUT_SECS = 10  # endpoint returns immediately after starting execution
 
@@ -27,7 +29,7 @@ def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, s
     try:
         # data=b"" is required by urllib to send a POST (not GET)
         req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECS) as resp:
+        with loopback_urlopen(req, timeout=_TIMEOUT_SECS) as resp:
             body = json.loads(resp.read())
             if body.get("ok"):
                 name = body.get("name", job_id)

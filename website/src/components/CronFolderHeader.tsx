@@ -5,6 +5,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
 import type { CronFolder } from '../utils/cronFolders'
+import { TableCell, TableRow } from './ui/table'
 import { i18nT } from '../i18n/t'
 
 interface Props {
@@ -30,8 +31,8 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
 
   return (
     <>
-      <tr className="bg-bg-elevated/50 border-b border-border">
-        <td colSpan={colSpan} className="px-2.5 py-1.5">
+      <TableRow className="bg-bg-elevated/50 hover:bg-transparent">
+        <TableCell colSpan={colSpan} className="px-2.5 py-1.5">
           <div className="flex items-center gap-2">
             {editing ? (
               <>
@@ -84,11 +85,11 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-        </td>
-      </tr>
+        </TableCell>
+      </TableRow>
       {confirmingDelete && (
-        <tr className="bg-danger/5 border-b border-danger/20">
-          <td colSpan={colSpan} className="px-4 py-2">
+        <TableRow className="bg-danger/5 border-danger/20 hover:bg-transparent">
+          <TableCell colSpan={colSpan} className="px-4 py-2">
             <div className="flex items-center gap-3 text-sm">
               <span className="text-text">{i18nT('pages.schedulePage.cronFolders.confirm_delete_folder', { name: folder.name })}</span>
               <Btn danger onClick={() => { onDelete(); setConfirmingDelete(false) }}>
@@ -98,8 +99,8 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                 {i18nT('pages.schedulePage.cancel')}
               </Btn>
             </div>
-          </td>
-        </tr>
+          </TableCell>
+        </TableRow>
       )}
     </>
   )

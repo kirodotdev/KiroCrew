@@ -12,21 +12,38 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
+import hashlib
 import json
 import logging
 import os
 import re
-import stat
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import quote, urlparse, urlunparse
 
 from aiohttp import web
 
-from kiro_crew import platform_compat
+from kiro_crew import github_runner, platform_compat
+
+# Validation policy, well-known install dirs, and the strict-mode toggle are
+# owned by the shared hardened runner (kiro_crew.github_runner) so every
+# gh/glab-spawning surface applies exactly the same trust policy and never
+# drifts. Re-exported under the historical private names because this module
+# is their long-standing import location (issue_radar's glab resolution and
+# the provider tests reach them here).
+from kiro_crew.github_runner import GH_ENV_PASSTHROUGH as _GH_ENV_PASSTHROUGH
+from kiro_crew.github_runner import (
+    PROVIDER_EXECUTABLE_CANDIDATES as _PROVIDER_EXECUTABLE_CANDIDATES,
+)
+from kiro_crew.github_runner import STRICT_PROVIDER_BIN_ENV as _STRICT_PROVIDER_BIN_ENV
+from kiro_crew.github_runner import (
+    provider_executable_candidates,
+)
+from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
+from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
 from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -54,38 +71,28 @@ _PROVIDER_CONCURRENCY = 4
 # reservation until their underlying task actually completes.
 _DIRECT_FETCH_PENDING_MAX = 16
 _DIRECT_FETCH_MAX_RESERVED_BYTES = 128 * 1024 * 1024
+# Measured worst case for one full fetch -- every command in the fanout at its
+# declared output ceiling -- is a ~32MB allocation peak, and ~43MB projected if
+# every ceiling is filled exactly (decode amplifies wire bytes by ~4.3x). 64MB
+# is therefore a ~1.5x cover for raw bytes, decoded JSON, the normalized copy,
+# and object overhead while a complete fetch remains alive. Two of these
+# saturate the pool by design; a third caller WAITS for room rather than being
+# refused (see _wait_for_direct_fetch_capacity), so the ceiling bounds memory
+# without turning ordinary concurrent panel use into an error.
 _FULL_FETCH_RESERVATION_BYTES = 64 * 1024 * 1024
 _CHECKS_FETCH_RESERVATION_BYTES = 8 * 1024 * 1024
+# How long a caller waits for admission room before giving up. Sized under the
+# per-command timeout (_COMMAND_TIMEOUT_SECS) so a queued read cannot outlive the
+# fetch it is queued behind by more than one command's worth of work.
+_DIRECT_FETCH_WAIT_SECS = 20.0
 # An issue payload is metadata plus comments -- no diffs, no check rollup -- so
 # both its aggregate cache and its retained-memory lease sit well below the
 # pull-request figures. TTL and entry count are shared with the PR cache.
 _ISSUE_CACHE_MAX_BYTES = 16 * 1024 * 1024
 _ISSUE_FETCH_RESERVATION_BYTES = 16 * 1024 * 1024
 _PROVIDER_EXECUTABLE_OVERRIDES = {
-    "gh": "KIROCREW_GH_BIN",
+    "gh": github_runner.GH_BIN_ENV,
     "glab": "KIROCREW_GLAB_BIN",
-}
-# Opt-in hardening for shared/multi-tenant hosts: restore the historical rule
-# that a provider CLI must be root-owned and unwritable by the gateway user.
-# Off by default — see _validate_provider_executable for the current policy.
-_STRICT_PROVIDER_BIN_ENV = "KIROCREW_PROVIDER_BIN_STRICT"
-_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
-# Well-known install dirs searched (in order) before the ambient PATH. Shared
-# with Issue Radar's gh resolver (issue_radar/backend/github_client.py) so both
-# panels accept exactly the same set of gh locations and never drift.
-_PROVIDER_EXECUTABLE_DIRS = (
-    "/usr/local/libexec/kirocrew",
-    "/usr/libexec/kirocrew",
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/usr/bin",
-    "/home/linuxbrew/.linuxbrew/bin",
-)
-_PROVIDER_EXECUTABLE_CANDIDATES = {
-    executable: tuple(
-        f"{directory}/{executable}" for directory in _PROVIDER_EXECUTABLE_DIRS
-    )
-    for executable in ("gh", "glab")
 }
 # Provider commands are absolute. Keep PATH deterministic only for trusted
 # system helpers a provider may invoke; never inherit a workspace-controlled
@@ -123,7 +130,14 @@ _PROVIDER_BASE_ENV_KEYS = frozenset(
     }
 )
 _PROVIDER_AUTH_ENV_KEYS = {
-    "gh": frozenset({"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"}),
+    # The gh set derives from the canonical union owned by the shared runner
+    # (every key is gh-scoped auth/network/TLS config). GH_HOST passes through
+    # it, but _run_json pins GH_HOST=github.com afterward, so the final env
+    # cannot drift to a configured enterprise default — and for the same
+    # reason the enterprise tokens are withheld: a github.com-pinned child can
+    # never use them, so forwarding them is pure surplus credential surface.
+    "gh": frozenset(_GH_ENV_PASSTHROUGH)
+    - {"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"},
     "glab": frozenset({"GLAB_CONFIG_DIR", "GITLAB_TOKEN"}),
 }
 # url -> (stored_at, serialized_size_bytes, normalized_payload)
@@ -144,6 +158,10 @@ _ISSUE_CACHE_LOCK = asyncio.Lock()
 _ISSUE_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _ISSUE_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _DIRECT_FETCH_RESERVATIONS: dict[asyncio.Task[Any], int] = {}
+# Futures held by callers waiting for admission room. Woken when any reservation
+# is released, so a request that arrives at a full pool queues instead of
+# failing (see _wait_for_direct_fetch_capacity).
+_DIRECT_FETCH_WAITERS: list[asyncio.Future[None]] = []
 _provider_semaphore = asyncio.Semaphore(_PROVIDER_CONCURRENCY)
 _SAFE_ERROR_RE = re.compile(r"\s+")
 _PROVIDER_TOOL_NAME = "source_provider_cli"
@@ -152,6 +170,15 @@ logger = logging.getLogger(__name__)
 
 class SourceProviderError(RuntimeError):
     """A provider CLI could not return the requested source data."""
+
+
+class SourceCapacityError(SourceProviderError):
+    """Admission room did not free up within the wait budget.
+
+    Distinct from its parent so the HTTP layer can mark it retryable: nothing is
+    wrong with the request or the provider, the gateway was simply holding its
+    concurrent-fetch memory ceiling for longer than the caller agreed to wait.
+    """
 
 
 def _sel():
@@ -185,171 +212,6 @@ def _audit_provider_cli(
         if critical:
             raise
         logger.debug("SEL provider CLI audit failed", exc_info=True)
-
-
-def _path_parents(path: Path) -> list[Path]:
-    """Return every parent through the filesystem root."""
-    parents: list[Path] = []
-    current = path.parent
-    while True:
-        parents.append(current)
-        if current.parent == current:
-            return parents
-        current = current.parent
-
-
-def _strict_provider_bins() -> bool:
-    """True when the operator opted into the root-owned-only provider policy."""
-    return os.environ.get(_STRICT_PROVIDER_BIN_ENV, "").strip().lower() in _TRUTHY_ENV_VALUES
-
-
-def _agent_writable_roots() -> tuple[Path, ...]:
-    """Trees the agent itself writes: the active project checkout and the LLM
-    workspace root (worktrees, venvs, scratch files, downloaded repos).
-
-    A provider CLI resolved inside one of these is refused — a repo-planted
-    ``gh`` shim is the substitution vector the model itself controls, and it is
-    the same check codex applies to its own sandbox helper (reject a binary
-    found inside the workspace, accept anything else).
-    """
-    raw_roots = [os.environ.get("KIROCREW_PROJECT_DIR")]
-    try:
-        from kiro_crew.config.loader import workspace_root
-
-        raw_roots.append(str(workspace_root()))
-    except Exception:  # pragma: no cover - config unavailable in isolation
-        logger.debug("workspace root unavailable for provider CLI validation", exc_info=True)
-    roots: list[Path] = []
-    for raw in raw_roots:
-        if not raw:
-            continue
-        try:
-            roots.append(Path(raw).resolve())
-        except OSError:
-            continue
-    return tuple(roots)
-
-
-def _check_provider_path_component(path: Path, *, label: str, uid: int, strict: bool) -> None:
-    """Apply the ownership/permission policy to one path component."""
-    try:
-        path_stat = path.stat()
-    except OSError as exc:
-        raise ValueError("executable hierarchy is not accessible") from exc
-    if strict:
-        if path_stat.st_uid != 0:
-            raise ValueError(f"{label} is not root-owned")
-        if path_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or os.access(path, os.W_OK):
-            raise ValueError(f"{label} is writable by the gateway user")
-        return
-    # Relaxed policy: the gateway user's own installs are fine; a binary owned
-    # by a third account or writable by the whole host is not.
-    if path_stat.st_uid not in (0, uid):
-        raise ValueError(f"{label} is owned by another user (uid {path_stat.st_uid})")
-    if path_stat.st_mode & stat.S_IWOTH:
-        # A world-writable DIRECTORY is tolerated when it is sticky (`/tmp`,
-        # 1777): only the owner may replace an entry, so the uid check above
-        # still decides. Without the sticky bit any local account can swap the
-        # entry out, and a world-writable FILE can be rewritten in place.
-        if not (stat.S_ISDIR(path_stat.st_mode) and path_stat.st_mode & stat.S_ISVTX):
-            raise ValueError(f"{label} is world-writable")
-
-
-def _validate_provider_executable(candidate: str) -> str:
-    """Return the canonical path of a provider CLI we will run, or raise.
-
-    Default policy — *if `gh` works in your terminal, it works here*. Any
-    executable the gateway user could run interactively is accepted, including
-    the ordinary user-owned Homebrew/Linuxbrew/asdf installs: requiring a
-    root-owned copy made every stock ``brew install gh`` fail and pushed users
-    into a ``sudo cp`` ritual for a CLI they had already installed and
-    authenticated. What stays refused is provenance the user did not choose:
-
-    * a binary (or parent dir) owned by another unprivileged account,
-    * anything world-writable, e.g. a ``/tmp`` shim (a world-writable *directory*
-      is tolerated only when sticky, where the owner check still decides),
-    * anything inside the agent's project checkout or workspace root, the one
-      substitution vector the model itself controls (``_agent_writable_roots``).
-
-    Provider children still receive only the minimal, provider-scoped env built
-    by ``_provider_env`` (no AWS/Slack/gateway secrets, no inherited PATH), and
-    every spawn is SEL-audited — containment and audit carry the trust boundary
-    instead of binary provenance.
-
-    A gateway running as **root** is refused outright, in both modes: every
-    process it spawns (including the agent's own shell) would be root too, which
-    makes the ownership and agent-tree checks vacuous.
-
-    Set ``KIROCREW_PROVIDER_BIN_STRICT=1`` on shared or multi-tenant hosts to
-    restore the previous rule: canonical, symlink-free, root-owned and
-    unwritable by the gateway user through every parent.
-    """
-    if not os.path.isabs(candidate):
-        raise ValueError("path must be absolute")
-    getuid = getattr(os, "getuid", None)
-    geteuid = getattr(os, "geteuid", getuid)
-    if getuid is None or geteuid is None:
-        raise ValueError("filesystem ownership checks are unavailable")
-    if geteuid() == 0:
-        raise ValueError("provider execution is disabled for a root gateway")
-    strict = _strict_provider_bins()
-
-    original = Path(candidate)
-    try:
-        resolved = original.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError("path does not exist") from exc
-    if strict and original != resolved:
-        raise ValueError("path must be canonical and contain no symlinks")
-
-    try:
-        if not stat.S_ISREG(resolved.stat().st_mode):
-            raise ValueError("path is not a regular file")
-    except OSError as exc:
-        raise ValueError("executable hierarchy is not accessible") from exc
-    if not os.access(resolved, os.X_OK):
-        raise ValueError("file is not executable")
-
-    if not strict:
-        for root in _agent_writable_roots():
-            if resolved == root or root in resolved.parents:
-                raise ValueError(f"executable is inside the agent-writable tree {root}")
-
-    uid = geteuid()
-    _check_provider_path_component(resolved, label="executable", uid=uid, strict=strict)
-    # A symlink's own directory chain is part of the provenance too (relaxed
-    # mode allows symlinks, so /opt/homebrew/bin gets checked as well).
-    parents = list(_path_parents(resolved))
-    if not strict and original != resolved:
-        parents += [p for p in _path_parents(original) if p not in parents]
-    for parent in parents:
-        try:
-            if not stat.S_ISDIR(parent.stat().st_mode):
-                raise ValueError("executable parent is not a directory")
-        except OSError as exc:
-            raise ValueError("executable hierarchy is not accessible") from exc
-        _check_provider_path_component(parent, label="executable parent", uid=uid, strict=strict)
-    return str(resolved)
-
-
-def provider_executable_candidates(executable: str) -> tuple[str, ...]:
-    """Absolute paths to try for *executable*, in resolution order.
-
-    The well-known install dirs come first (a managed root-owned copy still
-    wins when one exists), then every ``PATH`` hit — so the install the user
-    already runs from their terminal is found even when it lives somewhere this
-    module has never heard of (asdf, mise, ``~/.local/bin``). ``PATH`` is not
-    consulted in strict mode, which by definition only trusts system dirs.
-    """
-    ordered: dict[str, None] = dict.fromkeys(_PROVIDER_EXECUTABLE_CANDIDATES.get(executable, ()))
-    if not _strict_provider_bins():
-        for entry in (os.environ.get("PATH") or "").split(os.pathsep):
-            if not entry:
-                continue
-            found = os.path.join(entry, executable)
-            if os.path.isfile(found) and os.access(found, os.X_OK):
-                ordered.setdefault(os.path.abspath(found), None)
-    return tuple(ordered)
 
 
 def _provider_setup_message(executable: str, override_name: str, last_error: str) -> str:
@@ -441,11 +303,16 @@ class SourceRef:
 
 
 _GITLAB_HOSTS_TTL_SECS = 30.0
-# Cached allowlist snapshot. Populated only by _load_gitlab_hosts() running in a
-# worker thread, so every reader on the event loop is a pure dict lookup.
+# Cached allowlist snapshots. Populated only by _load_provider_hosts() running
+# in a worker thread, so every reader on the event loop is a pure dict lookup.
+# GitLab and Jira allowlists come out of the SAME config read and share one
+# TTL, lock, and generation counter: they change together (one config file) and
+# consumers that memoize parse results (the per-slot sidebar source links) fold
+# a single generation into their cache key either way.
 _gitlab_hosts_snapshot: frozenset[str] = frozenset()
+_jira_hosts_snapshot: frozenset[str] = frozenset()
 _gitlab_hosts_loaded_at = 0.0
-# Bumped whenever the snapshot's CONTENT changes. Consumers that memoize a
+# Bumped whenever either snapshot's CONTENT changes. Consumers that memoize a
 # parse result (per-slot sidebar source links) fold this into their cache key so
 # a later allowlist load invalidates decisions made against the cold snapshot.
 _gitlab_hosts_generation = 0
@@ -464,17 +331,19 @@ def _gitlab_hosts_fresh() -> bool:
     )
 
 
-def _publish_gitlab_hosts(hosts: frozenset[str]) -> None:
-    """Install a freshly loaded snapshot, bumping the generation on real change."""
-    global _gitlab_hosts_snapshot, _gitlab_hosts_loaded_at, _gitlab_hosts_generation
-    if hosts != _gitlab_hosts_snapshot:
-        _gitlab_hosts_snapshot = hosts
+def _publish_provider_hosts(gitlab: frozenset[str], jira: frozenset[str]) -> None:
+    """Install freshly loaded snapshots, bumping the generation on real change."""
+    global _gitlab_hosts_snapshot, _jira_hosts_snapshot
+    global _gitlab_hosts_loaded_at, _gitlab_hosts_generation
+    if gitlab != _gitlab_hosts_snapshot or jira != _jira_hosts_snapshot:
+        _gitlab_hosts_snapshot = gitlab
+        _jira_hosts_snapshot = jira
         _gitlab_hosts_generation += 1
     _gitlab_hosts_loaded_at = time.monotonic()
 
 
-def _load_gitlab_hosts() -> frozenset[str]:
-    """Read the configured self-managed GitLab hosts. BLOCKING -- never on the loop.
+def _load_provider_hosts() -> tuple[frozenset[str], frozenset[str]]:
+    """Read the configured GitLab and Jira hosts. BLOCKING -- never on the loop.
 
     ``KiroCrewConfig.load()`` stats, reads, parses, and validates config files, so
     a slow or network-backed config directory would stall the sole event loop.
@@ -483,10 +352,11 @@ def _load_gitlab_hosts() -> frozenset[str]:
     try:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        return frozenset(KiroCrewConfig.load().dashboard.gitlab_hosts)
+        dashboard = KiroCrewConfig.load().dashboard
+        return frozenset(dashboard.gitlab_hosts), frozenset(dashboard.jira_hosts)
     except Exception:
-        logger.debug("self-hosted GitLab allowlist unavailable", exc_info=True)
-        return frozenset()
+        logger.debug("self-hosted provider allowlists unavailable", exc_info=True)
+        return frozenset(), frozenset()
 
 
 async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
@@ -509,9 +379,9 @@ async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
         # Another waiter may have refreshed while this one queued.
         if _gitlab_hosts_fresh():
             return _gitlab_hosts_snapshot
-        hosts = await asyncio.to_thread(_load_gitlab_hosts)
-        _publish_gitlab_hosts(hosts)
-        return hosts
+        gitlab, jira = await asyncio.to_thread(_load_provider_hosts)
+        _publish_provider_hosts(gitlab, jira)
+        return gitlab
 
 
 def _allowed_gitlab_hosts() -> frozenset[str]:
@@ -525,6 +395,16 @@ def _allowed_gitlab_hosts() -> frozenset[str]:
     recognized yet).
     """
     return _gitlab_hosts_snapshot
+
+
+def _allowed_jira_hosts() -> frozenset[str]:
+    """Return the cached self-hosted Jira hosts. Same discipline as GitLab.
+
+    Loaded by the same :func:`ensure_gitlab_hosts_loaded` refresh (one config
+    read covers both allowlists), so every entry point that awaits it before
+    parsing has this snapshot warm too. Fails closed while cold.
+    """
+    return _jira_hosts_snapshot
 
 
 # Path markers that identify a GitLab object, paired with the SourceRef kind
@@ -579,6 +459,46 @@ def _gitlab_ref(host: str, path: str) -> SourceRef:
     owner = project.rsplit("/", 1)[0] if "/" in project else ""
     return SourceRef(
         "gitlab", normalized, host, owner, repo, number, project=project, kind=kind
+    )
+
+
+# A Jira issue key: PROJECT-NUMBER where the project part starts with a letter,
+# is uppercase alphanumeric, and Jira caps it at 10 characters. Mirrors the
+# frontend's JIRA_KEY_RE in pullRequestLinks.ts -- the two parsers must agree so
+# a chip the backend emits always re-parses on the frontend for the reveal.
+_JIRA_KEY_RE = re.compile(r"[A-Z][A-Z0-9]{0,9}-\d+")
+
+
+def _jira_ref(host: str, path: str) -> SourceRef:
+    """Build a Jira ``SourceRef`` for an already-authorized host.
+
+    Jira issues live at ``/browse/KEY-123``, possibly behind a context path
+    (``/jira/browse/KEY-123`` on some Cloud tenants and Data Center installs).
+    The prefix is preserved in the normalized URL so a self-hosted chip opens
+    the real endpoint. The project key maps onto ``repo`` and the numeric tail
+    onto ``number`` -- the same shape the frontend derives, so the sidebar chip
+    label (``PROJ-123``) and the Issues panel identity agree end to end.
+    """
+    marker = "/browse/"
+    browse_idx = path.find(marker)
+    if browse_idx < 0:
+        raise ValueError(
+            "Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123."
+        )
+    # The key is the first segment after /browse/; deeper segments are Jira UI
+    # state, not identity. Uppercase before validating -- Jira treats keys
+    # case-insensitively and canonicalizing here keeps the dedup map in
+    # state.py from splitting one issue across case variants.
+    key = path[browse_idx + len(marker) :].split("/", 1)[0].upper()
+    if not _JIRA_KEY_RE.fullmatch(key):
+        raise ValueError(
+            "Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123."
+        )
+    project_key, number_text = key.rsplit("-", 1)
+    prefix = path[:browse_idx]
+    normalized = urlunparse(("https", host, f"{prefix}{marker}{key}", "", "", ""))
+    return SourceRef(
+        "jira", normalized, host, "", project_key, int(number_text), kind="issue"
     )
 
 
@@ -643,10 +563,21 @@ def parse_source_url(raw_url: str) -> SourceRef:
     if host and candidate in _allowed_gitlab_hosts():
         return _gitlab_ref(candidate, path)
 
+    # Jira: Atlassian Cloud (``*.atlassian.net``) is recognized automatically --
+    # the suffix is Atlassian-operated, so it identifies the product the way
+    # ``github.com`` does. Self-hosted Jira / Data Center requires an exact
+    # entry in ``dashboard.jira_hosts``, the same allowlist discipline as
+    # self-managed GitLab and checked AFTER it so a host an operator listed as
+    # GitLab is never reinterpreted as Jira.
+    is_cloud_jira = host.endswith(".atlassian.net") and len(host) > len(".atlassian.net")
+    if host and (is_cloud_jira or candidate in _allowed_jira_hosts()):
+        return _jira_ref(candidate, path)
+
     raise ValueError(
         "Only github.com pull requests and issues, gitlab.com merge requests and "
-        "issues, and merge requests or issues on a GitLab host listed in "
-        "dashboard.gitlab_hosts are supported."
+        "issues, merge requests or issues on a GitLab host listed in "
+        "dashboard.gitlab_hosts, and Jira issues on *.atlassian.net or a host "
+        "listed in dashboard.jira_hosts are supported."
     )
 
 
@@ -798,7 +729,14 @@ async def _run_json(
         # in glab's own config (reachable via GLAB_CONFIG_DIR), which is scoped to
         # the host it was created for.
         allowed_env_keys = allowed_env_keys - {"GITLAB_TOKEN"}
-    base_env = {key: value for key, value in os.environ.items() if key in allowed_env_keys}
+    # Matching follows the shared convention (exact on POSIX, case-folded on
+    # Windows — see platform_compat.env_key_allowed) so the filter never
+    # depends on the allowlist's casing agreeing with what os.environ yields.
+    base_env = {
+        key: value
+        for key, value in os.environ.items()
+        if platform_compat.env_key_allowed(key, allowed_env_keys)
+    }
     base_env.update(
         {
             "GH_PAGER": "cat",
@@ -2277,20 +2215,62 @@ def _direct_fetch_tasks() -> set[asyncio.Task[Any]]:
     return tasks
 
 
-def _ensure_direct_fetch_capacity(reservation_bytes: int) -> None:
+def _direct_fetch_capacity_free(reservation_bytes: int) -> bool:
+    """Whether a lease of ``reservation_bytes`` fits under both ceilings now."""
     tasks = _direct_fetch_tasks()
     reserved = sum(
         amount
         for task, amount in _DIRECT_FETCH_RESERVATIONS.items()
         if task in tasks and not task.done()
     )
-    if (
-        len(tasks) >= _DIRECT_FETCH_PENDING_MAX
-        or reservation_bytes > _DIRECT_FETCH_MAX_RESERVED_BYTES - reserved
-    ):
-        raise SourceProviderError(
-            "Too many source requests are pending; retry shortly."
-        )
+    return (
+        len(tasks) < _DIRECT_FETCH_PENDING_MAX
+        and reservation_bytes <= _DIRECT_FETCH_MAX_RESERVED_BYTES - reserved
+    )
+
+
+async def _wait_for_direct_fetch_capacity(deadline: float) -> bool:
+    """Sleep until a reservation is released or ``deadline`` passes.
+
+    Returns True if a release was observed and the caller should re-check
+    capacity, False if the wait budget is spent.
+
+    MUST NOT be awaited while holding ``_CACHE_LOCK`` or ``_ISSUE_CACHE_LOCK``:
+    an in-flight fetch takes the same lock to write its result, so waiting for it
+    to finish while holding that lock would deadlock. Callers therefore release
+    the lock, wait here, then re-acquire and re-check.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
+    waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    _DIRECT_FETCH_WAITERS.append(waiter)
+    try:
+        await asyncio.wait_for(waiter, timeout=remaining)
+        return True
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        if waiter in _DIRECT_FETCH_WAITERS:
+            _DIRECT_FETCH_WAITERS.remove(waiter)
+
+
+def _wake_direct_fetch_waiters() -> None:
+    """Wake every waiter after a release; each re-checks its own ceiling.
+
+    All waiters are woken rather than just the first: leases differ in size, so
+    the head of the queue is not necessarily the one that now fits, and a
+    freed lease that only satisfies a later waiter must not stall behind it.
+    """
+    waiters = list(_DIRECT_FETCH_WAITERS)
+    _DIRECT_FETCH_WAITERS.clear()
+    for waiter in waiters:
+        if not waiter.done():
+            waiter.set_result(None)
+
+
+def _capacity_exhausted_error() -> SourceCapacityError:
+    return SourceCapacityError("Too many source requests are pending; retry shortly.")
 
 
 def _reserve_direct_fetch(task: asyncio.Task[Any], reservation_bytes: int) -> None:
@@ -2299,6 +2279,11 @@ def _reserve_direct_fetch(task: asyncio.Task[Any], reservation_bytes: int) -> No
 
     def release(done: asyncio.Task[Any]) -> None:
         _DIRECT_FETCH_RESERVATIONS.pop(done, None)
+        # The lease is gone, so a queued caller may now fit. Scheduled on the loop
+        # rather than woken inline: this runs during task teardown, and deferring
+        # by one loop iteration means the waiter re-checks capacity after the task
+        # is fully settled rather than mid-completion.
+        asyncio.get_running_loop().call_soon(_wake_direct_fetch_waiters)
 
     task.add_done_callback(release)
 
@@ -2309,17 +2294,23 @@ async def fetch_pull_request_checks(raw_url: str) -> list[dict[str, Any]]:
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
-    task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
-    if task is None:
-        _ensure_direct_fetch_capacity(_CHECKS_FETCH_RESERVATION_BYTES)
-        task = asyncio.create_task(_fetch_pull_request_checks_uncached(ref))
-        _CHECKS_FETCH_INFLIGHT[ref.url] = task
-        _reserve_direct_fetch(task, _CHECKS_FETCH_RESERVATION_BYTES)
+    deadline = time.monotonic() + _DIRECT_FETCH_WAIT_SECS
+    while True:
+        task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
+        if task is not None:
+            break
+        if _direct_fetch_capacity_free(_CHECKS_FETCH_RESERVATION_BYTES):
+            task = asyncio.create_task(_fetch_pull_request_checks_uncached(ref))
+            _CHECKS_FETCH_INFLIGHT[ref.url] = task
+            _reserve_direct_fetch(task, _CHECKS_FETCH_RESERVATION_BYTES)
 
-        def finish_checks(done: asyncio.Task[list[dict[str, Any]]]) -> None:
-            _finish_inflight(_CHECKS_FETCH_INFLIGHT, ref.url, done)
+            def finish_checks(done: asyncio.Task[list[dict[str, Any]]]) -> None:
+                _finish_inflight(_CHECKS_FETCH_INFLIGHT, ref.url, done)
 
-        task.add_done_callback(finish_checks)
+            task.add_done_callback(finish_checks)
+            break
+        if not await _wait_for_direct_fetch_capacity(deadline):
+            raise _capacity_exhausted_error()
     return await asyncio.shield(task)
 
 
@@ -2372,30 +2363,40 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
     now = time.monotonic()
-    async with _CACHE_LOCK:
-        cached = _CACHE.get(ref.url)
-        if not refresh and cached and now - cached[0] < _CACHE_TTL_SECS:
-            return cached[2]
-        task = _FULL_FETCH_INFLIGHT.get(ref.url)
-        if task is None:
-            _ensure_direct_fetch_capacity(_FULL_FETCH_RESERVATION_BYTES)
-            generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
-            task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation))
-            _FULL_FETCH_INFLIGHT[ref.url] = task
-            _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
-            _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
+    deadline = now + _DIRECT_FETCH_WAIT_SECS
+    while True:
+        async with _CACHE_LOCK:
+            cached = _CACHE.get(ref.url)
+            if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
+                return cached[2]
+            task = _FULL_FETCH_INFLIGHT.get(ref.url)
+            if task is not None:
+                break
+            if _direct_fetch_capacity_free(_FULL_FETCH_RESERVATION_BYTES):
+                generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
+                task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation))
+                _FULL_FETCH_INFLIGHT[ref.url] = task
+                _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
+                _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
 
-            def finish_full_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
-                _finish_inflight(_FULL_FETCH_INFLIGHT, ref.url, done)
-                active = _FULL_FETCH_TASKS.get(ref.url)
-                if active is None:
-                    return
-                active.discard(done)
-                if not active:
-                    _FULL_FETCH_TASKS.pop(ref.url, None)
-                    _FULL_FETCH_GENERATIONS.pop(ref.url, None)
+                def finish_full_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
+                    _finish_inflight(_FULL_FETCH_INFLIGHT, ref.url, done)
+                    active = _FULL_FETCH_TASKS.get(ref.url)
+                    if active is None:
+                        return
+                    active.discard(done)
+                    if not active:
+                        _FULL_FETCH_TASKS.pop(ref.url, None)
+                        _FULL_FETCH_GENERATIONS.pop(ref.url, None)
 
-            task.add_done_callback(finish_full_fetch)
+                task.add_done_callback(finish_full_fetch)
+                break
+        # Outside the lock on purpose: the fetches being waited on take
+        # _CACHE_LOCK themselves to write their result, so waiting under it would
+        # deadlock. Re-checks the cache and the inflight map on wake, since
+        # either may have been satisfied by whoever just finished.
+        if not await _wait_for_direct_fetch_capacity(deadline):
+            raise _capacity_exhausted_error()
     # Shield the shared fetch so one disconnected browser cannot cancel work
     # still awaited by another request for the same URL.
     return await asyncio.shield(task)
@@ -2443,32 +2444,69 @@ async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     ref = parse_source_url(raw_url)
     if ref.kind != "issue":
         raise ValueError("This URL points at a pull request or merge request, not an issue.")
+    # Jira has no local CLI integration: the chip and the Issues panel entry are
+    # link-outs only (the panel offers "Open in Jira"). Refuse here so a direct
+    # API call can never hand a Jira URL to the GitLab fetch path below.
+    if ref.provider == "jira":
+        raise ValueError("Jira issues open in the browser; there is no local fetch for them.")
     now = time.monotonic()
-    async with _ISSUE_CACHE_LOCK:
-        cached = _ISSUE_CACHE.get(ref.url)
-        if not refresh and cached and now - cached[0] < _CACHE_TTL_SECS:
-            return cached[2]
-        task = _ISSUE_FETCH_INFLIGHT.get(ref.url)
-        if task is None:
-            _ensure_direct_fetch_capacity(_ISSUE_FETCH_RESERVATION_BYTES)
-            task = asyncio.create_task(_fetch_issue_uncached(ref))
-            _ISSUE_FETCH_INFLIGHT[ref.url] = task
-            _ISSUE_FETCH_TASKS.setdefault(ref.url, set()).add(task)
-            _reserve_direct_fetch(task, _ISSUE_FETCH_RESERVATION_BYTES)
+    deadline = now + _DIRECT_FETCH_WAIT_SECS
+    while True:
+        async with _ISSUE_CACHE_LOCK:
+            cached = _ISSUE_CACHE.get(ref.url)
+            if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
+                return cached[2]
+            task = _ISSUE_FETCH_INFLIGHT.get(ref.url)
+            if task is not None:
+                break
+            if _direct_fetch_capacity_free(_ISSUE_FETCH_RESERVATION_BYTES):
+                task = asyncio.create_task(_fetch_issue_uncached(ref))
+                _ISSUE_FETCH_INFLIGHT[ref.url] = task
+                _ISSUE_FETCH_TASKS.setdefault(ref.url, set()).add(task)
+                _reserve_direct_fetch(task, _ISSUE_FETCH_RESERVATION_BYTES)
 
-            def finish_issue_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
-                _finish_inflight(_ISSUE_FETCH_INFLIGHT, ref.url, done)
-                active = _ISSUE_FETCH_TASKS.get(ref.url)
-                if active is None:
-                    return
-                active.discard(done)
-                if not active:
-                    _ISSUE_FETCH_TASKS.pop(ref.url, None)
+                def finish_issue_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
+                    _finish_inflight(_ISSUE_FETCH_INFLIGHT, ref.url, done)
+                    active = _ISSUE_FETCH_TASKS.get(ref.url)
+                    if active is None:
+                        return
+                    active.discard(done)
+                    if not active:
+                        _ISSUE_FETCH_TASKS.pop(ref.url, None)
 
-            task.add_done_callback(finish_issue_fetch)
+                task.add_done_callback(finish_issue_fetch)
+                break
+        # Outside the lock: see the matching note in fetch_pull_request.
+        if not await _wait_for_direct_fetch_capacity(deadline):
+            raise _capacity_exhausted_error()
     # Shield the shared fetch so one disconnected browser cannot cancel work
     # still awaited by another request for the same URL.
     return await asyncio.shield(task)
+
+
+def _provider_error_response(
+    request: web.Request, operation: str, exc: SourceProviderError
+) -> web.Response:
+    """Audit and answer a failed provider read.
+
+    Capacity pressure is reported under its own code and audit reason rather than
+    as a generic provider error: nothing failed, the gateway was holding its
+    concurrent-fetch memory ceiling. The code is what lets the client retry this
+    one case instead of presenting it as a dead end, while a real provider error
+    (auth, missing PR, malformed payload) still fails immediately.
+
+    The audit event is emitted here rather than at the call sites so the reason
+    cannot drift from the code the caller receives -- the two are one decision.
+    Owning the ``json_response`` here also keeps the error-code contract scan
+    honest: a helper that returned only the body would leave every call site
+    passing an opaque variable (see test/test_error_code_contract.py).
+    """
+    if isinstance(exc, SourceCapacityError):
+        code, reason = "source_busy", "capacity_exhausted"
+    else:
+        code, reason = "provider_error", "provider_error"
+    _audit_source_api(request, operation, "failed", reason)
+    return web.json_response({"error": str(exc), "code": code}, status=503)
 
 
 async def api_pull_request_source(request: web.Request) -> web.Response:
@@ -2498,8 +2536,7 @@ async def api_pull_request_source(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.pull_request.read", "failed", "invalid_request")
         return web.json_response({"error": str(exc)}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.pull_request.read", "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, "source.pull_request.read", exc)
     _audit_source_api(request, "source.pull_request.read", "completed")
     return web.json_response(data)
 
@@ -2532,8 +2569,7 @@ async def api_issue_source(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.issue.read", "failed", "invalid_request")
         return web.json_response({"error": str(exc)}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.issue.read", "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, "source.issue.read", exc)
     _audit_source_api(request, "source.issue.read", "completed")
     return web.json_response(data)
 
@@ -2563,8 +2599,7 @@ async def api_pull_request_checks(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.pull_request.checks", "failed", "invalid_request")
         return web.json_response({"error": str(exc)}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.pull_request.checks", "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, "source.pull_request.checks", exc)
     _audit_source_api(request, "source.pull_request.checks", "completed")
     return web.json_response({"checks": checks})
 
@@ -2652,6 +2687,40 @@ _GITHUB_RESOLVE_MUTATION = (
     "mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId})"
     "{thread{isResolved}}}"
 )
+
+_GITHUB_UNRESOLVE_MUTATION = (
+    "mutation($threadId:ID!){unresolveReviewThread(input:{threadId:$threadId})"
+    "{thread{isResolved}}}"
+)
+
+_GITHUB_THREAD_REPLY_MUTATION = (
+    "mutation($threadId:ID!,$body:String!)"
+    "{addPullRequestReviewThreadReply"
+    "(input:{pullRequestReviewThreadId:$threadId,body:$body})"
+    "{comment{id}}}"
+)
+
+# Comment bodies are user text passed as a single CLI argument (argv, never a
+# shell string), so the only real risk is size. GitHub rejects bodies past 65536
+# characters anyway, so refusing here turns a provider error into a clear local
+# one and bounds the argument.
+_MAX_COMMENT_CHARS = 65536
+
+
+def _validated_comment_body(body: str) -> str:
+    """Return a comment body that is safe and worth sending.
+
+    Empty bodies are refused rather than posted: an accidental empty comment is
+    visible to everyone on the pull request and cannot be removed from here.
+    """
+    text = (body or "").strip()
+    if not text:
+        raise ValueError("A comment body is required.")
+    if len(text) > _MAX_COMMENT_CHARS:
+        raise ValueError(
+            f"A comment body must be at most {_MAX_COMMENT_CHARS} characters.")
+    return text
+
 
 # Node ids are provider-issued, but they are interpolated into a CLI argument,
 # so they get the same shape check as review-thread ids before dispatch.
@@ -2772,6 +2841,86 @@ async def _invalidate_pull_request_cache(url: str) -> None:
     """Supersede cached and in-flight data before a provider mutation."""
     await _invalidate_full_payload_cache(url)
     _invalidate_check_status(url)
+
+
+async def _github_thread_ref(raw_url: str, thread_id: str) -> SourceRef:
+    """Validate a thread id AND prove it belongs to the pull request in the url.
+
+    The ownership check is the security control: the thread id arrives from the
+    browser, and without it an owner-authenticated mutation could be steered at a
+    thread on an unrelated pull request. Shared by reply/resolve/unresolve so no
+    future call site can skip it.
+    """
+    await ensure_gitlab_hosts_loaded()
+    # The docstring above promises this is the one place reply/resolve/unresolve
+    # cannot skip, so the kind check belongs here too — not only in the callers
+    # that happen to repeat it.
+    ref = _require_change_ref(parse_source_url(raw_url))
+    if ref.provider != "github":
+        raise ValueError(
+            "Replying to review threads is only supported on GitHub so far.")
+    if not _GITHUB_THREAD_ID_RE.fullmatch(thread_id or ""):
+        raise ValueError("A valid thread id is required.")
+    threads = await _run_json(
+        "gh", "api", "graphql",
+        "-f", f"query={_GITHUB_REVIEW_THREADS_QUERY}",
+        "-f", f"owner={ref.owner}",
+        "-f", f"repo={ref.repo}",
+        "-F", f"number={ref.number}",
+    )
+    if thread_id not in _github_thread_ids(threads):
+        raise ValueError("Review thread does not belong to this pull request.")
+    return ref
+
+
+async def reply_to_review_thread(raw_url: str, thread_id: str, body: str) -> None:
+    """Post a reply into an existing review thread."""
+    text = _validated_comment_body(body)
+    ref = await _github_thread_ref(raw_url, thread_id)
+    # Invalidate before dispatch, matching resolve: once the provider call
+    # starts its remote result is uncertain under cancellation, so a stale
+    # generation must already be unable to satisfy the post-write refresh.
+    await _invalidate_pull_request_cache(ref.url)
+    payload = await _run_json(
+        "gh", "api", "graphql",
+        "-f", f"query={_GITHUB_THREAD_REPLY_MUTATION}",
+        "-f", f"threadId={thread_id}",
+        "-f", f"body={text}",
+    )
+    _raise_on_graphql_errors(payload, "could not post the reply")
+
+
+async def unresolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
+    """Reopen a resolved review thread."""
+    ref = await _github_thread_ref(raw_url, thread_id)
+    await _invalidate_pull_request_cache(ref.url)
+    payload = await _run_json(
+        "gh", "api", "graphql",
+        "-f", f"query={_GITHUB_UNRESOLVE_MUTATION}",
+        "-f", f"threadId={thread_id}",
+    )
+    _raise_on_graphql_errors(payload, "could not reopen the thread")
+
+
+async def comment_on_pull_request(raw_url: str, body: str) -> None:
+    """Post a top-level comment on the pull request itself (not a thread)."""
+    text = _validated_comment_body(body)
+    await ensure_gitlab_hosts_loaded()
+    # Issue refs are refused here for the same reason the thread mutations refuse
+    # them: this posts to /issues/{number}/comments, and on GitHub issues and pull
+    # requests share one number counter, so an issue URL would publish a comment
+    # on an unrelated issue that happens to carry the PR's number.
+    ref = _require_change_ref(parse_source_url(raw_url))
+    if ref.provider != "github":
+        raise ValueError("Commenting is only supported on GitHub so far.")
+    await _invalidate_pull_request_cache(ref.url)
+    # Issue comments, because a pull request's conversation timeline IS its issue
+    # timeline; the review-comment endpoints require a diff position.
+    await _run_json(
+        "gh", "api", "-X", "POST",
+        f"repos/{ref.owner}/{ref.repo}/issues/{ref.number}/comments",
+        "-f", f"body={text}",
+    )
 
 
 async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
@@ -3008,6 +3157,497 @@ async def mark_pull_request_ready(raw_url: str) -> None:
     _raise_on_graphql_errors(payload, "GitLab refused to mark the merge request ready")
 
 
+# The three verdicts GitHub accepts when submitting a pending review. DISMISS and
+# the other review endpoints are deliberately absent: this path exists to publish a
+# draft the caller has read, not to act on reviews someone else submitted.
+_REVIEW_SUBMIT_EVENTS = frozenset({"APPROVE", "REQUEST_CHANGES", "COMMENT"})
+# The verdicts that GATE a merge, and therefore the ones whose attachment to a
+# specific commit is load-bearing. A COMMENT review carries no verdict, so a head
+# that moves under it costs nothing but misplaced line anchors.
+_REVIEW_GATING_EVENTS = frozenset({"APPROVE", "REQUEST_CHANGES"})
+# GitHub review ids are positive integers. Bounded and anchored because the value
+# is interpolated into the REST path.
+_GITHUB_REVIEW_ID_RE = re.compile(r"[1-9][0-9]{0,19}")
+
+
+def _flatten_paginated(payload: Any) -> list[dict[str, Any]]:
+    """Flatten a ``gh api --paginate --slurp`` result into one list of objects.
+
+    ``--slurp`` returns an array of per-page arrays, but a single-page result from
+    a caller without the flag is already flat, so both shapes are accepted rather
+    than assuming one. Non-dict members are dropped: a malformed page must not
+    smuggle a value past the scans that read these lists.
+    """
+    out: list[dict[str, Any]] = []
+    if not isinstance(payload, list):
+        return out
+    for item in payload:
+        if isinstance(item, dict):
+            out.append(item)
+        elif isinstance(item, list):
+            out.extend(p for p in item if isinstance(p, dict))
+    return out
+
+
+async def _github_pending_review(ref: SourceRef) -> dict[str, Any]:
+    """Return the caller's own unsubmitted review on ``ref``, or empty fields.
+
+    GitHub scopes a PENDING review to its author and permits only one per user
+    per pull request, so the single PENDING entry this returns is necessarily the
+    authenticated user's own draft -- there is no way to observe, or therefore to
+    publish, someone else's.
+
+    Beyond the body, two facts decide whether the draft may be published at all,
+    so they are read here rather than re-derived at submit time:
+
+    ``stale`` -- the draft's ``commit_id`` is not the pull request's live head.
+    Publishing a verdict then attributes a review to code that was never read, and
+    on a repository without stale-approval dismissal a stale ``APPROVE`` counts as
+    a live approval of unreviewed code.
+
+    ``contentRedacted`` -- redaction ALTERS the draft's own text (body or any of
+    its inline comments). Submitting publishes GitHub's stored draft, not the
+    redacted copy this returns, so a draft quoting a credential would be shown
+    redacted here and published verbatim there. The mismatch is reported so the
+    publish path can refuse rather than silently leak.
+    """
+    raw = await _run_json(
+        "gh", "api", "--paginate", "--slurp",
+        f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews",
+    )
+    if not isinstance(raw, list):
+        raise SourceProviderError("GitHub returned an invalid reviews payload")
+    # Paginated: a pull request with more reviews than one page can carry would
+    # otherwise hide the PENDING entry past the first 30 and read back as "no
+    # draft" -- the same page-one blindness that made the comment scan unsafe.
+    reviews = _flatten_paginated(raw)
+    for entry in reviews:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("state") or "").upper() != "PENDING":
+            continue
+        review_id = str(entry.get("id") or "")
+        raw_body = str(entry.get("body") or "")
+        state = await _github_pull_request_state(ref)
+        head_sha = str(state["headSha"])
+        draft_sha = str(entry.get("commit_id") or "")
+        texts = [raw_body]
+        comments: list[dict[str, Any]] = []
+        if review_id:
+            comments = await _github_pending_review_comments(ref, review_id)
+            texts.extend(str(c.get("body") or "") for c in comments)
+        # The body is provider-controlled text on its way to the dashboard, so it
+        # goes through the same redaction chokepoint as every other provider read
+        # (fetch_pull_request, fetch_pull_request_checks). A hand-written draft can
+        # quote a credential as easily as a comment can.
+        return {
+            "reviewId": review_id,
+            "body": str(_redact_provider_data(raw_body)),
+            # The inline comments are part of what a verdict publishes, and
+            # `contentDigest` binds them, so they have to be RETURNED as well or the
+            # digest would certify text the reader never saw -- consent to a body
+            # standing in for consent to comments hidden behind it. Redacted the same
+            # way and on the same chokepoint as the body.
+            "comments": [
+                {
+                    "path": str(_redact_provider_data(str(c.get("path") or ""))),
+                    "line": c.get("line"),
+                    "body": str(_redact_provider_data(str(c.get("body") or ""))),
+                }
+                for c in comments
+            ],
+            "commitId": draft_sha,
+            "headSha": head_sha,
+            # Unknown draft or head sha counts as stale: fail closed rather than
+            # treat an unanswerable question as "current".
+            "stale": not (draft_sha and head_sha and draft_sha == head_sha),
+            "contentRedacted": any(_redact_provider_data(t) != t for t in texts),
+            "autoMergeArmed": bool(state["autoMergeArmed"]),
+            "contentDigest": _review_content_digest(raw_body, comments),
+            "staleDismissalEnabled": await _github_stale_dismissal_enabled(
+                ref, str(state["baseRef"])
+            ),
+        }
+    return {
+        "reviewId": "", "body": "", "comments": [], "commitId": "", "headSha": "",
+        "stale": False, "contentRedacted": False, "autoMergeArmed": False,
+        "contentDigest": "", "staleDismissalEnabled": False,
+    }
+
+
+async def _github_pull_request_state(ref: SourceRef) -> dict[str, Any]:
+    """The live facts a publish decision needs: head sha, and whether auto-merge is armed.
+
+    One fetch for both, because they are read together on every publish path and the
+    object carries them both.
+
+    Fetches the object and reads the fields in Python rather than passing
+    ``--jq .head.sha``: ``gh``'s jq output for a string is a BARE token, and
+    ``_run_json`` feeds every response to ``json.loads``, which rejects it — so the
+    jq form turned every read of this value into a 503.
+    """
+    payload = await _run_json(
+        "gh", "api", f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}",
+    )
+    if not isinstance(payload, dict):
+        raise SourceProviderError("GitHub returned an invalid pull-request payload")
+    head = payload.get("head")
+    sha = str((head or {}).get("sha") or "").strip() if isinstance(head, dict) else ""
+    # `auto_merge` is null when disarmed and an object when armed. Anything else
+    # counts as armed: an unrecognised shape must not read as "safe".
+    auto = payload.get("auto_merge")
+    base = payload.get("base")
+    base_ref = str((base or {}).get("ref") or "") if isinstance(base, dict) else ""
+    return {
+        "headSha": sha,
+        "autoMergeArmed": auto is not None,
+        "baseRef": base_ref,
+    }
+
+
+async def _github_stale_dismissal_enabled(ref: SourceRef, base_ref: str) -> bool:
+    """Whether the base branch dismisses approvals when new commits land.
+
+    This is the setting that makes a stale approval HARMLESS: with it on, GitHub
+    itself dismisses the approval the moment the head moves, so an approval can
+    never authorize a merge of code nobody reviewed -- no matter when auto-merge is
+    armed or when the force-push lands relative to our own checks.
+
+    Fail CLOSED: when NEITHER read can confirm the setting -- no protection at all,
+    no permission on either surface, any error -- this returns False, which withholds
+    APPROVE rather than assuming the branch is safe.
+
+    Two reads, because they need different privileges. `GET /branches/{ref}/protection`
+    is admin-only, so a non-admin reviewer on a properly protected repository would be
+    refused APPROVE forever and sent back to github.com -- the context switch this
+    feature removes. GraphQL's `branchProtectionRules` answers the same question at a
+    lower privilege, so it is tried when REST cannot answer. The safety property is
+    unchanged: only an explicit `true` from one of them opens the verdict.
+    """
+    if not base_ref:
+        return False
+    if await _github_rest_dismisses_stale(ref, base_ref):
+        return True
+    return await _github_graphql_dismisses_stale(ref, base_ref)
+
+
+async def _github_rest_dismisses_stale(ref: SourceRef, base_ref: str) -> bool:
+    """The admin-only REST read of the base branch's protection block."""
+    try:
+        payload = await _run_json(
+            "gh", "api",
+            f"repos/{ref.owner}/{ref.repo}/branches/{quote(base_ref, safe='')}/protection",
+        )
+    except Exception:
+        logger.debug("branch protection unreadable via REST for %s", ref.url, exc_info=True)
+        return False
+    if not isinstance(payload, dict):
+        return False
+    reviews = payload.get("required_pull_request_reviews")
+    if not isinstance(reviews, dict):
+        return False
+    return reviews.get("dismiss_stale_reviews") is True
+
+
+async def _github_graphql_dismisses_stale(ref: SourceRef, base_ref: str) -> bool:
+    """The lower-privilege GraphQL read, used when REST cannot answer.
+
+    A rule's `pattern` may be a glob (`releases/*`), so the branch is matched with
+    fnmatch rather than by equality. Only a rule that BOTH matches this branch and has
+    `dismissesStaleReviews` true counts -- a non-matching rule says nothing about the
+    branch being merged into.
+    """
+    query = (
+        "query($owner:String!,$name:String!){"
+        " repository(owner:$owner,name:$name){"
+        " branchProtectionRules(first:100){"
+        " nodes{ pattern dismissesStaleReviews } } } }"
+    )
+    try:
+        payload = await _run_json(
+            "gh", "api", "graphql", "-f", f"query={query}",
+            "-F", f"owner={ref.owner}", "-F", f"name={ref.repo}",
+        )
+    except Exception:
+        logger.debug("branch protection unreadable via GraphQL for %s", ref.url,
+                     exc_info=True)
+        return False
+    nodes = (((payload or {}).get("data") or {}).get("repository") or {}) \
+        .get("branchProtectionRules") or {}
+    for rule in nodes.get("nodes") or []:
+        if not isinstance(rule, dict):
+            continue
+        pattern = rule.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        if (_branch_pattern_matches(pattern, base_ref)
+                and rule.get("dismissesStaleReviews") is True):
+            return True
+    return False
+
+
+def _branch_pattern_matches(pattern: str, ref: str) -> bool:
+    """Does a GitHub branch-protection ``pattern`` cover branch ``ref``?
+
+    GitHub matches these patterns **per path segment**: a single ``*`` never
+    crosses a ``/`` and ``**`` is the only wildcard that spans segments. Python's
+    :func:`fnmatch.fnmatch` has no pathname mode -- its ``*`` swallows separators
+    -- so ``releases/*`` would match ``releases/1/2`` here while GitHub's rule
+    does not cover that branch at all.
+
+    That difference is not cosmetic: this predicate is what opens the APPROVE
+    verdict, so a pattern that appears to match a branch it does not actually
+    protect is a fail-OPEN -- a stale approval could survive a head change on a
+    branch carrying no stale-dismissal rule. Compare segment by segment.
+
+    Case-sensitive by design (``fnmatchcase``): branch names are, and plain
+    ``fnmatch`` would fold case on macOS and Windows.
+    """
+    if not pattern or not ref:
+        return False
+    return _segments_match(pattern.split("/"), ref.split("/"))
+
+
+def _segments_match(pat: list[str], seg: list[str]) -> bool:
+    """Segment-wise glob match, where ``**`` consumes zero or more segments."""
+    if not pat:
+        return not seg
+    if pat[0] == "**":
+        return any(_segments_match(pat[1:], seg[i:]) for i in range(len(seg) + 1))
+    if not seg:
+        return False
+    if not fnmatch.fnmatchcase(seg[0], pat[0]):
+        return False
+    return _segments_match(pat[1:], seg[1:])
+
+
+async def _github_pull_request_head_sha(ref: SourceRef) -> str:
+    """The pull request's live head sha, used to detect a stale draft review."""
+    return str((await _github_pull_request_state(ref))["headSha"])
+
+
+async def _github_pending_review_comments(ref: SourceRef, review_id: str) -> list[dict[str, Any]]:
+    """A pending review's inline comments, ACROSS ALL PAGES.
+
+    Needed because submission publishes every comment GitHub holds for the draft,
+    not just the body this app can see -- so a credential hiding in an inline
+    comment of a hand-written draft has to be detectable too, and the content
+    digest has to cover them. Pagination is not optional here: the endpoint returns
+    30 per page, so an unpaginated scan clears a draft whose 31st comment carries
+    the credential and then publishes it.
+    """
+    raw = await _run_json(
+        "gh", "api", "--paginate", "--slurp",
+        f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/comments",
+    )
+    return _flatten_paginated(raw)
+
+
+def _review_content_digest(body: str, comments: list[dict[str, Any]]) -> str:
+    """Stable digest of everything submitting this draft would publish.
+
+    The review id identifies the review OBJECT, not its contents: GitHub lets a
+    pending review's body be edited and its inline comments be added or removed
+    under the same id. So an id match alone cannot prove the caller read what is
+    about to go out -- this digest can, and the submit path requires the one the
+    caller was shown.
+
+    Sorted by comment id (stable and unique) so a re-ordered read of identical
+    content yields the same digest, while an edited body, a moved line, or an
+    added/removed comment all change it. Hashes the RAW text, because raw text is
+    what GitHub publishes.
+    """
+    payload: list[dict[str, Any]] = [{
+        "id": str(c.get("id") or ""),
+        "path": str(c.get("path") or ""),
+        "line": c.get("line"),
+        "body": str(c.get("body") or ""),
+    } for c in comments]
+    payload.sort(key=lambda c: str(c["id"]))
+    blob = json.dumps({"body": body, "comments": payload}, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+async def pull_request_pending_review(raw_url: str) -> dict[str, Any]:
+    """Read the caller's unsubmitted draft review, so a client can show it.
+
+    Separate from the submit call because publishing is only safe when the caller
+    has been shown the exact draft it is about to publish: the id returned here is
+    what :func:`submit_pull_request_review` requires back.
+    """
+    await ensure_gitlab_hosts_loaded()
+    ref = _require_change_ref(parse_source_url(raw_url))
+    if ref.provider != "github":
+        raise ValueError("Draft reviews can only be read on GitHub pull requests.")
+    return await _github_pending_review(ref)
+
+
+async def submit_pull_request_review(
+    raw_url: str, review_id: str, event: str, content_digest: str
+) -> dict[str, Any]:
+    """Publish an existing pending review with a verdict.
+
+    ``review_id`` is required rather than resolved implicitly: a pending review may
+    equally be one the human started by hand in the provider UI, so submitting
+    whatever draft happens to exist could publish an unfinished review the caller
+    never saw. Requiring the id the caller was shown -- and re-checking that it is
+    still the pending one -- makes that impossible and turns a concurrent
+    submit-or-replace into a rejection instead of a surprise.
+    """
+    await ensure_gitlab_hosts_loaded()
+    ref = _require_change_ref(parse_source_url(raw_url))
+    if ref.provider != "github":
+        raise ValueError("Draft reviews can only be published on GitHub pull requests.")
+    normalized = (event or "").strip().upper()
+    if normalized not in _REVIEW_SUBMIT_EVENTS:
+        raise ValueError("event must be APPROVE, REQUEST_CHANGES, or COMMENT.")
+    if not _GITHUB_REVIEW_ID_RE.fullmatch(review_id or ""):
+        raise ValueError("A valid review id is required.")
+    pending = await _github_pending_review(ref)
+    if pending.get("reviewId") != review_id:
+        raise ValueError(
+            "This draft review is no longer pending -- it was already submitted or "
+            "replaced. Reload the pull request and try again."
+        )
+    # The id identifies the review OBJECT; GitHub lets its body be edited and its
+    # inline comments change under the same id. So the id alone cannot prove the
+    # caller read what is about to be published -- the digest of the current
+    # content must match the one the caller was shown. REQUIRED, never optional:
+    # an omitted digest that skipped the comparison would be a one-parameter
+    # bypass of this whole guard.
+    # What this endpoint does NOT check: whether the pending draft belongs to the
+    # caller's own review RUN. It enforces identity of the DRAFT (`reviewId` must be
+    # the pending one) and identity of its CONTENT (the digest), which is everything
+    # visible from here -- run provenance lives in Sage's run records, which this
+    # provider-level handler has no access to. Sage's publish bar checks it before
+    # offering a verdict; a different caller publishing "the pending draft" is
+    # publishing what it read, bound to what it read, and gets no run-coherence
+    # guarantee from this endpoint.
+    if not content_digest:
+        raise ValueError(
+            "A contentDigest is required: publishing must be bound to the exact "
+            "draft contents that were displayed."
+        )
+    if content_digest != pending.get("contentDigest"):
+        raise ValueError(
+            "This draft changed after it was displayed -- its body or inline comments "
+            "are no longer what you read. Reload the pull request and review it again."
+        )
+    # Submission publishes the draft GitHub stored, NOT the redacted copy the read
+    # returned. So when redaction alters the draft's own text the two disagree: the
+    # dashboard shows `[REDACTED]` while the published review would carry the
+    # secret verbatim. Refuse -- a leak the user was shown as redacted is worse
+    # than no publish button.
+    if pending.get("contentRedacted"):
+        raise ValueError(
+            "This draft contains content that must be redacted (a credential or an "
+            "unsafe URL), and publishing would post the original text. Edit or "
+            "discard the draft on GitHub instead."
+        )
+    # A draft written against an older head reviewed code that is no longer there.
+    # For APPROVE that is the dangerous case -- a repository without stale-approval
+    # dismissal counts it as a live approval of unreviewed code -- but a verdict of
+    # any kind, and inline comments anchored to vanished lines, are all wrong on a
+    # moved head, so every event is refused rather than carving out an exception.
+    if pending.get("stale"):
+        raise ValueError(
+            "This draft was written against an earlier commit and the pull request "
+            "has moved since. Re-review the current head before publishing."
+        )
+    # The stale check above and the submit below cannot be atomic — GitHub's
+    # submit-review API takes no expected-head parameter — so a force-push in that
+    # window leaves a verdict on an unreviewed head. The post-submit dismissal
+    # further down repairs that, EXCEPT when auto-merge is armed: then the approval
+    # satisfies branch protection and GitHub can merge before the dismissal lands,
+    # and nothing repairs a merge. Refuse APPROVE for exactly that combination
+    # rather than removing the verdict outright.
+    # Every remaining variant of the stale-approval race -- auto-merge armed before
+    # OR after this check, a force-push landing inside the submit round trip, a
+    # manual merge in that same window -- needs ONE precondition to do harm: the base
+    # branch must NOT dismiss approvals when new commits land. With
+    # `dismiss_stale_reviews` on, GitHub retracts the approval itself the moment the
+    # head moves, so a stale approval can never authorize unreviewed code and the
+    # timing of our own checks stops mattering. Requiring it closes the chain instead
+    # of narrowing it, and it fails closed: unreadable protection (no admin rights,
+    # no protection at all) withholds APPROVE.
+    if normalized == "APPROVE" and not pending.get("staleDismissalEnabled"):
+        raise ValueError(
+            "Approve is unavailable because this pull request's base branch does not "
+            "dismiss approvals when new commits are pushed (or its protection is not "
+            "readable from here). Without that, an approval published now could "
+            "outlive the commit it reviewed. Enable \"Dismiss stale pull request "
+            "approvals when new commits are pushed\" on the base branch, or approve "
+            "on GitHub."
+        )
+    if normalized == "APPROVE" and pending.get("autoMergeArmed"):
+        raise ValueError(
+            "Auto-merge is armed on this pull request, so an approval could merge it "
+            "before a stale-head check could take the approval back. Disarm "
+            "auto-merge to approve from here, or approve on GitHub where you can see "
+            "the head you are approving."
+        )
+    # Invalidate before dispatch: once the provider call starts its remote result
+    # is uncertain under cancellation, so a stale generation must already be unable
+    # to refill or satisfy a post-mutation refresh.
+    await _invalidate_pull_request_cache(ref.url)
+    validated_head = str(pending.get("headSha") or "")
+    await _run_json(
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/events",
+        "-f",
+        f"event={normalized}",
+    )
+    # GitHub's submit-review API takes no expected-head parameter, so the check
+    # above and this call cannot be one atomic operation: a force-push landing in
+    # between would leave a verdict attached to a head nobody reviewed. Re-read the
+    # head and, for a GATING verdict, dismiss what we just published rather than
+    # leave a silent stale approval. This is a compensating action, not atomicity --
+    # it turns an invisible window into a visible, self-reverting one.
+    if normalized in _REVIEW_GATING_EVENTS:
+        landed_head = await _github_pull_request_head_sha(ref)
+        if landed_head and validated_head and landed_head != validated_head:
+            dismissed = await _github_dismiss_review(ref, review_id)
+            await _invalidate_pull_request_cache(ref.url)
+            if dismissed:
+                raise SourceProviderError(
+                    "The pull request head moved while this review was being "
+                    f"published, so the {normalized} was dismissed again. Re-review "
+                    "the new head."
+                )
+            raise SourceProviderError(
+                "The pull request head moved while this review was being published, "
+                f"and the resulting {normalized} could NOT be dismissed "
+                "automatically. Dismiss it on GitHub: it applies to a commit that "
+                "was not reviewed."
+            )
+    return {"submitted": True, "event": normalized}
+
+
+async def _github_dismiss_review(ref: SourceRef, review_id: str) -> bool:
+    """Dismiss a just-published review whose head moved under it. Never raises.
+
+    Best-effort by design: the caller reports a different, louder error when this
+    fails, because an undismissable stale approval is exactly the state a human has
+    to know about.
+    """
+    try:
+        await _run_json(
+            "gh", "api", "-X", "PUT",
+            f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/dismissals",
+            "-f",
+            "message=Dismissed automatically: the pull request head changed while "
+            "this review was being published, so it applied to unreviewed code.",
+            "-f", "event=DISMISS",
+        )
+        return True
+    except Exception:
+        logger.warning("could not dismiss a stale review on %s", ref.url, exc_info=True)
+        return False
+
+
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
 
@@ -3094,6 +3734,61 @@ async def api_pull_request_resolve(request: web.Request) -> web.Response:
     return await _owner_mutation_response(request, "source.pull_request.resolve", action)
 
 
+async def api_pull_request_unresolve(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/unresolve`` mutation.
+
+    The counterpart to resolve: a thread closed by mistake, or reopened because
+    the fix did not hold, has to be recoverable from the same surface.
+    """
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        await unresolve_pull_request_thread(
+            str(body.get("url") or ""), str(body.get("threadId") or "")
+        )
+        return {"resolved": False}
+
+    return await _owner_mutation_response(
+        request, "source.pull_request.unresolve", action)
+
+
+async def api_pull_request_reply(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/reply`` mutation.
+
+    Posts a reply into an existing review thread under the dashboard owner's
+    provider identity. Same auth, audit, and cache-invalidation contract as
+    resolve, plus the thread-ownership proof that keeps a browser-supplied thread
+    id from reaching an unrelated pull request.
+    """
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        await reply_to_review_thread(
+            str(body.get("url") or ""),
+            str(body.get("threadId") or ""),
+            str(body.get("body") or ""),
+        )
+        return {"posted": True}
+
+    return await _owner_mutation_response(
+        request, "source.pull_request.reply", action)
+
+
+async def api_pull_request_comment(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/comment`` mutation.
+
+    A top-level comment on the pull request conversation, for the case that is
+    not a reply to anyone's line.
+    """
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        await comment_on_pull_request(
+            str(body.get("url") or ""), str(body.get("body") or "")
+        )
+        return {"posted": True}
+
+    return await _owner_mutation_response(
+        request, "source.pull_request.comment", action)
+
+
 async def _owner_mutation_response(
     request: web.Request,
     operation: str,
@@ -3134,8 +3829,7 @@ async def _owner_mutation_response(
             rejection["confirmationRequired"] = True
         return web.json_response(rejection, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, operation, "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, operation, exc)
     except Exception:
         _audit_source_api(request, operation, "failed", "internal_error")
         raise
@@ -3180,6 +3874,61 @@ async def api_pull_request_ready(request: web.Request) -> web.Response:
         return {"ready": True}
 
     return await _owner_mutation_response(request, "source.pull_request.ready", action)
+
+
+async def api_pull_request_pending_review(request: web.Request) -> web.Response:
+    """POST ``/api/source/pull-request/pending-review`` with ``{url}``.
+
+    A read, gated like :func:`api_pull_request_source` rather than like the
+    mutations: it returns the same class of credential-backed provider data, so a
+    stricter gate here would hide the draft on installations that can already read
+    the pull request itself.
+    """
+    operation = "source.pull_request.pending_review"
+    denied = _authorize_owner_request(request, operation, allow_local_no_owner=True)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except asyncio.CancelledError:
+        _audit_source_api(request, operation, "failed", "request_cancelled")
+        raise
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        data = await pull_request_pending_review(str(body.get("url") or ""))
+    except asyncio.CancelledError:
+        _audit_source_api(request, operation, "failed", "request_cancelled")
+        raise
+    except ValueError as exc:
+        _audit_source_api(request, operation, "failed", "invalid_request")
+        return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
+    except SourceProviderError as exc:
+        return _provider_error_response(request, operation, exc)
+    _audit_source_api(request, operation, "completed")
+    return web.json_response(data)
+
+
+async def api_pull_request_submit_review(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/pull-request/submit-review`` mutation.
+
+    Publishes a pending review the caller has already been shown. Same credential
+    boundary as the resolve mutation, and the strictest of the provider writes in
+    consequence: submitting is irreversible and visible to everyone on the pull
+    request.
+    """
+
+    async def action(body: dict[str, Any]) -> dict[str, Any]:
+        return await submit_pull_request_review(
+            str(body.get("url") or ""),
+            str(body.get("reviewId") or ""),
+            str(body.get("event") or ""),
+            str(body.get("contentDigest") or ""),
+        )
+
+    return await _owner_mutation_response(request, "source.pull_request.submit_review", action)
 
 
 # ── Lightweight CI check status for sidebar chips ────────────────────────────

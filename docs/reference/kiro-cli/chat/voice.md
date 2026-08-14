@@ -91,6 +91,27 @@ status badge stays "not installed".
 dependency because the `mlx` wheel is arm64-only; Kiro Crew invokes the
 `mlx_whisper` CLI as a subprocess, exactly like the `whisper` provider.
 
+### CPU threads (many-core hosts)
+
+Kiro Crew derives the Whisper subprocess's thread count from the host: **half the
+available cores**, capped at 16. To control it yourself, set `OMP_NUM_THREADS` or
+`OPENBLAS_NUM_THREADS` — if either is set, Kiro Crew leaves both alone and your
+value is used as-is. The count comes from `sched_getaffinity` where available, so
+a CPU-restricted container gets its real budget rather than the whole machine's.
+
+Why not use every core: Whisper decodes one output step at a time, and each step
+is a small matmul that ends in a thread barrier. Wide thread pools therefore cost
+latency per step instead of buying throughput, and on a host that is doing other
+work — a Kiro Crew host runs the gateway and agent sessions alongside — the
+workers get time-sliced, so each barrier waits on threads the scheduler has not
+run yet.
+
+Measured on a 32-vCPU Graviton3 host with an 11-second clip, 16 threads beat 31
+(`base` 4.9s vs 7.3s, `turbo` 20.8s vs 26.9s), and restricted to 16 cores with
+`taskset`, 8 threads beat 16 (5s vs 7s). The headroom buys predictability more
+than raw speed: 8 threads measured 4.9–5.0s across repeats, while taking all 32
+ranged 8.1–68.4s depending on how busy the machine was.
+
 ## Voice Output (Text-to-Speech)
 
 Kiro Crew can speak responses aloud using Amazon Polly. Two modes are available:

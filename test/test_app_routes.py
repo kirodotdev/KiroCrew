@@ -382,3 +382,85 @@ async def test_ui_file_no_cache_revalidation(tmp_path, monkeypatch):
             headers={"If-Modified-Since": last_modified},
         )
         assert resp304.status == 304
+
+
+# ---------------------------------------------------------------------------
+# Registration must run off the event loop (blocking KIROCREW_HOME filesystem
+# work — manifest reads, skill symlink walks, mcp.json atomic writes — would
+# otherwise freeze the gateway on a stalled mount).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_register_helper_dispatches_off_loop(monkeypatch):
+    """_register_app_off_loop runs register_app on an executor thread and
+    passes its return value through to the caller."""
+    import threading
+
+    import kiro_crew.apps.routes as routes_mod
+
+    loop_thread = threading.current_thread()
+    seen: dict[str, object] = {}
+    sentinel = SimpleNamespace(ok=True)
+
+    def _spy(name):
+        seen["name"] = name
+        seen["thread"] = threading.current_thread()
+        return sentinel
+
+    monkeypatch.setattr(routes_mod, "register_app", _spy)
+    result = await routes_mod._register_app_off_loop("some-app")
+    assert result is sentinel  # return value reaches the awaiting caller
+    assert seen["name"] == "some-app"
+    assert seen["thread"] is not loop_thread  # executor thread, not the loop
+
+
+@pytest.mark.asyncio
+async def test_deregister_helper_dispatches_off_loop(monkeypatch):
+    """_deregister_app_off_loop runs deregister_app on an executor thread."""
+    import threading
+
+    import kiro_crew.apps.routes as routes_mod
+
+    loop_thread = threading.current_thread()
+    seen: dict[str, object] = {}
+    sentinel = SimpleNamespace(ok=True)
+
+    def _spy(name):
+        seen["name"] = name
+        seen["thread"] = threading.current_thread()
+        return sentinel
+
+    monkeypatch.setattr(routes_mod, "deregister_app", _spy)
+    result = await routes_mod._deregister_app_off_loop("some-app")
+    assert result is sentinel
+    assert seen["name"] == "some-app"
+    assert seen["thread"] is not loop_thread
+
+
+@pytest.mark.asyncio
+async def test_install_route_registers_off_loop(tmp_path, monkeypatch):
+    """The install handler reaches register_app via the executor: the real
+    registration call must not execute on the event-loop thread."""
+    import threading
+
+    import kiro_crew.apps.routes as routes_mod
+
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    loop_thread = threading.current_thread()
+    seen: dict[str, object] = {}
+    real_register = routes_mod.register_app
+
+    def _spy(name):
+        seen["thread"] = threading.current_thread()
+        return real_register(name)
+
+    monkeypatch.setattr(routes_mod, "register_app", _spy)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/apps/install", json={"source": str(src)})
+        assert resp.status == 201
+        data = await resp.json()
+        assert data["ok"] is True
+        assert "registration" in data  # helper's return value still surfaces
+    assert seen["thread"] is not loop_thread

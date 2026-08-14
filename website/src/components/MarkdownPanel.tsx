@@ -1,4 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { hasCommandModifier } from '../utils/commandModifier'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
@@ -234,7 +235,7 @@ const MonacoDiffEditor = lazy(async () => {
  * path-backed `.svg` to `image` and never returns `svg` here. `svg` is kept in the
  * list for the content-string SVG that artifacts render.
  */
-const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw']
+const RICH_FILE_TYPES = ['image', 'svg', 'csv', 'json', 'jsonl', 'html', 'pdf', 'excalidraw', 'office']
 
 /** Comment hint banner — shown once per session for markdown files */
 function CommentHint({ onDismiss }: { onDismiss: () => void }) {
@@ -270,6 +271,29 @@ async function downloadFile(filePath: string) {
     setTimeout(() => URL.revokeObjectURL(url), 2_000)
     // eslint-disable-next-line no-console -- surface download failures for diagnostics
   } catch (err) { console.error('downloadFile failed', err); alert(i18nT('components.markdownPanel.download_failed')) }
+}
+
+/**
+ * Hand the open file to the desktop: `open` launches it in the OS default
+ * application, `reveal` selects it in Finder / Explorer / the Linux file
+ * manager.
+ *
+ * A headless host (SSH, container, cloud desktop) has neither, and the backend
+ * says so by answering with `copy` rather than an error — `api.revealPath` puts
+ * the path on the clipboard in that case, so the alert here tells the user why
+ * nothing appeared on screen instead of leaving the click looking broken. A
+ * rejected request (a path the SEL guard treats as sensitive, or `open` on a
+ * directory) surfaces the server's own message.
+ */
+async function revealOrOpen(filePath: string, action: 'open' | 'reveal') {
+  try {
+    const res = await api.revealPath(filePath, action)
+    if (res?.copy) alert(i18nT('components.markdownPanel.path_copied_to_clipboard_no_desktop_available'))
+  } catch (err) {
+    // eslint-disable-next-line no-console -- surface reveal failures for diagnostics
+    console.error('revealPath failed', err)
+    alert((err as Error).message)
+  }
 }
 
 /** 26px square icon toggle for the file toolbar (borderless, accent when on). */
@@ -352,6 +376,20 @@ function KnowledgeToggleIconButton({ state }: { state: ReturnType<typeof useFile
 const barLabelBtn = (on: boolean) =>
   `flex items-center gap-1.5 px-2 h-[26px] rounded-md cursor-pointer transition-colors border-none shrink-0 text-[11.5px] font-medium ${on ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`
 
+/**
+ * One row of the ⋯ overflow menu.
+ *
+ * The roving-focus tint is `focus-visible`, not `focus`: the WAI-ARIA menu
+ * pattern moves real DOM focus onto the first row as the menu opens, and a
+ * plain `focus:` tint paints that row with the same colour as `hover:` for as
+ * long as the menu stays open. A pointer user then sees the first row lit the
+ * whole time — and two lit rows at once as soon as they hover something else.
+ * `:focus-visible` matches a script-moved focus only when the interaction that
+ * moved it was a keypress, so arrow-key navigation keeps its indicator while a
+ * mouse click paints nothing.
+ */
+const menuRowCls = 'flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-none'
+
 export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, refreshTitle, onFullscreen, fullscreen, onSnapshot, snapshotting }: {
   filePath: string; content: string
   /** View actions folded in from the old header row (side-panel revamp): the
@@ -413,25 +451,25 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
   const canAddToKnowledge = knowledge.formats && knowledge.formats.includes(ext)
   return (
     <div ref={ref} className="relative">
-      <button ref={triggerRef} aria-label={i18nT('components.markdownPanel.more_options')} aria-haspopup="menu" aria-expanded={open} className={barIconBtn(open)} onClick={() => setOpen(!open)}>
+      <button ref={triggerRef} data-testid="markdown-panel-more-options" aria-label={i18nT('components.markdownPanel.more_options')} aria-haspopup="menu" aria-expanded={open} className={barIconBtn(open)} onClick={() => setOpen(!open)}>
         <Ellipsis size={15} />
       </button>
       {open && (
         <div ref={listRef} role="menu" onKeyDown={onListKeyDown} className="absolute right-0 top-full mt-1 z-50 rounded-lg bg-bg-elevated border border-border shadow-lg py-1 min-w-[180px]">
           {onRefresh && (
-            <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none disabled:opacity-40" disabled={refreshDisabled} title={refreshTitle} onClick={() => { onRefresh(); setOpen(false) }}>
+            <button role="menuitem" data-option tabIndex={-1} className={`${menuRowCls} disabled:opacity-40`} disabled={refreshDisabled} title={refreshTitle} onClick={() => { onRefresh(); setOpen(false) }}>
               <RefreshCw size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.refresh')}
             </button>
           )}
           {onFullscreen && (
-            <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { onFullscreen(); setOpen(false) }}>
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { onFullscreen(); setOpen(false) }}>
               {fullscreen ? <Minimize2 size={14} className="lucide-inline" /> : <Maximize2 size={14} className="lucide-inline" />} {fullscreen ? i18nT('components.markdownPanel.exit_full_screen') : i18nT('components.markdownPanel.full_screen')}
             </button>
           )}
           <div className="h-px bg-border my-1 mx-2" />
           {artifact.existing ? (
             <button
-              role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none"
+              role="menuitem" data-option tabIndex={-1} className={menuRowCls}
               onClick={() => { navigate(`/artifacts/${encodeURIComponent(artifact.existing!.slug)}`); setOpen(false) }}
               title={i18nT('components.markdownPanel.open_artifact', { name: artifact.existing.slug })}
             >
@@ -439,7 +477,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             </button>
           ) : (
             <button
-              role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none disabled:opacity-50"
+              role="menuitem" data-option tabIndex={-1} className={`${menuRowCls} disabled:opacity-50`}
               onClick={() => artifact.add(undefined, { onSuccess: delayedClose })}
               disabled={artifact.adding}
               title={i18nT('components.markdownPanel.save_this_file_as_an_artifact_versioned_persiste')}
@@ -452,7 +490,7 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
             </button>
           )}
           {onSnapshot && artifact.existing && (
-            <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none disabled:opacity-50" onClick={() => { onSnapshot(); delayedClose() }} disabled={snapshotting} title={i18nT('components.markdownPanel.capture_the_current_file_content_as_a_new_artifa')}>
+            <button role="menuitem" data-option tabIndex={-1} className={`${menuRowCls} disabled:opacity-50`} onClick={() => { onSnapshot(); delayedClose() }} disabled={snapshotting} title={i18nT('components.markdownPanel.capture_the_current_file_content_as_a_new_artifa')}>
               <Camera size={14} className="lucide-inline" /> {snapshotting ? i18nT('components.markdownPanel.snapshotting') : i18nT('components.markdownPanel.snapshot_version')}
             </button>
           )}
@@ -462,19 +500,29 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
                 <BookOpen size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.in_library')} <Check size={14} className="lucide-inline" />
               </span>
             ) : (
-              <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => knowledge.add(undefined, { onSuccess: delayedClose })} disabled={knowledge.adding}>
+              <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => knowledge.add(undefined, { onSuccess: delayedClose })} disabled={knowledge.adding}>
                 {knowledge.added ? <><BookOpen size={14} className="lucide-inline" style={{color: 'var(--ok)'}} /> {knowledge.addResult === 'exists' ? i18nT('components.markdownPanel.already_in_library') : i18nT('components.markdownPanel.added')}</> : knowledge.adding ? i18nT('components.markdownPanel.adding_2') : <><BookOpen size={14} className="lucide-inline" /> {i18nT('components.markdownPanel.add_to_knowledge')}</>}
               </button>
             )
           )}
           <div className="h-px bg-border my-1 mx-2" />
-          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
+          {/* File-location group: hand the file to the desktop, then the
+              clipboard/download fallbacks for hosts that have no desktop.
+              Iconless like its neighbours — the group reads as a list of
+              destinations, and two glyphs among five would look arbitrary. */}
+          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'open'); setOpen(false) }}>
+            {i18nT('components.markdownPanel.open_with_default_app')}
+          </button>
+          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal'); setOpen(false) }}>
+            {i18nT('components.markdownPanel.show_in_file_manager')}
+          </button>
+          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}
           </button>
-          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { copyToClipboard(content); setOpen(false) }}>
+          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(content); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_content')}
           </button>
-          <button role="menuitem" data-option tabIndex={-1} className="flex items-center gap-2 w-full px-3 py-1.5 text-[13px] text-text cursor-pointer border-none bg-transparent text-left hover:bg-bg-hover focus:bg-bg-hover focus:outline-none" onClick={() => { downloadFile(filePath); setOpen(false) }}>
+          <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { downloadFile(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.download')}
           </button>
         </div>
@@ -997,7 +1045,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // region; otherwise we let it bubble (chat-find) or let Monaco handle it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'f') return
+      if (!hasCommandModifier(e) || e.key.toLowerCase() !== 'f') return
       if (editing || diffMode || !isMarkdown) return       // Monaco/edit owns it; non-markdown skip
       if (!findActiveRef.current) return                    // cursor is in chat → let chat-find handle
       e.preventDefault()

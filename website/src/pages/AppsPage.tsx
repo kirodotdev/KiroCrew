@@ -26,12 +26,14 @@ import SimpleSelect from '../components/SimpleSelect'
 import { recordEvent } from '../rum'
 import SegmentedControl from '../components/SegmentedControl'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
+import type { EditorialArtwork } from '../components/appstore/useEditorialArt'
 import FeatureCard from '../components/appstore/FeatureCard'
 import CategoryRail, { type SourceRow } from '../components/appstore/CategoryRail'
 import AppListRow from '../components/appstore/AppListRow'
 import InstalledAppCard from '../components/appstore/InstalledAppCard'
+import TrustAppModal, { isTrustDeniedError, useTrustGate, type TrustAppTarget } from '../components/appstore/TrustAppModal'
 import SourcesPopover from '../components/appstore/SourcesPopover'
-import { categoryFor, categoryCounts, type Category } from '../components/appstore/categories'
+import { categoryFor, categoryCounts, mergeCategoryOrder, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
 import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
@@ -64,10 +66,91 @@ function initialTab(): Tab {
  * deterministically — apps shipping hero art first, then verified publishers,
  * then name.
  */
+/**
+ * One published featured section, as it arrives from the registry endpoint.
+ *
+ * `type` is the discriminator the card branches on. An `app` section always
+ * carries exactly one ref; a `collection` carries two or more plus the title
+ * that explains why they share a card. Both spell the refs as a list so
+ * resolution is one code path regardless of type.
+ */
+type EditorialSection = {
+  type: 'app' | 'collection'
+  appRefs: string[]
+  title?: string
+  blurb?: string
+  artwork?: EditorialArtwork
+}
+
+/** A collection below this has lost members; see the drop in `featuredSections`. */
+const MIN_COLLECTION_APPS = 2
+/** The schema's collection ceiling, re-applied at the fetch boundary. */
+const MAX_SECTION_APPS = 6
+
+/**
+ * An artwork URL safe to hand an `<img src>`, or undefined.
+ *
+ * The server already screens these refs and this is the SECOND check, not the
+ * first. It exists because one guard for a property the contract states
+ * absolutely -- no scheme other than the catalog's own may reach the DOM -- is
+ * one regression away from none.
+ *
+ * What it blocks: every scheme except https, which covers `javascript:` and
+ * `data:` (neither has a slash after the colon, so a naive `"://"` test admits
+ * both), and the scheme-relative `//host` form that inherits the page scheme
+ * while looking like a path.
+ *
+ * What it deliberately does NOT block: an https URL on a host other than the
+ * catalog. Rejecting that needs the catalog origin, and the only copy of it lives
+ * server-side (`official_catalog.OFFICIAL_CATALOG_BASE`); a second copy here
+ * would silently blank all artwork the day the catalog moves. That case stays
+ * the server's job, where the origin is already known.
+ */
+function editorialArtUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value || value.startsWith('//')) return undefined
+  const local = value.startsWith('/')
+  return local || value.startsWith('https://') ? value : undefined
+}
+
+/** Project a section's artwork, dropping anything whose light variant is unusable. */
+function normalizeEditorialArtwork(value: unknown): EditorialArtwork | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as Record<string, unknown>
+  const url = editorialArtUrl(raw.url)
+  if (!url) return undefined
+  const urlDark = editorialArtUrl(raw.urlDark)
+  const alt = typeof raw.alt === 'string' ? raw.alt : undefined
+  return { url, ...(urlDark ? { urlDark } : {}), ...(alt ? { alt } : {}) }
+}
+
+/**
+ * Which app in a featured card has an action in flight, or null.
+ *
+ * `actionLoading` is a single `"<name>:<action>"` slot, so only one app can be
+ * busy at a time. Resolving it to a name lets each row disable its OWN control
+ * instead of the card disabling all of them — pressing Get on one member of a
+ * collection must not freeze the others.
+ *
+ * A value with no colon is treated as the whole name rather than silently losing
+ * its last character, so a future caller that sets a bare name still disables the
+ * right row instead of no row.
+ */
+export function featuredBusyName(actionLoading: string | null, apps: RegistryApp[]): string | null {
+  if (!actionLoading) return null
+  const sep = actionLoading.indexOf(':')
+  const name = sep === -1 ? actionLoading : actionLoading.slice(0, sep)
+  return apps.some(a => a.name === name) ? name : null
+}
+
 export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
   const rank = (f: RegistryApp['featured']) => (typeof f === 'number' ? f : 1e9)
+  // "Not external" via the server-computed field, falling back to the
+  // server-attached ``_registry`` tag for rows from older gateways. Either
+  // signal marks the row external — belt-and-braces with the server, which
+  // also strips ``featured`` from external rows entirely.
+  const external = (a: RegistryApp) => a.provenance === 'external' || !!a._registry
   const flagged = apps
-    .filter(a => !a._registry && a.featured !== undefined && a.featured !== false)
+    .filter(a => !external(a) && a.featured !== undefined && a.featured !== false)
     .sort((a, b) => rank(a.featured) - rank(b.featured) || a.displayName.localeCompare(b.displayName))
   const rest = apps
     .filter(a => !flagged.includes(a))
@@ -104,7 +187,11 @@ export default function AppsPage() {
     queryFn: () => api.listApps(),
   })
 
-  const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{ apps: RegistryApp[] }>({
+  const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
+    apps: RegistryApp[]
+    categoryOrder: string[]
+    editorialSections: EditorialSection[]
+  }>({
     queryKey: ['registry'],
     // api.listRegistry() types `apps` as unknown[]; the backend payload matches
     // RegistryApp, so narrow it here at the single fetch boundary.
@@ -113,7 +200,58 @@ export default function AppsPage() {
       // Normalize at the single fetch boundary: registry.py yields minimal
       // rows when an app.json fetch fails, and external registries are
       // user-supplied JSON, so display fields may be missing or mistyped.
-      return { apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp) }
+      //
+      // `categoryOrder` is published presentation, so it gets the same
+      // treatment: a non-array, or a member that is not a string, collapses to
+      // an empty list, which `mergeCategoryOrder` reads as "use the canonical
+      // order".
+      const publishedOrder = Array.isArray(res.categoryOrder)
+        ? res.categoryOrder.filter((id): id is string => typeof id === 'string')
+        : []
+      // Published layout gets the same treatment as the order: the server
+      // already screened each artwork URL, but the SHAPE arrives over HTTP like
+      // any other payload, so a malformed section is dropped here rather than
+      // reaching a component that would throw mid-render.
+      const publishedSections: EditorialSection[] = Array.isArray(res.editorialSections)
+        ? res.editorialSections.flatMap((raw: unknown) => {
+            if (!raw || typeof raw !== 'object') return []
+            const s = raw as Record<string, unknown>
+            // An unrecognised type is skipped, not coerced: the document's
+            // contract is that a client renders what it knows and ignores the
+            // rest, which is what lets a new shape publish ahead of support.
+            if (s.type !== 'app' && s.type !== 'collection') return []
+            const refs = Array.isArray(s.appRefs)
+              ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
+              : []
+            // Dedupe and cap HERE as well as server-side. This boundary exists to
+            // not trust the payload, and every bound it skipped was one the
+            // component would have rendered: duplicate refs collide row keys, and
+            // an `app` section carrying several refs would render a multi-row card
+            // headed by one member's name.
+            const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
+            if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
+            const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
+            // A collection is nothing without its theme, so one that arrives
+            // without a title is dropped rather than rendered anonymously. A
+            // whitespace-only title is absent, not present-and-blank -- otherwise
+            // the card renders an empty heading over the rows.
+            if (s.type === 'collection' && !title) return []
+            return [{
+              type: s.type,
+              appRefs: unique,
+              // An `app` section is headed by the app's own name; a published
+              // title there means the document meant `collection`.
+              title: s.type === 'collection' ? title : undefined,
+              blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
+              artwork: normalizeEditorialArtwork(s.artwork),
+            }]
+          })
+        : []
+      return {
+        apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
+        categoryOrder: publishedOrder,
+        editorialSections: publishedSections,
+      }
     },
     staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on tab switch
   })
@@ -164,6 +302,10 @@ export default function AppsPage() {
         enabled: a.enabled,
         origin: 'builtin',
         lifecycle: 'locked',
+        // Client-synthesized rows never pass through /api/apps/registry, so
+        // speak the server trust contract (_apply_trust_fields) directly.
+        provenance: 'builtin',
+        verified: true,
       }))
     const builtinNames = new Set(builtinEntries.map(a => a.name))
     const enriched = registry.filter(r => !builtinNames.has(r.name)).map(r => {
@@ -178,7 +320,45 @@ export default function AppsPage() {
   const featured = useMemo(() => pickFeatured(browseApps), [browseApps])
   const [spotlight, ...secondary] = featured
 
-  const categories = useMemo(() => categoryCounts(browseApps), [browseApps])
+  /**
+   * Editorial featured sections, resolved against the apps this client can
+   * actually show. A reference that resolves to nothing is dropped — the
+   * registry is the source of truth for what exists, so editorial can never
+   * conjure an app by naming one.
+   *
+   * A collection that falls below two resolvable apps is dropped whole rather
+   * than demoted to a single-app card: the title states why several apps belong
+   * together, and showing one survivor under that theme would claim something
+   * the curator did not write.
+   *
+   * Empty means "fall back to `pickFeatured`", which is what Discover did before
+   * the editorial document had a layout. That is also today's live state:
+   * `sections` is published empty, so the derived pick is what ships -- rendered
+   * by the same card, so the layout change reaches users before any curated
+   * section does.
+   */
+  const featuredSections = useMemo(() => {
+    const byName = new Map(browseApps.map(a => [a.name, a]))
+    return (registryData?.editorialSections || []).flatMap(section => {
+      const resolved = section.appRefs.map(n => byName.get(n)).filter((a): a is RegistryApp => !!a)
+      const floor = section.type === 'collection' ? MIN_COLLECTION_APPS : 1
+      if (resolved.length < floor) return []
+      return [{ ...section, apps: resolved }]
+    })
+  }, [registryData, browseApps])
+
+  // The published rail order decides the sequence of the categories it names;
+  // anything it omits keeps its canonical position. An absent or unusable
+  // document leaves the order exactly as it was before the editorial document
+  // existed.
+  const categoryOrder = useMemo(
+    () => mergeCategoryOrder(registryData?.categoryOrder || []),
+    [registryData],
+  )
+  const categories = useMemo(
+    () => categoryCounts(browseApps, categoryOrder),
+    [browseApps, categoryOrder],
+  )
 
   const sources: SourceRow[] = useMemo(() => {
     // Count built-ins from browseApps so the SOURCES totals describe the same
@@ -260,18 +440,43 @@ export default function AppsPage() {
   }
   // autoAction travels as router STATE, never a query param — a URL-reachable
   // trigger would let a cross-site navigation start a privileged install.
+  //
+  // Get / Update on this page NAVIGATE and never call an install endpoint
+  // themselves (FeaturedSpotlight, the Browse cards and AppListRow all route
+  // their `onGet` here), so the registry-install trust refusal — which the
+  // gateway now raises before cloning — surfaces on the detail page, where
+  // `handleInstall` owns the consent modal. Nothing to gate here.
   const getApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'install' } })
   const updateApp = (name: string) => navigate(`/apps/detail/${name}`, { state: { autoAction: 'update' } })
+
+  // Provenance the consent modal shows. The browse-catalog row is preferred:
+  // registry rows carry `repo`/`_registry`, which the installed record does not.
+  const trustTarget = (name: string): TrustAppTarget => {
+    const row = browseApps.find(a => a.name === name)
+    if (row) return { name: row.name, displayName: row.displayName, repo: row.repo, origin: row.origin, _registry: row._registry }
+    const installed = apps.find(a => a.name === name)
+    return { name, displayName: installed?.displayName, repo: installed?.manifest?.repo, origin: installed?.origin }
+  }
+
+  /** The single enable path — shared by Discover, Library, and the trust retry. */
+  const runEnable = async (name: string) => {
+    await api.enableApp(name)
+    recordEvent('app_enable', { app: name })
+    invalidate()
+  }
+
+  const trust = useTrustGate(runEnable)
 
   const enableApp = async (name: string) => {
     setActionLoading(`${name}:enable`)
     setError('')
     try {
-      await api.enableApp(name)
-      recordEvent('app_enable', { app: name })
-      invalidate()
+      await runEnable(name)
     } catch (e) {
-      setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_enable', { name }))
+      // A third-party app that has not been granted execution trust yet is a
+      // consent prompt, not an error — branch on the machine-readable code.
+      if (isTrustDeniedError(e)) trust.open(trustTarget(name))
+      else setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_enable', { name }))
     } finally {
       setActionLoading(null)
     }
@@ -304,7 +509,7 @@ export default function AppsPage() {
     setActionLoading(`${name}:${action}`)
     setError('')
     try {
-      if (action === 'enable') await api.enableApp(name)
+      if (action === 'enable') await runEnable(name)
       else if (action === 'disable') await api.disableApp(name)
       invalidate()
       // Show toast when hiding a builtin app
@@ -316,7 +521,8 @@ export default function AppsPage() {
         }
       }
     } catch (e) {
-      setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
+      if (action === 'enable' && isTrustDeniedError(e)) trust.open(trustTarget(name))
+      else setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action, name }))
     } finally {
       setActionLoading(null)
     }
@@ -389,7 +595,22 @@ export default function AppsPage() {
             className="w-[220px]"
             aria-label={i18nT('pages.appsPage.search_apps')}
           />
-          <SourcesPopover open={sourcesOpen} onOpenChange={setSourcesOpen} onError={setError} />
+          <SourcesPopover
+            open={sourcesOpen}
+            onOpenChange={setSourcesOpen}
+            onError={setError}
+            onInstalled={(name) => {
+              // A path-installed app lands DISABLED, so it never shows in the
+              // sidebar — steer to Library (where disabled apps live) and
+              // confirm, instead of the popover silently closing. Clear any
+              // Discover search first: the Library list filters on the same
+              // `query`, so a stale non-matching term would hide the new app.
+              setQuery('')
+              setTab('library')
+              setSuccessMsg(i18nT('pages.appsPage.installed_app_find_in_library_and_enable', { name }))
+              setTimeout(() => setSuccessMsg(''), 6000)
+            }}
+          />
         </>}
       />
 
@@ -408,6 +629,18 @@ export default function AppsPage() {
             <button aria-label={i18nT('pages.appsPage.dismiss_message')} className="text-muted hover:text-text text-sm" onClick={() => setSuccessMsg('')}><X className="lucide-inline" /></button>
           </div>
         )}
+
+        {/* Third-party execution-trust consent. Opened when an enable is
+            refused with code `app_execution_denied`, instead of surfacing the
+            raw backend string in the error card above. */}
+        <TrustAppModal
+          app={trust.target}
+          pending={trust.pending}
+          failed={trust.failed}
+          granted={trust.granted}
+          onCancel={trust.cancel}
+          onConfirm={trust.confirm}
+        />
 
         {/* Uninstall confirmation modal. The backdrop closes on click (mouse
             convenience); keyboard users press Escape (handled) or the Cancel
@@ -551,14 +784,41 @@ export default function AppsPage() {
             />
           ) : (
             <>
-              {showEditorial && spotlight && (
+              {/* A published layout replaces the derived one entirely: mixing a
+                  curator's cards with `featured`-flag picks would show the
+                  same app twice and give the curator no way to say "only these". */}
+              {showEditorial && featuredSections.length > 0 ? (
+                featuredSections.map((section, position) => (
+                  <FeaturedSpotlight
+                    /* Keyed by document POSITION, not content. Two sections may
+                       legitimately agree on type and title -- the publish gate
+                       checks duplicate refs within a section, not across them --
+                       and a colliding key lets React reconcile one card against
+                       the other's fiber, resetting art-failure state or dropping
+                       a card entirely. */
+                    key={`${position}:${section.type}`}
+                    type={section.type}
+                    apps={section.apps}
+                    title={section.title}
+                    blurb={section.blurb}
+                    artwork={section.artwork}
+                    busyName={
+                      featuredBusyName(actionLoading, section.apps)
+                    }
+                    onGet={name => getApp(name)}
+                    onEnable={name => enableApp(name)}
+                    onOpenApp={(name, e) => openDetail(name, e)}
+                  />
+                ))
+              ) : showEditorial && spotlight && (
                 <>
                   <FeaturedSpotlight
-                    app={spotlight}
-                    busy={actionLoading === `${spotlight.name}:enable`}
-                    onOpen={e => openDetail(spotlight.name, e)}
-                    onGet={() => getApp(spotlight.name)}
-                    onEnable={() => enableApp(spotlight.name)}
+                    type="app"
+                    apps={[spotlight]}
+                    busyName={featuredBusyName(actionLoading, [spotlight])}
+                    onGet={name => getApp(name)}
+                    onEnable={name => enableApp(name)}
+                    onOpenApp={(name, e) => openDetail(name, e)}
                   />
                   {secondary.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-6">

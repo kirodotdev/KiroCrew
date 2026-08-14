@@ -1,11 +1,22 @@
-"""Issue Radar — in-process new-issue watcher.
+"""Issue Radar — in-process watcher: new issues, and the crews' unblock signals.
 
 A single asyncio background loop, started from ``register_routes(app)`` via
 ``app.on_startup`` and cancelled on ``app.on_cleanup``. Every
-:data:`POLL_INTERVAL_SEC` seconds it checks each connected repo that has opted
-in (per-repo setting ``notify_on_new_issue``) for issues created since the last
-check, and pushes a KiroCrew dashboard notification (``state.notify`` — the
-bell, persisted to the notification history) when new ones appear.
+:data:`POLL_INTERVAL_SEC` seconds it makes two passes over the connected repos:
+
+  1. **new-issue notification** — each repo that has opted in (per-repo setting
+     ``notify_on_new_issue``) is checked for issues created since the last check,
+     and a Kiro Crew dashboard notification is pushed (``state.notify`` — the bell,
+     persisted to the notification history) when new ones appear;
+  2. **crew sweep** (:func:`crew_runtime.sweep_repo`) — every repo with a live crew
+     has its crews' open work items compared against the six unblock signals, and
+     the owning crew is woken when one moves.
+
+THIS IS THE ONLY ALWAYS-ON LOOP IN THE APP, which is why the crew sweep lives here
+rather than in the route layer. Everything else — including ``routes.py``'s
+probe-coalescing and every cache refresh — is driven by a frontend HTTP request, so
+with no dashboard tab open none of it runs and none of its caches are fresh. A crew
+must keep working with the browser closed.
 
 This is NOT a cron job: it lives entirely inside the gateway process and only
 runs while KiroCrew is running (and the machine is awake). It is also
@@ -14,8 +25,11 @@ zero-LLM/zero-token — it shells out to the user's existing ``gh`` session
 per-repo high-water mark stored in ``watch-state.json``.
 
 Fail-safe / best-effort by design:
-  * a disabled app is silent (``is_app_enabled`` gate);
-  * only repos with ``notify_on_new_issue`` set are polled at all;
+  * a disabled app is silent, crews included — revoked inside the disable request
+    by ``crew_runtime.on_app_disabled``, with the ``is_app_enabled`` gate below as
+    the backstop for a disable this process was never told about;
+  * only repos with ``notify_on_new_issue`` set are polled for NEW ISSUES — the
+    crew sweep deliberately does not inherit that gate (see :func:`_poll_once`);
   * any ``gh``/network error skips that repo for the cycle and leaves its mark
     untouched, so nothing is missed and nothing is double-reported;
   * one bad cycle never kills the loop.
@@ -30,7 +44,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import provider, store
+from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime, provider, store
 from kiro_crew.apps.manager import is_app_enabled
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
@@ -53,6 +67,11 @@ _NOTIFY_LIST_CAP = 4
 
 # Module-level strong ref so the task isn't garbage-collected mid-flight.
 _watch_task: asyncio.Task | None = None
+
+# Whether the crews have already been suspended for the CURRENT disabled stretch.
+# Nothing re-establishes trust or re-arms a loop while the app is off, so the
+# suspension only has to happen on the enabled -> disabled edge.
+_crews_suspended = False
 
 
 async def start_watcher(app: web.Application) -> None:
@@ -84,6 +103,34 @@ async def stop_watcher(app: web.Application) -> None:
 
 
 async def _watch_loop(app: web.Application) -> None:
+    # Register the crew dismissal hook BEFORE the first sleep. The watchdog also
+    # installs it every cycle (idempotent, and its restart backstop), but that
+    # first cycle is a full POLL_INTERVAL_SEC away, and until the hook exists a
+    # deliberate ✕ on a crew's session is silently ignored and the sweep then
+    # resurrects the crew — the exact bug the hook was added to prevent, live for
+    # a minute after every gateway start. Registration is a dict write with no
+    # subprocess, so it does not undo the startup-cost reason for the delay below.
+    try:
+        crew_runtime.install_slot_close_hook()
+    except Exception:  # pragma: no cover - defensive; never block the loop
+        logger.debug("issue-radar crew close hook install failed", exc_info=True)
+    # Same timing argument, and a sharper consequence: until the disable hook is
+    # registered, switching the app off only writes a flag, and the crews keep
+    # their auto-approve grants until this loop next wakes. Registered here so the
+    # window does not exist for the first minute of every gateway's life either.
+    #
+    # Announced only from here — once per process — because the watchdog
+    # re-registers every cycle and a warning there would be a log flood.
+    try:
+        if not crew_runtime.install_app_disable_hook(app.get("state")):
+            logger.warning(
+                "issue-radar: this gateway has no app-disable hook registry, so "
+                "disabling the app stops the crews on the next %ds sweep rather "
+                "than immediately",
+                POLL_INTERVAL_SEC,
+            )
+    except Exception:  # pragma: no cover - defensive; never block the loop
+        logger.debug("issue-radar crew disable hook install failed", exc_info=True)
     # First tick waits a full interval so gateway startup isn't hit with gh
     # subprocesses the moment it comes up.
     while True:
@@ -97,10 +144,45 @@ async def _watch_loop(app: web.Application) -> None:
 
 
 async def _poll_once(app: web.Application) -> None:
-    """One sweep across every opted-in connected repo."""
-    # A disabled app must be silent (the user turned Issue Radar off).
+    """One sweep across every connected repo.
+
+    TWO independent passes per repo, and the difference between their gates is
+    deliberate:
+
+    * the new-issue notification, which only runs for repos that opted in via
+      ``notify_on_new_issue``;
+    * the crew sweep, which runs for every connected repo that has a live crew.
+      ``notify_on_new_issue`` is a NOTIFICATION preference — whether the bell rings
+      — not a fetch switch, and a crew that stopped reconciling its own pull
+      requests because the user muted a bell would stall every open item with no
+      trace of why. The app's enabled gate below is the switch that stops crews.
+    """
+    # A disabled app must be silent (the user turned Issue Radar off) — and that
+    # includes the crews, whose whole runtime hangs off this loop. Returning here
+    # is not enough on its own: a crew's auto-approval lives on its slot and its
+    # nudge loop fires regardless of any app's enabled flag, so both have to be
+    # taken away explicitly.
+    #
+    # THE BACKSTOP, not the first line. ``crew_runtime.on_app_disabled`` revokes
+    # inside the disable request itself, so an operator using the dashboard or the
+    # API has stopped crews by the time it returns. This branch exists for the
+    # disables nothing can tell us about: ``kirocrew app disable`` in another
+    # process, an ``installed.json`` edited on disk, and a gateway restart that
+    # re-armed loops for an app that is off. Both paths are needed, and the
+    # difference between them is a poll interval of unattended, auto-approved turns.
+    #
+    # In-memory only (no config read, no gh), and done once per disable transition
+    # since nothing re-establishes trust or a loop while the app is off.
+    global _crews_suspended
     if not await asyncio.to_thread(is_app_enabled, APP_NAME):
+        if not _crews_suspended:
+            _crews_suspended = True
+            try:
+                await crew_runtime.suspend_crews(app.get("state"))
+            except Exception:
+                logger.warning("issue-radar: suspending crews failed", exc_info=True)
         return
+    _crews_suspended = False
     repos = await asyncio.to_thread(store.list_connected_repos)
     for entry in repos:
         owner = entry.get("owner")
@@ -118,13 +200,22 @@ async def _poll_once(app: web.Application) -> None:
                 provider=key.provider, host=key.host,
             )
         )
-        if not settings.get("notify_on_new_issue"):
-            continue
+        if settings.get("notify_on_new_issue"):
+            try:
+                await _poll_repo(app, key)
+            except Exception:
+                # Per-repo failure (CLI/network/etc.) must not stop the sweep.
+                logger.warning(
+                    "issue-radar watch failed for %s/%s", owner, repo, exc_info=True
+                )
         try:
-            await _poll_repo(app, key)
+            await crew_runtime.sweep_repo(app, key)
         except Exception:
-            # Per-repo failure (CLI/network/etc.) must not stop the sweep.
-            logger.warning("issue-radar watch failed for %s/%s", owner, repo, exc_info=True)
+            # Same containment: one repo's crews failing must not stop the others,
+            # and must not take the new-issue notification down with them.
+            logger.warning(
+                "issue-radar crew sweep failed for %s/%s", owner, repo, exc_info=True
+            )
 
 
 async def _poll_repo(app: web.Application, key: provider.RepoKey) -> None:

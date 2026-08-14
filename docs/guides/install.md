@@ -97,6 +97,18 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
+If the host has no Python 3.10+, the installer installs one from your distro:
+`apt` on Debian/Ubuntu (including the split `python3-venv` package), `dnf` on
+Amazon Linux / RHEL / CentOS Stream, and `yum` on CentOS 7. Where no base-repo
+package supplies 3.10+ (CentOS 7 ships 3.6, older Ubuntu 3.8) it uses an
+**already-installed** [mise](https://mise.jdx.dev/) python-build-standalone
+interpreter if you have one (it runs on the older glibc those releases carry);
+otherwise it prints how to get a newer Python and stops. The signed installer
+never pipes an unsigned third-party script into a shell — to use the mise path,
+install mise yourself first (`curl https://mise.run | sh`). When it finishes it
+prints the next step: `kirocrew gateway` to start now, or `kirocrew service
+install` to run it as a service.
+
 ### b. From source (development)
 
 Build the dashboard, install the backend into a local virtualenv (`.venv`), and
@@ -119,6 +131,12 @@ Both targets bootstrap their toolchain first (`ensure-node.sh`,
 `ensure-python.sh`) and fall back to whatever is on `PATH` if that fails. The
 backend target refuses to build a venv from an interpreter older than 3.10
 rather than letting the install backtrack forever.
+
+After the backend target runs, `bin/kirocrew` resolves its real install root,
+sets `KIROCREW_PROJECT_DIR`, and delegates to `.venv/bin/kirocrew`. That console
+script comes from the editable package metadata (`kiro_crew._bootstrap:main`),
+so the virtual environment makes `src/kiro_crew` importable without the wrapper
+modifying `PYTHONPATH`; caller-provided entries pass through unchanged.
 
 Any CLI subcommand works the same way, for example
 `PYTHONPATH=src python -m kiro_crew setup` or `... doctor`.
@@ -156,7 +174,7 @@ Installed console script:
 
 | Command | Entry point |
 |---------|-------------|
-| `kirocrew` | `kiro_crew.cli:main` |
+| `kirocrew` | `kiro_crew._bootstrap:main` |
 
 `pyproject.toml`'s `[project.scripts]` declares `kirocrew` and nothing else.
 Because a `[project]` table exists, setuptools reads the entry points from
@@ -239,19 +257,57 @@ in place of `kirocrew`.
 ### What `kirocrew setup` asks
 
 The wizard installs the agent config, then walks through the workspace
-directory, Slack credentials, the slash-command name, timezone, dashboard URL,
-the Playwright browser MCP server, and (on macOS) the desktop app.
+directory, timezone, dashboard URL, and (on macOS) the desktop app. It does NOT
+configure any messaging channel: pass `--slack` to opt into the guided Slack
+credential and slash-command setup. It also does NOT install a browser: browsing
+is available when `playwright-cli` is on PATH, and you install it separately (see
+[Browser](#browser)).
 
-**Answering "n" to "Configure Slack tokens?" leaves Slack disabled and gives you
-dashboard-only mode.** The web dashboard is fully functional without any
-messaging credentials; add Slack later when you want to reach the same agent
-away from your desk.
+**Want the Playwright CLI at your own shell?** That is a separate tool from the
+Browser Mode above, and it has its own installer, which bootstraps Node when your
+machine has none and reports enterprise-registry failures (mirror login, proxy,
+blocked browser CDN) as specific remedies rather than a raw npm dump:
 
-Two flags narrow the wizard:
+```bash
+curl -fsSLO https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/playwright-cli.sh
+less playwright-cli.sh          # read it before you run it
+sh playwright-cli.sh --version 0.1.18
+```
+
+The download-and-read form is listed first on purpose: piping a script into a
+shell is prohibited on many corporate machines, and `raw.githubusercontent.com`
+itself is blocked or rate-limited on some — which is the same audience whose
+network this script exists to cope with. If yours allows it, `curl -fsSL … | sh`
+works as a one-liner; if it does not, take the file from a checkout or a release
+and run it locally. Either way the script reaches only three hosts: the npm
+registry (or the mirror you point it at), the Node mirror when it has to
+bootstrap a toolchain, and the Playwright CDN for the browser binaries — that
+last one only unless you pass `--skip-browsers`, and `--download-host` points it
+at an internal mirror instead.
+
+Windows uses `playwright-cli.ps1` with the same flags in PowerShell spelling.
+`--help` lists all of them; `--dry-run` prints the plan without changing anything.
+Design notes and the exit-code table:
+[browser module spec](../system-specs/modules/browser.md).
+
+**Messaging channels are optional.** The default wizard configures none, and the
+web dashboard is fully functional without any messaging credentials. Connect a
+channel later -- Slack (`kirocrew setup --slack` or
+[slack-setup.md](slack-setup.md)),
+[Discord](../../src/kiro_crew/docs/discord-integration.md),
+[Telegram](../../src/kiro_crew/docs/telegram-integration.md),
+[Teams](../../src/kiro_crew/docs/teams-integration.md),
+[Webex](../../src/kiro_crew/docs/webex-integration.md),
+[WeCom](../../src/kiro_crew/docs/wecom-integration.md), or
+[WeChat](../../src/kiro_crew/docs/weixin-integration.md) --
+when you want to reach the same agent away from your desk.
+
+These flags narrow the wizard:
 
 | Flag | Effect |
 |------|--------|
 | `--agent-only` | Install the agent config and stop, skipping the workspace and every credential prompt |
+| `--slack` | Run the guided Slack credential + slash-command setup (opt-in) |
 | `--clean` | Fresh agent config: ignore the existing `kirocrew.json` and regenerate from defaults instead of merging your MCP servers and tools forward |
 | `--electron-only` | Install only the macOS desktop app |
 
@@ -260,13 +316,39 @@ from scratch and touches nothing else. That is the fix for a broken or stale MCP
 configuration, because without `--clean` the existing file is used as the base
 so all user customizations survive.
 
+## Browser
+
+Browsing is optional and installed separately. The agent drives a browser by
+running `playwright-cli` commands, so it needs Node.js 20 or newer:
+
+```bash
+npm install -g @playwright/cli@latest
+playwright-cli install-browser              # add --with-deps on Linux
+playwright-cli install --skills agents --global
+```
+
+The dashboard's **Browser** panel embeds the CLI's own dashboard over loopback,
+which shows the live session and lets you take over with real mouse and keyboard.
+That is how you complete a CAPTCHA or a 2FA prompt, and how you log in once so a
+session can be captured with `playwright-cli state-save`.
+
+**Installing the CLI is what grants browsing.** There is no separate toggle,
+because the CLI has no capability gating and a binary on `PATH` is reachable from
+any shell command the agent runs, so no subset of browsing could be granted or
+withheld. Read that in both directions: uninstalling `playwright-cli` (or never
+installing it) is the way to withhold the capability, and if you installed it for
+your own unrelated work then the capability is armed on this host without a
+separate opt-in. It matters most for `playwright-cli attach --extension`, which
+drives your own running Chrome with the sessions you are already logged into.
+
 ## Configuration
 
 - Config file: `~/.kiro/crew/config.json`, managed with
   `kirocrew config get/set/edit`.
-- Credentials: `~/.kiro/crew/.env` holding `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`,
-  and `KIROCREW_OWNER_ID`. See [slack-setup.md](slack-setup.md) for creating the
-  Slack app.
+- Credentials: `~/.kiro/crew/.env` holding messaging-channel tokens (for Slack:
+  `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `KIROCREW_OWNER_ID`; other channels use
+  their own keys). See [slack-setup.md](slack-setup.md) for creating the Slack
+  app.
 
 ### Environment variables
 
@@ -280,6 +362,9 @@ so all user customizations survive.
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
 ephemeral port). The `dashboard.url` config key only advertises a remote URL.
+For the installed service the port is baked into the unit at install time — see
+[Running as a service](#running-as-a-service) for how to set and later change
+it.
 
 ### The data home lives under `~/.kiro/`
 
@@ -327,7 +412,7 @@ loop-stall crash dumps, and connectivity.
 
 ## Running as a service
 
-For always-on operation (Slack bot, cron jobs, background tasks):
+For always-on operation (channel bots, cron jobs, background tasks):
 
 ```bash
 kirocrew service install    # systemd on Linux, launchd on macOS
@@ -337,7 +422,82 @@ kirocrew service uninstall
 
 On Linux this writes `/etc/systemd/system/kirocrew.service` (sudo is prompted
 for the unit file and the `systemctl` calls; the gateway itself runs as your own
-user, never under sudo). On macOS it writes a launchd plist and needs no sudo.
+user, never under sudo). When you are already root — a minimal container or
+`root` login — no `sudo` binary is required. On macOS it writes a launchd plist
+and needs no sudo.
+
+The gateway runs untrusted agent tools, so it must run as a **non-root** user:
+the installer sets `User=` to the account behind `sudo` (`$SUDO_USER`, else
+`$USER`), and **refuses to install a `User=root` service**. From a bare `root`
+login (or `sudo` with no `$SUDO_USER`), first create or pick a normal account and
+install as it, e.g. `sudo -u <user> KIROCREW_KIRO_BIN=... kirocrew service
+install` (the official Docker image already runs as the `kirocrew` user).
+
+### Setting the service port
+
+A system service inherits none of your shell environment, so `export
+KIROCREW_PORT=…` in your shell does **not** reach it. Set the port when you
+install so it is baked into the unit:
+
+```bash
+KIROCREW_PORT=5477 kirocrew service install
+```
+
+To change it later without reinstalling, edit the overrides file the installer
+creates and restart:
+
+```bash
+sudo sed -i 's/^#\?KIROCREW_PORT=.*/KIROCREW_PORT=5477/' /etc/kirocrew/kirocrew.env
+sudo systemctl restart kirocrew
+```
+
+`/etc/kirocrew/kirocrew.env` is read by the unit via `EnvironmentFile=`, so its
+values override the install-time snapshot and survive a reinstall. Use this to
+move the service off the default `5476` when that port is already taken (for
+example by a local crew you also run on this host — there is one
+`kirocrew.service` unit, so re-running `service install` updates it in place
+rather than creating a second service).
+
+**The `EnvironmentFile=` directive only exists in units written by v0.2.0 or
+later.** Upgrading the package never rewrites an already-installed unit, so a
+unit installed by an older release (v0.1.3 and earlier) silently ignores
+`/etc/kirocrew/kirocrew.env` — editing it changes nothing. Check which kind you
+have:
+
+```bash
+grep EnvironmentFile /etc/systemd/system/kirocrew.service
+```
+
+No output means the directive is missing. Either re-run `kirocrew service
+install` (it rewrites the unit in place, keeping the same service), or set
+variables with a [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
+which works on any unit version.
+
+### Setting other environment variables (systemd drop-in)
+
+For variables the seeded overrides file does not cover — proxy settings are the
+common case — use a systemd drop-in. Drop-ins are systemd's own override
+mechanism: they apply to the unit no matter which release wrote it, and they
+survive reinstalls, `service install` re-runs, and even
+`kirocrew service uninstall` (which removes the unit but never touches
+`/etc/systemd/system/kirocrew.service.d/`).
+
+```bash
+sudo mkdir -p /etc/systemd/system/kirocrew.service.d
+sudo tee /etc/systemd/system/kirocrew.service.d/proxy.conf > /dev/null <<'EOF'
+[Service]
+Environment="HTTPS_PROXY=http://proxy.example.com:3128"
+Environment="HTTP_PROXY=http://proxy.example.com:3128"
+Environment="NO_PROXY=localhost,127.0.0.1"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart kirocrew
+```
+
+A new or edited drop-in is not picked up until `systemctl daemon-reload` runs —
+restarting alone is not enough. Verify what the unit resolved to with
+`systemctl cat kirocrew` (drop-ins are printed below the unit) or
+`systemctl show kirocrew --property=Environment`.
 
 For remote hosts, see [remote-and-mobile.md](remote-and-mobile.md).
 
@@ -512,7 +672,7 @@ Always start with `kirocrew doctor`.
 
 ### `AcpTimeoutError: ACP prompt timed out`
 
-The `kiro-cli` backend did not answer in time. Four common causes:
+The `kiro-cli` backend did not answer in time. Five common causes:
 
 1. **`kiro-cli` is not installed.** The gateway raises
    `kiro-cli not found in PATH`. Install it, or use the dashboard's
@@ -529,6 +689,18 @@ The `kiro-cli` backend did not answer in time. Four common causes:
    seconds is treated as finished, and a dispatched tool that returns nothing at
    all for 10 minutes is treated as a dead stall and the agent is killed to
    recover the slot.
+5. **The host needs a proxy and the service does not have one.** On a
+   corporate network, `kiro-cli` must reach its backend through your proxy. A
+   systemd service inherits none of your shell's `HTTPS_PROXY`/`HTTP_PROXY`
+   exports, so a gateway that works when run from your terminal can still time
+   out as a service. Set the proxy variables on the unit with a
+   [systemd drop-in](#setting-other-environment-variables-systemd-drop-in),
+   then `sudo systemctl daemon-reload && sudo systemctl restart kirocrew`.
+   Agent sessions inherit the service environment, so this fixes them. One
+   known gap: the first-run setup gate's login probe currently filters proxy
+   variables out even when the unit carries them, so it can stay stuck on
+   "Sign in to Kiro CLI" on a proxied host — that is
+   [issue #2648](https://github.com/kirodotdev/KiroCrew/issues/2648).
 
 ### Memory or knowledge search returns nothing
 
@@ -581,6 +753,12 @@ sign-off is tracked in
 ## Next steps
 
 - [Slack setup](slack-setup.md): create and configure the Slack app.
+- Other channels: [Discord](../../src/kiro_crew/docs/discord-integration.md),
+  [Telegram](../../src/kiro_crew/docs/telegram-integration.md),
+  [Teams](../../src/kiro_crew/docs/teams-integration.md),
+  [Webex](../../src/kiro_crew/docs/webex-integration.md),
+  [WeCom](../../src/kiro_crew/docs/wecom-integration.md), and
+  [WeChat](../../src/kiro_crew/docs/weixin-integration.md).
 - [Remote and mobile access](remote-and-mobile.md): 24/7 operation on a remote
   host, and reaching the dashboard from a phone.
 - [Architecture overview](../architecture/overview.md): system diagrams and the

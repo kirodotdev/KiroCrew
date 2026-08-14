@@ -2,13 +2,13 @@
 
 Issue Radar shells out to the user's own ``gh`` session, so the binary it picks
 is a trust decision. It deliberately shares both the search order and the
-validation with the Sidebar PR panel
-(``source_providers.provider_executable_candidates`` /
-``_validate_provider_executable``): the well-known install dirs first, then the
-ambient ``PATH``, accepting the user's own (Homebrew, asdf, ``~/.local/bin``)
-install and refusing only provenance the user did not choose. These tests pin
-that wiring — a regression here either locks out every stock ``brew install gh``
-(the bug this replaced) or silently accepts an agent-plantable shim.
+validation with every other gh surface via the shared hardened runner
+(``kiro_crew.github_runner.resolve_gh``): the well-known install dirs first,
+then the ambient ``PATH``, accepting the user's own (Homebrew, asdf,
+``~/.local/bin``) install and refusing only provenance the user did not choose.
+These tests pin that wiring — a regression here either locks out every stock
+``brew install gh`` (the bug this replaced) or silently accepts an
+agent-plantable shim.
 """
 import sys
 
@@ -16,18 +16,19 @@ import pytest
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only gh resolution")
 
+from kiro_crew import github_runner  # noqa: E402
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh  # noqa: E402
-from kiro_crew.dashboard.handlers import source_providers as source  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _reset_gh_cache(monkeypatch):
-    monkeypatch.setattr(gh, "_gh_bin_cache", None)
+    github_runner.reset_cache()
     monkeypatch.delenv("KIROCREW_ISSUE_RADAR_GH", raising=False)
+    monkeypatch.delenv("KIROCREW_GH_BIN", raising=False)
     monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: ())
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: ())
     yield
-    gh._gh_bin_cache = None
+    github_runner.reset_cache()
 
 
 def _fake_gh(directory) -> str:
@@ -42,8 +43,8 @@ def test_gh_bin_accepts_a_user_owned_install_from_path(monkeypatch, tmp_path) ->
     """The Homebrew/asdf case: user-owned, only on PATH, no root-owned copy."""
     binary = _fake_gh(tmp_path / "user-bin")
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
     )
     monkeypatch.setenv("PATH", str(tmp_path / "user-bin"))
@@ -54,10 +55,10 @@ def test_gh_bin_accepts_a_user_owned_install_from_path(monkeypatch, tmp_path) ->
 def test_gh_bin_refuses_a_shim_inside_the_agent_writable_tree(monkeypatch, tmp_path) -> None:
     project = tmp_path / "project"
     binary = _fake_gh(project / "bin")
-    monkeypatch.setattr(source, "_agent_writable_roots", lambda: (project.resolve(),))
+    monkeypatch.setattr(github_runner, "agent_writable_roots", lambda: (project.resolve(),))
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": (binary,), "glab": ("/nonexistent-kirocrew/glab",)},
     )
     monkeypatch.setenv("PATH", str(project / "bin"))
@@ -71,8 +72,8 @@ def test_gh_bin_refuses_a_shim_inside_the_agent_writable_tree(monkeypatch, tmp_p
 
 def test_gh_bin_missing_gives_install_guidance(monkeypatch) -> None:
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
     )
     monkeypatch.setenv("PATH", "")
@@ -91,8 +92,8 @@ def test_gh_bin_strict_mode_still_requires_a_root_owned_copy(monkeypatch, tmp_pa
     binary = _fake_gh(tmp_path / "user-bin")
     monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": (binary,), "glab": ("/nonexistent-kirocrew/glab",)},
     )
 
@@ -113,8 +114,8 @@ def test_gh_bin_override_failure_is_a_setup_error(monkeypatch, tmp_path) -> None
 def test_gh_bin_caches_the_resolved_path(monkeypatch, tmp_path) -> None:
     binary = _fake_gh(tmp_path / "user-bin")
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": (binary,), "glab": ("/nonexistent-kirocrew/glab",)},
     )
 
@@ -122,8 +123,8 @@ def test_gh_bin_caches_the_resolved_path(monkeypatch, tmp_path) -> None:
     # Second call must not re-validate: point the candidates at nothing and
     # confirm the cached answer is returned anyway.
     monkeypatch.setattr(
-        source,
-        "_PROVIDER_EXECUTABLE_CANDIDATES",
+        github_runner,
+        "PROVIDER_EXECUTABLE_CANDIDATES",
         {"gh": ("/nonexistent-kirocrew/gh",), "glab": ("/nonexistent-kirocrew/glab",)},
     )
     assert gh._gh_bin() == binary

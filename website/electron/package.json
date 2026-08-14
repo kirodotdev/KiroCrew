@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-electron-mac",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "main": "main.js",
   "scripts": {
@@ -47,10 +47,11 @@
     "afterSign": "scripts/notarize.js",
     "linux": {
       "category": "Development",
-      "icon": "icon.png",
+      "icon": "build/icons",
       "target": [
         "AppImage"
-      ]
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "dmg": {
       "writeUpdateInfo": false
@@ -74,7 +75,9 @@
       "sandbox-profile.js",
       "home-dir.js",
       "local-token.js",
+      "local-gateway.js",
       "window-state.js",
+      "global-hotkey.js",
       "gateway-liveness.js",
       "gateway-recovery.js",
       "pyspy-dump.js",
@@ -103,6 +106,7 @@
       "mochi/shortcuts.js",
       "mochi/pageUrl.js",
       "mochi/instanceGate.js",
+      "mochi/machineStore.js",
       "crew-companion/index.js",
       "crew-companion/petOverlay.js",
       "crew-companion/pageUrl.js",
@@ -114,7 +118,9 @@
       "loading.html",
       "token-prompt.html",
       "icon.png",
-      "icon-nightly.png"
+      "icon-nightly.png",
+      "trayTemplate.png",
+      "trayTemplate@2x.png"
     ],
     "extraResources": [
       {

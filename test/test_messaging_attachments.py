@@ -29,6 +29,8 @@ from kiro_crew.messaging.attachments import (
     VIDEO,
     Attachment,
     IngestLimits,
+    IngestResult,
+    append_attachment_context,
     classify,
     cleanup,
     ingest_attachments,
@@ -501,3 +503,51 @@ class TestBlockingWorkLeavesTheEventLoop:
         # 150ms of blocking work at a 5ms tick interval leaves room for ~20+
         # ticks when offloaded; a frozen loop yields approximately none.
         assert during >= 5, f"loop was starved during the blocking read (ticks={during})"
+
+
+# ── append_attachment_context (shared utility) ────────────────────────────────
+
+
+class TestAppendAttachmentContext:
+    """append_attachment_context is channel-neutral and lives in messaging/."""
+
+    def test_image_paths_appended(self):
+        result = IngestResult(image_paths=["/tmp/a.png", "/tmp/b.jpg"])
+        out = append_attachment_context("hello", result)
+        assert out == "hello\n/tmp/a.png\n/tmp/b.jpg"
+
+    def test_text_blocks_appended(self):
+        result = IngestResult(text_blocks=["[File: x.txt]\ncontent"])
+        out = append_attachment_context("msg", result)
+        assert out == "msg\n\n[File: x.txt]\ncontent"
+
+    def test_rejections_appended(self):
+        result = IngestResult(rejections=["[Video not supported]"])
+        out = append_attachment_context("msg", result)
+        assert out == "msg\n\n[Video not supported]"
+
+    def test_all_combined(self):
+        result = IngestResult(
+            image_paths=["/tmp/img.png"],
+            text_blocks=["[File: a.txt]\nhi"],
+            rejections=["[nope]"],
+        )
+        out = append_attachment_context("user text", result)
+        assert "/tmp/img.png" in out
+        assert "[File: a.txt]\nhi" in out
+        assert "[nope]" in out
+
+    def test_empty_text_with_images(self):
+        result = IngestResult(image_paths=["/tmp/x.png"])
+        out = append_attachment_context("", result)
+        assert out == "/tmp/x.png"
+
+    def test_empty_result_returns_text_unchanged(self):
+        result = IngestResult()
+        assert append_attachment_context("unchanged", result) == "unchanged"
+
+    def test_reexport_from_discord(self):
+        """discord/attachments re-exports the same function."""
+        from kiro_crew.discord.attachments import append_attachment_context as discord_fn
+
+        assert discord_fn is append_attachment_context

@@ -219,7 +219,6 @@ test/test_session.py::TestResetWithPid::test_reset_with_pid_survives_shutdown_fo
 test/test_session_pid_sig.py::TestNoNofollowPlatform::test_lstat_open_swap_refused
 test/test_session_pid_sig.py::TestNoNofollowPlatform::test_regular_file_still_reads
 test/test_session_pid_sig.py::TestNoNofollowPlatform::test_symlink_present_at_lstat_refused
-test/test_skill_usage.py::TestSkillUsageLedger::test_persist_roundtrip
 test/test_slack_config_handlers.py::test_write_env_updates_adds_and_preserves
 test/test_slack_config_handlers.py::test_write_env_updates_is_atomic_and_owner_only
 test/test_slack_gateway.py::TestBgSessionDashboardBranch::test_bg_session_prints_dashboard_url

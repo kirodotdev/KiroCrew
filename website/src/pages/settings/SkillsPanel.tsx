@@ -59,6 +59,7 @@ export function SkillsPanel() {
           checked={autoCreate}
           onChange={(v) => patchMut.mutate({ path: 'skills.auto_create_from_sessions', value: v })}
           disabled={disabled}
+          configKey="skills.auto_create_from_sessions"
         />
         <SettingsToggle
           label={i18nT('pages.settings.skillsPanel.require_approval_before_generated_skills_go_live')}
@@ -66,6 +67,7 @@ export function SkillsPanel() {
           checked={approvalRequired}
           onChange={(v) => patchMut.mutate({ path: 'skills.approval_required', value: v })}
           disabled={disabled || !autoCreate}
+          configKey="skills.approval_required"
         />
       </SettingsCard>
       <ErrorNotice message={saveError} className="mt-2" askAgent />

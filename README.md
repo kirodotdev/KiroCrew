@@ -59,9 +59,20 @@ running, updates itself on the channel you download, and can connect to a
 remote Gateway over an SSH tunnel. See the
 [desktop app guide](docs/build/desktop-app.md).
 
-- **macOS**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
-- **Linux**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
+- **macOS** (one universal DMG, Apple Silicon + Intel): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew.dmg) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew.dmg) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew.dmg)
+- **Linux x86_64**: [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-x86_64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-x86_64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-x86_64.AppImage)
+- **Linux aarch64** (Graviton, Raspberry Pi, ARM laptops): [Stable](https://download.crew.kiro.dev/desktop/stable/latest/KiroCrew-aarch64.AppImage) | [Insider](https://download.crew.kiro.dev/desktop/insider/latest/KiroCrew-aarch64.AppImage) | [Nightly](https://download.crew.kiro.dev/desktop/nightly/latest/KiroCrew-aarch64.AppImage)
 - **Windows**: no desktop build yet, so run the Gateway from a [source install](#build-from-source) and open the dashboard in your browser
+
+Not sure which Linux file you need? `uname -m` prints it — `x86_64` or `aarch64`.
+Every architecture below is a first-class lane: each gets its own build, its own
+auto-update feed, and its own SLSA provenance attestation.
+
+| Install path | x86_64 | aarch64 (ARM64) |
+|---|---|---|
+| **Desktop AppImage** | yes | yes |
+| **CLI one-liner / wheel** | yes | yes (the wheel is `py3-none-any`; native libraries are vendored per architecture) |
+| **Docker image** | yes | yes (`linux/amd64` and `linux/arm64` under every tag, so `docker pull` picks yours) |
 
 Take Stable unless you have a reason not to — the table below says who each
 channel is for.
@@ -117,10 +128,16 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
 ```
 
 Open `http://localhost:5476` and start a conversation. The web dashboard works
-without messaging credentials. Add [Slack](docs/guides/slack-setup.md),
-[Telegram](src/kiro_crew/docs/telegram-integration.md), or
-[WeCom](src/kiro_crew/docs/wecom-integration.md) when you want to continue
-working with the same agent away from the dashboard. These channels connect
+without messaging credentials. Add a messaging channel —
+[Slack](docs/guides/slack-setup.md),
+[Discord](src/kiro_crew/docs/discord-integration.md),
+[Telegram](src/kiro_crew/docs/telegram-integration.md),
+[Teams](src/kiro_crew/docs/teams-integration.md),
+[Webex](src/kiro_crew/docs/webex-integration.md),
+[WeCom](src/kiro_crew/docs/wecom-integration.md), or
+[WeChat](src/kiro_crew/docs/weixin-integration.md) — when you want to continue
+working with the same agent away from the dashboard. Apart from Teams (which
+needs a public HTTPS webhook — see its guide), these channels connect
 outbound, so you do not need to expose the dashboard port publicly.
 
 ### Docker
@@ -139,7 +156,7 @@ the container security model.
 
 ### Build from source
 
-macOS and Linux require Python 3.10+, Node.js 18+, npm, and
+macOS and Linux require Python 3.10+, Node.js 22+ (24 LTS recommended), npm, and
 [`kiro-cli`](https://kiro.dev/docs/cli/). The first desktop or dashboard launch
 can install Kiro CLI on the Gateway host and guide device-code sign-in before
 chat opens. Windows is supported through a native source install; follow the
@@ -208,7 +225,7 @@ The complete inventory is in [Features](src/kiro_crew/docs/index.md) and
 
 ```mermaid
 flowchart TD
-    S["Desktop app · Web dashboard · Slack · Telegram · WeCom · CLI"]
+    S["Desktop app · Web dashboard · CLI · Messaging channels (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat)"]
     G["Gateway<br/>access · sessions · memory · schedules · approvals · apps"]
     A["Agent sessions<br/>ACP runtime · kiro-cli · MCP tools · models"]
     S --> G --> A
@@ -216,9 +233,9 @@ flowchart TD
 
 The Gateway separates where the agent runs from where you work with it. In the
 desktop app or web dashboard, you can work directly through parallel conversations,
-files, task runs, approvals, memory, and apps. From Slack, Telegram, WeCom, or
-the CLI, the Gateway routes your work to managed agent sessions under the same
-memory, tool, approval, and policy services. Apps extend the dashboard and
+files, task runs, approvals, memory, and apps. From the CLI or any connected
+messaging channel, the Gateway routes your work to managed agent sessions under
+the same memory, tool, approval, and policy services. Apps extend the dashboard and
 Gateway APIs with focused workflows.
 
 Each active conversation or background task uses an agent session. Its session
@@ -240,11 +257,11 @@ session state, injects memory and skills, starts scheduled work, coordinates
 subagents, brokers approvals, enforces runtime policy, and exposes activity in
 the dashboard.
 
-**Agent sessions.** A dashboard conversation or Slack thread maps to an isolated
-agent session. Scheduled jobs, task runs, Telegram and WeCom conversations, and
-subagents also use managed sessions. These sessions preserve conversation
-context and can run concurrently before returning results to a parent session or
-configured surface.
+**Agent sessions.** A dashboard conversation, Slack thread, or Discord DM maps to
+an isolated agent session. Scheduled jobs, task runs, other messaging-channel
+conversations, and subagents also use managed sessions. These sessions preserve
+conversation context and can run concurrently before returning results to a
+parent session or configured surface.
 
 **ACP runtime and turns.** Kiro Crew supports both a dedicated `kiro-cli` ACP
 process for a session and a shared ACP runtime that multiplexes multiple session
@@ -261,7 +278,7 @@ logical isolation boundary, not necessarily one OS process.
 | **Slack** | Work from DMs and threads with streaming replies, approvals, notifications, and session links back to the dashboard. |
 | **Telegram** | Reach your agent from private DMs on your phone or laptop, with streaming replies, inline approvals, and commands. |
 | **Discord** | Work from DMs with streaming replies and approvals delivered as message buttons. |
-| **Teams** | Reach your agent from Microsoft Teams chats with streaming replies and approvals. |
+| **Teams** | Reach your agent from Microsoft Teams chats — replies arrive as complete messages, and approvals are answered by typing. |
 | **Webex** | Work from Webex direct messages with streaming replies and inline approvals. |
 | **WeCom** | Chat through an outbound-connected WeCom AI bot with configured user access and streaming replies. |
 | **WeChat (Weixin)** | Reach your agent from WeChat with configured user access and streaming replies. |
@@ -273,7 +290,7 @@ logical isolation boundary, not necessarily one OS process.
 |---|---|---|
 | **Scheduled** | Briefings, audits, backups, and recurring maintenance | `kirocrew cron` or a natural-language request |
 | **Proactive** | Goals that need another pass without waiting for a new user message | AutoNudge and goal-loop skills |
-| **Reactive** | CI alerts, external automation, Slack activity, and other events | Authenticated agent webhooks and messaging events |
+| **Reactive** | CI alerts, external automation, messaging-channel activity, and other events | Authenticated agent webhooks and messaging events |
 | **Task runner** | Bounded projects with explicit steps, tests, review, and checkpoint resume | `kirocrew run TASK.md` |
 | **Subagents** | Independent workstreams that can run concurrently | `kirocrew spawn run "task"` |
 
@@ -286,8 +303,9 @@ from the dashboard. Incognito and temporary session modes let you opt out when
 a conversation should not persist.
 
 **Skills, MCP, and apps.** Markdown skills supply reusable workflows and can be
-loaded only when relevant. The built-in `kirocrew-core` and `kirocrew-cron` MCP
-servers expose task, subagent, learning, messaging, and scheduling tools. You
+loaded only when relevant. The built-in `kirocrew-core`, `kirocrew-cron` and
+`kirocrew-computer` MCP servers expose task, subagent, learning, messaging,
+scheduling, and desktop-automation tools. You
 can discover additional MCP servers from Kiro or Kiro Crew configuration. The
 App Kit adds installable interfaces and domain workflows. Apps can add dashboard
 pages, use scoped Gateway APIs, subscribe to events, and register lifecycle
@@ -300,8 +318,9 @@ the runtime boundary instead of relying only on prompt instructions.
 
 - **Local by default.** The dashboard binds to loopback unless you explicitly
   configure a network URL. Remote dashboards require token authentication.
-- **Interactive approvals.** Review tool requests in the dashboard, Slack, or
-  Telegram. Session-scoped trust can reduce repeated prompts without changing
+- **Interactive approvals.** Review tool requests in the dashboard or a
+  connected messaging channel like Slack, Discord, or Telegram.
+  Session-scoped trust can reduce repeated prompts without changing
   the underlying deny and sensitive-path controls.
 - **OS sandbox.** On Linux and macOS, `kiro-cli` can run inside namespace or
   Seatbelt isolation. Standard, strict, and off modes make the tradeoff
@@ -330,9 +349,15 @@ chat. Read the [security architecture](docs/architecture/security-deep-dive.md) 
 
 **Installer details.** The installer resolves the channel feed, verifies the wheel's SHA-256 against
 the published manifest, installs through `pipx` when available or a managed
-virtual environment at `~/.kiro/crew/venv`, and records the channel in
-`~/.kiro/crew/channel`. The channels are `stable`, `insider`, and `nightly`, and
-`KIROCREW_CHANNEL` sets the default.
+virtual environment at `~/.kiro/crew-venv` (beside the data home; override with
+`KIROCREW_VENV`), and records the channel in `~/.kiro/crew/channel`. The channels
+are `stable`, `insider`, and `nightly`, and `KIROCREW_CHANNEL` sets the default.
+On Linux it installs a Python 3.10+ interpreter from your distro when the system
+lacks one — via `apt` on Debian/Ubuntu, `dnf` on Amazon Linux / RHEL / CentOS
+Stream, `yum` on CentOS 7. Where no base-repo package supplies 3.10+ (CentOS 7,
+older Ubuntu) it uses an already-installed [mise](https://mise.jdx.dev/) if you
+have one, otherwise it prints how to install a newer Python and stops. The
+signed installer never pipes an unsigned third-party script into a shell.
 
 **Pin an exact wheel.** You can also install one exact wheel directly and pin it to its published
 SHA-256. Every version directory publishes a `SHA256SUMS` file next to the
@@ -382,6 +407,20 @@ kirocrew service status
 kirocrew logs
 ```
 
+To bind a non-default port (for example a host where `5476` is already taken),
+set `KIROCREW_PORT` when you install the service — the value is baked into the
+unit:
+
+```bash
+KIROCREW_PORT=5477 kirocrew service install
+```
+
+To change it later without reinstalling, edit `/etc/kirocrew/kirocrew.env`
+(created by `service install`) and run `sudo systemctl restart kirocrew`. Units
+installed by releases before v0.2.0 lack the `EnvironmentFile=` directive that
+reads this file — re-run `kirocrew service install` or use a systemd drop-in;
+see [the install guide](docs/guides/install.md#setting-the-service-port).
+
 The desktop app can use this local Gateway or connect to a remote one. For an
 always-on VPS, home server, or cloud VM in your account, follow the
 [remote host guide](docs/guides/remote-and-mobile.md). Kiro Crew does not require a
@@ -409,8 +448,8 @@ main configuration with `kirocrew config get`, `set`, and `edit`.
 
 `agent.provider` is fixed to `acp`. Kiro Crew drives `kiro-cli` over the Agent
 Client Protocol. Set the dashboard port with `KIROCREW_PORT` or
-`kirocrew gateway --port <n>`. Slack credentials live in `~/.kiro/crew/.env`
-rather than the JSON config.
+`kirocrew gateway --port <n>`. Messaging-channel credentials (Slack, Discord,
+Telegram, and the rest) live in `~/.kiro/crew/.env` rather than the JSON config.
 
 **Troubleshoot quickly.** Start with `kirocrew doctor`. For an ACP timeout,
 confirm `kiro-cli` is on `PATH` and logged in, then allow extra time for the
@@ -572,6 +611,7 @@ make this tool possible:
 <a href="https://github.com/acdoussan" title="acdoussan"><img src="https://github.com/acdoussan.png?size=64" width="64" height="64" alt="acdoussan" /></a>
 <a href="https://github.com/adam-dunc" title="Adam Duncan"><img src="https://github.com/adam-dunc.png?size=64" width="64" height="64" alt="Adam Duncan" /></a>
 <a href="https://github.com/AddisonTustin" title="AddisonTustin"><img src="https://github.com/AddisonTustin.png?size=64" width="64" height="64" alt="AddisonTustin" /></a>
+<a href="https://github.com/adiarora06" title="Adi Arora"><img src="https://github.com/adiarora06.png?size=64" width="64" height="64" alt="Adi Arora" /></a>
 <a href="https://github.com/adlio" title="Aaron Longwell"><img src="https://github.com/adlio.png?size=64" width="64" height="64" alt="Aaron Longwell" /></a>
 <a href="https://github.com/adunuthulan" title="Nirav Adunuthula"><img src="https://github.com/adunuthulan.png?size=64" width="64" height="64" alt="Nirav Adunuthula" /></a>
 <a href="https://github.com/Aiden-Gaines" title="Aiden Gaines"><img src="https://github.com/Aiden-Gaines.png?size=64" width="64" height="64" alt="Aiden Gaines" /></a>
@@ -579,6 +619,7 @@ make this tool possible:
 <a href="https://github.com/akshitdesai" title="Akshit Desai"><img src="https://github.com/akshitdesai.png?size=64" width="64" height="64" alt="Akshit Desai" /></a>
 <a href="https://github.com/Albisourous" title="Albin Shrestha"><img src="https://github.com/Albisourous.png?size=64" width="64" height="64" alt="Albin Shrestha" /></a>
 <a href="https://github.com/alecgdouglas" title="Alec Douglas"><img src="https://github.com/alecgdouglas.png?size=64" width="64" height="64" alt="Alec Douglas" /></a>
+<a href="https://github.com/Alexander-Yuan" title="Alexander-Yuan"><img src="https://github.com/Alexander-Yuan.png?size=64" width="64" height="64" alt="Alexander-Yuan" /></a>
 <a href="https://github.com/AlexShen101" title="Alex Shen"><img src="https://github.com/AlexShen101.png?size=64" width="64" height="64" alt="Alex Shen" /></a>
 <a href="https://github.com/amadsalmon" title="Amad Salmon"><img src="https://github.com/amadsalmon.png?size=64" width="64" height="64" alt="Amad Salmon" /></a>
 <a href="https://github.com/amergrgic" title="Amer Grgic"><img src="https://github.com/amergrgic.png?size=64" width="64" height="64" alt="Amer Grgic" /></a>
@@ -586,6 +627,7 @@ make this tool possible:
 <a href="https://github.com/amulya349" title="Amulya Kumar Sahoo"><img src="https://github.com/amulya349.png?size=64" width="64" height="64" alt="Amulya Kumar Sahoo" /></a>
 <a href="https://github.com/anant-kaushik" title="Anant Kaushik"><img src="https://github.com/anant-kaushik.png?size=64" width="64" height="64" alt="Anant Kaushik" /></a>
 <a href="https://github.com/andrewtakeshi" title="Andrew Golightly"><img src="https://github.com/andrewtakeshi.png?size=64" width="64" height="64" alt="Andrew Golightly" /></a>
+<a href="https://github.com/andreyaurelien" title="andreyaurelien"><img src="https://github.com/andreyaurelien.png?size=64" width="64" height="64" alt="andreyaurelien" /></a>
 <a href="https://github.com/angeloyu" title="angeloyu"><img src="https://github.com/angeloyu.png?size=64" width="64" height="64" alt="angeloyu" /></a>
 <a href="https://github.com/aniketshukla1" title="Aniket Shukla"><img src="https://github.com/aniketshukla1.png?size=64" width="64" height="64" alt="Aniket Shukla" /></a>
 <a href="https://github.com/anjn98" title="anjn98"><img src="https://github.com/anjn98.png?size=64" width="64" height="64" alt="anjn98" /></a>
@@ -597,6 +639,7 @@ make this tool possible:
 <a href="https://github.com/aravance" title="Alex Avance"><img src="https://github.com/aravance.png?size=64" width="64" height="64" alt="Alex Avance" /></a>
 <a href="https://github.com/architect4dj" title="architect4dj"><img src="https://github.com/architect4dj.png?size=64" width="64" height="64" alt="architect4dj" /></a>
 <a href="https://github.com/arjunsoota" title="Arjun Soota"><img src="https://github.com/arjunsoota.png?size=64" width="64" height="64" alt="Arjun Soota" /></a>
+<a href="https://github.com/arimorgan" title="Ariana Morgan"><img src="https://github.com/arimorgan.png?size=64" width="64" height="64" alt="Ariana Morgan" /></a>
 <a href="https://github.com/arpan98" title="Arpan Banerjee"><img src="https://github.com/arpan98.png?size=64" width="64" height="64" alt="Arpan Banerjee" /></a>
 <a href="https://github.com/arvindsrinathus-tech" title="arvindsrinathus-tech"><img src="https://github.com/arvindsrinathus-tech.png?size=64" width="64" height="64" alt="arvindsrinathus-tech" /></a>
 <a href="https://github.com/AryPathania" title="Ary Pathania"><img src="https://github.com/AryPathania.png?size=64" width="64" height="64" alt="Ary Pathania" /></a>
@@ -606,6 +649,7 @@ make this tool possible:
 <a href="https://github.com/aswindjs" title="Aswin Damodar"><img src="https://github.com/aswindjs.png?size=64" width="64" height="64" alt="Aswin Damodar" /></a>
 <a href="https://github.com/av-writes-code" title="av-writes-code"><img src="https://github.com/av-writes-code.png?size=64" width="64" height="64" alt="av-writes-code" /></a>
 <a href="https://github.com/avmikhli1" title="avmikhli1"><img src="https://github.com/avmikhli1.png?size=64" width="64" height="64" alt="avmikhli1" /></a>
+<a href="https://github.com/ayahiro1729" title="ayahiro1729"><img src="https://github.com/ayahiro1729.png?size=64" width="64" height="64" alt="ayahiro1729" /></a>
 <a href="https://github.com/bayshanhai-dev" title="Steven Chen"><img src="https://github.com/bayshanhai-dev.png?size=64" width="64" height="64" alt="Steven Chen" /></a>
 <a href="https://github.com/beau-bright" title="beau-bright"><img src="https://github.com/beau-bright.png?size=64" width="64" height="64" alt="beau-bright" /></a>
 <a href="https://github.com/benwart-consensus" title="Ben Wart"><img src="https://github.com/benwart-consensus.png?size=64" width="64" height="64" alt="Ben Wart" /></a>
@@ -657,7 +701,9 @@ make this tool possible:
 <a href="https://github.com/eajajhossain" title="Eajaj Hossain"><img src="https://github.com/eajajhossain.png?size=64" width="64" height="64" alt="Eajaj Hossain" /></a>
 <a href="https://github.com/echorubisco" title="echorubisco"><img src="https://github.com/echorubisco.png?size=64" width="64" height="64" alt="echorubisco" /></a>
 <a href="https://github.com/EduVencovsky" title="Eduardo Vencovsky"><img src="https://github.com/EduVencovsky.png?size=64" width="64" height="64" alt="Eduardo Vencovsky" /></a>
+<a href="https://github.com/el-pedrito" title="Pierre"><img src="https://github.com/el-pedrito.png?size=64" width="64" height="64" alt="Pierre" /></a>
 <a href="https://github.com/EllaRed" title="Emmanuella Dasilva-Domingos"><img src="https://github.com/EllaRed.png?size=64" width="64" height="64" alt="Emmanuella Dasilva-Domingos" /></a>
+<a href="https://github.com/EllianCarlos" title="Ellian Carlos"><img src="https://github.com/EllianCarlos.png?size=64" width="64" height="64" alt="Ellian Carlos" /></a>
 <a href="https://github.com/em-sec" title="Eric M"><img src="https://github.com/em-sec.png?size=64" width="64" height="64" alt="Eric M" /></a>
 <a href="https://github.com/Eng-Ahmd" title="Ahmed Hassanin"><img src="https://github.com/Eng-Ahmd.png?size=64" width="64" height="64" alt="Ahmed Hassanin" /></a>
 <a href="https://github.com/envyN" title="Naveen Adarsh"><img src="https://github.com/envyN.png?size=64" width="64" height="64" alt="Naveen Adarsh" /></a>
@@ -666,6 +712,7 @@ make this tool possible:
 <a href="https://github.com/estenger" title="Evan Stenger"><img src="https://github.com/estenger.png?size=64" width="64" height="64" alt="Evan Stenger" /></a>
 <a href="https://github.com/ethanlevine" title="ethanlevine"><img src="https://github.com/ethanlevine.png?size=64" width="64" height="64" alt="ethanlevine" /></a>
 <a href="https://github.com/EzzatQ" title="Ezzat Qupty"><img src="https://github.com/EzzatQ.png?size=64" width="64" height="64" alt="Ezzat Qupty" /></a>
+<a href="https://github.com/fanhongy" title="Stan Fan"><img src="https://github.com/fanhongy.png?size=64" width="64" height="64" alt="Stan Fan" /></a>
 <a href="https://github.com/felipeb" title="Felipe"><img src="https://github.com/felipeb.png?size=64" width="64" height="64" alt="Felipe" /></a>
 <a href="https://github.com/filipgodina" title="filipgodina"><img src="https://github.com/filipgodina.png?size=64" width="64" height="64" alt="filipgodina" /></a>
 <a href="https://github.com/finnhad" title="Finn H"><img src="https://github.com/finnhad.png?size=64" width="64" height="64" alt="Finn H" /></a>
@@ -683,12 +730,15 @@ make this tool possible:
 <a href="https://github.com/greatfighter" title="Spencer"><img src="https://github.com/greatfighter.png?size=64" width="64" height="64" alt="Spencer" /></a>
 <a href="https://github.com/gregory-chapman" title="Gregory Chapman"><img src="https://github.com/gregory-chapman.png?size=64" width="64" height="64" alt="Gregory Chapman" /></a>
 <a href="https://github.com/haozihong" title="haozihong"><img src="https://github.com/haozihong.png?size=64" width="64" height="64" alt="haozihong" /></a>
+<a href="https://github.com/harpreetmultani1994" title="Harpreet Singh"><img src="https://github.com/harpreetmultani1994.png?size=64" width="64" height="64" alt="Harpreet Singh" /></a>
+<a href="https://github.com/hazlijohar95" title="Hazli Johar"><img src="https://github.com/hazlijohar95.png?size=64" width="64" height="64" alt="Hazli Johar" /></a>
 <a href="https://github.com/hchy0422" title="Kathy Han"><img src="https://github.com/hchy0422.png?size=64" width="64" height="64" alt="Kathy Han" /></a>
 <a href="https://github.com/helenastafford" title="helenastafford"><img src="https://github.com/helenastafford.png?size=64" width="64" height="64" alt="helenastafford" /></a>
 <a href="https://github.com/HermiteBai" title="Hermite Bai"><img src="https://github.com/HermiteBai.png?size=64" width="64" height="64" alt="Hermite Bai" /></a>
 <a href="https://github.com/hhllii" title="hhllii"><img src="https://github.com/hhllii.png?size=64" width="64" height="64" alt="hhllii" /></a>
 <a href="https://github.com/hilljm-418" title="hilljm-418"><img src="https://github.com/hilljm-418.png?size=64" width="64" height="64" alt="hilljm-418" /></a>
 <a href="https://github.com/hoang-phan98" title="Hoang "><img src="https://github.com/hoang-phan98.png?size=64" width="64" height="64" alt="Hoang " /></a>
+<a href="https://github.com/huanghang111" title="Zihang Huang"><img src="https://github.com/huanghang111.png?size=64" width="64" height="64" alt="Zihang Huang" /></a>
 <a href="https://github.com/hugoncosta" title="Hugo Costa"><img src="https://github.com/hugoncosta.png?size=64" width="64" height="64" alt="Hugo Costa" /></a>
 <a href="https://github.com/hungtnvu" title="Hung Vu"><img src="https://github.com/hungtnvu.png?size=64" width="64" height="64" alt="Hung Vu" /></a>
 <a href="https://github.com/iamwhatever" title="Zejiang Guo (Joe)"><img src="https://github.com/iamwhatever.png?size=64" width="64" height="64" alt="Zejiang Guo (Joe)" /></a>
@@ -705,18 +755,25 @@ make this tool possible:
 <a href="https://github.com/JasonZhang1993" title="Jason Zhang's Git"><img src="https://github.com/JasonZhang1993.png?size=64" width="64" height="64" alt="Jason Zhang's Git" /></a>
 <a href="https://github.com/jayaprakashreddy007" title="jayaprakashreddy007"><img src="https://github.com/jayaprakashreddy007.png?size=64" width="64" height="64" alt="jayaprakashreddy007" /></a>
 <a href="https://github.com/jbandon" title="Jack Bandon"><img src="https://github.com/jbandon.png?size=64" width="64" height="64" alt="Jack Bandon" /></a>
+<a href="https://github.com/jeeshofone" title="Will Laws"><img src="https://github.com/jeeshofone.png?size=64" width="64" height="64" alt="Will Laws" /></a>
 <a href="https://github.com/jeffn12" title="Jeff Neuberger"><img src="https://github.com/jeffn12.png?size=64" width="64" height="64" alt="Jeff Neuberger" /></a>
+<a href="https://github.com/jfnlewis-aws" title="Jeffrey Lewis"><img src="https://github.com/jfnlewis-aws.png?size=64" width="64" height="64" alt="Jeffrey Lewis" /></a>
 <a href="https://github.com/jianwenl" title="jianwenl"><img src="https://github.com/jianwenl.png?size=64" width="64" height="64" alt="jianwenl" /></a>
 <a href="https://github.com/jkasiraj" title="jkasiraj"><img src="https://github.com/jkasiraj.png?size=64" width="64" height="64" alt="jkasiraj" /></a>
+<a href="https://github.com/jkiepert" title="jkiepert"><img src="https://github.com/jkiepert.png?size=64" width="64" height="64" alt="jkiepert" /></a>
 <a href="https://github.com/jodoyodo" title="David Qian"><img src="https://github.com/jodoyodo.png?size=64" width="64" height="64" alt="David Qian" /></a>
+<a href="https://github.com/JoernZheng" title="Yaowen Zheng"><img src="https://github.com/JoernZheng.png?size=64" width="64" height="64" alt="Yaowen Zheng" /></a>
+<a href="https://github.com/johann-sew" title="johann-sew"><img src="https://github.com/johann-sew.png?size=64" width="64" height="64" alt="johann-sew" /></a>
 <a href="https://github.com/JohnCrickett" title="John Crickett"><img src="https://github.com/JohnCrickett.png?size=64" width="64" height="64" alt="John Crickett" /></a>
 <a href="https://github.com/JohnEspenhahn" title="John Espenhahn"><img src="https://github.com/JohnEspenhahn.png?size=64" width="64" height="64" alt="John Espenhahn" /></a>
 <a href="https://github.com/johnnymastin" title="Johnny Mastin"><img src="https://github.com/johnnymastin.png?size=64" width="64" height="64" alt="Johnny Mastin" /></a>
 <a href="https://github.com/johnnynaught" title="johnnynaught"><img src="https://github.com/johnnynaught.png?size=64" width="64" height="64" alt="johnnynaught" /></a>
 <a href="https://github.com/joshymle" title="Joshua Yeung"><img src="https://github.com/joshymle.png?size=64" width="64" height="64" alt="Joshua Yeung" /></a>
 <a href="https://github.com/Jpontone" title="JPontone"><img src="https://github.com/Jpontone.png?size=64" width="64" height="64" alt="JPontone" /></a>
+<a href="https://github.com/jtoloui" title="Jamie Toloui"><img src="https://github.com/jtoloui.png?size=64" width="64" height="64" alt="Jamie Toloui" /></a>
 <a href="https://github.com/Jus973" title="Justin Z"><img src="https://github.com/Jus973.png?size=64" width="64" height="64" alt="Justin Z" /></a>
 <a href="https://github.com/jyuros" title="Jaden Yuros"><img src="https://github.com/jyuros.png?size=64" width="64" height="64" alt="Jaden Yuros" /></a>
+<a href="https://github.com/k33bz" title="Matthew Kastro"><img src="https://github.com/k33bz.png?size=64" width="64" height="64" alt="Matthew Kastro" /></a>
 <a href="https://github.com/KaiqueGovani" title="Kaique Govani"><img src="https://github.com/KaiqueGovani.png?size=64" width="64" height="64" alt="Kaique Govani" /></a>
 <a href="https://github.com/kaizawa97" title="Kai Mitsuzawa"><img src="https://github.com/kaizawa97.png?size=64" width="64" height="64" alt="Kai Mitsuzawa" /></a>
 <a href="https://github.com/kazimovzaman2" title="Zaman Kazimov"><img src="https://github.com/kazimovzaman2.png?size=64" width="64" height="64" alt="Zaman Kazimov" /></a>
@@ -728,6 +785,7 @@ make this tool possible:
 <a href="https://github.com/kondisettyravi" title="Ravi Teja Kondisetty"><img src="https://github.com/kondisettyravi.png?size=64" width="64" height="64" alt="Ravi Teja Kondisetty" /></a>
 <a href="https://github.com/konippi" title="Kyosuke Konishi"><img src="https://github.com/konippi.png?size=64" width="64" height="64" alt="Kyosuke Konishi" /></a>
 <a href="https://github.com/kotyara1005" title="Artem Krivonos"><img src="https://github.com/kotyara1005.png?size=64" width="64" height="64" alt="Artem Krivonos" /></a>
+<a href="https://github.com/koushikginjupally" title="koushikginjupally"><img src="https://github.com/koushikginjupally.png?size=64" width="64" height="64" alt="koushikginjupally" /></a>
 <a href="https://github.com/krishdhasmana" title="Krish Dhasmana"><img src="https://github.com/krishdhasmana.png?size=64" width="64" height="64" alt="Krish Dhasmana" /></a>
 <a href="https://github.com/krunalpa-amzn" title="krunalpa-amzn"><img src="https://github.com/krunalpa-amzn.png?size=64" width="64" height="64" alt="krunalpa-amzn" /></a>
 <a href="https://github.com/ksarieddine" title="ksarieddine"><img src="https://github.com/ksarieddine.png?size=64" width="64" height="64" alt="ksarieddine" /></a>
@@ -744,6 +802,7 @@ make this tool possible:
 <a href="https://github.com/leozhad" title="Leo Zhadanovsky"><img src="https://github.com/leozhad.png?size=64" width="64" height="64" alt="Leo Zhadanovsky" /></a>
 <a href="https://github.com/lester-gh" title="lester-gh"><img src="https://github.com/lester-gh.png?size=64" width="64" height="64" alt="lester-gh" /></a>
 <a href="https://github.com/LeTeutz" title="Teodor Oprescu"><img src="https://github.com/LeTeutz.png?size=64" width="64" height="64" alt="Teodor Oprescu" /></a>
+<a href="https://github.com/Liam-Wirth" title="Liam Wirth"><img src="https://github.com/Liam-Wirth.png?size=64" width="64" height="64" alt="Liam Wirth" /></a>
 <a href="https://github.com/LiptonJumboTeaBag" title="John Li"><img src="https://github.com/LiptonJumboTeaBag.png?size=64" width="64" height="64" alt="John Li" /></a>
 <a href="https://github.com/lmambr2" title="lmambr2"><img src="https://github.com/lmambr2.png?size=64" width="64" height="64" alt="lmambr2" /></a>
 <a href="https://github.com/Lock128" title="Johannes Koch"><img src="https://github.com/Lock128.png?size=64" width="64" height="64" alt="Johannes Koch" /></a>
@@ -770,11 +829,13 @@ make this tool possible:
 <a href="https://github.com/mcryan77" title="mcryan"><img src="https://github.com/mcryan77.png?size=64" width="64" height="64" alt="mcryan" /></a>
 <a href="https://github.com/Mdkar" title="Mihir Dhamankar"><img src="https://github.com/Mdkar.png?size=64" width="64" height="64" alt="Mihir Dhamankar" /></a>
 <a href="https://github.com/mdwyer223" title="Matthew Dwyer"><img src="https://github.com/mdwyer223.png?size=64" width="64" height="64" alt="Matthew Dwyer" /></a>
+<a href="https://github.com/miamanav" title="miamanav"><img src="https://github.com/miamanav.png?size=64" width="64" height="64" alt="miamanav" /></a>
 <a href="https://github.com/michellemxm" title="Michelle Ma"><img src="https://github.com/michellemxm.png?size=64" width="64" height="64" alt="Michelle Ma" /></a>
 <a href="https://github.com/MikeMayer" title="Mike Mayer"><img src="https://github.com/MikeMayer.png?size=64" width="64" height="64" alt="Mike Mayer" /></a>
 <a href="https://github.com/mikkuzne" title="Mikhail Kuznetsov"><img src="https://github.com/mikkuzne.png?size=64" width="64" height="64" alt="Mikhail Kuznetsov" /></a>
 <a href="https://github.com/minglong51" title="Minglong Pan"><img src="https://github.com/minglong51.png?size=64" width="64" height="64" alt="Minglong Pan" /></a>
 <a href="https://github.com/mkbarnum" title="mkbarnum"><img src="https://github.com/mkbarnum.png?size=64" width="64" height="64" alt="mkbarnum" /></a>
+<a href="https://github.com/mnaameh" title="Marc El Naameh"><img src="https://github.com/mnaameh.png?size=64" width="64" height="64" alt="Marc El Naameh" /></a>
 <a href="https://github.com/MohammedAnes" title="MohammedAnes"><img src="https://github.com/MohammedAnes.png?size=64" width="64" height="64" alt="MohammedAnes" /></a>
 <a href="https://github.com/molladair" title="Molly Adair"><img src="https://github.com/molladair.png?size=64" width="64" height="64" alt="Molly Adair" /></a>
 <a href="https://github.com/musaprg" title="Kotaro Inoue"><img src="https://github.com/musaprg.png?size=64" width="64" height="64" alt="Kotaro Inoue" /></a>
@@ -795,8 +856,10 @@ make this tool possible:
 <a href="https://github.com/nishi7409" title="Nishant Srivastava"><img src="https://github.com/nishi7409.png?size=64" width="64" height="64" alt="Nishant Srivastava" /></a>
 <a href="https://github.com/nitan2k" title="nitan2k"><img src="https://github.com/nitan2k.png?size=64" width="64" height="64" alt="nitan2k" /></a>
 <a href="https://github.com/NovaPlasm" title="Beau Taylor"><img src="https://github.com/NovaPlasm.png?size=64" width="64" height="64" alt="Beau Taylor" /></a>
+<a href="https://github.com/nullabe" title="Antoine Belluard"><img src="https://github.com/nullabe.png?size=64" width="64" height="64" alt="Antoine Belluard" /></a>
 <a href="https://github.com/nyclord" title="Mark Lord"><img src="https://github.com/nyclord.png?size=64" width="64" height="64" alt="Mark Lord" /></a>
 <a href="https://github.com/officialprosingh" title="Parwinder Singh"><img src="https://github.com/officialprosingh.png?size=64" width="64" height="64" alt="Parwinder Singh" /></a>
+<a href="https://github.com/omarMokh" title="Omar Abo Mokh"><img src="https://github.com/omarMokh.png?size=64" width="64" height="64" alt="Omar Abo Mokh" /></a>
 <a href="https://github.com/OnlyOneByte" title="Rengang (Angelo) Yang"><img src="https://github.com/OnlyOneByte.png?size=64" width="64" height="64" alt="Rengang (Angelo) Yang" /></a>
 <a href="https://github.com/parimaldeshmukh" title="Parimal Deshmukh"><img src="https://github.com/parimaldeshmukh.png?size=64" width="64" height="64" alt="Parimal Deshmukh" /></a>
 <a href="https://github.com/patrigao" title="patrigao"><img src="https://github.com/patrigao.png?size=64" width="64" height="64" alt="patrigao" /></a>
@@ -810,10 +873,12 @@ make this tool possible:
 <a href="https://github.com/popematt" title="Matthew Pope"><img src="https://github.com/popematt.png?size=64" width="64" height="64" alt="Matthew Pope" /></a>
 <a href="https://github.com/poyea" title="John Law"><img src="https://github.com/poyea.png?size=64" width="64" height="64" alt="John Law" /></a>
 <a href="https://github.com/pramod-123" title="Pramod Dudhi"><img src="https://github.com/pramod-123.png?size=64" width="64" height="64" alt="Pramod Dudhi" /></a>
+<a href="https://github.com/Premshay" title="Premshay"><img src="https://github.com/Premshay.png?size=64" width="64" height="64" alt="Premshay" /></a>
 <a href="https://github.com/presidentarrow" title="presidentarrow"><img src="https://github.com/presidentarrow.png?size=64" width="64" height="64" alt="presidentarrow" /></a>
 <a href="https://github.com/ptias" title="ptias"><img src="https://github.com/ptias.png?size=64" width="64" height="64" alt="ptias" /></a>
 <a href="https://github.com/ptomooka" title="ptomooka"><img src="https://github.com/ptomooka.png?size=64" width="64" height="64" alt="ptomooka" /></a>
 <a href="https://github.com/qh2244" title="Qifeng Huang"><img src="https://github.com/qh2244.png?size=64" width="64" height="64" alt="Qifeng Huang" /></a>
+<a href="https://github.com/qihang-dai" title="TracerMain"><img src="https://github.com/qihang-dai.png?size=64" width="64" height="64" alt="TracerMain" /></a>
 <a href="https://github.com/qinghua" title="qinghua"><img src="https://github.com/qinghua.png?size=64" width="64" height="64" alt="qinghua" /></a>
 <a href="https://github.com/Qusai1201" title="Qusai Hussein"><img src="https://github.com/Qusai1201.png?size=64" width="64" height="64" alt="Qusai Hussein" /></a>
 <a href="https://github.com/r331" title="Roman Ivanov"><img src="https://github.com/r331.png?size=64" width="64" height="64" alt="Roman Ivanov" /></a>
@@ -824,11 +889,14 @@ make this tool possible:
 <a href="https://github.com/raleycs" title="Christopher Raley"><img src="https://github.com/raleycs.png?size=64" width="64" height="64" alt="Christopher Raley" /></a>
 <a href="https://github.com/ramdavid" title="ramdavid"><img src="https://github.com/ramdavid.png?size=64" width="64" height="64" alt="ramdavid" /></a>
 <a href="https://github.com/randallwc" title="William Randall"><img src="https://github.com/randallwc.png?size=64" width="64" height="64" alt="William Randall" /></a>
+<a href="https://github.com/raphael-shin" title="Jungseob Shin"><img src="https://github.com/raphael-shin.png?size=64" width="64" height="64" alt="Jungseob Shin" /></a>
 <a href="https://github.com/rbcommits" title="Raghav Bhardwaj"><img src="https://github.com/rbcommits.png?size=64" width="64" height="64" alt="Raghav Bhardwaj" /></a>
 <a href="https://github.com/rcidadef" title="Roberto Cidade Fonseca"><img src="https://github.com/rcidadef.png?size=64" width="64" height="64" alt="Roberto Cidade Fonseca" /></a>
 <a href="https://github.com/Remicks1" title="Jimmy Kilpatrick"><img src="https://github.com/Remicks1.png?size=64" width="64" height="64" alt="Jimmy Kilpatrick" /></a>
 <a href="https://github.com/rishabhagrawal1" title="Rishabh Agrawal"><img src="https://github.com/rishabhagrawal1.png?size=64" width="64" height="64" alt="Rishabh Agrawal" /></a>
 <a href="https://github.com/rittikg-amazon" title="rittikg-amazon"><img src="https://github.com/rittikg-amazon.png?size=64" width="64" height="64" alt="rittikg-amazon" /></a>
+<a href="https://github.com/rlunar" title="Roberto Luna-Rojas"><img src="https://github.com/rlunar.png?size=64" width="64" height="64" alt="Roberto Luna-Rojas" /></a>
+<a href="https://github.com/rnoack1" title="Robert Noack"><img src="https://github.com/rnoack1.png?size=64" width="64" height="64" alt="Robert Noack" /></a>
 <a href="https://github.com/robchahin" title="robchahin"><img src="https://github.com/robchahin.png?size=64" width="64" height="64" alt="robchahin" /></a>
 <a href="https://github.com/rochakgupta" title="Rochak Gupta"><img src="https://github.com/rochakgupta.png?size=64" width="64" height="64" alt="Rochak Gupta" /></a>
 <a href="https://github.com/Rocketpoodle" title="Austin Goddard"><img src="https://github.com/Rocketpoodle.png?size=64" width="64" height="64" alt="Austin Goddard" /></a>
@@ -861,8 +929,10 @@ make this tool possible:
 <a href="https://github.com/smeyffret" title="smeyffret"><img src="https://github.com/smeyffret.png?size=64" width="64" height="64" alt="smeyffret" /></a>
 <a href="https://github.com/snoldak924" title="Sam Oldak"><img src="https://github.com/snoldak924.png?size=64" width="64" height="64" alt="Sam Oldak" /></a>
 <a href="https://github.com/snowoody" title="snowoody"><img src="https://github.com/snowoody.png?size=64" width="64" height="64" alt="snowoody" /></a>
+<a href="https://github.com/so0k" title="so0k"><img src="https://github.com/so0k.png?size=64" width="64" height="64" alt="so0k" /></a>
 <a href="https://github.com/solnikhil" title="Nikhil Solanki"><img src="https://github.com/solnikhil.png?size=64" width="64" height="64" alt="Nikhil Solanki" /></a>
 <a href="https://github.com/Soneji" title="Dhaval Soneji"><img src="https://github.com/Soneji.png?size=64" width="64" height="64" alt="Dhaval Soneji" /></a>
+<a href="https://github.com/Souptik96" title="Souptik Chakraborty"><img src="https://github.com/Souptik96.png?size=64" width="64" height="64" alt="Souptik Chakraborty" /></a>
 <a href="https://github.com/spandanagrawal" title="Spandan Gopal Agrawal"><img src="https://github.com/spandanagrawal.png?size=64" width="64" height="64" alt="Spandan Gopal Agrawal" /></a>
 <a href="https://github.com/stifspear" title="stifspear"><img src="https://github.com/stifspear.png?size=64" width="64" height="64" alt="stifspear" /></a>
 <a href="https://github.com/sudhamsu" title="Sudhamsu Manne"><img src="https://github.com/sudhamsu.png?size=64" width="64" height="64" alt="Sudhamsu Manne" /></a>
@@ -873,6 +943,7 @@ make this tool possible:
 <a href="https://github.com/SwapDixit" title="Swapnil Dixit"><img src="https://github.com/SwapDixit.png?size=64" width="64" height="64" alt="Swapnil Dixit" /></a>
 <a href="https://github.com/sxhmilyoyo" title="sxhmilyoyo"><img src="https://github.com/sxhmilyoyo.png?size=64" width="64" height="64" alt="sxhmilyoyo" /></a>
 <a href="https://github.com/syedmujahedalih" title="Mujahed Syed"><img src="https://github.com/syedmujahedalih.png?size=64" width="64" height="64" alt="Mujahed Syed" /></a>
+<a href="https://github.com/szto" title="SoonKim"><img src="https://github.com/szto.png?size=64" width="64" height="64" alt="SoonKim" /></a>
 <a href="https://github.com/t-jones" title="Tim Jones"><img src="https://github.com/t-jones.png?size=64" width="64" height="64" alt="Tim Jones" /></a>
 <a href="https://github.com/TakahiroIshii" title="Takahiro Ishii"><img src="https://github.com/TakahiroIshii.png?size=64" width="64" height="64" alt="Takahiro Ishii" /></a>
 <a href="https://github.com/texnewmex" title="Nolan Clayton"><img src="https://github.com/texnewmex.png?size=64" width="64" height="64" alt="Nolan Clayton" /></a>
@@ -882,6 +953,7 @@ make this tool possible:
 <a href="https://github.com/thiagoh" title="thiagoh"><img src="https://github.com/thiagoh.png?size=64" width="64" height="64" alt="thiagoh" /></a>
 <a href="https://github.com/think-imbaig" title="think-imbaig"><img src="https://github.com/think-imbaig.png?size=64" width="64" height="64" alt="think-imbaig" /></a>
 <a href="https://github.com/ThR3742" title="ThR3742"><img src="https://github.com/ThR3742.png?size=64" width="64" height="64" alt="ThR3742" /></a>
+<a href="https://github.com/tjdwlsdlaek" title="seongjin"><img src="https://github.com/tjdwlsdlaek.png?size=64" width="64" height="64" alt="seongjin" /></a>
 <a href="https://github.com/tlauda" title="Tomasz Lauda"><img src="https://github.com/tlauda.png?size=64" width="64" height="64" alt="Tomasz Lauda" /></a>
 <a href="https://github.com/tlobinger" title="Thomas Lobinger"><img src="https://github.com/tlobinger.png?size=64" width="64" height="64" alt="Thomas Lobinger" /></a>
 <a href="https://github.com/toby-wong" title="Toby Wong"><img src="https://github.com/toby-wong.png?size=64" width="64" height="64" alt="Toby Wong" /></a>
@@ -895,9 +967,11 @@ make this tool possible:
 <a href="https://github.com/vamgan" title="Vamil Gandhi"><img src="https://github.com/vamgan.png?size=64" width="64" height="64" alt="Vamil Gandhi" /></a>
 <a href="https://github.com/vdurante" title="Vitor Durante"><img src="https://github.com/vdurante.png?size=64" width="64" height="64" alt="Vitor Durante" /></a>
 <a href="https://github.com/venkatvb" title="Venkatesh Babu AR"><img src="https://github.com/venkatvb.png?size=64" width="64" height="64" alt="Venkatesh Babu AR" /></a>
+<a href="https://github.com/vinayshah1998" title="Vinay Shah"><img src="https://github.com/vinayshah1998.png?size=64" width="64" height="64" alt="Vinay Shah" /></a>
 <a href="https://github.com/vishal-sahoo" title="Vishal Sahoo"><img src="https://github.com/vishal-sahoo.png?size=64" width="64" height="64" alt="Vishal Sahoo" /></a>
 <a href="https://github.com/vishalvignesh" title="Vishal Vignesh"><img src="https://github.com/vishalvignesh.png?size=64" width="64" height="64" alt="Vishal Vignesh" /></a>
 <a href="https://github.com/w-wei105" title="w-wei105"><img src="https://github.com/w-wei105.png?size=64" width="64" height="64" alt="w-wei105" /></a>
+<a href="https://github.com/Walsen" title="Sergio D. Rodríguez Inclán"><img src="https://github.com/Walsen.png?size=64" width="64" height="64" alt="Sergio D. Rodríguez Inclán" /></a>
 <a href="https://github.com/wang-shihao" title="Arthur, Shihao Wang"><img src="https://github.com/wang-shihao.png?size=64" width="64" height="64" alt="Arthur, Shihao Wang" /></a>
 <a href="https://github.com/wannaFlyKa" title="Yao"><img src="https://github.com/wannaFlyKa.png?size=64" width="64" height="64" alt="Yao" /></a>
 <a href="https://github.com/wbowditch" title="Will Bowditch"><img src="https://github.com/wbowditch.png?size=64" width="64" height="64" alt="Will Bowditch" /></a>

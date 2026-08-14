@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from yaml_helpers import load_with
+
 from kiro_crew.deploy import engine
 from kiro_crew.deploy import iam as iam_mod
 
@@ -55,7 +57,7 @@ def test_policy_prefix_matches_template_bucket():
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "base-stack.yaml"
     with open(template_path) as f:
-        tmpl = yaml.load(f, Loader=_CfnLoader)  # noqa: S506
+        tmpl = load_with(_CfnLoader, f)
     bucket_name = tmpl["Resources"]["OriginBucket"]["Properties"]["BucketName"]
     # Template uses !Sub 'kirocrew-deploy-${AWS::AccountId}-${AWS::Region}'
     # The IAM prefix must be 'kirocrew-deploy-*' to cover all account/region combos.
@@ -90,7 +92,7 @@ def test_audit_log_bucket_has_versioning_enabled():
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "base-stack.yaml"
     with open(template_path) as f:
-        tmpl = yaml.load(f, Loader=_CfnLoader)  # noqa: S506
+        tmpl = load_with(_CfnLoader, f)
 
     resources = tmpl["Resources"]
     for name in ("OriginBucket", "LogBucket"):
@@ -378,7 +380,7 @@ def test_reaper_template_includes_engine_arch_permissions():
 
     template_path = _PKG / "skills" / "artifact-deploy" / "templates" / "reaper.yaml"
     with open(template_path) as f:
-        tmpl = yaml.load(f, Loader=_CfnLoader)  # noqa: S506
+        tmpl = load_with(_CfnLoader, f)
 
     role_props = tmpl["Resources"]["ReaperRole"]["Properties"]
     stmts = role_props["Policies"][0]["PolicyDocument"]["Statement"]

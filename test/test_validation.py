@@ -19,6 +19,7 @@ from kiro_crew.validation import (
     ValidationError,
     build_tool_response,
     normalize_unicode,
+    sanitize_json_values,
     sanitize_response,
     sanitize_string,
     strip_hidden_unicode,
@@ -165,6 +166,30 @@ class TestSanitizeString:
         assert sanitize_string("\u0645\u200c\u062e") == "\u0645\u200c\u062e"
 
 
+class TestSanitizeJsonValues:
+    def test_strips_hidden_chars_from_nested_values_and_keys(self):
+        # A ``\u200b`` escape in raw JSON is plain ASCII to the schema
+        # sanitizer; it becomes a real zero-width char only on decode. The
+        # decoded walk must strip it wherever it lands.
+        decoded = {
+            "no\u200bte": "AKIA\u200bIOSFODNN7EXAMPLE",
+            "nested": {"list": ["a\u200bb", 7, None, True]},
+        }
+        cleaned = sanitize_json_values(decoded)
+        assert cleaned == {
+            "note": "AKIAIOSFODNN7EXAMPLE",
+            "nested": {"list": ["ab", 7, None, True]},
+        }
+
+    def test_non_string_scalars_untouched(self):
+        assert sanitize_json_values({"n": 1, "f": 2.5, "b": False, "x": None}) == {
+            "n": 1,
+            "f": 2.5,
+            "b": False,
+            "x": None,
+        }
+
+
 # ── Response Sanitization ──
 
 
@@ -257,6 +282,31 @@ class TestValidateToolArgs:
     def test_spawn_run_max_turns_negative_rejected(self):
         with pytest.raises(ValidationError, match=">="):
             validate_tool_args({"task": "x", "max_turns": -1}, SPAWN_RUN_SCHEMA)
+
+    def test_spawn_run_context_groups_accepted(self):
+        result = validate_tool_args(
+            {
+                "task": "x",
+                "include_memory": False,
+                "include_lessons": True,
+                "include_project": False,
+            },
+            SPAWN_RUN_SCHEMA,
+        )
+        assert result["include_memory"] is False
+        assert result["include_lessons"] is True
+        assert result["include_project"] is False
+
+    def test_spawn_run_context_groups_omitted(self):
+        """Absent flags must not materialize as False — omitted means all groups on."""
+        result = validate_tool_args({"task": "x"}, SPAWN_RUN_SCHEMA)
+        assert result.get("include_memory") is not False
+        assert result.get("include_lessons") is not False
+        assert result.get("include_project") is not False
+
+    def test_spawn_run_context_group_non_bool_rejected(self):
+        with pytest.raises(ValidationError):
+            validate_tool_args({"task": "x", "include_memory": "no"}, SPAWN_RUN_SCHEMA)
 
     def test_learn_add_valid(self):
         result = validate_tool_args(

@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
+from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel, sel_hmac_key_path
 
 
 @pytest.fixture(autouse=True)
@@ -58,13 +59,13 @@ def _make_event(**overrides) -> SecurityEvent:
 class TestHmacKeyManagement:
     def test_creates_key_file_on_first_init(self, sel_dir):
         SecurityEventLog(base_dir=sel_dir, sync=True)
-        key_path = sel_dir / "sel_hmac.key"
+        key_path = sel_dir / "trust" / "sel_hmac.key"
         assert key_path.exists()
         assert len(key_path.read_bytes()) == 32
 
     def test_key_file_permissions(self, sel_dir):
         SecurityEventLog(base_dir=sel_dir, sync=True)
-        key_path = sel_dir / "sel_hmac.key"
+        key_path = sel_dir / "trust" / "sel_hmac.key"
         mode = oct(key_path.stat().st_mode & 0o777)
         assert mode == "0o600"
 
@@ -448,7 +449,7 @@ class TestHmacKeyManagementExtras:
 
         monkeypatch.setattr("kiro_crew.platform_compat.os.chmod", _boom)
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
-        assert (tmp_path / "sel_hmac.key").exists()
+        assert (tmp_path / "trust" / "sel_hmac.key").exists()
         assert log._hmac_key
 
     def test_singleton_init_is_idempotent(self, tmp_path: Path) -> None:
@@ -949,7 +950,7 @@ class TestHmacKeyValidation:
     def test_generated_key_meets_minimum_length(self, tmp_path: Path) -> None:
         """The auto-generated key must satisfy the validation on next load."""
         SecurityEventLog(base_dir=tmp_path, sync=True)
-        assert len((tmp_path / "sel_hmac.key").read_bytes()) >= 32
+        assert len((tmp_path / "trust" / "sel_hmac.key").read_bytes()) >= 32
         # Re-init from the on-disk key must not raise.
         SecurityEventLog._instance = None
         SecurityEventLog._initialized = False
@@ -961,7 +962,7 @@ class TestHmacKeyValidation:
 class TestHmacKeyPermissionEnforcement:
     def test_created_key_is_owner_only(self, tmp_path: Path) -> None:
         SecurityEventLog(base_dir=tmp_path, sync=True)
-        mode = (tmp_path / "sel_hmac.key").stat().st_mode & 0o777
+        mode = (tmp_path / "trust" / "sel_hmac.key").stat().st_mode & 0o777
         assert mode == 0o600
 
     def test_reenforces_perms_on_load(self, tmp_path: Path) -> None:
@@ -970,7 +971,10 @@ class TestHmacKeyPermissionEnforcement:
         key_path.write_bytes(b"k" * 32)
         os.chmod(key_path, 0o644)  # simulate relaxed perms (backup restore, etc.)
         SecurityEventLog(base_dir=tmp_path, sync=True)
-        mode = key_path.stat().st_mode & 0o777
+        # The legacy file is migrated into trust/ and tightened there.
+        migrated = tmp_path / "trust" / "sel_hmac.key"
+        assert not key_path.exists()
+        mode = migrated.stat().st_mode & 0o777
         assert mode == 0o600
 
     def test_chmod_failure_on_load_is_swallowed(
@@ -1167,13 +1171,13 @@ class TestHmacKeyAtomicCreation:
 
     def test_created_key_is_full_length_and_owner_only(self, tmp_path: Path) -> None:
         SecurityEventLog(base_dir=tmp_path, sync=True)
-        key_path = tmp_path / "sel_hmac.key"
+        key_path = tmp_path / "trust" / "sel_hmac.key"
         assert len(key_path.read_bytes()) == 32
         assert (key_path.stat().st_mode & 0o777) == 0o600
 
     def test_no_temp_key_files_left_behind(self, tmp_path: Path) -> None:
         SecurityEventLog(base_dir=tmp_path, sync=True)
-        leftovers = list(tmp_path.glob(".sel_hmac_*"))
+        leftovers = list((tmp_path / "trust").glob(".sel_hmac_*"))
         assert leftovers == []
 
     def test_crash_during_create_leaves_no_short_key(
@@ -1192,8 +1196,8 @@ class TestHmacKeyAtomicCreation:
             SecurityEventLog(base_dir=tmp_path, sync=True)
         monkeypatch.setattr(os, "write", real_write)
         # No published key, and no orphaned temp file.
-        assert not (tmp_path / "sel_hmac.key").exists()
-        assert list(tmp_path.glob(".sel_hmac_*")) == []
+        assert not (tmp_path / "trust" / "sel_hmac.key").exists()
+        assert list((tmp_path / "trust").glob(".sel_hmac_*")) == []
 
     def test_short_write_still_persists_full_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1209,7 +1213,7 @@ class TestHmacKeyAtomicCreation:
         monkeypatch.setattr(os, "write", _short_write)
         SecurityEventLog(base_dir=tmp_path, sync=True)
         monkeypatch.setattr(os, "write", real_write)
-        assert len((tmp_path / "sel_hmac.key").read_bytes()) == 32
+        assert len((tmp_path / "trust" / "sel_hmac.key").read_bytes()) == 32
 
     def test_zero_byte_write_is_treated_as_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1225,5 +1229,330 @@ class TestHmacKeyAtomicCreation:
         with pytest.raises(OSError):
             SecurityEventLog(base_dir=tmp_path, sync=True)
         monkeypatch.setattr(os, "write", real_write)
+        assert not (tmp_path / "trust" / "sel_hmac.key").exists()
+        assert list((tmp_path / "trust").glob(".sel_hmac_*")) == []
+
+
+class TestHmacKeyTrustDirMigration:
+    """The SEL HMAC key lives at trust/sel_hmac.key — OUTSIDE the log's own
+    directory — so write access to the log dir does not imply re-signing power.
+    A legacy key at <dir>/sel_hmac.key is migrated in atomically with the key
+    BYTES unchanged, so pre-existing chains still verify.
+    """
+
+    def _reset(self) -> None:
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+
+    def test_fresh_install_creates_key_in_trust_dir(self, tmp_path: Path) -> None:
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert (tmp_path / "trust" / "sel_hmac.key").exists()
         assert not (tmp_path / "sel_hmac.key").exists()
-        assert list(tmp_path.glob(".sel_hmac_*")) == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+    def test_trust_dir_is_owner_only(self, tmp_path: Path) -> None:
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        mode = (tmp_path / "trust").stat().st_mode & 0o777
+        assert mode == 0o700
+
+    def test_legacy_key_migrated_and_chain_still_verifies(self, tmp_path: Path) -> None:
+        """Seed a legacy-layout install (key next to the log, signed entries);
+        re-init must relocate the key and keep every existing entry verifying."""
+        log1 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log1.log_tool_invocation(session_key="s1", tool_name="t1", tool_kind="tool", outcome="ok")
+        log1.log_tool_invocation(session_key="s2", tool_name="t2", tool_kind="tool", outcome="ok")
+        key_bytes = log1._hmac_key
+        # Recreate the LEGACY layout: key beside the log.
+        os.replace(tmp_path / "trust" / "sel_hmac.key", tmp_path / "sel_hmac.key")
+        self._reset()
+
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log2._hmac_key == key_bytes
+        assert (tmp_path / "trust" / "sel_hmac.key").exists()
+        assert not (tmp_path / "sel_hmac.key").exists()
+        total, valid = log2.verify_integrity()
+        assert total == 2
+        assert valid == 2
+
+    def test_migrated_key_can_extend_existing_chain(self, tmp_path: Path) -> None:
+        log1 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log1.log_tool_invocation(session_key="s1", tool_name="t1", tool_kind="tool", outcome="ok")
+        os.replace(tmp_path / "trust" / "sel_hmac.key", tmp_path / "sel_hmac.key")
+        self._reset()
+
+        log2 = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log2.log_tool_invocation(session_key="s2", tool_name="t2", tool_kind="tool", outcome="ok")
+        total, valid = log2.verify_integrity()
+        assert total == 2
+        assert valid == 2
+
+    def test_planted_destination_is_overwritten_by_legacy_key(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Upgrade-boundary defense: ``trust/`` was not deny-listed before the
+        migration release, so a file already at the destination on a legacy
+        install could be agent-planted (known bytes = forgeable MACs). The
+        deny-list-protected legacy key must WIN and overwrite it."""
+        planted_key = b"n" * 32
+        legacy_key = b"l" * 32
+        (tmp_path / "trust").mkdir()
+        (tmp_path / "trust" / "sel_hmac.key").write_bytes(planted_key)
+        (tmp_path / "sel_hmac.key").write_bytes(legacy_key)
+
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._hmac_key == legacy_key
+        assert (tmp_path / "trust" / "sel_hmac.key").read_bytes() == legacy_key
+        # Legacy file consumed by the atomic replace.
+        assert not (tmp_path / "sel_hmac.key").exists()
+        assert any("replaced by the legacy" in r.message for r in caplog.records)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_linked_trust_dir_is_removed_not_followed(self, tmp_path: Path) -> None:
+        """A ``trust`` symlink planted before the upgrade must be removed
+        (link only, target untouched) so the key is never written through it."""
+        legacy_key = b"l" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(legacy_key)
+        target = tmp_path / "agent-readable"
+        target.mkdir()
+        (tmp_path / "trust").symlink_to(target)
+
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._hmac_key == legacy_key
+        assert not (tmp_path / "trust").is_symlink()
+        # The key landed in the REAL dir; the link target got nothing.
+        assert (tmp_path / "trust" / "sel_hmac.key").read_bytes() == legacy_key
+        assert list(target.iterdir()) == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_linked_key_file_is_removed_not_followed(self, tmp_path: Path) -> None:
+        """A ``trust/sel_hmac.key`` symlink must be removed before use so a
+        fresh key is never written through (or read via) a planted link."""
+        (tmp_path / "trust").mkdir()
+        target = tmp_path / "exfil.key"
+        target.write_bytes(b"p" * 32)
+        (tmp_path / "trust" / "sel_hmac.key").symlink_to(target)
+
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        key_path = tmp_path / "trust" / "sel_hmac.key"
+        assert not key_path.is_symlink()
+        # Fresh key minted in place, never the planted target bytes.
+        assert log._hmac_key != b"p" * 32
+        assert target.read_bytes() == b"p" * 32
+
+    def test_sel_hmac_key_path_reports_trust_location(self, tmp_path: Path) -> None:
+        """Dependent protocols (session_pid_sig) resolve the key through the
+        accessor, so it must report the resolved trust/ path."""
+        SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert sel_hmac_key_path() == tmp_path / "trust" / "sel_hmac.key"
+
+    def test_sel_hmac_key_path_default_includes_trust_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a live singleton the accessor falls back to the same
+        trust/ default the singleton would use."""
+        self._reset()
+        monkeypatch.setattr("kiro_crew.sel._default_dir", lambda: tmp_path)
+        assert sel_hmac_key_path() == tmp_path / "trust" / "sel_hmac.key"
+
+    def test_readonly_config_dir_with_legacy_key_still_boots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A legacy install whose config dir cannot gain a trust/ subdir
+        (read-only FS) must keep signing with the legacy key — never crash
+        SecurityEventLog init before the fallback can run."""
+        key = b"k" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(key)
+        real_mkdir = Path.mkdir
+
+        def _deny_trust_mkdir(self, *args, **kwargs):  # noqa: ANN001
+            if self.name == "trust":
+                raise PermissionError(30, "Read-only file system", str(self))
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", _deny_trust_mkdir)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(Path, "mkdir", real_mkdir)
+        assert log._hmac_key == key
+        # Key stayed at (and is reported from) the legacy location.
+        assert (tmp_path / "sel_hmac.key").exists()
+        assert sel_hmac_key_path() == tmp_path / "sel_hmac.key"
+
+    def test_failed_replace_with_planted_destination_prefers_legacy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed os.replace while the legacy source STILL EXISTS must fall
+        back to the legacy key — never adopt a destination file that could
+        have been pre-planted (attacker forces the replace to fail, plants
+        known bytes at the destination)."""
+        legacy_key = b"l" * 32
+        planted_key = b"p" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(legacy_key)
+        (tmp_path / "trust").mkdir()
+        (tmp_path / "trust" / "sel_hmac.key").write_bytes(planted_key)
+        real_replace = os.replace
+
+        def _failing_replace(src, dst):
+            raise PermissionError("simulated forced replace failure")
+
+        monkeypatch.setattr(os, "replace", _failing_replace)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(os, "replace", real_replace)
+        assert log._hmac_key == legacy_key
+        # The accessor reports the file actually in use (legacy), so
+        # session_pid_sig never anchors on the planted destination.
+        assert sel_hmac_key_path() == tmp_path / "sel_hmac.key"
+
+    def test_migration_race_lost_uses_already_migrated_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two processes can race the legacy->trust migration: the loser's
+        os.replace fails AFTER the winner moved the key. The loser must pick up
+        the already-migrated key — never mint a fresh one that forks the
+        trust root."""
+        key = b"k" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(key)
+        real_replace = os.replace
+
+        def _racing_replace(src, dst):
+            # Simulate the sibling winning the race between our exists() check
+            # and our os.replace call: the key is already at the new path and
+            # the legacy source is gone.
+            real_replace(src, dst)
+            raise FileNotFoundError("simulated lost migration race")
+
+        monkeypatch.setattr(os, "replace", _racing_replace)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(os, "replace", real_replace)
+        assert log._hmac_key == key
+        assert sel_hmac_key_path() == tmp_path / "trust" / "sel_hmac.key"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+    def test_unremovable_planted_link_falls_back_to_legacy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Read-only config dir + planted trust link + legacy key: init must
+        fall back to the legacy key, never crash and never use the link."""
+        legacy_key = b"l" * 32
+        (tmp_path / "sel_hmac.key").write_bytes(legacy_key)
+        target = tmp_path / "agent-readable"
+        target.mkdir()
+        (tmp_path / "trust").symlink_to(target)
+
+        def _deny_unlink(path):
+            raise PermissionError(30, "Read-only file system", str(path))
+
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.unlink_link_or_junction", _deny_unlink
+        )
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log._hmac_key == legacy_key
+        assert sel_hmac_key_path() == tmp_path / "sel_hmac.key"
+        # Nothing was ever written through the planted link.
+        assert list(target.iterdir()) == []
+
+    def test_migrated_short_key_still_hard_fails(self, tmp_path: Path) -> None:
+        """Validation applies to the migrated file exactly as to a fresh one."""
+        (tmp_path / "sel_hmac.key").write_bytes(b"x" * 8)
+        with pytest.raises(RuntimeError, match="too short"):
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+
+    def test_key_bytes_accessor_returns_the_live_signing_key(
+        self, tmp_path: Path
+    ) -> None:
+        """The recovery path for the dependent protocol: SEL caches the
+        validated bytes at init, so they stay available when the file behind the
+        frozen resolved path no longer loads."""
+        from kiro_crew.sel import _sel_hmac_key_bytes
+
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert _sel_hmac_key_bytes() == log._hmac_key
+        # Still available after the file is gone — that is the whole point.
+        (tmp_path / "trust" / "sel_hmac.key").unlink()
+        assert _sel_hmac_key_bytes() == log._hmac_key
+
+    def test_key_bytes_accessor_is_none_without_a_live_singleton(self) -> None:
+        """The verifying MCP process has no singleton; it must get None rather
+        than a partially-constructed instance's attribute."""
+        from kiro_crew.sel import _sel_hmac_key_bytes
+
+        self._reset()
+        assert _sel_hmac_key_bytes() is None
+
+    def test_key_bytes_accessor_is_none_mid_construction(self) -> None:
+        """``__new__`` publishes the instance to ``_instance`` BEFORE ``__init__``
+        loads the key, so a concurrent reader can see an instance whose
+        ``_hmac_key`` does not exist yet. ``_initialized`` is the barrier that
+        makes that window return None instead of raising or yielding garbage."""
+        from kiro_crew.sel import SecurityEventLog as _SEL
+        from kiro_crew.sel import _sel_hmac_key_bytes
+
+        self._reset()
+        try:
+            _SEL.__new__(_SEL)  # publishes _instance, leaves _initialized False
+            assert _SEL._instance is not None
+            assert not getattr(_SEL._instance, "_initialized", False)
+            assert _sel_hmac_key_bytes() is None
+        finally:
+            self._reset()
+
+    def test_key_bytes_accessor_has_exactly_one_production_caller(self) -> None:
+        """Handing out raw trust-root bytes is safe only under the file-first
+        ordering its ONE caller enforces; a second caller would inherit none of
+        it. Pin the caller set rather than trusting the underscore."""
+        root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        callers = {
+            path
+            for path in root.rglob("*.py")
+            if path.name != "sel.py"
+            # encoding is explicit: the default is cp1252 on Windows, which
+            # cannot decode the non-ASCII bytes several sources contain.
+            and "_sel_hmac_key_bytes" in path.read_text(encoding="utf-8")
+        }
+        assert callers == {root / "session_pid_sig.py"}, (
+            f"_sel_hmac_key_bytes gained a caller outside session_pid_sig: {callers}"
+        )
+
+    def test_concurrent_first_construction_initializes_once(self, tmp_path: Path) -> None:
+        """``__new__`` publishes the instance BEFORE ``__init__`` runs, so two
+        threads arriving in between both see ``_initialized`` False. Unserialized,
+        both run the construction body and each can mint a fresh key — one wins
+        on disk while the other signs from different bytes in memory, splitting
+        the audit chain from the file every other process resolves.
+
+        Reachable because SEL is now constructed from worker threads (the
+        middleware deny audits offload via ``asyncio.to_thread``), where the
+        event loop no longer serializes callers for free.
+        """
+        self._reset()
+        calls: list[int] = []
+        real = SecurityEventLog._load_or_create_hmac_key
+
+        def counting(inst):
+            calls.append(1)
+            # Widen the window a real race would need, so an unlocked body
+            # reliably interleaves instead of passing by luck.
+            time.sleep(0.05)
+            return real(inst)
+
+        barrier = threading.Barrier(8)
+
+        def build():
+            barrier.wait()
+            SecurityEventLog(base_dir=tmp_path, sync=True)
+
+        with patch.object(SecurityEventLog, "_load_or_create_hmac_key", counting):
+            threads = [threading.Thread(target=build) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert len(calls) == 1, (
+            f"construction body ran {len(calls)} times; concurrent first "
+            "denials can mint competing trust-root keys"
+        )
+        inst = SecurityEventLog._instance
+        assert inst is not None and inst._initialized
+        assert inst._hmac_key == (tmp_path / "trust" / "sel_hmac.key").read_bytes()
+        self._reset()

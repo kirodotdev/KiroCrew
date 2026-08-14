@@ -4,7 +4,8 @@ const {
   OWNER,
   planTransition,
   canAgentControl,
-  chooseControlTransport,
+  isLoopbackUrl,
+  mayBootstrapView,
   createControlPlane,
 } = require("../browser-control");
 
@@ -89,25 +90,106 @@ test("gate: missing state fails closed", () => {
   assert.strictEqual(canAgentControl({}).allowed, false);
 });
 
-// ── chooseControlTransport (topology branch) ──
+// ── mayBootstrapView (the predicate that shipped broken) ──
 
-test("transport: streaming frames mean the browser is elsewhere -> proxy", () => {
+test("bootstrap: an absent view is the ONE refusal a navigate may tolerate", () => {
+  // The bootstrap is about to satisfy this precondition by opening a view.
   assert.strictEqual(
-    chooseControlTransport({ framesStreaming: true, nativeAvailable: true }),
-    "proxy",
+    mayBootstrapView(canAgentControl({ agentActEnabled: true, viewOpen: false })),
+    true,
   );
 });
 
-test("transport: native view with no frames -> native", () => {
-  assert.strictEqual(
-    chooseControlTransport({ framesStreaming: false, nativeAvailable: true }),
-    "native",
-  );
+test("bootstrap: no grant still refuses, even with no view open", () => {
+  // The regression this pins: reading a property the gate never returns made the
+  // verdict a constant. Both directions must be asserted — a constant-TRUE test
+  // passes the case above while letting an unauthorized bootstrap through here.
+  const verdict = canAgentControl({ agentActEnabled: false, viewOpen: false });
+  assert.strictEqual(verdict.reason, "agent-act-not-authorized");
+  assert.strictEqual(mayBootstrapView(verdict), false);
 });
 
-test("transport: no native view -> proxy", () => {
-  assert.strictEqual(chooseControlTransport({ nativeAvailable: false }), "proxy");
-  assert.strictEqual(chooseControlTransport(undefined), "proxy");
+test("bootstrap: an allowed verdict passes, and a malformed one fails closed", () => {
+  assert.strictEqual(
+    mayBootstrapView(canAgentControl({ agentActEnabled: true, viewOpen: true })),
+    true,
+  );
+  // A shape with neither `allowed` nor a recognised reason must not slip through.
+  assert.strictEqual(mayBootstrapView(undefined), false);
+  assert.strictEqual(mayBootstrapView({}), false);
+  assert.strictEqual(mayBootstrapView({ agentActEnabled: true }), false);
+});
+
+// ── consent seeding removed: Browser Mode is the agent's authorization ──
+
+test("gate: the agent path authorizes on Browser Mode alone — no per-session grant, view precondition still applies", () => {
+  // The "built-in browser is the default" change: the agent command channel's
+  // dispatch (main.js) now builds the gate with `agentActEnabled: true`
+  // unconditionally, because Browser Mode (the Settings toggle) is the agent's
+  // authorization to drive the built-in browser — security.py (~line 4236)
+  // documents it as keystone-level, "Presence alone is the authorization", and
+  // the browser_* tools only exist while it is on. Gating the built-in view
+  // behind a SECOND per-session grant gated a strictly weaker capability, so it
+  // was removed. This pins that contract at the gate primitive: with the grant
+  // modeled as always-on, an op is authorized with NO per-session consent state,
+  // yet the view precondition still gates it.
+  const agentGate = (viewOpen) => canAgentControl({ agentActEnabled: true, viewOpen });
+
+  // Authorized with a live view and no per-session grant anywhere.
+  assert.strictEqual(agentGate(true).allowed, true);
+
+  // The view precondition still applies — a closed view refuses with no-browser-view,
+  assert.deepStrictEqual(agentGate(false), { allowed: false, reason: "no-browser-view" });
+  // ...and that is the ONE refusal a navigate may satisfy by bootstrapping a view.
+  assert.strictEqual(mayBootstrapView(agentGate(false)), true);
+});
+
+test("loopback: local dev targets are exempt from the grant, real sites are not", () => {
+  // The grant protects an authenticated identity; a dev server has none, and
+  // cookies are host-scoped so navigating to localhost sends nobody's session.
+  for (const u of [
+    "http://localhost:5173/",
+    "http://127.0.0.1:8080/x",
+    "https://kirocrew.localhost/",
+    "http://[::1]:3000/",
+  ]) {
+    assert.strictEqual(isLoopbackUrl(u), true, u);
+    assert.strictEqual(
+      canAgentControl({ agentActEnabled: false, viewOpen: true, loopback: isLoopbackUrl(u) }).allowed,
+      true,
+      u,
+    );
+  }
+
+  // Anything that is not provably loopback stays gated — including lookalikes.
+  for (const u of [
+    "https://www.amazon.com/",
+    "http://localhost.evil.com/",
+    "http://notlocalhost/",
+    "file:///etc/passwd",
+    "",
+    "not a url",
+  ]) {
+    assert.strictEqual(isLoopbackUrl(u), false, u);
+    assert.strictEqual(
+      canAgentControl({ agentActEnabled: false, viewOpen: true, loopback: isLoopbackUrl(u) }).reason,
+      "agent-act-not-authorized",
+      u,
+    );
+  }
+});
+
+test("loopback: the exemption does not lift the view precondition", () => {
+  // Exempt from the GRANT is not exempt from needing a page to act on.
+  assert.deepStrictEqual(
+    canAgentControl({ agentActEnabled: false, viewOpen: false, loopback: true }),
+    { allowed: false, reason: "no-browser-view" },
+  );
+  // ...but a bootstrap may still proceed, since that is the refusal it satisfies.
+  assert.strictEqual(
+    mayBootstrapView(canAgentControl({ agentActEnabled: false, viewOpen: false, loopback: true })),
+    true,
+  );
 });
 
 // ── createControlPlane ──
@@ -264,6 +346,24 @@ test("plane: CDP navigation refuses non-web URLs (will-navigate cannot see it)",
   assert.strictEqual(wc.calls.filter((c) => c[1] === "Page.navigate").length, 0);
 });
 
+test("loopback: a remote gateway URL must never be polled with the local secret", () => {
+  // Regression (found by review): the agent command channel authenticates with THIS
+  // machine's internal secret, and reporting any session key is what makes it poll.
+  // A remote-connected window's backend URL is the REMOTE host, so polling it pushes
+  // the local secret through the tunnel to be rejected 403 — forever, since the poller
+  // retries, making the remote append one SEL denial per attempt without bound. This
+  // models main.js's `listPanelIds` guard: report keys only for a local gateway.
+  const ids = (backendUrl, keys) => (isLoopbackUrl(backendUrl) ? keys : []);
+
+  for (const local of ["http://127.0.0.1:5476", "http://localhost:7778/", "http://[::1]:5476"]) {
+    assert.deepStrictEqual(ids(local, ["chat-a"]), ["chat-a"], local);
+  }
+  // A remote host, and anything not provably local, reports nothing — fail closed.
+  for (const remote of ["http://dev-box.example.com:7879", "https://gw.internal/", "", undefined]) {
+    assert.deepStrictEqual(ids(remote, ["chat-a"]), [], String(remote));
+  }
+});
+
 test("plane: CDP navigation normalizes and forwards a web URL", async () => {
   const wc = fakeWc();
   const plane = createControlPlane({ getWebContents: () => wc });
@@ -322,4 +422,63 @@ test("plane: a throwing audit sink never breaks a transition", async () => {
   });
   const res = await plane.setOwner(OWNER.LIGHT, ALLOW);
   assert.strictEqual(res.changed, true);
+});
+
+// ── reuse across a view rebuild (the "close before a second op" bug) ──
+
+// A WebContents fake that models Chromium's debugger faithfully: `sendCommand`
+// THROWS unless the debugger is currently attached to THIS target, and each
+// target owns its own attach state. The shared `fakeWc()` above never checks
+// attach state on send, so it cannot surface a stale-attachment bug — this one
+// can. `id` is only for readability in failures.
+function realisticWc(id) {
+  let isAttached = false;
+  return {
+    id,
+    debugger: {
+      isAttached: () => isAttached,
+      attach() {
+        if (isAttached) throw new Error("Debugger is already attached to the target");
+        isAttached = true;
+      },
+      detach() {
+        isAttached = false;
+      },
+      async sendCommand(method) {
+        if (!isAttached) throw new Error("Debugger is not attached to the target");
+        return method === "Runtime.evaluate" ? { result: { value: 7 } } : {};
+      },
+    },
+  };
+}
+
+test("plane: reuse after the embedded view is rebuilt re-attaches instead of hitting a detached target", async () => {
+  // Reproduces the "must close the browser before a second operation" symptom.
+  // The embedded WebContentsView can be torn down and rebuilt under the control
+  // plane (panel reopened, session re-keyed, view recreated). The recorded owner
+  // stays LIGHT, but the debugger that was attached to the OLD view is gone with
+  // it. A second agent op re-requests LIGHT — a planTransition(LIGHT,LIGHT)
+  // no-op — so without re-validating the attachment the next CDP send lands on
+  // the NEW view's detached debugger and throws. Fully closing the panel is what
+  // "fixed" it for users, because that path resets the owner to NONE.
+  let current = realisticWc("A");
+  const plane = createControlPlane({ getWebContents: () => current });
+
+  await plane.setOwner(OWNER.LIGHT, ALLOW);
+  assert.strictEqual(await plane.evaluate("1+1"), 7, "first op drives view A");
+
+  // View A is destroyed; a fresh view B is mounted (new WebContents whose
+  // debugger is NOT attached). The control plane still records owner = LIGHT.
+  current = realisticWc("B");
+
+  // The next agent op re-requests LIGHT, exactly as main.js dispatch does.
+  const again = await plane.setOwner(OWNER.LIGHT, ALLOW);
+  assert.strictEqual(again.changed, false, "same logical owner");
+
+  // Must transparently reuse view B — not require the user to close first.
+  assert.strictEqual(
+    await plane.evaluate("1+1"),
+    7,
+    "second op must reuse the rebuilt view, not hit a detached target",
+  );
 });

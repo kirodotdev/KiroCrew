@@ -38,6 +38,20 @@ class TestParseLoginOutput:
         assert p.actionable is True
         assert p.already_logged_in is False
 
+    def test_prefers_complete_url_over_bare_verification_uri(self):
+        # kiro-cli prints the bare verification_uri FIRST and the code-embedded
+        # verification_uri_complete second. We must surface the complete one so the
+        # user deep-links to the approve screen instead of a generic sign-in page.
+        text = (
+            "To sign in, open:\n"
+            "  https://device.sso.us-east-1.amazonaws.com/\n"
+            "and enter code ABCD-1234, or open:\n"
+            "  https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-1234\n"
+        )
+        p = login.parse_login_output(text)
+        assert p.url == "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-1234"
+        assert p.code == "ABCD-1234"
+
     def test_already_logged_in(self):
         p = login.parse_login_output("You are already logged in as user@example.com")
         assert p.already_logged_in is True

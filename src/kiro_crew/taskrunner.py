@@ -1265,13 +1265,20 @@ class TaskRunner:
                     rule, category, negative, "task_runner",
                 )
             else:
-                self._lesson_store.save(
+                # Offloaded for the same reason as write_lesson above, and now
+                # necessarily so: LessonStore locks per PATH, so instances in
+                # different components share one lock. A dashboard writer holding
+                # it across its read-and-rewrite would stall this loop if save()
+                # ran here. The lock is what makes the write atomic, so the fix is
+                # to move the caller off the loop rather than to weaken it.
+                await asyncio.to_thread(
+                    self._lesson_store.save,
                     Lesson(
                         ts=datetime.now(tz=timezone.utc).isoformat(),
                         rule=rule,
                         category=category,
                         negative=negative,
-                    )
+                    ),
                 )
             logger.info("Lesson extracted from task %d: %s", task.index, rule)
             if run:

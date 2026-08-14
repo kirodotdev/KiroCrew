@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Callable
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import is_sensitive_path
@@ -18,7 +19,9 @@ from kiro_crew.sel import sel
 
 from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
-from .ingestion import DUPLICATE_JOB_STATUS
+from .ingestion import DUPLICATE_JOB_STATUS, run_to_completion
+from .kiroignore import KIROIGNORE_FILENAME
+from .kiroignore import load as load_kiroignore
 from .readers import FileReader
 
 logger = logging.getLogger(__name__)
@@ -28,8 +31,13 @@ logger = logging.getLogger(__name__)
 # per-file graph reload runs on the event loop and can stall it past the loop
 # watchdog (dist/assets/*.js was the motivating case). Dot-dirs (.cache, .next,
 # .venv) are already pruned separately by the startswith(".") rule in _walk.
+# ``cdk.out`` is the same churn with a cost attached rather than a stall: AWS CDK
+# rewrites hashed asset bundles and template JSON on every synth, so each build
+# presents megabytes of generated JSON as changed content and the scan pays a
+# fresh extraction call per chunk. Its name only CONTAINS a dot, so the
+# dot-prefix rule never prunes it, and the bare ``out`` entry does not match it.
 HARD_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                  "dist", "build", "out", "target"}
+                  "dist", "build", "out", "target", "cdk.out"}
 DEFAULT_MAX_FILES = 5000
 
 # How many times a file left in 'scanning' is retried before its row is retired to
@@ -55,12 +63,23 @@ SOURCE_TYPE_SKIP_DIRS: dict[str, set[str]] = {
     "obsidian_vault": {".obsidian", ".trash"},
 }
 
-# OS-generated temp / lock / junk files that are never real documents. Matched
-# case-insensitively against the file basename for every folder source type, in
-# addition to any per-source ignore_patterns. Without this, files that carry an
-# otherwise-supported extension are discovered, fail ingestion, and (since failed
-# files are never auto-retried) leave a source permanently stalled below 100%.
-# The motivating case: macOS AppleDouble sidecars (``._<name>.docx``).
+# Files that are never real documents, matched case-insensitively against the
+# file basename for every folder source type in addition to any per-source
+# ignore_patterns. Entries must therefore be lowercase.
+#
+# Two classes, for two different reasons:
+#
+# OS-generated temp / lock / junk files carry an otherwise-supported extension,
+# so they are discovered, fail ingestion, and -- since failed files are never
+# auto-retried -- leave a source permanently stalled below 100%. macOS
+# AppleDouble sidecars (``._<name>.docx``) are the common case.
+#
+# Dependency lock files ingest successfully, which is worse: they are large,
+# fully machine-generated, and answer no question a human would ask, yet every
+# chunk costs one extraction call and a regenerated lock file is billed again on
+# the next sweep. Several of them carry an extension no reader supports today,
+# so the glob is what keeps them out regardless of what ``FileReader.SUPPORTED``
+# accepts.
 DEFAULT_IGNORE_GLOBS: tuple[str, ...] = (
     "._*",            # macOS AppleDouble resource forks
     ".ds_store",      # macOS Finder metadata
@@ -77,6 +96,22 @@ DEFAULT_IGNORE_GLOBS: tuple[str, ...] = (
     "*.crdownload",   # incomplete browser downloads
     "*.part",
     "*.partial",
+    # Dependency lock files: generated resolution output, not documentation.
+    "package-lock.json",     # npm
+    "npm-shrinkwrap.json",
+    "yarn.lock",             # Yarn
+    "pnpm-lock.yaml",        # pnpm
+    "bun.lockb",             # Bun (binary and text forms)
+    "bun.lock",
+    "poetry.lock",           # Python
+    "uv.lock",
+    "pipfile.lock",
+    "cargo.lock",            # Rust
+    "gemfile.lock",          # Ruby
+    "composer.lock",         # PHP
+    "packages.lock.json",    # NuGet
+    "gradle.lockfile",       # Gradle
+    "flake.lock",            # Nix
 )
 
 
@@ -141,6 +176,18 @@ def _prop_int(value: object) -> int:
     if isinstance(value, float) and not math.isfinite(value):
         return 0
     return int(value) if value > 0 else 0
+
+
+def _rel_posix(rel_dir: str, name: str) -> str:
+    """Join a walk-relative directory and an entry name into a ``/``-separated path.
+
+    ``.kiroignore`` patterns are written with ``/``, so a Windows ``\\``-separated
+    relative path has to be normalised or every pattern carrying a separator
+    silently never matches.
+    """
+    if rel_dir in ("", "."):
+        return name
+    return f"{rel_dir.replace(os.sep, '/')}/{name}"
 
 
 #: Per-source property that overrides the configured folder budget. Separate from
@@ -443,7 +490,9 @@ class FolderWatcher:
                                attempts=prior_attempts + 1)
 
             item_ids, outcome = await self._ingest_file(
-                file_path, source_id, namespace, props, old_ids, root=uri)
+                file_path, source_id, namespace, props, old_ids, root=uri,
+                on_duplicate=lambda: self._record_deduped_state(
+                    source_id, file_path, content_hash, mtime, now))
             if item_ids is None:
                 # Ingestion failed. The 'scanning' marker above is only a crash hint,
                 # so it has to be replaced with a terminal status here rather than
@@ -462,10 +511,10 @@ class FolderWatcher:
                 # the Library under another source. 'deduped' -- the same status the
                 # dedup sweep writes -- records WHY the file has no item group, so a
                 # later scan can tell it apart from an ingest that produced nothing.
-                # The content_hash and mtime are stored with it, which is what lets
-                # an edit bring the file back into the scan.
-                self._update_state(source_id, file_path, content_hash, mtime, "[]", now,
-                                   "deduped", commit=False)
+                # The row itself was written by the ``on_duplicate`` finalizer above,
+                # inside the gate's own run-to-completion hop, because the gate has
+                # already committed by the time it reports back and a cancellation
+                # here would leave that commit unrecorded.
                 stats["skipped"] += 1
             else:
                 self._update_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False)
@@ -483,16 +532,34 @@ class FolderWatcher:
 
         self._flush_last_seen(last_seen_batch)
         self.store.db.commit()  # Batch commit for all non-crash-recovery updates
+        # Always report chunks consumed so the caller can track global budget.
+        stats["chunks_ingested"] = chunks_ingested
         # Targeted cross-source dedup for each newly ingested/changed file, so a folder
         # copy collapses any matching one-shot upload. O(k*n) over the k changed files
         # rather than a full O(n^2) corpus sweep (knowledge/dedup.py).
         if getattr(self.pipeline, "_dedup_enabled", True):
-            for fpath in ingested_paths:
-                try:
-                    dedup_document(self.store, source_id, file_path=fpath, apply=True)
-                except Exception:
-                    logger.debug("Per-file dedup skipped for %s", fpath, exc_info=True)
+            # Offloaded in ONE hop for all k files: dedup_document rebuilds the entire
+            # entity graph per collapse (_load_graph), so the cost scales with the
+            # corpus AND the number of duplicates found. Run inline it stalls the loop
+            # past the loop-stall watchdog on a large KB and the supervisor respawns
+            # straight into the same scan -- a crash loop. Mirrors the already-offloaded
+            # dedup sites in ingestion.py and watcher.py; the RLock-guarded graph plus
+            # thread-local sqlite connections make this thread-safe.
+            await asyncio.to_thread(self._dedup_ingested, source_id, ingested_paths)
         return stats
+
+    def _dedup_ingested(self, source_id: str, paths: list[str]) -> None:
+        """Targeted cross-source dedup for each freshly ingested path.
+
+        Synchronous by design and always reached through ``asyncio.to_thread`` --
+        it is the blocking half of the scan and must never run on the event loop.
+        One path's failure must not abandon the rest, so each is guarded.
+        """
+        for fpath in paths:
+            try:
+                dedup_document(self.store, source_id, file_path=fpath, apply=True)
+            except Exception:
+                logger.debug("Per-file dedup skipped for %s", fpath, exc_info=True)
 
     def _walk(self, root: str, ignore_patterns: list[str], extra_skip_dirs: set[str],
               include_extensions: set[str] | None = None,
@@ -521,6 +588,9 @@ class FolderWatcher:
         supported = FileReader.SUPPORTED
         results = []
         skip_dirs = HARD_SKIP_DIRS | extra_skip_dirs
+        # Root-level rules only, re-read each sweep so editing the file takes effect
+        # without touching the source's properties.
+        kiroignore = load_kiroignore(root)
         root_real = ""
         if confine_to_root:
             try:
@@ -529,15 +599,25 @@ class FolderWatcher:
                 return []
 
         for dirpath, dirnames, filenames in os.walk(root):
+            rel_dir = os.path.relpath(dirpath, root)
             # Prune skip dirs in-place.
             # Windows: the `.`-prefix hidden check is POSIX-centric — Windows marks
             # hidden via the NTFS hidden attribute, not a dotfile name, so some
             # dirs that are hidden on Windows aren't pruned (benign over-ingestion).
             # Tracked as follow-on work.
             dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+            if kiroignore is not None:
+                # Excluded directories are PRUNED, not filtered per file, so a huge
+                # generated tree (cdk.out, coverage output) is never descended.
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not kiroignore.is_ignored(_rel_posix(rel_dir, d), is_dir=True)]
 
-            rel_dir = os.path.relpath(dirpath, root)
             for fname in filenames:
+                # The rule file is configuration, not a document. Its extensionless
+                # name is in FileReader.SUPPORTED, so it would otherwise be indexed.
+                if rel_dir == "." and fname == KIROIGNORE_FILENAME:
+                    continue
                 # Skip OS-generated temp/lock/junk files (basename, case-insensitive)
                 if any(fnmatch(fname.lower(), pat) for pat in DEFAULT_IGNORE_GLOBS):
                     continue
@@ -546,6 +626,9 @@ class FolderWatcher:
                 # normalized before matching or every pattern containing a
                 # separator silently never matches on Windows.
                 if any(fnmatch(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
+                    continue
+                if kiroignore is not None and kiroignore.is_ignored(
+                        _rel_posix(rel_dir, fname), is_dir=False):
                     continue
                 # Extension filter
                 ext = Path(fname).suffix.lower()
@@ -590,6 +673,78 @@ class FolderWatcher:
         return row["error_message"] if row else None
 
     def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, commit: bool = True):
+        self._write_state_row(source_id, file_path, content_hash, mtime, item_ids, now,
+                              status, error_message, attempts=attempts)
+        if commit:
+            self.store.db.commit()
+
+    def _deduped_text_hash(self, content_hash: str) -> str | None:
+        """Text hash for a row the pre-ingest gate refused, or ``None``.
+
+        A refused row owns nothing, so it has no items to derive the text hash
+        from -- and it is exactly the row that later needs one, because releasing
+        its claim is what stops a folder being handed a document whose file is
+        gone. Take it from the byte-identical row it was refused against: equal
+        bytes through the same reader give equal text, so this is derived rather
+        than guessed. ``None`` when there is no sibling to derive from; the
+        ownership lookup coalesces to content_hash for such a row, which is the
+        right answer wherever it can be reached (the gate can only have refused a
+        plaintext file in that situation, and for plaintext the two are equal).
+        """
+        if not content_hash:
+            return None
+        sib = self.store.db.execute(
+            "SELECT text_hash FROM folder_file_state "
+            "WHERE content_hash = ? AND text_hash IS NOT NULL LIMIT 1",
+            (content_hash,)).fetchone()
+        return sib["text_hash"] if sib else None
+
+    def _surviving_group(self, source_id: str, file_path: str) -> list[str]:
+        """This file's group per :meth:`KnowledgeStore.surviving_group_in_txn`.
+
+        Never on the event loop, and only inside the caller's write transaction.
+
+        Returning empty is not proof that this source owns nothing for the
+        document. ``_adopt_reassigned_item`` matches a folder row on
+        ``COALESCE(text_hash, content_hash)``, and a refused row's ``text_hash``
+        is derived from a byte-identical sibling row -- so for a transformed file
+        (PDF, DOCX, HTML, where the bytes hash and the text hash differ) with no
+        such sibling, the adoption matches nothing and this read cannot see the
+        item. That gap predates this change: the terminal write was previously an
+        unconditional empty group, so the row never named the item either. Closing
+        it needs the incoming document's TEXT hash carried out of the gate rather
+        than guessed from a sibling, which is a change to what the gate reports and
+        does not belong here. ``test_deduped_state_write_recovers_a_transformed_
+        files_reassigned_item`` is an xfail pinning it. The aggregate tables store
+        the text hash in ``content_hash`` directly and do not have this gap.
+        """
+        return self.store.surviving_group_in_txn(
+            "folder_file_state", source_id, file_path)
+
+    def _record_deduped_state(self, source_id: str, file_path: str, content_hash: str,
+                              mtime: float, now: str) -> None:
+        """Terminal write for a file the pre-ingest gate refused.
+
+        Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the
+        gate's own ``BEGIN IMMEDIATE`` and on its worker thread. It therefore takes
+        no lock and no transaction of its own: the delete of the previous group, the
+        location claim on the holder's items, the terminal job row and this record
+        are one atomic unit. Nothing can observe a claim without the row that names
+        it, and nothing can interleave between them.
+
+        The group is DERIVED rather than assumed empty, because a
+        ``delete_source_cascade`` that committed BEFORE this transaction took the
+        lock may already have reassigned the surviving item here and adopted it into
+        this row. Predicting ``[]`` would erase that and leave the last copy owned
+        by this source but named by no row: unreachable by the deleted-file path,
+        and undeletable.
+        """
+        adopted = self._surviving_group(source_id, file_path)
+        self._write_state_row(
+            source_id, file_path, content_hash, mtime, json.dumps(adopted), now,
+            "done" if adopted else "deduped")
+
+    def _write_state_row(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
         # lookups have to relate this row to items, and items are keyed by the text
         # hash -- for a PDF or HTML file that is a different string from the bytes
@@ -607,23 +762,8 @@ class FolderWatcher:
                 "SELECT content_hash FROM items WHERE id = ?", (ids[0],)).fetchone()
             if row:
                 text_hash = row["content_hash"]
-        elif status == "deduped" and content_hash:
-            # A row refused by the pre-ingest gate owns nothing, so it has no items to
-            # derive the text hash from -- and it is exactly the row that later needs
-            # one, because releasing its claim is what stops a folder being handed a
-            # document whose file is gone. Take it from the byte-identical row it was
-            # refused against: equal bytes through the same reader give equal text, so
-            # this is derived rather than guessed.
-            sib = self.store.db.execute(
-                "SELECT text_hash FROM folder_file_state "
-                "WHERE content_hash = ? AND text_hash IS NOT NULL LIMIT 1",
-                (content_hash,)).fetchone()
-            if sib:
-                text_hash = sib["text_hash"]
-            # Left NULL when there is no sibling to derive from. The ownership lookup
-            # coalesces to content_hash for such a row, which is the right answer
-            # wherever it can be reached: the gate can only have refused a plaintext
-            # file in that situation, and for plaintext the two hashes are equal.
+        elif status == "deduped":
+            text_hash = self._deduped_text_hash(content_hash)
         # ``attempts`` defaults to 0, so every terminal write ('done', 'deduped',
         # 'failed') clears the retry budget as a side effect of not passing it: the
         # count only ever accumulates across consecutive 'scanning' markers, which is
@@ -631,8 +771,6 @@ class FolderWatcher:
         self.store.db.execute(
             "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message, attempts))
-        if commit:
-            self.store.db.commit()
 
     def _update_last_seen(self, source_id: str, file_path: str, now: str):
         self.store.db.execute(
@@ -670,28 +808,38 @@ class FolderWatcher:
     async def _handle_deleted(self, source_id: str, file_path: str, state: dict):
         """Archive items for a deleted file and remove state row."""
         item_ids = json.loads(state.get("item_ids", "[]"))
-        if item_ids:
-            # The file is gone from THIS folder; a copy another source holds survives.
-            self.store.delete_items_batch(item_ids, owner_source_id=source_id)
-        else:
-            # No group to detach -- which is exactly the case for a file that LOST a
-            # dedup: its row is 'deduped' with an empty group, while this source is
-            # still recorded as a location of the winner's items. That claim is what
-            # would later hand this source a document whose file is gone, so it is
-            # released by content hash. Nothing is deleted: the items are the winner's.
-            # The TEXT hash, not the bytes one: this resolves items, and for a PDF or
-            # HTML file the two differ.
-            self.store.detach_source_location_by_hash(
-                source_id, state.get("text_hash") or "")
-        self.store.db.execute(
-            "DELETE FROM folder_file_state WHERE source_id = ? AND file_path = ?",
-            (source_id, file_path))
-        self.store.db.commit()
+
+        def _archive_and_forget() -> None:
+            # ONE off-loop hop: delete_items_batch rebuilds the entity graph and
+            # cannot run on the loop, and the folder_file_state removal must
+            # travel with it -- a cancellation between the two would leave a
+            # state row pointing at item_ids that are already gone.
+            if item_ids:
+                # The file is gone from THIS folder; a copy another source holds survives.
+                self.store.delete_items_batch(item_ids, owner_source_id=source_id)
+            else:
+                # No group to detach -- which is exactly the case for a file that LOST a
+                # dedup: its row is 'deduped' with an empty group, while this source is
+                # still recorded as a location of the winner's items. That claim is what
+                # would later hand this source a document whose file is gone, so it is
+                # released by content hash. Nothing is deleted: the items are the winner's.
+                # The TEXT hash, not the bytes one: this resolves items, and for a PDF or
+                # HTML file the two differ.
+                self.store.detach_source_location_by_hash(
+                    source_id, state.get("text_hash") or "")
+            self.store.db.execute(
+                "DELETE FROM folder_file_state WHERE source_id = ? AND file_path = ?",
+                (source_id, file_path))
+            self.store.db.commit()
+
+        await run_to_completion(_archive_and_forget)
         logger.info("Deleted file removed: %s (%d items)", file_path, len(item_ids))
 
     async def _ingest_file(self, file_path: str, source_id: str, namespace: str, props: dict,
                            old_item_ids: list[str],
-                           root: str = "") -> tuple[list[str] | None, str]:
+                           root: str = "",
+                           on_duplicate: Callable[[], None] | None = None,
+                           ) -> tuple[list[str] | None, str]:
         """Ingest one file.
 
         Returns ``(item_ids, outcome)`` where *outcome* is ``"done"``,
@@ -751,7 +899,8 @@ class FolderWatcher:
             job_id = await self.pipeline.ingest_file(
                 resolved, source_id=source_id, namespace=namespace,
                 original_name=Path(file_path).name,
-                old_item_ids=old_item_ids)
+                old_item_ids=old_item_ids,
+                on_duplicate=on_duplicate)
 
             if job_id and (self.pipeline.get_job_status(job_id) or {}).get(
                     "status") == DUPLICATE_JOB_STATUS:

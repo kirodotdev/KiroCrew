@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from aiohttp import web
 
@@ -34,10 +35,12 @@ from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mi
 from kiro_crew.dashboard.chat_slack import list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, is_channel_session_key
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,27 @@ async def api_channel_targets(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("channel-targets: failed to enumerate %s", channel_type, exc_info=True)
     return web.json_response(targets)
+
+
+def _resumes_inbound(transport: Any) -> bool:
+    """Does a binding on this transport actually route replies back to the session?
+
+    Only a transport whose inbound path resolves the mirror binding may claim
+    ``accepts_inbound``. Discord's dispatcher looks the conversation up; the
+    others build a session key from the route and never consult the binding, so
+    a reply there runs in a SEPARATE session no matter what the binding says.
+    Claiming inbound for them would not make replies come back — it would only
+    make the dashboard say they do, and the slot row would report
+    ``direction: both`` on a promise nothing keeps.
+
+    Reads the capability rather than testing ``channel_type == "discord"``, so a
+    transport earns the claim by declaring it next to its own inbound path. The
+    ``getattr`` chain is the conservative branch: a transport with no capability
+    object at all degrades to outbound-only.
+    """
+    return bool(
+        getattr(getattr(transport, "capabilities", None), "supports_session_resume", False)
+    )
 
 
 async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
@@ -239,6 +263,51 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         thread_id=thread_id,
     )
 
+    # Refuse an occupied conversation BEFORE anything is posted into it. The
+    # authoritative check is the atomic one inside ``set_mirror_link`` at the
+    # bottom, but that fires only after the link notice and the whole catch-up
+    # transcript have already been delivered — and a binding can be unwound
+    # while posted messages cannot. So ask the same question here, at the first
+    # point the real location is known, and answer with the same 409.
+    #
+    # ``accepts_inbound`` is threaded through so this asks the writer's EXACT
+    # question. Without it the precheck would refuse where the writer allows —
+    # rejecting a second outbound-only mirror on transports that cannot resume at
+    # all, whose in-channel link handlers do not translate the refusal because
+    # they can never provoke it.
+    #
+    # Degrades open on anything it cannot interpret: a SessionManager double that
+    # lacks the accessor simply gets no precheck, and the writer still enforces.
+    # That trades a late refusal for a missing one, never a wrong binding.
+    #
+    # The ``isinstance`` is load-bearing, not defensive clutter. A stubbed
+    # SessionManager answers with a Mock, and a Mock is TRUTHY — read as a rival
+    # list it would refuse every connect in every test double's world, and the
+    # refusal would look like a real conflict. Only an actual list is an answer.
+    try:
+        rivals = state.sessions.mirror_claim_blockers(
+            session_key, link, accepts_inbound=_resumes_inbound(transport)
+        )
+    except Exception:
+        logger.debug("mirror-link: occupancy precheck unavailable", exc_info=True)
+        rivals = None
+    occupants = list(rivals) if isinstance(rivals, list) else []
+    if occupants:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.mirror_link",
+            outcome="denied",
+            source="dashboard",
+            resources=f"{slot.key} -> {channel_type}:{conversation_id} (occupied)",
+        )
+        return web.json_response(
+            {
+                "error": "another session is already linked to this conversation",
+                "code": "conversation_occupied",
+            },
+            status=409,
+        )
+
     try:
         # Recheck at the actual send boundary as well: target resolution can
         # yield while governance is updated.
@@ -384,10 +453,46 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         except Exception:
             logger.debug("mirror-link context delivery failed", exc_info=True)
 
-    state.sessions.set_mirror_link(
-        session_key,
-        link,
-    )
+    try:
+        with state.sessions.batched_save():
+            # An explicit bind is explicit intent to mirror, so it withdraws any
+            # standing refusal of the AUTOMATIC bind. Without this the two
+            # disagree: a channel that re-asserts its own conversation every turn
+            # would keep declining while the user is looking at a link they just
+            # made, and a later automatic pass would have to guess which of the
+            # two the user meant.
+            state.sessions.set_mirror_opt_out(session_key, False)
+            state.sessions.set_mirror_link(
+                session_key,
+                link,
+                # Mark the binding inbound-capable only where the transport's
+                # inbound path actually resolves it. Without this the connect
+                # writes an outbound-only binding, ``resumed_session`` skips it,
+                # and the user's reply starts a brand-new session with none of
+                # this transcript.
+                accepts_inbound=_resumes_inbound(transport),
+            )
+    except ConversationOwnershipConflict:
+        # The precheck above covers the common case; this is the genuine race —
+        # someone claimed the conversation while we were delivering. Report the
+        # same conflict rather than a 500, so the client offers "unlink there
+        # first" instead of inviting a retry of a request that is behaving
+        # correctly.
+        logger.info("mirror-link refused: conversation claimed during delivery")
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.mirror_link",
+            outcome="denied",
+            source="dashboard",
+            resources=f"{slot.key} -> {channel_type}:{conversation_id} (raced)",
+        )
+        return web.json_response(
+            {
+                "error": "another session claimed this conversation",
+                "code": "conversation_occupied",
+            },
+            status=409,
+        )
     sel().log_api_access(
         caller="dashboard",
         operation="chat.mirror_link",
@@ -400,6 +505,118 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     return web.json_response(
         {"ok": True, "channel_type": channel_type, "conversation_id": conversation_id}
     )
+
+
+async def api_chat_slot_mirror_pause(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{name}/mirror-pause — set whether turns reach the channel.
+
+    The channel-neutral twin of ``slack-pause``, and what the dashboard's single
+    row calls for a non-Slack channel. Body: ``{"paused": bool, "origin": bool}``,
+    ``paused`` defaulting to ``true``; it sets a state in both directions for the
+    same reason its Slack counterpart does — a session BORN in a channel has no
+    binding to re-establish, so reconnecting cannot go through the link endpoint.
+
+    ``origin`` says WHICH non-Slack delivery the row is, because a session can
+    hold two: the conversation it was born in and an explicit mirror binding. They
+    carry separate flags, so a session born in Discord that also mirrors to
+    Telegram can disconnect one without silencing the other. ``409`` when the
+    named one is not connected — answering ok would tell the UI it disconnected
+    something that was never connected.
+
+    The binding survives, so inbound routing is untouched and a reply still
+    resolves to THIS session; only the turn's outbound mirroring stops (see
+    ``chat_utils.mirror_is_paused`` for the exact scope). Written on the event
+    loop, matching the link writers in this module.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info.get("name") or request.match_info.get("slot", "")
+    slot = state.get_slot(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # Only an explicit boolean `false` connects; anything else disconnects, so
+    # ambiguous input fails toward the quiet side. Same rule as slack-pause.
+    paused = body.get("paused", True) is not False
+    # WHICH non-Slack delivery this row is: the conversation the session was born
+    # in, or an explicit mirror binding. A session can hold both at once and they
+    # mute independently, so the row tells us rather than us guessing from the
+    # channel type — which is identical for both.
+    origin = body.get("origin", False) is True
+
+    session_key = effective_session_key(slot)
+    link = state.sessions.get_mirror_link(session_key)
+    explicit_mirror = link is not None and link.channel_type != SLACK_NAMESPACE
+    # Checked against the delivery actually named. A Slack-only session
+    # synthesizes a Slack ChannelLink from its dedicated fields, which would pass
+    # a bare None-check and then mute nothing; Slack is disconnected through its
+    # own endpoint, so refusing here keeps the reply honest.
+    connected = is_channel_session_key(session_key) if origin else explicit_mirror
+    if not connected:
+        return web.json_response({"error": "not linked", "code": "mirror_not_linked"}, status=409)
+
+    # Coerced for the same reason as the Slack path: this lands in the response
+    # body, so a non-bool from a stubbed manager would 500 at the JSON boundary.
+    # On the loop, for the same reason as the Slack twin — see the note there:
+    # offloading picks ``_save``'s inline-write branch and holds ``_MAP_LOCK``
+    # across the write, which is what stalls the loop rather than what avoids it.
+    was_paused = bool(state.sessions.set_mirror_paused(session_key, paused, origin=origin))
+
+    # Same courtesy note as the Slack thread, for the same reason and under the
+    # same governance: a conversation that simply goes quiet cannot be told from a
+    # stalled one. Only on the transition, and only when a send target actually
+    # resolves — a channel-born session with no explicit binding has nothing this
+    # path can address, and a missing note is better than a failed send.
+    #
+    # Skipped entirely for an ORIGIN disconnect. ``_resolve_mirror_target``
+    # resolves the EXPLICIT mirror, which is a different conversation from the one
+    # being disconnected whenever a session holds both — so notifying from here
+    # would tell the mirror it had been disconnected when it is still connected.
+    # A silent origin disconnect is the honest outcome; addressing the born-in
+    # conversation is the channel handler's job, not this endpoint's.
+    if paused and not was_paused and not origin:
+        target = await asyncio.to_thread(_resolve_mirror_target, state, session_key)
+        if target is not None:
+            mirror_link, transport = target
+            note_permitted = False
+            try:
+                decision = await asyncio.to_thread(
+                    vet_and_audit,
+                    "channels",
+                    mirror_link.channel_type,
+                    session_key=session_key,
+                    tool_name="chat.mirror_disconnect_note",
+                    fail_closed=True,
+                )
+                note_permitted = bool(getattr(decision, "permitted", False))
+            except Exception:
+                logger.debug("disconnect note governance check failed", exc_info=True)
+                note_permitted = False
+            if note_permitted:
+                try:
+                    await transport.send_message(
+                        mirror_link.channel_id,
+                        "\U0001f50c _Disconnected — the conversation continues in the dashboard._",
+                        thread_id=mirror_link.thread_id,
+                    )
+                except Exception:
+                    logger.debug("disconnect note delivery failed", exc_info=True)
+
+    state.push_slots_update()
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.mirror_pause" if paused else "chat.mirror_resume",
+        outcome="noop" if was_paused == paused else "success",
+        source="dashboard",
+        resources=slot.key,
+    )
+    logger.info("mirror-pause: %s paused=%s (was=%s)", slot.key, paused, was_paused)
+    return web.json_response({"ok": True, "was_paused": was_paused, "paused": paused})
 
 
 async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:

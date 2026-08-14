@@ -166,6 +166,29 @@ class TestRemedyRecording:
         sb.reset_backend()
         assert sb.unavailable_remedy() == ""
 
+    def test_unavailable_reason_reads_the_same_recorded_failure(self) -> None:
+        # Sibling accessor: reason and remedy come from ONE recorded tuple, so a
+        # diagnostic surface can never pair failure A's text with failure B's fix.
+        sb._record_probe_failure(
+            False,
+            "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)",
+            sb.REMEDY_APPARMOR_USERNS,
+        )
+        assert sb.unavailable_reason() == "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"
+
+    def test_unavailable_reason_is_empty_when_the_last_probe_succeeded(self) -> None:
+        sb._record_probe_failure(False, "x", sb.REMEDY_APPARMOR_USERNS)
+        sb._last_unshare_failure = None
+        assert sb.unavailable_reason() == ""
+
+    def test_remedy_guidance_is_the_shared_guidance_text(self) -> None:
+        # The public accessor must serve the one shared prose table, so doctor
+        # and the dashboard can never drift from the mechanism's own guidance.
+        assert sb.remedy_guidance(sb.REMEDY_APPARMOR_USERNS) == sb._linux_remedy_guidance(
+            sb.REMEDY_APPARMOR_USERNS
+        )
+        assert sb.remedy_guidance("not-a-token") == ""
+
     def test_a_deferred_on_loop_probe_reports_no_remedy(self) -> None:
         """The synthetic on-loop transient describes no host mechanism.
 

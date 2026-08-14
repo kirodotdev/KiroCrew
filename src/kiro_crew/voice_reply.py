@@ -1,7 +1,8 @@
-"""KiroCrew voice reply — generate TTS audio and upload to Slack thread.
+"""Kiro Crew voice reply — generate TTS audio and deliver it to the requesting surface.
 
 Post-response hook: strips markdown, generates audio via the configured
-TTS provider (Amazon Polly or local Piper), uploads to the same Slack thread.
+TTS provider (Amazon Polly or local Piper), then delivers it back to the
+requesting surface (Slack thread upload, dashboard playback).
 Fire-and-forget — never blocks the text response.
 
 Supported providers:

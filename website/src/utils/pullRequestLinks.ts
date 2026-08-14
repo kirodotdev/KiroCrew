@@ -1,7 +1,7 @@
 import type { ChatMessage } from '../types'
 import { safeSetItem } from './safeStorage'
 
-export type PullRequestProvider = 'github' | 'gitlab'
+export type PullRequestProvider = 'github' | 'gitlab' | 'jira'
 
 /**
  * What a mentioned provider URL points at. 'change' is a pull request / merge
@@ -103,7 +103,21 @@ export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet
   )
 }
 
+/** Normalize the configured Jira hosts to a lookup set.
+ * Same normalization as gitlabHostSet — entries are exact `host[:port]` values
+ * from operator config (dashboard.jira_hosts). Atlassian Cloud instances
+ * (`*.atlassian.net`) are recognized automatically without listing, but
+ * self-hosted Jira/Data Center instances must be explicitly allowlisted here. */
+export function jiraHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
+  return new Set(
+    (hosts ?? [])
+      .map(host => host.trim().toLowerCase().replace(/:443$/, ''))
+      .filter(Boolean),
+  )
+}
+
 const NO_GITLAB_HOSTS: ReadonlySet<string> = new Set<string>()
+const NO_JIRA_HOSTS: ReadonlySet<string> = new Set<string>()
 
 /** GitLab path markers, in match order. Both a merge request and an issue live
  * under the project's `/-/` namespace and end in a numeric id, so the marker
@@ -131,6 +145,42 @@ function gitlabLink(origin: string, path: string): PullRequestLink | null {
   return null
 }
 
+/** Jira issue key pattern: 1-10 uppercase ASCII letters, a hyphen, then 1+ digits.
+ * Covers both `/browse/PROJ-123` and `/browse/PROJ-123?focusedId=...` paths. */
+const JIRA_KEY_RE = /^[A-Z][A-Z0-9]{0,9}-\d+$/
+
+function jiraLink(origin: string, path: string): PullRequestLink | null {
+  // Jira issues live at /browse/KEY-123 (classic) or /jira/browse/KEY-123
+  // (some Cloud paths include /jira prefix).
+  const browseIdx = path.indexOf('/browse/')
+  if (browseIdx < 0) return null
+  const keyPart = path.slice(browseIdx + '/browse/'.length)
+  // The key is the first path segment after /browse/ (ignore sub-paths).
+  const key = keyPart.split('/')[0].toUpperCase()
+  if (!JIRA_KEY_RE.test(key)) return null
+  // Extract the numeric part as the "number" — consistent with how GitHub/GitLab
+  // use the issue/MR number for chip display.
+  const dashIdx = key.lastIndexOf('-')
+  const number = Number(key.slice(dashIdx + 1))
+  // repo = project key (the letters before the dash), useful for chip label.
+  const repo = key.slice(0, dashIdx)
+  // Preserve any context-path prefix (e.g. /jira/browse/KEY or /custom/browse/KEY)
+  // so self-hosted Jira/Data Center installations open the correct endpoint.
+  const prefix = path.slice(0, browseIdx)
+  return {
+    url: `https://${origin}${prefix}/browse/${key}`,
+    provider: 'jira',
+    number,
+    repo,
+    kind: 'issue',
+  }
+}
+
+/** True when the host is an Atlassian Cloud instance (*.atlassian.net). */
+function isAtlassianCloudHost(host: string): boolean {
+  return host.endsWith('.atlassian.net') && host.length > '.atlassian.net'.length
+}
+
 /** GitHub's third path segment decides the kind: `/pull/12` vs `/issues/12`. */
 function githubSegmentKind(segment: string): SourceLinkKind | null {
   // An explicit comparison, not an object-literal lookup: a Record index also
@@ -146,6 +196,8 @@ function parseCandidate(
   raw: string,
   gitlabHosts: ReadonlySet<string> = NO_GITLAB_HOSTS,
   anyGitlabHost = false,
+  jiraHosts: ReadonlySet<string> = NO_JIRA_HOSTS,
+  anyJiraHost = false,
 ): PullRequestLink | null {
   // Trim trailing punctuation and markdown emphasis (**bold**, *italic*,
   // `code`, _underscore_, ~~strike~~) that the candidate scan may have
@@ -189,6 +241,10 @@ function parseCandidate(
   const rawHost = url.hostname.toLowerCase().replace(/\.+$/, '')
   const hostWithPort = url.port ? `${rawHost}:${url.port}` : rawHost
   if (anyGitlabHost || gitlabHosts.has(hostWithPort)) return gitlabLink(hostWithPort, path)
+  // Jira: Atlassian Cloud (*.atlassian.net) is recognized automatically;
+  // self-hosted Jira/Data Center instances require explicit allowlisting via
+  // dashboard.jira_hosts, matching the same discipline as self-hosted GitLab.
+  if (isAtlassianCloudHost(host) || anyJiraHost || jiraHosts.has(hostWithPort)) return jiraLink(hostWithPort, path)
   return null
 }
 
@@ -199,13 +255,30 @@ function parseCandidate(
  * time and re-validated by the backend. Applying the allowlist here would drop
  * every self-hosted URL from the seen set, so after a reload those MRs would look
  * new again and reopen the Changes panel. */
+/** Parse a STORED url with the same dual probe `isCanonicalStoredUrl` trusts.
+ *
+ * Two probes: the first with anyGitlabHost covers GitHub + GitLab (cloud +
+ * self-hosted), the second with anyJiraHost covers Jira (cloud + self-hosted).
+ * A single combined call cannot work because anyGitlabHost=true makes the
+ * GitLab self-hosted branch fire first for ANY unknown host — returning null
+ * for a /browse/ path and short-circuiting before the Jira check. Every reader
+ * of persisted urls must go through this one helper: a write-side probe that
+ * accepts what a read-side probe rejects silently drops the entry on reload
+ * (a revealed Jira issue vanished from the panel this way).
+ */
+function parseStoredCanonicalLink(value: string): PullRequestLink | null {
+  return parseCandidate(value, NO_GITLAB_HOSTS, true)
+    ?? parseCandidate(value, NO_GITLAB_HOSTS, false, NO_JIRA_HOSTS, true)
+}
+
 function isCanonicalStoredUrl(value: string): boolean {
-  return parseCandidate(value, NO_GITLAB_HOSTS, true)?.url === value
+  return parseStoredCanonicalLink(value)?.url === value
 }
 
 function linksInMessage(
   message: ChatMessage | undefined,
   gitlabHosts: ReadonlySet<string> = NO_GITLAB_HOSTS,
+  jiraHosts: ReadonlySet<string> = NO_JIRA_HOSTS,
   limit = MAX_PULL_REQUEST_SOURCES,
 ): AttributedLink[] {
   if (message?.role === 'streaming' || message?.role === 'chunk' || limit <= 0) return []
@@ -218,12 +291,60 @@ function linksInMessage(
   const content = typeof rawContent === 'string' ? rawContent : ''
   URL_CANDIDATE_RE.lastIndex = 0
   for (const match of content.matchAll(URL_CANDIDATE_RE)) {
-    const link = parseCandidate(match[0], gitlabHosts)
+    const link = parseCandidate(match[0], gitlabHosts, false, jiraHosts)
     if (!link || found.has(link.url)) continue
     found.set(link.url, { ...link, mentionedBy })
     if (found.size >= limit) break
   }
   return [...found.values()]
+}
+
+/** Parse ONE url into a source link, or null when it is not a pull request /
+ *  merge request / issue on a permitted host.
+ *
+ *  Exposed for callers that hold a url but no transcript — the sidebar chips,
+ *  whose links the BACKEND scanned out of the slot's messages. Going through the
+ *  same parser as the transcript extractor means such a caller gets the identical
+ *  canonical shape (canonicalised url, provider, number, repo, kind) instead of a
+ *  second, drifting hand-rolled one. */
+export function parseSourceLinkUrl(
+  url: string,
+  gitlabHosts: readonly string[] = [],
+  jiraHosts: readonly string[] = [],
+): PullRequestLink | null {
+  return parseCandidate(url, gitlabHostSet(gitlabHosts), false, jiraHostSet(jiraHosts))
+}
+
+/** Chip label for a GitHub / GitLab link, in each forge's own reference
+ *  convention: `owner/repo#123` for GitHub (issues and pull requests alike),
+ *  `group/project#123` for GitLab issues and `group/project!123` for merge
+ *  requests. The FULL project path (subgroups included) is recovered from the
+ *  parser's own canonical `url` — `repo` deliberately keeps only the last
+ *  segment for the sidebar chips, so it cannot label a chip unambiguously.
+ *  Derives from a url THIS module built, never from raw chat text; returns
+ *  null for Jira (which labels itself with the issue key) and for any shape
+ *  the parser would not have produced. */
+export function forgeChipLabel(link: PullRequestLink): string | null {
+  if (link.provider !== 'github' && link.provider !== 'gitlab') return null
+  let path: string
+  try {
+    path = new URL(link.url).pathname
+  } catch {
+    return null
+  }
+  if (link.provider === 'github') {
+    // Canonical shape: /owner/repo/(pull|issues)/N
+    const parts = path.split('/').filter(Boolean)
+    if (parts.length !== 4) return null
+    return `${parts[0]}/${parts[1]}#${link.number}`
+  }
+  // GitLab: the project path is everything before the /-/ marker.
+  for (const { marker } of GITLAB_MARKERS) {
+    const idx = path.lastIndexOf(marker)
+    if (idx <= 0) continue
+    return `${path.slice(1, idx)}${link.kind === 'change' ? '!' : '#'}${link.number}`
+  }
+  return null
 }
 
 function roleCount(found: Map<string, AttributedLink>, role: MentionRole): number {
@@ -252,11 +373,13 @@ function addLinks(
 export function extractPullRequestLinks(
   messages: ChatMessage[],
   gitlabHosts: readonly string[] = [],
+  jiraHosts: readonly string[] = [],
 ): PullRequestLink[] {
   const hosts = gitlabHostSet(gitlabHosts)
+  const jHosts = jiraHostSet(jiraHosts)
   const found = new Map<string, AttributedLink>()
   for (const message of messages) {
-    addLinks(found, linksInMessage(message, hosts))
+    addLinks(found, linksInMessage(message, hosts, jHosts))
     // Once MAX agent sources are captured, no further message can add an emitted
     // Change source, so stop scanning (user links past this point are moot).
     if (roleCount(found, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
@@ -289,20 +412,24 @@ export class PullRequestLinkIndex {
   private tailTransient = false
   private result: PullRequestLink[] = []
   private hosts: ReadonlySet<string> = NO_GITLAB_HOSTS
+  private jHosts: ReadonlySet<string> = NO_JIRA_HOSTS
   private hostsKey = ''
 
   update(
     slot: string | null,
     messages: ChatMessage[],
     gitlabHosts: readonly string[] = [],
+    jiraHosts: readonly string[] = [],
   ): PullRequestLink[] {
     // An operator adding a self-managed host mid-session must retro-detect the
     // MRs already in the transcript, so a changed allowlist forces a full
     // rescan rather than only applying to future messages.
     const hostsKey = [...gitlabHostSet(gitlabHosts)].sort().join(',')
+      + '|' + [...jiraHostSet(jiraHosts)].sort().join(',')
     if (hostsKey !== this.hostsKey) {
       this.hostsKey = hostsKey
       this.hosts = gitlabHostSet(gitlabHosts)
+      this.jHosts = jiraHostSet(jiraHosts)
       this.rebuild(slot, messages)
       return this.result
     }
@@ -325,7 +452,7 @@ export class PullRequestLinkIndex {
     if (appended) {
       if (!this.tailTransient) addLinks(this.settled, this.tail)
       for (let index = previousLength; index < nextLength - 1; index += 1) {
-        addLinks(this.settled, linksInMessage(messages[index], this.hosts))
+        addLinks(this.settled, linksInMessage(messages[index], this.hosts, this.jHosts))
         if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
       }
       this.setTail(messages[nextLength - 1])
@@ -346,7 +473,7 @@ export class PullRequestLinkIndex {
     this.messages = messages
     this.settled = new Map()
     for (let index = 0; index < Math.max(0, messages.length - 1); index += 1) {
-      addLinks(this.settled, linksInMessage(messages[index], this.hosts))
+      addLinks(this.settled, linksInMessage(messages[index], this.hosts, this.jHosts))
       if (roleCount(this.settled, 'agent') >= MAX_PULL_REQUEST_SOURCES) break
     }
     this.setTail(messages.at(-1))
@@ -355,7 +482,7 @@ export class PullRequestLinkIndex {
 
   private setTail(message: ChatMessage | undefined): void {
     this.tailTransient = message?.role === 'streaming' || message?.role === 'chunk'
-    this.tail = linksInMessage(message, this.hosts)
+    this.tail = linksInMessage(message, this.hosts, this.jHosts)
   }
 
   private materialize(): void {
@@ -383,6 +510,156 @@ export function recordNewPullRequestLinks(
   seenBySlot.delete(slot)
   seenBySlot.set(slot, seen)
   return hasNew
+}
+
+/** Per-slot, per-kind links a sidebar chip explicitly revealed into the panel. */
+export type RevealedSources = Record<string, Partial<Record<SourceLinkKind, PullRequestLink>>>
+
+const REVEALED_SOURCE_PREFIX = 'mc-pr-source-revealed:'
+
+/** `mc-pr-source-revealed:<kind>:<slot>` — kind first so the slot is the whole
+ *  remainder and needs no escaping, exactly like `selectionStorageKey`. */
+function revealedStorageKey(slot: string, kind: SourceLinkKind): string {
+  return `${REVEALED_SOURCE_PREFIX}${kind}:${slot}`
+}
+
+function parseRevealedStorageKey(key: string): { slot: string; kind: SourceLinkKind } | null {
+  if (!key.startsWith(REVEALED_SOURCE_PREFIX)) return null
+  const rest = key.slice(REVEALED_SOURCE_PREFIX.length)
+  const split = rest.indexOf(':')
+  if (split <= 0) return null
+  const kind = rest.slice(0, split)
+  const slot = rest.slice(split + 1)
+  if (!slot || slot.length > MAX_PERSISTED_SLOT_LENGTH) return null
+  if (kind !== 'change' && kind !== 'issue') return null
+  return { slot, kind }
+}
+
+interface StoredRevealed {
+  slot: string
+  kind: SourceLinkKind
+  link: PullRequestLink
+  at: number
+}
+
+/** Largest raw entry worth handing to JSON.parse — a url plus its `{u,t}` wrapper
+ *  with room to spare. Bounds the parse itself rather than only rejecting the url
+ *  afterwards. */
+const MAX_STORED_REVEALED_BYTES = MAX_PERSISTED_SOURCE_URL_LENGTH + 128
+/** Upper bound on a plausible recency stamp (2100-01-01Z). Storage is untrusted
+ *  and `Number.isFinite` alone admits `Number.MAX_VALUE`; because
+ *  `MAX_VALUE + 1 === MAX_VALUE`, such an entry could tie a genuine write and —
+ *  being earlier in a stable sort — cap the genuine one out. An absolute bound is
+ *  used rather than "not in the future" because a clock stepping BACKWARD is a
+ *  real scenario (`commitRevealedSource` guards it), and a future-relative rule
+ *  would make every previously-written real stamp look crafted. */
+const MAX_PLAUSIBLE_STAMP_MS = 4102444800000
+/** Highest stamp a genuine write may take. Strictly below the trusted ceiling so a
+ *  crafted entry sitting AT the ceiling is demoted rather than tying — otherwise 32
+ *  entries stamped exactly `MAX_PLAUSIBLE_STAMP_MS` would tie a clamped genuine
+ *  write and, being earlier in a stable sort, keep it out of the read cap. */
+const MAX_WRITABLE_STAMP_MS = MAX_PLAUSIBLE_STAMP_MS - 1
+
+/**
+ * Enumerate and validate every stored revealed link.
+ *
+ * ONE KEY PER FIELD, for the same reason the selection store next door uses one:
+ * a popped-out session shares this localStorage, and a whole-map write publishes
+ * this window's stale view of the slots it is not looking at — so the later write
+ * would delete a sibling window's reveal, and the reload it was meant to survive
+ * would silently swap the panel after all.
+ *
+ * Only the URL is stored, never the parsed shape: localStorage is untrusted, so
+ * every entry is re-derived by the same parser that built it. The host allowlist
+ * is deliberately NOT applied (same reasoning as `isCanonicalStoredUrl`): whether
+ * a host may be loaded was decided at reveal time and is re-validated by the
+ * backend, and applying it here would drop every self-hosted link because the
+ * allowlist arrives asynchronously from dashboard config.
+ */
+function readStoredRevealed(): StoredRevealed[] {
+  if (typeof localStorage === 'undefined') return []
+  const out: StoredRevealed[] = []
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key) continue
+      const parsedKey = parseRevealedStorageKey(key)
+      if (!parsedKey) continue
+      const raw = localStorage.getItem(key)
+      // Bound the parse, not just its result: an oversized value is rejected
+      // before JSON.parse rather than after the url check.
+      if (!raw || raw.length > MAX_STORED_REVEALED_BYTES) continue
+      let value: unknown
+      try {
+        value = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+      const { u, t } = value as { u?: unknown; t?: unknown }
+      if (typeof u !== 'string' || !u || u.length > MAX_PERSISTED_SOURCE_URL_LENGTH) continue
+      const link = parseStoredCanonicalLink(u)
+      // Re-derived, canonical, and its own parsed kind must agree with the key it
+      // was filed under — a 'change' key holding an issue url would inject into
+      // the panel the other kind owns.
+      if (!link || link.url !== u || link.kind !== parsedKey.kind) continue
+      // A stamp is trusted for RECENCY only within a plausible range; outside it
+      // the entry keeps its link but forfeits recency and sorts oldest, so a
+      // crafted stamp cannot displace a genuine reveal from the read cap.
+      const trusted = typeof t === 'number'
+        && Number.isFinite(t)
+        && t >= 0
+        && t < MAX_PLAUSIBLE_STAMP_MS
+      out.push({ ...parsedKey, link, at: trusted ? (t as number) : 0 })
+    }
+  } catch {
+    // Enumerating storage can throw in locked-down environments.
+    return out
+  }
+  return out
+}
+
+/** Restore revealed links, capped on READ to the most recently written slots.
+ *
+ *  The cap is applied here and nothing deletes another slot's key, for the reason
+ *  `loadSourceSelections` documents at length: a prune pass computes its doomed
+ *  set from a walk, and a sibling window can refresh one of those slots before the
+ *  removals run. */
+export function loadRevealedSources(): RevealedSources {
+  const stored = readStoredRevealed()
+  const newest = new Map<string, number>()
+  for (const entry of stored) {
+    newest.set(entry.slot, Math.max(newest.get(entry.slot) ?? 0, entry.at))
+  }
+  const keep = new Set(
+    [...newest.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_PERSISTED_SOURCE_SLOTS).map(([slot]) => slot),
+  )
+  const out: RevealedSources = {}
+  for (const entry of stored) {
+    if (!keep.has(entry.slot)) continue
+    out[entry.slot] = { ...out[entry.slot], [entry.kind]: entry.link }
+  }
+  return out
+}
+
+/** Persist ONE revealed link. Never touches another slot's or kind's key. */
+export function commitRevealedSource(
+  slot: string | null,
+  kind: SourceLinkKind,
+  url: string,
+): boolean {
+  if (!slot || slot.length > MAX_PERSISTED_SLOT_LENGTH) return false
+  if (typeof localStorage === 'undefined') return false
+  if (url.length > MAX_PERSISTED_SOURCE_URL_LENGTH || !isCanonicalStoredUrl(url)) return false
+  // Never stamp below what is already stored: a clock stepping BACKWARD (an NTP
+  // correction, a resumed VM) would otherwise sort a brand-new reveal below the
+  // read cap. Mirrors `commitSourceSelection`.
+  const newestAt = readStoredRevealed().reduce((max, entry) => Math.max(max, entry.at), 0)
+  // Clamped BELOW the reader's trusted ceiling, so a write can never produce a
+  // stamp its own reader would discard, and a crafted at-the-ceiling entry cannot
+  // tie it.
+  const at = Math.min(Math.max(Date.now(), newestAt + 1), MAX_WRITABLE_STAMP_MS)
+  return safeSetItem(revealedStorageKey(slot, kind), JSON.stringify({ u: url, t: at }))
 }
 
 /**

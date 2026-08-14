@@ -5,7 +5,7 @@ Build, install, and run your first KiroCrew app in 5 minutes.
 ## Prerequisites
 
 - KiroCrew installed and running (`kirocrew gateway`)
-- Node.js 18+ (for apps with UI)
+- Node.js 22+ (24 LTS recommended) (for apps with UI)
 
 ## 1. Create an App Directory
 
@@ -175,6 +175,27 @@ Available in `@kirocrew/app-sdk`:
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
 | `useChatLauncher()` | Navigate to chat with optional agent and message |
+
+## Chat Marker Protocol
+
+Also in `@kirocrew/app-sdk`, for an app that renders agent messages itself. An agent puts follow-up
+choices and steer acknowledgements inline in its prose (`[OPTIONS: a | b]`,
+`[STEERING steer-<id>: …]`); these parse them out so your UI can show buttons instead of raw syntax.
+
+| Export | Purpose |
+|--------|---------|
+| `parseOptions(content)` | Split the prose from the choices offered with it |
+| `deriveFollowUpOptions(messages, isStreaming)` | The choices that still apply to the conversation |
+| `extractSteeringAcks(content)` | Pull the steer acknowledgement out of the text |
+| `stripPartialOptionMarker(text)` | Hide a marker that is still arriving mid-stream |
+
+Types: `ParsedOptions`, `FollowUpDerivation`, `ChatMessage`. React-free, so it also works in a worker
+or a test. Worked examples: [api-reference.md](api-reference.md#chat-marker-protocol).
+
+To render a transcript rather than parse one, `ChatMessageList` draws it and its row
+**registry** lets you add a row type or replace one without forking the list — including the
+roles the dashboard leaves undrawn. See
+[api-reference.md](api-reference.md#chat-transcript-rendering).
 
 ## Shared UI Components
 

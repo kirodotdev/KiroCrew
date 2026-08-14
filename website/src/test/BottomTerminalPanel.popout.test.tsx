@@ -60,7 +60,9 @@ describe('TerminalTabsView dock variant — pop out', () => {
     const second = addTab()
     renderWithProviders(<TerminalTabsView variant="dock" />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Pop out to window' }))
+    // Pop-out now lives inside the overflow dropdown menu
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Pop out to window' }))
 
     // The popout window opened…
     expect(openPopout).toHaveBeenCalledTimes(1)
@@ -79,7 +81,9 @@ describe('TerminalTabsView dock variant — pop out', () => {
     addTab()
     renderWithProviders(<TerminalTabsView variant="dock" />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Pop out to window' }))
+    // Pop-out now lives inside the overflow dropdown menu
+    await userEvent.click(screen.getByRole('button', { name: 'More actions' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Pop out to window' }))
 
     expect(openPopout).toHaveBeenCalledTimes(1)
     expect(disposeTerminalConnection).not.toHaveBeenCalled()

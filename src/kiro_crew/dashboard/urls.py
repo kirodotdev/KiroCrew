@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import os
 import socket
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,27 @@ def is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def dashboard_socket_path(port: int) -> Path:
+    """Path of the dashboard internal-API unix socket for *port*.
+
+    Both the server (``dashboard/server`` binds a ``web.UnixSite`` here) and
+    the client (``mcp_core`` prefers this transport when the file exists) must
+    agree on the path, so it is computed in exactly one place. The name is
+    port-suffixed because the data home can be shared by multiple gateway
+    instances on different ports (the instances feature): each instance binds
+    its own socket, and a client resolving its port from ``dashboard.url``
+    reaches the same logical endpoint it would have reached over TCP.
+
+    The ``config`` import is deliberately lazy: this module is a stdlib-only
+    leaf on the hot CLI / MCP-stdio import path (see the module docstring),
+    and only callers that actually use the unix transport should pay for
+    config resolution.
+    """
+    from kiro_crew.config.loader import config_dir
+
+    return config_dir() / f"dashboard-{int(port)}.sock"
 
 
 # ---------------------------------------------------------------------------

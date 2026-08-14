@@ -41,8 +41,9 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
 
     // Local + the relayed instance tab both render.
-    expect(screen.getByRole('tab', { name: /Local/ })).toBeTruthy()
-    const cloud = screen.getByRole('tab', { name: /Cloud One/ })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(screen.getByRole('menuitemradio', { name: /Local/ })).toBeTruthy()
+    const cloud = screen.getByRole('menuitemradio', { name: /Cloud One/ })
     expect(cloud).toBeTruthy()
 
     await userEvent.click(cloud)
@@ -51,7 +52,8 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       '*',
     )
 
-    await userEvent.click(screen.getByRole('tab', { name: /Local/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Local/ }))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-switch-instance', id: null }),
       '*',
@@ -63,7 +65,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       instances: { warm: {}, activeId: null, mru: [], unread: {}, host: null },
     })
     const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
-    expect(container.querySelector('[role="tablist"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Remote crews"]')).toBeNull()
   })
 })
 

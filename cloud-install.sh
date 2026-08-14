@@ -52,6 +52,13 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# Privilege prefix for package installs: empty when already root (a minimal
+# CentOS / container image often has no `sudo` binary, and invoking it would
+# abort the installer under `set -e` with command-not-found), empty when sudo
+# is simply absent, else `sudo`.
+SUDO=""
+if [ "$(id -u)" != "0" ] && has sudo; then SUDO="sudo"; fi
+
 echo
 echo "  ${MAGENTA}${BOLD}KiroCrew — run on your own AWS${RESET}"
 echo "  ${DIM}Platform: $OS $ARCH${RESET}"
@@ -67,11 +74,17 @@ if [ -z "$PY" ]; then
         info "Installing the Xcode command-line tools (provides python3)…"
         xcode-select --install 2>/dev/null || true
         warn "Finish the Xcode CLT install if prompted, then re-run this script."
-    elif has apt-get; then sudo apt-get update -qq && sudo apt-get install -y python3 python3-venv python3-pip
-    elif has dnf; then sudo dnf install -y python3 python3-pip
+    elif has apt-get; then $SUDO apt-get update -qq && $SUDO apt-get install -y python3 python3-venv python3-pip
+    elif has dnf; then $SUDO dnf install -y python3.11 python3.11-pip 2>/dev/null || $SUDO dnf install -y python3 python3-pip
+    elif has yum; then $SUDO yum install -y python3 python3-pip
     elif has brew; then brew install python@3.12
     fi
-    for c in python3.12 python3.11 python3.10 python3; do has "$c" && PY="$c" && break; done
+    # Re-probe with the same >=3.10 gate as above -- a bare existence check would
+    # wrongly latch onto a distro's default python3 (RHEL/CentOS 7 = 3.6,
+    # Amazon Linux 2023 = 3.9), which then fails later at pip/venv.
+    for c in python3.12 python3.11 python3.10 python3; do
+        if has "$c" && "$c" -c 'import sys; assert sys.version_info>=(3,10)' 2>/dev/null; then PY="$c"; break; fi
+    done
 fi
 [ -n "$PY" ] || { warn "Python 3.10+ required. Install it and re-run."; exit 1; }
 ok "$($PY --version 2>&1)"

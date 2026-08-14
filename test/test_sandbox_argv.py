@@ -34,6 +34,15 @@ from kiro_crew.sandbox import (
 # don't starve each other / blow the 30s timeout. Requires --dist loadgroup.
 pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 
+# ``_build_launcher_script`` calls POSIX-only ``os.getuid``/``os.getgid`` (the
+# namespace launcher is Linux-only), so any test that builds the launcher script
+# raises AttributeError on Windows. Skip those on win32 -- the reduced-scope
+# Windows CI lane runs them, but they pass in the full POSIX suite. See #2041.
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
+)
+
 
 @pytest.fixture(autouse=True)
 def clean_backend(monkeypatch):
@@ -275,12 +284,14 @@ class TestBuildSeatbeltProfile:
 
 
 class TestBuildLauncherScript:
+    @_POSIX_ONLY
     def test_strict_script_contains_dirs(self):
         script = _build_launcher_script("strict")
         assert "SENSITIVE_DIRS" in script
         assert ".aws" in script
         assert ".gnupg" in script
 
+    @_POSIX_ONLY
     def test_strict_script_denies_namespace_escape_not_hardlinks(self):
         """Linux seccomp deny list must contain the namespace-escape syscalls
         (mount/umount2/unshare/setns/pivot_root) and must NOT contain
@@ -297,11 +308,13 @@ class TestBuildLauncherScript:
         assert "308, 155, 86, 265)" not in script
         assert "268, 41, 37)" not in script
 
+    @_POSIX_ONLY
     def test_standard_script_excludes_aws(self):
         script = _build_launcher_script("standard")
         # Standard dirs don't include .aws
         assert "HIDE_SSH = False" in script
 
+    @_POSIX_ONLY
     def test_auth_staging_is_hidden_except_for_trusted_auth_spawn(self):
         home = Path.home()
         staging = home / ".kiro" / "crew-auth-staging"
@@ -328,6 +341,7 @@ class TestBuildLauncherScript:
         assert str(data_home) in auth_script
         assert str(data_home) in auth_profile
 
+    @_POSIX_ONLY
     def test_a_file_valued_hidden_path_reaches_the_file_loop(self, tmp_path):
         """A hidden path that is a FILE must reach ``SENSITIVE_FILES``.
 
@@ -392,6 +406,7 @@ class TestBuildLauncherScript:
             f"_build_launcher_script stats the filesystem on the event loop: {probes}"
         )
 
+    @_POSIX_ONLY
     def test_every_sensitive_path_reaches_a_loop_that_can_hide_it(self):
         """Whole-list check against the real sensitive-path list.
 
@@ -413,16 +428,19 @@ class TestBuildLauncherScript:
             assert path in dirs, f"{path} never reaches the directory loop"
             assert path in files, f"{path} never reaches the file loop"
 
+    @_POSIX_ONLY
     def test_cc_script_exposes_aws_config(self):
         script = _build_launcher_script("cc")
         assert ".aws/config" in script
         assert "EXPOSE_FILES" in script
 
+    @_POSIX_ONLY
     def test_script_scrubs_env_vars(self):
         script = _build_launcher_script("strict")
         for prefix in _SENSITIVE_ENV_PREFIXES:
             assert prefix in script
 
+    @_POSIX_ONLY
     def test_strips_self_dir_before_ctypes_import(self):
         """The sys.path hardening must run before the first shadowable import.
 
@@ -436,6 +454,7 @@ class TestBuildLauncherScript:
         # sys must be imported first (it is a builtin and cannot be shadowed).
         assert script.index("import sys") < script.index("sys.path[:]")
 
+    @_POSIX_ONLY
     def test_launcher_has_no_unimportable_kiro_crew_refs(self):
         """The launcher runs as a standalone ~/.kirocrew/run script with the
         launcher dir scrubbed from sys.path, so it CANNOT import kiro_crew.
@@ -470,6 +489,103 @@ class TestBuildLauncherScript:
             ), f"{level}: launcher references un-importable module(s) {forbidden}"
 
 
+@_POSIX_ONLY
+class TestHardlinkScanBudget:
+    """Step-7 pre-exec hardlink scan: per-root budgets + loud truncation.
+
+    The launcher needs ``unshare`` so it cannot run end-to-end in CI; these
+    are text/compile assertions on the generated script, the same pattern as
+    the other launcher-script tests above. A single budget shared across the
+    CWD and /tmp walks let a large worktree consume the whole budget before
+    /tmp (the world-writable root the check exists for) was scanned at all,
+    and an exhausted budget fell through to exec silently — a truncated scan
+    was indistinguishable from a clean one.
+    """
+
+    def test_shared_budget_counter_is_gone(self):
+        script = _build_launcher_script("strict")
+        assert "_scan_count > _MAX_SCAN" not in script
+        assert "_scan_count" not in script
+
+    def test_only_aliased_credential_inodes_arm_the_walk(self):
+        # An inode with st_nlink == 1 has no alias anywhere on the
+        # filesystem, so it must not enter the match set: when every
+        # credential has nlink == 1 the CWD + /tmp walk is skipped and the
+        # common healthy-host spawn pays nothing (and emits no truncation
+        # warning). Both collection loops (SENSITIVE_DIRS and
+        # SENSITIVE_FILES) carry the gate.
+        script = _build_launcher_script("strict")
+        assert script.count("if _st.st_nlink > 1:") == 2
+
+    def test_per_root_budget_covers_a_busy_tmp(self):
+        # The budget only applies once a credential inode is actually
+        # aliased (see the nlink gate above), so it can afford to be
+        # generous: 100k covers the busiest observed /tmp (~11.8k files)
+        # with an order of magnitude to spare, making truncation genuinely
+        # exceptional rather than a steady-state warning.
+        script = _build_launcher_script("strict")
+        assert "_MAX_SCAN_PER_ROOT = 100000" in script
+
+    def test_per_root_budget_with_counter_reset_inside_root_loop(self):
+        script = _build_launcher_script("strict")
+        assert "_MAX_SCAN_PER_ROOT" in script
+        # The counter reset must be a DIRECT child of the per-root loop body:
+        # each root gets exactly one fresh budget, so a large CWD cannot
+        # starve the /tmp scan. AST-based, because a byte-offset check cannot
+        # tell this apart from a reset nested inside the os.walk loop (which
+        # would reset per-directory and make the scan effectively unbounded).
+        root_loops = [
+            node
+            for node in ast.walk(ast.parse(script))
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_scan_root"
+        ]
+        assert len(root_loops) == 1
+        direct_assigns = [
+            stmt
+            for stmt in root_loops[0].body
+            if isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_root_scanned"
+                for t in stmt.targets
+            )
+        ]
+        assert len(direct_assigns) == 1, (
+            "_root_scanned reset must sit directly in the per-root loop body"
+        )
+
+    def test_truncation_warns_on_stderr_without_exiting(self):
+        script = _build_launcher_script("strict")
+        assert "hardlink scan truncated" in script
+        assert "scan incomplete" in script
+        # The diagnostic goes to stderr, which the parent already captures.
+        warn_idx = script.index("hardlink scan truncated")
+        stderr_idx = script.index("file=sys.stderr", warn_idx)
+        # Deliberate fail-open: the truncation path warns, it never exits.
+        assert "sys.exit" not in script[warn_idx:stderr_idx]
+
+    def test_blocked_exit_path_for_found_hardlinks_still_present(self):
+        script = _build_launcher_script("strict")
+        assert "sandbox: BLOCKED — found hardlink" in script
+
+    def test_no_directory_pruning_in_the_scan(self):
+        # /tmp is world-writable and the sandboxed agent shares the uid, so
+        # any name- or prefix-based prune list is a deterministic bypass: the
+        # attacker just names their directory to match. The scan must visit
+        # every directory the depth limit allows; noisy trees are handled by
+        # the per-root budget + truncation warning, never by skipping.
+        script = _build_launcher_script("strict")
+        assert "_SKIP_TMP_DIR_PREFIXES" not in script
+
+    def test_generated_script_compiles_at_every_level(self):
+        # Proves the f-string brace escaping in the template produced
+        # syntactically valid Python for every sandbox level.
+        for level in ("strict", "standard", "cc"):
+            compile(_build_launcher_script(level), "<launcher>", "exec")
+
+
+@_POSIX_ONLY
 class TestLauncherStdlibShadowing:
     """End-to-end: a sibling /tmp/struct.py must NOT crash the launcher.
 
@@ -586,6 +702,7 @@ class TestSignalBroadcastGuard:
     mechanism (session identity, claim-push, systemd) — stays intact.
     """
 
+    @_POSIX_ONLY
     def test_launcher_script_contains_kill_filter(self):
         """Static: the generated launcher carries the kill-broadcast filter
         (arg-inspection block) and per-arch kill syscall numbers."""
@@ -600,6 +717,7 @@ class TestSignalBroadcastGuard:
         assert "0, 0, 20))" not in script
         assert "0xFFFFFFFF" in script  # 32-bit pid -1 comparison
 
+    @_POSIX_ONLY
     def test_launcher_script_exports_host_pid(self):
         """Static: launcher exports KIROCREW_HOST_PID before fork so the
         whole subtree can resolve session_pid files by the recorded pid."""
@@ -730,6 +848,7 @@ class TestSandboxExecArgv:
                 os.unlink(profile_path)
 
 
+@_POSIX_ONLY
 class TestNamespaceArgv:
     @patch("kiro_crew.sandbox._resolve_agent_executable", return_value="/usr/local/bin/kiro-cli")
     def test_wraps_with_python_launcher(self, mock_resolve):
@@ -1264,6 +1383,354 @@ class TestCgroupScopeArgv:
             assert out.stdout.strip() == "hit-limit"
         finally:
             self._reset_probe()
+
+
+class TestAgentsSliceLimits:
+    """ensure_agents_slice_limits() puts an AGGREGATE MemoryMax/TasksMax on
+    kirocrew-agents.slice — the parent of every per-spawn scope — so N
+    concurrent scopes cannot collectively request N x 65% of host RAM while
+    each stays inside its own per-scope ceiling."""
+
+    def _reset(self):
+        import kiro_crew.sandbox as sb
+
+        sb._CGROUP_SCOPE_PROBE = None
+        sb._CGROUP_WARNED = False
+        sb._SLICE_LIMITS_APPLIED = False
+        sb._SLICE_OOM_SEEN = None
+
+    def test_applies_runtime_property_once_idempotent(self):
+        """One systemctl invocation with the exact property set; a second call
+        is a no-op returning True (idempotent across restarts of the caller).
+        argv[0] must be the TRUSTED absolute path, never a bare name PATH
+        could resolve to an agent-planted shim."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            run_mock = MagicMock(return_value=MagicMock(returncode=0, stderr=""))
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch("kiro_crew.sandbox._slice_limits_from_config", return_value=(10000, 32768)),
+                patch(
+                    "kiro_crew.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemctl",
+                ),
+                patch("kiro_crew.sandbox.subprocess.run", run_mock),
+            ):
+                assert sb.ensure_agents_slice_limits() is True
+                assert sb.ensure_agents_slice_limits() is True
+            assert run_mock.call_count == 1
+            argv = run_mock.call_args[0][0]
+            assert argv == [
+                "/usr/bin/systemctl",
+                "--user",
+                "set-property",
+                "--runtime",
+                "kirocrew-agents.slice",
+                "MemoryMax=10000M",
+                "MemorySwapMax=0",
+                "TasksMax=32768",
+            ]
+        finally:
+            self._reset()
+
+    def test_no_trusted_systemctl_means_no_apply(self):
+        """PATH is never consulted: when no trusted systemctl exists, the
+        ceiling is skipped (returns False), not resolved through PATH."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            run_mock = MagicMock()
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch("kiro_crew.platform_compat.trusted_system_bin", return_value=None),
+                patch("kiro_crew.sandbox.subprocess.run", run_mock),
+            ):
+                assert sb.ensure_agents_slice_limits() is False
+            run_mock.assert_not_called()
+        finally:
+            self._reset()
+
+    def test_skipped_when_unavailable_and_no_second_warning(self, caplog):
+        """No delegation -> no systemctl call, and the slice site plus the
+        per-spawn site together emit exactly ONE SECURITY warning."""
+        import logging
+
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            run_mock = MagicMock()
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(False, "not Linux")),
+                patch("kiro_crew.sandbox.subprocess.run", run_mock),
+                caplog.at_level(logging.WARNING, logger="kiro_crew.sandbox"),
+            ):
+                assert sb.ensure_agents_slice_limits() is False
+                out = sb.cgroup_scope_argv(["git", "status"])
+            run_mock.assert_not_called()
+            assert out == ["git", "status"]
+            security = [r for r in caplog.records if "SECURITY" in r.getMessage()]
+            assert len(security) == 1
+        finally:
+            self._reset()
+
+    def test_failed_apply_is_retried_next_call(self):
+        """A nonzero rc leaves the ceiling unapplied — the next call retries
+        rather than caching the failure as success."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            run_mock = MagicMock(return_value=MagicMock(returncode=1, stderr="boom"))
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch("kiro_crew.sandbox._slice_limits_from_config", return_value=(10000, 32768)),
+                patch(
+                    "kiro_crew.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemctl",
+                ),
+                patch("kiro_crew.sandbox.subprocess.run", run_mock),
+            ):
+                assert sb.ensure_agents_slice_limits() is False
+                assert sb.ensure_agents_slice_limits() is False
+            assert run_mock.call_count == 2
+        finally:
+            self._reset()
+
+    def test_config_overrides_slice_limits(self):
+        import kiro_crew.sandbox as sb
+
+        with patch(
+            "kiro_crew.config.loader._raw_config",
+            return_value={
+                "resource_limits": {
+                    "max_total_memory_mb": 4096,
+                    "max_total_processes": 1000,
+                }
+            },
+        ):
+            mem, tasks = sb._slice_limits_from_config()
+        assert mem == 4096
+        assert tasks == 1000
+
+    def test_config_defaults_when_absent_or_junk(self):
+        """Zero/junk falls back to the default rather than leaving the
+        aggregate unset — same rule as the per-scope ceiling."""
+        import kiro_crew.sandbox as sb
+
+        with patch("kiro_crew.config.loader._raw_config", return_value={}):
+            mem, tasks = sb._slice_limits_from_config()
+        assert mem == sb._default_max_total_memory_mb()
+        assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+        with patch(
+            "kiro_crew.config.loader._raw_config",
+            return_value={
+                "resource_limits": {
+                    "max_total_memory_mb": 0,
+                    "max_total_processes": "x",
+                }
+            },
+        ):
+            mem, tasks = sb._slice_limits_from_config()
+        assert mem == sb._default_max_total_memory_mb()
+        assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+        # Fractional values pass a naive `> 0` check but truncate to 0, which
+        # would emit MemoryMax=0M and kill every agent scope — must fall back.
+        with patch(
+            "kiro_crew.config.loader._raw_config",
+            return_value={
+                "resource_limits": {
+                    "max_total_memory_mb": 0.5,
+                    "max_total_processes": 0.9,
+                }
+            },
+        ):
+            mem, tasks = sb._slice_limits_from_config()
+        assert mem == sb._default_max_total_memory_mb()
+        assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+
+    def test_default_total_memory_fraction_and_fallback(self):
+        """80% of RAM by default; flat fallback when RAM is unreadable. Both
+        must sit ABOVE their per-scope counterparts, or the slice would clamp
+        a single spawn tighter than its own documented ceiling."""
+        import kiro_crew.sandbox as sb
+
+        sixteen_g = 16 * 1024**3
+        with patch("os.sysconf", side_effect=lambda n: sixteen_g // 4096 if "PHYS" in n else 4096):
+            mb = sb._default_max_total_memory_mb()
+        assert mb == int(sixteen_g * sb._CGROUP_TOTAL_MEMORY_FRACTION) // (1024 * 1024)
+        with patch("os.sysconf", side_effect=OSError("no sysconf")):
+            assert sb._default_max_total_memory_mb() == sb._CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB
+        assert sb._CGROUP_TOTAL_MEMORY_FRACTION > sb._CGROUP_MEMORY_FRACTION
+        assert sb._CGROUP_FALLBACK_MAX_TOTAL_MEMORY_MB > sb._CGROUP_FALLBACK_MAX_MEMORY_MB
+
+    def test_per_scope_property_still_emitted_ratchet(self):
+        """RATCHET: the two-level model needs BOTH layers. The per-spawn scope
+        must keep emitting its own MemoryMax under the slice — a future change
+        must not silently replace per-tree bounding with aggregate-only."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch(
+                    "kiro_crew.sandbox._cgroup_limits_from_config",
+                    return_value=(8192, 4096, 50, 0),
+                ),
+                patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
+            ):
+                out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
+            assert f"--slice={sb._CGROUP_AGENTS_SLICE}" in out
+            assert "MemoryMax=4096M" in out
+            assert "TasksMax=8192" in out
+        finally:
+            self._reset()
+
+    def _fake_slice(self, tmp_path, *, oom_kill=0, local_max=0, current=100, mem_max="1000"):
+        d = tmp_path / "kirocrew-agents.slice"
+        d.mkdir(exist_ok=True)
+        (d / "memory.events").write_text(f"low 0\nhigh 0\nmax 0\noom 0\noom_kill {oom_kill}\n")
+        (d / "memory.events.local").write_text(
+            f"low 0\nhigh 0\nmax {local_max}\noom 0\noom_kill 0\n"
+        )
+        (d / "memory.current").write_text(f"{current}\n")
+        (d / "memory.max").write_text(f"{mem_max}\n")
+        return d
+
+    def test_slice_pressure_seeds_then_reports_new_kills(self, tmp_path):
+        """First read seeds the counters (no spurious boot warning); a later
+        oom_kill increase is reported with the victim scope and whether the
+        slice-level ceiling engaged."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            d = self._fake_slice(tmp_path, oom_kill=2)
+            with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d):
+                assert sb.check_agents_slice_pressure() is None  # seed only
+                # A scope takes a kill and the slice's own limit engaged.
+                self._fake_slice(tmp_path, oom_kill=3, local_max=1)
+                victim = d / "run-r1.scope"
+                victim.mkdir()
+                (victim / "memory.events.local").write_text(
+                    "low 0\nhigh 0\nmax 1\noom 1\noom_kill 1\n"
+                )
+                msg = sb.check_agents_slice_pressure()
+                assert msg is not None
+                assert "1 new kill(s)" in msg
+                assert "run-r1.scope" in msg
+                assert "aggregate ceiling engaged: yes" in msg
+                # No further change -> quiet.
+                assert sb.check_agents_slice_pressure() is None
+        finally:
+            self._reset()
+
+    def test_slice_pressure_scope_local_breach_is_distinguished(self, tmp_path):
+        """A kill without a slice-level max event reads as a per-scope breach."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            d = self._fake_slice(tmp_path)
+            with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d):
+                assert sb.check_agents_slice_pressure() is None
+                self._fake_slice(tmp_path, oom_kill=1, local_max=0)
+                msg = sb.check_agents_slice_pressure()
+                assert msg is not None
+                assert "a scope hit its own per-tree limit" in msg
+        finally:
+            self._reset()
+
+    def test_slice_pressure_none_when_slice_absent(self):
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=None):
+                assert sb.check_agents_slice_pressure() is None
+        finally:
+            self._reset()
+
+    def test_slice_pressure_self_heals_a_vanished_ceiling(self, tmp_path):
+        """A user-manager restart drops the --runtime property. The sampler
+        detects memory.max reading 'max' and re-applies — but only when WE
+        applied the ceiling before."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            d = self._fake_slice(tmp_path, mem_max="max")
+            ensure_mock = MagicMock(return_value=True)
+            with (
+                patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d),
+                patch("kiro_crew.sandbox.ensure_agents_slice_limits", ensure_mock),
+            ):
+                sb._SLICE_LIMITS_APPLIED = True
+                sb.check_agents_slice_pressure()
+                ensure_mock.assert_called_once()
+                assert sb._SLICE_LIMITS_APPLIED is False  # reset so the re-apply is real
+        finally:
+            self._reset()
+
+    def test_slice_pressure_no_heal_when_never_applied(self, tmp_path):
+        """A host that never passed the delegation gate must not start
+        shelling out from the sampler."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            d = self._fake_slice(tmp_path, mem_max="max")
+            ensure_mock = MagicMock(return_value=True)
+            with (
+                patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d),
+                patch("kiro_crew.sandbox.ensure_agents_slice_limits", ensure_mock),
+            ):
+                sb._SLICE_LIMITS_APPLIED = False
+                sb.check_agents_slice_pressure()
+                ensure_mock.assert_not_called()
+        finally:
+            self._reset()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="cgroup v2 scope enforcement is Linux-only")
+    def test_real_scope_nests_under_agents_slice(self):
+        """On a delegation-capable host, a real scope's cgroup path runs
+        through kirocrew-agents.slice — the structural premise of the
+        aggregate boundary: whatever limit the slice carries, the kernel
+        min-composes it over every scope. When the live slice carries a
+        MemoryMax (a running gateway applied one), assert the scope's own
+        limit is not the only bound in the ancestry. Skips cleanly where
+        delegation is unavailable. No host state is mutated: the test only
+        spawns a scope (as every spawn does) and reads cgroup files."""
+        import kiro_crew.sandbox as sb
+
+        sb._CGROUP_SCOPE_PROBE = None
+        try:
+            available, _ = sb._probe_cgroup_scope()
+            if not available:
+                pytest.skip("no cgroup v2 delegation on this host")
+            with patch(
+                "kiro_crew.sandbox._cgroup_limits_from_config", return_value=(50, 512, 50, 0)
+            ):
+                argv = sb.cgroup_scope_argv(
+                    [
+                        sys.executable,
+                        "-c",
+                        "cg=open('/proc/self/cgroup').read().split('::',1)[1].strip()\n"
+                        "print(cg)\n"
+                        "print(open('/sys/fs/cgroup'+cg+'/memory.max').read().strip())\n",
+                    ]
+                )
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            assert out.returncode == 0, out.stderr
+            cg_path, scope_max = out.stdout.strip().splitlines()
+            assert "/kirocrew-agents.slice/" in cg_path
+            assert scope_max == str(512 * 1024 * 1024)
+        finally:
+            sb._CGROUP_SCOPE_PROBE = None
 
 
 class TestCgroupScopeBusEnv:

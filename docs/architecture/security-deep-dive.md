@@ -418,7 +418,11 @@ enterprise policy can deny it via the `yolo_duration` scope's `permanent` member
 which downgrades it to the ordinary ad-hoc duration.
 
 Every lifecycle transition (`activate`, `renew`, `expired`, `deactivate`) is
-SEL-audited, and fleet-visibility endpoints expose the live state
+SEL-audited. The transitions that create or extend auto-approval authority
+(`activate`, `activate_scoped`, `renew`) audit **fail-closed**: the SEL event is
+written before the grant is committed, and if the write fails the grant (or the
+extension) is refused — auto-approval authority never exists without an audit
+record. Fleet-visibility endpoints expose the live state
 (`/api/status` reports `yolo_active` / `yolo_expires_at`;
 `/api/admin/compliance/yolo-status` carries the full override status).
 

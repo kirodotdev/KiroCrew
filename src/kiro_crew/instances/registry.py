@@ -40,6 +40,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.instances.constants import TTL_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -51,29 +52,31 @@ _FILENAME = "instances.json"
 
 # Instance id: slug-like, what the URL/switcher key uses. Kept conservative so
 # it is safe as a dict key, a query param, and a filename component.
-_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
 
 # ssh_host / remote_bin light charset guard (early reject only — the real
 # injection-safe validation lives in the tunnel manager, Stage 4). Allows
 # hostnames, FQDNs, ssh config aliases, user@host, and absolute bin paths.
-_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,255}$")
-_REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}$")
+_SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,255}\Z")
+_REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 
 # ssm_target: an EC2 instance id (i-<17 hex>) or an SSM managed-instance id
 # (mi-<17 hex>); early reject only, mirroring the ssh_host guard above — the
 # authoritative validation lives with the tunnel manager (validation.py).
-_SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}$")
+_SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}\Z")
 # aws_profile: named profile in ~/.aws/config; conservative charset, no shell
 # metacharacters. Empty string means "default credential chain".
-_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.\-]{0,128}$")
+_AWS_PROFILE_RE = re.compile(r"^[A-Za-z0-9_.\-]{0,128}\Z")
 # aws_region: standard AWS region shape (e.g. us-east-1, eu-west-2). Empty
 # string means "use the profile's/environment's default region".
-_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}$|^$")
+_AWS_REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-\d{1,2}\Z|^\Z")
 # ssm_run_as: the remote POSIX user that SSM commands are wrapped in
 # (``sudo -u <user> -i``). Unix username shape, matching the charset
 # cloud.ssm.run_command validates at the chokepoint. Defaults to the
 # launcher-provisioned AL2023 user; an Ubuntu AMI needs "ubuntu".
-_SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}\Z")
+# Shared with both token minters (see constants.TTL_PATTERN).
+_TTL_RE = re.compile(TTL_PATTERN)
 _DEFAULT_SSM_RUN_AS = "ec2-user"
 
 _DEFAULT_REMOTE_PORT = 7777
@@ -112,6 +115,22 @@ def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     slug = slug[:63]
     return slug or "instance"
+
+
+def validate_ttl(ttl: str) -> None:
+    """Reject a ttl the token minters would refuse.
+
+    Checked where a ttl is WRITTEN rather than in :meth:`Instance.validate`, so a
+    legacy record whose stored ttl predates this rule keeps working: its hint
+    writes (``was_connected`` / ``local_port`` from connect and disconnect) go
+    through ``update()`` too, and failing those would break the teardown path
+    over a field the caller never touched.
+    """
+    if not _TTL_RE.match(ttl):
+        raise InvalidInstanceError(
+            f"invalid ttl {ttl!r}: expected a positive integer of at most four "
+            f"digits followed by 'h' or 'm' (e.g. 20h, 30m)"
+        )
 
 
 @dataclass
@@ -405,6 +424,7 @@ class InstancesRegistry:
                 was_connected=False,
             )
             inst.validate()
+            validate_ttl(inst.ttl)
             doc.instances.append(inst)
             self._write(doc)
             logger.info(
@@ -415,15 +435,20 @@ class InstancesRegistry:
             )
             return inst
 
-    def update(self, instance_id: str, **changes: object) -> Instance:
+    def update(
+        self, instance_id: str, *, mark_last_active: bool = False, **changes: object
+    ) -> Instance:
         """Patch fields on an existing instance and return the updated record.
 
         Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``,
         ``aws_profile``, ``aws_region``, ``was_connected``. The ``id`` is
-        immutable. Raises :class:`InstanceNotFoundError` /
-        :class:`InvalidInstanceError`.
+        immutable. ``mark_last_active=True`` additionally records the instance
+        as the auto-revive target in the SAME read-modify-write, so callers that
+        need both (a connect persisting its hints) get one atomic file rewrite
+        instead of two — the pair becomes durable together. Raises
+        :class:`InstanceNotFoundError` / :class:`InvalidInstanceError`.
         """
         allowed = {
             "name",
@@ -442,6 +467,8 @@ class InstancesRegistry:
         unknown = set(changes) - allowed
         if unknown:
             raise InvalidInstanceError(f"unknown fields: {sorted(unknown)}")
+        if "ttl" in changes:
+            validate_ttl(str(changes["ttl"]))
         with self._lock:
             doc = self._read()
             target: Instance | None = None
@@ -454,6 +481,8 @@ class InstancesRegistry:
             for key, value in changes.items():
                 setattr(target, key, value)
             target.validate()
+            if mark_last_active:
+                doc.last_active_id = instance_id
             self._write(doc)
             logger.info("Updated instance %s: %s", instance_id, sorted(changes))
             return target

@@ -2,11 +2,13 @@ import { useState } from 'react'
 
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ChevronDown, ChevronUp, Coins, Gauge, Rocket } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
 import { api } from '../api/client'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
+import { SettingRef } from '../components/settingRef/SettingRef'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { compareText, fmtDateNumeric, fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
@@ -700,7 +702,13 @@ function convoCols(navigable: string): Col<CostConvo>[] {
       hide: 'max-[900px]:hidden',
       sort: v => v.turns_to_compaction ?? null,
       color: v => (v.turns_to_compaction == null ? undefined : headroomColor(v.turns_to_compaction)),
-      render: v => (v.turns_to_compaction == null ? '—' : fmtNumber(v.turns_to_compaction)),
+      render: v =>
+        v.turns_to_compaction == null
+          ? '—'
+          : i18nT('pages.telemetryPanel.turns_to_compaction', {
+              count: v.turns_to_compaction,
+              n: fmtNumber(v.turns_to_compaction),
+            }),
     },
   ]
 }
@@ -820,7 +828,10 @@ function SpendTab({ c }: { c: Cost }) {
           {
             label: i18nT('pages.telemetryPanel.vs_previous_period'),
             value: fmtDelta(c.delta_pct),
-            sub: `${fmtNumber(c.prior_credits)} · ${fmtNumber(c.prior_turns)}`,
+            sub: i18nT('pages.telemetryPanel.prior_credits_turns', {
+              credits: fmtNumber(c.prior_credits),
+              turns: fmtNumber(c.prior_turns),
+            }),
           },
           {
             label: i18nT('pages.telemetryPanel.per_turn_col'),
@@ -1375,13 +1386,13 @@ export default function TelemetryPanel() {
   if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
 
   const offBody = data ? (
-    <>
-      {i18nT('pages.telemetryPanel.enable_with')}{' '}
-      <code className="text-accent">{i18nT('pages.telemetryPanel.telemetry_enabled_true')}</code>
-      {i18nT('pages.telemetryPanel.metrics_stay_local')}
-      <code className="text-accent">{data.metrics_dir}</code>
-      {i18nT('pages.telemetryPanel.nothing_leaves_this_machine')}
-    </>
+    <Trans
+      i18nKey="pages.telemetryPanel.off_body"
+      components={{
+        settingRef: <SettingRef configKey="telemetry.enabled" />,
+        metricsDir: <code className="text-accent">{data.metrics_dir}</code>,
+      }}
+    />
   ) : null
 
   if (data && !data.enabled) {

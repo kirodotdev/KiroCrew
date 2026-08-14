@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session import (
     _BG_BLIND_RECYCLE_PROMPTS,
     BACKGROUND_KEY,
@@ -142,10 +143,61 @@ class TestSessionManager:
         finally:
             mgr._recycling.pop("thread1", None)
 
-        assert replacement.needs_context_reinjection is False, (
-            "a recycle must not flag the fresh replacement session"
-        )
+        assert (
+            replacement.needs_context_reinjection is False
+        ), "a recycle must not flag the fresh replacement session"
         assert mgr.consume_needs_reinjection("thread1") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_overflow_recycle_preserves_channel_binding(self, cfg):
+        """A context-overflow recycle is housekeeping, so it must not unlink.
+
+        Dropping the whole session-map entry takes the mirror binding with it: a
+        Discord conversation resumed into that session loses its binding, and
+        later inbound messages from that channel fork into a new conversation.
+        Only the resume sid may go — the overflowed native conversation must not
+        be resumed.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("dashboard:chat-1")
+        key = mgr._fold_key("dashboard:chat-1")
+        session = mgr._sessions[key]
+        mgr._session_map.set(key, "sid-overflowed")
+        mgr.set_mirror_link(
+            key,
+            ChannelLink(channel_type="discord", channel_id="C1"),
+            accepts_inbound=True,
+        )
+
+        await mgr._recycle_held(key, session, 95.0)
+
+        link = mgr.get_mirror_link(key)
+        assert link is not None
+        assert (link.channel_type, link.channel_id) == ("discord", "C1")
+        assert mgr.mirror_accepts_inbound(key) is True
+        # The overflowed conversation stays unresumable...
+        assert not mgr._session_map.get(key)
+        # ...and the entry was repaired, not deleted, so the dropped sid is
+        # still diagnosable.
+        assert mgr._session_map.get_discarded_sid(key) == "sid-overflowed"
+        assert not mgr.has_session(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_overflow_recycle_clears_sid_instead_of_deleting_entry(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("thread1")
+        key = mgr._fold_key("thread1")
+        session = mgr._sessions[key]
+        with (
+            patch.object(mgr._session_map, "clear_sid") as mock_clear,
+            patch.object(mgr._session_map, "delete") as mock_delete,
+        ):
+            await mgr._recycle_held(key, session, 95.0)
+        provider.shutdown.assert_awaited_once()
+        mock_clear.assert_called_once_with(key)
+        mock_delete.assert_not_called()
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -769,7 +821,16 @@ class TestCancelRaceCondition:
 
     @pytest.mark.asyncio
     async def test_cancel_during_start_kills_provider(self, cfg):
-        """CancelledError during provider.start() kills the process synchronously."""
+        """CancelledError during provider.start() dispatches the process kill.
+
+        The kill goes through _dispatch_hard_kill (non-blocking submission to
+        the subprocess executor) rather than an inline _sync_kill_provider:
+        the inline form blocks the event loop (os.waitpid / taskkill), and
+        resume prefetch makes this cancellation handler routine — a focus
+        flip mid-session/load cancels the loading task. Submission is
+        synchronous, so the kill is guaranteed dispatched before the
+        re-raise.
+        """
         mock_provider = AsyncMock()
         mock_provider.start = AsyncMock(side_effect=asyncio.CancelledError)
         mock_provider._client = AsyncMock()
@@ -780,9 +841,7 @@ class TestCancelRaceCondition:
 
         mgr = SessionManager(cfg, provider_factory=factory)
 
-        import kiro_crew.session as _sess_mod
-
-        with patch.object(_sess_mod, "_sync_kill_provider") as mock_kill:
+        with patch.object(SessionManager, "_dispatch_hard_kill") as mock_kill:
             with pytest.raises(asyncio.CancelledError):
                 await mgr.get_or_create("test-cancel")
 
@@ -794,7 +853,13 @@ class TestCancelRaceCondition:
 
     @pytest.mark.asyncio
     async def test_cancel_after_start_before_registration_kills_provider(self, cfg):
-        """CancelledError after start() but before _sessions[key] kills the process."""
+        """CancelledError after start() but before _sessions[key] dispatches the kill.
+
+        Same contract as the during-start case: _dispatch_hard_kill, never an
+        inline _sync_kill_provider (which blocks the event loop). This handler
+        is also the landing site for SpeculativeResumeRefused, so resume
+        prefetch exercises it on every failed speculative load.
+        """
         mock_provider = AsyncMock()
         mock_provider.start = AsyncMock()  # succeeds
         mock_provider.context_usage_pct = lambda: 0.0
@@ -824,9 +889,7 @@ class TestCancelRaceCondition:
                 if self._calls < 2:
                     return await original_lock.__aexit__(*a)
 
-        import kiro_crew.session as _sess_mod
-
-        with patch.object(_sess_mod, "_sync_kill_provider") as mock_kill:
+        with patch.object(SessionManager, "_dispatch_hard_kill") as mock_kill:
             mgr._lock = CancelOnSecondLock()
             with pytest.raises(asyncio.CancelledError):
                 await mgr.get_or_create("test-cancel-2")
@@ -1348,9 +1411,12 @@ class TestCompactCallback:
     @pytest.mark.asyncio
     async def test_compact_session_defers_when_turn_never_drains(self, cfg, caplog, monkeypatch):
         """A still-running turn (semaphore held) must NEVER be killed for
-        compaction: after _COMPACT_TIMEOUT_SECS the attempt is deferred —
+        compaction: after COMPACT_WAIT_TIMEOUT_SECS the attempt is deferred —
         session intact, no callback — and re-triggered at the next turn end."""
-        monkeypatch.setattr("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.1)
+        # Only the outer cap is scaled: the inner status wait clamps to
+        # _COMPACT_RESULT_WAIT_FLOOR_SECS (5s) — patch that too if a test
+        # needs the inner wait itself to time out quickly.
+        monkeypatch.setattr("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.1)
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Hold the semaphore and never release -> simulates a long-running turn.
         provider, _, _ = await mgr.get_or_create("dashboard:chat-1")
@@ -1898,6 +1964,39 @@ class TestCheckContextUsage:
             mock_trigger.assert_not_called()
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_no_compaction_when_pct_unconfirmed(self, cfg):
+        """#2932 defensive gate: a pct above threshold that no telemetry has
+        confirmed for the CURRENT session binding must NOT trigger compaction
+        (compacting an empty just-claimed session, then overflowing)."""
+        cfg.session.autocompact_pct = 90.0
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.context_usage_pct = lambda: 95.0
+        provider.context_usage_unknown = lambda: True
+        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+            pct = mgr.check_context_usage("k1", provider)
+            mock_trigger.assert_not_called()
+        assert pct == 95.0  # reading is still returned, only the trigger is gated
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_compaction_fires_when_pct_confirmed(self, cfg):
+        """Twin of the gate test: the same pct WITH confirmed telemetry
+        (context_usage_unknown False) still compacts — the gate must not
+        suppress legitimate triggers."""
+        cfg.session.autocompact_pct = 90.0
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.context_usage_pct = lambda: 95.0
+        provider.context_usage_unknown = lambda: False
+        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+            mgr.check_context_usage("k1", provider)
+            mock_trigger.assert_called_once_with("k1", "context at 95%", 95.0)
+        await mgr.close_all()
+
     def test_missing_session_still_returns_pct(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_p = AsyncMock()
@@ -1938,6 +2037,64 @@ class TestDestroy:
                 await mgr.destroy("k1")
         # finally block still runs
         mock_delete.assert_called_once_with("k1")
+
+
+class TestDiscardConversation:
+    """Tests for discard_conversation() — the poisoned-conversation escape.
+
+    Unlike destroy(), the session-map ENTRY must survive: it carries the
+    Slack thread/channel linkage (and feeds the reverse thread→session sync
+    index), so deleting it would silently unlink a mirrored session. Only
+    the resume sid is cleared, forcing the next turn to cold-start a fresh
+    native conversation."""
+
+    @pytest.mark.asyncio
+    async def test_discard_shuts_down_and_clears_only_sid(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        with (
+            patch.object(mgr._session_map, "clear_sid") as mock_clear,
+            patch.object(mgr._session_map, "delete") as mock_delete,
+        ):
+            await mgr.discard_conversation("k1")
+        provider.shutdown.assert_awaited_once()
+        mock_clear.assert_called_once_with("k1")
+        mock_delete.assert_not_called()
+        assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_discard_preserves_slack_linkage(self, cfg):
+        """Regression for the poisoned-conversation escalation: a Slack-linked
+        session that discards its rejected conversation must keep its thread
+        binding, or the recovered answer is not mirrored and later inbound
+        replies fork a new conversation."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.release("k1")
+        mgr._session_map.set("k1", "sid-poisoned")
+        mgr._session_map.set_slack_link("k1", "1234.5678", "C0FFEE")
+        await mgr.discard_conversation("k1")
+        # sid gone → next turn cold-starts instead of session/load-ing the poison
+        assert not mgr._session_map.get("k1")
+        # ...but the Slack linkage survives.
+        assert mgr.get_slack_link("k1") == ("1234.5678", "C0FFEE")
+        # ...and the dropped sid is stashed, so a false-positive discard is
+        # diagnosable and manually reversible (the native conversation still
+        # exists on disk; only the pointer was cleared).
+        assert mgr._session_map.get_discarded_sid("k1") == "sid-poisoned"
+
+    @pytest.mark.asyncio
+    async def test_discard_shutdown_exception_still_clears_sid(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        provider.shutdown = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch.object(mgr._session_map, "clear_sid") as mock_clear:
+            with pytest.raises(RuntimeError, match="boom"):
+                await mgr.discard_conversation("k1")
+        # finally block still runs
+        mock_clear.assert_called_once_with("k1")
 
 
 class TestContextInfo:
@@ -3255,7 +3412,9 @@ class TestCompactTimeout:
 
         with (
             patch("kiro_crew.session._is_claude_backend", return_value=True),
-            patch("kiro_crew.session._COMPACT_TIMEOUT_SECS", 0.05),
+            # Only the outer cap is scaled — see _COMPACT_RESULT_WAIT_FLOOR_SECS
+            # note above if the inner wait must time out quickly.
+            patch("kiro_crew.session.COMPACT_WAIT_TIMEOUT_SECS", 0.05),
         ):
             await mgr._compact_session("k1", 92.0)
 
@@ -3502,6 +3661,66 @@ class TestGetOrCreatePoolClaim:
         mgr.release("dashboard:slot1")
         assert provider is mock_pooled
         assert is_new is True
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_pool_claim_resets_stale_context_and_skips_compaction(self, cfg):
+        """#2932 end-to-end: a pooled provider carrying a previous session's
+        context stats must not hand them to the claiming session. The claim
+        path calls client.rekey(), whose reset makes the first turn-end
+        check_context_usage read 0%/unknown instead of firing compaction on
+        an empty conversation."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.providers.acp import AcpProvider
+
+        cfg.session.pool_size = 1
+        cfg.session.autocompact_pct = 90.0
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr._pool_size = 1
+        mgr._pool_agent = "kirocrew"
+
+        # Real (unstarted) AcpClient seeded with the PREVIOUS session's stats —
+        # the exact leak shape from the issue: high confirmed pct, real counts.
+        real_client = AcpClient()
+        real_client.last_prompt_stats = AcpPromptStats(
+            context_pct=95.0,
+            context_used_tokens=190_000,
+            context_window_tokens=200_000,
+            context_tokens_from_usage=True,
+        )
+
+        mock_pooled = AsyncMock(spec=AcpProvider)
+        mock_pooled.start = AsyncMock()
+        mock_pooled.shutdown = AsyncMock()
+        mock_pooled.is_process_alive = lambda: True
+        mock_pooled.client = real_client
+        # Route the provider probes through the real client stats (mirrors
+        # AcpProvider.context_usage_pct / context_usage_unknown).
+        mock_pooled.context_usage_pct = lambda: real_client.last_prompt_stats.context_pct
+        mock_pooled.context_usage_unknown = (
+            lambda: real_client.last_prompt_stats.context_pct_unknown
+        )
+
+        mgr._warm_pool.put_nowait((mock_pooled, time.monotonic()))
+
+        provider, is_new, _ = await mgr.get_or_create("dashboard:slot1", agent="kirocrew")
+        mgr.release("dashboard:slot1")
+        assert provider is mock_pooled
+
+        # The handoff dropped the stale session-scoped state (back to plain
+        # defaults — NOT flagged unknown, which would collide with the
+        # compacted-in-place recycle predicate)...
+        stats = real_client.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_window_tokens == 0
+        assert stats.context_pct_unknown is False
+
+        # ...so the first turn-end check does not compact the empty session.
+        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+            pct = mgr.check_context_usage("dashboard:slot1", provider)
+            mock_trigger.assert_not_called()
+        assert pct == 0.0
         await mgr.close_all()
 
     @pytest.mark.asyncio

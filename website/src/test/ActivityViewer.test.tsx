@@ -791,6 +791,23 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(screen.getByTestId('artifact-save-abc123')).toBeInTheDocument()
   })
 
+  it('lists an auto-registered image artifact for this session', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({
+      artifacts: [{
+        slug: 'generated-image',
+        name: 'Generated image',
+        kind: 'image',
+        pinned: false,
+        auto_registered: true,
+        image: { mime: 'image/png', ext: 'png', alt: 'generated preview' },
+      }],
+    } as never)
+    render(<ActivityViewer {...artifactProps} />, { wrapper: routerWrapper })
+    expect(await screen.findByText('Generated image')).toBeInTheDocument()
+    expect(screen.getByText('image')).toBeInTheDocument()
+    expect(screen.getByTestId('artifact-save-generated-image')).toBeInTheDocument()
+  })
+
   it('offers no save action once an auto-registered widget is pinned', async () => {
     // Pinning is one-way in this panel: un-pinning only buys eligibility for
     // the sweep, so a pinned row must NOT render a toggle back.

@@ -92,4 +92,25 @@ describe('useWebSocket notification -> MC_NOTIFICATION_EVENT', () => {
       window.removeEventListener(MC_NOTIFICATION_EVENT, listener as EventListener)
     }
   })
+
+  it('fires MC_NOTIFICATION_EVENT with kind "approval" on an approval frame so sounds play', async () => {
+    const kinds: (string | undefined)[] = []
+    const listener = (e: Event) => {
+      kinds.push((e as CustomEvent<McNotificationDetail>).detail?.kind)
+    }
+    window.addEventListener(MC_NOTIFICATION_EVENT, listener as EventListener)
+    try {
+      renderHook(() => useWebSocket(), { wrapper })
+      const ws = WS_INSTANCES[0]
+      act(() => { ws.simulateOpen() })
+
+      act(() => {
+        ws.simulateMessage({ type: 'approval', data: { id: 'test-1', tool: 'shell', source: 'agent', slot: 'slot-1' } })
+      })
+
+      expect(kinds).toEqual(['approval'])
+    } finally {
+      window.removeEventListener(MC_NOTIFICATION_EVENT, listener as EventListener)
+    }
+  })
 })

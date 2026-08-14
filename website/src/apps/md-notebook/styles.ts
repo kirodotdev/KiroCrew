@@ -4,8 +4,22 @@
  * Geometry and colour live in inline styles (which cannot be purged and need no
  * build step); this string carries only what inline styles cannot express —
  * hover and focus.
+ *
+ * The one exception is the heading accent VALUES: the `color-mix()` expressions
+ * that derive the rule and rail colours from `--accent`. They sit here as
+ * custom properties on `.mdnb-note` rather than as module constants because the
+ * strict i18n gate (`eslint.i18n.strict.config.js`) reads a string literal under
+ * an ALL-CAPS declarator as user-visible copy, and a `color-mix()` expression
+ * carries enough words and spaces to look like prose to it. Declaring them as
+ * CSS keeps them in the module that is exempt precisely because it holds
+ * declarations rather than copy, while the geometry that uses them stays inline
+ * in `Preview.tsx` as the convention above requires.
  */
 export const MDNB_CSS = `
+.mdnb-note{
+  --mdnb-heading-rule-strong:color-mix(in srgb,var(--accent) 45%,transparent);
+  --mdnb-heading-rule-soft:color-mix(in srgb,var(--accent) 30%,transparent);
+  --mdnb-heading-rail:color-mix(in srgb,var(--accent) 55%,transparent)}
 .mdnb-row:hover{background:var(--bg-hover);color:var(--text)}
 .mdnb-row-actions{position:absolute;top:50%;transform:translateY(-50%);right:6px;
   display:flex;align-items:center;gap:2px;padding:3px;border-radius:8px;

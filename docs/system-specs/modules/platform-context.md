@@ -578,10 +578,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   existence-checked). Default `[]`.
 - `AgentCatalogProvider.builtin_agents() -> List[Dict[str, Any]]` — ADD-only
   agent-catalog rows merged by `agent_discovery.list_agents()` AFTER the on-disk
-  `~/.kiro/agents` scan (via `_with_edition_agents`, through
+  scan of `~/.kiro/agents` and, when the caller supplies a `project_dir`,
+  `<project>/.kiro/agents` (via `_with_edition_agents`, through
   `safe_context_call`), de-duped by name so an on-disk agent of the same name
-  wins. Each row is a plain dict of `AgentInfo` fields (`name` required;
-  `filename`/`description`/`model`/`skills`/`mcp_servers`/`source`/`package`
+  wins. Within the on-disk scan a **project** agent shadows a user-level one of
+  the same name (and the shadowing is logged), mirroring kiro-cli — which resolves
+  `--agent` against its cwd first, and which Kiro Crew spawns with the session's
+  project directory as that cwd, so the project entry is the one that would
+  actually run. Kiro Crew's legacy `<project>/.kiro/*.agent-spec.json` convention is
+  deliberately NOT scanned here (only the Slack handler opts into it): kiro-cli
+  cannot activate such a name, and this list is a dispatch surface. Each row is a
+  plain dict of `AgentInfo` fields (`name` required;
+  `filename`/`description`/`model`/`skills`/`mcp_servers`/`source`/`package`/`scope`
   optional). **EXECUTABLE INVARIANT:** every returned row MUST be spawnable —
   the edition guarantees a resolvable agent config exists for its `name`
   (materialized under `~/.kiro/agents` or otherwise resolvable by the ACP
@@ -637,7 +645,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   searching those roots — a row outside them lists but 404s on tree/detail, so an
   edition satisfying both Protocols MUST keep them consistent; the core enforces
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed
-  row outside every `extra_skills()` root);
+  row outside every `extra_skills()` root. Two further constraints bind the keys
+  an edition may hand out. **A root the core already keys itself is not
+  `package/` territory:** `~/.kiro/skills`, the data home skills dir, configured
+  `skills.extra_paths`, and the active project's `.kiro/skills` are keyed
+  `kiro-user/`, `kiro-workspace/`, or unprefixed, so advertising one of them from
+  `extra_skills()` (legitimate — it makes the loader index it) does NOT also
+  expose it under `package/`; `_edition_package_roots()` computes that difference
+  once and both catalog enumeration and path resolution read it, so the two
+  cannot drift. **Resolution is exact-first and refuses ambiguity:** a
+  `package/<name>` request prefers `<root>/<name>/SKILL.md` over a nested
+  `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
+  it resolves to `None` — HTTP 404, with the competing candidates logged — rather
+  than picking one, because the key cannot express which was meant (paths that
+  merely symlink to the same file are not a tie). An edition that wants both of
+  two same-named skills reachable MUST therefore key them distinguishably);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`
@@ -846,7 +868,7 @@ new module/class names.
     deny-by-default, a `PlatformCompositionError` is re-raised. The public
     Default cannot raise, so standalone never reaches the fallback.
   - `DashboardContributor.on_token_consumed(user_id, channel, session_exp,
-    thread_ts)` — fired in `dashboard/token_auth.py` after `bind_token_ip` on the
+    thread_ts)` — fired in `dashboard/token_auth.py` after `bind_token_peer` on the
     first (non-cookie) exchange, with `channel`/`thread_ts` read from the token's
     signed `extra` payload. OBSERVER only; the anchor a challenge auth-window
     opens on. Default no-op. `safe_context_call(fallback=None)` re-raises

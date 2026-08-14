@@ -41,8 +41,13 @@ def test_save_denies_forwarded_loopback_request() -> None:
     assert resp.status == 403
 
 
-def _client_put(mod, monkeypatch, tmp_path, body):
-    """Run a save over a real TestClient with paths isolated to tmp_path."""
+def _client_put(mod, monkeypatch, tmp_path, body, state=None):
+    """Run a save over a real TestClient with paths isolated to tmp_path.
+
+    *state* seeds ``app["state"]``; the folder-creation hook is skipped when it is
+    absent, which is also the production guard for a request that arrives before
+    the dashboard state is wired.
+    """
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -55,6 +60,8 @@ def _client_put(mod, monkeypatch, tmp_path, body):
 
     async def _run():
         app = web.Application()
+        if state is not None:
+            app["state"] = state
         app.router.add_put("/api/discord/config", mod.api_discord_config_save)
         async with TestClient(TestServer(app)) as client:
             resp = await client.put("/api/discord/config", json=body)
@@ -277,3 +284,197 @@ def test_get_masks_token_and_reports_state(tmp_path: Path, monkeypatch) -> None:
     assert body["enabled"] is True
     assert body["allowed_user_ids"] == ["42"]
     assert body["allowed_thread_ids"] == ["99"]
+
+
+def test_save_persists_session_folder_without_asking_for_a_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``session_folder`` is read live, so changing it alone needs no restart."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"session_folder": " Discord "})
+    status, body = status_body
+    assert status == 200
+    assert body["restart_required"] is False
+    data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert data["discord"]["session_folder"] == "Discord"
+
+
+def test_save_creates_the_configured_folder(tmp_path: Path, monkeypatch) -> None:
+    """The folder is created HERE, on the save — never on the reconcile path.
+
+    Creation from the reconciler would put an ``fsync`` on the event loop and,
+    being reachable from both the 30s pass and every inbound channel message,
+    could drop a concurrent folder edit. The save endpoint is user-initiated and
+    already writes config.json, so it is the right owner.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    created: list[tuple[str, str, bool]] = []
+
+    async def fake_ensure(
+        state, namespace: str, name: str, *, relabel: bool = False
+    ) -> str:
+        created.append((namespace, name, relabel))
+        return "fid"
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"session_folder": "Team chat"}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created == [("discord", "Team chat", True)]
+
+
+def test_save_ignores_a_hand_edited_non_string_session_folder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A hand-edited non-string must not become a folder on an unrelated save.
+
+    The save endpoints read ``session_folder`` back out of the RAW config.json dict
+    they just edited, which bypasses the loader's coercion. Saving any OTHER field
+    in the section therefore carries the stored value straight to
+    ``ensure_channel_folder`` — and coercing it with ``str()`` would create a real
+    sidebar folder literally named ``123``, which nobody chose. It has to fail
+    closed to "off" instead.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    # Hand-edited config: session_folder is a number, not text.
+    (tmp_path / "config.json").write_text(
+        json.dumps({"discord": {"session_folder": 123}}), encoding="utf-8"
+    )
+
+    created: list[tuple[str, str, bool]] = []
+
+    async def fake_ensure(
+        state, namespace: str, name: str, *, relabel: bool = False
+    ) -> str:
+        created.append((namespace, name, relabel))
+        return "fid"
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    # Save an UNRELATED field, leaving the hand-edited value in place.
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"enabled": True}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created == [], (
+        f"a non-string session_folder created a folder: {created!r}"
+    )
+
+
+def test_save_creates_no_folder_when_the_setting_is_off(tmp_path: Path, monkeypatch) -> None:
+    """Off is the default; a save that leaves it off must not create anything."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    created: list[tuple[str, str, bool]] = []
+
+    async def fake_ensure(state, namespace: str, name: str) -> str:
+        created.append((namespace, name))
+        return ""
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"enabled": True}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created == []
+
+
+def test_save_still_asks_for_a_restart_for_boot_read_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A live-reload field alongside a boot-read one still requires a restart."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"session_folder": "Discord", "enabled": True}
+    )
+    status, body = status_body
+    assert status == 200
+    assert body["restart_required"] is True
+
+
+def test_save_rejects_an_unusable_session_folder(tmp_path: Path, monkeypatch) -> None:
+    """A name that could not address a sidebar folder is refused, not coerced."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    for bad in ("nested/name", "back\\slash", "line\nbreak", "x" * 101, 42):
+        (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"session_folder": bad})
+        assert status_body[0] == 400, f"session_folder={bad!r} should be rejected"
+
+
+def test_get_reports_the_configured_session_folder(tmp_path: Path, monkeypatch) -> None:
+    """The panel reads the current value back, defaulting to off."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"discord": {"session_folder": "Discord"}}', encoding="utf-8")
+    monkeypatch.setattr(loader, "config_path", lambda: cfg)
+    monkeypatch.setattr(loader, "env_path", lambda: tmp_path / ".env")
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    class _State:
+        discord_connected = False
+        discord_connect_error = ""
+
+    req = make_mocked_request("GET", "/api/discord/config", app={"state": _State()})
+    body = json.loads(asyncio.run(mod.api_discord_config_get(req)).text)
+    assert body["session_folder"] == "Discord"
+
+
+def test_an_unrelated_save_does_not_relabel_the_folder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Only the save that carried session_folder may rename the folder.
+
+    This endpoint runs on every section save, so relabelling unconditionally
+    renamed a folder the user had renamed in the sidebar back to the stored config
+    value — undoing their change on a save that had nothing to do with folders.
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    # Stored config already carries a folder name; this save touches another field.
+    (tmp_path / "config.json").write_text(
+        json.dumps({"discord": {"session_folder": "Team chat"}}), encoding="utf-8"
+    )
+
+    created: list[tuple[str, str, bool]] = []
+
+    async def fake_ensure(
+        state, namespace: str, name: str, *, relabel: bool = False
+    ) -> str:
+        created.append((namespace, name, relabel))
+        return "fid"
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    # A save that touches only an unrelated field.
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"enabled": True}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created, "the folder should still be ensured to exist"
+    assert created[0][2] is False, (
+        f"an unrelated save asked to relabel the folder: {created!r}"
+    )
+
+
+def test_a_folder_save_does_relabel(tmp_path: Path, monkeypatch) -> None:
+    """The save that expresses folder intent is the one allowed to rename."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    created: list[tuple[str, str, bool]] = []
+
+    async def fake_ensure(
+        state, namespace: str, name: str, *, relabel: bool = False
+    ) -> str:
+        created.append((namespace, name, relabel))
+        return "fid"
+
+    monkeypatch.setattr(mod, "ensure_channel_folder", fake_ensure)
+    (status_body, _) = _client_put(
+        mod, monkeypatch, tmp_path, {"session_folder": "Team chat"}, state=object()
+    )
+    assert status_body[0] == 200
+    assert created == [("discord", "Team chat", True)]

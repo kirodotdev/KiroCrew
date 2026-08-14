@@ -21,12 +21,13 @@ from collections import OrderedDict
 from collections.abc import Callable, Container, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect, stream_and_collect_json
 from kiro_crew.messaging.link import legacy_key
 from kiro_crew.preview_text import strip_markdown_preview
@@ -59,13 +60,173 @@ logger = logging.getLogger(__name__)
 SESSIONS_DIR_NAME = "sessions"
 ARCHIVE_DIR_NAME = "archive"
 ARCHIVE_RETENTION_DAYS = 7
+
+# Separates a transcript's stem from an archive segment's timestamp. NOT a dot,
+# because session keys legitimately contain dots (a Slack thread_ts), which would
+# make a right-most-dot parse attribute a segment to the wrong session.
+ARCHIVE_SEGMENT_DELIMITER = "__"
 _CONSOLIDATION_THRESHOLD = 30  # preferences/projects update threshold (messages)
+
+
+# Returned by _consolidate when its retry-eligibility gate refuses the span.
+# Distinct from None (a pass that ran, or found nothing to do) so callers'
+# done-callbacks can tell a refusal from a completed pass: a refusal must not
+# advance their bookkeeping (offsets, throttles) as if the window had been
+# processed, and raising instead would log a routine backoff as a task failure.
+class _ConsolidationRefusedSentinel:
+    __slots__ = ()
+
+
+_CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
+# Persistent retry accounting for history consolidation. A pass spends a billed
+# LLM turn BEFORE it can write the durable "consolidated" marker, so any failure
+# in between leaves the span unconsolidated — and every entry point (the 60s
+# idle sweep, session-expiry sweeps, the dashboard trigger) then re-spends that
+# turn, forever, because the only thing suppressing a repeat is an in-memory
+# throttle that a failure skips and a restart forgets. Attempts are therefore
+# counted in the transcript's metadata line (durable, per span) and gated behind
+# exponential backoff up to a hard cap. At the cap the span is abandoned with
+# the marker written anyway: losing one memory pass costs one summary, while
+# retrying forever costs an LLM turn per heartbeat tick indefinitely.
+_CONSOLIDATION_MAX_ATTEMPTS = 5
+_CONSOLIDATION_BACKOFF_BASE_SECS = 900.0  # 15 min, doubling per failed attempt
+_CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0  # 24 h ceiling on a single wait
+# Every metadata field the accounting owns, so the marker's success path can drop
+# the whole set in one place and a rebuilding writer can name it as foreign.
+_CONSOLIDATION_META_KEYS: frozenset[str] = frozenset(
+    {
+        "consolidation_attempts",
+        "consolidation_retry_at",
+        "consolidation_env_failures",
+        "consolidation_attempts_generation",
+        "consolidation_attempts_offset",
+        "consolidation_attempts_count",
+    }
+)
+
+
+class AttemptedSpan(NamedTuple):
+    """The span identity a consolidation turn actually covered.
+
+    All three fields come from ONE atomic
+    :meth:`ConversationLog.snapshot_for_consolidation` taken BEFORE the turn:
+    where the span starts (*generation*, *offset*) and how far it reaches
+    (*total*). They travel together because the accounting's whole guarantee is
+    that a charged attempt is stamped with the span it measured — mixing a
+    snapshot value with one re-read after the turn stamps content that was never
+    attempted, and the cap then either outlives its span (stranding messages
+    forever) or releases early (re-billing indefinitely).
+
+    Re-reading the metadata line at failure time is the specific mistake this
+    type exists to prevent. A rotation or a marker-resetting rewrite DURING the
+    turn moves all three, so a post-turn read stamps the counter with the NEW
+    span's identity while the count it carries was charged against the old one.
+    At the cap that leaves the post-rotation messages capped without ever having
+    been attempted, and because their generation and offset already match the
+    stamp no later append can release them.
+    """
+
+    #: Transcript message total the turn covered — the snapshot's total, not the
+    #: file's size afterwards. Named ``total`` rather than ``count`` because a
+    #: ``NamedTuple`` field called ``count`` would shadow ``tuple.count``.
+    total: int
+    #: ``rotation_generation`` at the snapshot.
+    generation: int
+    #: ``last_consolidated`` at the snapshot — where the attempted span begins.
+    offset: int
+
+
 # Skill detection judges a wider window than the incremental history tail: a
 # reusable procedure usually spans the whole session, not just the slice since
 # the last consolidation, so a tail-only view systematically misses skills in
 # any session consolidated more than once. Bound the window so pathologically
 # long sessions stay cost-safe.
 _SKILL_DETECTION_WINDOW = 200
+
+# The keys :meth:`ConversationLog.compact` is authoritative for; every other field
+# on the metadata line is another layer's and is carried through.
+_COMPACT_OWNED_META_KEYS: frozenset[str] = frozenset(
+    {"_type", "created_at", "last_consolidated", "compacted_at"}
+)
+
+# The keys the dashboard's slot save is authoritative for. It reconstructs the
+# line from the slot's in-memory state, so for THESE absence is meaningful (a
+# cleared title, an un-pinned slot, a reopened tab) — hence they are named here
+# and not preserved, while everything else survives the save.
+SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
+    {
+        "_type",
+        "created_at",
+        "last_consolidated",
+        "closed",
+        "closed_at",
+        "memory_mode",
+        "title",
+        "agent",
+        "model",
+        "reasoning_effort",
+        "mode",
+        "workspace",
+        "project",
+        "folder_id",
+        "app",
+        "artifact",
+        "pinned",
+        "color_index",
+        "color_theme",
+        "tags",
+        "forked_from",
+        "linked_session_key",
+        "tab_id",
+    }
+)
+
+
+def carry_unowned_metadata(
+    rebuilt: dict,
+    existing: dict,
+    owned: Container[str],
+) -> dict:
+    """Carry every pre-existing metadata field the rebuilding writer does not own.
+
+    A writer that reconstructs a transcript's metadata line from its own state
+    (the dashboard slot save, :meth:`ConversationLog.compact`) is authoritative
+    ONLY for the keys it writes: for those, absence is meaningful and must erase
+    (clearing a title, un-pinning, reopening a closed tab). For every OTHER key
+    absence means "not mine to know about", so reconstructing the subset silently
+    deletes another layer's durable state.
+
+    Enumerating the foreign keys to preserve instead is the failure mode this
+    replaces: each new field has to be added to every rebuilder, and the one that
+    is missed loses data with no error — the rotation generation and the
+    consolidation retry accounting were both erased that way. So *owned* names the
+    writer's OWN keys and everything else is carried through verbatim, making
+    preservation the default and erasure the deliberate act.
+
+    Preservation is unconditional, INCLUDING the consolidation retry accounting
+    (:data:`_CONSOLIDATION_META_KEYS`), because a rebuild is not evidence about
+    content: a slot flush re-serializes the same window, and a compaction archives
+    turns the budget has already measured without introducing any the LLM has not
+    seen — erasing the accounting there resets a live backoff and resumes billed
+    retries.
+
+    A save that genuinely EDITS the conversation is distinguished by the content
+    identity it writes, not by what this helper drops: the dashboard rewrite path
+    advances ``rotation_generation``, which releases the budget through the span
+    identity the accounting is stamped with (see :class:`AttemptedSpan` and
+    :meth:`ConversationLog._attempts_describe_current_span`) and invalidates any
+    in-flight attempt's marker write. Keeping that in ONE counter is what makes an
+    edit and a rotation behave identically; a second, parallel drop-the-keys valve
+    here would additionally discard the armed backoff deadline, handing a session
+    whose consolidation keeps failing a free billed turn on every user edit.
+
+    Returns *rebuilt*, mutated in place.
+    """
+    for meta_key, value in existing.items():
+        if meta_key in owned or meta_key in rebuilt:
+            continue
+        rebuilt[meta_key] = value
+    return rebuilt
 
 
 def _fmt_message(m: dict) -> str:
@@ -102,6 +263,19 @@ _SESSION_KEEP_LINES = 200
 # don't.
 _FLOCK_ACQUIRE_TIMEOUT_S = 10.0
 _FLOCK_POLL_INTERVAL_S = 0.05
+
+
+class _ConsolidationNotDispatched(Exception):
+    """A consolidation prompt never reached the provider.
+
+    Distinguishes "we could not send the turn" (no session manager; kiro-cli
+    missing, not logged in, or failing to start) from "the turn ran and returned
+    nothing useful". Only the latter costs money, so only the latter may consume
+    the attempt budget that abandons a span — charging an unsent turn would let a
+    broken host mark messages consolidated that no LLM has ever read. Raised
+    rather than reported as a flag beside the result so a caller cannot silently
+    drop the distinction.
+    """
 
 
 class HistoryLockTimeout(TimeoutError):
@@ -214,6 +388,19 @@ _ON_LOOP_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _ON_LOOP_FALSY = frozenset({"0", "false", "no", "off"})
 
 
+def on_loop_persist_strict() -> bool:
+    """Public alias of :func:`_on_loop_persist_strict` for other modules.
+
+    The strictness knob (``KIROCREW_STRICT_ON_LOOP_PERSIST`` /
+    ``KIROCREW_DEV_MODE``) governs the on-loop persistence discipline for every
+    store, not just this module's conversation log; consumers that enforce the
+    same offload rule on their own SQLite databases (e.g. the auto_research
+    campaigns DB) read the shared setting through this alias instead of
+    importing a private name.
+    """
+    return _on_loop_persist_strict()
+
+
 def _check_on_loop_persist_discipline(key: str) -> None:
     """Enforce (strict) or diagnose (production) an on-loop ``_locked`` entry.
 
@@ -308,8 +495,13 @@ def append_if_absent_off_loop(
     content: str,
     *,
     agent: str | None = None,
-) -> None:
+    cls: str = "",
+) -> Any:
     """Idempotent, loop-safe variant of :func:`append_off_loop`.
+
+    Returns the executor future for the scheduled write, or None when the write
+    already happened inline (no running loop). A caller holding the ONLY durable
+    copy of something must await that future: scheduling is not durability.
 
     Routes :meth:`ConversationLog.append_if_absent` — which atomically skips a
     message already persisted under the same session lock — off the event loop
@@ -324,7 +516,7 @@ def append_if_absent_off_loop(
     """
 
     def _do() -> None:
-        conversation_log.append_if_absent(key, role, content, agent=agent)
+        conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls)
 
     try:
         loop = asyncio.get_running_loop()
@@ -339,7 +531,7 @@ def append_if_absent_off_loop(
                 key,
                 exc_info=True,
             )
-        return
+        return None
 
     def _report(fut: "asyncio.Future[None]") -> None:
         exc = fut.exception()
@@ -350,7 +542,12 @@ def append_if_absent_off_loop(
                 exc,
             )
 
-    loop.run_in_executor(None, _do).add_done_callback(_report)
+    fut = loop.run_in_executor(None, _do)
+    fut.add_done_callback(_report)
+    # Hand the future BACK: a caller holding the only durable copy awaits this
+    # to turn "scheduled" into "on disk". Dropping it here made the barrier a
+    # no-op on every running-loop path, i.e. every real gateway path.
+    return fut
 
 
 def update_metadata_off_loop(
@@ -413,8 +610,41 @@ def update_metadata_off_loop(
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
+SEARCH_MAX_TOKENS = 12  # distinct terms scored per query — see search_query_tokens
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
+_PHRASE_BOOST = 4  # extra weight per exact whole-query hit in a multi-word search
 _SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
+
+
+def search_query_tokens(query: str) -> tuple[list[str], str]:
+    """Return ``(tokens, phrase)`` for a search *query*, casefolded.
+
+    ``tokens`` are the DISTINCT whitespace-separated terms in first-seen order,
+    capped at :data:`SEARCH_MAX_TOKENS`; ``phrase`` is the whole normalized
+    query. Callers requiring every token (:meth:`ConversationLog.search_sessions`)
+    and callers locating one (the snippet builders) share this so the two halves
+    of a query cannot drift apart.
+
+    Both bounds exist because **every token costs one full scan** of a session's
+    text, so token count multiplies search cost on a user-supplied string:
+
+    * Deduplication is free correctness — a repeated term cannot change an AND
+      match, so scanning for it twice buys nothing. A 256-character query of
+      repeated ``"a "`` would otherwise run 128 scans per session instead of 1.
+    * The cap bounds the distinct case, which dedup cannot: 100 distinct short
+      terms is still 100 scans. Truncating makes the query only LOOSER (fewer
+      required terms), so it can admit extra results but never hide a session
+      that would have matched — the safe direction when the alternative is a
+      keystroke-driven search stalling for seconds.
+
+    A whitespace-only query yields ``([], "")``; callers treat that as "matches
+    nothing" rather than "matches everything".
+    """
+    parts = query.casefold().split()
+    if not parts:
+        return ([], "")
+    return (list(dict.fromkeys(parts))[:SEARCH_MAX_TOKENS], " ".join(parts))
+
 
 # Hard ceilings on the memory the two search memos may hold, in real retained
 # bytes as reported by ``str.__sizeof__`` — NOT in characters.
@@ -444,6 +674,27 @@ _SEARCH_SNIPPET_BUDGET_BYTES = 64 * 1024 * 1024
 # history tools (mcp_core) and the dashboard session handlers so the exclusion
 # can't silently diverge between surfaces.
 INCOGNITO_MEMORY_MODES = frozenset({"incognito", "temporary"})
+
+
+def is_incognito_transcript(memory_mode: object) -> bool:
+    """True when *memory_mode* marks a transcript private (incognito/temporary).
+
+    The single shared predicate for :data:`INCOGNITO_MEMORY_MODES` membership,
+    so the normalization cannot drift between the surfaces that must agree on
+    what "private" means (history scans, MCP history tools, dashboard session
+    handlers, Discord resume, summary/folder/channel-slot derivations).
+
+    Normalization is ``str()`` + ``lower()`` — exactly what the call sites
+    apply: ``None``/absent reads as persistent (not private), and comparison is
+    case-insensitive because the set holds lowercase members while a
+    hand-edited transcript header is not bound by the API's validation.
+    Whitespace is deliberately NOT stripped and unrecognized values read as
+    not-private: callers that must fail closed on an unreadable or junk header
+    (e.g. the restricted-session write gate) resolve the mode through an
+    allowlist first and deny on ``None`` before this membership test applies.
+    """
+    return str(memory_mode or "").lower() in INCOGNITO_MEMORY_MODES
+
 
 # The fields that record where a message came from: the session key it arrived
 # on (``source_thread``, e.g. ``slack:1785861252.833429``) and the platform user
@@ -537,11 +788,11 @@ def _archive_lines(
     )
     payload = header + "".join(lines)
     # Atomic exclusive-create to avoid TOCTOU clobber when two archives land in the same second.
-    # Use '__' delimiter so keys containing dots (e.g. Slack thread_ts) don't confuse rfind('.') parsing.
     for n in itertools.count():
         if n > 1000:
             raise RuntimeError(f"Failed to create archive file after {n} attempts")
-        candidate = adir / f"{safekey}__{stamp}{f'-{n}' if n else ''}.jsonl"
+        suffix = f"-{n}" if n else ""
+        candidate = adir / f"{safekey}{ARCHIVE_SEGMENT_DELIMITER}{stamp}{suffix}.jsonl"
         try:
             with candidate.open("x", encoding="utf-8") as f:
                 f.write(payload)
@@ -731,6 +982,43 @@ def monotonic_transcript_ts(previous: str | None, now: datetime) -> str:
 def _safe_key(key: str) -> str:
     """Convert a session key (e.g. Slack thread_ts) to a safe filename."""
     return re.sub(r"[^\w\-.]", "_", key)
+
+
+def transcript_stem(key: str) -> str:
+    """The canonical filename stem *key*'s transcript and archive segments share.
+
+    Exported so callers that account for or reclaim a session's disk usage can
+    pair a session key with its files without re-deriving the sanitization. A
+    second copy of that rule would drift the moment this one changed, and the
+    failure is silent and destructive: the pairing misses, and a caller deleting
+    "the session" removes one half and leaves the other behind.
+
+    Prefer :func:`transcript_stems` when the answer feeds a decision about which
+    files belong to a session — a Slack thread predating the canonical
+    ``slack:<ts>`` key still logs under its bare thread_ts stem, and this function
+    alone would not find it.
+    """
+    return _safe_key(key)
+
+
+def transcript_stems(key: str) -> tuple[str, ...]:
+    """Every filename stem *key*'s transcript could occupy, canonical first.
+
+    :meth:`ConversationLog._path` falls back to the pre-migration bare
+    ``thread_ts`` filename for Slack threads that predate the canonical session
+    key, so one session key can legitimately resolve to either name. A caller that
+    only knew the canonical stem would treat the legacy transcript as belonging to
+    no session — and therefore as reclaimable while the session is still
+    resumable. Returning both keeps that decision correct without duplicating the
+    fallback rule.
+    """
+    stems = [_safe_key(key)]
+    bare = legacy_key(key)
+    if bare is not None:
+        legacy = _safe_key(bare)
+        if legacy not in stems:
+            stems.append(legacy)
+    return tuple(stems)
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
@@ -1468,9 +1756,7 @@ class ConversationLog:
         any real append advances the mtime and invalidates it.
         """
         try:
-            data = json.loads(
-                self._summary_cache_path(key).read_text(encoding="utf-8")
-            )
+            data = json.loads(self._summary_cache_path(key).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         summary = data.get("summary")
@@ -1492,6 +1778,93 @@ class ConversationLog:
             json.dumps({"sig": sig, "summary": summary}),
         )
 
+    def _intent_summary_cache_path(self, key: str) -> Path:
+        """Sidecar path for a session's cached intent-structured summary.
+
+        Deliberately a different file from :meth:`_summary_cache_path`: the
+        one-line summary and the intent summary have independent writers and
+        independent triggers, and sharing one file would reintroduce the
+        read-modify-write race the sidecar design exists to avoid.
+        """
+        return self._dir / ".intents" / f"{_safe_key(key)}.json"
+
+    def get_cached_intent_summary(self, key: str) -> dict | None:
+        """Return the cached intent summary payload for *key* if still valid.
+
+        Same mtime-signature contract as :meth:`get_cached_summary`: any real
+        append advances the session file's mtime and invalidates the cache,
+        while metadata-only rewrites preserve it. Returns the whole payload so
+        the caller can read ``generated_at`` for display.
+        """
+        try:
+            raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
+            return None
+        sig = self.session_mtime(key)
+        if sig is None or data.get("sig") != sig:
+            return None
+        return data
+
+    def read_intent_summary(self, key: str) -> tuple[dict | None, bool]:
+        """Return ``(payload, stale)`` for a session's intent summary.
+
+        Unlike :meth:`get_cached_intent_summary`, this does not discard a
+        payload whose signature no longer matches — it reports it as stale
+        instead. The panel prefers showing the last known summary marked as
+        out of date over showing nothing, because an empty panel reads as
+        "this feature is broken" while a stale one reads as "not regenerated
+        yet", which is the truth.
+        """
+        try:
+            raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return None, False
+        if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
+            return None, False
+        sig = self.session_mtime(key)
+        return data, not (sig is not None and data.get("sig") == sig)
+
+    def set_cached_intent_summary(self, key: str, payload: dict, sig: float) -> bool:
+        """Persist a derived intent summary *payload* to its sidecar cache.
+
+        Writes only the sidecar, never the session JSONL, so generating a
+        summary cannot clobber the transcript or advance its mtime (which would
+        both invalidate every other derived cache and reorder ``list_sessions``).
+
+        The write happens under ``_locked`` and only if the transcript still
+        exists with the *same* signature the generation started from. Generation
+        holds no lock while the model call is in flight (it can take tens of
+        seconds), so a permanent :meth:`delete_session` can complete in that
+        window -- removing the transcript AND this sidecar. An unconditional
+        write here would then recreate the sidecar, resurrecting deleted
+        conversation data after the user was told it was gone. The sig equality
+        check also drops a summary that a mid-generation append has already made
+        stale, rather than storing it as the latest word.
+
+        Returns True when the payload was written, False when it was refused
+        (transcript deleted or changed, or the lock could not be acquired).
+        Callers run this off the event loop (``asyncio.to_thread``) because
+        ``_locked`` blocks.
+        """
+        try:
+            with self._locked(key):
+                if _safe_mtime(self._path(key)) != sig:
+                    return False
+                atomic_write(
+                    self._intent_summary_cache_path(key),
+                    json.dumps({**payload, "sig": sig}),
+                )
+                return True
+        except HistoryLockTimeout:
+            logger.warning(
+                "set_cached_intent_summary: lock timeout, not writing key=%s", key
+            )
+            return False
+
     def append(
         self,
         key: str,
@@ -1502,8 +1875,14 @@ class ConversationLog:
         source_user: str | None = None,
         agent: str | None = None,
         tab_id: str | None = None,
+        cls: str = "",
     ) -> None:
         """Append a message with optional provenance to the session log.
+
+        *cls* persists the message's presentation class. The in-memory slot
+        carries one (``_ChatSlot.append``) but this durable copy had nowhere to
+        put it, so any class-borne distinction silently vanished the moment a
+        session's rows had to be replayed from disk after a restart.
 
         If the session file does not yet exist, it will be created with an
         initial metadata line.  When *agent* is supplied, the agent name is
@@ -1538,6 +1917,7 @@ class ConversationLog:
             msg: dict = {
                 "role": role,
                 "content": _redact_at_write_boundary(role, content),
+                **({"cls": cls} if cls else {}),
                 # Strictly after the row already on disk, so the pair written by
                 # one turn stays ordered on a host whose clock cannot separate
                 # them (see monotonic_transcript_ts). Consulting the file here is
@@ -1589,6 +1969,7 @@ class ConversationLog:
         *,
         agent: str | None = None,
         tab_id: str | None = None,
+        cls: str = "",
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
@@ -1621,7 +2002,7 @@ class ConversationLog:
             # Reentrant: ``append`` re-enters ``_locked`` for the same key on
             # this thread (RLock + refcounted flock), so the write stays inside
             # the critical section we already hold.
-            self.append(key, role, content, agent=agent, tab_id=tab_id)
+            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls)
             return True
 
     def recent(
@@ -1714,14 +2095,23 @@ class ConversationLog:
         return messages[offset:], len(messages)
 
     def rotation_generation(self, key: str) -> int:
-        """Return the session's rotation generation counter.
+        """Return the session's content-identity counter for *key*.
 
-        Incremented by :meth:`_maybe_rotate` on every rotation. A consolidator
-        snapshots this alongside the message offset before its (slow) LLM call
-        and passes it back to :meth:`mark_consolidated`, which resets the offset
-        whenever the generation changed — closing the rotation-during-await race
-        for ANY retained count, not just files that shrank below the offset.
-        Absent field (legacy metadata / never rotated) reads as ``0``.
+        Advanced by every write that makes the transcript's messages a DIFFERENT
+        body of content than a consolidation may have snapshotted: a rotation
+        (:meth:`_maybe_rotate`), a dashboard rewrite save (regenerate / rewind /
+        fork), and a channel transcript merge. A consolidator snapshots it
+        alongside the message offset before its (slow) LLM call and passes it back
+        to :meth:`mark_consolidated`, which refuses to apply the offset whenever
+        the generation changed — closing the change-during-await race for ANY
+        retained count, including an edit that leaves the count untouched. It is
+        also the span identity the retry accounting is stamped against
+        (:meth:`_attempts_describe_current_span`), so the same bump releases a
+        budget charged against the superseded content.
+
+        Named for the rotation that first needed it; the field is now the general
+        content-identity counter. Absent field (legacy metadata / never advanced)
+        reads as ``0``.
         """
         return int(self._read_metadata(key).get("rotation_generation", 0) or 0)
 
@@ -1759,22 +2149,31 @@ class ConversationLog:
         *offset* is an absolute message index captured by the caller BEFORE a
         (potentially slow) LLM consolidation call. *generation* is the rotation
         generation counter (:meth:`rotation_generation`) captured at the same
-        moment. If a rotation fired while the consolidator awaited the LLM, the
-        file was truncated to its newest messages, ``last_consolidated`` reset
-        to 0, and the generation bumped — so the caller's *offset* is in the
-        stale PRE-rotation numbering: every surviving index shifted by the
-        number of dropped lines, so applying it would silently mark
-        never-consolidated retained messages as already processed.
+        moment. It advances on anything that changes the content under a
+        consolidation in flight, and each case makes the caller's *offset*
+        meaningless in a different way:
+
+        * A **rotation** truncated the file to its newest messages and reset
+          ``last_consolidated`` to 0, so every surviving index shifted by the
+          number of dropped lines and applying the offset would mark
+          never-consolidated retained messages as processed.
+        * A **transcript edit** (the dashboard regenerate / rewind / fork save)
+          replaced the live window's tail with content this turn never read. The
+          message count, the marker and the extent can all be unchanged, so the
+          offset still *looks* applicable — and applying it would mark the
+          REPLACEMENT tail consolidated without ever extracting it.
+
+        Both are silent memory loss, and the generation is what distinguishes
+        them from a turn whose span is still intact.
 
         Detection uses two independent signals:
 
         1. **Generation change** (primary, when *generation* is supplied):
-           any rotation between snapshot and write bumps the counter, so a
-           mismatch resets ``last_consolidated`` to 0 regardless of how many
-           messages the rotation retained. This closes the case a pure
-           offset-vs-count heuristic misses — a rotation that keeps >= *offset*
-           messages leaves ``offset <= msg_count`` true yet has still shifted
-           every index.
+           anything that changes the content between snapshot and write bumps the
+           counter, so a mismatch resets ``last_consolidated`` to 0. This closes
+           both cases a pure offset-vs-count heuristic misses — a rotation that
+           keeps >= *offset* messages, and an edit that keeps the count identical,
+           each leave ``offset <= msg_count`` true.
         2. **Offset exceeds current count** (fallback, always): the file shrank
            below the captured offset (rotation truncated it). Retained if
            *generation* is unavailable (legacy callers) or as defense-in-depth.
@@ -1802,20 +2201,25 @@ class ConversationLog:
             msg_count = sum(1 for ln in lines[1:] if ln.strip())
             current_generation = int(meta.get("rotation_generation", 0) or 0)
             if generation is not None and current_generation != generation:
-                # PRIMARY signal: a rotation fired between the caller's snapshot
-                # and now (the generation counter advanced). The offset is in
-                # the stale PRE-rotation numbering — every surviving index has
-                # shifted by the number of dropped lines — so it cannot be
-                # applied regardless of how many messages the rotation retained.
-                # A rotation that kept >= *offset* messages leaves
-                # ``offset <= msg_count`` true and would sail past the count
-                # heuristic below, silently marking never-consolidated retained
-                # messages as done. Reset to 0 and reconsolidate the retained
-                # tail (harmless, idempotent) rather than risk that loss.
+                # PRIMARY signal: the content under this consolidation changed
+                # between the caller's snapshot and now (the generation counter
+                # advanced) — a rotation, or a dashboard rewrite that swapped the
+                # live window's tail. Either way the offset cannot be applied.
+                # After a rotation it is in the stale PRE-rotation numbering
+                # (every surviving index shifted by the number of dropped lines);
+                # after an edit the numbering still fits but the messages it would
+                # mark are the REPLACEMENT tail, which no turn has read. Neither
+                # is caught by the count heuristic below: a rotation that kept
+                # >= *offset* messages and an edit that kept the count identical
+                # both leave ``offset <= msg_count`` true, and marking either
+                # would drop never-consolidated content from memory/history
+                # extraction. Reset to 0 and reconsolidate the current tail
+                # (harmless, idempotent) rather than risk that loss.
                 logger.warning(
                     "mark_consolidated: rotation generation changed %s->%d for "
-                    "%s (rotation during consolidation); resetting "
-                    "last_consolidated to 0 to avoid skipping retained messages",
+                    "%s (rotation or transcript edit during consolidation); "
+                    "resetting last_consolidated to 0 to avoid marking content "
+                    "no consolidation turn read",
                     generation,
                     current_generation,
                     key,
@@ -1847,6 +2251,22 @@ class ConversationLog:
                 safe_offset = offset
             meta["last_consolidated"] = safe_offset
             meta["updated_at"] = metadata_now_iso()
+            # The marker is the success signal for the retry accounting written
+            # by record_consolidation_failure: once a span is marked, its failed
+            # attempts and backoff deadline describe a span that no longer
+            # exists, and leaving them behind would charge the NEXT span for this
+            # one's failures. Dropped in the same locked write so no window
+            # exists where the marker is applied but the budget is not released.
+            #
+            # Only when the offset was actually APPLIED, though. Both branches
+            # above reset to 0 without advancing anything, so the span is still
+            # unconsolidated — and the abandon-at-cap path calls this method
+            # precisely to stop spending on it. Clearing the accounting there
+            # would hand a capped span a fresh budget every time a rotation
+            # raced the marker write, so the cap would never actually hold.
+            if safe_offset == offset:
+                for _acct_key in _CONSOLIDATION_META_KEYS:
+                    meta.pop(_acct_key, None)
             lines[0] = json.dumps(meta) + "\n"
             # Reduce lock hold for this one-line metadata rewrite: skip the
             # fsync (fsync=False). ``last_consolidated`` is recoverable
@@ -1865,6 +2285,291 @@ class ConversationLog:
         messages = self._read_messages(key)
         offset = self._read_metadata(key).get("last_consolidated", 0)
         return max(0, len(messages) - offset)
+
+    def consolidation_counts(self, key: str) -> tuple[int, int]:
+        """Return ``(total_messages, unconsolidated)`` from a SINGLE read.
+
+        The consolidator's entry points need both: the unconsolidated count to
+        decide there is anything to do, and the total as the extent
+        :meth:`consolidation_retry_state` compares the charged span against. Both
+        come from one ``_read_messages`` call so the eligibility check costs no
+        additional transcript read on the event loop.
+        """
+        messages = self._read_messages(key)
+        offset = self._read_metadata(key).get("last_consolidated", 0)
+        try:
+            offset = int(offset or 0)
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+        return len(messages), max(0, len(messages) - offset)
+
+    def consolidation_retry_state(
+        self, key: str, message_count: int | None = None
+    ) -> tuple[int, float]:
+        """Return ``(failed_attempts, next_eligible_at)`` for *key*.
+
+        Both live on the metadata line beside ``last_consolidated``, so the
+        accounting shares the marker's lifetime: it survives a gateway restart
+        (the consolidator's own throttle is in-memory only) and is cleared by
+        :meth:`mark_consolidated` when the span finally lands. ``(0, 0.0)`` means
+        no failed attempt is on record — the common case — so callers can treat a
+        missing entry as "eligible now".
+
+        Read UNCACHED. The accounting is cross-process (a gateway sweep, the CLI,
+        a subagent all record failures for the same session), and every writer of
+        these fields restores the file's pre-write mtime so housekeeping does not
+        reorder ``list_sessions``. The metadata cache is keyed on mtime, so a warm
+        entry survives another process's write byte-for-byte and would serve a
+        stale attempt count — bypassing the backoff on the read path and, on the
+        read-increment-write path, overwriting the other process's durable count
+        with a lower one. Dropping the entry first costs one first-line read.
+
+        Metadata is caller-supplied JSON, so every conversion is defensive:
+        ``1e309`` parses to ``inf`` and ``int(inf)`` raises ``OverflowError``
+        (which would surface as a 500 from the manual trigger or break the idle
+        sweep), while a ``NaN`` deadline makes every ``now >= retry_at``
+        comparison false and disables consolidation for the session forever.
+        Non-finite and unconvertible values therefore reset to the eligible zero
+        state rather than propagating.
+        """
+        self._meta_cache.pop(key, None)
+        meta = self._read_metadata(key)
+        try:
+            attempts = int(meta.get("consolidation_attempts", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            attempts = 0
+        try:
+            retry_at = float(meta.get("consolidation_retry_at", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            retry_at = 0.0
+        if not math.isfinite(retry_at):
+            retry_at = 0.0
+        if attempts and not self._attempts_describe_current_span(meta, message_count):
+            # The counter belongs to a span that no longer exists: a rotation
+            # archived those messages (generation bumped), a rewrite reset the
+            # marker they started from, or the transcript has grown past the
+            # extent that was charged. The cap ABANDONS a span, so carrying a
+            # capped count onto different content would silence consolidation for
+            # this session permanently — every message written after that point
+            # would stay ineligible forever. The new span gets a fresh budget.
+            #
+            # The deadline is deliberately kept: a fresh budget is not a free
+            # immediate turn, so a session that keeps failing still waits out the
+            # backoff already armed (4 h at the cap) rather than re-billing the
+            # instant one more message lands.
+            attempts = 0
+        return max(0, attempts), retry_at
+
+    def _attempts_describe_current_span(
+        self, meta: dict, message_count: int | None
+    ) -> bool:
+        """True when the recorded attempts belong to the span in front of us now.
+
+        A span is identified by where it starts AND how far it reaches: the
+        ``(rotation_generation, last_consolidated)`` pair it was charged against
+        plus the message count that was actually attempted. While a span keeps
+        failing none of the three move — the marker is only advanced on success —
+        so the cap holds across attempts. Anything that changes the CONTENT under
+        the counter moves one of them: a rotation and a dashboard rewrite
+        (regenerate / rewind / fork) both advance the generation, a rewrite that
+        cannot apply a stale offset resets the marker, and new messages push the
+        transcript past the extent that was attempted.
+
+        The generation is what covers the edit that moves nothing else. A
+        regenerate replaces the assistant tail with a reply the failing turns
+        never saw and lands at the same message count, the same marker and the
+        same extent, so without the bump a capped budget would sit over brand-new
+        content and refuse it forever.
+
+        The extent matters because the cap is what ABANDONS a span, and it is only
+        reachable from :meth:`HistoryConsolidator.retry_eligible` when the
+        abandon-marker write itself failed. Without it, that one transient write
+        failure would refuse the session forever: appended messages leave the
+        generation and marker untouched, so every entry point would keep rejecting
+        a transcript that is no longer the one that failed, and the session's
+        history would never be consolidated again.
+
+        *message_count* is the transcript's CURRENT total, supplied by the caller.
+        It is never read from disk here: this predicate runs inside
+        ``retry_eligible`` on the gateway event loop, and a synchronous full-file
+        read there stalls every other gateway task on a large transcript. Callers
+        that already hold a count pass it (see :meth:`consolidation_counts`);
+        ``None`` means "no count available", which skips the extent test and keeps
+        the cap — the conservative direction, since the alternative is spending a
+        billed turn on an unverified premise.
+
+        Growth is compared with ``>`` rather than ``!=`` on purpose. A count that
+        SHRANK is a rotation or compaction, which already moves the generation or
+        the marker; treating a shrink as new content on its own would hand a
+        budget to a span with nothing added to it.
+
+        Unstamped accounting (written before a given field existed) is treated as
+        belonging to the current span, so an unknown provenance keeps the cap
+        rather than granting an unbounded supply of billed retries.
+
+        The stamp this compares against is the ATTEMPTED span, captured before the
+        turn (see :class:`AttemptedSpan`), which is what makes all three tests
+        meaningful: if the stamp were re-read after the turn it would describe the
+        transcript in front of us by construction, and every test here would
+        trivially match.
+        """
+        for meta_key, span_key in (
+            ("rotation_generation", "consolidation_attempts_generation"),
+            ("last_consolidated", "consolidation_attempts_offset"),
+        ):
+            if span_key not in meta:
+                continue
+            try:
+                if int(meta.get(span_key, 0) or 0) != int(meta.get(meta_key, 0) or 0):
+                    return False
+            except (TypeError, ValueError, OverflowError):
+                # Unreadable stamp — fall back to keeping the cap.
+                continue
+        if message_count is not None and "consolidation_attempts_count" in meta:
+            try:
+                attempted = int(meta.get("consolidation_attempts_count", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                return True
+            if message_count > attempted:
+                return False
+        return True
+
+    def _current_span_fields(self, span: AttemptedSpan) -> dict:
+        """The span-identity stamp to store beside a freshly charged attempt.
+
+        Every field comes from *span* — the consolidation's own pre-turn snapshot
+        (see :class:`AttemptedSpan`) — and NOTHING is re-read from the metadata
+        line here. The stamp must describe the span the turn actually attempted,
+        and the metadata line at failure time describes the transcript as it is
+        *now*, which a rotation or a marker-resetting rewrite during the turn has
+        already changed.
+        The clamps are the only normalization: *span* is typed, and its values come
+        from a snapshot's own ``len()``/generation reads, so there is nothing to
+        coerce — but a negative offset or count would be nonsense to stamp.
+        """
+        return {
+            "consolidation_attempts_generation": span.generation,
+            "consolidation_attempts_offset": max(0, span.offset),
+            "consolidation_attempts_count": max(0, span.total),
+        }
+
+    def record_consolidation_failure(
+        self,
+        key: str,
+        base_secs: float,
+        max_secs: float,
+        span: AttemptedSpan,
+        now: float | None = None,
+    ) -> tuple[int, float]:
+        """Durably count one failed consolidation attempt for *key*.
+
+        *span* is the identity of what the failing turn actually attempted, taken
+        from the pre-turn snapshot (see :class:`AttemptedSpan`). It serves twice:
+        as the stamp written beside the counter, and as the span the existing
+        counter is compared against — so a turn that attempted a DIFFERENT span
+        starts a fresh budget while one attempting the same span increments toward
+        the cap. Nothing about the span is re-read from the file here, so a
+        rotation or rewrite that landed during the turn cannot relabel this charge
+        as belonging to content it never measured.
+
+        Returns the new ``(attempts, next_eligible_at)``. The wait doubles per
+        attempt from *base_secs*, capped at *max_secs*, so a persistently broken
+        span costs a geometrically shrinking number of billed LLM turns instead
+        of one per heartbeat tick.
+
+        The read-increment-write runs under a single :meth:`_locked` hold: two
+        processes consolidating the same session (gateway sweep and CLI) would
+        otherwise both read the same count and write the same value, letting the
+        span consume unbounded attempts while the counter sits still. The read
+        inside is uncached for the same reason (see
+        :meth:`consolidation_retry_state`) — an mtime-preserving write by the
+        other process is invisible to a warm cache.
+
+        Returns ``(0, 0.0)`` without writing when the session's transcript is gone
+        (deleted while the consolidation was in flight): ``_update_metadata_locked``
+        upserts, so writing would resurrect the session as an empty metadata-only
+        file. Blocking file IO — call it off the event loop.
+        """
+        stamp = _time.time() if now is None else now
+        with self._locked(key):
+            if not self._path(key).exists():
+                # The session was deleted while this consolidation was in flight.
+                # _update_metadata_locked upserts, so writing here would recreate
+                # the transcript as a metadata-only file — resurrecting a deleted
+                # session as empty history in list_sessions. Nothing to account
+                # for: the span it described is gone.
+                logger.info(
+                    "Skipping consolidation retry accounting for %s: session deleted",
+                    key,
+                )
+                return 0, 0.0
+            attempts = self.consolidation_retry_state(key, span.total)[0] + 1
+            # The exponent comes from caller-supplied metadata, so clamp it before
+            # shifting: an absurd stored count would otherwise make ``2 ** n``
+            # allocate a huge int (or raise) instead of returning a wait. The
+            # backoff saturates at *max_secs* far below the clamp, so no reachable
+            # attempt count is affected.
+            retry_at = stamp + min(max_secs, base_secs * (2 ** min(attempts - 1, 64)))
+            self._update_metadata_locked(
+                key,
+                {
+                    "consolidation_attempts": attempts,
+                    "consolidation_retry_at": retry_at,
+                    # Bind the count to the span it was charged against — where it
+                    # starts and how far it reaches — so a rotation, a rewrite, or
+                    # a grown transcript cannot leave a capped counter sitting over
+                    # content it never measured (see
+                    # _attempts_describe_current_span). Every field comes from the
+                    # pre-turn snapshot, never from the file as it stands now, and
+                    # is written in the SAME locked update as the counter, so no
+                    # window exists where the count is charged but its span is
+                    # unidentified or misidentified.
+                    **self._current_span_fields(span),
+                },
+            )
+        return attempts, retry_at
+
+    def record_consolidation_environment_failure(
+        self,
+        key: str,
+        base_secs: float,
+        max_secs: float,
+        now: float | None = None,
+    ) -> tuple[int, float]:
+        """Arm the backoff for a consolidation that never reached the provider.
+
+        Counted separately from :meth:`record_consolidation_failure` because the
+        two failures have different costs. A spent turn costs money, so its
+        counter feeds a hard abandon cap. A pre-dispatch failure — no session
+        manager, or kiro-cli failing to start — costs nothing, so it must never
+        abandon a span: doing so would write the durable marker over messages no
+        LLM has ever read. It still needs a deadline, or a permanently broken host
+        re-attempts on every 60s heartbeat tick forever, so the count drives the
+        same widening wait up to *max_secs* and then holds there.
+
+        Returns the new ``(environment_failures, next_eligible_at)``. Same single
+        locked read-increment-write and same deleted-session guard as the billed
+        path. Blocking file IO — call it off the event loop.
+        """
+        stamp = _time.time() if now is None else now
+        with self._locked(key):
+            if not self._path(key).exists():
+                return 0, 0.0
+            meta = self._read_metadata(key)
+            try:
+                failures = int(meta.get("consolidation_env_failures", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                failures = 0
+            failures = max(0, failures) + 1
+            retry_at = stamp + min(max_secs, base_secs * (2 ** min(failures - 1, 64)))
+            self._update_metadata_locked(
+                key,
+                {
+                    "consolidation_env_failures": failures,
+                    "consolidation_retry_at": retry_at,
+                },
+            )
+        return failures, retry_at
 
     def load_transcript(self, key: str) -> str:
         """Load full session as formatted text for LLM summarization."""
@@ -2012,41 +2717,85 @@ class ConversationLog:
     def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
-        Case-insensitive substring match over each message's ``content``
-        field using full Unicode case folding via :meth:`str.casefold`
-        (so e.g. German ``ß`` folds to ``ss``).  Matching only on parsed
-        ``content`` avoids false positives from JSON structural elements
-        (e.g. the word ``"user"`` matching every ``"role": "user"`` line).
+        The query is split on whitespace into tokens, and a session matches only
+        when **every** token appears somewhere in its title or content — an AND
+        over the whole document, not a single whole-query substring. That is what
+        makes a natural multi-word query work: ``"ack contention hypotheses"``
+        finds a session discussing all three, which a whole-phrase match missed
+        because those exact words never sit adjacent. A single-token query is
+        unchanged by this — one token IS the phrase.
+
+        Each token is matched case-insensitively as a SUBSTRING (so ``"cont"``
+        hits ``"contention"``, which keeps search-as-you-type responsive) using
+        full Unicode case folding via :meth:`str.casefold` (so e.g. German ``ß``
+        folds to ``ss``).  Matching only on parsed ``content`` avoids false
+        positives from JSON structural elements (e.g. the word ``"user"``
+        matching every ``"role": "user"`` line).
 
         Ranking (higher is better)::
 
-            score = (title_matches * _TITLE_BOOST)
-                  + (content_matches / sqrt(1 + doc_chars / 1024))
+            score = (title_hits * _TITLE_BOOST)
+                  + (content_hits / sqrt(1 + doc_chars / 1024))
+
+        where ``*_hits`` sum the per-token counts, plus ``_PHRASE_BOOST`` per
+        occurrence of the exact whole query when it has more than one token.
+        The phrase bonus rewards adjacency: at comparable token frequency, the
+        session containing the words TOGETHER as typed ranks above one that
+        merely mentions them far apart.  It is deliberately a bonus and not an
+        override — a session repeating one token far more often still wins on
+        raw term frequency, exactly as it already did for a single-token query.
+        (Saturating term frequency, BM25-style, would change that; it would also
+        re-rank every existing single-token query, so it is out of scope here.)
 
         Title matches get a strong field boost - titles are short and
         intentional, so a hit there is strong evidence.  Content matches
         are normalized by a sqrt length factor so a long session with a
         casual mention doesn't outrank a short, focused one.  (Simpler
         than BM25's ``(1-b) + b*(dl/avgdl)`` because we avoid the
-        two-pass scan needed for corpus stats.)  Sessions with zero
-        matches are dropped.  Ties break by recency (existing
+        two-pass scan needed for corpus stats.)  Sessions missing any
+        token are dropped.  Ties break by recency (existing
         ``list_sessions`` order - newest first).  Caps results at *limit*.
         Only the ``_SEARCH_SCAN_WINDOW`` most recent files are scored, so
         I/O stays bounded even with hundreds of sessions.
         """
         if not query or limit <= 0 or not self._dir.exists():
             return []
-        needle = query.casefold()
+        tokens, phrase = search_query_tokens(query)
+        if not tokens:
+            # Whitespace-only query: no tokens to require, so nothing can match.
+            # Returning [] keeps this from degenerating into "match everything",
+            # and skips reading every session file to reach that conclusion.
+            return []
+        # True when the phrase carries more than the single token does, so an
+        # exact-phrase bonus is meaningful. Not `len(tokens) > 1`: dedup collapses
+        # "a a" to one token while its phrase is still two words.
+        multi = tokens != [phrase]
         # (score, -rank, meta, needs_snippet)
         scored: list[tuple[float, int, dict, bool]] = []
         window = self.list_sessions()[:_SEARCH_SCAN_WINDOW]
         self._prune_search_memos({m["key"] for m in window})
         for rank, meta in enumerate(window):
             doc_chars, folded = self._folded_content(meta["key"])
-            content_hits = folded.count(needle) if folded else 0
-            title_hits = (meta.get("title") or "").casefold().count(needle)
-            if not title_hits and not content_hits:
+            title_folded = (meta.get("title") or "").casefold()
+            content_hits = 0
+            title_hits = 0
+            for token in tokens:
+                in_content = folded.count(token) if folded else 0
+                in_title = title_folded.count(token)
+                if not in_content and not in_title:
+                    # AND semantics: one absent token disqualifies the session,
+                    # so stop counting the rest.
+                    content_hits = title_hits = 0
+                    break
+                content_hits += in_content
+                title_hits += in_title
+            if not content_hits and not title_hits:
                 continue
+            if multi:
+                # Reward the words appearing together, in order, as typed.
+                if folded:
+                    content_hits += folded.count(phrase) * _PHRASE_BOOST
+                title_hits += title_folded.count(phrase) * _PHRASE_BOOST
             length_norm = math.sqrt(1 + doc_chars / 1024)
             score = title_hits * _TITLE_BOOST + content_hits / length_norm
             # Negate rank so a smaller (newer) rank wins ties after score desc sort.
@@ -2285,23 +3034,34 @@ class ConversationLog:
         an empty snippet despite a nonzero hit count), but folding can change a
         string's length, so the window may be off by a character or two.
 
-        Returns ``''`` when the query is not locatable in any single message, or
+        For a multi-word query the exact phrase is tried first and each token is
+        tried as a fallback, mirroring :meth:`search_sessions`' AND-over-tokens
+        matching — otherwise every session that matched on scattered words would
+        come back with no snippet at all. Needles are tried per message, so the
+        first MESSAGE containing any of them wins rather than the best needle
+        overall; that preserves the streaming early-exit above, and this string
+        is display-only.
+
+        Returns ``''`` when no needle is locatable in any single message, or
         when the file cannot be read (display-only — never raises at the caller).
         """
-        needle = query.casefold()
-        if not needle:
+        tokens, phrase = search_query_tokens(query)
+        if not tokens:
             return ""
+        needles = [phrase] if tokens == [phrase] else [phrase, *tokens]
         try:
             for text in self._snippet_texts(key):
-                pos = text.casefold().find(needle)
-                if pos < 0:
-                    continue
-                start = max(0, pos - self._SNIPPET_LEAD)
-                end = min(len(text), pos + len(query) + self._SNIPPET_TRAIL)
-                frag = " ".join(text[start:end].split())
-                prefix = "…" if start > 0 else ""
-                suffix = "…" if end < len(text) else ""
-                return (prefix + frag + suffix)[: self._SNIPPET_MAX]
+                folded = text.casefold()
+                for needle in needles:
+                    pos = folded.find(needle)
+                    if pos < 0:
+                        continue
+                    start = max(0, pos - self._SNIPPET_LEAD)
+                    end = min(len(text), pos + len(needle) + self._SNIPPET_TRAIL)
+                    frag = " ".join(text[start:end].split())
+                    prefix = "…" if start > 0 else ""
+                    suffix = "…" if end < len(text) else ""
+                    return (prefix + frag + suffix)[: self._SNIPPET_MAX]
         except OSError:
             return ""
         return ""
@@ -2344,9 +3104,8 @@ class ConversationLog:
                             d = json.loads(line.strip())
                         except (json.JSONDecodeError, ValueError):
                             continue
-                        if d.get("_type") == "metadata" and d.get("memory_mode") in (
-                            "incognito",
-                            "temporary",
+                        if d.get("_type") == "metadata" and is_incognito_transcript(
+                            d.get("memory_mode")
                         ):
                             is_restricted = True
                             break
@@ -2472,6 +3231,10 @@ class ConversationLog:
                     self._summary_cache_path(key).unlink(missing_ok=True)
                 except OSError:
                     pass
+                try:
+                    self._intent_summary_cache_path(key).unlink(missing_ok=True)
+                except OSError:
+                    pass
         except HistoryLockTimeout:
             logger.warning("delete_session: lock timeout, not deleting key=%s", key)
             return False
@@ -2510,6 +3273,39 @@ class ConversationLog:
         # (it only touches in-process state) so the next chained read rebuilds.
         if "tab_id" in fields:
             self.invalidate_tab_id_cache()
+
+    def update_metadata_if(
+        self, key: str, fields: dict, guard: Callable[[dict], bool]
+    ) -> bool:
+        """Merge *fields* only if *guard* still accepts the on-disk metadata.
+
+        ``guard`` is evaluated INSIDE the cross-process lock, against the record
+        as it stands at write time. That is the difference from
+        :meth:`update_metadata`: a caller that decided to write based on a
+        snapshot taken earlier cannot land that write over a change another
+        writer made in the meantime, because the decision is re-made here rather
+        than trusted from before the lock was acquired. Taking the lock can
+        itself mean waiting, so "checked, then wrote" is not the same as "checked
+        at the moment of writing".
+
+        Returns whether the merge was applied, so a caller can tell a skipped
+        write from a completed one and avoid applying it in memory.
+
+        Fails CLOSED on an unreadable record. ``_read_metadata`` cannot tell
+        "genuinely empty" from "could not be read", and an empty dict satisfies
+        most guards — so consulting it would let a failed read look like a blank
+        record and authorise a write over a placement that is actually there.
+        """
+        with self._locked(key):
+            meta, readable = self._read_metadata_status(key)
+            if not readable:
+                return False
+            if not guard(meta):
+                return False
+            self._update_metadata_locked(key, fields)
+        if "tab_id" in fields:
+            self.invalidate_tab_id_cache()
+        return True
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
         """Merge *fields* into the session's metadata line and persist.
@@ -2883,6 +3679,21 @@ class ConversationLog:
         ts = tail[-1].get("ts")
         return ts if isinstance(ts, str) and ts else None
 
+    def last_row_ts(self, key: str) -> str | None:
+        """The ``ts`` of the last persisted message row for *key*, or ``None``.
+
+        The public form of :meth:`_last_row_ts`: it takes :meth:`_locked` itself,
+        so a caller outside this class gets a read that no concurrent append can
+        tear. Ordering derived from it survives a restart, because the value is a
+        field of the persisted row rather than a count of what a process happens
+        to hold in memory.
+
+        BLOCKING. It performs file I/O, so an async caller must run it off the
+        event loop (``asyncio.to_thread``).
+        """
+        with self._locked(key):
+            return self._last_row_ts(key)
+
     def _invalidate_cache(self, key: str) -> None:
         """Invalidate caches for a key after a write operation."""
         self._msg_cache.pop(key, None)
@@ -2985,6 +3796,23 @@ class ConversationLog:
         """Return session metadata for *key*."""
         return self._read_metadata(key)
 
+    def get_metadata_status(self, key: str) -> tuple[dict, bool]:
+        """Return ``(metadata, readable)`` for *key*.
+
+        ``readable`` is ``False`` only when the transcript exists but its
+        metadata line could not be read after
+        :data:`_METADATA_READ_ATTEMPTS` attempts. Every other empty result --
+        no transcript at all, an empty first line, an undecodable one -- is a
+        genuine answer and reports ``True``.
+
+        :meth:`get_metadata` cannot express that difference: it returns ``{}``
+        for both, and a caller that reads ``{}`` as "this session was never
+        persisted" will discard live state. Use this instead of
+        :meth:`get_metadata` wherever an empty result triggers something
+        destructive.
+        """
+        return self._read_metadata_status(key)
+
     def _pause_for_transient_retry(self) -> None:
         """Pause briefly before retrying a transient read, but ONLY off the loop.
 
@@ -3009,29 +3837,38 @@ class ConversationLog:
     def _read_metadata(self, key: str) -> dict:
         """Read the metadata line (first line) from a session JSONL file.
 
+        Thin wrapper over :meth:`_read_metadata_status` that drops the
+        readability flag, so the many callers for whom "empty" and "unreadable"
+        are equivalent keep a plain ``dict`` return.
+        """
+        return self._read_metadata_status(key)[0]
+
+    def _read_metadata_status(self, key: str) -> tuple[dict, bool]:
+        """Read the metadata line, reporting whether the read itself succeeded.
+
         Uses mtime-based caching to avoid re-reading unchanged files.
 
-        Returns ``{}`` for a session that genuinely has no metadata. A caller
-        cannot distinguish that from a transient read failure, and at least one
-        does something destructive with the answer: the open-tab restore treats
-        ``{}`` as "never persisted" and silently drops the tab. So absorb the
-        transient case HERE rather than reporting it as absence -- retry a few
-        times, and if it still fails, say so at warning level instead of
-        returning a confident empty dict. Windows makes this more than
-        theoretical: a freshly written file can be briefly unopenable while an
-        indexer or AV scanner holds it (``ERROR_SHARING_VIOLATION``), which
-        surfaces as ``PermissionError`` -- an ``OSError`` subclass.
+        Returns ``({}, True)`` for a session that genuinely has no metadata and
+        ``({}, False)`` when the file exists but could not be read after
+        retries. The retry absorbs the common transient case; the flag exists
+        because absorbing it is not always possible, and at least one caller
+        does something destructive with a confident empty answer: the open-tab
+        restore treats ``{}`` as "never persisted" and drops the tab. Windows
+        makes this more than theoretical: a freshly written file can be briefly
+        unopenable while an indexer or AV scanner holds it
+        (``ERROR_SHARING_VIOLATION``), which surfaces as ``PermissionError`` --
+        an ``OSError`` subclass.
         """
         path = self._path(key)
         if not path.exists():
             self._meta_cache.pop(key, None)
-            return {}
+            return {}, True
         for attempt in range(_METADATA_READ_ATTEMPTS):
             try:
                 mtime = path.stat().st_mtime
                 cached = self._meta_cache.get(key)
                 if cached and cached[0] == mtime:
-                    return cached[1]
+                    return cached[1], True
                 # Read ONLY the first line. The previous form slurped the entire
                 # file via read_text() and then threw all but the first line away
                 # — on a 26 MB transcript that is ~10ms and ~26 MB of transient
@@ -3056,17 +3893,28 @@ class ConversationLog:
                     _METADATA_READ_ATTEMPTS,
                     exc_info=True,
                 )
-                return {}
+                return {}, False
             if not first:
-                return {}
+                return {}, True
             try:
                 data = json.loads(first)
-                meta = data if data.get("_type") == "metadata" else {}
+                # ``isinstance`` guard, not just the _type check: a first line
+                # that is valid JSON but not an OBJECT (``null``, a list, a bare
+                # string, a number) would make ``.get`` raise AttributeError
+                # rather than JSONDecodeError. That is a corrupt metadata line
+                # exactly like an undecodable one, so report it the same way --
+                # an empty dict that IS a genuine answer -- instead of throwing a
+                # non-OSError out of a read that callers treat as total.
+                meta = (
+                    data
+                    if isinstance(data, dict) and data.get("_type") == "metadata"
+                    else {}
+                )
             except json.JSONDecodeError:
                 meta = {}
             self._meta_cache[key] = (mtime, meta)
-            return meta
-        return {}
+            return meta, True
+        return {}, True
 
     def sliding_window(self, key: str, keep_recent: int = 5) -> tuple[list[dict], list[dict]]:
         """Split messages into (older, recent) for compaction.
@@ -3115,7 +3963,11 @@ class ConversationLog:
                 _archive_lines(key, dropped, reason="compact", base=self._dir)
             except Exception:
                 logger.warning("Failed to archive dropped lines for %s", key, exc_info=True)
-        # Preserve select fields from original metadata
+        # Rebuild only the fields compaction owns; everything else on the metadata
+        # line belongs to another layer (the rotation generation an in-flight
+        # consolidation checks, its retry accounting, the slot's title/agent/pin)
+        # and is carried through verbatim. Enumerating what to keep is how those
+        # fields got dropped in the first place.
         orig_meta = self.get_metadata(key) or {}
         meta = {
             "_type": "metadata",
@@ -3123,13 +3975,7 @@ class ConversationLog:
             "last_consolidated": orig_meta.get("last_consolidated", 0),
             "compacted_at": metadata_now_iso(),
         }
-        # Carry the rotation generation forward so a compaction (which is NOT a
-        # rotation) doesn't reset it to 0 and spuriously trip the generation
-        # mismatch in mark_consolidated for an in-flight consolidation.
-        if orig_meta.get("rotation_generation"):
-            meta["rotation_generation"] = orig_meta["rotation_generation"]
-        if orig_meta.get("memory_mode"):
-            meta["memory_mode"] = orig_meta["memory_mode"]
+        carry_unowned_metadata(meta, orig_meta, _COMPACT_OWNED_META_KEYS)
         lines = [json.dumps(meta) + "\n"]
         for m in messages:
             lines.append(json.dumps(m) + "\n")
@@ -3256,16 +4102,22 @@ _TOOL_ROLES: frozenset[str] = frozenset({"tool", "tool_call", "tool_result"})
 
 
 def _frontmatter_value(text: str | None, key: str) -> str:
-    """Return a single-line frontmatter value from a SKILL.md body, or ""."""
+    """Return *key*'s frontmatter value from a SKILL.md body, or "".
+
+    Values resolve the way ``SkillsLoader._parse_frontmatter`` resolves them:
+    only a column-0 key is a field, and a bare block-scalar indicator
+    (``>``/``|``, optionally chomped) folds the indented lines that follow.
+    The auto-skill update path carries the live skill's ``description`` and
+    ``triggers`` through this reader into a staged candidate that overwrites
+    the live skill on approval — reading the indicator verbatim would collapse
+    a block-scalar description to ``""`` and inject a bogus ``>`` trigger on
+    that round-trip. The grammar (plus the leading-whitespace opener
+    tolerance, verbatim plain values, and first-duplicate-wins lookup) is
+    pinned as ``frontmatter.SKILL_UPDATE``.
+    """
     if not text:
         return ""
-    m = re.match(r"^\s*---\n(.*?)\n---", text, re.DOTALL)
-    if not m:
-        return ""
-    for ln in m.group(1).split("\n"):
-        if ":" in ln and ln.split(":", 1)[0].strip() == key:
-            return ln.split(":", 1)[1].strip()
-    return ""
+    return frontmatter_value(text, key, SKILL_UPDATE)
 
 
 def _merge_trigger_lists(live: str, candidate: str, *, cap: int = 12) -> str:
@@ -3300,7 +4152,9 @@ def _strip_skill_frontmatter(text: str | None) -> str:
     A skill body read off disk carries its frontmatter header; only the prose
     below it may be fed to (or accepted from) the update-merge turn, because
     ``stage_skill_candidate`` re-emits frontmatter of its own. Text without a
-    leading block is returned unchanged (stripped).
+    leading block is returned unchanged (stripped). A fence LOCATOR, not a
+    field parser — deliberately outside ``kiro_crew.frontmatter``; editing
+    its grammar means revisiting ``_frontmatter_value``'s dialect too.
     """
     if not text:
         return ""
@@ -3443,6 +4297,143 @@ class HistoryConsolidator:
         # swaps the window's content) still forces a fresh pass.
         self._last_skillgen_marker: dict[str, tuple[int, int]] = {}
 
+    def retry_eligible(
+        self, key: str, now: float | None = None, message_count: int | None = None
+    ) -> bool:
+        """True when *key* may spend a billed consolidation turn right now.
+
+        Every automatic entry point consults this so a span whose consolidation
+        keeps failing backs off instead of re-billing an LLM turn on each sweep,
+        and _consolidate() itself enforces it as the final gate, so an entry
+        point without a pre-check of its own still cannot bypass the backoff.
+        A span at :data:`_CONSOLIDATION_MAX_ATTEMPTS` is refused: the abandon path
+        normally writes the marker (which also clears the accounting), so reaching
+        here at the cap means even that write failed, and refusing keeps a broken
+        span from spending forever.
+
+        That refusal covers the SPAN, not the session. The cap is scoped to the
+        content it measured, so a rotation or new messages release it with a fresh
+        bounded budget (see
+        :meth:`ConversationLog._attempts_describe_current_span`) — otherwise one
+        transient marker-write failure would stop this session from ever
+        consolidating again.
+
+        Costs one metadata-line read and NO transcript read: this runs on the
+        gateway event loop (heartbeat sweep, expiry, dashboard trigger), where a
+        synchronous full-file read would stall every other gateway task on a large
+        transcript. *message_count* is the transcript's current total, which every
+        automatic caller already holds from its own
+        :meth:`ConversationLog.consolidation_counts` call; omitting it skips the
+        extent test and keeps the cap.
+        """
+        attempts, retry_at = self._log.consolidation_retry_state(key, message_count)
+        if attempts >= _CONSOLIDATION_MAX_ATTEMPTS:
+            return False
+        return (_time.time() if now is None else now) >= retry_at
+
+    async def _note_failed_attempt(
+        self, key: str, span: AttemptedSpan, reason: str
+    ) -> None:
+        """Charge one attempt for a billed turn that never reached the marker.
+
+        Called only once the prompt has actually reached the provider, so a
+        pre-dispatch failure (no session manager, kiro-cli failing to start) and a
+        cheap pre-call failure (snapshot, metadata read) both keep their free
+        retry. At the attempt cap the durable marker is written anyway and the span
+        is abandoned with a warning: the alternative is re-billing this failure
+        indefinitely.
+
+        *span* is the pre-turn snapshot identity (see :class:`AttemptedSpan`), used
+        both to stamp the charge and to place the abandon marker — the same values
+        for both, so the marker cannot be written for a span other than the one the
+        cap was reached on.
+        """
+        try:
+            attempts, retry_at = await asyncio.to_thread(
+                self._log.record_consolidation_failure,
+                key,
+                _CONSOLIDATION_BACKOFF_BASE_SECS,
+                _CONSOLIDATION_BACKOFF_MAX_SECS,
+                span,
+            )
+        except Exception:
+            # Without a persisted count the sweep cannot back off, so say so
+            # loudly — but never let bookkeeping mask the original failure.
+            logger.warning(
+                "Could not persist consolidation retry state for %s", key, exc_info=True
+            )
+            return
+        if attempts < 1:
+            # The session was deleted mid-consolidation, so nothing was recorded
+            # and there is no span left to abandon.
+            return
+        if attempts < _CONSOLIDATION_MAX_ATTEMPTS:
+            logger.warning(
+                "Consolidation attempt %d/%d failed for %s (%s); "
+                "next attempt in %.0fs",
+                attempts,
+                _CONSOLIDATION_MAX_ATTEMPTS,
+                key,
+                reason,
+                max(0.0, retry_at - _time.time()),
+            )
+            return
+        logger.warning(
+            "Abandoning consolidation for %s after %d failed attempts (%s): "
+            "marking %d messages consolidated WITHOUT a memory pass, so this "
+            "span's history/preferences/lessons are not extracted",
+            key,
+            attempts,
+            reason,
+            span.total,
+        )
+        try:
+            await asyncio.to_thread(
+                self._log.mark_consolidated, key, span.total, span.generation
+            )
+        except Exception:
+            # The count stays at the cap, so retry_eligible() keeps refusing —
+            # the span stops spending even though the marker is missing.
+            logger.warning(
+                "Could not mark abandoned consolidation for %s", key, exc_info=True
+            )
+
+    async def _note_environment_failure(self, key: str, reason: str) -> None:
+        """Arm the backoff for a consolidation that never reached the provider.
+
+        Deliberately does NOT touch the attempt cap. A pre-dispatch failure spends
+        nothing, so abandoning the span over one would write the durable marker
+        over messages no LLM has ever read — losing a memory pass to a broken
+        kiro-cli install rather than to a genuinely unprocessable span. The
+        environment counter only widens the retry interval, so a permanently broken
+        host settles at the backoff ceiling instead of re-attempting every tick.
+        """
+        try:
+            failures, retry_at = await asyncio.to_thread(
+                self._log.record_consolidation_environment_failure,
+                key,
+                _CONSOLIDATION_BACKOFF_BASE_SECS,
+                _CONSOLIDATION_BACKOFF_MAX_SECS,
+            )
+        except Exception:
+            logger.warning(
+                "Could not persist consolidation environment backoff for %s",
+                key,
+                exc_info=True,
+            )
+            return
+        if failures < 1:
+            return
+        logger.warning(
+            "Consolidation for %s could not reach the LLM (%s; environment "
+            "failure #%d, nothing billed); retrying in %.0fs without consuming "
+            "the attempt budget",
+            key,
+            reason,
+            failures,
+            max(0.0, retry_at - _time.time()),
+        )
+
     def maybe_consolidate(self, key: str) -> None:
         """Fire preferences/projects consolidation if message threshold exceeded."""
         self._last_activity[key] = _time.time()
@@ -3452,13 +4443,31 @@ class HistoryConsolidator:
         prefs_off = self._prefs_offset.get(key, 0)
         if total - prefs_off < _CONSOLIDATION_THRESHOLD:
             return
+        # Cheap pre-check mirroring the other automatic entry points. This
+        # runs on every user turn, so during a backoff window every message
+        # past the threshold would otherwise schedule a task whose snapshot
+        # takes the per-file lock (the same one appends contend on) and reads
+        # the transcript, only to be refused by the gate inside _consolidate().
+        # retry_eligible costs one metadata-line read and no transcript read;
+        # the inner gate remains the enforcement backstop.
+        if not self.retry_eligible(key, message_count=total):
+            return
         self._running.add(key)
         t = asyncio.create_task(self._consolidate(key, include_history=False))
         self._tasks.add(t)
 
         def _on_done(fut: asyncio.Task, k: str = key, off: int = total) -> None:  # type: ignore[type-arg]
             self._tasks.discard(fut)
-            if not fut.cancelled() and fut.exception() is None:
+            if (
+                not fut.cancelled()
+                and fut.exception() is None
+                # A refusal ran no pass over the window. Advancing the offset
+                # anyway would mark the window consolidated, so once the
+                # backoff expires the threshold test skips it until a whole new
+                # threshold of messages accumulates — silently dropping its
+                # preference/project extraction.
+                and fut.result() is not _CONSOLIDATION_REFUSED
+            ):
                 self._prefs_offset[k] = off
 
         t.add_done_callback(_on_done)
@@ -3467,11 +4476,20 @@ class HistoryConsolidator:
         """Check all tracked sessions for idle-based history consolidation."""
         now = _time.time()
         for key, last in list(self._last_activity.items()):
+            if now - last < self._history_idle_secs:
+                continue
+            total, unconsolidated = self._log.consolidation_counts(key)
             if (
-                now - last < self._history_idle_secs
-                or self._log.unconsolidated_count(key) < 1
+                unconsolidated < 1
                 or now - self._history_consolidated.get(key, 0) < self._history_idle_secs
                 or key in self._running
+                # Durable backoff, checked last so it only costs a metadata read
+                # once the cheap conditions pass. The in-memory throttle above is
+                # set only when the task ends without an exception and is lost on
+                # restart, so it alone cannot stop a repeatedly failing span from
+                # re-billing an LLM turn every tick. *total* comes from the read
+                # above, so the check adds no transcript read on the loop.
+                or not self.retry_eligible(key, now, message_count=total)
             ):
                 continue
             self._running.add(key)
@@ -3485,7 +4503,13 @@ class HistoryConsolidator:
                 ts: float = captured_now,
             ) -> None:
                 self._tasks.discard(fut)
-                if not fut.cancelled() and fut.exception() is None:
+                if (
+                    not fut.cancelled()
+                    and fut.exception() is None
+                    # A refusal is not a completed pass; setting the throttle
+                    # for it would delay the retry past the backoff deadline.
+                    and fut.result() is not _CONSOLIDATION_REFUSED
+                ):
                     self._history_consolidated[k] = ts
 
             t.add_done_callback(_on_idle_done)
@@ -3495,7 +4519,8 @@ class HistoryConsolidator:
 
         Used by session-end hooks (dashboard close, Slack end, idle expiry)
         and the ``kirocrew consolidate`` CLI command.  Skips if the session
-        is already being consolidated or has no unconsolidated messages.
+        is already being consolidated, has no unconsolidated messages, or is
+        inside the durable consolidation retry backoff.
 
         Safety: skill detection (_run_skill_detection) re-checks
         _session_touched_sensitive() over its window before proposing anything,
@@ -3503,7 +4528,18 @@ class HistoryConsolidator:
         """
         if key in self._running:
             return
-        if self._log.unconsolidated_count(key) < 1:
+        total, unconsolidated = self._log.consolidation_counts(key)
+        if unconsolidated < 1:
+            return
+        # This path consults no time-based throttle at all — every session expiry
+        # for the same key fires a fresh consolidation — so the durable backoff
+        # stands between a repeatedly failing span and one billed LLM turn per
+        # expiry. Checked here (as well as inside _consolidate()) so the skip is
+        # logged before a task is ever scheduled.
+        if not self.retry_eligible(key, message_count=total):
+            logger.info(
+                "consolidate_session skipped for %s: consolidation retry backoff", key
+            )
             return
         # Short-circuit sensitive sessions before scheduling a task
         messages = self._log._read_messages(key)
@@ -3524,33 +4560,59 @@ class HistoryConsolidator:
                 return
             exc = fut.exception()
             if exc is None:
-                self._history_consolidated[k] = _time.time()
+                # A refusal is not a completed pass; leave the throttle unset.
+                if fut.result() is not _CONSOLIDATION_REFUSED:
+                    self._history_consolidated[k] = _time.time()
             else:
                 logger.warning("consolidate_session failed for %s: %s", k, exc)
 
         t.add_done_callback(_on_done)
 
-    async def consolidate_now(self, key: str) -> None:
+    async def consolidate_now(self, key: str) -> bool:
         """Consolidate a session synchronously (blocking).
 
         Unlike consolidate_session() which is fire-and-forget, this awaits
         completion. Used by the CLI command.
 
-        Safety: defense-in-depth — also checked inside _consolidate().
+        Returns ``False`` when the consolidation retry backoff refused the
+        span — so the CLI can report the skip instead of a false success —
+        and ``True`` for every other completion (including the nothing-to-do
+        and sensitive-session skips, which were already reported as done).
+
+        Safety: defense-in-depth — the consolidation retry backoff is also
+        checked inside _consolidate(), and _run_skill_detection() re-checks
+        the sensitive-session guard over its own window.
         """
         if self._log.unconsolidated_count(key) < 1:
-            return
+            return True
         messages = self._log._read_messages(key)
         if _session_touched_sensitive(messages):
             logger.info("consolidate_now skipped for %s: sensitive session", key)
-            return
-        await self._consolidate(key, include_history=True)
+            return True
+        outcome = await self._consolidate(key, include_history=True)
+        return outcome is not _CONSOLIDATION_REFUSED
 
-    async def _consolidate(self, key: str, include_history: bool = True) -> None:
-        """Run LLM consolidation for a session."""
+    async def _consolidate(
+        self, key: str, include_history: bool = True
+    ) -> _ConsolidationRefusedSentinel | None:
+        """Run LLM consolidation for a session.
+
+        Returns :data:`_CONSOLIDATION_REFUSED` when the retry-eligibility gate
+        refuses the span; every other completion returns ``None``.
+        """
         # Capture the gateway loop so the thread-offloaded _process_auto_skills
         # can schedule the async dedupe judge back onto it.
         self._event_loop = asyncio.get_running_loop()
+        # Flipped once the prompt actually reaches the provider, which is what
+        # makes a failure expensive: everything before that point is free to
+        # retry, everything after costs a turn that produced nothing durable.
+        billed = False
+        total = 0
+        generation_at_snapshot = 0
+        # The span identity any failure charge is stamped with. Rebuilt from the
+        # snapshot below; the zero value only ever reaches a charge if the snapshot
+        # itself raised, and that path is not billed.
+        attempted = AttemptedSpan(0, 0, 0)
         try:
             # Atomically snapshot the unconsolidated tail, the total message
             # count (the absolute offset handed to mark_consolidated below), and
@@ -3568,7 +4630,40 @@ class HistoryConsolidator:
                 generation_at_snapshot,
             ) = await asyncio.to_thread(self._log.snapshot_for_consolidation, key)
             if not unconsolidated:
-                return
+                return None
+            # Retry-eligibility choke point: every entry point funnels through
+            # this function, so a span inside its durable backoff is refused
+            # here — before anything that can bill a provider turn — even if a
+            # caller carries no pre-check of its own (a future entry point, or
+            # a pre-check that raced the backoff being recorded). Callers keep
+            # their cheaper pre-checks as scheduling short-circuits and UX (the
+            # idle sweep's per-tick skip, maybe_consolidate's per-turn skip,
+            # the dashboard trigger's 429); this gate is the enforcement that
+            # holds when a new entry point forgets one. The count comes
+            # from the atomic snapshot above — the same consistent read the
+            # rest of this function uses — and retry_eligible costs one
+            # metadata-line read, so no second transcript read lands on the
+            # event loop. The refusal returns a sentinel rather than raising:
+            # the finally block still releases self._running and the callers'
+            # done-callbacks run normally (so the key is never stranded), while
+            # the sentinel lets those callbacks tell a refusal from a completed
+            # pass and leave their bookkeeping untouched.
+            if not self.retry_eligible(key, message_count=total):
+                logger.info(
+                    "_consolidate refused for %s: consolidation retry backoff", key
+                )
+                return _CONSOLIDATION_REFUSED
+            # Freeze the whole span identity from that one snapshot. The offset is
+            # derived rather than returned because the snapshot slices at it
+            # (``messages[offset:]``), so the subtraction is exact and comes from
+            # the same lock hold — no second read that a concurrent rotation could
+            # land between. A failure charge stamped with these values describes
+            # what the turn attempted even if the file changed underneath it.
+            attempted = AttemptedSpan(
+                total=total,
+                generation=generation_at_snapshot,
+                offset=total - len(unconsolidated),
+            )
 
             # Resolve workspace-scoped memory from session metadata
             meta = self._log.get_metadata(key)
@@ -3597,7 +4692,11 @@ class HistoryConsolidator:
             # Structured memory extraction (when vector store is available)
             has_vector = self._vector_store is not None
             if has_vector and self._vector_store is not None:
-                current_semantic = self._vector_store.get_all_semantic()
+                # Offload: the fetch serializes on the store's _db_lock (#1947),
+                # and this coroutine runs on the gateway event loop — a worker
+                # holding the lock (backfill's FAISS rebuild, reconcile's bulk
+                # UPDATEs) would otherwise block the whole loop here.
+                current_semantic = await asyncio.to_thread(self._vector_store.get_all_semantic)
                 semantic_json = (
                     json.dumps(
                         [
@@ -3682,9 +4781,31 @@ class HistoryConsolidator:
             prompt_parts.append("\n\nRespond with ONLY valid JSON, no markdown fences.")
             prompt = "".join(prompt_parts)
 
-            result = await self._call_llm(prompt)
+            try:
+                result = await self._call_llm(prompt)
+            except _ConsolidationNotDispatched as exc:
+                # Nothing was sent, so nothing was billed. Charging this to the
+                # attempt cap would let a handful of environment failures abandon
+                # the span — writing the durable marker over messages no LLM has
+                # ever read, which is the exact false-abandonment this accounting
+                # exists to prevent. Arm the backoff only, so a broken host retries
+                # on a widening interval instead of on every 60s tick.
+                if include_history:
+                    await self._note_environment_failure(key, str(exc))
+                return None
+            billed = True
             if not result:
-                return
+                # The turn reached the provider and produced nothing usable, so it
+                # was spent while the marker below stays unwritten. Returning
+                # silently would look like success to the done-callbacks, setting
+                # the in-memory throttle while the durable count still says
+                # unconsolidated: the span re-bills a full turn every idle window,
+                # and immediately after every restart. Charge the attempt.
+                if include_history:
+                    await self._note_failed_attempt(
+                        key, attempted, "empty LLM result"
+                    )
+                return None
 
             if entry := result.get("history_entry"):
                 # Offloaded to a worker thread: append_history takes a blocking
@@ -3725,11 +4846,7 @@ class HistoryConsolidator:
             # window (see _run_skill_detection), not the incremental tail. Runs
             # only on history consolidation, guarded by flag + loader; failures
             # are logged, never fatal.
-            if (
-                include_history
-                and self._auto_skills_enabled
-                and self._skills_loader is not None
-            ):
+            if include_history and self._auto_skills_enabled and self._skills_loader is not None:
                 try:
                     await self._run_skill_detection(key)
                 except Exception:
@@ -3740,10 +4857,7 @@ class HistoryConsolidator:
             # their own (create/approve were the only triggers). Consolidation is
             # the existing idle/periodic path; throttle to at most once/hour
             # across all sessions so frequent consolidations don't rescan the set.
-            if (
-                self._skills_loader is not None
-                and (_time.time() - self._last_lifecycle) > 3600
-            ):
+            if self._skills_loader is not None and (_time.time() - self._last_lifecycle) > 3600:
                 self._last_lifecycle = _time.time()
                 try:
                     await asyncio.to_thread(
@@ -3773,9 +4887,19 @@ class HistoryConsolidator:
 
         except Exception:
             logger.exception("Consolidation failed for %s", key)
+            # Anything raised between the LLM call and mark_consolidated (memory
+            # writes, lesson writes, the marker write itself) re-raises, so the
+            # idle sweep's done-callback never sets its throttle and all of its
+            # skip conditions are false again on the next 60s tick. Charging the
+            # attempt here is what converts that tight loop into backoff.
+            if billed and include_history:
+                await self._note_failed_attempt(
+                    key, attempted, "exception after the LLM call"
+                )
             raise
         finally:
             self._running.discard(key)
+        return None
 
     async def _run_skill_detection(self, key: str) -> None:
         """Detect a reusable skill from the FULL session (bounded window).
@@ -3850,7 +4974,7 @@ class HistoryConsolidator:
             '"procedure_md": "<concise markdown body with '
             "## When to use / ## Steps / ## Gotchas sections, "
             '<=8000 chars>"' + scripts_field + "}. "
-            'Return null if the session was trivial, a single-shot answer, '
+            "Return null if the session was trivial, a single-shot answer, "
             "a one-off failure with no reusable takeaway, or involved "
             "sensitive paths. When a session plausibly contains a procedure "
             "a future session could reuse, lean toward returning it — every "
@@ -3874,11 +4998,19 @@ class HistoryConsolidator:
         conversation = "\n".join(_fmt_message(m) for m in window)
         prompt = (
             "You are a skill-extraction agent. Review this session excerpt and "
-            "return a JSON object with these keys:\n\n" + numbered
-            + "\n\n## Session excerpt\n" + conversation
+            "return a JSON object with these keys:\n\n"
+            + numbered
+            + "\n\n## Session excerpt\n"
+            + conversation
             + "\n\nRespond with ONLY valid JSON, no markdown fences."
         )
-        result = await self._call_llm(prompt)
+        try:
+            result = await self._call_llm(prompt)
+        except _ConsolidationNotDispatched:
+            # Skill detection is best-effort and owns no retry accounting, so an
+            # unreachable provider is simply no detection this pass. The marker
+            # below is still recorded, matching the existing failed-turn path.
+            result = None
         # Record the (generation, count) marker regardless of outcome so an
         # unchanged session isn't re-evaluated on every subsequent
         # consolidation, but a rotation still forces a fresh pass.
@@ -4023,27 +5155,26 @@ class HistoryConsolidator:
         # only enumerates LIVE skills — .pending is pruned from discovery).
         try:
             for p in loader.list_pending_skills():
-                existing.append({
-                    "key": f"auto/{p.get('slug', '')}",
-                    "description": p.get("description", ""),
-                    "triggers": p.get("triggers", ""),
-                })
+                existing.append(
+                    {
+                        "key": f"auto/{p.get('slug', '')}",
+                        "description": p.get("description", ""),
+                        "triggers": p.get("triggers", ""),
+                    }
+                )
         except Exception:
             pass
         loop = self._event_loop
 
         def _lexical() -> "tuple[str, str | None]":
-            hit = loader.find_similar(
-                description, threshold=self._auto_similarity_threshold
-            )
+            hit = loader.find_similar(description, threshold=self._auto_similarity_threshold)
             return (VERDICT_DUP, hit) if hit else (VERDICT_NEW, None)
 
         if self._judge_model and existing and loop is not None:
+
             def _judge_fn(prompt: str) -> str:
                 try:
-                    fut = asyncio.run_coroutine_threadsafe(
-                        self._dedupe_judge(prompt), loop
-                    )
+                    fut = asyncio.run_coroutine_threadsafe(self._dedupe_judge(prompt), loop)
                     return fut.result(timeout=60) or ""
                 except Exception:
                     return ""
@@ -4190,9 +5321,7 @@ class HistoryConsolidator:
             # ``approve_pending_update`` requires a live target, so staging that
             # would queue a candidate the user can never approve. Drop it
             # instead, audited so the loss is visible.
-            logger.info(
-                "Skill update skipped: target '%s' is not a live auto skill", target_key
-            )
+            logger.info("Skill update skipped: target '%s' is not a live auto skill", target_key)
             sel().log_tool_invocation(
                 session_key=key,
                 tool_name="auto_skill_create",
@@ -4219,9 +5348,7 @@ class HistoryConsolidator:
         if live_prose and self._event_loop is not None:
             try:
                 fut = asyncio.run_coroutine_threadsafe(
-                    self._merge_skill_update(
-                        live_prose, description, triggers, procedure_md
-                    ),
+                    self._merge_skill_update(live_prose, description, triggers, procedure_md),
                     self._event_loop,
                 )
                 merged = fut.result(timeout=90)
@@ -4239,9 +5366,7 @@ class HistoryConsolidator:
                 body = red
                 used_merge = True
 
-        provenance = AutoSkillProvenance(
-            session_key=key, created_at=AutoSkillProvenance.now_iso()
-        )
+        provenance = AutoSkillProvenance(session_key=key, created_at=AutoSkillProvenance.now_iso())
         # The slug pattern caps at 64 chars, and our own generation prompt permits
         # up to 60, so `<target>-update` can overflow and be REJECTED by staging —
         # silently dropping the learning, because consolidation advances its
@@ -4271,8 +5396,7 @@ class HistoryConsolidator:
             base_version=base_version,
         )
         if name:
-            logger.info("Staged skill update %s (target %s) from session %s",
-                        name, target_key, key)
+            logger.info("Staged skill update %s (target %s) from session %s", name, target_key, key)
             sel().log_tool_invocation(
                 session_key=key,
                 tool_name="auto_skill_create",
@@ -4377,7 +5501,9 @@ class HistoryConsolidator:
                 # another *proposal*, which the human reviews side by side anyway.
                 if verdict == VERDICT_UPDATE and target:
                     try:
-                        _target_is_live = self._skills_loader.read_auto_skill_body(target) is not None
+                        _target_is_live = (
+                            self._skills_loader.read_auto_skill_body(target) is not None
+                        )
                     except Exception:
                         _target_is_live = False
                     if not _target_is_live:
@@ -4590,11 +5716,26 @@ class HistoryConsolidator:
         """Call LLM for consolidation via the persistent background session.
 
         Uses the shared background kiro-cli process (no spawn/teardown cost).
-        Returns parsed JSON dict or None on failure.
+        Returns the parsed JSON dict, or ``None`` when the turn reached the
+        provider but produced nothing usable (a failed or unparsable answer).
+
+        Raises :class:`_ConsolidationNotDispatched` when the prompt never reached
+        the provider at all — no session manager, or the background session could
+        not be acquired because kiro-cli is missing, not logged in, or failing to
+        start. That case is signalled separately rather than folded into ``None``
+        because the two cost different things: a spent turn costs money and must
+        consume the caller's retry budget, while a prompt that was never sent costs
+        nothing and must not, or a broken host would abandon spans it never read.
+        An exception (rather than a flag beside the result) is used so a caller
+        cannot silently drop the distinction.
+
+        Once ``stream_and_collect_json`` is entered the prompt counts as sent: a
+        failure inside it may still have been billed, so it returns ``None`` and is
+        charged rather than risk an unbounded retry loop over real spend.
         """
         if not self._sessions:
             logger.warning("LLM consolidation skipped — no session manager")
-            return None
+            raise _ConsolidationNotDispatched("no session manager")
 
         session_key = BACKGROUND_KEY
         # Timing instrumentation (_bg stall investigation): measure both the
@@ -4605,9 +5746,20 @@ class HistoryConsolidator:
         # consolidation stall.
         t_start = _time.monotonic()
         try:
-            client, _is_new, _resumed = await self._sessions.get_or_create(
-                session_key, agent="kirocrew-lite"
-            )
+            try:
+                client, _is_new, _resumed = await self._sessions.get_or_create(
+                    session_key, agent="kirocrew-lite"
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Consolidation could not acquire the background session "
+                    "after %.1fs — nothing was sent",
+                    _time.monotonic() - t_start,
+                    exc_info=True,
+                )
+                raise _ConsolidationNotDispatched(
+                    "background session unavailable"
+                ) from exc
             t_acquired = _time.monotonic()
             wait_s = t_acquired - t_start
             # Reject all tools: this is a text/JSON-only generation turn. kiro
@@ -4616,9 +5768,17 @@ class HistoryConsolidator:
             # kirocrew-core/cron toolset — without REJECT_ALL a background
             # consolidation turn could fire side-effecting tools (send_message,
             # learn_add, spawn_run). REJECT_ALL keeps both providers tool-free.
-            result = await stream_and_collect_json(
-                client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
-            )
+            try:
+                result = await stream_and_collect_json(
+                    client, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
+                )
+            except Exception:
+                logger.warning(
+                    "LLM consolidation turn failed after %.1fs",
+                    _time.monotonic() - t_start,
+                    exc_info=True,
+                )
+                return None
             turn_s = _time.monotonic() - t_acquired
             logger.debug(
                 "Consolidation LLM turn: wait=%.1fs turn=%.1fs total=%.1fs ok=%s",
@@ -4628,13 +5788,6 @@ class HistoryConsolidator:
                 result is not None,
             )
             return result
-        except Exception:
-            logger.warning(
-                "LLM consolidation call failed after %.1fs",
-                _time.monotonic() - t_start,
-                exc_info=True,
-            )
-            return None
         finally:
             self._sessions.release(session_key)
             await self._sessions.recycle_background()

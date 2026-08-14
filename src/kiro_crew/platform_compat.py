@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes.util
+import errno
+import functools
 import io
 import logging
 import os
@@ -20,6 +22,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
@@ -71,6 +74,35 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # (start_new_session is silently ignored) and CREATE_NEW_PROCESS_GROUP makes the
 # child tree taskkill /T-reapable. Add DETACHED_PROCESS to the flags for a
 # fully detached, console-less child (e.g. the gateway respawn).
+
+# ── Desktop-app bundled interpreter detection ──
+#: Directory name the desktop build stages the bundled python-build-standalone
+#: runtime under (``Resources/backend-dist/…`` inside the app bundle). The
+#: authoritative spellings live in the packaging layer — electron-builder's
+#: ``extraResources`` mapping in ``website/electron/package.json`` and the
+#: staging steps in ``packaging/build-desktop.sh`` — and this constant MUST
+#: match them: ``test_platform_compat.py`` pins the two together so a packaging
+#: rename breaks a test instead of a runtime guarantee.
+BUNDLED_BACKEND_DIST_DIRNAME: str = "backend-dist"
+
+
+def is_bundled_interpreter() -> bool:
+    """Return True when this process runs on the desktop app's bundled interpreter.
+
+    Contract: the desktop build ships a python-build-standalone runtime inside
+    the application bundle, always under a ``backend-dist`` path component
+    (see :data:`BUNDLED_BACKEND_DIST_DIRNAME`). On macOS that bundle is
+    code-signed, so anything that would write into the interpreter's tree —
+    most notably ``pip install`` into its site-packages — invalidates the
+    signature and breaks subsequent launches/updates, and the write is
+    discarded on every app update anyway. Callers use this predicate to refuse
+    such writes loudly.
+
+    This is the ONE place the packaging layout's directory name is interpreted
+    at runtime; never re-inline the sentinel at a call site.
+    """
+    return BUNDLED_BACKEND_DIST_DIRNAME in Path(sys.executable).resolve().parts
+
 
 # ── macOS TCC-protected home subdirectories ──
 # macOS gates these home subdirectories behind TCC (Transparency, Consent and
@@ -469,6 +501,82 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
         return False
 
 
+def probe_file_persistence(directory: Path) -> str | None:
+    """Verify that *directory* supports every primitive the Kiro Crew
+    persistence paths depend on: creating a new file (``tempfile.mkstemp``),
+    writing bytes to it, taking an advisory lock (:func:`file_lock`),
+    atomically replacing it (``os.replace``), and removing it — the exact
+    operations ``atomic_write`` and the ``.lock``-file helpers perform.
+
+    Returns ``None`` when all of them work, otherwise a human-readable
+    description of the first failure. A process whose environment breaks any
+    of these primitives cannot save chat history, cron history, or session
+    state — but it CAN still serve traffic and append to already-open log fds,
+    so without this probe it limps along losing writes silently. The known way
+    to get into that state is inheriting a seccomp syscall filter from a
+    sandboxed parent (seccomp survives fork/exec, ``nohup`` included):
+    filtered syscalls fail with ``ENOSYS`` while everything else looks
+    healthy. The returned message names that cause when ``errno`` says so.
+
+    Probe files carry a ``.persistence-probe-`` prefix, and their removal is
+    part of the probed contract: an environment that allows creating files but
+    denies deleting them (delete-scoped ACLs) breaks the atomic
+    rename/replace paths just the same, so a failed cleanup is reported as a
+    preflight failure rather than suppressed. On the failure path probe files
+    are best-effort removed; one may remain only when removal itself is what
+    is broken.
+    """
+    fd: int | None = None
+    path: str | None = None
+    replaced: str | None = None
+    step = "create files in"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, path = tempfile.mkstemp(dir=directory, prefix=".persistence-probe-")
+        step = "write files in"
+        os.write(fd, b"probe")
+        step = "flush files in"
+        os.fsync(fd)
+        step = "lock files in"
+        with file_lock(fd, exclusive=True):
+            pass
+        os.close(fd)
+        fd = None
+        step = "atomically replace files in"
+        replaced = f"{path}.target"
+        # The same replace primitive atomic_write commits with: plain
+        # os.replace on POSIX, bounded retry over the Windows AV/indexer
+        # sharing-violation window — a healthy Windows data home must not fail
+        # the preflight over that transient. Imported lazily because
+        # atomic_write imports this module at top level.
+        from kiro_crew.atomic_write import replace_with_retry
+
+        replace_with_retry(path, replaced)
+        path = None
+        step = "remove files from"
+        os.unlink(replaced)
+        replaced = None
+    except OSError as exc:
+        hint = ""
+        if exc.errno == errno.ENOSYS:
+            hint = (
+                " (ENOSYS from a basic file syscall usually means this process"
+                " inherited a seccomp filter from a sandboxed parent — e.g. a"
+                " gateway spawned from inside an agent session; start it from a"
+                " regular shell or the system service instead)"
+            )
+        return f"cannot {step} {directory}: {exc}{hint}"
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        for leftover in (path, replaced):
+            if leftover is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(leftover)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Win32 struct layouts
 # ---------------------------------------------------------------------------
@@ -546,6 +654,101 @@ class _TokenUser(ctypes.Structure):
     """advapi32 ``TOKEN_USER`` — the ``TokenUser`` information-class payload."""
 
     _fields_ = [("User", _SidAndAttributes)]
+
+
+# ---------------------------------------------------------------------------
+# Process introspection
+# ---------------------------------------------------------------------------
+
+# Byte layout of the macOS ``proc_vnodepathinfo`` struct filled by
+# ``proc_pidinfo(PROC_PIDVNODEPATHINFO)``: two ``vnode_info_path`` records (the
+# process's cwd, then its root), each a fixed-size ``vnode_info`` header
+# followed by a NUL-terminated path of up to ``MAXPATHLEN``. Only the header
+# size matters to us, since it is the offset the cwd path starts at.
+_DARWIN_PROC_PIDVNODEPATHINFO = 9
+_DARWIN_VNODE_INFO_SIZE = 152
+_DARWIN_MAXPATHLEN = 1024
+_DARWIN_VNODE_INFO_PATH_SIZE = _DARWIN_VNODE_INFO_SIZE + _DARWIN_MAXPATHLEN
+_DARWIN_PROC_VNODEPATHINFO_SIZE = 2 * _DARWIN_VNODE_INFO_PATH_SIZE
+
+_darwin_libproc: Any = None
+_darwin_libproc_loaded = False
+
+
+def _darwin_libproc_handle() -> Any:
+    """Cached ``libproc`` handle, or None when it cannot be loaded.
+
+    Cached rather than opened per call because the cwd probe runs on a poll
+    cadence per open terminal, and a fresh ``CDLL`` would dlopen every time.
+    """
+    global _darwin_libproc, _darwin_libproc_loaded
+    if _darwin_libproc_loaded:
+        return _darwin_libproc
+    _darwin_libproc_loaded = True
+    try:
+        path = ctypes.util.find_library("proc")
+        if path is None:
+            return None
+        lib = ctypes.CDLL(path)
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        _darwin_libproc = lib
+    except Exception:
+        _darwin_libproc = None
+    return _darwin_libproc
+
+
+def _darwin_process_cwd(pid: int) -> str | None:
+    """macOS cwd of *pid* via ``libproc``, or None when it cannot be read.
+
+    Requires no entitlement for a same-uid process. The kernel reports how many
+    bytes it filled; anything other than the exact struct size means the layout
+    assumed by the offsets above no longer matches, so the answer is refused
+    rather than sliced out of the wrong place.
+    """
+    lib = _darwin_libproc_handle()
+    if lib is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_PROC_VNODEPATHINFO_SIZE)
+        filled = lib.proc_pidinfo(
+            pid,
+            _DARWIN_PROC_PIDVNODEPATHINFO,
+            0,
+            buf,
+            _DARWIN_PROC_VNODEPATHINFO_SIZE,
+        )
+        if filled != _DARWIN_PROC_VNODEPATHINFO_SIZE:
+            return None
+        raw = buf.raw[_DARWIN_VNODE_INFO_SIZE:_DARWIN_VNODE_INFO_PATH_SIZE]
+        cwd = raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+        return cwd or None
+    except Exception:
+        return None
+
+
+def process_cwd(pid: int) -> str | None:
+    """Current working directory of *pid*, or None when no source can answer.
+
+    Never spawns a subprocess. Callers poll this per open terminal, where a
+    fork+exec of the whole gateway costs orders of magnitude more than the
+    answer is worth. ``/proc`` serves Linux; macOS goes to ``libproc``. Windows
+    and any host with neither source get None, leaving the caller to decide
+    whether a costlier fallback is warranted.
+    """
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    if sys.platform == "darwin":
+        return _darwin_process_cwd(pid)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +913,42 @@ def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> l
     return result
 
 
-_TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+@functools.lru_cache(maxsize=None)
+def _folded_env_allowlist(allowed: frozenset[str] | tuple[str, ...]) -> frozenset[str]:
+    """Upper-cased view of *allowed*, cached per allowlist constant."""
+    return frozenset(name.upper() for name in allowed)
+
+
+def env_key_allowed(key: str, allowed: frozenset[str] | tuple[str, ...]) -> bool:
+    """Whether env-var *key* is in *allowed*, honoring Windows' case-insensitive env.
+
+    On Windows, environment variable names are case-INSENSITIVE and CPython's
+    ``os.environ`` upper-cases every key, so ``os.environ.items()`` yields
+    ``SYSTEMROOT`` — never the ``SystemRoot`` spelling Microsoft documents and
+    that env allowlists are written in. A literal membership test therefore
+    drops exactly the variables the allowlist was extended to carry, and the
+    failure is silent at the boundary and only surfaces in the spawned child as
+    an unrelated-looking error: a Windows process without ``SystemRoot`` cannot
+    resolve side-by-side assemblies or initialize Winsock, so it dies before
+    ``main()`` or fails a fetch with ``getaddrinfo() thread failed to start``.
+
+    Folding on Windows only, rather than upper-casing the allowlists, keeps
+    POSIX exact: ``PATH`` and ``Path`` are genuinely different variables there,
+    and a case-insensitive match would let a lookalike through.
+
+    This is the single shared membership predicate for subprocess env
+    allowlists. Each caller keeps its own *allowed* set — the sets are
+    deliberately different trust boundaries — and only the matching convention
+    is shared, so correctness never depends on an individual allowlist's
+    casing. *allowed* must be hashable (a frozenset or tuple); the folded view
+    is cached per distinct allowlist value.
+    """
+    if IS_WINDOWS:
+        return key.upper() in _folded_env_allowlist(allowed)
+    return key in allowed
+
+
+_TRUSTED_SYSTEM_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin")
 
 # Windows argv carries a bare name (``taskkill``) while the file on disk carries
 # an extension (``taskkill.exe``), so a trusted lookup must try the suffixes the
@@ -821,6 +1059,142 @@ def trusted_system_bin(name: str) -> str | None:
                 return candidate
     _log_tool_outside_trusted_dirs(name, directories)
     return None
+
+
+def trusted_system_path() -> str | None:
+    """A ``PATH`` value containing only the trusted system directories.
+
+    Pinning a spawned binary is not always enough: some launchers are shell
+    scripts that dispatch to helpers of their own through ``PATH``, and
+    ``xdg-open`` is the one that matters here — it reaches for ``gio``,
+    ``gvfs-open``, ``exo-open`` or ``kde-open``. Handing such a process the
+    gateway's inherited ``PATH`` would reopen at one remove exactly the hole
+    :func:`trusted_system_bin` closes, so callers replace ``PATH`` with this and
+    leave the rest of the environment alone (``DISPLAY``,
+    ``DBUS_SESSION_BUS_ADDRESS`` and ``XDG_*`` are what let a launcher reach the
+    running desktop session).
+
+    ``None`` on Windows, where helpers live beside their install rather than
+    being resolved from a colon-separated search path.
+    """
+
+    if IS_WINDOWS:
+        return None
+    return os.pathsep.join(_TRUSTED_SYSTEM_BIN_DIRS)
+
+
+def reveal_in_file_manager(target: str) -> bool:
+    """Show *target* in the host's file manager. ``True`` if a launcher started.
+
+    Off macOS the **containing folder** is opened, never the target itself, and
+    unconditionally so: ``explorer.exe <file>`` launches the file's *associated
+    application* — the execution sink this capability exists to avoid — and making
+    the rule structural means a caller handing over a request-derived path cannot
+    reach it, with no filesystem probe of that path needed to decide. It also
+    matches what this endpoint already did before the launcher moved here. macOS is
+    the exception that needs no derivation: ``open -R`` reveals its argument and
+    never opens it.
+
+    This lives beside :func:`trusted_system_bin` rather than in the dashboard
+    handler that wants it, because three separate rules meet on the ``Popen``
+    lines below and only this location satisfies all of them:
+
+    * The launcher must be an ABSOLUTE path, never a bare ``open`` / ``xdg-open``
+      argv name: a gateway's ``PATH`` can lead with an agent-writable directory,
+      so a bare name lets a planted shim run on a click the user initiated.
+    * Those absolute paths are POSIX path literals, which the cross-platform
+      portability gate rejects everywhere except this module — the module it
+      excludes precisely because such literals have to live somewhere.
+    * The command position must be a literal at the call site, with the
+      caller-supplied target as a later element of that same literal list.
+      Hoisting either into a variable makes the whole command line read as
+      user-controlled to the SAST passes.
+
+    A launcher that is absent (or present and refusing to run — AppLocker, a
+    revoked exec bit, an exhausted process table) returns ``False`` so the caller
+    can degrade rather than fail the request.
+    """
+
+    env = _reveal_env()
+    try:
+        if sys.platform == "darwin":
+            if not os.path.isfile("/usr/bin/open"):
+                return False
+            subprocess.Popen(["/usr/bin/open", "-R", target], env=env)
+            return True
+        # Everything else opens the CONTAINING FOLDER, never the target itself —
+        # `explorer.exe <file>` would launch the file's associated application, the
+        # execution sink this capability exists to avoid. Unconditional, so no
+        # filesystem probe of a caller-supplied path is needed to decide, and so a
+        # caller cannot reach the sink by handing over a file.
+        folder = os.path.dirname(target)
+        if not folder:
+            return False
+        if IS_WINDOWS:
+            # A literal, so the command position stays constant. The conventional
+            # location is not universal, so an image that keeps Windows elsewhere
+            # reads as "no file manager here" rather than spawning something else.
+            if not os.path.isfile(r"C:\Windows\explorer.exe"):
+                return False
+            subprocess.Popen([r"C:\Windows\explorer.exe", folder], env=env)
+            return True
+        if not os.path.isfile("/usr/bin/xdg-open"):
+            return False
+        subprocess.Popen(["/usr/bin/xdg-open", folder], env=env)
+        return True
+    except OSError:
+        logger.warning(
+            "file manager did not start for %s; caller should degrade", target,
+            exc_info=True)
+        return False
+
+
+def open_with_default_app(target: str) -> bool:
+    """Launch *target* with its associated application. ``True`` if it started.
+
+    Separate from :func:`reveal_in_file_manager` because it is the opposite
+    intent — this one deliberately RUNS what the path points at — and because
+    Windows is refused outright: there, launching by association is reached
+    through the shell rather than an argv the caller can inspect, and the path
+    typically arrives from a request. POSIX keeps it: ``open`` / ``xdg-open`` hand
+    the file to the desktop's handler without a shell in between.
+    """
+
+    if IS_WINDOWS:
+        return False
+    env = _reveal_env()
+    try:
+        if sys.platform == "darwin":
+            if not os.path.isfile("/usr/bin/open"):
+                return False
+            subprocess.Popen(["/usr/bin/open", target], env=env)
+            return True
+        if not os.path.isfile("/usr/bin/xdg-open"):
+            return False
+        subprocess.Popen(["/usr/bin/xdg-open", target], env=env)
+        return True
+    except OSError:
+        logger.warning(
+            "default application did not start for %s; caller should degrade",
+            target, exc_info=True)
+        return False
+
+
+def _reveal_env() -> dict[str, str]:
+    """The gateway environment with ``PATH`` pinned to trusted system directories.
+
+    Pinning the launcher binary is not enough on its own: ``xdg-open`` is a shell
+    script that dispatches to whichever helper it finds on ``PATH`` — ``gio``,
+    ``gvfs-open``, ``exo-open``, ``kde-open``. Only ``PATH`` is replaced, because
+    the rest of the environment is what lets a launcher reach the running desktop
+    session (``DISPLAY``, ``DBUS_SESSION_BUS_ADDRESS``, ``XDG_*``).
+    """
+
+    env = dict(os.environ)
+    pinned = trusted_system_path()
+    if pinned is not None:
+        env["PATH"] = pinned
+    return env
 
 
 def tool_outside_trusted_dirs(name: str) -> str | None:
@@ -1535,7 +1909,7 @@ def process_owner_uid(pid: int) -> int | None:
     must decide what to do with ``None`` explicitly rather than assume a match.
 
     Used to confirm that a pid a client is about to trust belongs to the calling
-    user (see ``cli_server._gateway_owns_port``), which is what makes pid
+    user (see ``port_resolution._gateway_owns_port``), which is what makes pid
     recycling into a *foreign* user's process non-exploitable.
     """
     try:

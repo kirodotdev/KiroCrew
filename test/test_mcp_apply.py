@@ -173,9 +173,7 @@ class TestApplyEndpoint:
             ),
         )
         # Stub rebuild_agent_config — we only care about file writes here.
-        import kiro_crew.agent
-
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         # No-op the lock to simplify testing.
         class _NoLock:
@@ -232,9 +230,7 @@ class TestApplyEndpoint:
         # the subprocess.run call entirely.
         monkeypatch.setattr("kiro_crew.dashboard.handlers._shared._capability_manager", lambda: MagicMock(**{"available.return_value": False}))
 
-        import kiro_crew.agent
-
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -268,10 +264,8 @@ class TestApplyEndpoint:
         # Return None from shutil.which to short-circuit that path.
         monkeypatch.setattr("kiro_crew.dashboard.handlers._shared._capability_manager", lambda: MagicMock(**{"available.return_value": False}))
 
-        import kiro_crew.agent
-
         rebuild = MagicMock()
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", rebuild)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", rebuild)
 
         class _NoLock:
             async def __aenter__(self):
@@ -348,10 +342,8 @@ class TestHostileNameRejection:
             lambda: pytest.fail("_capability_manager must not be reached for invalid name"),
         )
 
-        import kiro_crew.agent
-
         rebuild = MagicMock()
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", rebuild)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", rebuild)
 
         class _NoLock:
             async def __aenter__(self):
@@ -398,9 +390,7 @@ class TestHostileNameRejection:
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers._shared._capability_manager", lambda: MagicMock(**{"available.return_value": False}))
 
-        import kiro_crew.agent
-
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -493,13 +483,12 @@ class TestApplyBatchCap:
     @pytest.mark.asyncio
     async def test_accepts_batch_at_cap(self, monkeypatch, tmp_path) -> None:
         """A batch exactly at the cap is not rejected by the size guard."""
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -581,14 +570,13 @@ class TestBoundedCapabilityManager:
         (in the phase BEFORE the MCP file lock is taken) and records it."""
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -622,14 +610,13 @@ class TestBoundedCapabilityManager:
         import asyncio as _asyncio
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
         # Tiny budget so the hanging op blows the phase deadline immediately.
         from kiro_crew.platform import capability_bound
 
@@ -673,7 +660,6 @@ class TestUninstallCrashWindowCleanup:
         uninstall's config removal runs — the finally sweep still purges it."""
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
@@ -686,7 +672,7 @@ class TestUninstallCrashWindowCleanup:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -740,7 +726,6 @@ class TestUninstallCrashWindowCleanup:
         import asyncio as _asyncio
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
         from kiro_crew.platform import capability_bound
@@ -752,7 +737,7 @@ class TestUninstallCrashWindowCleanup:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
         monkeypatch.setattr(capability_bound, "CAPABILITY_UNINSTALL_TIMEOUT", 0.01)
 
         class _NoLock:
@@ -804,7 +789,6 @@ class TestUninstallCrashWindowCleanup:
         import asyncio as _asyncio
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
@@ -817,7 +801,7 @@ class TestUninstallCrashWindowCleanup:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -876,7 +860,6 @@ class TestUninstallCrashWindowCleanup:
         import threading
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
@@ -885,7 +868,7 @@ class TestUninstallCrashWindowCleanup:
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", kiro_path)
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
 
         class _NoLock:
             async def __aenter__(self):
@@ -939,14 +922,13 @@ class TestApplyMutex:
         import asyncio as _asyncio
         from unittest.mock import AsyncMock
 
-        import kiro_crew.agent
         from kiro_crew.dashboard.handlers import _shared
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", tmp_path / "kc.json")
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
-        monkeypatch.setattr(kiro_crew.agent, "rebuild_agent_config", lambda: None)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
         # Reset the module-global apply lock so a stale loop binding from an
         # earlier test can't leak in.
         monkeypatch.setattr(mcp_mod, "_apply_lock", None)

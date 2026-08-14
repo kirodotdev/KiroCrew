@@ -219,6 +219,157 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
   })
 
+  it('reattaches to in-flight sync when syncMain gets "already running" with run_id', async () => {
+    let runPolls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, opts) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      // POST /sync returns "already running" with the in-flight run_id
+      if (u.includes('/sync') && opts?.method?.toUpperCase() === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'sync already running', run_id: 'run-inflight-99' }), { status: 200 }))
+      }
+      if (u.includes('/run?id=run-inflight-99')) {
+        runPolls++
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'running', output: ['npm ci...'], started: Date.now() / 1000 - 10,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    // Click Pull+Build confirm
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    fireEvent.click(trigger)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    fireEvent.click(start)
+    // Should reattach and start polling the in-flight run
+    await waitFor(() => expect(runPolls).toBeGreaterThan(0), { timeout: 3000 })
+  })
+
+  it('reattaches to completed sync on page load showing result', async () => {
+    const FLEET_WITH_DONE_SYNC = {
+      ...FLEET,
+      sync_run_id: 'run-done-456',
+      build_pending: true,
+    }
+    let runCalls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_DONE_SYNC), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-done-456')) {
+        runCalls++
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'done', exit_code: 0, output: ['All steps complete'], started: Date.now() / 1000 - 120,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getAllByText('main').length).toBeGreaterThan(0))
+    // Should fetch and display the completed run result
+    await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
+  })
+
+  it('reattaches to a running provision on page load via provision_run_id', async () => {
+    const FLEET_WITH_PROV = {
+      ...FLEET,
+      worktrees: FLEET.worktrees.map((w) =>
+        w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-live' } : w),
+    }
+    let runCalls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_PROV), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-prov-live')) {
+        runCalls++
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'running', output: ['[provision] creating venv \u2026'], started: Date.now() / 1000 - 30,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // The reattach fetches the run and rehydrates the running stepper
+    await waitFor(() => expect(runCalls).toBeGreaterThan(0), { timeout: 3000 })
+    await waitFor(() => expect(screen.getByText('Provisioning')).toBeInTheDocument(), { timeout: 3000 })
+  })
+
+  it('reattaches to a failed provision on page load restoring the persisted failure', async () => {
+    const FLEET_WITH_FAILED = {
+      ...FLEET,
+      worktrees: FLEET.worktrees.map((w) =>
+        w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-dead' } : w),
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_FAILED), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-prov-dead')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'done', exit_code: 1, output: ['npm ERR! build failed'], started: Date.now() / 1000 - 300,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // Failed run persists across the reload: red label + log auto-expanded.
+    // The last log line renders twice (inline strip + expanded <pre> panel).
+    await waitFor(() => expect(screen.getByText('Provision failed (exit 1)')).toBeInTheDocument(), { timeout: 3000 })
+    expect(screen.getAllByText('npm ERR! build failed').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('reattached polling keeps the fetched log prefix and marks a scrolled gap', async () => {
+    // Regression: the reattach effect fetches the run once, then hands off to
+    // the poll loop. If the loop starts from an EMPTY accumulator, output that
+    // scrolled between the fetch and the first poll silently replaces the
+    // fetched prefix. Seeding the accumulator means a zero-overlap window can
+    // only produce the visible LOG_GAP_MARKER, never a dropped prefix.
+    const FLEET_WITH_PROV = {
+      ...FLEET,
+      worktrees: FLEET.worktrees.map((w) =>
+        w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-scroll' } : w),
+    }
+    let runCalls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_PROV), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/run?id=run-prov-scroll')) {
+        runCalls++
+        // Reattach fetch: still running, early output visible.
+        if (runCalls === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            status: 'running', output: ['early-line-A', 'early-line-B'], started: Date.now() / 1000 - 30,
+          }), { status: 200 }))
+        }
+        // First poll tick: run failed and the tail window scrolled entirely
+        // past the fetched prefix (zero overlap).
+        return Promise.resolve(new Response(JSON.stringify({
+          status: 'done', exit_code: 1, output: ['late-line-Z'], started: Date.now() / 1000 - 30,
+        }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // Both the row strip and the completion toast carry the failure label.
+    await waitFor(() => expect(screen.getAllByText('Provision failed (exit 1)').length).toBeGreaterThan(0), { timeout: 6000 })
+    // The expanded <pre> must retain the fetched prefix, mark the gap, and
+    // append the new tail — in that order.
+    const pre = document.querySelector('pre') as HTMLPreElement
+    expect(pre).not.toBeNull()
+    expect(pre.textContent).toContain('early-line-A')
+    expect(pre.textContent).toContain(LOG_GAP_MARKER)
+    expect(pre.textContent).toContain('late-line-Z')
+    expect(pre.textContent!.indexOf('early-line-A')).toBeLessThan(pre.textContent!.indexOf('late-line-Z'))
+  })
+
   it('renders sort dropdown with all 4 options', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
       const u = typeof url === 'string' ? url : (url as Request).url
@@ -241,6 +392,43 @@ describe('DevFleetPage', () => {
     // And picking one actually re-sorts: 'behind' puts feature-x (behind 3) first.
     fireEvent.click(screen.getByRole('option', { name: 'Sort: behind' }))
     await waitFor(() => expect(trigger).toHaveTextContent('Sort: behind'))
+  })
+
+  it('status sort orders equal pod-status rows by PR state, not alphabetically', async () => {
+    // Names are chosen so plain alphabetical order (a→e) CONTRADICTS the
+    // expected review-state order (open → draft → no PR → closed → merged);
+    // without the prRank secondary key this test fails.
+    const FLEET_PR = {
+      worktrees: [
+        { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+        { name: 'wt-a-merged', is_main: false, running: false, has_dist: false, pr: { number: 1, state: 'MERGED', url: 'https://github.com/org/repo/pull/1', isDraft: false } },
+        { name: 'wt-b-closed', is_main: false, running: false, has_dist: false, pr: { number: 2, state: 'CLOSED', url: 'https://github.com/org/repo/pull/2', isDraft: false } },
+        { name: 'wt-c-nopr', is_main: false, running: false, has_dist: false },
+        { name: 'wt-d-draft', is_main: false, running: false, has_dist: false, pr: { number: 4, state: 'OPEN', url: 'https://github.com/org/repo/pull/4', isDraft: true } },
+        { name: 'wt-e-open', is_main: false, running: false, has_dist: false, pr: { number: 5, state: 'OPEN', url: 'https://github.com/org/repo/pull/5', isDraft: false } },
+        // Pod status stays the PRIMARY key: a running pod with a merged PR
+        // still sorts above every not-built row.
+        { name: 'wt-z-pod-merged', is_main: false, running: true, has_dist: true, port: 7781, health: 200, pr: { number: 6, state: 'MERGED', url: 'https://github.com/org/repo/pull/6', isDraft: false } },
+      ],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_PR), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('wt-e-open')).toBeInTheDocument())
+    // Default sort is 'status'. Expected order: pod-up row first, then the
+    // not-built rows by review state (open, draft, no PR, closed, merged).
+    const expected = ['wt-z-pod-merged', 'wt-e-open', 'wt-d-draft', 'wt-c-nopr', 'wt-b-closed', 'wt-a-merged']
+    const els = expected.map((n) => screen.getByText(n))
+    for (let i = 0; i < els.length - 1; i++) {
+      expect(
+        els[i].compareDocumentPosition(els[i + 1]) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `${expected[i]} should render before ${expected[i + 1]}`,
+      ).toBeTruthy()
+    }
   })
 
   it('shows build-pending chip when fleet.build_pending is true', async () => {
@@ -301,9 +489,10 @@ describe('DevFleetPage', () => {
     expect(hasBuiltinComponent('/dev-fleet')).toBe(true)
   })
 
-  it('syncPhaseFromLines only advances on ::step:: markers, not pip done lines', async () => {
-    // Import the module to access syncPhaseFromLines indirectly via the component
-    // We test the stepper behavior through the rendered output
+  it('reports a running sync as indeterminate — a spinner, never a percentage', async () => {
+    // Step markers tell the UI which step is in flight; they must NOT be turned
+    // back into a completion percentage, because the five steps differ in
+    // duration by more than an order of magnitude.
     const FLEET_SYNC = {
       ...FLEET,
       sync_run_id: 'run-marker-test',
@@ -315,7 +504,8 @@ describe('DevFleetPage', () => {
       if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
       if (u.includes('/run?id=run-marker-test')) {
         pollCount++
-        // Output contains pip's "done" but NO ::step:: markers beyond index 0
+        // Output carries pip's "done" lines and a step marker — neither may be
+        // rendered as quantified progress.
         return Promise.resolve(new Response(JSON.stringify({
           status: 'running',
           output: [
@@ -325,6 +515,8 @@ describe('DevFleetPage', () => {
             'Successfully installed package done',
             'done',
           ],
+          step: 3,
+          step_label: 'npm ci',
           started: Date.now() / 1000 - 30,
         }), { status: 200 }))
       }
@@ -332,13 +524,50 @@ describe('DevFleetPage', () => {
     })
     renderPage()
     await waitFor(() => expect(pollCount).toBeGreaterThan(0), { timeout: 3000 })
-    // Percent must reflect ONLY the ::step:: marker (index 0) — pip's stray
-    // "done" lines must not drive the coarse progress toward completion.
     const bar = await screen.findByRole('progressbar')
-    const pct = Number(bar.getAttribute('aria-valuenow'))
-    expect(pct).toBeGreaterThanOrEqual(0)
-    expect(pct).toBeLessThan(25) // still inside the Pull/pip band, nowhere near done
-    expect(screen.getByText(/~\d+%/)).toBeInTheDocument()
+    // Indeterminate: the ARIA value attributes must be absent, not zeroed.
+    expect(bar.getAttribute('aria-valuenow')).toBeNull()
+    expect(bar.getAttribute('aria-valuemax')).toBeNull()
+    expect(bar.className).toContain('animate-spin')
+    expect(screen.queryByText(/~?\d+%/)).toBeNull()
+    // The honest step signal — the server's label — is still shown.
+    expect(await screen.findByText('npm ci')).toBeInTheDocument()
+  })
+
+  it('spins the Prune merged button while the merged-scan is in flight', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => { release = r })
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/prune-candidates')) {
+        // A big fleet keeps this scan open for seconds; hold it open here.
+        return gate.then(() => new Response(JSON.stringify({ ok: true, candidates: [{ name: 'merged-branch', code: 'merged' }], kept: [], scanned: 1 }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const btn = screen.getByText('Prune merged').closest('button') as HTMLButtonElement
+    expect(btn.querySelector('.animate-spin')).toBeNull()
+    // Idle: destructive affordance is on.
+    expect(btn.className).toContain('hover:text-danger')
+    fireEvent.click(btn)
+    await waitFor(() => expect(btn.getAttribute('aria-busy')).toBe('true'))
+    expect(btn.querySelector('.animate-spin')).not.toBeNull()
+    // In flight the label names the read-only action, not the destructive one:
+    // a spinner on a danger-styled "Prune merged" reads as "deletion running".
+    expect(btn.textContent).toContain('Scanning for merged…')
+    expect(screen.queryByText('Prune merged')).toBeNull()
+    // …and the danger variant is suppressed for the scan's whole window.
+    expect(btn.className).not.toContain('hover:text-danger')
+    release!()
+    await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument(), { timeout: 3000 })
+    expect(btn.querySelector('.animate-spin')).toBeNull()
+    // Scan over: label and destructive affordance are restored.
+    expect(btn.textContent).toContain('Prune merged')
+    expect(btn.className).toContain('hover:text-danger')
   })
 
   it('prune dialog renders with candidates and kept rows', async () => {
@@ -735,6 +964,84 @@ describe('DevFleetPage', () => {
     // Upward placement anchors via `bottom`, not `top`.
     expect(menu.style.bottom).not.toBe('')
     expect(menu.style.top).toBe('')
+  })
+
+  /* ─── Pull+Build confirm popover: portal + flip ─── */
+  // The confirm popover used to be position:absolute inside the row, so the
+  // Worktrees Card's `.card-glow { overflow: hidden }` clipped it. It is now
+  // portaled to <body> with fixed positioning, like the row-actions menu.
+  async function openPullBuildConfirm() {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    fireEvent.click(trigger)
+    return { trigger, pop: await screen.findByRole('dialog') }
+  }
+
+  it('renders the Pull+Build confirm popover in a portal on document.body (escapes Card overflow)', async () => {
+    const { pop } = await openPullBuildConfirm()
+    // Portaled: a direct child of <body>, not nested inside the row Card whose
+    // overflow:hidden previously cut the popover off mid-render.
+    expect(pop.parentElement).toBe(document.body)
+    expect(pop.getAttribute('aria-label')).toBe('Pull + Build main')
+    expect(within(pop).getByText('Pulls main and rebuilds (~6 min). Does NOT restart.')).toBeInTheDocument()
+  })
+
+  it('Start inside the portaled confirm popover still fires the sync request', async () => {
+    const { pop } = await openPullBuildConfirm()
+    // The outside-click guard must exclude the portaled popover itself, or the
+    // mousedown preceding this click would close it before the click lands.
+    fireEvent.click(within(pop).getByText('Start'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      const urls = calls.map((c) => (typeof c[0] === 'string' ? c[0] : (c[0] as Request).url))
+      expect(urls.some((u) => u.includes('/sync'))).toBe(true)
+    })
+  })
+
+  it('outside-click and Escape close the portaled confirm popover', async () => {
+    const { trigger } = await openPullBuildConfirm()
+    fireEvent.mouseDown(document.body)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(trigger)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('confirm popover opens downward when there is room below', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: 100, bottom: 120, left: 400, right: 440, width: 40, height: 20, x: 400, y: 100, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const pop = await screen.findByRole('dialog') as HTMLElement
+    expect(pop.getAttribute('data-placement')).toBe('down')
+    expect(pop.style.position).toBe('fixed')
+    expect(pop.style.top).not.toBe('')
+    expect(pop.style.bottom).toBe('')
+  })
+
+  it('confirm popover flips upward when near the viewport bottom', async () => {
+    mockFleet(FLEET_MENU)
+    renderPage()
+    await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
+    const trigger = screen.getByText('Pull+Build').closest('button') as HTMLButtonElement
+    // A row a few px above the bottom edge is exactly the case in the bug
+    // report: no room below, so the popover must flip up instead of being cut.
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      top: window.innerHeight - 8, bottom: window.innerHeight - 4, left: 400, right: 440, width: 40, height: 20, x: 400, y: window.innerHeight - 8, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(trigger)
+    const pop = await screen.findByRole('dialog') as HTMLElement
+    expect(pop.getAttribute('data-placement')).toBe('up')
+    expect(pop.style.bottom).not.toBe('')
+    expect(pop.style.top).toBe('')
   })
 
   /* ─── Provision progress: expandable log panel + failure persistence ─── */

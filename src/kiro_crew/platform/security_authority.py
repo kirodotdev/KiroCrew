@@ -100,6 +100,7 @@ class PolicyAuthority:
         extra_patterns: "list[str] | None" = None,
         *,
         denied_regexes: "list[str] | None" = None,
+        reason_notes: "dict[str, str] | None" = None,
     ) -> "str | None":
         """Evaluate a command/tool against the effective deny set.
 
@@ -111,6 +112,10 @@ class PolicyAuthority:
         user-added, with governance-pinned ids force-re-added) is forwarded
         opaquely.  ``@final`` — the decision cannot be overridden by a subclass.
 
+        ``reason_notes`` maps a user pattern to the operator's own explanation and
+        is forwarded opaquely too.  It is presentation-only: it cannot add,
+        remove, or alter a match, so it cannot weaken the overlay.
+
         Critical ADD-only invariant: the overlay patterns travel via
         ``extra_patterns`` and are NEVER routed through ``denied_regexes``, so a
         user opt-out of a built-in rule can never weaken the companion overlay.
@@ -121,6 +126,7 @@ class PolicyAuthority:
             tool_name,
             extra_patterns=combined or None,
             denied_regexes=denied_regexes,
+            reason_notes=reason_notes,
         )
 
 

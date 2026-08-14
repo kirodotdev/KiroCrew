@@ -2,7 +2,7 @@
  * Guards for the translation driver.
  *
  * The driver is the only thing standing between "1767 new English keys" and
- * "1767 keys x 10 locales landing in one commit", and `catalogParity.test.ts`
+ * "1767 keys x 11 locales landing in one commit", and `catalogParity.test.ts`
  * gives no partial credit — so the driver's checks have to be right before the
  * translation run, not after.
  *
@@ -47,9 +47,9 @@ describe('locale list derivation', () => {
   /**
    * The driver regex-parses `languages.ts` instead of keeping its own list. That
    * is the right call — a duplicated list is a second thing to forget when
-   * language #12 ships — but it only stays right while the parse agrees with the
+   * language #13 ships — but it only stays right while the parse agrees with the
    * real export. If someone reformats `SUPPORTED_LANGUAGES`, this fails here
-   * rather than by quietly translating nine locales out of ten.
+   * rather than by quietly translating ten locales out of eleven.
    */
   it('parses exactly the shipped, non-devOnly languages', () => {
     const parsed = parseLanguages(LANGUAGES_SRC)
@@ -62,12 +62,12 @@ describe('locale list derivation', () => {
     expect(parseLanguages(LANGUAGES_SRC).map((l: { code: string }) => l.code)).not.toContain('en-XA')
   })
 
-  it('leaves 10 translation targets once English is removed', () => {
+  it('leaves 11 translation targets once English is removed', () => {
     // A literal, NOT SUPPORTED_LANGUAGES.length - 1: the test above already
     // asserts the parse equals that export, so deriving the count from it here
     // would compare the parse against itself and pass for any fan-out size.
     const parsed = parseLanguages(LANGUAGES_SRC)
-    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(10)
+    expect(parsed.filter((l: { code: string }) => l.code !== DEFAULT_LANGUAGE)).toHaveLength(11)
   })
 
   it('throws rather than guessing when the export cannot be found', () => {
@@ -169,6 +169,37 @@ describe('checkValue — do-not-translate terms', () => {
     // `Git` must not count as present just because `Gitea` is.
     const f = checkValue({ key: 'k', en: 'Use Gitea here', tr: '在 Gitea 中使用', dnt: ['Git'] })
     expect(rules(f)).not.toContain('dnt-missing')
+  })
+
+  it('treats a Korean 조사 as a boundary, not a continuation of the term', () => {
+    // Korean agglutinates: `GitHub에서` IS the term, verbatim, with a particle
+    // attached. A plain letter-boundary called all 54 such values a dropped term.
+    const f = checkValue({
+      key: 'k', en: 'Open in GitHub', tr: 'GitHub에서 열기', dnt: ['GitHub'], locale: 'ko',
+    })
+    expect(rules(f)).not.toContain('dnt-missing')
+  })
+
+  it('still rejects a term the Korean dropped, particle or not', () => {
+    const f = checkValue({
+      key: 'k', en: 'Open in GitHub', tr: '깃허브에서 열기', dnt: ['GitHub'], locale: 'ko',
+    })
+    expect(rules(f)).toContain('dnt-missing')
+  })
+
+  it('keeps the strict boundary for every other locale', () => {
+    // The relaxation is Korean orthography, not a general loosening: `ja.md` §1.1
+    // asks for a space at the script boundary, so `GitHubで` is a real finding
+    // there and must stay one.
+    const f = checkValue({
+      key: 'k', en: 'Open in GitHub', tr: 'GitHubで開く', dnt: ['GitHub'], locale: 'ja',
+    })
+    expect(rules(f)).toContain('dnt-missing')
+  })
+
+  it('stays strict when no locale is supplied', () => {
+    const f = checkValue({ key: 'k', en: 'Open in GitHub', tr: 'GitHub에서 열기', dnt: ['GitHub'] })
+    expect(rules(f)).toContain('dnt-missing')
   })
 })
 

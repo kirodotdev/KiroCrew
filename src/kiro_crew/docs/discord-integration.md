@@ -159,9 +159,22 @@ answers split across messages.
 | `!new` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
 | `!sessions` | Pick a recent dashboard session and continue it here (owner only) |
-| `!link` / `!unlink` | Mirror this conversation's dashboard tab here |
+| `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
 | `!stop` | Stop the current reply and clear its queue |
 | `!help` | Show commands |
+
+### Continuing a Discord conversation from the dashboard
+
+A Discord conversation is its own mirror: every turn of that session is
+delivered back to the Discord channel it is read in, including the turns you
+later take from the session's dashboard tab. Nothing to switch on — the binding
+is (re-)asserted on each message you send, so it also survives a gateway
+restart or a rival claim that took it away.
+
+`!unlink` turns it off, and the refusal is remembered: without that, "off" would
+last exactly until your next message, since a conversation with no binding is
+indistinguishable from one that was never linked. `!link` withdraws it. Neither
+touches a binding you set explicitly from the dashboard to some other target.
 
 ### Continuing a dashboard session from Discord
 

@@ -111,6 +111,9 @@ describe('file-explorer/utils', () => {
     it('returns false for neither', () => {
       expect(utils.isShortcut({ metaKey: false, ctrlKey: false } as KeyboardEvent)).toBe(false)
     })
+    it('returns false for both — Ctrl+Cmd is an OS-reserved chord', () => {
+      expect(utils.isShortcut({ metaKey: true, ctrlKey: true } as KeyboardEvent)).toBe(false)
+    })
   })
 
   describe('loadState / saveState', () => {

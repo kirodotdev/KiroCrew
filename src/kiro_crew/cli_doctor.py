@@ -7,15 +7,17 @@ import json
 import logging
 import os
 import platform as _plat
+import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from kiro_crew import __version__ as _mc_version
-from kiro_crew import diagnostics, platform_compat
+from kiro_crew import diagnostics, platform_compat, sandbox
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
@@ -29,6 +31,7 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
     preserved_entries,
 )
+from kiro_crew.constants import MIN_NODE_MAJOR
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
     dump_first_stack_lines,
@@ -41,13 +44,16 @@ from kiro_crew.dashboard.origin import (
     parse_dashboard_url,
 )
 from kiro_crew.embeddings import (
+    _LIB_PATH_ENV,
     _load_llama_class,
     _platform_libs_dirname,
     _resolve_model_url,
     default_model_path,
     model_file_present,
     resolve_custom_model,
+    verify_vendored_libs,
 )
+from kiro_crew.kiro_cli import mcp_governance_may_apply
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
 from kiro_crew.platform import (
@@ -58,12 +64,12 @@ from kiro_crew.platform import (
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import sel
+from kiro_crew.service import apparmor
+from kiro_crew.service import linux as service_linux
+from kiro_crew.session_pid_sig import signing_health
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
 
 logger = logging.getLogger(__name__)
-
-_MIN_NODE_VERSION = 16
-
 
 # ``KIRO_AGENTS_DIR`` is an import-time override hook, NOT a frozen path.
 # ``None`` means "resolve from the live data home"; tests patch this
@@ -268,6 +274,105 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
         issues.append(f"{ref} probe")
 
 
+# Non-secret rows kiro-cli writes when the signed-in identity came from IAM
+# Identity Center. Presence is the signal; the values (a start URL and a region)
+# are never read into a message, and no token key is touched.
+def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
+    """Render the `MCP Governance` section of `kirocrew doctor`.
+
+    Speaks up in two situations: governance can reach this identity (Identity
+    Center or an API key), where an administrator's registry may be in force, and
+    the registry declaration or its markers are present on an identity governance
+    CANNOT reach, which is the inverse failure and just as silent. Stays quiet on
+    an ordinary personal install, where a governance warning would be pure noise.
+
+    This exists because the section above cannot detect either failure.
+    Governance is enforced inside kiro-cli when it assembles a session: it drops
+    every ``mcpServers`` entry whose registry marker does not match the account's
+    access mode. Kiro Crew's own handshake probe spawns each server directly and
+    therefore still reports it healthy, so an affected host reads green here
+    while `spawn_run`, `cron_add` and `learn_add` are absent from every session.
+    """
+    try:
+        declared = KiroCrewConfig.load().agent.mcp_registry_mode
+    except Exception:
+        logger.debug("config load failed in governance check", exc_info=True)
+        declared = False
+
+    try:
+        spec = json.loads(agent_path.read_text(encoding="utf-8"))
+        servers = spec.get("mcpServers") or {}
+    except Exception:
+        servers = {}
+    if not isinstance(servers, dict):
+        # `or {}` only replaces a FALSY value, so a string or list here survives
+        # and the membership walk below would raise, aborting the whole doctor
+        # run — on exactly the malformed spec someone is running doctor to find.
+        servers = {}
+
+    marked = sorted(
+        name
+        for name in _MANAGED_MCPS
+        if isinstance(servers.get(name), dict) and servers[name].get("type") == "registry"
+    )
+    names = ", ".join(sorted(_MANAGED_MCPS))
+    governed_capable = mcp_governance_may_apply()
+
+    # Nothing to say: an identity governance cannot reach, with no registry
+    # declaration and no leftover markers, is the ordinary case.
+    if not governed_capable and not declared and not marked:
+        return
+
+    print("\nMCP Governance (enterprise):")
+
+    if not governed_capable:
+        # The inverse filter. Outside registry mode a MARKED entry is the one the
+        # client drops, so this state breaks the same servers, equally silently —
+        # reachable by copying the guide onto a personal account, or by leaving an
+        # enterprise account with the declaration still set. Safe to assert only
+        # because neither governance-capable signal is present: no Identity Center
+        # rows AND no API key, which leaves Builder ID or social sign-in.
+        print("  identity: not Identity Center or API key — an admin MCP registry cannot apply")
+        if declared:
+            print(
+                "  ❌ registry mode is declared, so kiro-cli treats these servers as "
+                "registry-provided and drops them on an ungoverned account"
+            )
+        else:
+            print("  ❌ registry markers are present on the spec without the declaration")
+        print(f"      affected: {', '.join(marked) if marked else names}")
+        print("      fix:  kirocrew config set agent.mcp_registry_mode false")
+        issues.append("MCP registry mode on non-IDC account")
+        return
+
+    print("  identity: Identity Center or API key — an admin MCP registry can apply")
+    if declared:
+        print(f"  registry mode: on — {len(marked)}/{len(_MANAGED_MCPS)} managed servers marked")
+        if len(marked) < len(_MANAGED_MCPS):
+            print("  ❌ markers missing — re-run `kirocrew setup --agent-only`")
+            issues.append("MCP registry markers")
+            return
+        # Deliberately not a success line. Whether the administrator actually
+        # allow-listed these names is not knowable locally, so claiming green
+        # here would repeat the overstatement this section exists to correct.
+        print("  cannot verify the registry itself — that lives with your administrator")
+        print(f"      these names must be allow-listed, exactly: {names}")
+        print(
+            "      if tools are still missing in sessions, the account may no longer be "
+            "registry-governed — try `kirocrew config set agent.mcp_registry_mode false`"
+        )
+        return
+
+    print("  registry mode: off")
+    print(
+        "  ⚠️  If MCP tools are missing in sessions while probing OK above, your "
+        "administrator has configured an MCP Registry URL. In that mode kiro-cli "
+        "connects only to servers marked 'type': \"registry\"."
+    )
+    print("      Declare it:  kirocrew config set agent.mcp_registry_mode true")
+    print(f"      Then have your admin allow-list, by these exact names: {names}")
+
+
 def _doctor_data_home() -> None:
     """Report the data home and any leftover pre-move legacy home.
 
@@ -346,6 +451,219 @@ def _doctor_data_home() -> None:
             print(
                 f"  legacy:      ⏹ {legacy} still present (migration will retry on next cold start)"
             )
+
+
+def _doctor_trust_root() -> None:
+    """Report whether session identities can be signed, and from which file.
+
+    A gateway whose SEL trust root stops resolving keeps signing its audit
+    chain from bytes cached at init, so nothing looks wrong — while every
+    ``session_pid`` mapping goes out unsigned and the MCP tools that need a
+    verified session are refused. Publication logs that once per process, but
+    only once a session is actually claimed; asking here needs no claim.
+
+    Read-only on purpose: it never constructs ``SecurityEventLog``, so a
+    missing key is reported rather than created as a side effect of the
+    question.
+    """
+    ok, key_path = signing_health()
+    if ok:
+        print(f"  trust root:  ✅ {key_path}")
+        return
+    if not key_path.parent.is_dir():
+        # The trust dir and the key are created together, on the first
+        # SecurityEventLog init. Neither present means no instance has ever run
+        # against this home — a fresh install, not a broken one.
+        print(f"  trust root:  ⏹ {key_path} not created yet (the gateway writes it on first start)")
+        return
+    print(f"  ⚠ trust root: {key_path} is unreadable or shorter than 32 bytes.")
+    print(
+        "               Session identities go out unsigned, so sub-agent "
+        "dispatch and memory"
+    )
+    print(
+        "               writes are refused in sandboxed sessions. Restore the "
+        "key file, or"
+    )
+    print("               restart the gateway if another process relocated it.")
+
+
+_INDENT = "               "
+
+
+def _print_wrapped(text: str) -> None:
+    """Print ``text`` wrapped to the doctor's detail indent."""
+    for line in textwrap.wrap(text, width=80):
+        print(f"{_INDENT}{line}")
+
+
+def _process_apparmor_confinement() -> str:
+    """AppArmor confinement label of THIS process, ``""`` when unreadable.
+
+    Reads the kernel's own answer, e.g. ``unconfined`` or
+    ``kirocrew-userns (enforce)``. The per-LSM path is tried first; the bare
+    ``attr/current`` covers older kernels (where it may also carry an SELinux
+    context — which is fine, since callers only compare against a profile name).
+    """
+    for attr in ("/proc/self/attr/apparmor/current", "/proc/self/attr/current"):
+        try:
+            raw = Path(attr).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        return raw.replace("\x00", "").strip()
+    return ""
+
+
+def _service_unit_applies_profile(unit_path: Path, profile_name: str) -> bool:
+    """True when the installed systemd unit transitions the service into the profile.
+
+    The unit is rendered with ``AppArmorProfile=-<name>`` (the leading dash keeps
+    the unit startable while the profile is temporarily unloaded); the dashless
+    form is accepted too so a hand-edited unit still counts.
+    """
+    try:
+        text = unit_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("AppArmorProfile="):
+            value = stripped.split("=", 1)[1].strip().lstrip("-")
+            if value == profile_name:
+                return True
+    return False
+
+
+def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:
+    """Verdict for the Ubuntu AppArmor userns-restriction denial (EPERM on NEWNS).
+
+    Three honest verdicts, decided from real signals rather than the happy path:
+
+    * profile absent → broken, with the install command;
+    * profile installed but nothing applies it, or the probe failed even though
+      THIS process is confined by the profile → broken, with the repair command;
+    * profile installed, the service unit applies it, and this process is
+      unconfined → the probe's failure says nothing about the service, so the
+      verdict is "cannot be verified from this shell" plus how to verify — NOT
+      a claim that the sandbox works, and NOT counted as an issue.
+    """
+    if not apparmor.PROFILE_PATH.is_file():
+        print(f"  backend:     ❌ none — {reason}")
+        _print_wrapped(
+            f"This host restricts unprivileged user namespaces and the "
+            f"{apparmor.PROFILE_NAME} AppArmor profile is not installed, so no context "
+            f"on this host can build the sandbox. Run `kirocrew service install` to "
+            f"install the profile and confine the gateway service with it."
+        )
+        issues.append("sandbox: AppArmor profile not installed")
+        return
+
+    confinement = _process_apparmor_confinement()
+    if confinement and confinement.split(" ")[0] == apparmor.PROFILE_NAME:
+        # The one context that SHOULD be able to build the sandbox refused to:
+        # this is a genuine fault, not a vantage-point artifact.
+        print(f"  backend:     ❌ broken — {reason}")
+        _print_wrapped(
+            f"This process already runs confined by {apparmor.PROFILE_NAME}, which "
+            f"should grant user namespaces, yet the probe still failed. Re-run "
+            f"`kirocrew service install` to re-render and reload the profile."
+        )
+        issues.append("sandbox: probe failed under the AppArmor profile")
+        return
+
+    if not _service_unit_applies_profile(service_linux.UNIT_PATH, apparmor.PROFILE_NAME):
+        print(f"  backend:     ❌ none — {reason}")
+        _print_wrapped(
+            f"The {apparmor.PROFILE_NAME} AppArmor profile is installed, but no systemd "
+            f"unit applies it, so nothing on this host runs confined by it. Run "
+            f"`kirocrew service install` to (re)install the gateway service with the "
+            f"profile applied."
+        )
+        issues.append("sandbox: AppArmor profile installed but not applied")
+        return
+
+    # Unverifiable from here — deliberately NOT an issue, and deliberately NOT a
+    # success claim either.
+    print("  backend:     ⏭  cannot be verified from this shell")
+    _print_wrapped(
+        f"The {apparmor.PROFILE_NAME} AppArmor profile is installed and the gateway "
+        f"service unit is configured to run under it, but this shell is unconfined "
+        f"and aa_change_onexec() into a named profile is not permitted for an "
+        f"unconfined user — so this probe cannot succeed here no matter how healthy "
+        f"the service's sandbox is. To verify the sandbox in the confined context "
+        f"the service uses, run:"
+    )
+    # The interpreter path is quoted for the shell: the recipe is meant to be
+    # pasted, so an install path containing spaces or shell metacharacters must
+    # arrive as one argument, not execute.
+    quoted_python = shlex.quote(sys.executable)
+    print(f"{_INDENT}  sudo systemd-run --pipe --unit=kirocrew-sandbox-test \\")
+    print(f"{_INDENT}    --property=AppArmorProfile=-{apparmor.PROFILE_NAME} \\")
+    print(f"{_INDENT}    --uid=$(id -u) --gid=$(id -g) \\")
+    print(f'{_INDENT}    {quoted_python} -c "import kiro_crew.sandbox as sb; \\')
+    print(f'{_INDENT}      sb.reset_backend(); print(sb.detect_backend())"')
+    _print_wrapped("A healthy sandbox prints: namespace")
+
+
+def _doctor_sandbox(issues: list[str]) -> None:
+    """Render the ``Sandbox`` section — an honest verdict about the agent sandbox.
+
+    The hard rule: report only what THIS process can observe.
+    :func:`sandbox.detect_backend` answers for the probing process, not for the
+    gateway service — on a host that restricts unprivileged user namespaces the
+    profile is applied by systemd to the SERVICE, so from an interactive shell
+    the probe fails with EPERM no matter how healthy the service's sandbox is.
+    Reporting that failure as the sandbox being broken is a false negative; the
+    fix must not swing to the false positive of claiming the sandbox works when
+    all that is known is that it cannot be checked from here.
+    """
+    print("\nSandbox")
+    try:
+        # ONE probe decision: ``unavailable_kind()`` probes internally and
+        # returns "" for a working backend. Probing twice (a detect_backend
+        # read followed by a classifying call) would let a transient failure
+        # heal between the two reads and report a now-working backend as
+        # broken.
+        kind = sandbox.unavailable_kind()
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print(f"  backend:     ⚠️  could not probe ({exc})")
+        return
+    if not kind:
+        # The probe just succeeded, so this read serves the cached positive
+        # result rather than probing again.
+        print(f"  backend:     ✅ {sandbox.detect_backend()}")
+        return
+
+    reason = sandbox.unavailable_reason() or "no probe detail recorded"
+    if kind == "transient":
+        print("  backend:     ⚠️  probe failed transiently — not cached; the next spawn re-probes")
+        print(f"{_INDENT}({reason})")
+        return
+    if kind == "foreign_sandbox":
+        print("  backend:     ⚠️  an outer sandbox already confines this process")
+        _print_wrapped(
+            "Kiro Crew cannot nest its own sandbox inside it. Launch the gateway "
+            "outside that sandbox to hand isolation back to Kiro Crew's own profile."
+        )
+        return
+
+    remedy = sandbox.unavailable_remedy()
+    if remedy == sandbox.REMEDY_APPARMOR_USERNS:
+        _doctor_sandbox_apparmor(reason, issues)
+        return
+    if sys.platform.startswith("linux"):
+        # A permanent, named kernel refusal (user.max_user_namespaces=0, a kernel
+        # without CONFIG_USER_NS, ...) — genuinely broken, with the mechanism's
+        # own guidance when the probe identified one.
+        print(f"  backend:     ❌ none — {reason}")
+        guidance = sandbox.remedy_guidance(remedy)
+        if guidance:
+            _print_wrapped(guidance)
+        issues.append("sandbox backend")
+        return
+    # Platforms with no OS-level backend to offer (Windows; macOS builds without
+    # sandbox-exec) — a fact about the platform, not a fault of this install.
+    print("  backend:     ⏭  no OS-level sandbox backend on this platform")
 
 
 def _linger_enabled(user: str) -> bool | None:
@@ -431,6 +749,125 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         print("               taking running pods with it. " f"Fix: loginctl enable-linger {user}")
 
 
+# Where SwapTotal is read from. A module attribute (not inlined) so tests can
+# point it at a fabricated meminfo file.
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+# Userspace OOM killers doctor knows how to detect, in probe order:
+# systemd-oomd ships with systemd (the common case), earlyoom is the usual
+# add-on daemon.
+_OOM_KILLER_UNITS = ("systemd-oomd", "earlyoom")
+
+
+def _swap_total_kib() -> int | None:
+    """``SwapTotal`` from ``/proc/meminfo`` in KiB, ``None`` when unreadable.
+
+    Read from procfs directly rather than shelling out to ``free``/``swapon``:
+    the file is world-readable and parsing it cannot hang or prompt.
+    """
+    try:
+        text = _PROC_MEMINFO.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in text.splitlines():
+        if line.startswith("SwapTotal:"):
+            parts = line.split()
+            try:
+                return int(parts[1])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def _detect_userspace_oom_killer() -> str | bool | None:
+    """Which userspace OOM killer is active, if any.
+
+    Returns the unit name (``"systemd-oomd"`` / ``"earlyoom"``) when one is
+    active, ``False`` when every probe completed and none is active, and
+    ``None`` when it cannot be determined (no ``systemctl``, probe timeout or
+    failure) so the caller reports "unknown" rather than guessing. ``True`` is
+    never returned — the truthy arm carries the unit name.
+
+    Non-privileged and bounded: ``systemctl is-active`` needs no root and each
+    probe is capped at 5s, so this can never hang the doctor.
+    """
+    systemctl = platform_compat.trusted_system_bin("systemctl")
+    if systemctl is None:
+        return None
+    determined = True
+    for unit in _OOM_KILLER_UNITS:
+        try:
+            res = subprocess.run(
+                [systemctl, "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            determined = False
+            continue
+        if res.returncode == 0 and res.stdout.strip() == "active":
+            return unit
+    return False if determined else None
+
+
+def _doctor_memory_pressure(issues: list[str]) -> None:
+    """Report whether the host can degrade gracefully under memory pressure.
+
+    A Linux host with zero swap and no userspace OOM killer has no pressure
+    release valve: sustained memory pressure evicts file-backed pages (running
+    code included) faster than they re-fault in, and the host livelocks —
+    unresponsive for minutes, sometimes until a power cycle — before the kernel
+    OOM killer's conservative heuristics fire. Either protection alone (swap to
+    absorb the spike, or earlyoom/systemd-oomd to kill a hog early) prevents
+    the freeze, so this warns only when BOTH are absent. When detection is
+    inconclusive it reports "unknown" instead of warning.
+
+    Advisory only (never appended to ``issues``): swap sizing and OOM-killer
+    policy are host configuration the user owns — doctor reports the exposure,
+    it does not fail the install over it. Linux-only: the freeze mode and both
+    detection sources are Linux-specific.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nMemory Pressure")
+    if not sys.platform.startswith("linux"):
+        print(
+            f"  freeze risk: ⏹ not applicable ({sys.platform} — the swap/OOM-killer "
+            "check reads Linux procfs)"
+        )
+        return
+
+    swap_kib = _swap_total_kib()
+    if swap_kib is None:
+        print("  swap:        ⚠️  could not read SwapTotal from /proc/meminfo — check skipped")
+        return
+    if swap_kib > 0:
+        print(f"  swap:        ✅ {swap_kib / 1048576:.1f} GiB configured")
+    else:
+        print("  swap:        ⏹ none (SwapTotal = 0)")
+
+    killer = _detect_userspace_oom_killer()
+    if isinstance(killer, str):
+        print(f"  oom killer:  ✅ {killer} active")
+    elif killer is False:
+        print("  oom killer:  ⏹ none active (checked: " + ", ".join(_OOM_KILLER_UNITS) + ")")
+    else:
+        print("  oom killer:  ⏹ could not determine (no systemctl, or the probe failed)")
+
+    if swap_kib > 0 or isinstance(killer, str):
+        return
+    if killer is None:
+        # Uncertain detection must not warn — a container or non-systemd host
+        # may run a killer doctor cannot see.
+        print("  freeze risk: ⏹ unknown — no swap, and OOM-killer detection was inconclusive")
+        return
+    print("  freeze risk: ⚠️  host can freeze under sustained memory pressure")
+    print("               With no swap and no userspace OOM killer, memory pressure")
+    print("               thrashes file-backed pages and the host can livelock before")
+    print("               the kernel OOM killer intervenes.")
+    print("               Fix: add swap, enable systemd-oomd, or install earlyoom.")
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -476,8 +913,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Diagnostics bundle (--bundle) ──
     # Short-circuit: collect logs + crash reports into a redacted zip and print
-    # the local path plus a pre-filled GitHub issue URL, then exit. Shares the
-    # exact collector the dashboard "Report a Problem" button uses.
+    # the local path plus a GitHub issue URL, then exit. Shares the exact
+    # collector the dashboard "Report a Problem" button uses, but prints the
+    # short link variant: the dashboard's pre-filled URL carries a ~600-char
+    # query that the exfil query-length heuristic redacts on any surface that
+    # scans printed output.
     if bundle:
         print("Collecting diagnostics bundle (secrets are redacted)...\n")
         # The collector touches the filesystem in several places that can fail for
@@ -498,8 +938,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         )
         if result.skipped:
             print(f"     skipped (not found): {', '.join(result.skipped)}")
-        print("\n  Open a pre-filled GitHub issue (then drag the zip in):")
-        print(f"  {result.github_issue_url}")
+        print("\n  Open a GitHub issue (then drag the zip in):")
+        print(f"  {diagnostics.terminal_issue_url(result)}")
         return
 
     # ── Platform edition ──
@@ -596,18 +1036,18 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 timeout=5,
             )
             major = int(node_ver_result.stdout.strip().lstrip("v").split(".")[0])
-            if major >= _MIN_NODE_VERSION:
+            if major >= MIN_NODE_MAJOR:
                 print(f"  node:        ✅ {node} (v{major})")
             else:
                 print(
-                    f"  node:        ⚠️  v{major} < {_MIN_NODE_VERSION} (frontend needs Node {_MIN_NODE_VERSION}+)"
+                    f"  node:        ⚠️  v{major} < {MIN_NODE_MAJOR} (frontend needs Node {MIN_NODE_MAJOR}+)"
                 )
-                print("               Fix: install Node.js >= 16")
+                print(f"               Fix: install Node.js >= {MIN_NODE_MAJOR}")
         except Exception:
             print(f"  node:        ✅ {node}")
     else:
-        print(f"  node:        ⚠️  not found (frontend needs Node {_MIN_NODE_VERSION}+)")
-        print("               Fix: install Node.js >= 16")
+        print(f"  node:        ⚠️  not found (frontend needs Node {MIN_NODE_MAJOR}+)")
+        print(f"               Fix: install Node.js >= {MIN_NODE_MAJOR}")
 
     # venv detection — used by the runtime section below. Windows venvs put the
     # interpreter under .venv\Scripts\python.exe, not .venv/bin/python3, so a
@@ -694,14 +1134,26 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Data Home (+ leftover migration archive) ──
     _doctor_data_home()
+    _doctor_trust_root()
 
     # ── Pods (systemd --user session bus) ──
     _doctor_pod_session_bus(issues)
+
+    # ── Sandbox ──
+    # Ahead of MCP Tools: the probes below spawn through the sandbox chokepoint,
+    # so this verdict is the context for any probe failure they report.
+    _doctor_sandbox(issues)
+
+    # ── Memory pressure preparedness (swap / userspace OOM killer) ──
+    _doctor_memory_pressure(issues)
 
     # ── MCP Tools ──
     print("\nMCP Tools")
     if agent_path.exists():
         _doctor_mcp_tools(agent_path, issues)
+        # After the probe, deliberately: the probe reporting green is the exact
+        # condition this section exists to explain.
+        _doctor_mcp_governance(agent_path, issues)
 
     # ── Python Runtime ──
     print("\nRuntime")
@@ -761,6 +1213,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Vector Memory (in-process embeddings) ──
     print("\nVector Memory (in-process embeddings)")
 
+    # Read BEFORE _load_llama_class(): the loader `setdefault`s this var to its
+    # OWN bundled libs dir, so after the call an unset var is indistinguishable
+    # from an operator override pointing at the bundle.
+    _lib_path_override = os.environ.get(_LIB_PATH_ENV, "")
+
     if _load_llama_class() is not None:
         print("  runtime:     ✅ vendored llama-cpp-python importable")
     elif _platform_libs_dirname() is None:
@@ -773,6 +1230,29 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         )
     else:
         print("  runtime:     ❌ vendored runtime failed to load")
+        # Distinguish an incomplete SHIPPED payload from a load failure on a
+        # complete one. Both surface as the same ctypes "base name 'llama' not
+        # found", but only the former is a packaging defect the user cannot fix
+        # by configuration — and naming the absent files is what stops the
+        # diagnosis from being misread as an unsupported architecture.
+        #
+        # Mirrors the loader's LLAMA_CPP_LIB_PATH exemption: under an override
+        # the libs load from the operator's directory, so blaming the bundled
+        # tree would send them to reinstall a package they are deliberately not
+        # loading from, while saying nothing about the dir that actually failed.
+        _plat_dir = _platform_libs_dirname()
+        _absent = (
+            [] if _lib_path_override else verify_vendored_libs().get(_plat_dir or "", [])
+        )
+        if _absent:
+            print(f"               Missing native libs for {_plat_dir}: {', '.join(_absent)}")
+            print("               This install's vendored llama.cpp is incomplete (packaging")
+            print("               defect, not an unsupported platform) — reinstall Kiro Crew")
+            print("               from a current release to restore vector memory.")
+        elif _lib_path_override:
+            print(f"               {_LIB_PATH_ENV} is set — the libs load from")
+            print(f"               {_lib_path_override}, not the bundled tree.")
+            print("               Verify that directory holds a complete llama.cpp closure.")
         issues.append("embedding runtime")
 
     # FAISS is an optional accelerator — never a dependency, on any platform.
@@ -918,8 +1398,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 print("               The gateway will refuse to connect.")
                 issues.append("slack workspace: not in allowlist")
     else:
-        print("  status:      ⏭  not configured (dashboard-only mode)")
-        print("  setup:       run 'kirocrew setup' to add Slack tokens")
+        print("  status:      ⏭  not configured (optional)")
+        print("  setup:       run 'kirocrew setup --slack', or connect any channel")
+        print("               (Slack, Discord, Telegram, …) from the dashboard")
 
     # ── Loop-stall crash dumps ──
     print("\nLoop-stall Crash Dumps")
@@ -931,7 +1412,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             if _age_s < 7 * 86400:  # Less than 7 days old
                 _age_h = _age_s / 3600
                 print(f"  last dump:   ⚠️  {_latest.name} ({_age_h:.1f}h ago)")
-                _stack = dump_first_stack_lines(_latest, max_lines=5)
+                # 8 lines = preamble + thread header + ~6 frames: enough to
+                # reach past the asyncio plumbing into the Kiro Crew frame
+                # that identifies WHERE the loop wedged.
+                _stack = dump_first_stack_lines(_latest, max_lines=8)
                 if _stack:
                     print("  MainThread stuck at:")
                     for _line in _stack:

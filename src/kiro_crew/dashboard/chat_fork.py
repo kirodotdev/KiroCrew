@@ -49,12 +49,15 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
 
-    # Rate/resource guard: reject if we're already at the cap.
-    if len(state._slots) >= _MAX_SLOTS_FOR_FORK:
+    # Rate/resource guard: reject if we're already at the cap. Counts slots still
+    # under construction too (``live_slot_count``): the import path retracts a
+    # slot from ``_slots`` while it is built, and those are allocated memory this
+    # cap would otherwise ignore.
+    if state.live_slot_count() >= _MAX_SLOTS_FOR_FORK:
         sel().log_api_access(
             caller=request_app or "dashboard", operation="chat.slot_fork",
             outcome="denied", source="rate_limit",
-            resources=f"slot={name},slot_count={len(state._slots)}",
+            resources=f"slot={name},slot_count={state.live_slot_count()}",
             error="slot cap reached",
         )
         return web.json_response(
@@ -102,8 +105,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     at_index = body.get("at_message_index")
     prompt = body.get("prompt")
     mode_override = body.get("mode")
-    if mode_override is not None and mode_override not in ("", "orchestrator"):
-        return web.json_response({"error": "mode must be '' or 'orchestrator'"}, status=400)
+    if mode_override is not None and mode_override not in ("", "orchestrator", "crew"):
+        return web.json_response({"error": "mode must be '', 'orchestrator' or 'crew'"}, status=400)
     direction = body.get("direction", _FORK_DIRECTION_HEAD)
     if direction not in _FORK_DIRECTIONS:
         return web.json_response(

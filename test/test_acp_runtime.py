@@ -29,7 +29,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from spawn_test_helpers import strip_spawn_shim
 
+from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.runtime import (
+    _REQUEST_TIMEOUT,
+    _SESSION_NEW_TIMEOUT,
     _TERMINATE_TIMEOUT,
     AcpRuntime,
     AcpRuntimeDead,
@@ -50,8 +53,24 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 
-
 # ── Harness ──
+
+
+@pytest.fixture(autouse=True)
+def _fast_no_report_ceiling(monkeypatch):
+    """Shrink drain_init()'s no-report ceiling for every test in this module.
+
+    Many tests drive the real create_session()/load_session() path against a
+    fake backend that never emits MCP registration frames; at the production
+    ceiling each would stall drain_init() for seconds. drain_init() resolves
+    the module constant at call time precisely so this patch takes effect.
+    Tests that exercise the ceiling itself pass an explicit value instead.
+    """
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05, raising=False)
+
+
 def _make_runtime():
     """An initialized AcpRuntime wired to a fake subprocess.
 
@@ -466,6 +485,169 @@ async def test_non_object_json_line_does_not_crash_reader():
         assert not rt._dead  # reader never marked the runtime dead
     finally:
         await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_oversize_stdout_frame_is_dropped_not_fatal():
+    """A single JSON-RPC line over the stdout buffer must cost ONE frame, not
+    the whole runtime.
+
+    Regression: the reader used to _mark_dead on overrun, which poisons every
+    multiplexed session's queue and fails every pending future — users saw
+    "process exited / chat failure" mid-turn after one huge tool result.
+
+    Driven through a REAL StreamReader so this asserts asyncio's actual
+    behaviour, not a mock's.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        reader.feed_data(b"X" * 1024 + b"\n")  # oversize, newline present
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_unterminated_oversize_stdout_recovers_at_next_frame():
+    """The shape actually observed in the field: an oversize line whose newline
+    has NOT arrived yet, so the reader drains prefix after prefix before the
+    stream is back in sync. It must ride through every step and route the next
+    real frame.
+
+    Asserts the outcome (recovery), not the step count: how many buffer-fulls
+    the reader sees depends on how the feeds interleave with its task.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        for _ in range(4):
+            reader.feed_data(b"Y" * 512)  # no newline anywhere
+            await asyncio.sleep(0)
+        reader.feed_data(b"TAIL-OF-OVERSIZE-LINE\n")  # line finally terminates
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_oversize_frame_split_mid_multibyte_does_not_kill_demux():
+    """The drained remainder must never reach json.loads.
+
+    Regression for a defect in the second cut of this fix: the drain consumed only
+    the buffered prefix and let the recovered tail through as a line. That tail is
+    a byte-slice cut at an arbitrary offset, so an oversize frame carrying
+    multibyte UTF-8 (CJK, emoji — ordinary in tool output) splits a character;
+    `json.loads` then raises UnicodeDecodeError, which is NOT a
+    json.JSONDecodeError, so it escaped the non-JSON guard into the loop's crash
+    handler and killed EVERY multiplexed session.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        # Two conditions make the tail reach the parser, and both are ordinary:
+        #  - the discard boundary must fall mid-character, which the UNTERMINATED
+        #    branch does by construction (it reports `consumed = len(buffer)`, an
+        #    arbitrary byte offset; a newline-terminated overrun instead reports
+        #    the newline's offset, already a character boundary), and
+        #  - the remainder after the last discard must be UNDER the reader limit,
+        #    so readuntil returns it as a normal-looking line instead of
+        #    overrunning again.
+        # Dense CJK, fed in 500-byte slices that are not multiples of 3.
+        blob = ("苹" * 400).encode() + b"\n"  # 1201 bytes
+        assert len(blob) % 3 != 0
+        for off in range(0, 1000, 500):
+            reader.feed_data(blob[off : off + 500])
+            await asyncio.sleep(0)
+        reader.feed_data(blob[1000:])  # 201 bytes < limit → returned as a line
+        _feed(reader, {"method": "session/update", "params": {"sessionId": "sA"}})
+        msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+        assert msg.params["sessionId"] == "sA"
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_many_terminated_oversize_frames_never_exhaust_the_budget():
+    """A run of oversize-but-properly-terminated frames must stay survivable.
+
+    Regression for a defect in the first cut of this fix: the guard counted
+    oversize *frames* rather than bytes-without-a-boundary, so a replay of N
+    newline-terminated >limit frames walked straight into runtime death even
+    though every one of them recovered a frame boundary. The budget is now scoped
+    to a single drain call, each of which provably ends on a boundary.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    q = _register(rt, "sA")
+    task = await _start_reader(rt)
+    rounds = 40
+    try:
+        for i in range(rounds):
+            reader.feed_data(b"X" * 4096 + b"\n")
+            _feed(reader, {"method": "session/update", "params": {"sessionId": "sA", "n": i}})
+        for i in range(rounds):
+            msg = await asyncio.wait_for(q["sA"].get(), timeout=5.0)
+            assert msg.params["n"] == i
+        assert not rt._dead
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_unterminated_blob_past_the_byte_budget_marks_runtime_dead():
+    """The escape hatch: a stream that never yields a frame boundary would have
+    the reader draining forever, so exceeding the byte budget must still reach the
+    terminal state.
+
+    The liveness oracle cannot cover this case — it reads CPU/IO movement, and a
+    garbage-spewing stream moves both, so it would be judged WORKING.
+    """
+    rt, _, proc = _make_runtime()
+    reader = asyncio.StreamReader(limit=256)
+    proc.stdout = reader
+    _register(rt, "sA")
+    task = await _start_reader(rt)
+    try:
+        fed = 0
+        while fed <= _OVERSIZE_DRAIN_MAX_BYTES and not rt._dead:
+            reader.feed_data(b"Z" * 65536)  # never a newline
+            fed += 65536
+            await asyncio.sleep(0)
+        await asyncio.wait_for(task, timeout=5.0)
+    except Exception:
+        pass
+    finally:
+        await _stop_reader(task)
+    assert rt._dead
+
+
+def test_runtime_reuses_clients_oversize_drain_helper():
+    """The consume-prefix-and-retry drain must have ONE definition. A second copy
+    is how two read paths drift apart (they already disagreed once, when only one
+    of them killed the process)."""
+    import kiro_crew.acp.client as client_mod
+    import kiro_crew.acp.runtime as runtime_mod
+
+    assert runtime_mod._drain_oversize_line is client_mod._drain_oversize_line
+    assert runtime_mod.OversizeLineUnrecoverable is client_mod.OversizeLineUnrecoverable
 
 
 def test_runtime_uses_clients_augmented_kiro_bin_resolver():
@@ -3080,7 +3262,7 @@ class TestAcpRuntimeLoadSession:
 
         sent: list[tuple[str, dict]] = []
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             sent.append((method, params))
             # session/load echoes "modes"; set_mode echoes nothing meaningful.
             if method == METHOD_SESSION_LOAD:
@@ -3128,7 +3310,7 @@ class TestAcpRuntimeLoadSession:
         rt, _, _ = _make_runtime()
         rt._can_load_session = True
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             return {}  # no "modes" → load did not actually restore state
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -3147,7 +3329,7 @@ class TestAcpRuntimeLoadSession:
         rt._can_load_session = True
         captured: dict = {}
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             if method == METHOD_SESSION_LOAD:
                 captured.update(params)
                 return {"modes": {}, "models": []}
@@ -3226,7 +3408,7 @@ async def test_create_session_registers_queue_on_success(monkeypatch):
     registered so the returned handle receives its frames."""
     rt, _, _ = _make_runtime()
 
-    async def _fake_send(method, params):
+    async def _fake_send(method, params, timeout=None):
         if method == METHOD_SESSION_NEW:
             return {"sessionId": "sid-ok"}
         return {}
@@ -3519,6 +3701,226 @@ async def test_drain_init_repoisons_on_dead_runtime():
     q["sA"].put_nowait(None)
     await handle.drain_init(duration=0.5, idle_exit=0.05)
     assert q["sA"].get_nowait() is None  # sentinel preserved
+
+
+def _mcp_initialized_frame(session_id: str, server: str) -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "method": "_kiro.dev/mcp/server_initialized",
+            "params": {"sessionId": session_id, "serverName": server},
+        }
+    )
+
+
+def _metadata_frame(session_id: str) -> JsonRpcMessage:
+    return JsonRpcMessage.from_dict(
+        {
+            "method": "_kiro.dev/metadata",
+            "params": {"sessionId": session_id, "contextUsagePercentage": 1.0},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_drain_init_waits_past_idle_window_for_first_mcp_report(monkeypatch):
+    """#2627: the idle shortcut is not eligible before the first MCP
+    registration frame. A server that stays silent past the idle window and
+    THEN reports is still observed — non-MCP frames (metadata) that arrive
+    immediately after set_mode must not arm the shortcut either."""
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 5.0, raising=False)
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    # A non-MCP frame is already queued (kiro-cli emits metadata right after
+    # set_mode); it must be consumed without arming the idle exit.
+    q["sA"].put_nowait(_metadata_frame("sA"))
+
+    async def _late_report() -> None:
+        # Many idle windows of silence before the server finally reports.
+        await asyncio.sleep(0.15)
+        q["sA"].put_nowait(_mcp_initialized_frame("sA", "slow-npx"))
+
+    feeder = asyncio.create_task(_late_report())
+    try:
+        await handle.drain_init(duration=0.2, idle_exit=0.01)
+    finally:
+        await feeder
+    # The late report was drained rather than left to race into the first turn.
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_no_reports_returns_at_ceiling():
+    """#2627: a drain that never sees an MCP report returns at the no-report
+    ceiling instead of hanging (bounded even when servers are dead or absent)."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(_metadata_frame("sA"))  # non-MCP traffic doesn't extend it
+    # The outer wait_for is the hang guard: generous vs the 0.2s ceiling so a
+    # loaded shard can't flake it, tiny vs a genuine unbounded wait.
+    await asyncio.wait_for(
+        handle.drain_init(duration=0.05, idle_exit=0.01, no_report_ceiling=0.2),
+        timeout=5.0,
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_idle_exit_stays_prompt_after_first_report():
+    """#2627: once a report has been seen, a subsequent idle gap still exits
+    promptly — the warm path must not degrade into full-ceiling waits. The
+    ceilings are deliberately huge relative to the outer bound, so completing
+    inside it proves the idle shortcut (not a ceiling) ended the drain."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(_mcp_initialized_frame("sA", "fast-server"))
+    await asyncio.wait_for(
+        handle.drain_init(duration=30.0, idle_exit=0.02, no_report_ceiling=30.0),
+        timeout=5.0,
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_drain_init_zero_ceiling_keeps_idle_exit_active_from_start():
+    """#2627: no_report_ceiling=0.0 (MCP-free runtime opt-out) restores the
+    pre-fix behavior — idle exit is active before any report, so an empty
+    queue exits after one idle window instead of holding for a first report."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(_metadata_frame("sA"))
+    # duration is deliberately huge relative to the outer bound: completing
+    # inside it proves the idle shortcut ended the drain despite zero reports.
+    await asyncio.wait_for(
+        handle.drain_init(duration=30.0, idle_exit=0.02, no_report_ceiling=0.0),
+        timeout=5.0,
+    )
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
+    """#2627: a runtime constructed with expect_mcp_reports=False passes the
+    zero ceiling to drain_init, so its sessions never hold for a report."""
+    rt = AcpRuntime(work_dir="/tmp", expect_mcp_reports=False)
+    rt._initialized = True
+    proc = MagicMock()
+    proc.returncode = None
+    proc.pid = 4242
+    rt._process = proc
+    rt._pid = 4242
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {"sessionId": "sid-lite"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    seen: dict = {}
+    orig = AcpSessionHandle.drain_init
+
+    async def _spy(self, *args, **kwargs):
+        seen.update(kwargs)
+        await orig(self, *args, **kwargs)
+
+    with patch.object(AcpSessionHandle, "drain_init", _spy):
+        await rt.create_session(cwd="/w", agent="kirocrew-lite", mcp_servers=[])
+    assert seen.get("no_report_ceiling") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_drain_init_ignores_pre_switch_reports_still_waits_for_new_agent(monkeypatch):
+    """#2627 (review): on a shared runtime, session/new initializes the
+    PARENT mode's servers; their staged registration frames must not arm the
+    idle shortcut for a session that was then mode-SWITCHED — the switched-to
+    agent's own slow server, reporting after set_mode, must still be observed."""
+    import kiro_crew.acp.session_handle as sh
+
+    monkeypatch.setattr(sh, "_MCP_DRAIN_NO_REPORT_CEILING", 5.0, raising=False)
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    # Staged during session/new: the pre-switch agent's roster.
+    q["sA"].put_nowait(_mcp_initialized_frame("sA", "parent-mode-server"))
+    q["sA"].put_nowait(_metadata_frame("sA"))
+
+    async def _late_report() -> None:
+        # The switched-to agent's server reports well past the idle window.
+        await asyncio.sleep(0.15)
+        q["sA"].put_nowait(_mcp_initialized_frame("sA", "subagent-slow-npx"))
+
+    feeder = asyncio.create_task(_late_report())
+    try:
+        await handle.drain_init(duration=0.2, idle_exit=0.01, ignore_queued_reports=True)
+    finally:
+        await feeder
+    # Without the stale-backlog gate, the staged parent report arms the idle
+    # exit and the drain returns before the late report — leaving it queued.
+    assert q["sA"].empty()
+
+
+@pytest.mark.asyncio
+async def test_reader_retains_mcp_registration_frames_during_init():
+    """#2627: server_initialized / init_failure emitted before the session/new
+    response are staged (like OAuth) and handed to the new session's queue, so
+    drain_init() sees warm servers' reports and arms its idle shortcut."""
+    rt, reader, _ = _make_runtime()
+    task = asyncio.create_task(rt._reader_loop())
+    try:
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_NEW:
+                # Frames arrive while session/new is in flight — before the
+                # queue can be registered under the not-yet-known session id.
+                _feed(
+                    reader,
+                    {
+                        "method": "_kiro.dev/mcp/server_initialized",
+                        "params": {"sessionId": "sid-warm", "serverName": "core"},
+                    },
+                )
+                _feed(
+                    reader,
+                    {
+                        "method": "_kiro.dev/mcp/server_init_failure",
+                        "params": {"sessionId": "sid-warm", "serverName": "broken"},
+                    },
+                )
+                await asyncio.sleep(0.05)  # let the reader route them
+                return {"sessionId": "sid-warm"}
+            return {}
+
+        with patch.object(rt, "_send_and_await", _fake_send):
+            with patch.object(
+                AcpSessionHandle, "drain_init", AsyncMock()
+            ) as mock_drain:
+                handle = await rt.create_session(cwd="/w", agent="kirocrew", mcp_servers=[])
+        assert handle.session_id == "sid-warm"
+        mock_drain.assert_awaited_once()
+        # Both registration frames were transferred into the session queue
+        # (this is what drain_init would consume to arm its idle shortcut).
+        methods = []
+        while not handle._queue.empty():
+            frame = handle._queue.get_nowait()
+            assert frame is not None
+            methods.append(frame.method)
+        assert methods == [
+            "_kiro.dev/mcp/server_initialized",
+            "_kiro.dev/mcp/server_init_failure",
+        ]
+        # Staging area was emptied by the transfer.
+        assert not rt._pending_init_notifications
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def test_backfill_context_window_from_pct(monkeypatch):
@@ -4807,3 +5209,78 @@ def test_parse_session_modes_shapes():
     assert ids == ["kirocrew", "ops", "code-reviewer"]
     assert current == "kirocrew"
     assert advertised is True
+
+
+# ── Session-start timeout budget (#2946) ──
+#
+# kiro-cli blocks the session/new (and session/load) response while it
+# initializes the session's MCP servers; a remote server pending OAuth holds
+# that for its full 30s authorization wait. These tests lock in the CALL SITE
+# — the timeout actually handed to _send_and_await — not just the constant,
+# because dropping the ``timeout=`` argument silently reverts to the generic
+# 30s _REQUEST_TIMEOUT, which is the exact regression.
+
+
+@pytest.mark.asyncio
+async def test_session_new_call_site_passes_budget_above_request_timeout(monkeypatch):
+    """create_session must hand _send_and_await an explicit session/new timeout
+    that exceeds _REQUEST_TIMEOUT — the generic default equals the backend's
+    30s OAuth wait, turning session start into a race the client loses."""
+    rt, _, _ = _make_runtime()
+    rt._expect_mcp_reports = False  # skip the MCP drain wait — not under test
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            seen["timeout"] = timeout
+            return {"sessionId": "sid-budget"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.create_session(cwd="/w", mcp_servers=[])
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert isinstance(seen["timeout"], float)
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_session_load_call_site_passes_budget_above_request_timeout(monkeypatch):
+    """load_session is gated by the same MCP re-initialization (kiro-cli
+    re-initializes servers on load; oauth_request frames are staged while
+    either request is in flight), so it must carry the same budget."""
+    rt, _, _ = _make_runtime()
+    rt._can_load_session = True
+    rt._expect_mcp_reports = False  # skip the MCP drain wait — not under test
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            seen["timeout"] = timeout
+            return {"modes": {"currentModeId": "kirocrew"}}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.load_session("/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", cwd="/w")
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_send_and_await_timeout_error_names_the_budget():
+    """The timeout message must carry the budget that elapsed so a 90s
+    session-start timeout is distinguishable from a generic 30s one. The
+    'timed out' substring is load-bearing (chat_runner matches on it)."""
+    rt, _, _ = _make_runtime()
+
+    with pytest.raises(AcpRuntimeError) as exc_info:
+        # stdin is mocked and nothing ever responds → wait_for times out.
+        await rt._send_and_await("probe/method", {}, timeout=0.01)
+
+    msg = str(exc_info.value)
+    assert "timed out" in msg
+    assert "0.01s" in msg
+    assert "probe/method" in msg

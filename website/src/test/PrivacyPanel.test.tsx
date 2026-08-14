@@ -205,9 +205,11 @@ describe('PrivacyPanel', () => {
     })
     renderWithProviders(<PrivacyPanel />)
 
+    // Text is split across SettingRef element and surrounding i18n strings
     expect(
-      await screen.findByText(/KIROCREW_TELEMETRY_DISABLED is set in this environment/),
+      await screen.findByLabelText(/Environment variable KIROCREW_TELEMETRY_DISABLED/),
     ).toBeInTheDocument()
+    expect(screen.getByText(/is set in this environment/)).toBeInTheDocument()
 
     const toggle = screen.getByRole('switch', { name: TOGGLE_LABEL })
     await userEvent.click(toggle)

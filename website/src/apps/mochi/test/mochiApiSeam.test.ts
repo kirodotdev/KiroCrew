@@ -54,6 +54,16 @@ vi.mock('../pet/petBridge', () => ({
   openSettings: vi.fn(),
   openMemories: vi.fn(),
   getMochiConfig: async () => settings,
+  // The per-MACHINE prefs come from the SHELL, not from this gateway. `null` is
+  // the no-shell answer (a plain browser tab), which is what keeps these config
+  // assertions about the GATEWAY's copy — see the dedicated overlay tests below.
+  machinePrefs: async () => null,
+  // Mirrors `machinePrefs: null` above: these cases describe the no-shell tab.
+  // The api re-exports this so the Settings pane can gate shell-only controls on
+  // it instead of on a method's presence, which is always truthy here.
+  hasShell: false,
+  setPetInstance: vi.fn(async () => true),
+  instancesList: vi.fn(async () => null),
 }))
 
 beforeEach(() => {
@@ -115,6 +125,90 @@ describe('mochiApi config shape', () => {
     const api = await loadApi()
     await api.updateConfig({ mochi: { activityTier: 'economy', bgModel: 'small-1' } })
     expect(updateSettings).toHaveBeenCalledWith({ activityTier: 'economy', bgModel: 'small-1' })
+  })
+
+  it('never posts the per-MACHINE prefs to the gateway that served the window', async () => {
+    // THE ONE-WAY DOOR. Every Mochi window loads FROM the gateway it shows and
+    // this seam is same-origin, so posting `petInstance` here wrote it onto
+    // whichever gateway served the window — while the shell read this machine's
+    // copy. The choice looked saved (the UI read its own write back) and nothing
+    // acted on it, leaving no surface that could move the pet home. Same argument
+    // for `shortcuts`: one keyboard belongs to one computer.
+    const api = await loadApi()
+    await api.updateConfig({
+      mochi: { petName: 'Kiro', petInstance: 'crew-remote' },
+      shortcuts: { toggleWindow: 'Alt+Shift+M' },
+    })
+    expect(updateSettings).toHaveBeenCalledWith({ petName: 'Kiro' })
+  })
+
+  it('makes no request when a partial holds ONLY shell-owned prefs', async () => {
+    // The corollary: a save that changed nothing else must not fire a write whose
+    // entire payload the gateway does not own.
+    const api = await loadApi()
+    await api.updateConfig({ mochi: { petInstance: 'crew-remote' } })
+    expect(updateSettings).not.toHaveBeenCalled()
+  })
+})
+
+describe('mochiApi per-machine prefs overlay', () => {
+  it("prefers the SHELL's pointer over the serving gateway's copy", async () => {
+    // The read side of the same defect: a Settings window opened from a pet that
+    // is showing a remote must not display that remote's idea of where the pet
+    // belongs. Without the overlay the switcher highlights the wrong row and the
+    // user's real choice is invisible.
+    const bridge = await import('../pet/petBridge')
+    vi.spyOn(bridge, 'machinePrefs').mockResolvedValue({
+      petInstance: 'crew-shell',
+      shortcuts: { toggleWindow: 'Alt+Shift+K' },
+    })
+
+    const api = await loadApi()
+    const cfg = (await api.getConfig()) as unknown as {
+      mochi: Record<string, unknown>
+      shortcuts: Record<string, string>
+    }
+    expect(cfg.mochi.petInstance).toBe('crew-shell')
+    expect(cfg.shortcuts.toggleWindow).toBe('Alt+Shift+K')
+  })
+
+  it('fills every accelerator even when the shell stores only some', async () => {
+    // The shell's store deliberately OMITS an action it has no usable value for,
+    // so `machinePrefs` legitimately returns a PARTIAL set. The renderer has no
+    // fallback — displayAccelerator() splits the string — so a missing key throws
+    // while rendering the Shortcuts pane and takes the whole panel down. Assigning
+    // the partial object wholesale is what made that reachable.
+    const bridge = await import('../pet/petBridge')
+    vi.spyOn(bridge, 'machinePrefs').mockResolvedValue({
+      petInstance: 'self',
+      shortcuts: { toggleWindow: 'Alt+Shift+K' },
+    })
+
+    const api = await loadApi()
+    const cfg = (await api.getConfig()) as unknown as { shortcuts: Record<string, string> }
+    expect(cfg.shortcuts.toggleWindow).toBe('Alt+Shift+K')
+    for (const action of ['screenCapture', 'hideAll']) {
+      expect(typeof cfg.shortcuts[action]).toBe('string')
+      expect(cfg.shortcuts[action].length).toBeGreaterThan(0)
+    }
+  })
+
+  it('falls back to the gateway copy when there is no shell', async () => {
+    // A plain browser tab IS the host gateway, so its own copy is the best
+    // available answer — the pre-shell behaviour, preserved rather than replaced
+    // by invented defaults. Set explicitly because the spy above outlives
+    // clearAllMocks, and a fallback test that silently ran against a stubbed
+    // pointer would prove nothing.
+    const bridge = await import('../pet/petBridge')
+    vi.spyOn(bridge, 'machinePrefs').mockResolvedValue(null)
+
+    const api = await loadApi()
+    const cfg = (await api.getConfig()) as unknown as {
+      mochi: Record<string, unknown>
+      shortcuts: Record<string, string>
+    }
+    expect(cfg.shortcuts.toggleWindow).toBe('CommandOrControl+Shift+M')
+    expect(cfg.mochi.petInstance).toBe(settings.petInstance)
   })
 })
 

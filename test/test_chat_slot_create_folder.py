@@ -16,6 +16,7 @@ only the final state would pass even with the race reintroduced.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,7 +29,7 @@ from aiohttp.test_utils import TestClient, TestServer
 # resolves to the stdlib `test` and fails with ModuleNotFoundError on CI.
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import _SLOTS_BROADCAST_INTERVAL_S, DashboardState
 from kiro_crew.history import ConversationLog
 
 FOLDER_ID = "f-design"
@@ -180,6 +181,10 @@ class TestCreateInFolder:
             )
             assert again.status == 200
             assert (await again.json())["folder_id"] == FOLDER_ID
+
+            # The first POST took the leading edge of the slot-broadcast
+            # coalescing window, so this frame arrives on the trailing edge.
+            await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
 
         assert seen, "re-filing an existing slot emitted no slots frame at all"
         entry = next((s for s in seen[-1] if s["key"] == "s1"), None)

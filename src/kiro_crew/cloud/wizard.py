@@ -21,6 +21,7 @@ from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes, ssm, ui
 from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.validation import ValidationError
 
 _TOTAL_STEPS = 6
 
@@ -36,6 +37,7 @@ def _deploy_with_progress(
     tier: sizes.SizeTier,
     profile: str,
     region: str,
+    subnet_id: str = "",
     disable_rollback: bool = False,
 ) -> ec2.DeployResult:
     """Run ``ec2.deploy`` while streaming live CloudFormation + bootstrap logs.
@@ -60,6 +62,7 @@ def _deploy_with_progress(
                 tier=tier,
                 profile=profile,
                 region=region,
+                subnet_id=subnet_id,
                 disable_rollback=disable_rollback,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
             )
@@ -304,6 +307,7 @@ def launch(
     region: str = "",
     *,
     size_key: str = "",
+    subnet_id: str = "",
     assume_yes: bool = False,
     force_new: bool = False,
     keep_on_failure: bool = False,
@@ -311,13 +315,24 @@ def launch(
 ) -> int:
     """Run the full interactive launch flow. Returns a process exit code.
 
-    ``hold_tunnel=False`` closes the SSM tunnel and returns instead of blocking
-    on it — used when the wizard is embedded in a larger flow (``kirocrew
-    setup``) that still has steps to print after this one.
+    ``subnet_id`` (``--subnet``) pins the launch to an explicit subnet instead
+    of network auto-discovery — for dedicated-VPC / private-subnet setups the
+    default-VPC preference would otherwise never pick. ``hold_tunnel=False``
+    closes the SSM tunnel and returns instead of blocking on it — used when the
+    wizard is embedded in a larger flow (``kirocrew setup``) that still has
+    steps to print after this one.
     """
     cfg = CloudConfig.load()
     profile = profile or cfg.profile
     region = region or cfg.region or DEFAULT_REGION
+    if subnet_id:
+        try:
+            subnet_id = ec2.validate_subnet_id(subnet_id)
+        except ValidationError as exc:
+            # argparse can't charset-check the id; surface a clean one-liner
+            # instead of a traceback (launch() is also a public entrypoint).
+            ui.fail(str(exc))
+            return 1
 
     print(ui.BANNER)
     steps = ui.Steps(_TOTAL_STEPS)
@@ -402,6 +417,16 @@ def launch(
                 return 0
     else:
         ui.detail("Keeping the existing stack; instance size is unchanged.")
+        if subnet_id:
+            if assume_yes:
+                # Non-interactive: an explicitly requested pin that would be
+                # silently ignored is worse than an early exit — a script that
+                # passed --subnet expects the instance IN that subnet.
+                ui.fail("--subnet cannot apply to the existing stack (its network is fixed).")
+                ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+                return 1
+            ui.warn("--subnet is ignored for an existing stack (its network is fixed).")
+            ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
 
     # ── 4. Launch ─────────────────────────────────────────────────────────
     steps.step("Launching")
@@ -409,6 +434,8 @@ def launch(
         assert tier is not None
         tag = _new_tag()
         ui.info(f"CloudFormation stack: {ec2.stack_name(tag)}")
+        if subnet_id:
+            ui.info(f"Subnet: {subnet_id} (explicit --subnet; auto-discovery skipped)")
         # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
         # would leave cloud.json pointing at a ROLLBACK_COMPLETE / no-instance
         # stack on a failed first launch, and the NEXT `launch` would then treat
@@ -424,6 +451,7 @@ def launch(
                 tier=tier,
                 profile=profile,
                 region=region,
+                subnet_id=subnet_id,
                 disable_rollback=keep_on_failure,
             )
         except AWSError as exc:

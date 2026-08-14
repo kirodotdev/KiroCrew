@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   createSessionsProvider,
+  SESSIONS_MIN_QUERY_CHARS,
   type SessionsProviderDeps,
   type SessionSearchResponse,
   type SessionRef,
@@ -72,6 +73,22 @@ describe('createSessionsProvider — sub-threshold queries cost no round trip', 
     const { d, fetchSessions } = deps()
     await createSessionsProvider(d).search('ki')
     expect(fetchSessions).toHaveBeenCalledWith('ki')
+  })
+
+  it('declares minQueryChars equal to the constant the short-circuit enforces (issue #1830)', async () => {
+    // The palette reads `minQueryChars` to render the "keep typing" empty
+    // state. It must be the SAME value the search short-circuit uses, or the
+    // copy and the behavior drift apart. Pin both the declaration and the
+    // boundary behavior to the exported constant.
+    const { d, fetchSessions } = deps()
+    const p = createSessionsProvider(d)
+    expect(p.minQueryChars).toBe(SESSIONS_MIN_QUERY_CHARS)
+    // Boundary: one char below the declared minimum never fetches...
+    await p.search('x'.repeat(SESSIONS_MIN_QUERY_CHARS - 1))
+    expect(fetchSessions).not.toHaveBeenCalled()
+    // ...and exactly the declared minimum does.
+    await p.search('x'.repeat(SESSIONS_MIN_QUERY_CHARS))
+    expect(fetchSessions).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -202,5 +219,41 @@ describe('createSessionsProvider — fetch wiring', () => {
 
     const results = await p.search('x')
     expect(results).toEqual([])
+  })
+})
+
+describe('createSessionsProvider — folder-fetch failure is distinct from search failure', () => {
+  it('still returns session results when the folder fetch rejects (chip omitted, failure logged, not conflated with "no folders")', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fetchSessions = vi.fn(
+      async (): Promise<SessionSearchResponse> => ({
+        sessions: [{ key: 's-1', title: 'My Session', folder_id: 'f-1' }],
+      }),
+    )
+    const fetchFolders = vi.fn(async (): Promise<{ id: string; name: string }[]> => {
+      throw new Error('folders down')
+    })
+    const { d } = deps({ fetchSessions })
+    const p = createSessionsProvider({ ...d, fetchFolders })
+
+    const results = await p.search('my')
+    // A folders failure must NEVER blank the search results…
+    expect(results).toHaveLength(1)
+    expect(results[0].title).toBe('My Session')
+    // …the folder chip is simply omitted (folder unresolved)…
+    expect(results[0].folder).toBeUndefined()
+    // …and the failure is surfaced (logged), not silently swallowed as "no folders".
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('propagates a session-search rejection — distinct from the swallowed folder failure — so the palette can render its error state', async () => {
+    const fetchSessions = vi.fn(async (): Promise<SessionSearchResponse> => {
+      throw new Error('search down')
+    })
+    const { d } = deps({ fetchSessions })
+    const p = createSessionsProvider(d)
+
+    await expect(p.search('my')).rejects.toThrow('search down')
   })
 })

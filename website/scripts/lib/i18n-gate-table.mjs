@@ -32,6 +32,7 @@ export const SCRIPTS = [
   { key: 'strings', argv: ['check-i18n-strings.mjs'] },
   { key: 'dnt', argv: ['check-dnt-catalogs.mjs'] },
   { key: 'manifest', argv: ['check-app-manifest-sync.mjs'] },
+  { key: 'units', argv: ['check-unit-literals.mjs'] },
 ]
 
 /**
@@ -64,6 +65,22 @@ export const CHECKS = [
     find: /^\[vs-base\] (\d+) touched file\(s\) gained/m,
     ok: m => m[1] === '0',
     summary: m => `${m[1]} touched file(s) got worse than the base`,
+  },
+  {
+    // The number+unit scan runs as a script rather than a vitest test: it parses the
+    // whole in-scope tree with the TypeScript compiler, so its cost scales with the
+    // repo and, under vitest's coverage instrumentation and worker contention, it
+    // outgrew the suite's per-test budget on wide machines.
+    id: 'unit-added-lines', script: 'units', scope: 'diff', enforce: 'zero',
+    find: /^\[added-lines\] (\d+) number\+unit/m,
+    ok: m => m[1] === '0',
+    summary: m => `${m[1]} number+unit literal(s) on lines you wrote`,
+  },
+  {
+    id: 'unit-vs-base', script: 'units', scope: 'diff', enforce: 'zero',
+    find: /^\[vs-base\] (\d+) touched file\(s\) gained number\+unit/m,
+    ok: m => m[1] === '0',
+    summary: m => `${m[1]} touched file(s) gained number+unit literals`,
   },
   {
     id: 'source-strings', script: 'source', scope: 'diff', enforce: 'zero',
@@ -134,6 +151,11 @@ export const CHECKS = [
       find: /^\[app-manifest-sync\] FAIL — (\d+) problem\(s\)/m,
       summary: m => `${m[1]} manifest/catalog mismatch(es)`,
     },
+  },
+  {
+    id: 'unit-ceiling', script: 'units', scope: 'repo', enforce: 'info',
+    find: /^OK: (\d+) un-migrated number\+unit literal\(s\) across (\d+) file\(s\), baseline (\d+)\./m,
+    summary: m => `${m[1]} un-migrated of ${m[2]} file(s) · baseline ${m[3]}`,
   },
   {
     id: 'dynamic-keys', script: 'keys', scope: 'repo', enforce: 'info',

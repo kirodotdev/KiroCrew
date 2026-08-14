@@ -107,12 +107,18 @@ describe('DisplayPanel — language picker Auto row', () => {
     expect(text).not.toContain('简体中文')
   })
 
-  it('offers Japanese as a display language', () => {
-    renderWithProviders(<DisplayPanel />)
+  // The endonym, not the English name: a user looking for Korean scans for
+  // 한국어. `languages.ts` is the only place these strings live, so a language
+  // registered there and missing from the picker fails here.
+  it.each([['Japanese', '日本語'], ['Korean', '한국어']])(
+    'offers %s as a display language',
+    (_language, endonym) => {
+      renderWithProviders(<DisplayPanel />)
 
-    fireEvent.click(screen.getByRole('combobox', { name: 'Language' }))
-    expect(screen.getByRole('option', { name: '日本語' })).toBeInTheDocument()
-  })
+      fireEvent.click(screen.getByRole('combobox', { name: 'Language' }))
+      expect(screen.getByRole('option', { name: endonym })).toBeInTheDocument()
+    },
+  )
 })
 
 describe('DisplayPanel — zoom level description', () => {

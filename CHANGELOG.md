@@ -2,6 +2,225 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [Unreleased]
+
+- **A lesson from a previous embedding-model generation could no longer get
+  silently deleted or offered as a false contradiction.** `write_lesson`'s
+  semantic dedup and `find_contradiction_candidates` compared raw embeddings
+  with a cosine helper that silently truncated a dimension mismatch to the
+  shorter vector instead of rejecting it, so a row embedded at a different
+  dimensionality (e.g. left over from an old embedding model) could score a
+  plausible-looking ~0.5 similarity against an unrelated new rule — landing
+  either past the 0.85 dedup line (deleting the old lesson as a "duplicate")
+  or inside the [0.4, 0.85) contradiction band (offered as a false
+  contradiction candidate). Both paths now converge onto the same
+  dimension-checked, float64-precision scorer the ranking paths already use,
+  which also removes a per-row query re-derivation from both loops. (#3466)
+
+- **Side-panel oversize-question refusal now reports an accurate character
+  target for every script, not just emoji.** The refusal derived its
+  character count from a fixed worst-case floor (4 bytes/char, the emoji
+  case), so an ASCII user over the byte budget was told to cut to ~8,192
+  characters when trimming a single character would do (4x over-deletion),
+  and a zh-CN user (3 bytes/char) was told 8,192 when ~10,922 actually fit.
+  The target is now derived from the submitted question's own byte density,
+  so it's accurate per script — the all-emoji case is unaffected (it already
+  sat at the 4-byte floor). (#3432)
+
+- **The skill browser no longer serves a different skill than the one you asked
+  for.** Three `package/` lookups compared a bare leaf name and returned the
+  first hit, so a request for `package/<name>` could answer with a file under
+  `<root>/<Pkg>/<name>`, or with whichever of two identically named files the
+  filesystem happened to yield. Exact keys now decide first, leaf matching
+  survives only where it is unambiguous, and a real collision resolves to
+  nothing — a 404, with the competing candidates logged — because the
+  `package/<path>` key cannot express which of the two files was meant. Every
+  lookup that previously resolved correctly still resolves to the same file.
+  **Edition maintainers:** roots the core already keys itself (`~/.kiro/skills`,
+  the data home, configured extra paths) are no longer *also* enumerated under
+  `package/`, which previously presented an editable skill as a read-only
+  package one. A stored reference to one of those duplicate `package/` keys
+  stops resolving; the file itself is untouched and still reachable under its
+  canonical key, but the stored reference has to be re-pointed. (#3369)
+
+- **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
+  whose launcher exited without signalling it (a torn-down `pytest` run, for
+  example) used to stay resident forever — invisible to every sweep, ~27 MB
+  each, accumulating without bound. The daemon now watches its own listening
+  socket path and gracefully self-exits once the path is gone (three
+  consecutive checks, POSIX only), and the untracked-orphan sweep reaps any
+  gatewayd whose `--socket` path no longer exists on disk, TERM-first so
+  pooled backends drain cleanly. (#3315)
+
+- **Aggregate memory ceiling across all concurrent agent spawns.** The cgroup
+  memory limit was per-spawn only (65% of RAM each), so many concurrent
+  subagents could collectively request several times host RAM without any
+  single limit breaching. The gateway now also caps their shared parent slice
+  (`kirocrew-agents.slice`) at 80% of RAM plus an aggregate task ceiling —
+  override via `resource_limits.max_total_memory_mb` /
+  `max_total_processes` — and logs which scopes were OOM-killed when the
+  aggregate ceiling engages. (#3316)
+
+- **Slack manifest: private channels now work out of the box.** The shipped app
+  manifest adds the `groups:history` and `users:read` bot scopes and subscribes
+  to the `message.groups` event, so a tracked private channel actually delivers
+  messages and profile lookups resolve real names. **Existing installs are not
+  fixed by upgrading alone**: Slack only grants new scopes on reinstall — update
+  the app's manifest (or re-import it), then reinstall the app to the workspace
+  and copy the new bot token. (#3206)
+
+## [0.2.0] — 2026-08-09
+
+The first feature release after launch: a real browser for the agent, four new
+built-in apps, a native Windows desktop build, Korean and Japanese interfaces,
+setup that no longer assumes Slack, and several hundred fixes from the first
+weeks in the open.
+
+### The agent gets a browser
+
+- **Persistent Browser Mode** — Flip one switch in Settings and the agent can
+  operate a real browser: navigate, click, type, and fill forms, with the live
+  view streaming into the dashboard's Browser panel. Installation happens for
+  you and recovers on its own — enabling it never errors out — and the agent can
+  also serve browser work from the native embedded view.
+
+### Eight new built-in apps
+
+- **Spec Builder** — a spec-driven development surface: shape requirements into
+  a spec, then hand it to the agent to implement.
+- **Ops Mission Control** — an autonomous ops first responder with an incident
+  board and a knowledge ledger of fix patterns.
+- **Crew Companion** — a desk companion that reflects what your agent is doing.
+- **Auto-Improvement** — measurement-first self-improvement that proposes,
+  lands, and verifies its own changes GitHub-natively.
+- **Meetings** — transcribes a live meeting, keeps structured notes and diagrams
+  as it goes, and extracts action items you can review afterwards. Recordings
+  and notes can now be deleted from the app.
+- **Papyrus** — a LaTeX paper editor with a split-pane view, live PDF preview,
+  and an AI co-author.
+- **Mochi** — a desktop companion that lives on your screen in its own panel,
+  watches pages and feeds for you, and plans its day around your schedule.
+- **PPTX Maker** — describe the deck you want in chat and get a real `.pptx`
+  back, by way of an agent that interviews you and writes a brief, an outline,
+  and an art direction first.
+- Every one of these is **opt-in**: install it from the App Store and enable it
+  before it does anything.
+- Installed apps are searchable and launchable from the command palette, and
+  third-party apps now run under **per-app trust grants**, with a denial that
+  tells you exactly what to do about it.
+- **MCP Apps has its own switch** instead of riding the connection-pooling
+  toggle, and the shared MCP gateway follows it.
+- **Connections** gained a provider registry, so an integration declares what it
+  is asking for and its consent URL is validated before you are sent to it.
+- Clicking **Connect** now asks for the provider's approval link instead of
+  waiting for one, so the card offers it within seconds rather than only after
+  some later chat happens to reach that server.
+- Code Review Sage works against **GitHub Enterprise Server** hosts.
+- An MCP server that authenticates with OAuth now receives the scope list and
+  client id in the fields kiro-cli actually reads, so those connections
+  authorize instead of silently failing.
+
+### Windows, properly
+
+- The desktop build moved to an **NSIS installer** with an integrated titlebar,
+  launcher spawn/stop fixes, and a configurable sandbox tier for agent
+  subprocesses. Skills, the usage ledger, and build tooling all learned the
+  platform's rules.
+
+### A dashboard you can operate
+
+- **System is now a task manager** — live per-session resource usage, plus a
+  **Storage** screen that reports what sessions cost on disk and reclaims space
+  to a trash, with an inventory that no longer calls idle sessions "in use".
+- **Releases tab** — this changelog, rendered per version in Settings.
+- **Webhooks** — named tokens, HMAC signing, and a kill switch for inbound
+  automation. The page is still being finished, so it now sits behind a
+  per-device **Preview pages** toggle under Developer and is hidden by default.
+- Redesigned sidebar folders, drag a session into an open chat to reference it,
+  suggested folders for new sessions, consistent empty states with a next step,
+  and a notification sound when an approval prompt needs you.
+- **Continue instead of retyping** — resume an interrupted turn from where it
+  stopped, on any idle session, and recover cleanly from tool-hook blocks and
+  failed restores. Queued messages can be reordered before they send.
+- The terminal panel pops out into its own window, completes subcommands and
+  flags (not just paths), and takes a configurable font.
+- **Agent Templates became a two-pane inspector**, and agents defined in the
+  project you are working in are discovered alongside your user-level ones.
+- **Send a copy of a session to another instance** — hand a conversation, with
+  its context, to a different Kiro Crew you run.
+- Jira issue URLs and setting references render as **link chips** you can click
+  straight through.
+- Stale auto-titles refresh in the background, the command palette tells a
+  failed scoped search apart from an empty one, sidebar search keeps its
+  relevance order, and the chat action footer grows to 40px targets on touch
+  devices.
+- Bold, italic, and strikethrough now render correctly in **CJK prose**.
+- While the agent is waiting on something, the wait shows a **live countdown**
+  with a button to end it early instead of leaving you guessing.
+
+### Channels, and setup that no longer assumes Slack
+
+- **`kirocrew setup` stops asking for Slack tokens.** The wizard finishes on the
+  dashboard and points at the full set of chat channels; walk through the Slack
+  credentials only when you ask for them with `kirocrew setup --slack`. Docs and
+  in-app copy describe Kiro Crew as multi-channel rather than Slack-first.
+- **Telegram** accepts inbound attachments — images for vision, documents, and
+  audio that is transcribed on arrival. Serving **multiple bot accounts per
+  gateway** was withdrawn before this release: a second bot is a second inbound
+  door, and it is only worth having once a bot can be turned off, given its own
+  security posture, and named honestly in the audit log on its own. A
+  `telegram.accounts` entry written by an earlier release candidate is preserved
+  in config but no longer starts a bot — move the token you want served to
+  `telegram.bot_token`.
+- A sub-agent's completion now reports back into **non-Slack** parent sessions,
+  Discord continues the connected session when a reply arrives, and Slack
+  renders an `OPTIONS` prompt as a real control everywhere it appears.
+
+### Voice, language, and models
+
+- **Korean and Japanese** join the dashboard — twelve interface languages.
+- **On-device Apple speech-to-text** with live streaming; switch the microphone
+  mid-recording; dictation lands at the cursor.
+- The model picker shows each model's **credit multiplier** and scopes itself to
+  what the account can actually use; background and sub-agent work take a
+  **configurable per-role model** and reasoning effort.
+
+### Autonomy with a governor
+
+- Sub-agents can be steered with queued follow-ups, scoped to exactly the
+  context a task needs, and report completions as cards in the chat.
+- Monitoring loops accept a **wall-clock runtime budget**; cron jobs group into
+  collapsible folders and start from a **template gallery** of 15 presets.
+- Skills show their **per-injection context cost** on a budget screen, can opt
+  out of injection, and the knowledge library adds documents automatically,
+  dedupes per document, and honors `.kiroignore`.
+
+### Diagnostics and trust
+
+- **Report a Problem** collects a support bundle from the CLI or the UI, and
+  every error message carries an "Ask the agent" hand-off.
+- Loopback requests no longer leak the internal secret to a proxy; sensitive
+  paths and credential redaction got faster without getting looser.
+- The ACP runtime survives oversize output frames, worker sessions are no longer
+  reaped as orphans, and `kirocrew update` works for wheel and `cli.sh` installs.
+- A refusal from one of **your own** deny patterns can carry your note
+  explaining it, and the seven always-on git-publish rules now render locked in
+  Settings instead of offering a toggle that never took effect.
+- The gateway **refuses to boot when its data home cannot persist state**,
+  rather than running and losing your work silently.
+- The tool-approval window and the watchdog's stall windows are both bounded by
+  the turn ceiling, so neither outlives the turn it belongs to.
+
+Plus roughly 280 further fixes across the dashboard, chat, the chat channels,
+ACP transport, history consolidation, packaging, and CI.
+
+## [0.1.3] — 2026-08-07
+
+A hot patch for model entitlement: the model picker scopes itself to what the
+account can use, a model the account cannot use is never sent, and an
+unavailable model is reported as an access problem instead of a capacity error
+or a raw JSON-RPC dump.
+
 ## [0.1.2] — 2026-07-30
 
 First public release of KiroCrew — an open-source personal AI agent that runs on

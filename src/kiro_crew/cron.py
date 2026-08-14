@@ -2,7 +2,8 @@
 
 Jobs are stored in the config directory (``~/.kiro/crew/crons.json`` by default,
 overridden by ``KIROCREW_HOME``) and executed by a background
-asyncio timer.  Each job fires a callback (typically posting to Slack via ACP).
+asyncio timer.  Each job fires a callback (typically delivering the result to
+the dashboard and, when configured, the owner's Slack DM).
 
 Cross-process safety: the CLI and gateway run as separate processes sharing
 the same ``crons.json``.  All read-modify-write cycles use advisory file
@@ -109,6 +110,11 @@ def referenced_skill_names() -> set[str]:
 _STORE_VERSION = 2
 _MIN_INTERVAL_SECS = 60
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
+# Margin the per-wake budget must leave above a command/script subprocess
+# timeout: the wake deadline cancels only the executor FUTURE (threads are
+# not interruptible), so a budget shorter than the subprocess bound leaves
+# the subprocess running while the guards clear and later wakes duplicate it.
+_SUBPROC_CLEANUP_ALLOWANCE_SECS = 5
 _TIMER_POLL_SECS = 30  # check for due cron-expr jobs
 _AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
@@ -226,7 +232,33 @@ class CronJob:
     last_error: str | None = None
     created_ts: float = 0.0
     delete_after_run: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run was
+    # refused by the fire-time governance gate. A denied run is a policy
+    # state, not a completed run: a one-shot delete_after_run job is RETAINED
+    # instead of deleted, and a denied "at" job is parked DISABLED (a past-due
+    # at-job left enabled would be due again on every timer tick — a
+    # zero-delay refire loop) so an operator can re-enable it after a policy
+    # loosening. Recurring jobs need neither: they wait for their next slot.
+    # Reset at the start of every run.
+    fire_time_denied: bool = False
     last_result: str | None = None
+    # Runtime-only (never serialized): True once THIS run produced a result
+    # via set_run_result(). ``last_result`` is a cross-run context-carry
+    # field that result-less runs (timeout, callback exception, no-output
+    # command, script Skip) deliberately leave in place for the next run's
+    # prompt dedup, so the history recorder needs this marker — not the
+    # value — to decide attribution. Identity/equality checks on the string
+    # cannot do that job: CPython interns equal literals and caches
+    # single-character latin-1 strings, so a run re-producing the same text
+    # is indistinguishable from a run that produced nothing. Reset at the
+    # start of every run by _run_job_isolated.
+    result_produced: bool = False
+    # Runtime-only, reset by _execute_with_timeout at the start of every run:
+    # True once THIS run's failure has been counted via record_failure(). The
+    # timeout handler consults it so a run that already recorded its failure
+    # (e.g. a delivery-path exception) and then overran its deadline during
+    # cleanup is counted once, not twice.
+    failure_recorded: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
@@ -239,7 +271,7 @@ class CronJob:
     last_posted_at: float = 0.0  # epoch when last Slack post was delivered (dedup reminder)
     last_failure_hash: str = ""  # hash of last failure notification (dedup crashes)
     last_failure_at: float = 0.0  # epoch of last failure Slack alert (dedup reminder)
-    consecutive_failures: int = 0  # count of consecutive identical failures (incl. first alert)
+    consecutive_failures: int = 0  # consecutive failed runs (any error); drives auto-pause
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["2026-04-06"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -266,6 +298,19 @@ class CronJob:
     timeout: int = (
         0  # script/command timeout in seconds (0 = use default: 30s script, 300s command)
     )
+
+    def set_run_result(self, value: str) -> None:
+        """Record a result produced by the CURRENT run.
+
+        Sole write path for executor callbacks: pairs the ``last_result``
+        assignment with the runtime-only ``result_produced`` marker so the
+        history recorder can attribute the value to this run. Direct
+        ``last_result`` assignment stays reserved for store merge and
+        deserialization paths, which restore prior state rather than
+        produce a new result.
+        """
+        self.last_result = value
+        self.result_produced = True
 
     def _audit_pause_change(self, outcome: str) -> None:
         """Emit a SEL audit event for an auto-pause permission transition.
@@ -297,6 +342,7 @@ class CronJob:
         is recorded — mirroring how the effective-enabled derivation reads it back.
         """
         self.consecutive_failures += 1
+        self.failure_recorded = True
         if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
             self.enabled = False
             self.auto_paused = True
@@ -305,12 +351,23 @@ class CronJob:
     def record_success(self) -> None:
         """Reset the failure counter and lift any execution auto-pause.
 
-        A recovered job clears `auto_paused`; `enabled` is intentionally NOT set
-        back to True here — a job the user paused (`user_paused`) must stay paused
-        across a success, and re-enabling is the user's action (`enable_job`)."""
+        Clearing an auto-pause also re-enables the job, because ``enabled`` is
+        not independent state: :func:`_job_enabled` reconstructs it on load as
+        ``not user_paused and not auto_paused``. Leaving ``enabled`` False after
+        clearing ``auto_paused`` therefore produces a job that is paused in
+        memory and enabled on disk — it stays stopped until the next restart
+        silently resumes it, which is the surprise a manual "Run Now" on an
+        auto-paused job used to create.
+
+        A job the user paused stays paused: ``user_paused`` is never mutated by
+        execution, so it is the discriminator here, and re-enabling THAT is the
+        user's action (``enable_job``).
+        """
         self.consecutive_failures = 0
         if self.auto_paused:
             self.auto_paused = False
+            if not self.user_paused:
+                self.enabled = True
             self._audit_pause_change("auto_pause_cleared")
 
 
@@ -1126,6 +1183,7 @@ class CronService:
         session_key: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
+        timeout_secs: int = 0,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1184,6 +1242,7 @@ class CronService:
             session_key=session_key,
             minimal_context=minimal_context,
             timeout=timeout,
+            timeout_secs=timeout_secs,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1197,14 +1256,57 @@ class CronService:
     ) -> CronJob | None:
         """Build and persist a job only when no current store entry matches."""
         job = self._build_job(**kwargs)
+        if not self._persist_add_if_absent_locked(predicate, job):
+            return None
+        self._arm_timer()
+        return job
+
+    async def add_job_if_absent_async(
+        self,
+        predicate: Callable[[CronJob], bool],
+        **kwargs: Any,
+    ) -> CronJob | None:
+        """Event-loop-native :meth:`add_job_if_absent`.
+
+        Mirrors :meth:`add_job_async`: the job is built on-loop, the
+        lock/sync/check/append/save core runs in a worker thread so the
+        bounded ``_file_lock`` spin never parks the gateway loop, and timer
+        arming stays on-loop. The absence check and the append happen under
+        ONE store lock after a fresh ``_sync()``, so two concurrent
+        registrars (e.g. a CLI enable racing gateway boot) cannot both
+        observe the name as absent and persist duplicates. Returns None when
+        a matching job already exists.
+        """
+        job = self._build_job(**kwargs)
+        persisted = await asyncio.to_thread(
+            self._persist_add_if_absent_locked, predicate, job
+        )
+        if not persisted:
+            return None
+        self._arm_timer()
+        logger.info("Added cron job '%s' (%s) [if-absent]", job.name, job.id)
+        return job
+
+    def _persist_add_if_absent_locked(
+        self,
+        predicate: Callable[[CronJob], bool],
+        job: CronJob,
+    ) -> bool:
+        """Lock/reload/check/append/save — the atomic add-if-absent disk core.
+
+        Like :meth:`_persist_add_locked` (no timer work, thread-safe, raises
+        :class:`CronStoreBusy` on sustained contention) but the existence
+        check happens INSIDE the same lock, after ``_sync()`` refreshed the
+        in-memory view — closing the snapshot-then-append TOCTOU. Returns
+        False when an existing job matches ``predicate``.
+        """
         with self._file_lock():
             self._sync()
             if any(predicate(existing) for existing in self._jobs):
-                return None
+                return False
             self._jobs.append(job)
             self._save()
-        self._arm_timer()
-        return job
+        return True
 
     def _build_job(
         self,
@@ -1235,12 +1337,18 @@ class CronService:
         session_key: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
+        timeout_secs: int = 0,
     ) -> CronJob:
         """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
         Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
         identical validation on the event loop before any disk work. Raises
         ``ValueError`` on an invalid schedule or approval mode.
+
+        ``timeout_secs`` is the per-wake execution budget (the
+        ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
+        the ``_JOB_TIMEOUT_SECS`` default. Distinct from ``timeout``, which
+        bounds only script/command subprocesses.
 
         The optional presentation/routing fields (``agent_id``, ``model``,
         ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
@@ -1252,6 +1360,19 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+        if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
+            raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
+        if timeout_secs and (command or script):
+            _eff_sub = int(timeout) if timeout else (30 if script else 300)
+            if int(timeout_secs) < _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS:
+                raise ValueError(
+                    "timeout_secs (wake budget) must cover the command/script "
+                    f"subprocess timeout plus cleanup: need >= "
+                    f"{_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, got {timeout_secs}. "
+                    "A shorter wake budget cancels only the executor future — "
+                    "the subprocess keeps running while the next wake launches "
+                    "a duplicate."
+                )
         if timezone and not is_valid_timezone(timezone):
             raise ValueError(f"Invalid timezone: {timezone!r}")
         skip_dates = skip_dates or []
@@ -1298,6 +1419,7 @@ class CronService:
             session_key=session_key,
             minimal_context=minimal_context,
             timeout=timeout,
+            timeout_secs=int(timeout_secs) if timeout_secs else _JOB_TIMEOUT_SECS,
         )
 
     def _persist_add_locked(self, job: CronJob) -> None:
@@ -1342,6 +1464,7 @@ class CronService:
         session_key: str = "",
         minimal_context: bool = False,
         timeout: int = 0,
+        timeout_secs: int = 0,
     ) -> CronJob:
         """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
@@ -1388,6 +1511,7 @@ class CronService:
             session_key=session_key,
             minimal_context=minimal_context,
             timeout=timeout,
+            timeout_secs=timeout_secs,
         )
         await asyncio.to_thread(self._persist_add_locked, job)
         self._arm_timer()
@@ -1398,7 +1522,8 @@ class CronService:
         """Update fields on an existing job. Returns updated job or None if not found.
 
         Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
-        approval_mode, silent, skip_dates, timezone, thread_ts, model.
+        approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        timeout_secs (per-wake execution budget, 1..86400).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
         timeout; see :meth:`update_job_async` for the event-loop-safe variant.
@@ -1473,6 +1598,56 @@ class CronService:
                     for _d in kwargs["skip_dates"]:
                         if not is_valid_skip_date(_d):
                             raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
+                # Per-wake budget and subprocess timeout: validated HERE, in
+                # the pre-mutation section with every other check, so a
+                # rejected update cannot leave earlier field mutations (name,
+                # message, ...) stranded on the in-memory job for a later
+                # save to persist. Assignments happen below with the rest.
+                _tsecs: int | None = None
+                if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
+                    try:
+                        _tsecs = int(kwargs["timeout_secs"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(
+                            f"Invalid timeout_secs: {kwargs['timeout_secs']!r}"
+                        ) from e
+                    if not 1 <= _tsecs <= 86400:
+                        raise ValueError(
+                            f"timeout_secs must be within 1..86400, got {_tsecs}"
+                        )
+                # Script/command subprocess timeout. MCP cron_update has passed
+                # this since the field existed, but no branch consumed it — the
+                # update was accepted and silently dropped.
+                _tsub: int | None = None
+                if "timeout" in kwargs and kwargs["timeout"] is not None:
+                    try:
+                        _tsub = int(kwargs["timeout"])
+                    except (ValueError, TypeError) as e:
+                        raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+                    if not 0 <= _tsub <= 86400:
+                        raise ValueError(f"timeout must be within 0..86400, got {_tsub}")
+                # Cross-field: the wake budget must cover the subprocess bound
+                # plus cleanup, evaluated on the POST-update effective values —
+                # the wake deadline cancels only the executor future, so a
+                # shorter budget leaves the subprocess running while later
+                # wakes launch duplicates.
+                if job.command or job.script:
+                    _eff_secs = _tsecs if _tsecs is not None else job.timeout_secs
+                    _eff_sub_new = _tsub if _tsub is not None else job.timeout
+                    _eff_sub = (
+                        int(_eff_sub_new)
+                        if _eff_sub_new
+                        else (30 if job.script else 300)
+                    )
+                    if (_tsecs is not None or _tsub is not None) and _eff_secs < (
+                        _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS
+                    ):
+                        raise ValueError(
+                            "timeout_secs (wake budget) must cover the "
+                            "command/script subprocess timeout plus cleanup: "
+                            f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
+                            f"got {_eff_secs}"
+                        )
                 if "name" in kwargs and kwargs["name"]:
                     job.name = kwargs["name"]
                 if "message" in kwargs and kwargs["message"]:
@@ -1501,6 +1676,18 @@ class CronService:
                     job.folder_id = kwargs["folder_id"] or ""
                 if "model" in kwargs:
                     job.model = str(kwargs["model"] or "").strip()
+                # Per-wake budget (the asyncio.wait_for deadline in
+                # _execute_with_timeout). Distinct from ``timeout``, which
+                # bounds only script/command subprocesses. Until this branch
+                # existed the field was read, clamped and persisted but
+                # unreachable through every public writer — a job could only
+                # ever carry the creation-time default (Phase 0, Intervention
+                # 2: the operator had to edit the store under _file_lock by
+                # hand to keep an agent alive).
+                if _tsecs is not None:
+                    job.timeout_secs = _tsecs
+                if _tsub is not None:
+                    job.timeout = _tsub
 
                 # Schedule changes (already validated above)
                 if "cron_expr" in kwargs and kwargs["cron_expr"]:
@@ -2212,6 +2399,19 @@ class CronService:
         # Provisional; refined once the jitter sleep completes. Only read on
         # the history path, which a cancelled-during-jitter run never reaches.
         exec_started_at = started_at
+        # ``last_result`` is a cross-run context-carry field (see
+        # build_cron_session_context): runs that end without producing a
+        # result — timeout, callback exception, no-output command, script
+        # Skip — deliberately leave the previous run's value in place so the
+        # next run's prompt keeps its dedup context. The history recorder in
+        # the finally block must NOT attribute that carried-over value to
+        # THIS run, so clear the freshness marker here; executor callbacks
+        # set it via CronJob.set_run_result() when the run actually produces
+        # a result. (String identity/equality can't stand in for the marker:
+        # CPython interns equal literals and caches single-char strings, so
+        # a run re-producing the previous text looks identical to one that
+        # produced nothing.)
+        job.result_produced = False
         try:
             # The jitter sleep MUST live inside this try: hourly/daily jobs
             # sleep up to 59 min here, and a user cancel() during that window
@@ -2273,6 +2473,15 @@ class CronService:
                 # Record history
                 try:
                     status = "success" if job.last_status == "ok" else "failure"
+                    # Attribute last_result to this run only if the run
+                    # actually produced it (set_run_result sets the marker).
+                    # Reading it unconditionally recorded the PREVIOUS run's
+                    # result as this run's summary/trace whenever the run
+                    # ended without producing one (observed in the wild: a
+                    # timed-out run's history row carried the prior success's
+                    # summary verbatim — fabricated history on a
+                    # status=failure record).
+                    run_result = job.last_result if job.result_produced else None
                     record = CronRunRecord(
                         job_id=job.id,
                         trigger=trigger,
@@ -2280,8 +2489,8 @@ class CronService:
                         finished_at=finished_at,
                         duration_ms=int((finished_at - exec_started_at) * 1000),
                         status=status,
-                        summary=(job.last_result or job.last_error or "")[:200],
-                        trace=job.last_result or "",
+                        summary=(run_result or job.last_error or "")[:200],
+                        trace=run_result or "",
                         error=job.last_error or "",
                     )
                     await self._history.append(record)
@@ -2356,6 +2565,10 @@ class CronService:
     async def _execute_with_timeout(self, job: CronJob) -> None:
         """Execute a job with a timeout guard."""
         timeout = job.timeout_secs if 1 <= job.timeout_secs <= 86400 else _JOB_TIMEOUT_SECS
+        # Fresh run: no failure counted yet. The timeout handler below reads
+        # this to avoid double-counting a run that already recorded its
+        # failure and then overran the deadline during cleanup.
+        job.failure_recorded = False
         try:
             await asyncio.wait_for(self._execute(job), timeout=timeout)
         except asyncio.TimeoutError:
@@ -2373,15 +2586,21 @@ class CronService:
             job.last_run_ts = time.time()
             job.last_failure_hash = ""
             job.last_failure_at = 0.0
-            job.record_failure()
+            # Skip the count when this run already recorded its failure (a
+            # delivery-path exception followed by cleanup overrunning the
+            # deadline): one failed run is one failure, whichever handler
+            # observes it last.
+            if not job.failure_recorded:
+                job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, timeout)
 
     async def _execute(self, job: CronJob) -> None:
         """Run the job callback and update runtime fields (last_run_ts, last_status)."""
         logger.info("Cron: executing '%s' (%s)", job.name, job.id)
         # Reset status for this run so a prior run's "error" can't leak into an
-        # "ok" decision below.
+        # "ok" decision below. Same for the fire-time denial marker.
         job.last_status = None
+        job.fire_time_denied = False
         try:
             if self._on_job:
                 await self._on_job(job)
@@ -2395,6 +2614,26 @@ class CronService:
             if job.last_status != "error":
                 job.last_status = "ok"
                 job.last_error = None
+                # Reset the auto-pause budget: without this, CronService-run
+                # jobs count failures monotonically (record_failure fires on
+                # the error/timeout paths but nothing ever reset the counter
+                # here), so any job accumulating _AUTO_PAUSE_THRESHOLD
+                # transient failures over its LIFETIME — successes in
+                # between notwithstanding — silently auto-paused. Guarded by
+                # the "error" check above so the deliberately-neutral paths
+                # (governance/fire-time denials, which set last_status =
+                # "error" without counting a failure) stay neutral: a policy
+                # denial neither spends nor refills the budget. Callback
+                # paths that already called record_success() are unaffected
+                # (resetting 0 to 0 is idempotent). The _cancelled_jobs
+                # check closes a cancel race: cancel() kills the sandboxed
+                # subprocess BEFORE task.cancel(), and the gateway's
+                # cancelled branch returns None without setting last_status,
+                # so a callback returning in that window would otherwise
+                # reach this branch — and cancel() documents that it leaves
+                # consecutive_failures untouched.
+                if job.id not in self._cancelled_jobs:
+                    job.record_success()
         except Exception as exc:
             job.last_status = "error"
             job.last_error = str(exc)
@@ -2402,8 +2641,16 @@ class CronService:
 
         job.last_run_ts = time.time()
 
-        # One-shot "at" jobs without delete_after_run: disable instead of delete
-        if job.schedule.kind == "at" and not job.delete_after_run:
+        # One-shot "at" jobs: disable after the run. A fire-time-DENIED at-job
+        # is disabled too — its due time has passed, so leaving it enabled
+        # would make it due on EVERY timer tick (a zero-delay refire loop that
+        # floods audit/history until resource exhaustion). Parking it disabled
+        # (instead of deleting — including the delete_after_run shape, which
+        # the merge below retains) keeps it discoverable so an operator can
+        # re-enable it after a policy loosening. Recurring jobs are untouched:
+        # they simply wait for their next scheduled slot and resume on their
+        # own when policy loosens.
+        if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
             job.enabled = False
 
     def _merge_job_result(self, job: CronJob) -> None:
@@ -2426,7 +2673,10 @@ class CronService:
                 # Only propagate enabled=False for one-shot at-jobs that fired.
                 # Never overwrite enabled for recurring jobs — user_paused is the
                 # sole authority for user-controlled pause/resume state.
-                if job.schedule.kind == "at" and not job.delete_after_run:
+                # Propagate the fired/parked disable for at-jobs — including a
+                # fire-time-DENIED one (parked disabled instead of deleted so
+                # it cannot refire every tick yet stays re-enableable).
+                if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
                     by_id[job.id].enabled = job.enabled
                     by_id[job.id].user_paused = not job.enabled
                 # auto_paused is execution-owned (repeated-failure auto-pause and
@@ -2444,7 +2694,10 @@ class CronService:
                 by_id[job.id].last_failure_hash = job.last_failure_hash
                 by_id[job.id].last_failure_at = job.last_failure_at
                 by_id[job.id].consecutive_failures = job.consecutive_failures
-            if job.delete_after_run:
+            # A fire-time-DENIED run is a policy refusal, not a completed run:
+            # deleting the one-shot here would make the documented
+            # resume-on-policy-loosening semantic impossible for at-jobs.
+            if job.delete_after_run and not job.fire_time_denied:
                 self._jobs = [j for j in self._jobs if j.id != job.id]
             self._save()
 

@@ -563,3 +563,98 @@ async def test_crud_triggers_create_and_update_round_trip() -> None:
                 assert by_name["oncall"]["triggers"] == "sev2, sev1, page"
     finally:
         tmp.unlink(missing_ok=True)
+
+
+class TestDefaultAgentGuard:
+    """PUT /api/config/default-agent only accepts configured aliases.
+
+    The default is resolved from ``cfg.agents`` on every dispatch, so
+    persisting any other name (a project-scope discovery row, an app agent, a
+    typo) writes a default that silently resolves to something else. The guard
+    is server-side so every caller is covered, not just whichever picker
+    currently hides the action.
+    """
+
+    def _default_agent_app(self) -> web.Application:
+        from kiro_crew.dashboard.handlers import api_default_agent
+
+        app = web.Application()
+        app.router.add_put("/api/config/default-agent", api_default_agent)
+        app.router.add_get("/api/config/default-agent", api_default_agent)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_non_alias_name_is_rejected(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                async with TestClient(TestServer(self._default_agent_app())) as client:
+                    resp = await client.put(
+                        "/api/config/default-agent", json={"agent": "repo-only-agent"}
+                    )
+                    assert resp.status == 400
+                    data = await resp.json()
+                    assert data["code"] == "default_agent_not_alias"
+                    # And the config file is untouched.
+                    assert json.loads(tmp.read_text())["default_agent"] == "default"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_non_string_name_is_rejected_not_500(self) -> None:
+        """A JSON list/object agent value returns 400, never an unhashable 500."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                async with TestClient(TestServer(self._default_agent_app())) as client:
+                    for bad in (["x"], {"n": 1}, 7):
+                        resp = await client.put("/api/config/default-agent", json={"agent": bad})
+                        assert resp.status == 400, f"{bad!r} -> {resp.status}"
+                        assert (await resp.json())["code"] == "invalid_agent_type"
+                    assert json.loads(tmp.read_text())["default_agent"] == "default"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_unreadable_config_fails_closed(self) -> None:
+        """When the alias set cannot be loaded, a non-empty name is rejected.
+
+        Failing open would accept arbitrary names exactly when validation is
+        impossible — a malformed-but-parseable config must not disable the guard.
+        """
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                with unittest.mock.patch(
+                    "kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load",
+                    side_effect=RuntimeError("boom"),
+                ):
+                    async with TestClient(TestServer(self._default_agent_app())) as client:
+                        resp = await client.put(
+                            "/api/config/default-agent", json={"agent": "default"}
+                        )
+                        assert resp.status == 400
+                        assert (await resp.json())["code"] == "default_agent_not_alias"
+                assert json.loads(tmp.read_text())["default_agent"] == "default"
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_alias_name_is_accepted(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(_seed_config(), f)
+            tmp = Path(f.name)
+        try:
+            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+                async with TestClient(TestServer(self._default_agent_app())) as client:
+                    resp = await client.put("/api/config/default-agent", json={"agent": "default"})
+                    assert resp.status == 200
+                    assert json.loads(tmp.read_text())["default_agent"] == "default"
+        finally:
+            tmp.unlink(missing_ok=True)

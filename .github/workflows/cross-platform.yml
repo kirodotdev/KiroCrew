@@ -1,0 +1,128 @@
+name: Cross-Platform Portability
+
+# Catches POSIX-only assumptions in Python that ships to macOS, Linux AND
+# Windows. The Windows pytest shards already catch breakage that a test
+# exercises -- this gate exists for the code paths tests do not reach, where a
+# hardcoded `bash`, a `/tmp` literal, or an os-specific signal only fails on a
+# real user's Windows box.
+#
+# Deterministic, ADDED-LINES ONLY, no model. Every rule below is a pattern the
+# repo has actually been burned by, not a speculative portability opinion.
+#
+# Scope: `src/kiro_crew/**/*.py`, excluding the vendored tree (not ours to fix),
+# tests (they may legitimately assert POSIX behaviour behind a skip marker),
+# and `platform_compat.py` itself -- that module's whole job is to name the
+# os-specific primitives everything else routes through.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-platform-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  cross-platform:
+    name: Cross-Platform Portability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan added lines for non-portable patterns
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Escape hatch for a deliberate, reviewed POSIX-only path (e.g. the
+          # pod runner, which is Linux-only by design and says so).
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'posix-only-approved') }}
+        run: |
+          set -uo pipefail
+
+          # ADDED lines only ('^+', excluding the '+++' file header). A
+          # pre-existing violation elsewhere in a touched file is not this PR's
+          # problem and must not block it.
+          added="$(git diff --unified=0 "$BASE_SHA...$HEAD_SHA" -- \
+            'src/kiro_crew/**/*.py' \
+            ':(exclude)src/kiro_crew/_vendor/**' \
+            ':(exclude)src/kiro_crew/platform_compat.py' \
+            2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
+
+          if [ -z "$added" ]; then
+            echo "No added Python lines under src/kiro_crew/ to scan."
+            exit 0
+          fi
+
+          # Drop lines that are PROSE, not code: whole-line comments, and any
+          # line quoting a pattern in reST double-backticks (a docstring that
+          # merely NAMES `shell=True` to explain why it is avoided must not be
+          # flagged -- validated against commit 1d78b24e3, which did exactly
+          # that). Without this filter the gate fires on its own documentation.
+          added="$(printf '%s\n' "$added" | grep -vE '^\+[[:space:]]*#' | grep -vF '``' || true)"
+
+          if [ -z "$added" ]; then
+            echo "Added Python lines are comments/prose only -- nothing to scan."
+            exit 0
+          fi
+
+          findings=0
+          report() {
+            findings=$((findings + 1))
+            echo "::error::$1"
+            echo "- **$1**" >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' "$2" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          echo "### Cross-platform portability findings" >> "$GITHUB_STEP_SUMMARY"
+
+          # 1. Hardcoded shell. Windows has no /bin/bash and no `sh`; a spawned
+          #    shell is also how shell-injection surfaces get introduced.
+          hits="$(printf '%s' "$added" | grep -nE '(subprocess\.(run|Popen|call|check_output)\([^)]*\[?["'"'"']((/bin/)?(ba)?sh)["'"'"']|shell[[:space:]]*=[[:space:]]*True|os\.system\()' || true)"
+          [ -n "$hits" ] && report "Hardcoded shell or shell=True -- not available on Windows. Use a plain argv list, or platform_compat's helpers." "$hits"
+
+          # 2. POSIX path literals. Windows has no /tmp, /etc, /usr, /var.
+          hits="$(printf '%s' "$added" | grep -nE '["'"'"']/(tmp|etc|usr|var|opt)/' || true)"
+          [ -n "$hits" ] && report "Absolute POSIX path literal -- no such path on Windows. Use tempfile.gettempdir() / pathlib / platformdirs." "$hits"
+
+          # 3. POSIX-only signals and process primitives.
+          hits="$(printf '%s' "$added" | grep -nE '\b(os\.(fork|kill|getuid|geteuid|setsid|getpgid|killpg)|signal\.(SIGKILL|SIGHUP|SIGUSR[12]|SIGCHLD))\b' || true)"
+          [ -n "$hits" ] && report "POSIX-only process/signal primitive -- absent or different on Windows. Gate on sys.platform or route through platform_compat." "$hits"
+
+          # 4. Hardcoded path separator in a joined path. Backslash-vs-slash is
+          #    the classic silent Windows break.
+          hits="$(printf '%s' "$added" | grep -nE '\.(split|join|rsplit)\(["'"'"']/["'"'"']\)|\+[[:space:]]*["'"'"']/["'"'"'][[:space:]]*\+' || true)"
+          [ -n "$hits" ] && report "Manual '/' path assembly -- use pathlib or os.path.join so Windows separators work." "$hits"
+
+          # NOTE -- deliberately NO "missing encoding=" rule. It cannot be done
+          # reliably with a line regex: a nested call
+          # (`write_text(json.dumps(x), encoding="utf-8")`) truncates any
+          # `[^)]*` lookahead at the inner paren, and a multi-line call puts
+          # `encoding=` on a line the unified=0 diff hands over separately.
+          # Both produce FALSE failures on correct code -- verified against
+          # commit 1d78b24e3. The Windows pytest shards remain the real guard
+          # for cp1252 decode breakage.
+
+          if [ "$findings" -eq 0 ]; then
+            echo "No non-portable patterns in added lines." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo
+            echo "Each finding is on a line THIS PR adds. Fix the line, or -- if this"
+            echo "code path is intentionally POSIX-only and documented as such -- add the"
+            echo "\`posix-only-approved\` label and re-run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$EXEMPT" = "true" ]; then
+            echo "::warning::'posix-only-approved' label present -- $findings portability finding(s) reported but not blocking."
+            exit 0
+          fi
+          exit 1

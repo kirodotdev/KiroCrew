@@ -606,6 +606,7 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
 
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
       <div role="dialog" aria-modal="true" style={S.modal} onClick={(e) => e.stopPropagation()}>
         <div style={S.modalHeader}>
           <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{i18nT('apps.crewCompanion.gallery.importPet')}</span>
@@ -653,6 +654,7 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
             onChange={(e) => onInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && resolved) onConfirm() }}
             placeholder={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
+            aria-label={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             autoFocus
             disabled={importing}
             style={{
@@ -766,6 +768,7 @@ function DetailPanel({ detail, isActive, onClose, onApply, onExport, onEdit, onD
 
   return (
     <div role="presentation" style={S.detailOverlay} onClick={onClose}>
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- stopPropagation prevents backdrop dismiss when clicking inside modal */}
       <div role="dialog" aria-modal="true" style={S.detailPanel} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={S.detailHeader}>
@@ -1029,7 +1032,7 @@ export const GalleryPanel: React.FC = () => {
       offColor?.()
       offConfig?.()
     }
-  }, [fetchActiveId, fetchPacks])
+  }, [fetchActiveId, fetchPacks, lang])
 
   // ── Card click → fetch detail ──────────────────────────────────────────
 

@@ -7,7 +7,7 @@
  * `Group by` folds rows on an ATTRIBUTE (agent, channel). Sorting, expansion,
  * grouping, and aggregation come from `@tanstack/react-table`.
  */
-import { type MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -24,9 +24,10 @@ import {
   type SortingState,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3 } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3, TriangleAlert } from 'lucide-react'
 import { api } from '../../api/client'
-import { Btn, Card, EmptyState, IconButton, SearchInput } from '../../components/ui'
+import { Btn, Card, ContentSkeleton, EmptyState, IconButton, SearchInput } from '../../components/ui'
+import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import InfoTip from '../../components/InfoTip'
 import SegmentedControl, { type Segment } from '../../components/SegmentedControl'
@@ -48,6 +49,20 @@ import { i18nT } from '../../i18n/t'
 import type { PlaneState, SessionsPlaneState } from '../SystemPage'
 
 type Payload = Awaited<ReturnType<typeof api.sessionsMemory>>
+
+/**
+ * Shared empty fallbacks for a payload that carries no rows yet.
+ *
+ * These MUST be stable references, not inline `?? []` literals. An inline literal
+ * mints a NEW array on every render, which changes the identity of `rows` (and so
+ * of the `data` handed to `useReactTable`) even though nothing about the content
+ * changed. TanStack reads a new `data` identity as "the data changed" and fires
+ * its auto-reset queue, which calls `setState` — re-rendering, minting another
+ * array, and looping. The window where it bites is any render with no `sessions`
+ * field at all: the first fetch, and an error payload such as a 403.
+ */
+const EMPTY_SESSIONS: Payload['sessions'] = []
+const EMPTY_TASKS: Payload['tasks'] = []
 
 /** Attribute the table folds on. `none` is a flat ranking, Task Manager's default. */
 export type GroupBy = 'none' | 'app' | 'agent' | 'channel'
@@ -99,8 +114,6 @@ export default function SessionsTab({ planeStateRef }: Props) {
     saved?.visibility ?? { share: false, channel: false },
   )
   const [pickerOpen, setPickerOpen] = useState(false)
-  const pickerRef = useRef<HTMLDivElement>(null)
-  const pickerBtnRef = useRef<HTMLButtonElement>(null)
 
   // Persist state to planeStateRef on every change so it survives plane flips.
   useEffect(() => {
@@ -108,40 +121,15 @@ export default function SessionsTab({ planeStateRef }: Props) {
     planeStateRef.current = { ...planeStateRef.current, sessions: state }
   }, [sorting, groupBy, filter, visibility, planeStateRef])
 
-  // Finding 4: Escape + outside-click to close the Columns popover
-  useEffect(() => {
-    if (!pickerOpen) return
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node
-      if (pickerBtnRef.current?.contains(t)) return
-      if (pickerRef.current?.contains(t)) return
-      setPickerOpen(false)
-      pickerBtnRef.current?.focus()
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setPickerOpen(false)
-        pickerBtnRef.current?.focus()
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [pickerOpen])
-
-  const { data } = useQuery<Payload>({
+  const { data, isPending, isError, isFetching, refetch } = useQuery<Payload>({
     queryKey: ['sessionsMemory'],
     queryFn: () => api.sessionsMemory(),
     refetchInterval: 5000,
   })
 
-  const sessions = data?.sessions ?? []
-  const tasks = data?.tasks ?? []
+  const sessions = data?.sessions ?? EMPTY_SESSIONS
+  const tasks = data?.tasks ?? EMPTY_TASKS
   const totals = data?.totals
-  const unattributed = data?.unattributed ?? null
   const hostMb = totals?.host_mb ?? null
   const rows = useMemo(() => buildTree(sessions, tasks), [sessions, tasks])
   const maxima = useMemo(() => columnMaxima(rows), [rows])
@@ -268,6 +256,14 @@ export default function SessionsTab({ planeStateRef }: Props) {
     getGroupedRowModel: getGroupedRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
     autoResetExpanded: false,
+    // This table does not paginate — `getPaginationRowModel` is never supplied, so
+    // `pageIndex` / `pageSize` describe nothing. Auto-reset defaults to ON anyway,
+    // and with no `onPaginationChange` supplied it routes through TanStack's own
+    // `makeStateUpdater('pagination')`, i.e. `table.setState` → a React render.
+    // Paired with any change in `data` identity that becomes a render loop, since
+    // the render feeds the next auto-reset. Resetting a page index that cannot
+    // exist has no upside to trade against that, so it is off.
+    autoResetPageIndex: false,
     initialState: {
       expanded: true,
     },
@@ -294,16 +290,34 @@ export default function SessionsTab({ planeStateRef }: Props) {
   ]
   const hideable = table.getAllLeafColumns().filter(c => c.getCanHide())
 
-  /** Whether to show the unattributed row: only when procs > 0. */
-  const showUnattributed = unattributed != null && unattributed.procs > 0
 
+  /** Radix returns focus to the trigger when the popover closes. */
   const closePicker = useCallback(() => {
     setPickerOpen(false)
-    pickerBtnRef.current?.focus()
   }, [])
 
   return (
-    <Card className="mb-6 overflow-hidden">
+    <Card className="mb-6">
+      {/* Stale-data notice. Shown when a poll has failed but a previous payload is
+          still on screen: the rows below are real, just not current, and saying so
+          is what lets the user trust them without mistaking them for live. */}
+      {isError && data && (
+        <div
+          data-testid="sessions-stale"
+          className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-warn-subtle text-[11.5px] text-warn"
+        >
+          <TriangleAlert size={13} aria-hidden="true" className="lucide-inline shrink-0" />
+          <span>{i18nT('pages.sessionsTab.could_not_refresh')}</span>
+          <Btn
+            type="button"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="ml-auto text-[11px]"
+          >
+            {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
+          </Btn>
+        </div>
+      )}
       {/* Toolbar: Group by + segments + filter on left, Columns on right */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5 flex-wrap">
         <span className="text-[10.5px] text-muted">{i18nT('pages.sessionsTab.group_by')}</span>
@@ -316,46 +330,83 @@ export default function SessionsTab({ planeStateRef }: Props) {
           onChange={e => setFilter(e.currentTarget.value)}
           className="w-[150px]"
         />
-        <div className="relative ml-auto">
-          <Btn
-            ref={pickerBtnRef}
-            type="button"
-            aria-expanded={pickerOpen}
-            aria-haspopup="true"
-            onClick={() => setPickerOpen(o => !o)}
-            className="text-[11.5px] gap-1.5"
+        {/* The Radix popover primitive owns what a menu surface needs to get
+            right: focus moves into the panel on open and back to the trigger on
+            close, Escape and outside-press dismiss, and the panel stays anchored
+            to its trigger across scroll and resize instead of being positioned
+            once at open time. */}
+        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+          <PopoverTrigger asChild>
+            <Btn type="button" className="ml-auto text-[11.5px] gap-1.5">
+              <Columns3 size={13} aria-hidden="true" className="lucide-inline" />
+              {i18nT('pages.sessionsTab.columns')}
+            </Btn>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            sideOffset={4}
+            aria-label={i18nT('pages.sessionsTab.columns')}
+            className="w-auto min-w-40 p-1.5"
           >
-            <Columns3 size={13} aria-hidden="true" className="lucide-inline" />
-            {i18nT('pages.sessionsTab.columns')}
-          </Btn>
-          {pickerOpen && (
-            <div
-              ref={pickerRef}
-              role="dialog"
-              aria-label={i18nT('pages.sessionsTab.columns')}
-              className="absolute right-0 z-20 mt-1 min-w-40 rounded border border-border bg-bg-elevated p-1.5 shadow-lg"
-            >
-              {hideable.map(col => (
-                <label key={col.id} className="flex items-center gap-2 px-1.5 py-1 text-[12px] cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={col.getIsVisible()}
-                    onChange={col.getToggleVisibilityHandler()}
-                  />
-                  {flexRender(col.columnDef.header, {} as never) as never}
-                </label>
-              ))}
-              <div className="mt-1 border-t border-border pt-1">
-                <Btn type="button" onClick={closePicker} className="w-full text-[11px] justify-center">
-                  {i18nT('pages.sessionsTab.done')}
-                </Btn>
-              </div>
+            {hideable.map(col => (
+              <label key={col.id} className="flex items-center gap-2 px-1.5 py-1 text-[12px] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={col.getIsVisible()}
+                  onChange={col.getToggleVisibilityHandler()}
+                />
+                {flexRender(col.columnDef.header, {} as never) as never}
+              </label>
+            ))}
+            <div className="mt-1 border-t border-border pt-1">
+              <Btn type="button" onClick={closePicker} className="w-full text-[11px] justify-center">
+                {i18nT('pages.sessionsTab.done')}
+              </Btn>
             </div>
-          )}
-        </div>
+          </PopoverContent>
+        </Popover>
       </div>
 
-      {table.getRowModel().rows.length === 0 && !showUnattributed ? (
+      <div className="overflow-hidden rounded-b-lg">
+      {isPending ? (
+        // "No active sessions" is a claim about the machine, and during the first
+        // fetch it is one we cannot make — a slow or failing endpoint made the page
+        // assert there were none while it was still asking. A skeleton says
+        // "not known yet", which is the truth.
+        <ContentSkeleton rows={6} />
+      ) : isError && !data ? (
+        // The same false claim, by a different route: a failed request resolves the
+        // query with no data, so the empty state would render — indistinguishable
+        // from a healthy idle host, and re-asserted every 5s. That lands hardest on
+        // the shared-MCP-gateway users this page's own failure mode affects, so
+        // silence here reads as "nothing is running" while the truth is "we cannot
+        // tell".
+        //
+        // Gated on `!data` deliberately. react-query keeps the last payload while
+        // flipping status to `error`, so an unguarded `isError` would let one failed
+        // BACKGROUND poll unmount a table the user is mid-read on. Stale rows with a
+        // "can't refresh" notice (below) beat correct rows replaced by a panel.
+        <EmptyState
+          testId="sessions-error"
+          icon={<TriangleAlert className="lucide-inline" />}
+          title={i18nT('pages.sessionsTab.could_not_read_sessions')}
+          subtitle={i18nT('pages.sessionsTab.could_not_read_sessions_hint')}
+          action={
+            // Relabelled off `isFetching`, not decorative: the default retry +
+            // backoff leaves the screen pixel-identical for several seconds after
+            // the click, so an unacknowledged button reads as a dead one and gets
+            // clicked again — exactly when the user is already anxious.
+            <Btn
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="text-[11.5px]"
+            >
+              {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
+            </Btn>
+          }
+        />
+      ) : table.getRowModel().rows.length === 0 ? (
         <EmptyState
           icon={<MemoryStick className="lucide-inline" />}
           title={i18nT('pages.sessionsTab.no_active_sessions')}
@@ -391,7 +442,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
                       type="button"
                       onClick={h.column.getToggleSortingHandler()}
                       className={`border-transparent bg-transparent px-0 py-0 gap-1 text-[10px] font-medium ${
-                        dir ? 'text-accent' : 'text-muted'
+                        dir ? 'text-accent' : 'text-muted hover:text-text'
                       }`}
                     >
                       {flexRender(h.column.columnDef.header, h.getContext())}
@@ -405,35 +456,6 @@ export default function SessionsTab({ planeStateRef }: Props) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {/* Unattributed row — pinned above all sessions, outside sort.
-                Finding 6: use warn tint instead of danger for a documented-healthy state. */}
-            {showUnattributed && (
-              <TableRow data-testid="unattributed-row" className="text-warn">
-                {table.getHeaderGroups()[0]?.headers.map(h => {
-                  const colId = h.column.id
-                  const isName = colId === 'name'
-                  let content: string
-                  if (isName) content = ''
-                  else if (colId === 'rssMb') content = fmtMb(unattributed!.rss_mb)
-                  else if (colId === 'procs') content = fmtNumber(unattributed!.procs)
-                  else if (colId === 'uptimeS') content = fmtUptime(unattributed!.oldest_uptime_s)
-                  else content = '—'
-                  return (
-                    <TableCell
-                      key={h.id}
-                      className={isName ? 'px-3 py-1 text-left text-[12.5px] text-warn font-medium' : `px-3 py-1 ${NUM} text-warn`}
-                    >
-                      {isName ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span>{i18nT('pages.sessionsTab.unattributed')}</span>
-                          <InfoTip text={i18nT('pages.sessionsTab.unattributed_hint')} />
-                        </span>
-                      ) : content}
-                    </TableCell>
-                  )
-                })}
-              </TableRow>
-            )}
             {table.getRowModel().rows.map(row => {
               const r = row.original
               const grouped = row.getIsGrouped()
@@ -545,7 +567,10 @@ export default function SessionsTab({ planeStateRef }: Props) {
       )}
 
       {/* Footer — single horizontal strip of stat pairs.
-          Finding 3: units added to catalog labels (GB suffix in label string). */}
+          Suppressed until a payload lands: the body above says "not known yet"
+          (skeleton) or "cannot tell" (error), and a footer reading a concrete
+          "0" beside either of those makes the card tell two different stories. */}
+      {!isPending && data && (
       <div className="flex items-center flex-wrap px-3.5 py-2 border-t border-border bg-bg-elevated">
         <FooterStat label={i18nT('pages.sessionsTab.footer_kirocrew_gb')} value={fmtGb(usedMb)} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={totals?.host_pct != null ? fmtPercent(totals.host_pct / 100, { maximumFractionDigits: 2 }) : '—'} />
@@ -553,13 +578,8 @@ export default function SessionsTab({ planeStateRef }: Props) {
         <FooterStat label={i18nT('pages.sessionsTab.footer_sessions')} value={fmtNumber(sessions.length)} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_task_sessions')} value={fmtNumber(tasks.length)} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_session_procs')} value={fmtNumber(procTotal)} />
-        {showUnattributed && (
-          <FooterStat
-            label={i18nT('pages.sessionsTab.unattributed')}
-            value={`${fmtNumber(unattributed!.procs)} · ${fmtGb(unattributed!.rss_mb)}`}
-            warn
-          />
-        )}
+      </div>
+      )}
       </div>
     </Card>
   )

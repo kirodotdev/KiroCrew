@@ -574,7 +574,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
   return (
     <div
       ref={containerRef}
-      className={`group my-2 transition-colors ${expanded ? 'fixed inset-4 z-[100] rounded-xl border border-border bg-card overflow-hidden shadow-2xl' : ''}`}
+      className={`group my-2 transition-colors ${expanded ? 'fixed inset-4 z-[100] flex flex-col rounded-xl border border-border bg-card overflow-hidden shadow-2xl' : ''}`}
     >
       {!visible ? (
         /* Skeleton — mirrors the visible layout (same header bar + a reserved
@@ -635,7 +635,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
         </IconButtonGroup>
       </div>
 
-      {blobUrl && <div className="relative">
+      {blobUrl && <div className={expanded ? 'relative flex-1 min-h-0 bg-card' : 'relative'}>
         {/* Parent-side progress indicator. REQUIRED in addition to the in-iframe
             overlay: the iframe below renders at opacity 0 until its onLoad
             fires, so anything inside it is invisible during exactly the window
@@ -648,7 +648,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
             // centred indicator drifts below the fold — mounted but invisible,
             // which is the very failure this is meant to prevent.
             className="absolute inset-0 z-10 flex items-start justify-center gap-2 rounded bg-card pt-6 text-[12px] text-muted"
-            style={{ height: expanded ? 'calc(100% - 36px)' : height }}
+            style={{ height: expanded ? '100%' : height }}
           >
             <span
               className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-border motion-reduce:animate-none"
@@ -667,7 +667,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, w
           onLoad={() => setIframeLoaded(true)}
           sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           className="w-full border-none bg-card transition-opacity duration-200 ease-out motion-reduce:transition-none"
-          style={{ height: expanded ? 'calc(100% - 36px)' : height, opacity: iframeLoaded ? 1 : 0 }}
+          style={{ height: expanded ? '100%' : height, opacity: iframeLoaded ? 1 : 0 }}
           title={title}
         />
       </div>}

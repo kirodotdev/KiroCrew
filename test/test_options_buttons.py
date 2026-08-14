@@ -89,8 +89,14 @@ class TestBuildOptionsBlocks:
     def test_max_ten_choices(self):
         choices = [f"C{i}" for i in range(15)]
         blocks = build_options_blocks(choices)
-        opts = blocks[0]["elements"][0]["options"]
+        actions = next(b for b in blocks if b["type"] == "actions")
+        opts = actions["elements"][0]["options"]
         assert len(opts) == 10
+        # Overflow no longer vanishes: choices 11-15 degrade to a numbered
+        # context block the user can answer by typing.
+        overflow = next(b for b in blocks if b["type"] == "context")
+        assert "11. C10" in overflow["elements"][0]["text"]
+        assert "15. C14" in overflow["elements"][0]["text"]
 
     def test_truncates_long_choice_text(self):
         long = "x" * 100

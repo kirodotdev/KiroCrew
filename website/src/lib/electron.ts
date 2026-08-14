@@ -14,6 +14,24 @@ export const isElectron = !!mc?.isElectron
 export const isMacElectron = isElectron && mc?.platform === 'darwin'
 export const isWinElectron = isElectron && mc?.platform === 'win32'
 
+/**
+ * Absolute filesystem path for a File the OS handed us (drag-drop), via the
+ * desktop shell's preload bridge (webUtils.getPathForFile). Returns '' in a
+ * plain browser — pages cannot see real paths there — so callers must treat a
+ * falsy result as "no path available" and keep their browser behaviour.
+ *
+ * Read lazily (not via the module-load `mc` capture above) so tests can stub
+ * `window.kirocrew` per-case without import-order coupling.
+ */
+export function pathForFile(file: File): string {
+  const k = (window as { kirocrew?: { getPathForFile?: (f: File) => string } }).kirocrew
+  try {
+    return k?.getPathForFile?.(file) || ''
+  } catch {
+    return ''
+  }
+}
+
 /** Header left inset clearing the traffic lights: 16px inset + ~52px button group + 16px gap. */
 export const TRAFFIC_LIGHT_INSET_PX = 84
 

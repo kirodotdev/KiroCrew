@@ -4,6 +4,18 @@
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
+## Source Checkout Launcher
+
+The POSIX wrapper at `bin/kirocrew` resolves symlinks to find the real checkout,
+sets `KIROCREW_PROJECT_DIR` to that checkout unless the caller already supplied
+one, and delegates every argument to `.venv/bin/kirocrew`. The virtualenv entry
+point comes from the editable install created by the setup scripts, so it makes
+`src/kiro_crew` importable without adding the source tree to `PYTHONPATH`. Any
+caller-provided `PYTHONPATH` is inherited unchanged.
+
+If `.venv/bin/kirocrew` is unavailable, the wrapper exits with source-install
+guidance instead of falling through to a different Python environment.
+
 ## Standalone Wheel Installer Trust Contract
 
 `cli.sh` installs channel or pinned-version wheels only from an authenticated
@@ -56,11 +68,12 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew chat -m "msg"` | Send a single message, print streaming response |
 | `kirocrew chat` | Interactive chat mode (readline, exit with Ctrl+D) |
 | `kirocrew chat --model X` | Override model for this session |
-| `kirocrew gateway` | Start the KiroCrew server (dashboard + Slack) |
+| `kirocrew gateway` | Start the Kiro Crew server (dashboard + messaging channels) |
 | `kirocrew gateway --slack-only` | Start without dashboard or SSH tunnel instructions |
 | `kirocrew gateway --no-crons` | Start without cron scheduler (use when another instance handles crons) |
 | `kirocrew setup` | Install agent config, save project dir, configure credentials |
 | `kirocrew setup --agent-only` | Only install agent config (skip credentials) |
+| `kirocrew setup --slack` | Run the guided Slack credential + slash-command setup (opt-in) |
 | `kirocrew doctor` | Verify kiro-cli is installed and config is valid |
 | `kirocrew cron add/list/remove` | Manage cron jobs |
 | `kirocrew spawn run/list` | Manage background subagents |
@@ -70,7 +83,7 @@ This allows `kirocrew` to find project-level agent config and skills from any di
 | `kirocrew learn add/list/remove` | Manage learned corrections |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
-| `kirocrew logout` | Revoke all active dashboard access sessions (does not revoke refresh chains) |
+| `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git pull + rebuild) |
 | `kirocrew status` | Show runtime stats from running gateway |
@@ -139,7 +152,9 @@ exfiltration redactors run.
 
 1. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
 2. Installs agent config to `~/.kiro/agents/kirocrew.json`
-3. Prompts for Slack credentials (unless `--agent-only`)
+3. Prompts for Slack credentials and the slash-command name only when `--slack`
+   is passed; the default wizard configures no messaging channels and prints a
+   pointer to connect them later
 4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
 The saved project dir enables running `kirocrew` from any directory.
@@ -392,7 +407,7 @@ CLI compaction is blocking (single-user, acceptable).
 
 ## Entry Point
 
-`console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew.cli:main`.
+`console_scripts` in `setup.cfg` maps `kirocrew` → `kiro_crew._bootstrap:main`.
 
 ### Gateway asyncio child watcher
 
@@ -477,7 +492,7 @@ The wrapper sets `KIROCREW_PROJECT_DIR` and routes to the right runtime based on
 6. Backend build (`pip install -e .`)
 7. PATH setup + shell profile persistence
 8. `kirocrew setup --agent-only` (install kiro-cli agent config)
-9. Optional Slack credential configuration
+9. Optional Slack credential configuration (`kirocrew setup --slack`)
 
 Each step checks if the tool is already installed and skips if present.
 
@@ -490,7 +505,7 @@ Each step checks if the tool is already installed and skips if present.
 5. **MCP tools**: `@kirocrew-cron` and `@kirocrew-core` in `tools`, `allowedTools`, and `mcpServers` — auto-fixes missing entries
 6. **Global mcp.json**: kirocrew MCP servers present with valid binary paths — auto-fixes stale paths
 7. **Python environment**: checks Python 3.9+ availability and dependency installation
-8. **Vector memory (in-process embeddings)**: vendored llama-cpp-python runtime importable, embedding model file present (downloads in background on gateway start; when absent, a light HTTPS-reachability probe of the resolved model URL runs); embeddings are always-on (`embeddings:  ✅ always-on`). On platforms with no vendored native libs (`_platform_libs_dirname()` returns None, e.g. darwin/x86_64 — Intel Macs or a Rosetta interpreter), the runtime line reports `⏹ unsupported platform … — memory uses keyword search` and is NOT counted as an issue (designed degradation per `embeddings.py`); only a load failure on a supported platform flags `embedding runtime`. A `faiss:` line reports whether the optional FAISS accelerator is importable — never an issue on any platform (episodic recall falls back to the stdlib cosine scan); when absent it suggests `pip install faiss-cpu`
+8. **Vector memory (in-process embeddings)**: vendored llama-cpp-python runtime importable, embedding model file present (downloads in background on gateway start; when absent, a light HTTPS-reachability probe of the resolved model URL runs); embeddings are always-on (`embeddings:  ✅ always-on`). On platforms with no vendored native libs (`_platform_libs_dirname()` returns None, e.g. darwin/x86_64 — Intel Macs or a Rosetta interpreter), the runtime line reports `⏹ unsupported platform … — memory uses keyword search` and is NOT counted as an issue (designed degradation per `embeddings.py`); only a load failure on a supported platform flags `embedding runtime`. When that failure is an INCOMPLETE shipped payload, doctor additionally names the absent files (`Missing native libs for <platform>: …`, from `embeddings.verify_vendored_libs()`) and says it is a packaging defect rather than an unsupported platform — the two are indistinguishable in ctypes' own `Shared library with base name 'llama' not found`, which reads as an architecture problem and misdirects diagnosis. When `LLAMA_CPP_LIB_PATH` is set, doctor reports THAT directory as the thing to check instead (mirroring the loader's exemption): the libs load from there, so blaming the bundled tree would send the operator to reinstall a package they are deliberately not loading from. A `faiss:` line reports whether the optional FAISS accelerator is importable — never an issue on any platform (episodic recall falls back to the stdlib cosine scan); when absent it suggests `pip install faiss-cpu`
 9. **Speech-to-Text (optional)**: whisper + ffmpeg presence when STT is enabled. On Windows these are reported as non-fatal `⚠️` notes (neither is a Kiro Crew dependency there, and STT ships enabled-by-default) so a healthy first install exits 0 and the guide's `kirocrew doctor && kirocrew gateway` chain proceeds; on macOS/Linux a missing binary still flags an issue. Fix hints are OS-aware (`brew` / `winget` / Linux)
 10. Slack credentials (optional)
 11. kiro-cli connectivity
@@ -507,16 +522,31 @@ Each step checks if the tool is already installed and skips if present.
 ## Client Port Resolution
 
 `kirocrew token` / `status` / `logout` / `stop` / `restart` must find the port
-the gateway is actually bound to. `cli_server.resolve_client_port()` resolves it
-in this order, first hit wins:
+the gateway is actually bound to. `port_resolution.resolve_client_port()`
+(re-exported by `cli_server`) resolves it
+in this order, first hit wins. The MCP stdio servers (`mcp_core` /
+`mcp_computer`) resolve their gateway API base through the same helper —
+lazily, on the first gateway call, and cached for the process lifetime — so a
+loopback callback and a client CLI command always agree on which gateway they
+are talking to:
 
 1. An explicit `--port N` flag (`0` counts — the check is `is not None`).
-2. `KIROCREW_PORT`, when it parses as an int.
-3. A port **explicitly written** in `dashboard.url`. A portless URL
+2. `KIROCREW_PORT`, when it parses as an int. Deliberately above the bound
+   export: an explicitly-set `KIROCREW_PORT` is how a caller retargets a
+   child at a DIFFERENT gateway — `pod exec` builds a client env with
+   `KIROCREW_PORT=<pod-port>` while the inherited `KIROCREW_BOUND_PORT`
+   still names the spawning live gateway, and the bound value outranking it
+   would walk pod `token`/`status`/`logout` into the live plane.
+   (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright.)
+3. `KIROCREW_BOUND_PORT`, when it parses as an int — the port the parent
+   gateway actually bound, exported once its TCP site is listening
+   (`dashboard.server._export_bound_port`). Never persisted —
+   `service_environment()` deliberately does not capture it.
+4. A port **explicitly written** in `dashboard.url`. A portless URL
    (`http://my.host`) is *not* a port choice: `parse_dashboard_url()`
    substitutes `5476` for the server's benefit, so the client re-splits the URL
    and only accepts the port when it was actually named.
-4. The sole **gateway-owned run-marker**. A running gateway records
+5. The sole **gateway-owned run-marker**. A running gateway records
    `<data-home>/run/gateway-<port>.bin` (see
    `kiro_crew.instances.run_marker`, written for the SSH token-mint), so its
    filename already advertises the port. A client with nothing configured reads
@@ -557,9 +587,9 @@ in this order, first hit wins:
    - **Ambiguity** — with several gateways up there is no basis to pick one, so
      the step refuses, prints the candidate ports and the `--port` /
      `KIROCREW_PORT` hint to stderr, and falls through.
-5. `_DEFAULT_PORT` (`5476`).
+6. `_DEFAULT_PORT` (`5476`).
 
-Step 4 is what makes a single gateway started on a non-default port
+Steps 3 and 5 are what make a single gateway started on a non-default port
 (`kirocrew gateway --port 6776`) reachable from a bare `kirocrew token` with
 zero configuration; before it existed, the client hit a dead 5476 while the
 marker naming the live gateway sat unread. Config-load, URL-parse (including a
@@ -616,9 +646,12 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    that does not resolve there counts as absent rather than falling back.
    `listening_pid_tool_available()` performs the same pinned resolution, so it
    distinguishes "no listener" from "lookup tool missing" without disagreeing
-   with the lookup it describes. A host that installs the tool outside those
-   directories (NixOS, a Homebrew or conda prefix) therefore reads as not having
-   it; `trusted_system_bin()` logs a warning once per name when the tool is on
+   with the lookup it describes. The pinned set is the FHS directories plus
+   `/run/current-system/sw/bin`, which is root-owned and rewritten only by a
+   system rebuild. A tool installed anywhere else — a Homebrew or conda prefix —
+   still reads as absent, and deliberately so: those prefixes are writable by the
+   invoking user, which is the exposure the pin exists to close.
+   `trusted_system_bin()` logs a warning once per name when the tool is on
    `PATH` but not resolvable under the pin, and `tool_outside_trusted_dirs()`
    lets `stop` name where the tool actually is rather than tell an operator who
    already has it to install it. That case carries SEL
@@ -681,11 +714,26 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
 
 - **Linux** (`current_platform() == SYSTEMD`):
   - Unit file: `/etc/systemd/system/kirocrew.service` (root-owned).
-  - Install: `sudo tee` writes the unit, then `sudo systemctl
+  - Install: `sudo install` writes the unit, then `sudo systemctl
     daemon-reload && sudo systemctl enable --now kirocrew.service`.
+    Privilege is resolved per call: already-root (euid 0) skips `sudo`
+    entirely — required on minimal container / `root`-login images that
+    ship no `sudo` binary — and a non-root caller with no `sudo` fails
+    with a clear `ServiceInstallError` rather than an uncaught
+    `FileNotFoundError`.
   - The gateway runs as `User=$USER Group=$(id -gn)` — kirocrew
-    code never runs under sudo. Only `tee` and `systemctl` invocations
+    code never runs under sudo. Only `install` and `systemctl` invocations
     are elevated.
+  - **Environment**: values are captured from the installer's environment
+    into the unit's `Environment=` lines at install time
+    (`service_environment()` in `service/common.py`) — this is how
+    `KIROCREW_PORT=5477 kirocrew service install` binds a non-default port.
+    The unit also reads `EnvironmentFile=-/etc/kirocrew/kirocrew.env`, an
+    operator-editable file the installer seeds create-if-absent (a reinstall
+    never clobbers edits). systemd applies the file AFTER — and overriding —
+    the baked `Environment=` lines, so editing it and running `sudo systemctl
+    restart kirocrew` changes a value (e.g. the port) without reinstalling.
+    Uninstall removes the file and its `/etc/kirocrew` directory.
   - Boot survival via `WantedBy=multi-user.target` (no linger needed —
     that's a user-service concept; this is system-level).
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
@@ -712,7 +760,11 @@ source is most appropriate:
 1. systemd journal if the system service is installed on Linux. Tries
    unprivileged `journalctl` first; falls back to `sudo journalctl`
    only if the unprivileged probe returns no rows.
-2. launchd stdout file if a plist exists on macOS
+2. launchd stdout file if a plist exists on macOS and that file is
+   non-empty. Both conditions matter: the platform probe reports launchd
+   on any macOS host, and an install that never started the agent leaves
+   a 0-byte log behind, so either check alone would capture the command
+   and tail nothing.
 3. `~/.kiro/crew/gateway.log` for foreground gateways
 
 Uses `os.execvp` so signals (Ctrl+C) propagate naturally to the

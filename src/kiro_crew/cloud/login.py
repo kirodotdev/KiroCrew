@@ -109,9 +109,14 @@ def parse_login_output(text: str) -> LoginPrompt:
         return LoginPrompt(already_logged_in=True, raw=text)
 
     url = ""
-    m = _URL_RE.search(text)
-    if m:
-        url = m.group(0).rstrip(".,)")
+    # kiro-cli prints BOTH the bare verification_uri (a generic sign-in page) and
+    # the "complete" verification_uri_complete that embeds the code
+    # (…?user_code=…) and deep-links straight to the approve screen. Prefer the
+    # latter so the user isn't dropped on a general login with nowhere obvious to
+    # type the code; fall back to the first URL when no complete one is printed.
+    urls = [u.rstrip(".,)") for u in _URL_RE.findall(text)]
+    if urls:
+        url = next((u for u in urls if "user_code=" in u), urls[0])
     code = ""
     cm = _CODE_RE.search(text)
     if cm:

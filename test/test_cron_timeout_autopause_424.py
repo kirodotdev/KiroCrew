@@ -57,3 +57,26 @@ async def test_timeout_clears_failure_dedup_hash(tmp_path, monkeypatch):
     assert job.last_failure_at == 0.0
     # ...but the failure still counted.
     assert job.consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_timeout_after_recorded_failure_counts_once(tmp_path, monkeypatch):
+    """One failed run is one failure, even when two handlers observe it.
+
+    A delivery-path exception records the failure inside the callback; if the
+    run then overruns its deadline during cleanup, the TimeoutError handler
+    must not count the same run a second time.
+    """
+    svc = CronService(base_dir=tmp_path)
+    job = CronJob(id="j3", name="slow", message="hi", timeout_secs=1)
+
+    async def _fail_then_timeout(coro, timeout):
+        coro.close()
+        # The callback counted this run's failure before cleanup overran.
+        job.record_failure()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(cron_mod.asyncio, "wait_for", _fail_then_timeout)
+    await svc._execute_with_timeout(job)
+    assert job.consecutive_failures == 1
+    assert job.last_status == "error"

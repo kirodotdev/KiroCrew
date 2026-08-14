@@ -75,6 +75,9 @@ const H = vi.hoisted(() => {
     id: 'sessions',
     label: 'Sessions',
     icon: null,
+    // Mirrors the real provider's declared minimum (SESSIONS_MIN_QUERY_CHARS);
+    // the declared-equals-enforced pin lives in sessionsProvider.test.ts.
+    minQueryChars: 2,
     search: vi.fn(async () => [sessResult]),
   }
   const pagesProvider = { id: 'pages', label: 'Pages', icon: null, search: vi.fn(() => []) }
@@ -815,5 +818,173 @@ describe('CommandPalette — per-type Enter matrix (dispatchEnter routing)', () 
     choose(true)
     expect(run).toHaveBeenCalledTimes(1)
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * Scoped-provider error state (issue #1928).
+ *
+ * A scoped tab whose provider's search REJECTS must render a distinct failure
+ * state (message + retry) rather than the ordinary "No matches" empty copy,
+ * which would mislabel a backend failure as an empty corpus. The All aggregator
+ * is unaffected: it guards each provider and always RESOLVES with a blended
+ * list (pinned by allAggregator.test.ts), so isError is never set on the All
+ * tab.
+ */
+describe('CommandPalette — scoped provider error state (issue #1928)', () => {
+  // The file-scoped afterEach uses vi.clearAllMocks(), which clears call history
+  // but NOT a mockRejectedValue implementation — restore the Sessions provider's
+  // default resolve so a rejection set here cannot leak into a later test.
+  afterEach(() => {
+    H.sessionsProvider.search.mockResolvedValue([H.sessResult])
+  })
+
+  it('renders a distinct error state with a Retry (not "No matches") when a scoped provider search rejects', async () => {
+    H.sessionsProvider.search.mockRejectedValue(new Error('backend down'))
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    // Scope to Sessions via prefix + Tab, then the empty-query scoped listing
+    // is served by the (now rejecting) Sessions provider.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions') // scope hint label
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+
+    expect(await screen.findByText('Search failed')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
+    // The ordinary empty copy must NOT appear for a failure.
+    expect(screen.queryByText('No matches')).toBeNull()
+  })
+
+  it('the Retry button refetches the scoped provider and shows the results', async () => {
+    H.sessionsProvider.search
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValue([H.sessResult])
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    await screen.findByText('Sessions')
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+
+    const retry = await screen.findByRole('button', { name: /Retry/ })
+    fireEvent.click(retry)
+
+    // The refetch resolves this time, so the row renders and the error clears.
+    expect(await screen.findByText('Session Result')).toBeInTheDocument()
+    expect(screen.queryByText('Search failed')).toBeNull()
+  })
+
+  it('the All tab shows "No matches" (never the error state) when the aggregator swallows provider failures', async () => {
+    // The real All aggregator catches each provider and resolves with []; a
+    // fully-swallowed fan-out therefore looks like an empty result, not an
+    // error. isError stays false, so the ordinary empty copy shows.
+    H.allProvider.search.mockResolvedValue([])
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'zzz' } })
+
+    expect(await screen.findByText('No matches', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText('Search failed')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Retry/ })).toBeNull()
+
+    H.allProvider.search.mockResolvedValue([H.allResult])
+  })
+})
+
+/**
+ * Sub-threshold "keep typing" empty state (issue #1830).
+ *
+ * A scoped tab whose provider declares `minQueryChars` must render honest
+ * "Type at least N characters…" copy for a non-empty query below the minimum,
+ * instead of the generic "No matches" (the provider never searched, so nothing
+ * was "matched" against). Ordering ratchet: isError and loading each keep
+ * their existing copy, and the All tab (whose client-side scopes can answer a
+ * one-character query) never shows the new state.
+ */
+describe('CommandPalette — sub-threshold min-query empty state (issue #1830)', () => {
+  const KEEP_TYPING = 'Type at least 2 characters to search sessions'
+
+  // Restore defaults that clearAllMocks does not reset (implementations).
+  afterEach(() => {
+    H.sessionsProvider.search.mockResolvedValue([H.sessResult])
+    H.allProvider.search.mockResolvedValue([H.allResult])
+    H.recentsProvider.search.mockResolvedValue([H.recentResult])
+  })
+
+  /** Scope the palette to Sessions (prefix + Tab), then type `q`. */
+  async function scopeToSessionsAndType(q: string) {
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    const input = screen.getByRole('textbox', { name: 'Search everywhere' })
+    fireEvent.change(input, { target: { value: 'sess' } })
+    await screen.findByText('Sessions') // scope hint label
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+    fireEvent.change(input, { target: { value: q } })
+  }
+
+  it('renders the keep-typing copy (not "No matches") for a one-character Sessions query', async () => {
+    // Mirror the real provider: a sub-threshold query resolves to [].
+    H.sessionsProvider.search.mockResolvedValue([])
+    await scopeToSessionsAndType('k')
+
+    expect(await screen.findByText(KEEP_TYPING, {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText('No matches')).toBeNull()
+  })
+
+  it('still renders "No matches" for an at-threshold query that genuinely matches nothing', async () => {
+    H.sessionsProvider.search.mockResolvedValue([])
+    await scopeToSessionsAndType('zz')
+
+    expect(await screen.findByText('No matches', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText(KEEP_TYPING)).toBeNull()
+  })
+
+  it('a provider failure keeps the error copy even for a sub-threshold query (ordering ratchet)', async () => {
+    H.sessionsProvider.search.mockRejectedValue(new Error('backend down'))
+    await scopeToSessionsAndType('k')
+
+    expect(await screen.findByText('Search failed', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText(KEEP_TYPING)).toBeNull()
+  })
+
+  it('a scoped provider WITHOUT a declared minimum keeps "No matches" for a one-character query', async () => {
+    // Pins the `minQueryChars != null` guard: the pages provider declares no
+    // minimum, so a sub-2-char query on its tab is a genuine search whose
+    // empty result must say "No matches" — a future "default minimum" would
+    // break this. (The All-tab test covers scopeProvider === undefined; this
+    // covers a scoped provider with the field absent.)
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    const input = screen.getByRole('textbox', { name: 'Search everywhere' })
+    fireEvent.change(input, { target: { value: 'pag' } })
+    await screen.findByText('Pages') // scope hint label
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+    fireEvent.change(input, { target: { value: 'k' } })
+
+    expect(await screen.findByText('No matches', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText(/Type at least/)).toBeNull()
+  })
+
+  it('the All tab never shows the keep-typing state for a one-character query', async () => {
+    // Unscoped: the aggregator blends client-side scopes that CAN answer one
+    // character. An empty blend is a genuine "No matches", not "keep typing".
+    H.allProvider.search.mockResolvedValue([])
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'k' } })
+
+    expect(await screen.findByText('No matches', {}, { timeout: 2000 })).toBeInTheDocument()
+    expect(screen.queryByText(KEEP_TYPING)).toBeNull()
   })
 })

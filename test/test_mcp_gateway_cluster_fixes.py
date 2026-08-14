@@ -295,7 +295,7 @@ class TestNamingMigration:
             overlay_dir=overlay_dir,
             socket_path=Path("/tmp/gw.sock"),
             work_dir=work_dir,
-            poolable_servers=frozenset({"pooled"}),
+            stub_servers=frozenset({"pooled"}),
         )
         # Should have at least one KIROCREW_MCP_TARGET_ key
         assert any(k.startswith("KIROCREW_MCP_TARGET_") for k in target_env), (
@@ -327,7 +327,7 @@ class TestNamingMigration:
             work_dir=tmp_path,
             sandbox_mode="standard",
             approval_mode="interactive",
-            poolable_servers=frozenset(),
+            stub_servers=frozenset({"myserver"}),
         )
         entry = new_spec["mcpServers"]["already"]
         assert entry.get(_WRAPPER_MARKER) is True

@@ -75,6 +75,16 @@ class TestMcpCoreUserActions:
         )
 
     def test_learn_with_negative(self):
+        """The NOT-clause must reach the payload, not just the tool schema.
+
+        Regression guard: this test used to supply ``negative`` and assert only
+        that the call succeeded, so it passed while ``_call_tool`` built the body
+        as ``{rule, category, scope}`` and dropped the clause client-side -- the
+        very field whose ``rule`` description tells the model to prefer it over
+        inlining "-- NOT: ...". Assert the whole dict: the sibling
+        ``test_learn_preference`` pins the no-negative shape, so together they
+        lock the key in when a clause is supplied and out when it is not.
+        """
         with patch("kiro_crew.mcp_core._post") as mock_post:
             mock_post.return_value = {"status": "ok"}
             result = self._simulate_tool_call(
@@ -86,6 +96,15 @@ class TestMcpCoreUserActions:
                 },
             )
         assert "Saved lesson" in result
+        mock_post.assert_called_once_with(
+            "/api/lessons",
+            {
+                "rule": "Use pytest for testing",
+                "category": "tool",
+                "scope": "global",
+                "negative": "Do not use unittest directly",
+            },
+        )
 
     def test_learn_category_defaults_to_knowledge(self):
         """LLM might omit category — should default to 'knowledge'."""

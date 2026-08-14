@@ -45,6 +45,7 @@ from kiro_crew.dashboard.urls import (  # noqa: F401
     build_allowed_origins,
     build_dashboard_url,
     dashboard_origin,
+    dashboard_socket_path,
     devspaces_proxy_url,
     format_dashboard_urls,
     is_local_only,
@@ -184,6 +185,35 @@ def is_https_request(request: web.Request) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# ``socket.AF_UNIX`` does not exist on Windows CPython; resolved once so the
+# per-request discriminator below can never raise AttributeError there.
+_AF_UNIX = getattr(socket, "AF_UNIX", None)
+
+
+def request_is_unix_socket(request: web.Request) -> bool:
+    """True iff *request* arrived on an ``AF_UNIX`` transport.
+
+    Requests on the dashboard's unix socket (``server._start_unix_site``) have
+    no loopback peer IP (``request.remote`` is empty), yet are same-machine by
+    a strictly STRONGER guarantee than loopback TCP: connecting requires
+    traversing the 0700 data home, and the kernel reports the peer's
+    credentials (consumed by ``token_auth``'s peer verification). Used by the
+    no-Origin CSRF branch and the token-auth internal branch as the
+    loopback-equivalent discriminator. Never raises — returns ``False`` for
+    TCP requests, mocked/absent transports, and platforms without AF_UNIX.
+    """
+    if _AF_UNIX is None:
+        return False
+    transport = getattr(request, "transport", None)
+    if transport is None:
+        return False
+    try:
+        sock = transport.get_extra_info("socket")
+    except Exception:
+        return False
+    return sock is not None and getattr(sock, "family", None) == _AF_UNIX
+
+
 def check_origin(
     request: web.Request,
     *,
@@ -202,8 +232,12 @@ def check_origin(
     if not origin and fallback_header:
         origin = request.headers.get(fallback_header, "")
     if not origin:
-        # No Origin header: trust loopback (local processes), reject others
-        if is_loopback(request.remote or ""):
+        # No Origin header: trust loopback and the dashboard's own unix
+        # socket (local processes like mcp-core and doctor send no Origin;
+        # a browser cannot connect to the unix socket at all, so the CSRF
+        # threat model — cookie-attaching cross-origin pages — does not
+        # exist on that transport). Reject others.
+        if is_loopback(request.remote or "") or request_is_unix_socket(request):
             return True
         return not require
     origin_base = "/".join(origin.split("/")[:3]) if "://" in origin else ""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
@@ -9,6 +10,21 @@ from aiohttp import web
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+
+def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
+    """Deterministically advance a transcript's mtime past *sig*.
+
+    Two consecutive filesystem writes can land inside one timestamp tick
+    (~15.6 ms on Windows), leaving the second write with an mtime identical
+    to the first -- a staged "transcript moved on" then has not moved on at
+    all, and any staleness assertion keyed on the mtime signature becomes a
+    coin flip (#2981, same class as #2449). Pinning the mtime makes the test
+    exercise the signature COMPARISON rather than the platform's clock
+    resolution (testing-conventions.md § Determinism).
+    """
+    path = log._path(key)
+    os.utime(path, (sig + 1, sig + 1))
 
 
 class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
@@ -37,6 +53,28 @@ def _make_state(tmp_path, **kwargs):
     sessions.remove = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
+    # Real in-memory Slack-link store rather than bare MagicMocks. The unlink
+    # path unpacks get_slack_link into (thread_ts, channel_id) and branches on
+    # whether a link is PRESENT, and a MagicMock satisfies neither: it iterates
+    # empty (ValueError on unpack) and is unconditionally truthy. Parity with
+    # SessionStore: absent -> (None, None); clear -> True iff a link was there.
+    _slack_links: dict[str, tuple[str, str]] = {}
+
+    def _set_slack_link(key, thread_ts, channel_id):
+        if thread_ts or channel_id:
+            _slack_links[key] = (thread_ts, channel_id)
+        else:
+            _slack_links.pop(key, None)
+
+    def _get_slack_link(key):
+        return _slack_links.get(key, (None, None))
+
+    def _clear_slack_link(key):
+        return _slack_links.pop(key, None) is not None
+
+    sessions.set_slack_link = MagicMock(side_effect=_set_slack_link)
+    sessions.get_slack_link = MagicMock(side_effect=_get_slack_link)
+    sessions.clear_slack_link = MagicMock(side_effect=_clear_slack_link)
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),

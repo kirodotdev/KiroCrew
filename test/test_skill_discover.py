@@ -135,6 +135,25 @@ class TestDiscoverInstall:
         finally:
             await client.close()
 
+    async def test_install_preserves_bundle_bytes(self, fake_home, reset_registry):
+        """Installed files carry the provider's exact bytes: platform newline
+        translation is disabled on write, so a CRLF-authored SKILL.md does
+        not become \\r\\r\\n on Windows — which would make the installed
+        parse diverge from the preview's."""
+        skill_md = "---\r\nname: crlf-skill\r\ndescription: from windows\r\n---\r\n# Fake"
+        provider = FakeProvider(bundle=[("SKILL.md", skill_md)])
+        client, skills_dir = await self._client(fake_home, provider)
+        try:
+            resp = await client.post(
+                "/api/skills/-/discover/install",
+                json={"provider": "fakeprov", "skill_id": "fake-skill"},
+            )
+            assert resp.status == 200
+            installed = skills_dir / "fakeprov" / "fake-skill" / "SKILL.md"
+            assert installed.read_bytes() == skill_md.encode("utf-8")
+        finally:
+            await client.close()
+
     async def test_install_non_object_body_is_400(self, fake_home, reset_registry):
         # Valid JSON like [] has no .get() — must be a 400, not a 500.
         client, _ = await self._client(fake_home)
@@ -255,6 +274,112 @@ class TestDiscoverPreview:
             assert data["content"].startswith("---\nname: fake-skill")
             assert data["files"] == ["SKILL.md", "rules/extra.md"]
             assert data["file_count"] == 2
+        finally:
+            await client.close()
+
+    async def test_preview_description_matches_installed_skill(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        """The preview parses SKILL.md with the same grammar the skills
+        loader applies after install (SKILL_LOADER), so what the user sees
+        in the preview panel is what the installed skill will show: quotes
+        stripped from plain values and block-scalar descriptions resolved
+        from their continuation lines — not the raw indicator character.
+        The expectation is derived from the loader itself, not hardcoded,
+        so a future loader-dialect change breaks this pin instead of
+        silently reopening the preview/install divergence."""
+        from kiro_crew.skills import SkillsLoader
+
+        skill_md = (
+            "---\n"
+            'name: "fake-skill"\n'
+            "description: >\n"
+            "  folded first\n"
+            "  folded second\n"
+            "---\n# Fake"
+        )
+        oracle_path = tmp_path / "SKILL.md"
+        oracle_path.write_text(skill_md, encoding="utf-8")
+        expected = SkillsLoader._parse_frontmatter(oracle_path)
+        assert expected["description"]  # the oracle resolved the scalar
+
+        provider = FakeProvider(bundle=[("SKILL.md", skill_md)])
+        state, _ = _state_with_skills_loader(fake_home)
+        app = _make_app(state, provider)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            resp = await client.get(
+                "/api/skills/-/discover/preview",
+                params={"provider": "fakeprov", "id": "fake-skill"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == expected["name"]
+            assert data["description"] == expected["description"]
+        finally:
+            await client.close()
+
+    async def test_preview_parses_crlf_skill_md_like_the_loader(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        """Provider content arrives verbatim, so a Windows-authored bundle
+        carries CRLF line endings the loader never sees (Path.read_text's
+        universal-newline mode collapses them before parsing). The preview
+        must mirror that translation, or a CRLF SKILL.md previews as empty
+        metadata while installing fine."""
+        from kiro_crew.skills import SkillsLoader
+
+        skill_md = "---\r\nname: crlf-skill\r\ndescription: from windows\r\n---\r\n# Fake"
+        oracle_path = tmp_path / "SKILL.md"
+        # newline="" so the CRLF bytes land on disk unmangled, like a real
+        # Windows-authored file; read_text then normalizes them on read.
+        with oracle_path.open("w", encoding="utf-8", newline="") as f:
+            f.write(skill_md)
+        expected = SkillsLoader._parse_frontmatter(oracle_path)
+        assert expected == {"name": "crlf-skill", "description": "from windows"}
+
+        provider = FakeProvider(bundle=[("SKILL.md", skill_md)])
+        state, _ = _state_with_skills_loader(fake_home)
+        app = _make_app(state, provider)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            resp = await client.get(
+                "/api/skills/-/discover/preview",
+                params={"provider": "fakeprov", "id": "fake-skill"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == expected["name"]
+            assert data["description"] == expected["description"]
+        finally:
+            await client.close()
+
+    async def test_preview_prefers_agents_md_like_install(
+        self, fake_home, reset_registry
+    ):
+        """A bundle without SKILL.md installs AGENTS.md as the SKILL.md, so
+        the preview must parse AGENTS.md too — not whichever markdown file
+        happens to be listed first (e.g. a README.md)."""
+        agents_md = "---\nname: agents-skill\ndescription: from agents\n---\n# Agents"
+        readme_md = "---\nname: readme\ndescription: from readme\n---\n# Readme"
+        provider = FakeProvider(
+            bundle=[("README.md", readme_md), ("AGENTS.md", agents_md)]
+        )
+        state, _ = _state_with_skills_loader(fake_home)
+        app = _make_app(state, provider)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            resp = await client.get(
+                "/api/skills/-/discover/preview",
+                params={"provider": "fakeprov", "id": "fake-skill"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "agents-skill"
+            assert data["description"] == "from agents"
         finally:
             await client.close()
 

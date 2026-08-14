@@ -23,6 +23,7 @@ autouse conftest fixtures.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -140,16 +141,25 @@ async def test_subagent_turn_records_local_wall_clock():
 
         return _gen()
 
+    # Bracket the whole spawn so we have an OUTER wall-clock window that strictly
+    # encloses the subagent's internal one (_turn_t0 at stream start -> persist).
+    observed_start = time.monotonic()
     records = await _spawn_and_capture(stream_factory)
+    observed_elapsed_ms = (time.monotonic() - observed_start) * 1000
 
     assert len(records) == 1
     rec = records[0]
     assert rec["surface"] == "subagent"
-    # The fallback fired: a real, positive local measurement — not the literal
-    # 0 the provider-only read used to write into every row.
-    assert rec["duration_ms"] > 0
-    # Tie it to the real clock: >= the forced sleep, minus scheduling slop.
-    assert rec["duration_ms"] >= 20
+    # The fallback fired: a real, positive local measurement, not the literal 0
+    # the provider-only read used to write into every row. Bound it as
+    # 0 < duration_ms <= observed rather than with a fixed floor. The lower
+    # bound (> 0) proves the clock advanced; the upper bound ties it to a real
+    # measurement (a bug writing an arbitrary constant would exceed the window
+    # that encloses it). Both are race-free: the internal window is a subset of
+    # the outer one on any platform, unlike a fixed floor, which races Windows'
+    # ~15.6 ms timer quantum when a 30 ms sleep rounds to one tick (~15 ms) (see
+    # testing-conventions.md, Determinism class 2, wall-clock races).
+    assert 0 < rec["duration_ms"] <= observed_elapsed_ms
 
 
 @pytest.mark.asyncio

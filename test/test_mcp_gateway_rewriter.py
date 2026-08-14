@@ -14,10 +14,112 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _rewrite_single_spec
+from kiro_crew.mcp_gateway.rewriter import (
+    _WRAPPER_MARKER,
+    _injectable_settings_servers,
+    _rewrite_single_spec,
+)
 
 
-def _rewrite(spec: dict, tmp_path: Path) -> tuple[dict, int]:
+class TestSettingsRelocationMatchesInjection:
+    """``_injectable_settings_servers`` drives BOTH the per-agent injection and
+    the removal from the global settings overlay, so it must return exactly the
+    servers that get injected.
+
+    A name returned here but not injected is deleted from the only overlay that
+    still lists it — the server vanishes and its MCP tools disappear, which is
+    strictly worse than either stubbing it or leaving it alone.
+    """
+
+    def _spec(self) -> dict:
+        return {
+            "mcpServers": {
+                "alpha-mcp": {"command": "/usr/bin/alpha"},
+                "beta-mcp": {"command": "/usr/bin/beta"},
+                "http-mcp": {"url": "https://example.invalid/mcp"},
+            }
+        }
+
+    def test_unstubbed_stdio_server_is_left_in_the_settings_overlay(self) -> None:
+        out = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
+        # beta is stubbed -> relocated. alpha is NOT -> must stay put, or it is
+        # dropped from settings while nothing injects it.
+        assert set(out) == {"beta-mcp"}
+
+    def test_nothing_stubbed_relocates_nothing(self) -> None:
+        """The shipped default. Every server stays raw in the settings overlay."""
+        assert _injectable_settings_servers(self._spec(), frozenset()) == {}
+
+    def test_alias_spelling_is_honoured(self) -> None:
+        """The config may carry the slash-free alias while settings keeps the raw
+        key; matching only the raw name would silently fail to relocate a
+        stubbed slash-named server."""
+        spec = {"mcpServers": {"npm:@playwright/mcp": {"command": "/usr/bin/pw"}}}
+        from kiro_crew.mcp_gateway.rewriter import mcp_server_alias
+
+        alias = mcp_server_alias("npm:@playwright/mcp")
+        assert alias != "npm:@playwright/mcp"
+        out = _injectable_settings_servers(spec, frozenset([alias]))
+        # Keyed by the RAW name, because the caller filters raw-keyed src_servers.
+        assert set(out) == {"npm:@playwright/mcp"}
+
+    def test_http_server_is_never_relocated_even_when_listed(self) -> None:
+        """HTTP/SSE needs no stub and merges globally; relocating it would strip
+        it from settings for no gain."""
+        out = _injectable_settings_servers(self._spec(), frozenset(["http-mcp"]))
+        assert out == {}
+
+    def test_end_to_end_unstubbed_server_survives_in_the_written_overlay(
+        self, tmp_path: Path
+    ) -> None:
+        """Drive the real ``rewrite_agents`` and read the overlay it writes.
+
+        The unit tests above pin the producer; this pins the WIRING. Without it
+        the call site could pass the wrong set (or none) and no test would fail,
+        while every unstubbed global server silently vanished from the only
+        overlay that lists it.
+        """
+        from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+        source_dir = tmp_path / "agents"
+        source_dir.mkdir()
+        (source_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "mcpServers": {}}), encoding="utf-8"
+        )
+        settings_dir = tmp_path / "settings"
+        settings_dir.mkdir()
+        (settings_dir / "mcp.json").write_text(
+            json.dumps(self._spec()), encoding="utf-8"
+        )
+
+        overlay_dir = tmp_path / "overlay" / "agents"
+        rewrite_agents(
+            source_dir=source_dir,
+            overlay_dir=overlay_dir,
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            stub_servers=frozenset(["beta-mcp"]),
+        )
+
+        written = json.loads(
+            (overlay_dir.parent / "settings" / "mcp.json").read_text(encoding="utf-8")
+        )
+        names = set(written["mcpServers"])
+        # alpha was never stubbed: it must still be here, raw, for the session to
+        # launch itself. beta was stubbed, so it moved to the per-agent overlay.
+        assert "alpha-mcp" in names
+        assert "beta-mcp" not in names
+        # HTTP always stays and merges globally.
+        assert "http-mcp" in names
+
+
+def _rewrite(
+    spec: dict,
+    tmp_path: Path,
+    *,
+    stub_servers: frozenset[str] = frozenset(),
+    pooling_enabled: bool = True,
+) -> tuple[dict, int]:
     return _rewrite_single_spec(
         spec,
         stubs_dir=tmp_path / "stubs",
@@ -25,7 +127,8 @@ def _rewrite(spec: dict, tmp_path: Path) -> tuple[dict, int]:
         work_dir=tmp_path / "wd",
         sandbox_mode="auto",
         approval_mode="interactive",
-        poolable_servers=frozenset(),
+        stub_servers=stub_servers,
+        pooling_enabled=pooling_enabled,
     )
 
 
@@ -48,20 +151,159 @@ def test_disabled_poolable_server_is_not_wrapped(tmp_path: Path) -> None:
     assert entry.get("command") == "some-mcp"  # original launch left intact
 
 
-def test_enabled_poolable_server_is_still_wrapped(tmp_path: Path) -> None:
-    """Guard against over-correction: a non-disabled poolable server is still
-    wrapped into a pooling stub."""
+def test_enabled_listed_server_is_still_wrapped(tmp_path: Path) -> None:
+    """Guard against over-correction: a listed server that is not disabled or
+    denylisted is still wrapped into a stub."""
     spec = {
         "name": "agent-a",
         "mcpServers": {
-            "live": {"command": "some-mcp", "poolable": True},
+            "live": {"command": "some-mcp"},
         },
     }
-    new_spec, wrapped = _rewrite(spec, tmp_path)
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"live"}))
     entry = new_spec["mcpServers"]["live"]
 
     assert wrapped == 1
     assert entry.get(_WRAPPER_MARKER) is True
+
+
+def test_unstubbed_server_is_left_for_the_session_to_launch(
+    tmp_path: Path,
+) -> None:
+    """A server nobody stubbed gets NO stub, and its entry is untouched.
+
+    Routing is the per-server opt-in, and it is what puts a stub in the path at
+    all. Emitting one for every server made an upgrade add a daemon plus a proxy
+    process per (server, session) to installs that asked for neither, so absence
+    of a choice must mean absence of a stub — the session launches the server
+    itself, exactly as with no gateway present.
+    """
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "stateful": {"command": "some-mcp"},
+        },
+    }
+    new_spec, wrapped = _rewrite(spec, tmp_path)
+    entry = new_spec["mcpServers"]["stateful"]
+
+    assert wrapped == 0
+    assert _WRAPPER_MARKER not in entry
+    assert entry.get("command") == "some-mcp"
+    # The internal hint never reaches kiro-cli.
+    assert "poolable" not in entry
+
+
+def test_allowlisted_server_gets_the_poolable_flag(tmp_path: Path) -> None:
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "shareable": {"command": "some-mcp"},
+        },
+    }
+    new_spec, _ = _rewrite(
+        spec, tmp_path, stub_servers=frozenset({"shareable"})
+    )
+
+    assert "--poolable" in new_spec["mcpServers"]["shareable"]["args"]
+
+
+def test_private_server_with_declared_env_is_not_warned_about(
+    tmp_path: Path, caplog
+) -> None:
+    """The pooled warnings must not fire for a connection-private backend.
+
+    Both reasons the shared path withholds declared env are absent when there is
+    one stub, and gatewayd forwards the block in full — so the warning would be
+    false on its face. Worse, its remedy ("stop sharing this server") names the
+    state the server is already in, which sends an operator chasing a
+    non-problem. Reachable whenever a stubbed server runs with sharing off, which
+    is the useful middle state for a stateful server.
+    """
+    import logging
+
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "needs-env": {
+                "command": "some-mcp",
+                "env": {"API_TOKEN": "x", "REGION": "us-west-2"},
+            },
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        new_spec, wrapped = _rewrite(
+            spec,
+            tmp_path,
+            stub_servers=frozenset({"needs-env"}),
+            pooling_enabled=False,
+        )
+
+    assert wrapped == 1  # stubbed
+    assert "--poolable" not in new_spec["mcpServers"]["needs-env"]["args"]
+    env_warnings = [r for r in caplog.records if "declares" in r.getMessage()]
+    assert env_warnings == [], (
+        "a private backend was warned about with pooled-backend advice: "
+        f"{[r.getMessage() for r in env_warnings]}"
+    )
+
+
+def test_shared_server_with_declared_env_is_still_warned_about(
+    tmp_path: Path, caplog
+) -> None:
+    """The guard must not silence the case that IS real: a shared backend does
+    drop the declared env, and an operator relying on it needs to know."""
+    import logging
+
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "needs-env": {"command": "some-mcp", "env": {"REGION": "us-west-2"}},
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        _rewrite(
+            spec, tmp_path, stub_servers=frozenset({"needs-env"})
+        )
+
+    msgs = [r.getMessage() for r in caplog.records if "declares" in r.getMessage()]
+    assert len(msgs) == 1, msgs
+    assert "shared" in msgs[0]
+
+
+def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None:
+    """Pooling off is not stubs off.
+
+    With ``mcp_gateway.enabled`` false every LISTED server keeps its stub -- so
+    MCP Apps keeps working -- and nothing is marked shareable, so each connection
+    gets its own backend. A spec-level ``poolable: true`` neither overrides the
+    operator's global switch nor opts the server in: the config list is the only
+    thing that produces a stub.
+    """
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "declared": {"command": "some-mcp", "poolable": True},
+            "listed": {"command": "other-mcp"},
+        },
+    }
+    new_spec, wrapped = _rewrite(
+        spec,
+        tmp_path,
+        stub_servers=frozenset({"listed"}),
+        pooling_enabled=False,
+    )
+
+    assert wrapped == 1
+    listed = new_spec["mcpServers"]["listed"]
+    assert listed.get(_WRAPPER_MARKER) is True, "listed lost its stub"
+    assert "--poolable" not in listed["args"], "listed still marked shareable"
+
+    declared = new_spec["mcpServers"]["declared"]
+    assert declared.get(_WRAPPER_MARKER) is not True, (
+        "a spec-level poolable key must not opt a server in"
+    )
+    assert "poolable" not in declared, "the internal hint must never reach the overlay"
 
 
 def test_rewriter_calls_restrict_to_owner_on_windows(
@@ -131,7 +373,7 @@ def test_rewriter_calls_restrict_to_owner_on_windows(
             work_dir=tmp_path / "wd",
             sandbox_mode="auto",
             approval_mode="interactive",
-            poolable_servers=frozenset(["myserver"]),
+            stub_servers=frozenset(["myserver"]),
         )
 
     # Directories MUST go through make_owner_only_dir (0o700 + DACL), NOT
@@ -191,7 +433,7 @@ def test_rewriter_overlay_dirs_are_traversable_on_posix(tmp_path: Path) -> None:
         work_dir=tmp_path / "wd",
         sandbox_mode="auto",
         approval_mode="interactive",
-        poolable_servers=frozenset(["myserver"]),
+        stub_servers=frozenset(["myserver"]),
     )
 
     # Both directories must be traversable (owner execute bit set).
@@ -260,7 +502,7 @@ def test_env_sidecar_directory_goes_through_make_owner_only_dir(
             work_dir=tmp_path / "wd",
             sandbox_mode="auto",
             approval_mode="interactive",
-            poolable_servers=frozenset(["myserver"]),
+            stub_servers=frozenset(["myserver"]),
         )
 
     assert "env" in [p.name for p in made], (
@@ -320,7 +562,7 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
             work_dir=tmp_path / "wd",
             sandbox_mode="auto",
             approval_mode="interactive",
-            poolable_servers=frozenset(["myserver"]),
+            stub_servers=frozenset(["myserver"]),
         )
 
     # Nothing containing the secret may remain anywhere the rewriter wrote.

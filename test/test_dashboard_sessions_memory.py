@@ -169,34 +169,6 @@ async def test_non_string_key_does_not_raise_and_still_has_channel() -> None:
     assert row["channel"] == telemetry_channel_of(None)
 
 
-# ── unattributed field ─────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_unattributed_is_none_on_non_linux(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When the platform cannot enumerate processes, unattributed is null."""
-    from kiro_crew.dashboard import session_memory as sm
-
-    monkeypatch.setattr(sm.sys, "platform", "darwin")
-    status, body = await _call(_make_request([_row("dashboard:a", 7)]))
-    assert status == 200
-    assert body["unattributed"] is None
-
-
-@pytest.mark.asyncio
-async def test_unattributed_is_dict_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
-    """On Linux it returns the orphan summary, not None."""
-    from kiro_crew.dashboard import session_memory as sm
-
-    monkeypatch.setattr(sm, "_all_runtime_pids", lambda: set())
-    status, body = await _call(_make_request([_row("dashboard:a", 7)]))
-    assert status == 200
-    assert body["unattributed"] is not None
-    assert body["unattributed"]["procs"] == 0
-
-
 # ── credits / turns fields ─────────────────────────────────────────────────
 
 

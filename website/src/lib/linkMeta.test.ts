@@ -11,6 +11,7 @@ const wire = (over: Record<string, unknown> = {}) => ({
   site_name: 'Example',
   domain: 'example.com',
   icon: 'data:image/png;base64,AAAA',
+  icon_dark: '',
   fetched_at: 1770000000,
   ...over,
 })
@@ -129,6 +130,33 @@ describe('useLinkMeta', () => {
     const { result } = renderHook(() => useLinkMeta(URL_A, true))
     await waitFor(() => expect(result.current).toBeTruthy())
     expect((result.current as LinkMeta).icon).toBe('')
+  })
+
+  it('carries the dark-scheme variant when the site declares one', async () => {
+    fetchMock.mockImplementation(async () =>
+      ok(wire({ icon_dark: 'data:image/png;base64,BBBB' })),
+    )
+    const { result } = renderHook(() => useLinkMeta(URL_A, true))
+    await waitFor(() => expect(result.current).toBeTruthy())
+    expect((result.current as LinkMeta).iconDark).toBe('data:image/png;base64,BBBB')
+  })
+
+  it('reports no variant when the site ships one icon for every surface', async () => {
+    const { result } = renderHook(() => useLinkMeta(URL_A, true))
+    await waitFor(() => expect(result.current).toBeTruthy())
+    expect((result.current as LinkMeta).iconDark).toBe('')
+  })
+
+  it.each([
+    ['a remote URL', 'https://evil.example/track.png'],
+    ['an svg', 'data:image/svg+xml;base64,AAAA'],
+  ])('holds the dark variant to the same data:-only screen — %s', async (_label, value) => {
+    // A second icon field is a second `<img src>`, so it is exactly as
+    // attractive a place to smuggle a tracking beacon or active content.
+    fetchMock.mockImplementation(async () => ok(wire({ icon_dark: value })))
+    const { result } = renderHook(() => useLinkMeta(URL_A, true))
+    await waitFor(() => expect(result.current).toBeTruthy())
+    expect((result.current as LinkMeta).iconDark).toBe('')
   })
 
   it('never fetches when enabled is false', async () => {

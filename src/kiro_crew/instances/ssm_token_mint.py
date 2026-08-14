@@ -32,6 +32,7 @@ import logging
 import re
 
 from kiro_crew.cloud import ssm as cloud_ssm
+from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.instances.token_mint import (
     TokenMintError,
     build_remote_command,
@@ -55,7 +56,7 @@ _DEFAULT_MINT_TIMEOUT_SECS = 90
 
 # Same ttl shape token_mint.py accepts (kept local rather than importing a
 # "private" helper cross-module — see module docstring).
-_TTL_RE = re.compile(r"^[1-9][0-9]{0,3}[hm]$")
+_TTL_RE = re.compile(TTL_PATTERN)
 
 # How much of a failing remote's stdout/stderr to carry in an error message.
 _OUTPUT_TAIL_CHARS = 300

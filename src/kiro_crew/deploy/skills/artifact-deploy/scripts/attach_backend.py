@@ -4,8 +4,8 @@
 Idempotently adds an origin for the backend + a '<slug>/api/*' cache behavior
 routing to it (no caching, all-viewer-except-host so the origin sees the right
 Host). Two origin flavors:
-  * API Gateway (default): plain HTTPS custom origin, no OAC. Guardrail-safe -
-    the Lambda behind it is not world-accessible.
+  * API Gateway (default): plain HTTPS custom origin, no OAC. The Lambda behind
+    it is not world-accessible - only API Gateway may invoke it.
   * Lambda Function URL (--oac): adds a Lambda OAC so CloudFront SigV4-signs the
     origin request (for AWS_IAM Function URLs in unrestricted accounts).
 
@@ -136,9 +136,11 @@ _SENSITIVE_PREFIXES: tuple[str, ...] = (
     ".git-credentials",
     ".kiro/crew/.env",
     ".kiro/crew/sel_hmac.key",
+    ".kiro/crew/trust",
     ".kiro/crew/security_events.jsonl",
     ".kirocrew/.env",
     ".kirocrew/sel_hmac.key",
+    ".kirocrew/trust",
     ".kirocrew/security_events.jsonl",
 )
 

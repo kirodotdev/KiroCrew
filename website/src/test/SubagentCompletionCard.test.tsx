@@ -304,3 +304,156 @@ describe('SubagentCompletionCard rendering', () => {
     expect(container.querySelector('[data-testid="subagent-completion-card"]')).toBeNull()
   })
 })
+
+describe('structured meta path (the #1792 fix)', () => {
+  // The gateway stamps the header facts under message.meta.subagentCompletion.
+  // The card reads those FIRST; the prose regexes are only a legacy fallback.
+  const SINGLE_META = {
+    subagentCompletion: {
+      kind: 'single',
+      agentId: '53e3e5eb',
+      agentName: 'kirocrew',
+      outcome: 'ok',
+      task: 'Add TWO short UI labels to the GERMAN (de) catalog',
+      note: '',
+    },
+  }
+  const WAVE_META = {
+    subagentCompletion: {
+      kind: 'batch',
+      final: true,
+      chunk: 1,
+      chunks: 1,
+      ok: 8,
+      failed: 1,
+      stopped: 0,
+      total: 9,
+    },
+  }
+
+  it('parses a single completion from meta, taking the outcome and task from the fields', () => {
+    const p = parseSubagentCompletion(SINGLE, SINGLE_META)!
+    expect(p.kind).toBe('single')
+    if (p.kind !== 'single') return
+    expect(p.agentId).toBe('53e3e5eb')
+    expect(p.agentName).toBe('kirocrew')
+    expect(p.outcome).toBe('ok')
+    expect(p.task).toBe('Add TWO short UI labels to the GERMAN (de) catalog')
+    // Body still comes from the structural blank-line split, not the header prose.
+    expect(p.body).toBe('Added both keys and ran the parity check.')
+  })
+
+  it('parses a wave digest from meta, taking the tallies from the fields', () => {
+    const p = parseSubagentCompletion(WAVE, WAVE_META)!
+    expect(p.kind).toBe('batch')
+    if (p.kind !== 'batch') return
+    expect(p.final).toBe(true)
+    expect(p.ok).toBe(8)
+    expect(p.failed).toBe(1)
+    expect(p.total).toBe(9)
+    expect(p.delivered).toBe(9)
+    // The spawn-discipline prose still drops out via the blank-line split.
+    expect(p.body).not.toContain('do NOT re-run')
+    expect(p.body).toContain('b8185d65')
+  })
+
+  it('renders the card from meta even when the header PROSE is reworded', () => {
+    // This is the whole point of #1792: a copy tweak that breaks every regex
+    // must NOT break the card, because the card reads meta, not the prose.
+    const reworded = [
+      '[Subagent completion event]',
+      'Subagent 53e3e5eb wrapped up successfully 🎉', // no `Agent \`id\`` shape, no glyph the regex knows
+      'Task: Add TWO short UI labels to the GERMAN (de) catalog',
+      '',
+      'Added both keys and ran the parity check.',
+    ].join('\n')
+    // The regex path alone cannot parse this shape...
+    expect(parseSubagentCompletion(reworded)).toBeNull()
+    // ...but with meta the card still renders the correct outcome.
+    renderWithProviders(
+      <SubagentCompletionCard message={msg(reworded, { meta: SINGLE_META })} />,
+      { store: createTestStore({ chat: {} as unknown as ChatState }) },
+    )
+    expect(screen.getByText('Add TWO short UI labels to the GERMAN (de) catalog')).toBeTruthy()
+    expect(screen.getByText('Completed')).toBeTruthy()
+  })
+
+  it('renders a reworded wave digest from meta', () => {
+    const reworded = [
+      '[Subagent batch completion event]',
+      'All 9 helpers wrapped up: 8 good, 1 bad.', // regex-breaking rewrite
+      '',
+      '— `b8185d65` failed ❌ · es catalog',
+      '— `53e3e5eb` ✅ de catalog',
+    ].join('\n')
+    expect(parseSubagentCompletion(reworded)).toBeNull()
+    renderWithProviders(
+      <SubagentCompletionCard message={msg(reworded, { meta: WAVE_META })} />,
+      { store: createTestStore({ chat: {} as unknown as ChatState }) },
+    )
+    expect(screen.getByText('9 of 9 subagents finished')).toBeTruthy()
+    expect(screen.getByTestId('chip-ok').textContent).toContain('8')
+    expect(screen.getByTestId('chip-failed').textContent).toContain('1')
+  })
+
+  it('carries an orphan note from meta into the payload', () => {
+    const orphan = [
+      '[Subagent completion event]',
+      'Agent `53e3e5eb` ⚠️ orphaned by gateway restart',
+      'Task: catalog work',
+      'Result saved at: `/home/u/.kiro/crew/subagents/53e3e5eb/result.txt`',
+    ].join('\n')
+    const p = parseSubagentCompletion(orphan, {
+      subagentCompletion: {
+        kind: 'single',
+        agentId: '53e3e5eb',
+        outcome: 'interrupted',
+        task: 'catalog work',
+        note: 'orphaned by gateway restart',
+      },
+    })!
+    expect(p.kind).toBe('single')
+    if (p.kind !== 'single') return
+    expect(p.outcome).toBe('interrupted')
+    expect(p.body).toContain('orphaned by gateway restart')
+    // The result-path line survives via the no-blank-line agent split.
+    expect(p.body).toContain('result.txt')
+  })
+
+  it('falls back to the regex path when meta is absent (legacy scrollback)', () => {
+    // A row persisted before the gateway stamped meta must still render.
+    const p = parseSubagentCompletion(SINGLE, undefined)!
+    expect(p.kind).toBe('single')
+    if (p.kind !== 'single') return
+    expect(p.outcome).toBe('ok')
+  })
+
+  it('falls back to the regex path when meta is malformed, never a broken card', () => {
+    // A wrong field type must not render a card with a NaN tally or undefined
+    // outcome; it degrades to the prose path (which here still parses).
+    const bad = { subagentCompletion: { kind: 'single', agentId: '', outcome: 'ok' } }
+    const p = parseSubagentCompletion(SINGLE, bad)!
+    // agentId empty in meta → meta rejected → regex fills the real id.
+    expect(p.kind).toBe('single')
+    if (p.kind !== 'single') return
+    expect(p.agentId).toBe('53e3e5eb')
+  })
+
+  it('ignores a meta whose kind disagrees with the content prefix', () => {
+    // A batch meta on a single-prefixed message (or vice versa) is a mismatch;
+    // it must not cross-render. Falls through to the regex path.
+    const p = parseSubagentCompletion(SINGLE, WAVE_META)!
+    expect(p.kind).toBe('single') // came from the regex, not the batch meta
+  })
+
+  it('rejects a batch meta missing its tallies on the final chunk', () => {
+    const bad = {
+      subagentCompletion: { kind: 'batch', final: true, chunk: 1, chunks: 1, total: 9 },
+    }
+    // No ok/failed/stopped → meta rejected → regex path parses WAVE instead.
+    const p = parseSubagentCompletion(WAVE, bad)!
+    expect(p.kind).toBe('batch')
+    if (p.kind !== 'batch') return
+    expect(p.ok).toBe(8) // from the regex, proving the bad meta was not used
+  })
+})

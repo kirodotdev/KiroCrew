@@ -470,6 +470,29 @@ def _valid_override_home() -> Path | None:
     return p
 
 
+def shared_kiro_settings_writable() -> bool:
+    """False when this process must not write the user's kiro-cli settings.
+
+    ``~/.kiro/settings/mcp.json`` belongs to the kiro-cli installation, not to a
+    Kiro Crew data home, so it is resolved from the real home and a throwaway
+    instance shares it with the operator's live one. A pod is throwaway by
+    construction: its home is empty, so any decision it reaches about which MCP
+    servers should exist is a decision about a different install. Writing that
+    decision to the shared file disarms the live instance -- a pod boots with no
+    browser-mode marker, concludes browsing is off, and deletes the operator's
+    browse entry.
+
+    Keyed on ``KIROCREW_POD`` rather than on the presence of a data-home override,
+    because a custom ``KIROCREW_HOME`` is a normal single-instance install (the
+    desktop build uses one) and must keep its own registration working. Only an
+    instance that declares itself a pod is refused.
+
+    Reads stay allowed. Only the write side is refused, so a pod can still report
+    what it sees.
+    """
+    return not os.environ.get("KIROCREW_POD")
+
+
 def config_dir() -> Path:
     global _config_dir_memo
     override_raw = os.environ.get("KIROCREW_HOME")
@@ -727,8 +750,40 @@ def kiro_agents_dir() -> Path:
     Lives in this leaf module so :mod:`kiro_crew.config.loader` can locate
     installed agent JSONs without importing :mod:`kiro_crew.agent` — which
     imports ``config.loader`` at module load and would create an import cycle.
+
+    Single-valued on purpose: this is the WRITE target as well as the user-level
+    read scope. ``apps.bridges._register_agents`` materializes app agents here and
+    ``agent.rebuild_agent_config`` writes the managed specs here, so widening it
+    to a search path would leave those writers without one obvious destination.
+    Project-local discovery is a separate READ-only scope — see
+    :func:`project_agents_dir`.
     """
     return kiro_home() / "agents"
+
+
+def project_agents_dir(project_dir: str | Path) -> Path:
+    """The kiro-cli *workspace* agents dir of a project: ``<project>/.kiro/agents``.
+
+    kiro-cli resolves ``--agent <name>`` against ``$PWD/.kiro/agents`` before the
+    user-level directory, with NO upward walk — invoked from a subdirectory it does
+    not find the repo root's agents. Kiro Crew launches kiro-cli with the session's
+    project directory as its cwd, so this is exactly the directory the backend
+    itself searches for that session.
+
+    Read-only by construction: nothing in Kiro Crew writes here, because the
+    directory belongs to the user's checkout and is typically version-controlled.
+    """
+    return Path(project_dir) / ".kiro" / "agents"
+
+
+def project_kiro_dir(project_dir: str | Path) -> Path:
+    """The ``<project>/.kiro`` directory itself, which also holds agent specs.
+
+    Distinct from :func:`project_agents_dir` because Kiro Crew additionally honors
+    ``<project>/.kiro/*.agent-spec.json`` — a Kiro Crew-only convention that
+    predates ``.kiro/agents/`` and remains in use by projects driven from Slack.
+    """
+    return Path(project_dir) / ".kiro"
 
 
 def _default_workspace_base() -> Path:

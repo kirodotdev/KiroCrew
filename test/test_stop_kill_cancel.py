@@ -227,7 +227,7 @@ class TestKillPathIsPlatformCorrect:
        ``recycle_if_idle`` / ``shutdown`` instead of degrading, and in
        ``shutdown`` it also skipped the ``process.kill()`` fallback so the
        backend was never killed at all.
-    2. Per Mesh-2801 the ``_async`` variant is mandatory from a coroutine: the
+    2. The ``_async`` variant is mandatory from a coroutine: the
        Windows branch spawns ``taskkill`` with a 5s timeout, which stalls the
        loop. Patching only the async symbol would let a regression back to the
        sync helper pass silently, so both symbols are pinned and the sync one
@@ -491,7 +491,7 @@ class TestDetachOnCancelFailure:
 
         fake_backend = _RaisingBackend()
 
-        async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any):
+        async def _fake_acquire(_pool: Any, _key: Any, _resolver: Any, **_kw: Any):
             return fake_backend, True
 
         async def _fake_drain(_inbox: Any, _writer: Any, _stub_uuid: str = "") -> None:
@@ -654,6 +654,7 @@ class TestConservativeShutdown:
         mgr._queue = []
         mgr._running_count = 1
         mgr._default_timeout = 300
+        mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
         mgr._record_cost = MagicMock()
         mgr._on_event = None
@@ -717,6 +718,7 @@ class TestConservativeShutdown:
         mgr._queue = []
         mgr._running_count = 2
         mgr._default_timeout = 300
+        mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
         mgr._record_cost = MagicMock()
         mgr._on_event = None

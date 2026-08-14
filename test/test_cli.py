@@ -118,6 +118,17 @@ class TestDoctor:
         monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
         monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_sandbox(self, monkeypatch):
+        """Pin the Sandbox section host-independently: a CI runner can restrict
+        user namespaces with no profile installed, which is a genuine issue on
+        that HOST (doctor exits 1 for it) but not the subject of these tests."""
+        import kiro_crew.cli_doctor as _doc
+
+        monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
+
     def test_doctor_with_kiro(self, tmp_path):
         agent_file = tmp_path / "kirocrew.json"
         # A minimally healthy agent config so doctor walks the whole MCP
@@ -1101,6 +1112,10 @@ class TestSandboxActiveMarkerCleared:
         import sys
 
         monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        # The companion tier record must be dropped with it: a stale inherited
+        # level would be read as the ACTIVE tier by a descendant's passthrough
+        # and corrupt its downgrade audit.
+        monkeypatch.setenv("KIROCREW_SANDBOX_LEVEL", "strict")
         # A trivial subcommand so main() dispatches and returns cleanly; assert
         # the marker was popped before dispatch (patch the target to observe).
         argv = ["kirocrew", "cron", "list"]
@@ -1108,13 +1123,16 @@ class TestSandboxActiveMarkerCleared:
 
         def _capture(_ns):
             seen["marker"] = os.environ.get("KIROCREW_SANDBOX_ACTIVE")
+            seen["level"] = os.environ.get("KIROCREW_SANDBOX_LEVEL")
 
         with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron", _capture):
             from kiro_crew.cli import main
 
             main()
         assert seen.get("marker") is None
+        assert seen.get("level") is None
         assert os.environ.get("KIROCREW_SANDBOX_ACTIVE") is None
+        assert os.environ.get("KIROCREW_SANDBOX_LEVEL") is None
 
 
 class TestDirectCliOverrideAttestation:
@@ -1396,13 +1414,56 @@ class TestGetAlias:
 class TestManifest:
     """Tests for _manifest."""
 
+    def test_packaged_manifest_declares_complete_oauth_scopes(self):
+        import yaml
+
+        from kiro_crew import slack_manifest
+
+        manifest = yaml.safe_load(slack_manifest.render("scope-test"))
+        assert manifest["oauth_config"]["scopes"] == {
+            "bot": [
+                "app_mentions:read",
+                "channels:history",
+                "channels:read",
+                "chat:write",
+                "commands",
+                "files:read",
+                "files:write",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "im:write",
+                "reactions:write",
+                "users:read",
+            ],
+            "user": [
+                "channels:history",
+                "channels:read",
+                "groups:history",
+                "groups:read",
+                "im:history",
+                "im:read",
+                "mpim:history",
+                "mpim:read",
+                "search:read",
+                "users:read",
+            ],
+        }
+        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "message.groups" in bot_events
+
     def _patch_template(
         self, content="name: KiroCrew-{{ALIAS}}\ndisplay_name: KiroCrew-{{ALIAS}}\n"
     ):
-        """Patch importlib.resources.files to return a fake template."""
+        """Patch importlib.resources.files to return a fake template.
+
+        Patched on ``slack_manifest`` — the single module that reads the packaged
+        template for the CLI, the dashboard handler, and the exfil validator.
+        """
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.return_value = content
-        return patch("kiro_crew.cli_setup._pkg_files", return_value=mock_resource)
+        return patch("kiro_crew.slack_manifest._pkg_files", return_value=mock_resource)
 
     def test_renders_alias_to_stdout(self, capsys):
         with self._patch_template():
@@ -1433,7 +1494,7 @@ class TestManifest:
     def test_exits_when_template_missing(self):
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.side_effect = FileNotFoundError
-        with patch("kiro_crew.cli_setup._pkg_files", return_value=mock_resource):
+        with patch("kiro_crew.slack_manifest._pkg_files", return_value=mock_resource):
             from kiro_crew.cli_setup import _manifest
 
             try:
@@ -1481,7 +1542,7 @@ class TestLogout:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _logout(5476)  # Should not raise
 
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
@@ -1505,7 +1566,7 @@ class TestLogout:
         from kiro_crew.cli_server import _logout
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.HTTPError(None, 403, "Forbidden", {}, None),
         ):
             try:
@@ -1524,7 +1585,7 @@ class TestLogout:
         from kiro_crew.cli_server import _logout
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
         ):
             try:
@@ -1547,7 +1608,7 @@ class TestLogout:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             try:
                 _logout(5476)
                 assert False, "should have exited"
@@ -1566,7 +1627,7 @@ class TestStatus:
         from kiro_crew.cli_server import _status
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.HTTPError(
                 "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
             ),
@@ -1581,7 +1642,7 @@ class TestStatus:
         from kiro_crew.cli_server import _status
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.HTTPError(
                 "http://127.0.0.1:5476/api/status", 500, "Internal Server Error", {}, None
             ),
@@ -1596,7 +1657,7 @@ class TestStatus:
         from kiro_crew.cli_server import _status
 
         with patch(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
         ):
             _status(self._make_args())
@@ -1622,7 +1683,7 @@ class TestStatus:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _status(self._make_args())
         out = capsys.readouterr().out
         assert "1h 0m" in out
@@ -1632,7 +1693,7 @@ class TestStatus:
         """Non-network exceptions should report gateway as running with unexpected response."""
         from kiro_crew.cli_server import _status
 
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("unexpected")):
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=RuntimeError("unexpected")):
             _status(self._make_args())
         out = capsys.readouterr().out
         assert "running" in out
@@ -1739,6 +1800,13 @@ class TestArgsLookLikeKirocrew:
             "python3 -m kiro_crew gateway",
             "python -m kiro_crew dashboard",
             "python3.10 -m kiro_crew start",
+            # macOS framework build: the vendored interpreter's basename is
+            # "Python" (capital P) — a case-sensitive startswith("python") missed
+            # it, so stop/restart no-oped on macOS framework-build installs
+            # (Toolbox being the common one).
+            "/Library/Frameworks/Python.framework/Versions/3.10/Resources/"
+            "Python.app/Contents/MacOS/Python -m kiro_crew gateway --no-open",
+            "Python -m kiro_crew gateway",
             # Subcommand followed by trailing flags.
             "python -m kiro_crew gateway --no-open --port 7777",
             # Legacy dotted-submodule form.
@@ -3090,9 +3158,13 @@ class TestCliLoopbackAddress:
 
         from kiro_crew import cli_server
 
-        body = inspect.getsource(cli_server._token)
+        # The URL printing lives in _emit_session_urls, which _token calls. Inspect the
+        # function that actually owns the invariant, and assert the call still happens,
+        # so this stays a real check rather than passing on an empty search.
+        body = inspect.getsource(cli_server._emit_session_urls)
         assert "resolve_dashboard_host(local_only=True)" in body
         assert 'print(f"http://{host}:{port}?token={token}")' in body
+        assert "_emit_session_urls(" in inspect.getsource(cli_server._token)
 
 
 class TestEnsurePrerequisites:
@@ -3718,7 +3790,7 @@ class TestConfigDirOverride:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _logout(5476)
 
     def test_setup_slack_tokens_writes_to_config_dir(self, tmp_path, monkeypatch):
@@ -3735,6 +3807,82 @@ class TestConfigDirOverride:
         assert (tmp_path / ".env").exists()
         content = (tmp_path / ".env").read_text(encoding="utf-8")
         assert "xapp-test" in content
+
+
+class TestSetupChannelGating:
+    """`kirocrew setup` runs the Slack steps only with --slack.
+
+    Messaging channels are optional: the default wizard must configure none and
+    instead print the pointer to connect channels later, while `--slack` opts
+    into the guided Slack credential + slash-command steps.
+    """
+
+    def _run_setup(self, monkeypatch, tmp_path, **kwargs):
+        import kiro_crew.cli_setup as cs
+
+        calls: list[str] = []
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        # Imported inside _setup_impl — patch at their source modules.
+        monkeypatch.setattr(
+            "kiro_crew.agent.install_agent", lambda clean=False: tmp_path / "agent.json"
+        )
+        monkeypatch.setattr("kiro_crew.agent.ensure_kirocrew_on_path", lambda: None)
+        monkeypatch.setattr("kiro_crew.mcp_cleanup.clean_stale_managed_mcp", lambda: [])
+        # Neutralize every unrelated wizard step so only the gating is under test.
+        for name in (
+            "_ensure_prerequisites",
+            "_setup_workspace_dir",
+            "_setup_sandbox_consent",
+            "_setup_timezone",
+            "_maybe_setup_dashboard_url",
+            "_maybe_setup_custom_domain",
+            "_maybe_setup_cloud",
+            "_ensure_default_agent_in_config",
+        ):
+            monkeypatch.setattr(cs, name, lambda *a, **k: None)
+        monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
+        monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+        # Conductor-skill step catches Exception and continues.
+        monkeypatch.setattr(
+            cs, "KiroCrewConfig", MagicMock(load=MagicMock(side_effect=RuntimeError("no config")))
+        )
+        # Keep the macOS-only desktop-app input() prompt off the path.
+        monkeypatch.setattr(cs.platform, "system", lambda: "Linux")
+
+        cs._setup_impl(**kwargs)
+        return calls
+
+    def test_default_setup_skips_slack_steps(self, tmp_path, monkeypatch, capsys):
+        """Default wizard: no Slack prompts, prints the channels pointer instead."""
+        calls = self._run_setup(monkeypatch, tmp_path)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "Messaging Channels" in out
+        assert "setup --slack" in out
+
+    def test_slack_flag_opts_into_slack_steps(self, tmp_path, monkeypatch):
+        """--slack runs the guided Slack credential + slash-command steps in order."""
+        calls = self._run_setup(monkeypatch, tmp_path, slack=True)
+        assert calls == ["slack_tokens", "slash_command"]
+
+    def test_agent_only_with_slack_warns_and_skips_slack_steps(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only --slack: no Slack steps run, but a notice explains why."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True, slack=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--slack is ignored with --agent-only" in out
+        assert "setup --slack" in out
+
+    def test_agent_only_without_slack_prints_no_notice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only alone: the guided-setup pointer is not printed."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--slack is ignored" not in out
 
 
 class TestSpawnCliAuth:
@@ -3776,7 +3924,7 @@ class TestSpawnCliAuth:
             captured.append(req)
             return mock_resp
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
 
         from kiro_crew.cli_commands import _spawn
 
@@ -3803,7 +3951,7 @@ class TestSpawnCliAuth:
             captured.append(req)
             return mock_resp
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
 
         from kiro_crew.cli_commands import _spawn_run
 
@@ -3832,7 +3980,7 @@ class TestSpawnCliAuth:
                 fp=None,
             )
 
-        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("kiro_crew.cli_commands.loopback_urlopen", fake_urlopen)
 
         from kiro_crew.cli_commands import _spawn
 
@@ -3865,7 +4013,7 @@ class TestArtifactCli:
         # Surface any HTTP call as a fatal so we can prove the function exited
         # at the security check, not at the network layer.
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_commands.loopback_urlopen",
             lambda *_a, **_kw: pytest.fail("_artifact must refuse before opening any HTTP request"),
         )
 
@@ -3891,7 +4039,7 @@ class TestArtifactCli:
 
         monkeypatch.setattr("kiro_crew.cli_commands.is_sensitive_path", lambda _p: True)
         monkeypatch.setattr(
-            "urllib.request.urlopen",
+            "kiro_crew.cli_commands.loopback_urlopen",
             lambda *_a, **_kw: pytest.fail("_artifact must refuse before opening any HTTP request"),
         )
 
@@ -4015,18 +4163,62 @@ class TestDoctorEmbeddings:
     def _hermetic_config(self, monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
         _pin_default_config(monkeypatch)
+        # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses: name the
+        # missing bundled libs, or blame the operator's override directory. Which branch a
+        # test exercises is therefore part of its scenario, not an ambient property of the
+        # host — and the variable is easy to inherit, because the real loader sets it to its
+        # own bundled libs dir the first time embeddings load. Cleared per test; the tests
+        # that exercise the override branch set it themselves.
+        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
 
     @staticmethod
-    def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True):
-        """Run _doctor with the embeddings runtime/model state stubbed."""
+    def _run_doctor(tmp_path, monkeypatch, *, runtime_ok: bool, model_present: bool, platform_supported: bool = True, missing_libs: dict | None = None, loader_setdefaults: str = "", lib_path_override: str | None = None):
+        """Run _doctor with the embeddings runtime/model state stubbed.
+
+        ``loader_setdefaults`` reproduces the real loader's side effect of
+        ``setdefault``-ing LLAMA_CPP_LIB_PATH to its own bundled libs dir, which
+        is what makes reading that var after the load call ambiguous.
+
+        ``lib_path_override`` controls the LLAMA_CPP_LIB_PATH the doctor sees:
+        ``None`` (default) CLEARS it — the var LEAKS between tests otherwise,
+        because both the ``loader_setdefaults`` path and the real embeddings
+        loader plant it via ``os.environ.setdefault`` (invisible to
+        monkeypatch teardown), so whichever test ran first in the pytest
+        worker poisoned override-sensitive assertions (shard-layout-dependent
+        CI failures). A string sets the override deliberately, via monkeypatch
+        so it is restored on teardown.
+        """
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         import kiro_crew.cli_doctor as doc
 
-        monkeypatch.setattr(doc, "_load_llama_class", lambda: object if runtime_ok else None)
+        if lib_path_override is None:
+            # setenv FIRST so monkeypatch records a teardown action even when
+            # the var is ABSENT: delenv(raising=False) on a missing var
+            # registers nothing, so the loader_setdefaults path's direct
+            # os.environ.setdefault would still leak into later tests in
+            # workers where the var was never set (GPT review). The
+            # setenv+delenv pair restores the original state either way.
+            monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "")
+            monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
+        else:
+            monkeypatch.setenv("LLAMA_CPP_LIB_PATH", lib_path_override)
+
+        def _load():
+            if loader_setdefaults:
+                # Through monkeypatch, not a bare os.environ write: the real loader's
+                # setdefault is a process-wide mutation, and reproducing it literally leaked
+                # the variable into every later test in the same worker, flipping them onto
+                # the override branch depending on distribution order.
+                if "LLAMA_CPP_LIB_PATH" not in os.environ:
+                    monkeypatch.setenv("LLAMA_CPP_LIB_PATH", loader_setdefaults)
+            return object if runtime_ok else None
+
+        monkeypatch.setattr(doc, "_load_llama_class", _load)
         monkeypatch.setattr(
             doc, "_platform_libs_dirname", lambda: "macos_arm64" if platform_supported else None
         )
+        monkeypatch.setattr(doc, "verify_vendored_libs", lambda: missing_libs or {})
         monkeypatch.setattr(doc, "model_file_present", lambda path=None: model_present)
         default_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
@@ -4053,6 +4245,92 @@ class TestDoctorEmbeddings:
         self._run_doctor(tmp_path, monkeypatch, runtime_ok=False, model_present=False)
         out = capsys.readouterr().out
         assert "runtime:     ❌ vendored runtime failed to load" in out
+        # A COMPLETE payload that still fails to load must not be blamed on
+        # packaging — that would send the user reinstalling for nothing.
+        assert "incomplete" not in out
+
+    def test_doctor_names_the_missing_native_libs(self, tmp_path, capsys, monkeypatch):
+        """An incomplete shipped payload names the absent files.
+
+        ctypes reports only "base name 'llama' not found", which reads as an
+        unsupported architecture — so a bare "failed to load" sends diagnosis
+        after the CPU arch instead of the packaging rule that dropped the file
+        on every arch.
+        """
+        # This test asserts the NO-override branch, so the var must be absent.
+        # It is not, reliably: the doctor branches on LLAMA_CPP_LIB_PATH and the
+        # value can arrive from outside this test -- a dev shell that exports it,
+        # or the sibling override test, whose helper sets it via a raw
+        # os.environ.setdefault that escapes pytest teardown. Either way the
+        # doctor takes the "libs load from the override dir" path and this
+        # assertion can never match. Clearing it here (mirroring the sibling,
+        # which explicitly setenv-s) makes the expectation independent of both
+        # the ambient environment and test order -- pytest-split reshuffles
+        # shards whenever the suite test count changes, so the leak surfaced on
+        # an unrelated PR that merely added tests elsewhere.
+        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
+        self._run_doctor(
+            tmp_path,
+            monkeypatch,
+            runtime_ok=False,
+            model_present=False,
+            missing_libs={"macos_arm64": ["libllama.dylib"]},
+        )
+        out = capsys.readouterr().out
+        assert "Missing native libs for macos_arm64: libllama.dylib" in out
+        assert "packaging" in out
+
+    def test_doctor_blames_the_override_dir_not_the_bundled_tree(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Under LLAMA_CPP_LIB_PATH, point at the override — not a reinstall.
+
+        The libs load from the operator's directory, so "reinstall Kiro Crew"
+        would send them to replace a package they are deliberately not loading
+        from, while saying nothing about the dir that actually failed. Mirrors
+        the loader's exemption so the two diagnostics cannot disagree.
+        """
+        monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "/opt/my-gpu-llama")
+        self._run_doctor(
+            tmp_path,
+            monkeypatch,
+            runtime_ok=False,
+            model_present=False,
+            missing_libs={"macos_arm64": ["libllama.dylib"]},
+            lib_path_override="/opt/my-gpu-llama",
+        )
+        out = capsys.readouterr().out
+        assert "/opt/my-gpu-llama" in out
+        assert "Missing native libs" not in out
+        assert "reinstall Kiro Crew" not in out
+
+    def test_doctor_does_not_mistake_the_loaders_own_setdefault_for_an_override(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A complete payload that fails to import is not reported as overridden.
+
+        `_load_llama_class()` `setdefault`s LLAMA_CPP_LIB_PATH to its OWN bundled
+        libs dir, so reading the var AFTER that call cannot distinguish "operator
+        set it" from "the loader just set it to the bundle" — which produced the
+        self-contradiction "the libs load from <bundled path>, not the bundled
+        tree". Doctor must sample the environment before the load.
+        """
+        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
+        # Libs ARE missing, so reading the var too late suppresses the real
+        # packaging diagnosis and prints the override note in its place. With no
+        # missing libs both branches stay silent and the bug is invisible.
+        self._run_doctor(
+            tmp_path,
+            monkeypatch,
+            runtime_ok=False,
+            model_present=False,
+            missing_libs={"macos_arm64": ["libllama.dylib"]},
+            loader_setdefaults="/bundled/_vendor/llama_cpp_libs/x",
+        )
+        out = capsys.readouterr().out
+
+        assert "not the bundled tree" not in out
+        assert "Missing native libs for macos_arm64: libllama.dylib" in out
 
     def test_doctor_unsupported_platform_is_not_an_issue(self, tmp_path, capsys, monkeypatch):
         """No vendored libs for this platform = designed degradation, not a doctor failure."""
@@ -4221,7 +4499,7 @@ class TestWaitGatewayReady:
         from kiro_crew import cli_server
 
         with patch(
-            "kiro_crew.cli_server.urllib.request.urlopen",
+            "kiro_crew.cli_server.loopback_urlopen",
             side_effect=http.client.BadStatusLine("garbage"),
         ):
             assert cli_server._probe_gateway_ready(7777) == 0
@@ -4345,21 +4623,23 @@ class TestWaitGatewayReady:
         resp = MagicMock(status=200)
         resp.__enter__ = lambda s: s
         resp.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=resp) as mock_open:
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=resp) as mock_open:
             assert cli_server._probe_gateway_ready(7777) == 200
         assert mock_open.call_args.args[0] == "http://127.0.0.1:7777/api/ready"
 
     def test_probe_reports_zero_when_unreachable(self):
         from kiro_crew import cli_server
 
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen", side_effect=urllib.error.URLError("down")
+        ):
             assert cli_server._probe_gateway_ready(7777) == 0
 
     def test_probe_reports_the_http_status_of_a_not_ready_gateway(self):
         from kiro_crew import cli_server
 
         err = urllib.error.HTTPError("u", 503, "not ready", {}, None)
-        with patch("urllib.request.urlopen", side_effect=err):
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=err):
             assert cli_server._probe_gateway_ready(7777) == 503
 
 
@@ -4391,7 +4671,7 @@ class TestPrintTokenUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -4416,7 +4696,7 @@ class TestPrintTokenUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -4797,7 +5077,10 @@ class TestTokenCommand:
         )
 
         args = argparse.Namespace(ttl="1h", port=7777)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("abc123")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            return_value=self._mock_token_response("abc123"),
+        ):
             _token(args)
 
         out = capsys.readouterr().out
@@ -4825,7 +5108,10 @@ class TestTokenCommand:
         )
 
         args = argparse.Namespace(ttl="1h", port=7777)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("xyz789")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            return_value=self._mock_token_response("xyz789"),
+        ):
             _token(args)
 
         out = capsys.readouterr().out
@@ -4884,7 +5170,9 @@ class TestTokenCommand:
         from kiro_crew.cli_server import _token
 
         self._stub_token_env(tmp_path, monkeypatch)
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen", side_effect=urllib.error.URLError("refused")
+        ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
         assert excinfo.value.code == 1
@@ -4896,7 +5184,9 @@ class TestTokenCommand:
         from kiro_crew.cli_server import _token
 
         self._stub_token_env(tmp_path, monkeypatch)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen", return_value=self._mock_token_response("")
+        ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
         assert excinfo.value.code == 1
@@ -4916,7 +5206,10 @@ class TestTokenCommand:
         from kiro_crew.cli_server import _token
 
         self._stub_token_env(tmp_path, monkeypatch)
-        with patch("urllib.request.urlopen", return_value=self._mock_token_response("eyJa.b")):
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            return_value=self._mock_token_response("eyJa.b"),
+        ):
             _token(argparse.Namespace(ttl="1h", port=7777))
         captured = capsys.readouterr()
         lines = [ln for ln in captured.out.splitlines() if ln.strip()]

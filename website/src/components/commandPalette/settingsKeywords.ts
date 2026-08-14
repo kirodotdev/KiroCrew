@@ -36,7 +36,6 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'notifications.play-sound-on-new-notifications': ['alert', 'audio', 'mute', 'silent'],
 
   // Browser
-  'browser.chrome-extension-mode': ['playwright', 'headless', 'web automation'],
 
   // Computer use
   'computer-use.enable-computer-use': ['accessibility', 'desktop', 'click', 'keyboard', 'screenshot', 'a11y', 'automation', 'gui'],

@@ -8,6 +8,25 @@ delivers the answer to your notifications, not back over the HTTP connection.
 This is the inbound counterpart to cron jobs: cron fires on a schedule Kiro Crew
 owns, a webhook fires when something outside Kiro Crew decides it is time.
 
+## The Webhooks page is a preview, and hidden by default
+
+The HTTP endpoint below is fully supported. Its dashboard page is not finished
+yet, so it is not advertised anywhere in the UI: no sidebar row and no Search
+Everywhere result. Revealing it takes two per-device switches, because the page
+that holds the opt-in is itself behind a gate:
+
+1. **Settings > Developer > Developer Mode** — off by default, and while it is
+   off there is no **Developer** row in the sidebar at all. Turn it on first, or
+   step 2 has nowhere to happen.
+2. **Developer > Config > Preview pages** — switch **Webhooks** on. A
+   **Webhooks** row appears in the sidebar immediately (and an "Open Webhooks"
+   link on the card itself).
+
+Nothing about the API changes either way — tokens, the kill switch, and delivery
+all behave the same whether the page is visible or not. The one consequence is
+that when this document says "the Webhooks page", you need both switches on to
+get there.
+
 ## The fire-and-forget contract
 
 The endpoint accepts, queues, and returns. It never carries the agent's answer.

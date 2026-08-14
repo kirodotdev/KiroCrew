@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractSteeringAcks } from '../pages/chat/AssistantMessage'
+import { extractSteeringAcks } from '../app-sdk/protocol'
 
 // extractSteeringAcks pulls kiro-cli's `[STEERING steer-<hex>: <summary>]`
 // acknowledgment markers out of assistant prose so the raw tag never renders;

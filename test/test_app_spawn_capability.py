@@ -349,13 +349,14 @@ class TestManagerRefusesUnknownAgent:
     the SDK guard must not be able to reintroduce that escalation."""
 
     def test_validate_agent_refuses_named_unknown(self, monkeypatch):
-        import kiro_crew.agent_discovery as disc
         from kiro_crew import subagent
 
+        # Patched on SUBAGENT: the import is module-level there, so call-time
+        # lookup happens against subagent's binding, not agent_discovery's.
         monkeypatch.setattr(
-            disc,
+            subagent,
             "list_agents",
-            lambda: [
+            lambda project_dir=None: [
                 types.SimpleNamespace(name="kirocrew"),
                 types.SimpleNamespace(name="mochi--mochi-bg"),
             ],
@@ -368,6 +369,51 @@ class TestManagerRefusesUnknownAgent:
         name, err = subagent._validate_agent("does-not-exist")
         assert name == ""
         assert err and "not found" in err
+
+    def test_project_scope_is_read_from_cache_not_the_filesystem(self, monkeypatch):
+        """``spawn`` is synchronous and runs on the event loop, so validation must not
+        add filesystem work. The project scope therefore comes from the syscall-free
+        cache; widening the pre-existing user-level scan to a second directory would
+        stall the gateway on a slow or network checkout."""
+        import kiro_crew.agent_discovery as disc
+        from kiro_crew import subagent
+
+        monkeypatch.setattr(
+            subagent,
+            "list_agents",
+            lambda project_dir=None: [types.SimpleNamespace(name="kirocrew")],
+        )
+        # A warm cache makes a project agent dispatchable...
+        monkeypatch.setattr(
+            subagent, "cached_project_agent_names", lambda p: frozenset({"repobot"})
+        )
+        # ...and the SCANNING entry points must not be consulted at all.
+        monkeypatch.setattr(
+            disc,
+            "project_agent_names",
+            lambda p: pytest.fail("scanned the filesystem on the event loop"),
+        )
+        monkeypatch.setattr(
+            disc,
+            "project_agent_files",
+            lambda p, include_legacy=False: pytest.fail("globbed on the event loop"),
+        )
+        assert subagent._validate_agent("repobot", "/some/project") == ("repobot", "")
+
+    def test_cold_project_cache_refuses_rather_than_scanning(self, monkeypatch):
+        """Fail closed on a cold cache — refusing an unknown name is this function's
+        existing rule, and is safer than either stalling or running the default."""
+        from kiro_crew import subagent
+
+        monkeypatch.setattr(
+            subagent,
+            "list_agents",
+            lambda project_dir=None: [types.SimpleNamespace(name="kirocrew")],
+        )
+        monkeypatch.setattr(subagent, "cached_project_agent_names", lambda p: None)
+        name, err = subagent._validate_agent("repobot", "/some/project")
+        assert name == ""
+        assert "repobot" in err
 
 
 class TestChildGateInheritsTheApp:

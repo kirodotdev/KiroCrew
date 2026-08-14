@@ -328,7 +328,7 @@ export function ComputerUsePanel() {
 
       {cfg.platform === DARWIN && (
         <SettingsSection title={i18nT('pages.settings.computerUsePanel.permissions')}>
-          <SettingsCard>
+          <SettingsCard index={1}>
             <div className="flex items-center gap-1.5 pb-1 text-[13px] text-muted">
               <span>{i18nT('pages.settings.computerUsePanel.advisory_only')}</span>
               <InfoTip text={i18nT('pages.settings.computerUsePanel.not_detected_does_not_always_mean_unavailable_ma')} />
@@ -343,7 +343,7 @@ export function ComputerUsePanel() {
       )}
 
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')}>
-        <SettingsCard>
+        <SettingsCard index={2}>
           <div className="pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}</div>
           <SettingsInput
             label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}

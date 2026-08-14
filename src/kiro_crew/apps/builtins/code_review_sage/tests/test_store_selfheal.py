@@ -75,3 +75,47 @@ class TestSeedConfigUpgrade(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReadConfigQuiet(unittest.TestCase):
+    """read_config_quiet: side-effect-free AND no-follow. config.json sits in
+    the worker-reachable data dir, and the allowlist resolution the adapters
+    run on every pasted URL reads it — so a planted symlink must be refused,
+    never dereferenced into whatever the gateway can read."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp) / "apps" / "code-review-sage"
+        self.data = self.root / "data"
+        self.data.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_normal_config_reads(self):
+        (self.data / "config.json").write_text(
+            json.dumps({"github_hosts": ["github.com"]}), encoding="utf-8")
+        self.assertEqual(store.read_config_quiet(self.root),
+                         {"github_hosts": ["github.com"]})
+
+    def test_missing_config_is_empty_and_creates_nothing(self):
+        shutil.rmtree(self.data)
+        self.assertEqual(store.read_config_quiet(self.root), {})
+        self.assertFalse(self.data.exists())   # never self-heals the layout
+
+    def test_non_dict_payload_is_empty(self):
+        (self.data / "config.json").write_text("[1, 2, 3]", encoding="utf-8")
+        self.assertEqual(store.read_config_quiet(self.root), {})
+
+    def test_symlinked_config_is_refused_not_dereferenced(self):
+        # A worker-planted link pointing OUTSIDE the data dir: the gate must
+        # refuse it, so URL parsing can never make the gateway follow a link
+        # to a blocked credential file.
+        outside = Path(self.tmp) / "outside.json"
+        outside.write_text(json.dumps({"github_hosts": ["evil.example"]}),
+                           encoding="utf-8")
+        try:
+            (self.data / "config.json").symlink_to(outside)
+        except (OSError, NotImplementedError):  # pragma: no cover
+            self.skipTest("symlinks unavailable on this host")
+        self.assertEqual(store.read_config_quiet(self.root), {})

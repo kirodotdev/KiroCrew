@@ -124,7 +124,24 @@ function renderSidebar(slots: any[] = SLOTS, folders: ChatFolder[] = FOLDERS) {
 }
 
 beforeEach(() => localStorage.clear())
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.useRealTimers()
+})
+
+/** Pin the clock for date-bucket tests (issue #2919). Fakes ONLY `Date` so
+ *  real timers keep driving RTL and promises, and pins the instant to LOCAL
+ *  midday — the farthest point from both midnight edges in any timezone — so
+ *  a `daysAgo(n)` fixture lands in its intended calendar bucket regardless of
+ *  timezone or time of day (a raw `now - offset` slides across local midnight
+ *  when the suite runs just after 00:00, which put the 60s-ago row under a
+ *  "Yesterday" header). Mid-January avoids DST transitions in the lookback. */
+function pinClock() {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  const pin = new Date(2026, 0, 15, 12, 0, 0) // local midday, not 12:00Z
+  vi.setSystemTime(pin)
+  return (daysAgo: number) => new Date(pin.getTime() - daysAgo * 86400_000).toISOString()
+}
 
 describe('chat sidebar — flat view (explode chats out of folders)', () => {
   it('is off by default: folder tree renders, no flat lane', () => {
@@ -186,11 +203,11 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
 
   it('renders date segment headers on date sorts; pinned rows stay above without a header', () => {
     safeSetItem('mc-sidebar-flat-view', '1')
-    const iso = (secsAgo: number) => new Date(Date.now() - secsAgo * 1000).toISOString()
+    const iso = pinClock()
     const slots = [
-      { key: 'k-pin', title: 'Pinned old', messages: 1, running: false, last_ts: iso(40 * 86400), pinned: true },
-      { key: 'k-today', title: 'Fresh one', messages: 1, running: false, folder_id: 'f1', last_ts: iso(60) },
-      { key: 'k-week', title: 'Three days ago', messages: 1, running: false, folder_id: 'f2', last_ts: iso(3 * 86400) },
+      { key: 'k-pin', title: 'Pinned old', messages: 1, running: false, last_ts: iso(40), pinned: true },
+      { key: 'k-today', title: 'Fresh one', messages: 1, running: false, folder_id: 'f1', last_ts: iso(0) },
+      { key: 'k-week', title: 'Three days ago', messages: 1, running: false, folder_id: 'f2', last_ts: iso(3) },
     ]
     const { getByTestId } = renderSidebar(slots)
     const lane = getByTestId('flat-view-lane')
@@ -204,10 +221,10 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
   it('hides date segment headers on non-date sorts', () => {
     safeSetItem('mc-sidebar-flat-view', '1')
     safeSetItem('mc-session-sort', 'name-asc')
-    const iso = (secsAgo: number) => new Date(Date.now() - secsAgo * 1000).toISOString()
+    const iso = pinClock()
     const slots = [
-      { key: 'k-b', title: 'Bravo', messages: 1, running: false, folder_id: 'f1', last_ts: iso(60) },
-      { key: 'k-a', title: 'Alpha row', messages: 1, running: false, folder_id: 'f2', last_ts: iso(3 * 86400) },
+      { key: 'k-b', title: 'Bravo', messages: 1, running: false, folder_id: 'f1', last_ts: iso(0) },
+      { key: 'k-a', title: 'Alpha row', messages: 1, running: false, folder_id: 'f2', last_ts: iso(3) },
     ]
     const { getByTestId } = renderSidebar(slots)
     const lane = getByTestId('flat-view-lane')

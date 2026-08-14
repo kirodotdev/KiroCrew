@@ -17,13 +17,14 @@ absolute ``kirocrew`` path at *install* time, which goes stale when the worktree
 it points into is pruned (``unit_exec_ok``'s self-heal exists for exactly that);
 re-rendering per ``up`` cannot go stale.
 
-**2. No ``ExecStopPost``.** systemd guarantees zero-residue teardown by running
-``kirocrew pod _cleanup <name>`` after the service stops, whatever stopped it.
-launchd has no post-stop hook, so the ``down`` path must invoke
-``runtime.cleanup_home`` itself after ``bootout`` succeeds. The consequence is
-real and documented rather than hidden: a pod whose process dies without an
-explicit ``down`` (host crash, force-reboot) leaves its isolated HOME behind on
-macOS where Linux would have reaped it. :func:`orphan_homes` exists so ``pod ls`` can REPORT those
+**2. No ``ExecStopPost``.** Neither platform reclaims a pod's isolated HOME from a
+post-stop service hook: systemd's would run before the final kill of the unit's
+cgroup (racing the pod's own surviving subprocesses) and would also fire on the
+stop half of a ``Restart=``, so :func:`kiro_crew.pod.runtime.stop_pod` owns
+reclamation on both. launchd simply never had such a hook, which is why the
+consequence was visible here first: a pod whose process dies without an explicit
+``down`` (host crash, force-reboot) leaves its isolated HOME behind.
+:func:`kiro_crew.pod.runtime.orphan_homes` exists so ``pod ls`` can REPORT those
 (reclaim is `pod down <name>`, run by the user — nothing deletes them
 automatically).
 
@@ -52,21 +53,14 @@ derived port, no tunnel, ``--no-crons``, and the refusal to bind the live port.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import plistlib
 import re
 import shlex
 import shutil
 import subprocess
-import threading
 import time
 from pathlib import Path
-
-try:  # POSIX only; the backend refuses to run where launchd is absent anyway
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None  # type: ignore[assignment]
 
 from kiro_crew.pod.config import PodConfig, environment_vars
 from kiro_crew.pod.unit import _kirocrew_bin
@@ -165,61 +159,6 @@ def plist_path(cfg: PodConfig, name: str) -> Path:
     return cfg.pods_dir / f"{pod_label(cfg, name)}.plist"
 
 
-_MUTEX_STATE = threading.local()
-
-
-@contextlib.contextmanager
-def pod_mutex(cfg: PodConfig, name: str):
-    """Serialize this pod's lifecycle transactions per name.
-
-    ``down`` and ``up`` are independent entry points (CLI and Dev Fleet, which
-    shells out to the CLI) with no other per-name coordination. Without a mutex,
-    a stop that has just confirmed the label absent races a concurrent start:
-    the start writes its checkout pin and a fresh plist, and the stop's sweep
-    then deletes the NEW pod's definition, HOME, or env file — each a
-    review-blocking data-loss bug in earlier rounds. An exclusive flock on a
-    sibling lock file makes the whole transaction (pin + plist + bootstrap on
-    the up side; bootout + confirmation + HOME sweep + env unlink on the down
-    side) atomic with respect to the same name.
-
-    **Reentrant within a thread** so the CLI can hold it across a transaction
-    while ``runtime.start_pod``/``stop_pod`` re-acquire it internally (their own
-    protection for direct callers): flock is per open-file-description, so a
-    naive second acquisition in the same thread would deadlock against itself.
-
-    Advisory and cooperative by design: every mutating path routes through
-    here. On platforms without ``fcntl`` the mutex degrades to a no-op —
-    acceptable because launchd never runs there (:func:`require_backend`
-    refuses); only unit tests do. The lock file is deliberately never deleted:
-    unlinking a lock file another process may be opening reintroduces the race
-    the lock exists to close.
-    """
-    if fcntl is None:
-        yield
-        return
-    held = getattr(_MUTEX_STATE, "held", None)
-    if held is None:
-        held = _MUTEX_STATE.held = {}
-    key = pod_label(cfg, name)
-    if held.get(key, 0):
-        held[key] += 1
-        try:
-            yield
-        finally:
-            held[key] -= 1
-        return
-    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = cfg.pods_dir / f"{key}.lock"
-    with open(lock_file, "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        held[key] = 1
-        try:
-            yield
-        finally:
-            held[key] = 0
-            fcntl.flock(fh, fcntl.LOCK_UN)
-
-
 def log_paths(cfg: PodConfig, name: str) -> tuple[Path, Path]:
     """stdout/stderr files that stand in for the journal."""
     d = cfg.artifacts_dir / name
@@ -315,7 +254,7 @@ def stop(cfg: PodConfig, name: str, *, timeout: float = 15.0) -> subprocess.Comp
 
     **A per-pod plist must not outlive its pod.** systemd's template unit is
     machine-wide and deliberately persists; a launchd plist is per-pod, so leaving
-    it behind makes :func:`orphan_homes` classify the leftover HOME as "installed,
+    it behind makes :func:`kiro_crew.pod.runtime.orphan_homes` classify the leftover HOME as "installed,
     not orphaned" and never collect it, and leaves a stale definition that could be
     bootstrapped later.
 
@@ -452,28 +391,3 @@ def recent_journal(cfg: PodConfig, name: str, lines: int = 50) -> str:
             "that never started writes nothing here."
         )
     return "\n\n".join(chunks)
-
-
-def orphan_homes(cfg: PodConfig) -> list[str]:
-    """Pod HOMEs left behind with no live pod and no installed plist.
-
-    Only reachable on macOS: with no ``ExecStopPost``, a pod killed without an
-    explicit ``down`` leaves its isolated HOME. Reported (not deleted) here so the
-    caller decides, and so deletion still goes through
-    ``runtime.cleanup_home``'s re-validation rather than a raw recursive remove.
-    """
-    try:
-        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir()]
-    except OSError:
-        return []
-    live = active_names(cfg)
-    out = []
-    for p in entries:
-        if p.name.startswith("."):
-            continue
-        if p.name in live:
-            continue
-        if plist_path(cfg, p.name).exists():
-            continue
-        out.append(p.name)
-    return sorted(out)

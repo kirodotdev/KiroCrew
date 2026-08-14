@@ -15,6 +15,7 @@ import reducer, {
   selectUnreadByMode,
   sseSubagentStatus,
   sseSubagentText,
+  patchSlotLink,
 } from '../store/dashboardSlice'
 import type { StatusData, ChatSlot } from '../types'
 
@@ -262,6 +263,70 @@ describe('dashboardSlice', () => {
       let state = reducer(initial, sseSubagentStatus({ slot: 'chat-1', running: 1 }))
       state = reducer(state, sseSubagentText({ slot: 'chat-1', id: 'sub-1', text: 'hello' }))
       expect(state.subagentText['chat-1']['sub-1']).toBe('hello')
+    })
+  })
+
+  /** One channel can carry TWO rows — the conversation a session was born in AND
+   *  an explicit mirror to that same channel — and they disconnect independently.
+   *  Matching on `channel` alone patched whichever row came first in the array, so
+   *  acting on the mirror moved the origin row's `paused` instead. The row the user
+   *  clicked never changed, which reads as a dead control: it renders connected and
+   *  cannot be reconnected.
+   */
+  describe('patchSlotLink disambiguates two rows on one channel', () => {
+    const twoDiscordRows = (): ChatSlot => ({
+      key: 'chat-1',
+      title: 'Chat 1',
+      messages: 1,
+      running: false,
+      pending_approval: false,
+      waiting_for_input: false,
+      last_activity_ts: undefined,
+      links: [
+        { channel: 'discord', label: 'Discord', target: 'dm-1', direction: 'origin', live: true, paused: false },
+        { channel: 'discord', label: 'Discord', target: 'chan-2', direction: 'out', live: true, paused: false },
+      ],
+    })
+    const rows = (s: ReturnType<typeof reducer>) => s.slots[0].links!
+
+    it('patches the mirror row and leaves the origin row alone', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', origin: false, patch: { paused: true },
+      }))
+      expect(rows(state)[1].paused).toBe(true)
+      expect(rows(state)[0].paused).toBe(false)
+    })
+
+    it('patches the origin row and leaves the mirror row alone', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', origin: true, patch: { paused: true },
+      }))
+      expect(rows(state)[0].paused).toBe(true)
+      expect(rows(state)[1].paused).toBe(false)
+    })
+
+    // Classified by origin-ness, not by equality against `direction`, so this
+    // lands the same side here as the flag the endpoint was called with.
+    it('treats a `both` row as the mirror, like the endpoint flag does', () => {
+      const slot = twoDiscordRows()
+      slot.links![1].direction = 'both'
+      let state = reducer(initial, sseSlots([slot]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', origin: false, patch: { paused: true },
+      }))
+      expect(rows(state)[1].paused).toBe(true)
+      expect(rows(state)[0].paused).toBe(false)
+    })
+
+    // Slack has exactly one row, so its callers omit the flag.
+    it('falls back to channel-only matching when origin is omitted', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, patchSlotLink({
+        key: 'chat-1', channel: 'discord', patch: { paused: true },
+      }))
+      expect(rows(state)[0].paused).toBe(true)
     })
   })
 })

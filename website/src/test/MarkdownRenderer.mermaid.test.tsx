@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
 
 vi.mock('mermaid', () => ({
@@ -10,6 +10,8 @@ vi.mock('mermaid', () => ({
 
 import mermaid from 'mermaid'
 import MarkdownRenderer from '../components/MarkdownRenderer'
+
+beforeEach(() => { vi.clearAllMocks() })
 
 describe('MarkdownRenderer mermaid config', () => {
   it('initializes mermaid with suppressErrorRendering so parse errors do not leak error SVGs into the DOM', async () => {
@@ -26,5 +28,19 @@ describe('MarkdownRenderer mermaid config', () => {
         expect.objectContaining({ suppressErrorRendering: true })
       )
     )
+  })
+
+  it('renders the diagram through the lazily-imported module', async () => {
+    render(<MarkdownRenderer content={'```mermaid\ngraph TD;A-->B\n```'} />)
+    await vi.waitFor(() => expect(mermaid.render).toHaveBeenCalled())
+  })
+
+  it('does NOT touch mermaid for content without a diagram', async () => {
+    // The point of the dynamic import: mermaid must not be pulled in — nor
+    // initialized — just because a chat message rendered.
+    render(<MarkdownRenderer content={'# Hello\n\nplain text and `code`'} />)
+    await new Promise(r => setTimeout(r, 50))
+    expect(mermaid.initialize).not.toHaveBeenCalled()
+    expect(mermaid.render).not.toHaveBeenCalled()
   })
 })

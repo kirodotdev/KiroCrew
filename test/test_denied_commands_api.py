@@ -102,9 +102,24 @@ def _read_hooks(config_file: Path) -> dict:
 
 
 def _a_builtin_id() -> str:
-    from kiro_crew.security import builtin_denied_rules
+    """A freely-toggleable builtin id (never a floor-enforced one)."""
+    from kiro_crew.security import builtin_denied_rules, floor_enforced_builtin_command_ids
 
-    return builtin_denied_rules()[0]["id"]
+    floor = floor_enforced_builtin_command_ids()
+    return next(r["id"] for r in builtin_denied_rules() if r["id"] not in floor)
+
+
+def _a_floor_id() -> str:
+    """A floor-enforced (always-on, non-opt-out-able) builtin id."""
+    from kiro_crew.security import floor_enforced_builtin_command_ids
+
+    return sorted(floor_enforced_builtin_command_ids())[0]
+
+
+def _floor_n() -> int:
+    from kiro_crew.security import floor_enforced_builtin_command_ids
+
+    return len(floor_enforced_builtin_command_ids())
 
 
 # ── snapshot helpers ──
@@ -123,9 +138,18 @@ def test_snapshot_shape_and_defaults(home: Path):
     assert snap["governance_locked"] is False
     assert len(snap["builtins"]) == _CATALOG_N
     b = snap["builtins"][0]
-    assert set(b.keys()) == {"id", "pattern", "category", "description", "enabled", "pinned"}
+    assert set(b.keys()) == {
+        "id",
+        "pattern",
+        "category",
+        "description",
+        "enabled",
+        "pinned",
+        "lock_reason",
+    }
     assert b["enabled"] is True
     assert b["pinned"] is False
+    assert b["lock_reason"] is None
     assert snap["effective_count"] == _CATALOG_N
 
 
@@ -142,12 +166,17 @@ def test_disabled_id_lowers_effective_count(home: Path, config_file: Path):
     assert disabled and disabled[0]["enabled"] is False
 
 
-def test_disable_all_zeroes_builtins(home: Path, config_file: Path):
+def test_disable_all_zeroes_builtins_except_floor(home: Path, config_file: Path):
+    # disable_all turns off every toggleable builtin, but the floor-enforced
+    # git-publish rules stay forced-on: their always-on floor consults no
+    # opt-out state, so rendering them off would be the no-op lie this
+    # surface exists to avoid.
     _seed(config_file, {"disable_all": True})
     snap = build_denied_commands_snapshot()
     assert snap["disable_all"] is True
-    assert all(b["enabled"] is False for b in snap["builtins"])
-    assert snap["effective_count"] == 0
+    for b in snap["builtins"]:
+        assert b["enabled"] is (b["lock_reason"] == "floor")
+    assert snap["effective_count"] == _floor_n()
 
 
 def test_pin_forces_enabled_under_disable_all(home: Path, config_file: Path):
@@ -158,7 +187,8 @@ def test_pin_forces_enabled_under_disable_all(home: Path, config_file: Path):
     assert snap["governance_locked"] is True
     pinned = [b for b in snap["builtins"] if b["id"] == rid]
     assert pinned and pinned[0]["enabled"] is True and pinned[0]["pinned"] is True
-    assert snap["effective_count"] == 1
+    assert pinned[0]["lock_reason"] == "policy"
+    assert snap["effective_count"] == 1 + _floor_n()
 
 
 def test_corrupt_config_tolerated_for_snapshot(home: Path, config_file: Path):
@@ -184,6 +214,49 @@ def test_snapshot_disable_all_string_false_is_not_truthy(home: Path, config_file
     snap = build_denied_commands_snapshot()
     assert snap["disable_all"] is False
     assert snap["effective_count"] == _CATALOG_N
+
+
+def test_snapshot_marks_floor_rules_locked_and_forced_on(home: Path, config_file: Path):
+    # Every git-publish rule is floor-enforced: forced enabled and lock-flagged,
+    # even when its id was persisted into disabled_ids by an older build.
+    rid = _a_floor_id()
+    _seed(config_file, {"disabled_ids": [rid]})
+    snap = build_denied_commands_snapshot()
+    floor_rules = [b for b in snap["builtins"] if b["category"] == "git-publish"]
+    assert len(floor_rules) == _floor_n() > 0
+    for b in floor_rules:
+        assert b["enabled"] is True
+        assert b["lock_reason"] == "floor"
+        # `pinned` keeps its governance-only meaning; no governance here.
+        assert b["pinned"] is False
+    # Floor lock does NOT masquerade as governance at the panel level.
+    assert snap["governance_locked"] is False
+    assert snap["effective_count"] == _CATALOG_N
+
+
+def test_floor_lock_reason_wins_over_policy(home: Path):
+    # A rule that is BOTH governance-pinned and floor-enforced reports "floor":
+    # the floor holds even if the pin were removed, so it is the stronger reason.
+    rid = _a_floor_id()
+    with patch("kiro_crew.security.pinned_builtin_command_ids", return_value={rid}):
+        snap = build_denied_commands_snapshot()
+    row = next(b for b in snap["builtins"] if b["id"] == rid)
+    assert row["pinned"] is True
+    assert row["lock_reason"] == "floor"
+
+
+def test_floor_ids_are_derived_from_the_category():
+    # Guard: the accessor derives from the catalog category, so a newly added
+    # git-publish rule is locked without a code change. A hand-maintained id
+    # list would fail this the moment the catalog gains one.
+    from kiro_crew.security import (
+        BUILTIN_DENIED_RULES,
+        floor_enforced_builtin_command_ids,
+    )
+
+    expected = {r.id for r in BUILTIN_DENIED_RULES if r.category == "git-publish"}
+    assert expected, "catalog must carry git-publish rules"
+    assert floor_enforced_builtin_command_ids() == expected
 
 
 # ── GET ──
@@ -279,6 +352,36 @@ async def test_builtin_toggle_enable_pinned_is_200_noop(config_file: Path, mock_
     assert resp.status == 200
 
 
+@pytest.mark.asyncio
+async def test_builtin_toggle_disable_floor_is_409(config_file: Path, mock_sel):
+    rid = _a_floor_id()
+    async with _client() as client:
+        resp = await client.patch(
+            f"/api/security/denied-commands/builtins/{rid}", json={"enabled": False}
+        )
+        assert resp.status == 409
+        body = await resp.json()
+    assert body["code"] == "floor_enforced"
+    # Nothing persisted: the keystone file must not record the no-op opt-out.
+    assert not config_file.exists()
+    args = mock_sel.log_api_access.call_args.kwargs
+    assert args["outcome"] == "denied"
+    assert args["resources"] == f"{rid}=floor_enforced"
+
+
+@pytest.mark.asyncio
+async def test_builtin_toggle_enable_floor_is_200_noop(config_file: Path, mock_sel):
+    rid = _a_floor_id()
+    _seed(config_file, {"disabled_ids": [rid]})
+    async with _client() as client:
+        resp = await client.patch(
+            f"/api/security/denied-commands/builtins/{rid}", json={"enabled": True}
+        )
+    assert resp.status == 200
+    # Re-enable clears a stale persisted id (state from before the 409 existed).
+    assert rid not in _read_hooks(config_file).get("disabled_ids", [])
+
+
 # ── disable-all ──
 
 
@@ -316,9 +419,156 @@ async def test_user_add_happy(config_file: Path, mock_sel):
         assert added["pattern"] == "rm -rf /tmp/mine"
         assert added["enabled"] is True
         assert added["id"].startswith("user-")
+        # An add with no ``note`` key is the pre-existing shape and stays legal —
+        # it reports an empty note rather than omitting the field.
+        assert added["note"] == ""
         assert body["effective_count"] == _CATALOG_N + 1
     persisted = _read_hooks(config_file)["user_added"]
     assert persisted[0]["id"] == added["id"]
+    assert persisted[0]["note"] == ""
+
+
+@pytest.mark.asyncio
+async def test_user_add_with_note_persists_and_surfaces_in_snapshot(config_file: Path, mock_sel):
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user",
+            json={"pattern": "frobnicate.*", "note": "use --dry-run instead"},
+        )
+        assert resp.status == 200
+        added = (await resp.json())["user_added"][0]
+    # The snapshot is an allowlist REBUILD, not a passthrough — a key missing
+    # from it is stored on disk but invisible to the Settings row.
+    assert set(added.keys()) == {"id", "pattern", "enabled", "note"}
+    assert added["note"] == "use --dry-run instead"
+    persisted = _read_hooks(config_file)["user_added"][0]
+    assert persisted == {
+        "id": added["id"],
+        "pattern": "frobnicate.*",
+        "enabled": True,
+        "note": "use --dry-run instead",
+    }
+    # A fresh snapshot read back from disk carries the note too.
+    reread = build_denied_commands_snapshot()["user_added"][0]
+    assert reread["note"] == "use --dry-run instead"
+    assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_user_add_non_string_note_is_400(home: Path, mock_sel):
+    # Mirrors how ``pattern`` is handled: a present-but-wrong-typed note is a
+    # reject, not a silent drop of input the caller believes it supplied.
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": 42}
+        )
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "note must be a string"
+    kwargs = mock_sel.log_api_access.call_args.kwargs
+    assert kwargs["outcome"] == "denied"
+    assert kwargs["resources"] == "note_bad_type"
+
+
+@pytest.mark.asyncio
+async def test_user_add_oversize_note_is_400(home: Path, mock_sel):
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": "n" * 201}
+        )
+        assert resp.status == 400
+    kwargs = mock_sel.log_api_access.call_args.kwargs
+    assert kwargs["outcome"] == "denied"
+    assert kwargs["resources"] == "note_oversize"
+
+
+@pytest.mark.asyncio
+async def test_user_add_note_at_max_length_is_accepted(config_file: Path, mock_sel):
+    # The cap boundary itself, so the reject above is proven to be off-by-none.
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": "n" * 200}
+        )
+        assert resp.status == 200
+        assert (await resp.json())["user_added"][0]["note"] == "n" * 200
+
+
+@pytest.mark.asyncio
+async def test_user_add_note_forging_the_reason_prefix_is_400(home: Path, mock_sel):
+    # Pasting the refusal you just saw into the note field is a NATURAL thing to
+    # do, and it would make RecoveryCard.tsx -- which parses refusals with a
+    # global per-line regex -- report a second, fabricated deny pattern. Reject
+    # with a real error rather than silently mangling the operator's text.
+    from kiro_crew.security import DENY_REASON_PREFIX
+
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user",
+            json={"pattern": "danger", "note": f"{DENY_REASON_PREFIX}rm -rf /"},
+        )
+        assert resp.status == 400
+        assert "must not contain" in (await resp.json())["error"]
+    kwargs = mock_sel.log_api_access.call_args.kwargs
+    assert kwargs["outcome"] == "denied"
+    assert kwargs["resources"] == "note_forges_reason"
+    # Nothing was written: the reject happens before the mutation.
+    assert not (home / "denied_commands.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_user_add_note_forging_without_a_space_after_the_colon_is_400(
+    home: Path, mock_sel
+):
+    # RecoveryCard's regex is `Blocked by security policy:\s*`, so the space is
+    # OPTIONAL -- this parses as a refusal line while NOT containing the emitted
+    # prefix. Guarding on the emitted form (trailing space) left this bypass open.
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user",
+            json={"pattern": "danger", "note": "Blocked by security policy:not-a-rule"},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "note_forges_reason"
+    assert not (home / "denied_commands.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_user_add_note_whitespace_is_collapsed_to_one_line(config_file: Path, mock_sel):
+    # Newlines would forge extra lines in the refusal, whose FIRST line is a
+    # parsed contract — so they are collapsed rather than rejected.
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user",
+            json={"pattern": "danger", "note": "  first\nsecond\t\tthird   spaced  "},
+        )
+        assert resp.status == 200
+        note = (await resp.json())["user_added"][0]["note"]
+    assert note == "first second third spaced"
+    assert "\n" not in note
+    assert "  " not in note
+    assert _read_hooks(config_file)["user_added"][0]["note"] == note
+
+
+@pytest.mark.asyncio
+async def test_user_add_whitespace_only_note_is_empty_not_400(config_file: Path, mock_sel):
+    # Collapsing "   " yields "" — the same shape as no note at all, so the add
+    # succeeds and the rule is simply un-annotated.
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": " \n\t "}
+        )
+        assert resp.status == 200
+        assert (await resp.json())["user_added"][0]["note"] == ""
+
+
+@pytest.mark.asyncio
+async def test_user_add_note_rejected_before_any_write(config_file: Path, mock_sel):
+    # A rejected note must not leave a half-added rule behind.
+    async with _client() as client:
+        resp = await client.post(
+            "/api/security/denied-commands/user", json={"pattern": "danger", "note": ["nope"]}
+        )
+        assert resp.status == 400
+    assert not config_file.exists() or _read_hooks(config_file).get("user_added", []) == []
 
 
 @pytest.mark.asyncio
@@ -392,6 +642,34 @@ async def test_user_toggle(config_file: Path, mock_sel):
         body = await resp.json()
         assert body["user_added"][0]["enabled"] is False
         assert body["effective_count"] == _CATALOG_N  # disabled user rule not counted
+
+
+@pytest.mark.asyncio
+async def test_user_toggle_preserves_note(config_file: Path, mock_sel):
+    # There is no edit endpoint for a note (create-only, mirroring ``pattern``),
+    # so a toggle must carry it through — losing it here would silently strip the
+    # operator's remediation text on the first disable/re-enable.
+    async with _client() as client:
+        add = await client.post(
+            "/api/security/denied-commands/user",
+            json={"pattern": "danger", "note": "use the safe wrapper"},
+        )
+        rid = (await add.json())["user_added"][0]["id"]
+        off = await client.patch(
+            f"/api/security/denied-commands/user/{rid}", json={"enabled": False}
+        )
+        assert off.status == 200
+        disabled = (await off.json())["user_added"][0]
+        assert disabled["enabled"] is False
+        assert disabled["note"] == "use the safe wrapper"
+        assert _read_hooks(config_file)["user_added"][0]["note"] == "use the safe wrapper"
+        back_on = await client.patch(
+            f"/api/security/denied-commands/user/{rid}", json={"enabled": True}
+        )
+        assert back_on.status == 200
+        reenabled = (await back_on.json())["user_added"][0]
+        assert reenabled["enabled"] is True
+        assert reenabled["note"] == "use the safe wrapper"
 
 
 @pytest.mark.asyncio

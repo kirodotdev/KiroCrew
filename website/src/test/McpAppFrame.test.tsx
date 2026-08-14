@@ -4,6 +4,7 @@ import { act } from '@testing-library/react'
 import McpAppFrame from '../components/McpAppFrame'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { __resetRevealedForTests } from '../components/mcpAppReveal'
+import { useTheme } from '../hooks/useTheme'
 
 function payload(over: Partial<McpAppRenderPayload> = {}): McpAppRenderPayload {
   return {
@@ -77,7 +78,10 @@ describe('McpAppFrame', () => {
     expect(target).toBe('*')
     expect(reply.jsonrpc).toBe('2.0')
     expect(reply.id).toBe(1)
-    expect(reply.result.protocolVersion).toBe('2025-11-21')
+    // A PUBLISHED SEP-1865 revision id, not the SEP's creation date. If this
+    // assertion fails, check the new value exists under
+    // ext-apps/specification/ before updating it to match the source.
+    expect(reply.result.protocolVersion).toBe('2026-01-26')
     expect(reply.result.hostInfo).toEqual({ name: 'kirocrew', version: '0.1' })
     expect(reply.result.hostContext.displayMode).toBe('inline')
     expect(reply.result.hostContext.availableDisplayModes).toEqual(['inline', 'fullscreen'])
@@ -1061,5 +1065,71 @@ describe('McpAppFrame — app log forwarding', () => {
         expect(scroller.style.overflowY).not.toBe('hidden')
       } finally { restore.reverse().forEach((f) => f()) }
     })
+  })
+})
+
+
+// The app has no other styling signal: this host injects no CSS into the srcdoc,
+// so `hostContext.theme` is the whole contract. It was a hardcoded 'dark', which
+// left every MCP app dark-on-light for a light-theme user (#2110). The
+// pre-existing initialize test asserts displayMode, availableDisplayModes and
+// containerDimensions but never theme -- that gap is how this shipped, so these
+// assert the field itself.
+describe('McpAppFrame — host theme', () => {
+  beforeEach(() => {
+    __resetRevealedForTests()
+    localStorage.clear()
+  })
+
+  function initReply(win: { postMessage: ReturnType<typeof vi.fn> }) {
+    dispatchFromApp({ jsonrpc: '2.0', id: 1, method: 'ui/initialize' }, win)
+    return win.postMessage.mock.calls[0][0]
+  }
+
+  it.each(['light', 'dark'] as const)(
+    'reports the host theme as %s in the ui/initialize reply',
+    (mode) => {
+      // An explicit preference resolves synchronously, with no matchMedia dependency.
+      localStorage.setItem('mc-theme', mode)
+      const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const win = stubContentWindow(container.querySelector('iframe')!)
+
+      expect(initReply(win).result.hostContext.theme).toBe(mode)
+    },
+  )
+
+  it('pushes a host-context-changed carrying the new theme when the user switches', async () => {
+    localStorage.setItem('mc-theme', 'dark')
+    // Sibling consumer inside the same ThemeProvider, so the flip goes through
+    // the real setter the theme toggle uses rather than a synthetic event.
+    function ThemeFlip() {
+      const { setTheme } = useTheme()
+      return <button onClick={() => setTheme('light')}>flip</button>
+    }
+    const { container, getByText } = renderWithProviders(
+      <><ThemeFlip /><McpAppFrame payload={payload()} /></>,
+    )
+    const win = stubContentWindow(container.querySelector('iframe')!)
+    initReply(win)
+    win.postMessage.mockClear()
+
+    await act(async () => { getByText('flip').click() })
+
+    const notes = win.postMessage.mock.calls
+      .map(([m]) => m)
+      .filter((m) => m?.method === 'ui/notifications/host-context-changed')
+    expect(notes.length).toBeGreaterThan(0)
+    expect(notes[notes.length - 1].params.theme).toBe('light')
+  })
+
+  it('does not announce a theme change on first mount', () => {
+    localStorage.setItem('mc-theme', 'light')
+    const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+    const win = stubContentWindow(container.querySelector('iframe')!)
+
+    // Nothing is posted before the app speaks: a spurious notification on mount
+    // (what a first-run boolean flag would produce under StrictMode's double
+    // effect invocation) would show up here.
+    expect(win.postMessage).not.toHaveBeenCalled()
   })
 })

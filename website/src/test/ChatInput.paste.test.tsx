@@ -32,22 +32,28 @@ describe('ChatInput paste: prefer text over image', () => {
     expect(onUploadFiles).not.toHaveBeenCalled()
   })
 
-  it('does NOT upload files when clipboard has text/html alongside image', () => {
+  it('DOES upload when clipboard has text/html + image but no text/plain (browser "Copy Image")', () => {
+    // A <textarea> can only insert the text/plain representation. With no
+    // text/plain present, deferring to the text paste would make the whole
+    // gesture a silent no-op — so the image must win here. This is the
+    // browser right-click "Copy Image" clipboard shape (issue #2489).
     const onUploadFiles = vi.fn()
     renderWithProviders(
       <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} onUploadFiles={onUploadFiles} />,
     )
     const textarea = screen.getByRole('textbox')
+    const file = new File(['px'], 'photo-vacation.png', { type: 'image/png' })
     fireEvent.paste(textarea, {
       clipboardData: {
         types: ['text/html', 'Files'],
         items: [
-          { kind: 'file', type: 'image/png', getAsFile: () => new File(['px'], 'image.png', { type: 'image/png' }) },
+          { kind: 'file', type: 'image/png', getAsFile: () => file },
         ],
-        getData: () => '<b>rich</b>',
+        getData: () => '',
       },
     })
-    expect(onUploadFiles).not.toHaveBeenCalled()
+    expect(onUploadFiles).toHaveBeenCalledTimes(1)
+    expect(onUploadFiles.mock.calls[0][0]).toEqual([file])
   })
 
   it('allows file upload when clipboard has ONLY files (e.g. screenshot paste)', () => {
@@ -65,6 +71,73 @@ describe('ChatInput paste: prefer text over image', () => {
       },
     })
     expect(onUploadFiles).toHaveBeenCalledWith([file])
+  })
+})
+
+describe('ChatInput paste: clipboard image filename synthesis', () => {
+  const pasteImages = (files: File[]) => {
+    const onUploadFiles = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} onUploadFiles={onUploadFiles} />,
+    )
+    fireEvent.paste(screen.getByRole('textbox'), {
+      clipboardData: {
+        types: ['Files'],
+        items: files.map(f => ({ kind: 'file', type: f.type, getAsFile: () => f })),
+        getData: () => '',
+      },
+    })
+    return onUploadFiles
+  }
+
+  it('renames the browser placeholder "image.png" to a timestamped pasted-image name', () => {
+    // Chrome/Firefox hand EVERY pasted screenshot over as "image.png", so two
+    // pastes in one message would render identical chip labels.
+    const onUploadFiles = pasteImages([new File(['px'], 'image.png', { type: 'image/png' })])
+    expect(onUploadFiles).toHaveBeenCalledTimes(1)
+    const [uploaded] = onUploadFiles.mock.calls[0][0] as File[]
+    expect(uploaded.name).toMatch(/^pasted-image-\d{8}-\d{9}\.png$/)
+    expect(uploaded.type).toBe('image/png')
+  })
+
+  it('names an UNNAMED clipboard image (server rejects extension-less files)', () => {
+    const unnamed = new File(['px'], '', { type: 'image/jpeg' })
+    const onUploadFiles = pasteImages([unnamed])
+    const [uploaded] = onUploadFiles.mock.calls[0][0] as File[]
+    expect(uploaded.name).toMatch(/^pasted-image-\d{8}-\d{9}\.jpg$/)
+  })
+
+  it('keeps a real filename untouched (file copied from the OS file manager)', () => {
+    const real = new File(['px'], 'photo-vacation.png', { type: 'image/png' })
+    const onUploadFiles = pasteImages([real])
+    // Same object through — pasted and picked files stay indistinguishable.
+    expect(onUploadFiles.mock.calls[0][0]).toEqual([real])
+    expect((onUploadFiles.mock.calls[0][0] as File[])[0].name).toBe('photo-vacation.png')
+  })
+
+  it('disambiguates multiple generic images in ONE paste (same-millisecond timestamp)', () => {
+    const a = new File(['a'], 'image.png', { type: 'image/png' })
+    const b = new File(['b'], 'image.png', { type: 'image/png' })
+    const onUploadFiles = pasteImages([a, b])
+    const [ua, ub] = onUploadFiles.mock.calls[0][0] as File[]
+    expect(ua.name).not.toBe(ub.name)
+    expect(ub.name).toMatch(/-2\.png$/)
+  })
+
+  it('suffixes count only RENAMED files — a real-named sibling produces no orphan "-2"', () => {
+    const real = new File(['a'], 'photo-vacation.png', { type: 'image/png' })
+    const generic = new File(['b'], 'image.png', { type: 'image/png' })
+    const onUploadFiles = pasteImages([real, generic])
+    const [ua, ub] = onUploadFiles.mock.calls[0][0] as File[]
+    expect(ua.name).toBe('photo-vacation.png')
+    // The single synthesized name is unsuffixed: it is the first rename.
+    expect(ub.name).toMatch(/^pasted-image-\d{8}-\d{9}\.png$/)
+  })
+
+  it('never renames a non-image file (clipboard paste stays image-scoped)', () => {
+    const doc = new File(['x'], 'notes.txt', { type: 'text/plain' })
+    const onUploadFiles = pasteImages([doc])
+    expect((onUploadFiles.mock.calls[0][0] as File[])[0].name).toBe('notes.txt')
   })
 })
 

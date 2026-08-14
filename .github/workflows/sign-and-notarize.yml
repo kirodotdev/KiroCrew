@@ -74,6 +74,21 @@ on:
         required: false
         type: boolean
         default: true
+      promote:
+        description: "Publish an already notarized candidate bundle without rebuilding"
+        required: false
+        type: boolean
+        default: false
+      promotion_artifact:
+        description: "Verified same-run artifact created by the stable resolver"
+        required: false
+        type: string
+        default: ""
+      promotion_base_version:
+        description: "Bare stable version whose candidate manifest must match"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -83,6 +98,7 @@ permissions:
 jobs:
   sign:
     name: Sign with signing service (${{ inputs.channel }})
+    if: ${{ !inputs.promote }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # OIDC subject alignment: tag-triggered callers (release.yml) present
@@ -429,11 +445,13 @@ jobs:
 
       # Attest the DMG that actually ships -- AFTER staple, because stapling
       # embeds the ticket into the DMG file (the final released bytes).
-      - name: Attest DMG provenance
+      - name: Attest final shipping artifacts
         if: env.HAS_SIGNING_SECRETS
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: work/*.dmg
+          subject-path: |
+            work/notarized.zip
+            work/*.dmg
 
       # The GATED artifact: attached only after the spctl gate above. This
       # is the sole input of the publish job (and of release.yml's
@@ -463,12 +481,14 @@ jobs:
   publish:
     name: Publish to distribution (${{ inputs.channel }})
     needs: notarize
-    # success() is REQUIRED here: a custom job-level `if` replaces the
-    # implicit success check, and without it this job would run even after
-    # a failed or skipped notarize. The remaining conditions gate public
-    # distribution on the CDN being configured -- when it is not (fork),
-    # notarize still produced the gated artifact for github-release.
-    if: ${{ success() && inputs.write_feed && vars.CLI_DIST_BUCKET != '' }}
+    # Normal releases require a successful notarize job. Stable promotion
+    # deliberately skips sign/notarize and may publish only the resolver's
+    # already-gated bundle. Explicit result checks preserve fail-closed status
+    # semantics even though the promotion branch has skipped dependencies.
+    if: >-
+      ${{ always() && inputs.write_feed && vars.CLI_DIST_BUCKET != '' &&
+          ((!inputs.promote && needs.notarize.result == 'success') ||
+           (inputs.promote && needs.notarize.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Same OIDC subject alignment as the jobs above (S3 writes assume the
@@ -477,11 +497,15 @@ jobs:
     environment: prod
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      GH_TOKEN: ${{ github.token }}
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       # Pinned published basename -- see the notarize job's env comment.
       ARTIFACT_BASENAME: KiroCrew
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.promote
+
       - name: Configure AWS credentials
         if: env.HAS_SIGNING_SECRETS
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -493,8 +517,28 @@ jobs:
         if: env.HAS_SIGNING_SECRETS
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: KiroCrew-notarized-${{ inputs.channel }}-${{ inputs.version }}
+          name: ${{ inputs.promote && inputs.promotion_artifact || format('KiroCrew-notarized-{0}-{1}', inputs.channel, inputs.version) }}
           path: work
+
+      - name: Verify immutable promotion bundle
+        if: env.HAS_SIGNING_SECRETS && inputs.promote
+        env:
+          PROMOTION_BASE_VERSION: ${{ inputs.promotion_base_version }}
+        run: |
+          python3 scripts/release_promotion.py verify \
+            --bundle-dir work \
+            --expected-source-sha "${GITHUB_SHA}" \
+            --expected-base-version "${PROMOTION_BASE_VERSION}"
+
+      - name: Verify promoted macOS provenance
+        if: env.HAS_SIGNING_SECRETS && inputs.promote
+        run: |
+          gh attestation verify work/notarized.zip \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/sign-and-notarize.yml"
+          gh attestation verify "work/${ARTIFACT_BASENAME}.dmg" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/sign-and-notarize.yml"
 
       - name: Verify gated artifact contents
         if: env.HAS_SIGNING_SECRETS

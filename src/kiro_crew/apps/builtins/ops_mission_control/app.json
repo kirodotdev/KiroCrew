@@ -42,7 +42,8 @@
       "cron_list",
       "send_message",
       "spawn_run",
-      "learn_add"
+      "learn_add",
+      "ops_mission_control_api"
     ]
   },
   "notifications": {

@@ -170,13 +170,20 @@ def test_every_run_chat_dispatch_is_ceiling_bounded() -> None:
             # resolves it. Identify them by the absence of an inner wait_for.
             if "asyncio.wait_for(" not in body:
                 continue
-            if "CHAT_TURN_TIMEOUT" not in body:
+            # Two accepted bounds: the config-resolved ceiling (preferred —
+            # follows agent.chat_turn_timeout_secs above the 2h default) or the
+            # legacy shared constant.
+            if (
+                "chat_turn_timeout_secs(" not in body
+                and "CHAT_TURN_TIMEOUT" not in body
+            ):
                 offenders.append(f"{rel_path}:{line_no}")
 
     assert not offenders, (
         "Found _run_chat dispatch(es) wrapped without the shared ceiling:\n  "
         + "\n  ".join(offenders)
-        + "\n\nUse spawn_guarded_turn(...), or wait_for(..., timeout=CHAT_TURN_TIMEOUT)."
+        + "\n\nUse spawn_guarded_turn(...), or "
+        "wait_for(..., timeout=chat_turn_timeout_secs())."
     )
 
 

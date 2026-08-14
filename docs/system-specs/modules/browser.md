@@ -1,297 +1,288 @@
 ## Browser Module
 
-Thin auth layer for enterprise-authenticated website browsing via Playwright MCP.
+Website browsing through `playwright-cli`, the Playwright agent CLI. An agent
+drives a browser by running shell commands; Kiro Crew owns the install flow, the
+snapshot directory, and the dashboard surface that displays and hands over a live
+session.
 
 ### Architecture
 
+The browser is a **shell capability, not a tool namespace.** Each browser action
+is one `playwright-cli` invocation on the agent's ordinary command path, so there
+is no MCP server to register, no tool schemas re-sent per request, and no
+per-message browse marker. The agent decides per task whether a browser is
+warranted or whether `web_fetch` answers the question.
+
 ```
-User clicks Globe → backend injects [BROWSE] → agent loads browser-auth skill
-  → kirocrew browse auth health / refresh
-  → Playwright MCP tools: browser_navigate, browser_click, browser_snapshot, etc.
+agent turn ──shell──▶ playwright-cli <verb> …
+                          │
+                          ├─▶ stdout: page URL, page title, path to a snapshot YAML
+                          └─▶ disk:   .../page-<timestamp>.yml   (the accessibility tree)
 
-Without Globe → agent uses ReadInternalWebsites (the internal MCP server)
+agent reads the YAML with its own file tools ONLY when it needs the tree
 ```
 
-### Two Modes
+**The stdout line is the contract.** Every command prints the resulting page URL,
+the page title, and a filesystem path to a snapshot YAML. Roughly 250 characters
+of stdout carry a complete action result, and the accessibility tree stays on
+disk until the agent decides it needs it. This is why no compression layer
+exists: a wrapper that read the YAML and summarized it would put the tree back
+into the model context, which is the cost the on-disk handoff removes.
 
-| Mode | Platform | How it works |
-|------|----------|--------------|
-| **Extension** | macOS (recommended) | Playwright attaches to user's running Chrome via extension. All existing auth (enterprise SSO session, Sentry, Kerberos) works automatically. |
-| **Headless** | Linux Cloud Desktops | Launches separate Chromium with `--auth-server-allowlist` + storage state cookie injection. |
+**The path printed on stdout is authoritative.** The agent uses the exact path it
+was given rather than deriving one, because the snapshot directory is owned by the
+gateway (see [Snapshot retention](#snapshot-retention)) and is not the agent's
+working directory.
 
-### Key Design Decisions
+**Element refs are per-snapshot.** A ref such as `[ref=e5]` identifies an element
+within the snapshot that produced it, and any page change invalidates it. The
+invariant an agent must hold is therefore: after a navigation, a click that
+changes the page, or a reload, take a fresh `snapshot` and address elements from
+that one. A ref reused across a page change either misses or hits the wrong
+element, and the failure is silent in the second case, which is why the rule is
+stated as re-snapshot rather than as retry-on-error.
 
-**Delegate browsing to Playwright MCP** — we don't implement click/fill/navigate/screenshot.
-Playwright MCP handles all browser interaction. KiroCrew only handles enterprise-SSO auth.
+**Sessions are named.** `-s=<name>` selects a session, so several independent
+browsing contexts coexist under one CLI install and one agent can keep a
+logged-in context separate from a throwaway one.
 
-**Two auth strategies:**
-- Extension mode: zero auth work — real Chrome session has everything
-- Headless mode: storage state (`~/.kiro/crew/playwright-storage-state.json`) + Kerberos via `--auth-server-allowlist`
+### Capability model
 
-**Managed installation** — the Playwright MCP is auto-installed on gateway startup if missing.
+**Presence of `playwright-cli` on PATH is the capability.** The binary absent
+means the capability does not exist; installing it is the act that grants it.
+There is no toggle, no flag file, and no per-session gesture, because none of
+those could be enforced: the CLI documents that all of its capabilities are
+always available with no gating, and a binary on PATH is reachable from any shell
+turn, so no subset of browsing can be granted or withheld once it is installed.
 
-**Globe button triggers browse mode** — Backend injects `[BROWSE]` marker. Without it, agent uses `ReadInternalWebsites` (the internal MCP server) instead.
+An install Kiro Crew performs is consent by construction, since the operator
+asked for it. An operator's existing working install is also treated as consent,
+so an operator who already browses is never silently disarmed.
 
-### Auth Flow (Headless Mode)
+#### Accepted risk
 
-1. `kirocrew browse auth health` — validates SSO cookie, Kerberos ticket, AEA posture
-2. `kirocrew browse auth refresh` — converts `~/.kiro/crew/browser-cookies.txt` → `~/.kiro/crew/playwright-storage-state.json`
-3. Playwright loads cookies from storage state at context creation (no manual injection)
-4. `--auth-server-allowlist=*.example.com` handles SPNEGO challenges (the OSS build ships no enterprise allowlist)
-5. For SSO-gated sites: `kirocrew browse auth federate <url>` completes the federated login SPNEGO chain via curl
+Presence-as-consent has one hole, accepted deliberately and recorded here so it
+is discoverable without reading code.
 
-### Auth Flow (Extension Mode)
+An operator who installed `playwright-cli` for their own unrelated work has
+granted nothing, yet the capability is armed on that host. The exposure is
+concrete: `attach --extension` connects to the operator's own running Chrome,
+which carries their live logged-in sessions, so an agent turn can drive a browser
+holding those sessions without the operator having said yes to that.
 
-1. User has Chrome open with existing auth (enterprise SSO session, Sentry extension)
-2. Playwright MCP connects via extension token (`PLAYWRIGHT_MCP_EXTENSION_TOKEN`)
-3. All navigation uses the real authenticated session — no cookie injection needed
+It cannot be narrowed after the fact. The CLI offers no capability gating to
+subset, and PATH reachability means the restriction cannot be expressed in a tool
+surface either. Two mitigations apply, neither of which reintroduces a gate:
 
-### Config Files
+- The consent model is stated in the install guide and in the Settings surface,
+  so it is documented rather than discovered.
+- Browser use is visible after the fact. The dashboard panel showing a live
+  session is itself the disclosure.
 
-| File | Purpose |
-|------|---------|
-| `~/.kiro/crew/playwright-config.json` | Playwright MCP config: `--auth-server-allowlist`, `storageState`, `isolated: true`, capabilities |
-| `~/.kiro/crew/playwright-storage-state.json` | Playwright storage state (generated from `~/.kiro/crew/browser-cookies.txt`) |
-| `~/.kiro/crew/playwright-extension-mode` | Flag file: extension mode enabled |
-| `~/.kiro/crew/playwright-extension-token` | Chrome extension connection token (0o600 perms) |
-| `~/.kiro/settings/mcp.json` | MCP server config (args: `--extension` or `--config`) |
+### Install flow
 
-### Source Files
+Global install only. `npx` re-resolves the package through the npm registry on
+every invocation, which makes browsing depend on registry auth at run time: an
+expired token takes the capability down mid-session. A global binary resolves
+once, at install, so registry auth applies at install time only.
 
-| File | Purpose |
-|------|---------|
-| `browser/auth.py` | SSO cookies, federated SSO, KRB5CCNAME, health checks, URL validation |
-| `browser/setup.py` | Plugin-manager install, config generation, storage state refresh, MCP config patching |
-| `browser/cli.py` | `kirocrew browse` CLI: setup, auth health/refresh/inject/federate, extension on/off |
-| `mcp_playwright_proxy.py` | Stdio proxy: intercepts Playwright MCP responses, compresses accessibility trees |
-| `skills/browser-auth/SKILL.md` | Agent skill for auth + Playwright MCP workflow |
-| `scripts/refresh-playwright-cookies.py` | Standalone script: `~/.kiro/crew/browser-cookies.txt` → storage state |
-| `config/playwright-mcp-config.json.template` | Template for the Playwright config structure |
+1. Detect `playwright-cli` on PATH and Node.js 20 or newer.
+2. Install when absent: `npm install -g @playwright/cli@latest`.
+3. `playwright-cli install-browser` for the browser binary (`--with-deps` on
+   Linux). The CLI downloads one on first use regardless, so the explicit step
+   exists to give the operator a progress surface and a visible failure rather
+   than a stall inside the first browse.
+4. `playwright-cli install --skills agents --global` so the command reference is
+   discoverable from the skill file rather than occupying the system prompt.
+   `--skills` accepts `claude` (default) or `agents`; `--global` targets the home
+   directory instead of the workspace.
+5. Record that the install happened.
 
-### Context Window Optimization (Playwright Proxy)
+### Command surface
 
-Playwright MCP's `browser_snapshot` returns full accessibility trees (50-100K tokens on heavy pages). The **Playwright proxy** (`kirocrew mcp-playwright-proxy`) intercepts these responses and auto-compresses them before they reach the LLM — the full tree never enters context.
+The full reference lives in the skill the CLI installs in step 4, which is why the
+system prompt states only the loop and the ref rule. The verbs:
 
-**How it works:**
-- kiro-cli → `kirocrew mcp-playwright-proxy` (stdio) → real `npm-playwright-mcp` (subprocess)
-- Proxy forwards all messages bidirectionally
-- Intercepts responses with accessibility trees (>5K chars with tree-like structure)
-- Compresses to compact outline: only interactive elements (links, buttons, inputs, headings, images) with refs
-- ~95% token reduction on heavy pages
+| Group | Commands |
+|---|---|
+| Lifecycle | `open [url]`, `goto`, `close`, `attach --extension` |
+| Pointer and form | `click <ref>`, `dblclick`, `fill <ref> <text>`, `type <text>`, `select`, `check`, `uncheck`, `hover`, `drag`, `upload` |
+| Read | `snapshot`, `screenshot [ref]`, `pdf`, `eval`, `console`, `network` |
+| Navigation | `go-back`, `go-forward`, `reload`, `press <key>`, `resize` |
+| Dialogs | `dialog-accept`, `dialog-dismiss` |
+| Tabs | `tab-list`, `tab-new`, `tab-select`, `tab-close` |
+| State | `state-save [file]`, `state-load <file>`, `cookie-list`/`get`/`set`/`delete`/`clear`, `localstorage-*`, `sessionstorage-*` |
+| Capture and scripting | `route`, `run-code`, `tracing-start`/`stop`, `video-start`/`stop` |
+| Host | `show`, `install --skills`, `install-browser`, `config-print` |
 
-**Registration (one canonical server, no duplicates):** kiro-cli splits an agent
-`@server` reference on `/`, so a slash-containing key like `@playwright/mcp` is
-mis-parsed as `@server/tool` and exposes none of the server's tools. The proxy is
-therefore always registered under the **slash-free canonical alias**
-`playwright-mcp` (`mcp_server_alias("@playwright/mcp")`), and every writer drops
-the superseded keys it historically used so exactly one Playwright entry survives:
+Sessions are selected with `-s=<name>` on any command.
 
-- `kirocrew setup` — new installs get the canonical proxy entry from the start.
-- `patch_mcp_extension()` / `patch_mcp_headless()` — write the entry under the
-  canonical alias, after `_drop_superseded_playwright()` removes any legacy proxy
-  key (`@playwright/mcp`, `playwright-proxy-mcp`) **and** KiroCrew's legacy
-  *direct* `npm:@playwright/mcp` entry (that `npm:`-prefixed key is a KiroCrew
-  install artifact; a user's own direct server under the bare `@playwright/mcp`
-  key is left untouched — authorship is by launch target, not key name).
-- Gateway startup — `_migrate_playwright_to_proxy()` delegates to
-  `migrate_owned_playwright_registration()`, which converges KiroCrew's own
-  browse entry in `~/.kiro/settings/mcp.json` to the canonical key — including
-  upgrading a legacy *direct* `npm:@playwright/mcp` entry (from installs predating
-  the compression proxy) to the proxy — converges KiroCrew's own
-  `~/.kiro/crew/mcp.json` at the SOURCE (so a stale proxy key there is healed once,
-  not re-injected into every rebuild), and sweeps the KiroCrew-generated agent
-  configs (the exact `kirocrew*` filenames it writes, not a bare `*.json` glob, so
-  a user's own agents are never rewritten) so a duplicate proxy entry collapses
-  onto the one canonical server. This self-heals an existing machine on a plain
-  restart.
-- Every agent-config rebuild — `converge_playwright_servers()` runs right after
-  key normalization in `build_agent_config` as a BACKSTOP (the owned source files
-  are healed at boot above; this catches anything re-merged mid-rebuild),
-  collapsing any Playwright-proxy entry by *resolved launch target* (an entry that
-  invokes `mcp-playwright-proxy`). This catches a slash-free legacy key (e.g.
-  `playwright-proxy-mcp`) that key normalization — which only rewrites
-  slash-containing keys — cannot fold. Convergence keeps the canonical key
-  (unless a user's own *direct*, non-proxy server already occupies it — then the
-  proxy is left under its own non-conflicting key rather than clobbering the user
-  entry), rewrites dropped `@refs` in `tools`/`allowedTools`, and never touches a
-  user-declared, non-proxy server. Together with discovery read-folding and pool
-  launch-target dedupe, all surfaces agree on the single `playwright-mcp` server,
-  so no second backend, dashboard row, or probe is derived.
+### Auth
 
-**Ownership signals (authorship of an MCP entry).** `~/.kiro/settings/mcp.json` is
-co-owned with kiro-cli, and kiro-cli validates it (and agent specs) with
-`deny_unknown_fields`, so an in-spec ownership sentinel is impossible. KiroCrew
-therefore records the MCP keys it writes in an out-of-band sidecar manifest
-`~/.kiro/crew/owned-mcp-keys.json` (`_record_owned_mcp_key`, mode 0600), written by
-`patch_mcp_extension()` / `patch_mcp_headless()`. Drop/converge decisions consult
-this manifest **first** (`_load_owned_mcp_keys`); the `mcp-playwright-proxy`
-launch-target heuristic (`_spec_is_proxy`) and the `npm:@playwright/mcp` legacy-key
-rule remain the fallback for entries written by installs that predate the
-manifest. This stops the unmarked-entry population from growing so future
-migrations rely less on forensic heuristics on a destructive, every-restart path.
-*Follow-up:* extend the manifest to the agent-config writers and to all
-drop/converge sites (currently the sidecar sweep still keys on the owned-filename
-allowlist + launch target), and consider consolidating the per-surface
-convergence passes behind one canonicalizing `mcp_utils` accessor.
+Two paths, chosen by whose browser holds the session.
 
-**Source:** `src/kiro_crew/mcp_playwright_proxy.py`, `src/kiro_crew/browser/setup.py`
+**Saved state.** `state-save [file]` writes the current context's cookies and
+storage to a file, and `state-load <file>` restores it into a session. A logged-in
+context is therefore reusable across sessions and across gateway restarts without
+re-authenticating. `cookie-list`/`get`/`set`/`delete`/`clear` and the
+`localstorage-*` / `sessionstorage-*` families operate on individual entries when
+a whole-state round trip is heavier than the task needs.
 
-### Live Browse Mirror
+**Attach.** `attach --extension` connects to the operator's own running Chrome,
+which already holds their logins, so no state file is involved. This is the
+stronger capability of the two: the sessions are the operator's real ones, which
+is what the [accepted risk](#accepted-risk) above is about.
 
-The dashboard mirrors the headless `[BROWSE]` Chromium in near-real-time **without
-opening any debug port on the browser**. The headless Chromium runs on the gateway
-host; the only window onto it from a laptop is the dashboard (reachable over the
-reverse SSH tunnel).
+State files hold live session credentials and are written with owner-only
+permissions.
 
-**Relay path.** The Playwright proxy already intercepts every
-`browser_take_screenshot` response and re-encodes it to JPEG. It additionally
-re-POSTs that already-captured frame to the gateway's loopback
-`POST /api/browser/frame`, which rebroadcasts it over the existing WS as a
-`browser_frame` event; the `BrowserLiveView` panel renders the latest frame. This
-rides Playwright's existing authenticated, pipe-based control channel — it
-deliberately does **not** add a `--remote-debugging-port`. An earlier revision
-attached to a CDP debug port for smoother frames; that port was an unauthenticated,
-full-control endpoint on an authenticated browser session (a net-new
-local-process-takeover surface), so it was dropped.
+### Snapshot retention
 
-**Frame validation (`build_frame_payload`).** A pure helper normalizes the POSTed
-body into the `browser_frame` payload so the framing contract is unit-testable:
-- `data` must match the base64 charset (`_B64_RE`) — this structurally excludes
-  `:` (no `://` URL), whitespace, and `<`/`>` (no HTML/script), which is the right
-  boundary control for browser-captured image bytes; no text redaction is applied.
-- `format` must be in the `{jpeg, png, webp}` allowlist; `svg` is deliberately
-  excluded because an SVG data URI can carry executable script (XSS safety).
-- `session_key` is passed through only if it matches a bounded safe charset
-  (`_SESSION_KEY_RE`, ≤128 chars) so the WS payload can't carry arbitrary text.
+The CLI writes one timestamped YAML per command and documents no pruning, so the
+directory grows without bound.
 
-**Active pump.** Frames from agent screenshots alone are sparse, so the proxy runs
-a background active pump that injects its own idle-gated `browser_take_screenshot`
-into the Playwright subprocess to keep the mirror current between agent shots
-(~1-3 fps). It is single-in-flight (with a timeout so a hung browser can't wedge
-it), demuxes the proxy-namespaced response id (`__mc_pump_` prefix — never
-forwarded to kiro or written to disk), and backs off when there are zero
-subscribers (learned from the frame endpoint's response subscriber count). It is
-disabled in extension mode (the user already sees their own Chrome) and gated on
-recent real browse activity.
+**The gateway service prunes it on a schedule.** Retention belongs to a
+long-lived component rather than to the agent for two reasons: the agent has no
+reason to know the policy, and a per-command prune would race the daemon.
+Snapshots are throwaway state, so retention is by age and count. The service
+never deletes a file the current session still refers to, because the path on
+stdout is the agent's only handle to the tree.
 
-**Pump audit.** The proxy is a stdlib-only stdio subprocess and cannot reach
-`sel.py`, so each pump injection is reported to loopback
-`POST /api/browser/pump-audit` and the gateway emits the SEL
-`browser_take_screenshot` tool-invocation audit event on the proxy's behalf,
-keeping proxy-internal tool calls auditable.
+This is also why the snapshot directory is at a fixed path the service owns
+rather than relative to whatever working directory an agent happened to have.
 
-**Panel.** The live mirror renders in the floating `BrowserLiveView` window — a
-lifecycle-driven, resizable, persisted overlay that auto-opens in the corner on
-the first frame of a browse session (minimize→chip, close→dismiss-this-session).
-It consumes the frame stream via `useBrowserFrame` and is threaded with the
-resolved session *title* (the raw `session_key` is only a client-side lookup key
-against the dashboard's own slot store). It is read-only — no interactive
-control channel.
+### Dashboard integration
 
-> Note: the chat side panel's **"Web Preview"** tab (`WebPreviewPanel`, opened
-> from the + menu) is a SEPARATE feature — a URL-addressable iframe that
-> live-previews a local dev server the user is running (per-session URL), NOT
-> this agent-browse screenshot mirror. It does not consume the `browser_frame`
-> stream. The URL bar has back/forward (a URL-bar history stack — an iframe's
-> own cross-origin page history isn't readable), an inline reload, an
-> open-in-browser link inside the field, and an **expand** toggle: expand
-> broadcasts `PREVIEW_FOCUS_EVENT`, on which App collapses the left nav and
-> ChatPage hides the session list + maximizes the side panel (chat shrinks to its
-> minimum). A **dimension selector** (Monitor icon = responsive desktop;
-> Smartphone icon = a device size — iPhone/Pixel/Galaxy/iPad presets) renders the
-> iframe at that device's pixel size. A **crop** button (shown only where the
-> snip pipeline works — `isScreenSnipSupported()`, non-mobile) dispatches
-> `PREVIEW_SNIP_EVENT`; ChatPage handles it by reusing the shared snip pipeline
-> (`captureScreen` via getDisplayMedia — routed through Electron's
-> `setDisplayMediaRequestHandler` in the desktop app — → `SnipOverlay` drag-crop →
-> `uploadFiles` attaches the PNG to the composer, pinned to the slot that
-> initiated the capture so a mid-capture slot switch can't misfile it).
->
-> **Liveness.** A cross-origin iframe keeps displaying its last document after
-> its server dies, so while a URL is framed the panel polls it (`fetch` no-cors,
-> tab-active only); two consecutive connection failures ⇒ the iframe is unmounted
-> and a "server not reachable" state shown instead of the stale page, and a later
-> successful probe auto-restores it.
->
-> **Security.** The iframe is loopback-only (http(s), mixed-content-guarded). Cookies
-> are scoped by host but not port, so `isolatePreviewHost` swaps a preview whose
-> host equals the dashboard's (both loopback) to the other loopback alias
-> (`localhost` ⇄ `127.0.0.1`) — the dashboard's host-scoped auth cookie is never
-> sent to the framed dev server. The dashboard CSP admits loopback `frame-src`
-> unconditionally (`_LOOPBACK_FRAME_SRC` in `server.py`), so previews render in the
-> packaged app, not only in instances mode.
->
-> It can be **fed from chat** via `detectPreviewUrl` (assistant messages, newest
-> first; within a message a marker beats a bare URL): the agent's hidden
-> It can be **fed from chat** via `detectPreviewUrl` (assistant messages, newest
-> first; within a message a marker beats a bare URL). **Click-to-load:** neither
-> path ever navigates the iframe — both hand the URL to the panel as a **"Load
-> preview" card** (`setSessionPreviewPending`), and the GET fires only on the
-> user's explicit Load click, so agent output can't drive the scripted iframe to
-> an arbitrary host without consent. Chat-fed URLs are additionally
-> **loopback-only** (enforced in `setSessionPreviewPending`): agent output —
-> which browsed/read content can prompt-inject — can only ever offer a local dev
-> server, never an external host; the manual URL bar is not restricted. The
-> agent's hidden
-> `<!-- kirocrew:preview url="…" -->` marker (`web-preview` skill) is treated as
-> explicit intent — ChatPage surfaces the card AND opens the tab, deduped via a
-> PERSISTED `mc-webpreview-applied:<slot>` key (+ in-memory ref) so a route
-> remount won't reopen a dismissed card. A bare localhost URL in prose offers the
-> card WITHOUT opening the tab, and only when no target is set yet.
+`playwright-cli show --port <n> --host 127.0.0.1` serves the CLI's own dashboard
+over loopback HTTP, and the panel embeds that in an iframe. The served dashboard
+provides the session grid with live screencast, a session detail view with tab bar
+and navigation controls, and full remote mouse and keyboard input, so a human can
+take over a session directly: this is the path for a CAPTCHA or a 2FA prompt that
+an agent cannot and should not complete. Escape releases input capture.
 
-**Source:** `src/kiro_crew/browser/screencast.py`, `src/kiro_crew/mcp_playwright_proxy.py`, `website/src/hooks/useBrowserFrame.ts`, `website/src/components/BrowserLiveView.tsx`, `website/src/components/WebPreviewPanel.tsx`, `website/src/utils/detectPreviewUrl.ts`, `src/kiro_crew/dashboard/server.py` (`_LOOPBACK_FRAME_SRC`)
+Three properties of the server must be honoured, because each failure mode
+presents as a broken panel rather than as a misconfiguration:
 
-**Fallback tools** in kirocrew-core (for manual use if needed):
+1. **Bind `--host 127.0.0.1` explicitly.** The default listener is IPv6-only, and
+   an iframe pointed at `127.0.0.1` gets a connection failure against it.
+2. **Health-check for any response, not for 200.** The root path answers 302.
+3. **Treat `show` as a supervised child process.** It blocks, so it needs an
+   owned lifecycle rather than a fire-and-forget call. `show --kill` stops the
+   daemon.
 
-| Tool | Purpose |
-|------|---------|
-| `browse_outline` | Compress snapshot text → compact outline with refs |
-| `browse_search` | Regex search snapshot text → matching lines only |
-
-### Dashboard Integration
-
-- **Globe button** in ChatInput toggles browse mode → sends `{ browse: true }` in POST
-- **Backend** prepends `[BROWSE]` marker to message when browse mode active
-- **Settings → Browser** panel: toggle extension mode, paste token, auto session restart
-- **BrowserAuthPrompt** component: notification banner when auth gate detected
-- **API endpoints:**
-  - `GET /api/browser/config` — read extension mode + token status
-  - `PUT /api/browser/config` — save extension mode + token (patches `mcp.json`, restarts sessions)
-  - `POST /api/browser-auth-retry` — retry auth (calls `ensure()`)
-  - `POST /api/browser-event` — broadcast browser activity events via WebSocket
-  - `POST /api/browser/frame` — ingest a browse screenshot, rebroadcast as `browser_frame` WS event, return live subscriber count (loopback-only, in `internal_paths`)
-  - `POST /api/browser/pump-audit` — SEL audit for proxy active-pump screenshot injections (loopback-only, in `internal_paths`)
+**Never pass `--host 0.0.0.0`.** The served dashboard carries full remote input on
+a browser that may hold the operator's sessions, so binding it off loopback
+exposes an interactive takeover surface to the network.
 
 ### Security
 
 | Control | Implementation |
 |---------|----------------|
-| URL validation | `federated_login()` (stubbed enterprise SSO flow) restricts to `*.example.com` placeholders; the OSS build ships no enterprise allowlist |
-| Token storage | Written with `os.open(..., 0o600)` — not world-readable |
-| SEL audit | All browser API endpoints emit SEL audit events |
-| `browser_evaluate` | NOT auto-approved — requires user confirmation (cookie exfiltration risk) |
-| Storage state | Written with `0o600` permissions via `os.open` |
+| Capability grant | Presence of `playwright-cli` on PATH; see [Capability model](#capability-model) for what this does and does not cover |
+| Dashboard exposure | `show` is bound to `127.0.0.1`; `0.0.0.0` is never passed, because the served view carries remote input |
+| Saved state files | Owner-only permissions; they hold live session credentials |
+| Page content | Treated as untrusted input. A URL, instruction, or form target read off a page never decides the next navigation |
+| Attach mode | Operates the operator's real logged-in browser, so it is the strongest form of the capability and the reason the accepted risk is recorded |
+| Approval | Page-scoped verbs run without a prompt; verbs that reach the local machine do not. Matched on the real command from `tool_input`, never the model-authored title. Verb AND flag allowlists, so both `eval` and `screenshot --filename=<path>` keep interactive approval. Logged as `reason: "browser_cli"` |
 
-### Platform Matrix
+### Platform notes
 
-| Platform | Mode | Auth | Browser |
-|----------|------|------|---------|
-| macOS | Extension (recommended) | Real Chrome session | User's Chrome via extension |
-| macOS | Headed (fallback) | Storage state + SPNEGO | Separate Chromium |
-| AL2/AL2023 x86_64 | Headless | Storage state + SPNEGO | Playwright Chromium |
-| AL2/AL2023 NICE DCV | Extension (opt-in) | Real Chrome session | User's Chrome via extension |
-| AL2 aarch64 (glibc 2.26) | Fallback | N/A | `ReadInternalWebsites` only |
+| Requirement | Detail |
+|---|---|
+| Node.js | 20 or newer |
+| Install | `npm install -g @playwright/cli@latest` |
+| Browser binary | `install-browser`, with `--with-deps` on Linux |
+| Attach | Chromium-family only, since Playwright ships an attach extension for that family alone |
 
-### Credential Lifetimes
+### Standalone enterprise installer
 
-| Credential | Lifetime | Refresh | MCP Restart? |
-|---|---|---|---|
-| SSO session cookie | ~20 hours | your SSO login + `kirocrew browse auth refresh` + `browser_set_storage_state` | No |
-| Kerberos TGT | ~6 hours | your Kerberos login | Yes (read at Chromium launch) |
-| Extension token | Permanent (until Chrome extension reinstalled) | Re-copy from extension popup | Yes |
+`playwright-cli.sh` (macOS/Linux) and `playwright-cli.ps1` (Windows) install the
+same `@playwright/cli` package as the install flow above, for the case that flow
+cannot handle: a machine where `npm install -g` does not work. They are run by a
+human at a shell, not by the gateway, and nothing in the product invokes them.
 
-### Proof-of-Possession Enforcement (Future)
+They exist because step 2 of the install flow assumes two things an enterprise
+laptop often lacks — a Node toolchain of a recent enough major, and a default
+registry that answers without a login. When either is missing, a bare
+`npm install -g` fails with npm's own output, which does not distinguish "your
+token expired" from "the registry is firewalled" from "this mirror does not carry
+the package", and those three have mutually exclusive remedies. The scripts remove
+both assumptions without introducing a private artifact channel: there is no Kiro
+Crew-hosted Playwright build to keep in sync or to trust.
 
-Cookie replay will stop working when SSO proof-of-possession is enforced.
-- **Extension mode:** unaffected — real Chrome has the AEA extension
-- **Headless mode:** will break — fall back to `ReadInternalWebsites` or switch to extension mode
+**Node is bootstrapped, not required.** A Node already on PATH is reused when its
+major is at least the floor the install flow above requires, as is one recorded by
+`ensure-node.sh` in `<data home>/node-bin-dir` — these installers *read* that
+marker but never write it, so the sharing is one-directional: a Node they
+bootstrap stays private to them, and `ensure-node.sh` still downloads its own.
+That is deliberate, because `env.py` hands the marked interpreter to the gateway,
+whose floor is higher again.
+
+A reused Node is only reused if `npm` is actually beside it. On Debian and Ubuntu
+`nodejs` and `npm` are separate packages, so `apt install nodejs` alone leaves a
+perfectly good Node with no npm — and telling that user to install npm would hand
+back the one prerequisite these installers exist to remove. Such a Node is
+abandoned and a private one bootstrapped instead, because the release tarball
+bundles npm. Missing npm in a tree the installer itself unpacked is a different
+thing entirely — a truncated archive — and aborts rather than retrying.
+
+Otherwise the release build for the detected platform is downloaded and its
+SHA-256 checked against that release's `SHASUMS256.txt` **before it is
+executed**; a mismatch, or an artifact the manifest does not list at all, aborts
+the install. Selection is libc-aware because an official tarball is not portable:
+musl hosts (Alpine) get the unofficial-builds variant, and so do pre-2.28-glibc
+hosts (RHEL 7-era) **on x64 only**, which is the only architecture that variant
+is published for. The manifest is fetched over the same channel as the artifact
+and is not itself signed — identical to `ensure-node.sh`, so this is corruption
+detection plus transport trust, not an independent trust root like the signed
+manifest `cli.sh` verifies.
+
+**The install is unprivileged and self-contained**, which is where it diverges
+from the install flow above: `npm install --global` is run with
+`npm_config_prefix` pointed at `<data home>/playwright-cli`, so nothing is written
+outside the user's home and sudo is never involved. The generated entry point is a
+**wrapper script, not a symlink**: npm's own shim starts `#!/usr/bin/env node`,
+which resolves against the *caller's* PATH, so a user whose Node the installer had
+to bootstrap would get `node: not found` from a tool that installed perfectly. The
+wrapper pins the exact interpreter that was verified, and every path interpolated
+into it is escaped, because a generated script treats its inputs as code.
+
+**The public registry is pinned.** An ambient `.npmrc` that redirects the default
+registry at a private mirror makes a *public* package 401 the moment that mirror's
+token expires. `--registry` re-points it for the opposite case (public registry
+firewalled, mirror reachable), and `--isolated-npmrc` ignores the ambient config
+entirely. A registry URL carrying a credential — in userinfo or in a query
+parameter — is redacted everywhere the scripts print it, and the log is created
+owner-only, because npm writes that URL into its own output.
+
+**A credential may not be passed as a flag.** `/proc/<pid>/cmdline` is
+world-readable, so `--registry https://user:token@host/` publishes the token to
+every account on the machine for as long as the install runs, and leaves it in shell
+history besides — neither of which redaction can reach, since redaction covers only
+what the scripts print. The credential travels in the environment instead
+(`KIROCREW_NPM_REGISTRY`, `PLAYWRIGHT_DOWNLOAD_HOST`), where `/proc/<pid>/environ` is
+readable only by its owner, or through `npm login`. The refusal keys on PROVENANCE
+rather than content: the resolved registry value also holds an env-supplied
+credential, and refusing that would break the escape the error message recommends.
+
+**Enterprise failures are classified, not passed through.** npm's output is kept
+at `<prefix>/playwright-cli-install.log` — namespaced because a caller-supplied
+prefix could otherwise make that a generic name the installer truncates — and matched against the failures a corporate network
+actually produces. The browser binary is fetched during the install rather than
+left to first use, for the same reason: it comes from the Playwright CDN and not
+the npm registry, so a network that permits one may block the other, and doing it
+here turns that into exit 16 with a mirror remedy instead of a stall inside the
+user's first browse. `--with-deps` is deliberately not passed — it installs OS
+packages through the system package manager, and this installer never elevates.
+The full exit-code table is in `--help`; the codes that carry a diagnosis are 13
+(registry rejected auth), 14 (registry unreachable), 15 (package or version
+absent) and 16 (browser download blocked).
+
+### Related
+
+- [web-browse](../../../src/kiro_crew/builtin_skills/web-browse/SKILL.md) for
+  opening a page so the user can see it.
+- [web-verify](../../../src/kiro_crew/builtin_skills/web-verify/SKILL.md) for
+  screenshotting a front-end change as evidence.
+- [mcp](../../architecture/mcp.md) for why browsing is deliberately not an MCP
+  server.

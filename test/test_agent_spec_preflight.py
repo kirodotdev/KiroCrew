@@ -9,11 +9,12 @@ command instead of dumping a raw
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -180,10 +181,13 @@ class TestGatewayInstallVerification:
             vector = stack.enter_context(patch("kiro_crew.vector_memory.VectorMemoryStore"))
             vector.return_value = MagicMock()
             stack.enter_context(patch("kiro_crew.agent.rebuild_agent_config", rebuild))
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b"kiro-cli 2.16.0", b""))
             stack.enter_context(
-                patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="kiro-cli 2.16.0"))
+                patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
             )
-            orch._init_services()
+            asyncio.run(orch._init_services())
 
     def test_install_exception_logs_error_not_warning(self, tmp_path, caplog, capsys):
         orch = _make_orchestrator()
@@ -228,5 +232,15 @@ class TestGatewayInstallVerification:
             with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
                 self._run_init_services(orch, rebuild=ok)
 
-        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+        # Scoped to our own loggers on purpose: the claim is that a healthy
+        # install is silent, not that nothing anywhere in the worker logged. A
+        # task abandoned by an unrelated test surfaces its exception through the
+        # stdlib ``asyncio`` logger whenever the loop next runs, which can land
+        # inside this test's capture window and has nothing to do with install
+        # verification.
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.ERROR and r.name.startswith("kiro_crew")
+        ]
         assert "ERROR" not in capsys.readouterr().out

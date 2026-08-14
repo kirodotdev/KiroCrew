@@ -448,6 +448,7 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
      "severity": "red | yellow",
      "file": "path", "line": 0,
      "snippet": "quoted offending line(s)",
+     "headline": "the conclusion in ONE sentence under ~100 chars — what is wrong, stated directly; no hedging, no severity word, no file path, and NOT the first sentence of observation restated",
      "observation": "…",
      "consequence": "cause → mechanism → user/system harm",
      "suggestion": "…"}

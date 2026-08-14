@@ -800,6 +800,31 @@ def test_frontmatter_value_reads_fields_and_tolerates_missing():
     assert H._frontmatter_value(None, "description") == ""
 
 
+def test_frontmatter_value_resolves_block_scalars():
+    # A live skill authored with block-scalar frontmatter must round-trip
+    # through the update path: the staged candidate overwrites the live skill
+    # on approval, so reading the indicator verbatim would collapse the
+    # description to ">" (resolved to "" by the loader) and inject a bogus
+    # ">" entry into the merged trigger list.
+    body = (
+        "---\n"
+        "name: auto/x\n"
+        "description: >\n"
+        "  Retry a deploy\n"
+        "  after checking the logs.\n"
+        "triggers: |-\n"
+        "  a, b\n"
+        "---\n\n## Steps\n"
+    )
+    assert H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs."
+    assert H._frontmatter_value(body, "triggers") == "a, b"
+    # An empty block resolves to "" rather than the indicator character.
+    assert H._frontmatter_value("---\ndescription: >\nname: x\n---\nbody", "description") == ""
+    # An indented occurrence of the key is prose inside a block, not a field.
+    nested = "---\ndescription: >\n  triggers: not real\ntriggers: real\n---\nbody"
+    assert H._frontmatter_value(nested, "triggers") == "real"
+
+
 @pytest.mark.asyncio
 async def test_stage_update_merges_live_triggers_not_replaces_them():
     """Approval writes the candidate's frontmatter over live, so the candidate

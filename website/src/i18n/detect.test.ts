@@ -147,6 +147,7 @@ describe('detectBrowserLanguage — exact vs loose precedence', () => {
     withLanguages(['pt-BR'], () => expect(detectBrowserLanguage()).toBe('pt'))
     withLanguages(['es-MX', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('es'))
     withLanguages(['ja-JP', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('ja'))
+    withLanguages(['ko-KR', 'zh-TW'], () => expect(detectBrowserLanguage()).toBe('ko'))
   })
 
   it('takes the highest-ranked loose match when several match loosely', () => {

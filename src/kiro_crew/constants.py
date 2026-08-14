@@ -24,6 +24,15 @@ KIROCREW_SPAWNED_VALUE = "1"
 ENV_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
+# Minimum supported Node.js MAJOR version for every Python-side check
+# (``kirocrew doctor``, the frontend-build probe in ``cli.py``, the TUI
+# launcher in ``cli_chat.py``). Single source of truth so doctor and chat can
+# never disagree about the floor. 22 is the oldest non-EOL line the frontend
+# bundler supports (``ensure-node.sh`` enforces the finer-grained 22.12 floor;
+# ``.nvmrc`` pins the recommended 24 LTS).
+MIN_NODE_MAJOR = 22
+
+
 def env_flag_enabled(name: str) -> bool:
     """Return True iff env var *name* is set to a truthy value (case/space-insensitive)."""
     return os.environ.get(name, "").strip().lower() in ENV_TRUTHY
@@ -43,6 +52,24 @@ DATA_WARNING = (
 # ``acp/client.py``); this cap is the upper safety ceiling for genuinely runaway
 # work, not a "this turn took too long" guard.
 CHAT_TURN_TIMEOUT = 7200.0
+
+# How long the dashboard chat path parks a turn waiting for a human to answer a
+# tool-approval prompt, when config is unavailable (tests, early bootstrap).
+# Deliberately far below ``CHAT_TURN_TIMEOUT``: a window at or above the turn
+# ceiling can never fire, because the turn is cut first and reports itself as a
+# turn timeout, so the real cause (nobody approved) is never named. It also has
+# to leave the turn enough time to act on a late answer — an approval granted at
+# the ceiling buys a turn that is already over. ``agent.tool_approval_timeout_secs``
+# overrides it and is clamped below the turn ceiling at load time.
+TOOL_APPROVAL_TIMEOUT = 600.0
+
+# How long any caller waits for a compaction to report completed/failed —
+# the default of ``LLMProvider.wait_for_compaction`` and the cap on the
+# automatic context-threshold compaction in ``session.py``. Manual (/compact,
+# !compact) and automatic compaction deliberately share this single budget:
+# the operation is identical, so a shorter manual budget only reports
+# "timed out" on work that is still running and subsequently succeeds.
+COMPACT_WAIT_TIMEOUT_SECS = 300.0
 
 
 # ── Canonical "[OPTIONS: a | b | c]" trailer parsers ────────────────────────
@@ -169,6 +196,33 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
 
+# Key under a completion message's ``meta`` where the gateway stamps the
+# structured header facts (outcome, tallies, chunk index, agent id) the
+# dashboard card reads. Mirrors ``META_KEY`` in
+# website/src/pages/chat/subagentCompletion.ts — the two are one wire contract.
+# Stamping the facts here means a reword of the header PROSE below can no longer
+# silently break card rendering: the card reads this meta and the prose regexes
+# demote to a legacy-scrollback fallback (issue #1792).
+SUBAGENT_COMPLETION_META_KEY = "subagentCompletion"
+
+
+# Windows reserved device names, lowercase stems. Windows resolves these inside
+# EVERY directory, so no file OR directory may be named after one — the rule is
+# part of the documented Win32 file-naming contract, not a quirk of one build,
+# and it applies to any host the identifier might travel to.
+#
+# ONE definition on purpose. Every Kiro Crew identifier that becomes a path
+# component on disk — a git branch (a loose ref FILE under `.git/refs/heads/`),
+# an app name (a directory under the apps root) — has to refuse the same set,
+# and two copies would drift. Callers lowercase before testing; a caller whose
+# own grammar already forces lowercase can test membership directly.
+#
+# Only `com1`-`com9` and `lpt1`-`lpt9` are reserved: `com10` is an ordinary name.
+WINDOWS_DEVICE_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(1, 10)}
+    | {f"lpt{n}" for n in range(1, 10)}
+)
 
 # The product wordmark, figlet `small`. ONE definition on purpose: copy-pasting
 # it into cli.py and cli_chat.py risks a rename leaving a stale product name in

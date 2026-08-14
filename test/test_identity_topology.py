@@ -243,7 +243,7 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     response.__enter__ = MagicMock(return_value=response)
     response.__exit__ = MagicMock(return_value=False)
     urlopen = MagicMock(return_value=response)
-    monkeypatch.setattr(mcp_shared.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
     assert mcp_shared._resolve_excluded_tools() == set()
     # The walk must have RESOLVED a session key and reached the gateway —
@@ -399,7 +399,7 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     _wire_common(monkeypatch, topo, "host")
 
     urlopen = MagicMock()
-    monkeypatch.setattr(mcp_shared.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
 
     # No key resolvable -> startup-race fail-open WITHOUT a policy call and,
     # crucially, WITHOUT the stolen key ever being read through the symlink.
@@ -469,17 +469,24 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
-    "dashboard/handlers/messaging.py": (
-        "reader (STRICT): api_browser_frame resolves the browse-mirror session "
-        "key from the posting Playwright proxy's host_pid by walking process "
-        "ancestry and calling session_pid_sig.verify_session_pid (HMAC-verified) "
-        "on each ancestor — HOST-pid-keyed, no unsigned .txt read"
+    "peer_resolve.py": (
+        "reader: the SERVER-side /proc ancestry walk (extracted from "
+        "mcp_gateway/gatewayd._resolve_peer_identity, which now delegates "
+        "here) — runs in the server's own (host) pid namespace, so it is "
+        "immune to client-side namespace divergence; returns the session key "
+        "plus the host ancestor chain (gatewayd indexes the chain for "
+        "claim-push matching); .txt reads via "
+        "session_pid_sig.read_session_pid_txt (hardened, unsigned). Consumed "
+        "by gatewayd (stub register) and dashboard/token_auth (unix-socket "
+        "peer verification)"
     ),
-    "mcp_gateway/gatewayd.py": (
-        "(_resolve_peer_identity) — runs in gatewayd's own (host) pid namespace, "
-        "so it is immune to client-side namespace divergence; also indexes the "
-        "host ancestor chain for claim-push matching; .txt reads via "
-        "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
+    "dashboard/token_auth.py": (
+        "reader (via peer_resolve.resolve_peer_identity, no inline walk): "
+        "kernel-attests internal-API requests arriving on the dashboard's "
+        "AF_UNIX socket — SO_PEERCRED peer pid → host-namespace ancestry walk "
+        "→ session_pid_<pid>.txt; denies when the resolved key differs from "
+        "the client-declared X-Session-Key header, degrades to status quo "
+        "when unresolvable"
     ),
     "sandbox.py": (
         "writer-adjacent: launcher exports KIROCREW_HOST_PID (its own HOST pid — "

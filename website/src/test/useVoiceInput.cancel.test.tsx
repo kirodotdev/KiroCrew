@@ -69,6 +69,43 @@ async function loadHook() {
   return mod.useVoiceInput
 }
 
+describe('useVoiceInput cancel releases the startup latch', () => {
+  // The re-entrancy latch is held for the whole async startup. Cancelling while
+  // `getUserMedia` is still awaiting the permission dialog used to leave it held
+  // for as long as that dialog stayed open — nothing settles that await — so the
+  // next press hit `if (startingRef.current) return` and recorded NOTHING. On a
+  // push-to-talk binding that is an ordinary sequence: press, release during the
+  // first-run permission prompt, press again.
+  it('lets a replacement press start after a cancel mid-acquire', async () => {
+    const useVoiceInput = await loadHook()
+    let resolveFirst: (s: unknown) => void = () => {}
+    getUserMedia
+      .mockImplementationOnce(() => new Promise(r => { resolveFirst = r }))
+      .mockImplementationOnce(() => Promise.resolve(makeStream()))
+    const { result } = renderHook(() => useVoiceInput(vi.fn()))
+
+    // Press: startup begins and parks on the permission dialog.
+    act(() => { void result.current.start() })
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(result.current.recording).toBe(false)
+
+    // Release while the dialog is still open.
+    act(() => { result.current.cancel() })
+
+    // The replacement press must actually acquire and record.
+    await act(async () => { await result.current.start() })
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(result.current.recording).toBe(true))
+
+    // The abandoned acquire now resolves. It must not disturb the live session:
+    // its own teardown would otherwise null the warm promise, drop ownership and
+    // surface a mic error for a recording that is running fine.
+    await act(async () => { resolveFirst(makeStream()); await Promise.resolve() })
+    expect(result.current.recording).toBe(true)
+    expect(result.current.error).toBeNull()
+  })
+})
+
 describe('useVoiceInput cancel (Esc discard)', () => {
   it('DROPS the audio without transcribing', async () => {
     const useVoiceInput = await loadHook()

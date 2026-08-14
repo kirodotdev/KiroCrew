@@ -28,6 +28,7 @@ from kiro_crew.apps.execution import (
     shipped_builtin_app_root,
     shipped_builtin_module_path,
 )
+from kiro_crew.apps.interpreter import resolve_app_python, venv_python_path
 from kiro_crew.apps.manager import app_dir, get_app_manifest, list_apps
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
@@ -691,8 +692,11 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         _env = minimal_env()  # don't leak secrets to pip/venv subprocesses
         try:
             if not venv_dir.exists():
+                # sys.executable, never a bare "python3": the bare name relies on
+                # PATH (absent on some hosts, a Store stub on Windows) — the same
+                # policy every app spawn path applies via apps/interpreter.
                 venv_cmd, _ = wrap_argv(
-                    ["python3", "-m", "venv", str(venv_dir)], mode="standard"
+                    [sys.executable, "-m", "venv", str(venv_dir)], mode="standard"
                 )
                 venv_cmd = cgroup_scope_argv(venv_cmd)  # cgroup DoS ceiling
                 subprocess.run(
@@ -700,10 +704,15 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     check=True, capture_output=True, timeout=60, env=_env,
                     preexec_fn=resource_limit_preexec(),
                 )
-            pip_bin = str(venv_dir / "bin" / "pip")
+            # Invoke pip through the venv's own interpreter: `.venv/bin/pip` is
+            # POSIX-only (Windows venvs ship Scripts\), and `<venv python> -m pip`
+            # is the layout-independent spelling. Without it a Windows venv is
+            # created but never provisioned — and would then be preferred by the
+            # venv-first interpreter policy while holding none of the app's deps.
+            venv_python = str(venv_python_path(root))
             pip_cmd, _ = wrap_argv(
-                [pip_bin, "install", "--quiet", "--disable-pip-version-check",
-                 "-r", str(req_file)], mode="standard"
+                [venv_python, "-m", "pip", "install", "--quiet",
+                 "--disable-pip-version-check", "-r", str(req_file)], mode="standard"
             )
             pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling
             subprocess.run(
@@ -869,13 +878,13 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     elif backend_type == "asgi" or (
         not backend_type and _is_asgi_entry(entry)
     ):
-        venv_python = str(root / ".venv" / "bin" / "python3")
-        # Fall back to the gateway's own interpreter (sys.executable) rather than a bare
-        # "python3": a bare name relies on PATH, which isn't guaranteed (e.g. some
-        # build environments ship only a versioned interpreter, so execvp("python3") raises
-        # FileNotFoundError and the backend dies immediately). Matches the module-style
-        # branch above.
-        python_bin = venv_python if (root / ".venv" / "bin" / "python3").is_file() else sys.executable
+        # Prefer the app's venv interpreter, else the gateway's own (sys.executable) —
+        # never a bare "python3": a bare name relies on PATH, which isn't guaranteed
+        # (e.g. some build environments ship only a versioned interpreter, so
+        # execvp("python3") raises FileNotFoundError and the backend dies immediately).
+        # One policy shared with the stdio MCP registration path — see
+        # kiro_crew.apps.interpreter.
+        python_bin = resolve_app_python(root)
         # Derive the module path for uvicorn (e.g. backend.app:app)
         rel = entry.relative_to(root)
         parts = list(rel.parts)
@@ -895,10 +904,9 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
 
     # --- Plain Python backend (default) ---
     else:
-        venv_python = str(root / ".venv" / "bin" / "python3")
-        # See the ASGI branch: prefer the venv python, else the gateway's own interpreter
-        # (sys.executable) — a bare "python3" relies on PATH and isn't always present.
-        python_bin = venv_python if (root / ".venv" / "bin" / "python3").is_file() else sys.executable
+        # See the ASGI branch: venv python first, else the gateway's own interpreter —
+        # one policy shared with the stdio MCP registration path.
+        python_bin = resolve_app_python(root)
         cmd = [python_bin, entry_str]
         cwd = str(root)
 
@@ -1200,6 +1208,70 @@ def get_app_backend_port(app_name: str) -> int | None:
     with _lock:
         ap = _processes.get(app_name)
         return ap.port if ap and ap.healthy else None
+
+
+def recorded_backend_port(app_name: str) -> int | None:
+    """The port THIS GATEWAY recorded for *app_name*'s backend, or None.
+
+    Gateway-owned provenance, in preference order: the live tracking entry, then
+    the pidfile written at spawn/adoption. Neither is reachable by the app — the
+    pidfile lives under ``KIROCREW_HOME``, not in the app directory — which is
+    what makes this usable as evidence when the app's own manifest is not.
+
+    Must be read BEFORE :func:`stop_app_backend`, which drops both records.
+    """
+    with _lock:
+        ap = _processes.get(app_name)
+        if ap and ap.port:
+            return int(ap.port)
+    entry = _read_pidfile().get(app_name)
+    if isinstance(entry, dict):
+        port = entry.get("port")
+        if isinstance(port, int) and _MIN_PORT <= port <= _MAX_PORT:
+            return port
+    return None
+
+
+def unstopped_backend_port(app_name: str, *, port_hint: int | None = None) -> int | None:
+    """The port *app_name*'s backend is still listening on after a stop, else None.
+
+    Answers the one question :func:`stop_app_backend`'s boolean cannot: it returns
+    ``False`` both for "there was nothing to stop" (never started, already dead,
+    crashed) and for "something is running that I did not stop" (never adopted at
+    boot, or adopted with no usable PIDs) — and ``True`` only means the process it
+    was TRACKING is gone, which says nothing about a detached worker the app
+    spawned for itself. Those need opposite handling, so the caller observes the
+    port instead of reading a flag.
+
+    ``port_hint`` is the gateway-recorded port from :func:`recorded_backend_port`,
+    captured before the stop. It is preferred over the manifest because the
+    manifest is ``app.json`` INSIDE the app directory — writable by any app trusted
+    to run code, so an app could otherwise relabel its port (or claim ``auto``) to
+    hide from this probe. The hint also covers ``port: auto`` backends, whose real
+    port only the gateway ever knew.
+
+    The manifest is the fallback for the case the hint cannot cover: a fixed-port
+    backend this gateway never tracked at all (adoption skipped at boot), where the
+    declared port is the only lead available. Only ``backend.entryPoint`` apps are
+    considered there — an app whose backend is a loopback ``mcpServers`` URL is a
+    process the gateway never spawned and does not own, so a listener on it is not
+    an unstopped child. ``None`` means "nothing observed", not "definitely stopped".
+    """
+    if port_hint is not None:
+        return port_hint if _port_is_listening(port_hint) else None
+    try:
+        manifest = get_app_manifest(app_name)
+        if manifest is None or not manifest.backend.entryPoint:
+            return None
+        port_str = str(manifest.backend.port)
+        if not port_str or port_str == "auto":
+            return None
+        port = int(port_str)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not (_MIN_PORT <= port <= _MAX_PORT):
+        return None
+    return port if _port_is_listening(port) else None
 
 
 # ---------------------------------------------------------------------------

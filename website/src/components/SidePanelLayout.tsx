@@ -17,6 +17,14 @@ export interface SidePanelTab {
   group?: string
   /** Render a divider above this tab in the desktop nav (e.g. before About). */
   dividerBefore?: boolean
+  /** Contain THIS tab's pane to the viewport instead of letting the page grow:
+   *  the tab's own header stays put and the pane's `overflow-y-auto` children
+   *  do the scrolling. Per-tab because a page can legitimately mix the two —
+   *  Settings is one long scrolling form on sixteen tabs and a two-column
+   *  archive with its own rail on one, and a page-wide switch would have to
+   *  break one of them. The page-level `fixedContent` prop still forces it for
+   *  every tab. */
+  fixedContent?: boolean
 }
 
 interface SidePanelLayoutProps {
@@ -84,6 +92,14 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
     }, { replace: true })
   }
   const meta = tabs.find(t => t.key === tab)
+
+  // Whether the shown pane is contained rather than page-scrolled. The
+  // page-level prop is unconditional; the per-tab flag is honoured on desktop
+  // only, because it exists for panes that put a fixed rail beside a scrolling
+  // detail column and the mobile layout has no width for that pane to keep. On
+  // a phone the rail and the detail sit in ~150px each, so containing them
+  // would hand the reader two thumb-sized scrollers where one page scroll works.
+  const fixed = !!fixedContent || (!isMobile && !!meta?.fixedContent)
 
   // Keep the URL in step with the shown tab, so the address bar stays
   // copy-pasteable — including after an in-place param drop. Keyed on the
@@ -174,9 +190,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
         </nav>
       )}
 
-      <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixedContent ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+      <div className={`flex-1 min-w-0 min-h-0 flex flex-col ${fixed ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {!isMobile && (
-        <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3 shrink-0">
+        <div data-testid="side-panel-header" className="flex items-end justify-between gap-4 px-6 pt-2 pb-3 shrink-0">
           <div>
             <div className="text-2xl font-bold tracking-tight text-text-strong">{meta?.label || ''}</div>
             {meta?.description && <div className="text-muted text-sm mt-1">{meta.description}</div>}
@@ -184,7 +200,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           {headerRight}
         </div>
         )}
-        <div className={`${isMobile ? 'px-4' : 'px-6'} ${fixedContent ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
+        <div className={`${isMobile ? 'px-4' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
           {children(tab)}
         </div>
       </div>

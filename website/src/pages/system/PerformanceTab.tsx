@@ -5,14 +5,17 @@
  * at a time, a right body shows a large live graph plus that resource's numbers.
  * No process/session table — that belongs to Sessions.
  */
-import { type CSSProperties, type MutableRefObject, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
+import { ChevronRight } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card } from '../../components/ui'
-import { fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
+import { fmtBytes, fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import type { SystemData } from '../../types'
+import type { SessionStorageReport, SystemData } from '../../types'
 import type { PlaneState } from '../SystemPage'
+import SessionStorageScreen from './SessionStorageScreen'
 
 type Resource = 'cpu' | 'memory' | 'disk' | 'network'
 
@@ -75,6 +78,20 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
   const savedHistory = planeStateRef.current.performance?.history as HistoryPoint[] | undefined
   const [selected, setSelected] = useState<Resource>(savedResource ?? 'cpu')
   const [history, setHistory] = useState<HistoryPoint[]>(savedHistory ?? [])
+  // The drill-down lives in the URL so it is shareable and survives a reload,
+  // the same reason the plane itself does.
+  const [params, setParams] = useSearchParams()
+  const showStorage = params.get('view') === 'storage'
+  const setStorageView = useCallback((on: boolean) => {
+    setParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (on) next.set('view', 'storage')
+      else next.delete('view')
+      return next
+    }, { replace: true })
+  }, [setParams])
+  const openStorage = useCallback(() => setStorageView(true), [setStorageView])
+  const closeStorage = useCallback(() => setStorageView(false), [setStorageView])
   // Restored, not zeroed: see PerformancePlaneState.lastSampleAt.
   const lastDataId = useRef<number>(planeStateRef.current.performance?.lastSampleAt ?? 0)
 
@@ -119,6 +136,10 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
   const d = data ?? null
   const resources: Resource[] = ['cpu', 'memory', 'disk', 'network']
   const labels = resourceLabels()
+
+  // Its own room, not a panel wedged under the graph: the drill-down is a
+  // control plane and shares none of Performance's monitoring furniture.
+  if (showStorage) return <SessionStorageScreen onBack={closeStorage} />
 
   return (
     <Card>
@@ -169,6 +190,12 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
             <ResourceStats d={d} resource={selected} />
           </div>
 
+          {/* Disk answers "how full is this machine". "What is using it, and can
+              I have it back" is the next question, and it is a control plane —
+              so it is one quiet row that opens its own screen, not more numbers
+              here. Same shape as the Skills page entry row. */}
+          {selected === 'disk' && <StorageEntryRow onOpen={openStorage} />}
+
           {/* Machine identity strip */}
           <div className="border-t border-border pt-3 mt-auto flex flex-wrap gap-x-6 gap-y-1 text-[11.5px] text-muted">
             <span>{i18nT('pages.performanceTab.hostname')}: <strong className="text-text font-mono">{d?.hostname ?? '—'}</strong></span>
@@ -179,6 +206,48 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
         </div>
       </div>
     </Card>
+  )
+}
+
+/* ── Session-storage entry row (Disk pane only) ── */
+
+/**
+ * One quiet line with a figure and an arrow — the pattern already used on the
+ * Skills page. It fetches the report itself rather than lifting it into the
+ * plane, so nothing is requested until someone is actually looking at Disk.
+ */
+function StorageEntryRow({ onOpen }: { onOpen: () => void }) {
+  const { data } = useQuery<SessionStorageReport>({
+    queryKey: ['session-storage'],
+    queryFn: api.sessionStorage,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
+  })
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full text-left rounded-md border border-border bg-card hover:border-border-strong hover:bg-bg-hover transition-all px-3 py-2.5 flex items-center gap-3"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] font-semibold text-text-strong">
+          {i18nT('pages.performanceTab.session_storage')}
+        </div>
+        <div className="text-[11px] text-muted mt-0.5">
+          {data
+            ? i18nT('pages.performanceTab.session_storage_detail', {
+                sessions: fmtNumber(data.total_sessions),
+                reclaimable: fmtBytes(data.reclaimable_bytes),
+              })
+            : i18nT('pages.performanceTab.session_storage_measuring')}
+        </div>
+      </div>
+      {data && (
+        <span className="text-[12px] text-text font-mono tabular-nums">{fmtBytes(data.total_bytes)}</span>
+      )}
+      <ChevronRight className="w-4 h-4 text-muted shrink-0" />
+    </button>
   )
 }
 

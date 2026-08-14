@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers._shared import (
     _resolve_skill_root,
     annotate_skills_with_agents,
     collect_skills_blocking,
+    enumerate_skill_catalog,
     list_kiro_skills,
     list_skill_tree,
     read_skill_file,
@@ -883,3 +884,88 @@ class TestEndpoints:
             resp2 = await client.get("/api/skills/utils/tree/-/tree")
             assert resp2.status == 200
             assert "entries" in (await resp2.json())
+
+
+class TestSessionScopedSkillResolution:
+    """#2457: kiro-workspace/ resolution is scoped to the requesting chat slot.
+
+    With two chats on DIFFERENT projects, the keyless shared-project fallback
+    fails closed and workspace skills silently vanished. A session key now
+    selects the requesting slot's project; keyless behavior is unchanged.
+    """
+
+    def _two_project_state(self, tmp_path: Path):
+        proj_a = tmp_path / "proj-a"
+        proj_b = tmp_path / "proj-b"
+        _write_skill(proj_a / ".kiro" / "skills", "alpha-skill")
+        state = MagicMock(
+            _slots={
+                "slot-a": MagicMock(project=str(proj_a)),
+                "slot-b": MagicMock(project=str(proj_b)),
+            }
+        )
+        return state, proj_a, proj_b
+
+    def test_issue_2457_repro_two_projects_resolve_via_session_key(self, fake_home, tmp_path):
+        """The exact repro from the issue, then the fix: keyed resolution works."""
+        state, proj_a, _ = self._two_project_state(tmp_path)
+        # Pre-existing fail-closed contract without a key: ambiguous -> None.
+        assert _resolve_skill_root("kiro-workspace/alpha-skill", state) is None
+        # The fix: the requesting slot's key resolves its own project's skill.
+        out = _resolve_skill_root("kiro-workspace/alpha-skill", state, "slot-a")
+        assert out == (proj_a / ".kiro" / "skills" / "alpha-skill").resolve()
+
+    def test_other_slots_key_does_not_see_foreign_project_skill(self, fake_home, tmp_path):
+        """Scoping is per-slot: slot B must not resolve slot A's skill."""
+        state, _, _ = self._two_project_state(tmp_path)
+        assert _resolve_skill_root("kiro-workspace/alpha-skill", state, "slot-b") is None
+
+    def test_catalog_agrees_with_resolver_per_session(self, fake_home, tmp_path):
+        """enumerate_skill_catalog and _resolve_skill_root must agree per key —
+        an enumerated key that the resolver cannot resolve would be a phantom
+        entry in the editor."""
+        state, _, _ = self._two_project_state(tmp_path)
+        keyed = enumerate_skill_catalog(state, "slot-a")
+        assert "kiro-workspace/alpha-skill" in keyed
+        other = enumerate_skill_catalog(state, "slot-b")
+        assert "kiro-workspace/alpha-skill" not in other
+        keyless = enumerate_skill_catalog(state)
+        assert "kiro-workspace/alpha-skill" not in keyless  # ambiguous -> omitted
+
+    def test_keyless_single_project_fallback_unchanged(self, fake_home, tmp_path):
+        """The shared-project fallback (step 2) still serves keyless callers."""
+        proj = tmp_path / "solo"
+        _write_skill(proj / ".kiro" / "skills", "solo-skill")
+        state = MagicMock(_slots={"only": MagicMock(project=str(proj))})
+        out = _resolve_skill_root("kiro-workspace/solo-skill", state)
+        assert out == (proj / ".kiro" / "skills" / "solo-skill").resolve()
+        assert "kiro-workspace/solo-skill" in enumerate_skill_catalog(state)
+
+    def test_session_key_does_not_widen_the_allowlist(self, fake_home, tmp_path):
+        """The enumeration security boundary is untouched: with a valid key,
+        traversal names still miss, and the catalog still contains only
+        enumerated paths."""
+        state, proj_a, _ = self._two_project_state(tmp_path)
+        assert _resolve_skill_root("kiro-workspace/../secrets", state, "slot-a") is None
+        assert _resolve_skill_root("kiro-workspace//abs", state, "slot-a") is None
+        catalog = enumerate_skill_catalog(state, "slot-a")
+        for key, path in catalog.items():
+            assert ".." not in key
+            assert path.name == "SKILL.md"
+
+    def test_unknown_session_key_falls_back_not_crashes(self, fake_home, tmp_path):
+        """A stale/unknown key behaves like no key (fallback chain), never raises."""
+        state, _, _ = self._two_project_state(tmp_path)
+        assert _resolve_skill_root("kiro-workspace/alpha-skill", state, "gone-slot") is None
+
+    @pytest.mark.asyncio
+    async def test_skill_file_endpoint_honors_x_session_key(self, fake_home, tmp_path):
+        """End-to-end through the HTTP surface: the header scopes resolution."""
+        state, proj_a, _ = self._two_project_state(tmp_path)
+        state.context_builder = None
+        async with TestClient(TestServer(_make_app(state))) as client:
+            path = "/api/skills/kiro-workspace/alpha-skill/-/file?path=SKILL.md"
+            keyed = await client.get(path, headers={"X-Session-Key": "slot-a"})
+            assert keyed.status == 200
+            keyless = await client.get(path)
+            assert keyless.status == 404  # two projects, no key -> fail closed

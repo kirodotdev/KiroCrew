@@ -27,7 +27,7 @@ except ImportError:
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
@@ -1510,9 +1510,36 @@ _RULE_ID_BY_PATTERN: dict[str, str] = {r.pattern: r.id for r in BUILTIN_DENIED_R
 # always-on floor already covers every case these patterns would (protected
 # targets denied, feature branches allowed), so skipping them loses no coverage.
 _GIT_PUBLISH_RULE_CATEGORY = "git-publish"
-_GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(
-    r.pattern for r in BUILTIN_DENIED_RULES if r.category == _GIT_PUBLISH_RULE_CATEGORY
+# Single filtered view of the catalog so the pattern set and the id set below
+# cannot drift apart (both must cover exactly the git-publish rules).
+_GIT_PUBLISH_RULES: tuple[DeniedCommandRule, ...] = tuple(
+    r for r in BUILTIN_DENIED_RULES if r.category == _GIT_PUBLISH_RULE_CATEGORY
 )
+_GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(r.pattern for r in _GIT_PUBLISH_RULES)
+
+# Catalog rules whose ENFORCEMENT is an always-on floor rather than the
+# configurable regex tier.  Derived from the category (never a hand-maintained
+# id list) so a future git-publish rule is covered automatically.
+_FLOOR_ENFORCED_RULE_IDS: frozenset[str] = frozenset(r.id for r in _GIT_PUBLISH_RULES)
+
+
+def floor_enforced_builtin_command_ids() -> frozenset[str]:
+    """Built-in rule ids enforced by an always-on floor (not opt-out-able).
+
+    These rules exist in the catalog for display parity, but their enforcement
+    is the unconditional verb-anchored git-publish floor (``_is_git_publish`` /
+    ``_is_push_to_protected_branch``) evaluated before the configurable tiers,
+    which consults no opt-out state.  Persisting one of these ids into
+    ``disabled_ids`` therefore changes nothing — the Settings surface must
+    render them locked/forced-on and the toggle API must reject a disable, or
+    the opt-out is a silent no-op (UI reports success, the floor still denies).
+
+    DISPLAY/API accessor only: nothing in the enforcement path reads it, so it
+    cannot weaken the floor.  Pure and deterministic (module-scope derivation
+    from the catalog category), safe to call from any thread.
+    """
+    return _FLOOR_ENFORCED_RULE_IDS
+
 
 # The two self-protection rules whose enforcement lives in the argv-structural
 # floor (``_is_credential_mint`` / ``_is_self_kill``) rather than in the regex
@@ -2252,6 +2279,24 @@ _GIT_PUBLISH_SUBST_PROGRAM_RE = re.compile(
 # Human-readable label recorded in the denial reason + SEL audit event when
 # a git-publish invocation is blocked (the regexes above are the mechanism).
 _GIT_PUBLISH_DENY_LABEL = "git push"
+
+#: The refusal prefix, exported so guards cannot drift from the producer.
+#: ``RecoveryCard.tsx`` parses refusals with
+#: ``/Blocked by security policy:\s*(.+?)\s*$/gm`` — GLOBAL and per-line — so any
+#: line carrying this literal is read as a deny pattern.  An operator note is
+#: emitted on its own line, which means a note containing this literal would be
+#: parsed as a SECOND, fabricated pattern.  Callers that accept operator text
+#: reject or drop it on this constant (see ``hooks.resolve_denied_notes`` and the
+#: dashboard add handler) rather than hardcoding the string again.
+DENY_REASON_PREFIX = "Blocked by security policy: "
+
+#: The form to GUARD against, which is NOT the form we emit. ``RecoveryCard``'s
+#: regex is ``Blocked by security policy:\s*`` — the whitespace after the colon is
+#: optional — so ``"Blocked by security policy:forged"`` parses as a refusal line
+#: while NOT containing :data:`DENY_REASON_PREFIX` (which carries a trailing
+#: space). Guarding on the full prefix therefore leaves a bypass. Derived from the
+#: same string so the two can never drift apart.
+DENY_REASON_MATCH_PREFIX = DENY_REASON_PREFIX.rstrip()
 
 
 # ── Self-protection floor (argv-structural, not a regex) ──
@@ -4076,6 +4121,12 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     ".local/share/amazon-q",
     "Library/Application Support/kiro-cli",
     "Library/Application Support/amazon-q",
+    # Windows layout of the same stores (%APPDATA% defaults to
+    # ~/AppData/Roaming). This matcher is home-anchored, so a Roaming profile
+    # redirected outside the home directory is not covered — the default
+    # location is what agent file tools can reach by a fixed relative path.
+    "AppData/Roaming/kiro-cli",
+    "AppData/Roaming/amazon-q",
 ]
 
 # ── KiroCrew's own data-home secrets & governance trust-root ──
@@ -4086,7 +4137,10 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #   browser-cookies.txt           reusable browser-auth session cookies …
 #   playwright-storage-state.json … and the Playwright storage-state they become
 #   sel_hmac.key                  Security Event Log HMAC key — signs the
-#   security_events.jsonl         tamper-evident audit chain (``sel.py``)
+#   security_events.jsonl         tamper-evident audit chain (``sel.py``);
+#   trust                         the key now lives at ``trust/sel_hmac.key``
+#                                 (owner-only dir OUTSIDE the log's directory);
+#                                 the bare leaf covers pre-migration installs
 #   app_admission.json            App Kit admission ceiling (apps/admission.py)
 #   security_policy.json          governance ceiling (KEYSTONE, governance.py)
 #   profiles                      per-surface governance profiles
@@ -4098,6 +4152,12 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #                                 be neither readable nor writable via any shell
 #                                 form (operator edits it out-of-band via the
 #                                 dashboard ``/api/security/…`` endpoints)
+#   oauth_endpoints.json          operator OAuth consent-endpoint extension —
+#                                 each entry widens the banner-only OAuth
+#                                 entropy carve-out, so a writable file would
+#                                 let the agent exempt an attacker host from
+#                                 the exfiltration heuristics (operator edits
+#                                 it out-of-band by hand)
 #   token_signing.key             dashboard access/refresh token signing key
 #   refresh_chains.json           refresh-token chain state
 #   .local_secret                 internal MCP/cron/hook callback auth secret
@@ -4141,13 +4201,41 @@ _CREW_SECRET_LEAVES: list[str] = [
     "workspace/md-notebook/vaults.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
+    # The optional Playwright extension token. It removes the browser-side approval
+    # click for an attach, so a process that could read it could attach to the
+    # operator's logged-in browser without them seeing a prompt. The gateway hands
+    # it to the CLI through the environment, so nothing legitimate opens the file.
+    "playwright-extension-token",
+    # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
+    # a backup restore resurrects after migration). Kept alongside the ``trust``
+    # directory entry below so the key is gated at BOTH locations.
     "sel_hmac.key",
+    # SEL trust-root directory: sel.py stores/migrates the audit chain's HMAC
+    # signing key at ``trust/sel_hmac.key`` — OUTSIDE the log's directory, so
+    # write access to the log dir no longer implies re-signing power. The whole
+    # dir is gated (like ``profiles``/``run``) so future trust-root material is
+    # covered without a new entry. sel.py opens the key directly, not through
+    # this gate.
+    "trust",
     "security_events.jsonl",
     "app_admission.json",
     "security_policy.json",
     "profiles",
     "admission_policy.json",
     "denied_commands.json",
+    # The operator's OAuth consent-endpoint extension
+    # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
+    # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
+    # so this is a trust boundary of the same class as ``denied_commands.json``
+    # directly above: an agent that could WRITE it could exempt an
+    # attacker-controlled host from the exfiltration heuristics — widening its
+    # own trust ceiling — and one that could READ it would learn which extra
+    # hosts are exempt and aim there. Read+write blocked on both the tool path
+    # (``is_sensitive_path``) and the shell forms. The only legitimate reader
+    # (``_load_operator_oauth_endpoints`` in this module) opens the file
+    # directly, not through this gate; the operator hand-edits it out-of-band
+    # (there is deliberately no dashboard writer).
+    "oauth_endpoints.json",
     # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able
@@ -4169,6 +4257,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # handler is the only writer and it opens the path directly, not through this
     # gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Browser Mode's durable ENABLE gate. Same class of control as
+    # ``computer_use.json`` directly above: while it is present the browse proxy
+    # is registered and the ``browser_*`` tools are in the agent's tool list,
+    # which lets the agent operate a real browser — and in attach mode that is
+    # the operator's own running, logged-in browser. Presence alone is the
+    # authorization, so a bare ``touch`` of this file would be a prompt-injected
+    # self-grant of browser operation. It gets read+write keystone protection on
+    # both the tool path (``is_sensitive_path``) and the shell forms (``touch``,
+    # ``>``, ``tee``, extraction verbs). The dashboard PUT handler is the only
+    # writer and opens the path directly, not through this gate, so the Settings
+    # toggle still works. The sibling ``browser-engine`` leaf is protected too:
+    # it selects the browser Playwright launches, so an agent-authored value
+    # could steer the launch, and it must not diverge from the enable beside it.
+    "browser-mode-enabled",
+    "browser-engine",
     # Ops Mission Control's third-party provider tokens (PagerDuty / Datadog
     # API + application keys). These are live credentials against a user's
     # production incident tooling: a leaked one can acknowledge or resolve real
@@ -4467,6 +4570,80 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # ``marker.exists()``) is caught, not just the exact-leaf forms.
         rf"{home_alts}/(?:{wp_prefixes})/(?:{wp_leaves})(?:/|\s|$|['\"])"
     )
+    # Windows-native spellings of the same fenced dirs, matched in the RAW
+    # command text. POSIX shlex consumes unquoted backslashes during
+    # tokenization, and an embedded interpreter script
+    # (``python -c "open(r'C:\\Users\\u\\.aws\\credentials')"``) never
+    # tokenizes into a path at all — so this raw pass, which already catches
+    # embedded scripts for the POSIX spellings above, is the only layer that
+    # can see a native spelling. Anchors: the resolved home literal (on
+    # Windows it contains backslashes), a generic drive-letter home with
+    # either separator, a UNC prefix, ``%USERPROFILE%``, and ``~``/``$HOME``.
+    # Entry-internal separators accept both slashes; naming a fenced dir is
+    # itself the signal (same fail-safe posture as the branches above), so
+    # over-matching an odd mixed-separator spelling is the safe direction.
+    win_sep = r"[\\/]"
+    # Generalized separator: a plain separator, optionally preceded by any
+    # chain of canonical no-ops — single-dot segments (``\.``) and same-level
+    # down-up excursions (``\X\..``). This is what makes traversal spellings
+    # that re-enter the same location match
+    # (``AppData\Roaming\..\Roaming\kiro-cli``: the excursion consumes
+    # ``Roaming\..`` and the literal segment matches the re-entry). A
+    # multi-level ``..`` chain can over-match a path that actually ends
+    # elsewhere — the safe direction for this gate, which blocks on naming
+    # alone. The name run is length-capped to bound backtracking.
+    win_gsep = rf"(?:{win_sep}(?:\.|[^\\/\s'\"]{{1,64}}{win_sep}\.\.))*{win_sep}"
+    win_dirs_pattern = "|".join(
+        win_gsep.join(re.escape(part) for part in d.split("/"))
+        for d in _SENSITIVE_HOME_DIRS
+    )
+    generic_win_home = rf"[A-Za-z]:{win_sep}(?:Users|home){win_sep}[^\\/\s'\"]+"
+    unc_prefix = r"\\\\[^\s'\"]+"
+    # cmd.exe and PowerShell spellings of the profile variable both anchor a
+    # home-relative fenced path. The cmd.exe form tolerates expansion
+    # modifiers (``%USERPROFILE:~0%``, ``%USERPROFILE:a=b%``), and the
+    # PowerShell form is accepted braced (``${env:USERPROFILE}``) or bare —
+    # all expand to the same location. HOMEDRIVE+HOMEPATH concatenated (either
+    # shell's spelling) is the same home by definition.
+    userprofile = (
+        r"(?:%USERPROFILE(?::[^%\s]*)?%"
+        rf"|{re.escape('$env:USERPROFILE')}"
+        rf"|{re.escape('${env:USERPROFILE}')}"
+        r"|%HOMEDRIVE(?::[^%\s]*)?%%HOMEPATH(?::[^%\s]*)?%"
+        rf"|{re.escape('$env:HOMEDRIVE$env:HOMEPATH')}"
+        rf"|{re.escape('${env:HOMEDRIVE}${env:HOMEPATH}')})"
+    )
+    win_home_alts = (
+        f"(?:{home}|{generic_win_home}|{unc_prefix}|{userprofile}|{tilde}|{home_var})"
+    )
+    # Between the anchor and the fenced remainder, accept the same
+    # canonical-no-op chains (``\.\``, ``\X\..\``): they are equivalent to a
+    # plain separator, so ``%APPDATA%\.\kiro-cli\data.sqlite3`` and
+    # ``...\AppData\Roaming\..\Roaming\kiro-cli\...`` still name the store.
+    win_sensitive_path = (
+        rf"{win_home_alts}{win_gsep}(?:{win_dirs_pattern})(?:{win_sep}|\s|$|['\"])"
+    )
+    # ``%APPDATA%`` already points INTO ``AppData\Roaming``, so a spelling like
+    # ``%APPDATA%\kiro-cli\data.sqlite3`` names a fenced store WITHOUT the
+    # ``AppData\Roaming`` text the branch above anchors on. Map the variable
+    # directly onto that prefix: entries under ``AppData/Roaming/`` are matched
+    # by their remainder.
+    appdata_var = (
+        r"(?:%APPDATA(?::[^%\s]*)?%"
+        rf"|{re.escape('$env:APPDATA')}"
+        rf"|{re.escape('${env:APPDATA}')})"
+    )
+    appdata_remainders = "|".join(
+        win_gsep.join(re.escape(part) for part in d.split("/")[2:])
+        for d in _SENSITIVE_HOME_DIRS
+        if d.startswith("AppData/Roaming/")
+    )
+    # ``%APPDATA%`` ends in ``Roaming`` by definition, so ``\..\Roaming``
+    # right after it is a canonical no-op specific to this anchor.
+    appdata_sensitive_path = (
+        rf"{appdata_var}(?:{win_sep}\.\.{win_sep}Roaming)*"
+        rf"{win_gsep}(?:{appdata_remainders})(?:{win_sep}|\s|$|['\"])"
+    )
     return re.compile(
         # (1) verb/redirect-anchored, OR (2) verb-independent: the sensitive path
         # appears anywhere as a token.  The token anchor accepts start-of-string
@@ -4481,7 +4658,13 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"(?:(?:{_READ_CMDS}.*|{_WRITE_CMDS}.*|{_SCRIPT_OPEN}.*|.*[<>|]\s*)"
         rf"{sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){sensitive_path}"
-        rf"|(?:^|.*[\s'\"=:,;]){write_protected_path})",
+        rf"|(?:^|.*[\s'\"=:,;]){write_protected_path}"
+        # (4) Windows-native spelling, verb-independent (same token anchor):
+        # covers quoted backslash paths AND embedded-script literals that the
+        # tokenizing passes cannot see. (5) the %APPDATA% alias of the fenced
+        # Roaming stores.
+        rf"|(?:^|.*[\s'\"=:,;]){win_sensitive_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path})",
         re.IGNORECASE,
     )
 
@@ -4889,8 +5072,16 @@ _EXTRACT_INTO_TRUST_ROOT_RE = re.compile(
 # the CREATION verbs (``ln``, ``cp -s``/``--symbolic-link``) when any token
 # names a sensitive dir via dot-slash traversal.
 _SENSITIVE_SEGMENT_ALT = "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS)
+# Same alternation with either separator accepted between segments, so the
+# Windows-native relative spelling (``..\..\.aws\credentials``) is caught by
+# the traversal matcher below alongside the POSIX one. Forward-slash-only
+# entries still match (the class includes ``/``), so this strictly widens.
+_SENSITIVE_SEGMENT_ALT_ANYSEP = "|".join(
+    r"[\\/]".join(re.escape(part) for part in d.split("/"))
+    for d in _SENSITIVE_HOME_DIRS
+)
 _RELATIVE_SENSITIVE_RE = re.compile(
-    rf"(?:^|[\s'\"=:,;])(?:\.\.?/)+(?:{_SENSITIVE_SEGMENT_ALT})(?:/|\s|$|['\"])",
+    rf"(?:^|[\s'\"=:,;])(?:\.\.?[\\/])+(?:{_SENSITIVE_SEGMENT_ALT_ANYSEP})(?:[\\/]|\s|$|['\"])",
     re.IGNORECASE,
 )
 
@@ -4956,6 +5147,14 @@ _NORMALIZER_READ_VERBS: frozenset[str] = frozenset(
 # same fidelity as reading it. npm's own fs.link() never transits this gate.
 _LINK_CREATE_VERBS: frozenset[str] = frozenset({"ln", "link"})
 
+# Shell redirection operators attached without a space (``>~/path``,
+# ``>>~/path``, ``2>~/path``, ``2>>~/path``, ``<~/path``).  shlex keeps these
+# as a single token; we strip the operator prefix to expose the path for
+# checking.  Covers output (``>``, ``>>``) and input (``<``) redirections,
+# each with an optional fd number prefix.  Does NOT match heredoc (``<<``)
+# since that takes a delimiter word, not a path.
+_REDIR_PREFIX_RE = re.compile(r"^\d*(?:>>?|<(?!<))")
+
 
 def is_sensitive_bash_command(command: str) -> str | None:
     """Check if a bash command reads sensitive paths, accesses IMDS, or leaks env creds.
@@ -5008,8 +5207,17 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     - Relative traversal: ``awk '{print}' ~/../../.aws/credentials``
     - Mixed evasion: ``"cat" ~/.aws/credentials``
 
-    Only triggers when a recognized read verb is present in the resolved tokens
-    (avoids false positives on write/create commands).
+    Runs VERB-INDEPENDENTLY, matching the posture the regex first-pass already
+    ships: :func:`_build_sensitive_regex`'s catch-all branch blocks any command
+    that NAMES a sensitive path, whatever the verb, because naming one is itself
+    the signal. This pass previously required a token from
+    :data:`_NORMALIZER_READ_VERBS`, so normalization — the only layer that can
+    decide path equivalence — ran on the read path alone. A single dot segment
+    then turned the keystone fence off for every write verb: ``tee
+    ~/.kiro/crew/live_target.json`` was blocked while ``echo x >
+    ~/.kiro/crew/./live_target.json`` was not, on a default install. The verb
+    allowlist is now used only to skip the command name itself, never to decide
+    whether operands get checked.
 
     Returns denial reason string, or None if clean.
     """
@@ -5021,51 +5229,59 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     if not tokens:
         return None
 
-    # Check if any token resolves to a known read verb or hardlink/symlink
-    # creation verb (by basename, so /usr/bin/cat is recognized as "cat").
-    has_relevant_verb = False
-    for token in tokens:
-        if not token:
-            continue
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            has_relevant_verb = True
-            break
-
-    if not has_relevant_verb:
-        return None
-
     # Route each path-like token through is_sensitive_path()
     for token in tokens:
         if not token:
             continue
-        # Skip flags
-        if token.startswith("-"):
-            continue
-        # Skip tokens that ARE the verb itself
-        basename = os.path.basename(token).lower()
-        if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
-            continue
-        # Only check tokens that look like filesystem paths
-        if not _is_path_like(token):
-            continue
-        # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
-        # $HOME expansion, and all sensitive directory checks
-        if is_sensitive_path(token):
-            return (
-                "Blocked: command accesses sensitive credential path "
-                f"(resolved via normalizer: {token[:80]})"
-            )
+        # ``key=value`` operands carry the real path to the RIGHT of the first
+        # ``=``: dd's ``of=…``/``if=…`` and long flags like ``--output=…``.
+        # Checking the raw token cannot work (``of=/x`` resolves to nothing),
+        # and the flag skip below would drop ``--output=/x`` before it is ever
+        # looked at — so split and check the value too.
+        candidates = [token]
+        if "=" in token:
+            value = token.split("=", 1)[1]
+            if value:
+                candidates.append(value)
+        for cand in candidates:
+            # Shell redirections attached without a space (``>~/path``,
+            # ``>>~/path``, ``2>~/path``) are kept as a single token by
+            # shlex.  Strip the leading operator so the path portion is
+            # checked.  Pattern: optional fd digit(s), then ``>`` or ``>>``.
+            stripped = _REDIR_PREFIX_RE.sub("", cand)
+            if stripped != cand:
+                # The stripped form is the real path candidate; if empty
+                # after stripping, skip (bare ``>`` alone).
+                if not stripped:
+                    continue
+                cand = stripped
+            # Skip flags
+            if cand.startswith("-"):
+                continue
+            # Skip tokens that ARE the verb itself
+            basename = os.path.basename(cand).lower()
+            if basename in _NORMALIZER_READ_VERBS or basename in _LINK_CREATE_VERBS:
+                continue
+            # Only check tokens that look like filesystem paths
+            if not _is_path_like(cand):
+                continue
+            # is_sensitive_path handles symlink resolution, traversal, ~ expansion,
+            # $HOME expansion, and all sensitive directory checks
+            if is_sensitive_path(cand):
+                return (
+                    "Blocked: command accesses sensitive credential path "
+                    f"(resolved via normalizer: {cand[:80]})"
+                )
     return None
 
 
 # ── URL Exfiltration Detection ──
 # Detects URLs whose path/query contain credential-like data. We flag the
 # PAYLOAD, not the destination: any URL with secrets is suspicious regardless of
-# host. The sole host-sensitive carve-out is a companion-supplied exact-host
-# exemption (see _exfil_url_warning) that narrows ONLY the base64-blob and
-# query-length heuristics for trusted tenants; the hard-credential floor and the
-# heavy percent-encoding detector stay unconditional for every host.
+# host. The general redactors have one narrow carve-out for companion-supplied
+# exact tenant hosts. A separate, opt-in carve-out for standard OAuth params is
+# available only to ``oauth_url_contains_credential`` on the ACP banner path.
+# Fixed/encoded credentials and heavy percent encoding remain unconditional.
 
 # Host group (group 1) matches THREE host shapes so a raw-IP exfil destination
 # is not silently skipped: a DNS name with a letter TLD, a raw
@@ -5107,14 +5323,315 @@ _EXFIL_PATTERNS = re.compile(
 
 # Heavy URL-encoding detector — the same "20+ consecutive percent-encoded
 # octets" branch carved out of _EXFIL_PATTERNS. This stays UNCONDITIONAL: the
-# exact-host exemption below skips only the base64-blob and query-length
-# heuristics (which false-positive on legitimate long base64 document
-# pointers), NOT this percent-encoding detector, so an encoded exfil payload to
-# a trusted-tenant host is still caught.
+# context-specific exemptions below skip only the base64-blob and query-length
+# heuristics (which false-positive on legitimate document pointers or banner
+# state/PKCE), NOT this detector, so a heavily encoded payload is still caught.
 _EXFIL_PERCENT_RE = re.compile(
     r"%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}",
     re.IGNORECASE,
 )
+
+# Percent-decoding passes applied when re-scanning a URL for encoded
+# credentials. More than one is required because a double-encoded payload
+# survives a single pass; the bound stops a deliberately over-encoded URL from
+# making the scan loop indefinitely.
+_MAX_URL_DECODE_PASSES = 3
+
+# Exact, code-owned OAuth authorization endpoints whose standard front-channel
+# parameters may legitimately contain high-entropy state/PKCE values on the ACP
+# banner-safety path. This is deliberately NOT configurable and never uses
+# suffix matching: an agent-owned
+# setting or ``api.notion.com.attacker.example`` must not lower the redaction
+# ceiling. Paths are exact and case-sensitive; explicit ports and HTTP are not
+# exempted.
+_OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("accounts.google.com", "/o/oauth2/v2/auth"),
+        ("api.notion.com", "/v1/oauth/authorize"),
+        ("app.asana.com", "/-/oauth_authorize"),
+        ("auth.atlassian.com", "/authorize"),
+        ("github.com", "/login/oauth/authorize"),
+        ("linear.app", "/oauth/authorize"),
+        ("login.microsoftonline.com", "/common/oauth2/v2.0/authorize"),
+        ("slack.com", "/oauth/v2/authorize"),
+        # MCP-server authorization servers. A provider's *MCP* server usually
+        # runs its own authorization server, distinct from the classic web-OAuth
+        # endpoint above -- so the pairs above are NOT sufficient for the
+        # Connections launch set. Each pair below was taken from the provider's
+        # own advertised `authorization_endpoint` (RFC 8414 metadata reached via
+        # RFC 9728 protected-resource discovery from the registry's mcp_url) and
+        # independently corroborated by an authorize URL kiro-cli actually
+        # minted. A launch provider missing from this set cannot be connected at
+        # all: its banner fails closed with "authentication failed: URL
+        # contained credential or exfiltration pattern", which is how the gap
+        # was found. Every entry added to the Connections registry needs its
+        # MCP authorization server here too.
+        ("access.stripe.com", "/mcp/oauth2/authorize"),
+        ("gitlab.com", "/oauth/authorize"),
+        ("mcp.linear.app", "/authorize"),
+        ("mcp.notion.com", "/authorize"),
+        ("vercel.com", "/oauth/authorize"),
+    }
+)
+
+# OAuth 2.0 / OIDC front-channel parameters whose values are expected to be
+# opaque and high-entropy. The banner-only exemption is valid ONLY at an exact
+# endpoint above. Every unknown parameter still receives the full query
+# heuristics, even when it shares an otherwise-approved authorization URL.
+_OAUTH_QUERY_PARAMS = frozenset(
+    {
+        "access_type",
+        "acr_values",
+        "allow_signup",
+        "audience",
+        "client_id",
+        "code_challenge",
+        "code_challenge_method",
+        "display",
+        "domain_hint",
+        "id_token_hint",
+        "login",
+        "login_hint",
+        "max_age",
+        "nonce",
+        "prompt",
+        "redirect_uri",
+        "request_uri",
+        "resource",
+        "response_mode",
+        "response_type",
+        "scope",
+        "state",
+        "team",
+        "ui_locales",
+        "user_scope",
+    }
+)
+
+# ── Operator-owned OAuth endpoint extension (keystone oauth_endpoints.json) ──
+# ``_OAUTH_AUTHORIZATION_ENDPOINTS`` above is deliberately code-owned and
+# exact-match, but that leaves no remedy short of a code release when a user's
+# identity provider (Okta, Auth0, self-hosted OIDC, tenant-scoped Entra) is not
+# in the launch set: its real consent URL routinely exceeds the query-length
+# heuristic and the gate fails closed. The extension below restores an
+# OPERATOR-owned escape hatch without weakening the ceiling for the agent:
+#
+# * the file lives on ``_CREW_SECRET_LEAVES`` (read+write keystone), so the
+#   agent can neither read nor author its own trust widening;
+# * a missing/unreadable/corrupt/non-object file yields the EMPTY set — a
+#   mangled file must never widen trust (same posture as
+#   ``computer_use.enable_state.load_state``);
+# * every entry is strictly validated (exact host+path, no wildcards, no
+#   ports/userinfo/percent-escapes, no ``..``), and invalid entries are
+#   SKIPPED with a warning rather than failing the whole file;
+# * HTTPS-only / no-explicit-port stays enforced by the gate logic at both
+#   call sites and is NOT relaxable via the file;
+# * the exemption granted is identical to the builtin set's: only the
+#   base64-blob/query-length heuristics on known ``_OAUTH_QUERY_PARAMS`` are
+#   skipped — fixed-credential patterns, heavy percent-encoding, userinfo,
+#   fragments, backslashes, and unknown-param heuristics remain unconditional.
+_ENDPOINT_EXTENSION_ENTRIES_KEY = "additional_authorization_endpoints"
+
+# Bounds the accepted set AND the validation walk (the entry list is sliced to
+# this before iteration), so a pathological file cannot amplify into an
+# unbounded parse/warn loop or turn the endpoint check into a large probe.
+_ENDPOINT_EXTENSION_CAP = 50
+
+# Strict DNS-name shape for an operator entry, matched against the
+# lowercase-normalized host: dot-separated LDH labels ending in a letter TLD.
+# The letter-TLD requirement rejects raw IPv4 literals; the character class
+# rejects wildcards, schemes, ports, userinfo, percent-escapes, whitespace,
+# backslashes, and bracketed IPv6. Empty labels reject leading/trailing dots.
+# The lookahead bounds total length to the DNS maximum.
+_OAUTH_EXTENSION_HOST_RE = re.compile(
+    r"\A(?=.{1,253}\Z)"
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+    r"\.[a-z]{2,}\Z"
+)
+
+# Paths are exact and case-sensitive (same semantics as the builtin set).
+_OAUTH_EXTENSION_PATH_MAX_LEN = 512
+
+# Rejected anywhere in an operator path entry: query/fragment/path-param
+# delimiters and percent-escapes would let one entry smuggle structure the
+# exact-match comparison is not built to normalize, and ``..`` plus backslash
+# invite parser-differential games. The comparison is byte-exact, so a benign
+# provider path never needs any of these.
+_OAUTH_EXTENSION_PATH_BAD = (";", "?", "#", "%", "\\", "..")
+
+
+def _valid_oauth_extension_path(path: str) -> bool:
+    """True when *path* is safe to compare exactly against a consent URL path."""
+    if not path.startswith("/") or len(path) > _OAUTH_EXTENSION_PATH_MAX_LEN:
+        return False
+    if any(marker in path for marker in _OAUTH_EXTENSION_PATH_BAD):
+        return False
+    return not any(ch.isspace() for ch in path)
+
+
+# Memo for the parsed extension file, keyed on the file's identity + stat
+# (path, mtime_ns, size) so a hand-edit takes effect on the next check without
+# a gateway restart, while repeated checks against an unchanged file cost one
+# ``stat`` instead of a read+parse+validate pass. (path, None) memoizes the
+# absent-file case; any stat/read error bypasses the memo and fails soft.
+_OAUTH_EXTENSION_MEMO: dict[
+    tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]
+] = {}
+
+
+def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
+    """Load the operator's OAuth-endpoint extension set (fail-soft to EMPTY).
+
+    Reads ``<config_dir>/oauth_endpoints.json`` and returns the validated
+    ``(lowercase host, exact path)`` pairs. Absent, unreadable, corrupt, or
+    non-object files — and any entry that fails the strict per-entry
+    validation — yield nothing: a mangled extension file must never widen
+    trust. The ``config.loader`` import stays function-local to keep this
+    module's import graph independent of the loader's: ``config/loader.py``
+    itself imports ``security`` symbols function-locally to avoid a cycle, and
+    a module-level import here would quietly re-arm that cycle the moment the
+    loader hoists its own.
+    """
+    from kiro_crew.config import loader as config_loader
+
+    try:
+        path = config_loader.oauth_endpoints_path()
+        try:
+            stat = path.stat()
+            stat_key: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            stat_key = None
+        memo_key = (str(path), stat_key)
+        cached = _OAUTH_EXTENSION_MEMO.get(memo_key)
+        if cached is not None:
+            return cached
+        if stat_key is None:
+            _OAUTH_EXTENSION_MEMO.clear()
+            _OAUTH_EXTENSION_MEMO[memo_key] = frozenset()
+            return frozenset()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug(
+            "oauth_endpoints.json unreadable; ignoring extension file", exc_info=True
+        )
+        return frozenset()
+
+    approved = _validate_operator_oauth_entries(raw)
+    # One live entry per file: the memo never outgrows a handful of keys, but a
+    # test suite that rewrites the file hundreds of times should not accrete.
+    _OAUTH_EXTENSION_MEMO.clear()
+    _OAUTH_EXTENSION_MEMO[memo_key] = approved
+    return approved
+
+
+def _validate_operator_oauth_entries(raw: object) -> frozenset[tuple[str, str]]:
+    """Strictly validate a parsed extension document into ``(host, path)`` pairs."""
+    if not isinstance(raw, dict):
+        logger.warning("oauth_endpoints.json is not a JSON object; ignoring it")
+        return frozenset()
+    entries = raw.get(_ENDPOINT_EXTENSION_ENTRIES_KEY)
+    if not isinstance(entries, list):
+        if entries is not None:
+            logger.warning(
+                "oauth_endpoints.json: %r is not a list; ignoring it",
+                _ENDPOINT_EXTENSION_ENTRIES_KEY,
+            )
+        return frozenset()
+    if len(entries) > _ENDPOINT_EXTENSION_CAP:
+        logger.warning(
+            "oauth_endpoints.json: %d entries exceed the cap (%d); extra entries ignored",
+            len(entries),
+            _ENDPOINT_EXTENSION_CAP,
+        )
+
+    approved: set[tuple[str, str]] = set()
+    for entry in entries[:_ENDPOINT_EXTENSION_CAP]:
+        host = entry.get("host") if isinstance(entry, dict) else None
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(host, str) or not isinstance(path, str):
+            logger.warning(
+                "oauth_endpoints.json: skipping malformed entry (need host+path strings)"
+            )
+            continue
+        host_norm = host.lower()
+        if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(
+            path
+        ):
+            # The host is operator-authored config, not secret material, and
+            # naming it is what makes the warning actionable.
+            logger.warning(
+                "oauth_endpoints.json: skipping invalid endpoint entry host=%r", host[:64]
+            )
+            continue
+        approved.add((host_norm, path))
+    return frozenset(approved)
+
+
+# Per-process dedupe for the extension-used audit event, so repeated checks of
+# the same URL (every banner emit/redraw re-validates) do not spam the SEL.
+_OAUTH_EXTENSION_AUDITED: set[tuple[str, str]] = set()
+
+
+def _emit_oauth_extension_used_event(host: str, path: str) -> None:
+    """SEL-audit that an OPERATOR extension entry approved a consent endpoint.
+
+    Best-effort: an audit failure must not break the user's ability to
+    authorize their MCP server — the operator explicitly allowlisted the
+    endpoint, so the approval stands regardless of audit success.
+    """
+    if (host, path) in _OAUTH_EXTENSION_AUDITED:
+        return
+    _OAUTH_EXTENSION_AUDITED.add((host, path))
+    try:
+        # Function-local for the same loader-cycle reason as
+        # _load_operator_oauth_endpoints.
+        from kiro_crew.config import loader as config_loader
+
+        SecurityEventLog().log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="oauth_endpoint_extension_used",
+                caller_identity="",
+                agent="kirocrew",
+                source="security",
+                operation="oauth_banner_check",
+                outcome="allowed",
+                resources=f"{host}{path}",
+                metadata={
+                    "host": host,
+                    "path": path,
+                    "file": str(config_loader.oauth_endpoints_path()),
+                    "mechanism": "OAUTH_ENDPOINT_EXTENSION",
+                },
+            )
+        )
+    except Exception:
+        logger.debug(
+            "SEL audit failed for oauth_endpoint_extension_used (allow stands)",
+            exc_info=True,
+        )
+
+
+def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
+    """Exact-match endpoint approval for the banner-only OAuth entropy carve-out.
+
+    Union of the code-owned builtin set and the operator's keystone extension,
+    computed at check time so a hand-edited file takes effect without a
+    restart. The builtin set is consulted first so the common providers never
+    touch the disk; an approval that came from an operator entry is SEL-audited
+    (deduped per process). Callers keep enforcing HTTPS-only / no-explicit-port
+    — this helper only answers endpoint identity.
+    """
+    key = (host.lower(), path)
+    if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
+        return True
+    if key in _load_operator_oauth_endpoints():
+        _emit_oauth_extension_used_event(*key)
+        return True
+    return False
+
 
 # S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that
 # matches the base64-like blob pattern above.  These are intentional
@@ -5261,99 +5778,270 @@ def _exfil_exempt_hosts() -> frozenset[str]:
     return frozenset(host.lower() for host in _exempt_exact_hosts())
 
 
+# ── Kiro Crew's own Slack app-create deep link ──
+# ``kirocrew manifest --url`` and ``GET /api/slack/manifest`` both hand the user
+# Slack's new-app deep link carrying the bundled app manifest percent-encoded
+# into ``manifest_yaml``. That payload is ~1.9 KB, so the aggregate query-length
+# heuristic classifies it as exfiltration and the user is shown
+# ``[REDACTED: suspicious URL to api.slack.com]`` instead of the link the setup
+# guide tells them to click.
+#
+# The carve-out VALIDATES rather than trusts the destination: the decoded payload
+# must reproduce the bundled template, so an approved (host, path) carries no
+# arbitrary bytes. A different path, an extra or missing parameter, a repeated
+# parameter, or a payload that does not rebuild the template all keep the full
+# heuristics. This is deliberately NOT a host exemption: ``_exempt_exact_hosts``
+# is companion-owned tenant trust, and widening it here would exempt every URL at
+# api.slack.com including a model-authored one.
+#
+# The ALIAS is the one caller-controlled span, so it does NOT ride free: the
+# caller feeds it back through the base64-blob heuristic (see
+# ``_exfil_url_warning``) instead of zeroing the heuristic payload. Zeroing it was
+# a real bypass — the alias slot accepted 64 chars of ``[A-Za-z0-9_-]``, which is
+# wide enough for a 40-char alphanumeric secret, and ``_EXFIL_PATTERNS`` needs a
+# 40+ char run to fire. ``slack_manifest.ALIAS_MAX`` (32) now makes such a run
+# impossible AND the surviving span is still scanned, so an ``AKIA…`` id or an
+# ``xox…`` token short enough to fit is caught on the alias alone.
+#
+# Residual, stated rather than implied: an alias of up to ALIAS_MAX chars that
+# resembles no known credential is exempt from the base64/length heuristics. That
+# opens no NEW capability — any URL at any host may already carry a query under
+# _EXFIL_QUERY_MIN_LEN (200) chars without tripping either heuristic, so this
+# span is strictly narrower than what is available without the carve-out.
+#
+# Every unconditional check runs BEFORE this point and is unaffected:
+# hard-credential markers, canonical provider tokens, the multi-pass decode (and
+# its fail-closed saturation branch), and heavy percent-encoding.
+_SLACK_APP_CREATE_PARAMS = frozenset({"new_app", "manifest_yaml"})
+# Single-slot cache for the derived pattern. A plain module constant would read
+# packaged data at import time, which ``security`` avoids: it is imported by the
+# stdio MCP servers, where import-time file I/O is on the critical path.
+_slack_manifest_re_slot: list[re.Pattern[str] | None] = []
+
+
+def _slack_manifest_payload_re() -> re.Pattern[str] | None:
+    """Pattern matching the bundled Slack manifest rendered with any one alias.
+
+    Derived from ``slack_manifest.stripped_template()`` — the SAME procedure both
+    emitters use to build the payload — so the accepted payload cannot drift from
+    the emitted one. Every ``{{ALIAS}}`` after the first must be the same alias
+    (backreference), so a payload that varies them is rejected. Returns None when
+    the template cannot be read, which fails closed (no exemption).
+    """
+    if _slack_manifest_re_slot:
+        return _slack_manifest_re_slot[0]
+    compiled: re.Pattern[str] | None = None
+    try:
+        from kiro_crew import slack_manifest
+
+        rendered = slack_manifest.stripped_template()
+        placeholder_token = slack_manifest.ALIAS_PLACEHOLDER
+        alias_body = slack_manifest.ALIAS_PATTERN
+    except Exception:
+        rendered = ""
+        placeholder_token = ""
+        alias_body = ""
+    if rendered and placeholder_token in rendered:
+        parts = rendered.split(placeholder_token)
+        pattern = re.escape(parts[0])
+        for index, part in enumerate(parts[1:]):
+            slot = f"(?P<alias>{alias_body})" if index == 0 else "(?P=alias)"
+            pattern += slot + re.escape(part)
+        compiled = re.compile(pattern)
+    _slack_manifest_re_slot.append(compiled)
+    return compiled
+
+
+def _kirocrew_slack_app_link_alias(
+    domain: str,
+    path: str,
+    query: str,
+    *,
+    is_https: bool,
+    port: str,
+) -> str | None:
+    """The alias when this is our own Slack app-create link, else None.
+
+    Returns the captured alias rather than a bool so the caller can keep that one
+    caller-controlled span under the heuristics. An empty-string alias is
+    impossible (the pattern requires at least one char), so a truthiness test on
+    the result would be safe — but callers should compare against None to keep
+    that dependence explicit.
+
+    ``domain`` is expected already lowercased by the caller. HTTPS-only and no
+    explicit port, matching the OAuth gate's posture.
+    """
+    if not is_https or port:
+        return None
+    from kiro_crew import slack_manifest
+
+    if domain != slack_manifest.APP_CREATE_HOST or path != slack_manifest.APP_CREATE_PATH:
+        return None
+    params = parse_qs(query, keep_blank_values=True)
+    # Exact param set — an extra parameter is the obvious smuggling shape, so a
+    # superset is refused rather than ignored.
+    if set(params) != _SLACK_APP_CREATE_PARAMS:
+        return None
+    if params["new_app"] != ["1"]:
+        return None
+    payloads = params["manifest_yaml"]
+    if len(payloads) != 1:
+        return None
+    pattern = _slack_manifest_payload_re()
+    if pattern is None:
+        return None
+    match = pattern.fullmatch(payloads[0])
+    if match is None:
+        return None
+    return match.group("alias")
+
+
 def _exfil_url_warning(
     domain: str,
     path_and_query: str,
     exempt_hosts: frozenset[str],
+    *,
+    port: str = "",
+    is_https: bool = True,
+    allow_safe_presigned: bool = True,
+    allow_oauth_entropy: bool = False,
 ) -> str | None:
     """Classify one matched URL — the single per-URL exfil verdict.
 
     Shared by scan_exfiltration_urls (which collects the warnings) and
     redact_exfiltration_urls (which redacts every URL that returns non-None), so
-    the two paths can never drift — redact_ early-returns on scan_'s warnings, so
-    a divergence would silently produce warnings-without-redaction. Returns the
-    warning string, or None if the URL is clean/exempt.
+    the two paths can never drift. Returns the warning string, or None if clean.
     """
     qmark = path_and_query.find("?")
     query = path_and_query[qmark + 1 :] if qmark != -1 else ""
 
-    # Valid S3 presigned URLs carry AKIA in X-Amz-Credential legitimately, so
-    # exempt them wholesale BEFORE the hard-credential path scan below would
-    # otherwise flag them.
-    if query and _is_safe_presigned(domain, query):
+    # Valid S3 presigned URLs carry AKIA in X-Amz-Credential legitimately. This
+    # exemption is disabled for OAuth-banner validation.
+    if allow_safe_presigned and query and _is_safe_presigned(domain, query):
         return None
 
-    # Hard credential markers ANYWHERE in the path or query.
-    # The base64/length heuristics below are query-only, so a secret embedded in
-    # the URL PATH (``https://evil/AKIA…`` — no ``?``) escaped them entirely, and
-    # a raw-IP host never even matched _URL_RE. These markers (AKIA/ASIA,
-    # key=value creds, SSH/PEM, Slack) are unambiguous, so flag regardless of
-    # domain — a real AWS key in a URL is exfil even to an otherwise-safe (or
-    # exempted) host. This hard-credential floor is UNCONDITIONAL.
+    # Hard credential markers are unconditional across the full path/query.
     if _HARD_CREDENTIAL_RE.search(path_and_query):
         return f"Suspicious URL with credential in path/query: {domain}"
+
+    # Fixed credential signatures ANYWHERE in the full authority/path/query are
+    # unconditional. This uses canonical provider-token patterns (GitHub,
+    # Stripe, etc.) in addition to the older AWS/SSH/Slack hard floor, but NOT
+    # the bare-secret entropy classifier that false-positives on OAuth state.
+    full_payload = f"{domain}{port}{path_and_query}"
+    if _contains_fixed_credential(full_payload):
+        return f"Suspicious URL with credential in path/query: {domain}"
+
+    # Decode the whole authority/path/query payload as one invariant. Component-
+    # specific passes risk leaving newly handled URL structure outside the scan.
+    # Decoding ONCE is not enough: a double-encoded payload ("%2542" -> "%42" ->
+    # "B") survives a single pass, so decode until the text stops changing.
+    # Bounded so a deliberately over-encoded URL cannot spin here.
+    decoded_payload = full_payload
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        next_payload = unquote_plus(decoded_payload)
+        if next_payload == decoded_payload:
+            break
+        decoded_payload = next_payload
+        if _HARD_CREDENTIAL_RE.search(
+            decoded_payload
+        ) or _contains_fixed_credential(decoded_payload):
+            return f"Suspicious URL with encoded credential in path/query: {domain}"
+
+    # Fail closed when the budget above ran out with layers still to go. A
+    # payload that is STILL decodable was never seen in plaintext, and neither
+    # remaining check covers it: the credential patterns match literal markers
+    # rather than percent text, and _EXFIL_PERCENT_RE needs 20+ CONSECUTIVE
+    # octets, which the intermediate forms of a wrapped payload ("%252520") do
+    # not form. Treating saturation as clean therefore made the bound an escape
+    # hatch -- wrap a credential in one more layer than the cap and it passed.
+    # Raising the cap only moves that line, so the bound is priced as lost
+    # precision (a pathologically encoded URL is refused) instead of lost
+    # soundness. Benign traffic reaches a stable payload in one or two passes
+    # and never gets here.
+    if unquote_plus(decoded_payload) != decoded_payload:
+        return f"Suspicious URL with encoded credential in path/query: {domain}"
+
+    # Heavy percent-encoding is always suspicious, including inside a standard
+    # OAuth parameter at an approved endpoint. It runs before either
+    # host-sensitive heuristic exemption below.
+    if _EXFIL_PERCENT_RE.search(path_and_query):
+        return f"Suspicious URL with credential-like query data: {domain}"
 
     if qmark == -1:
         return None
 
-    # UNCONDITIONAL base64 decode-and-scan: a hard credential (AWS key, SSH/PEM,
-    # Slack token) that is base64-ENCODED into the query would slip past the raw
-    # _HARD_CREDENTIAL_RE floor above (which matches literal markers, not encoded
-    # bytes) AND, on an exempt host, past the raw base64-blob heuristic below.
-    # Decode any base64 chunk and re-scan the decoded bytes for credential
-    # markers; a legitimate base64 *document* decodes to non-credential text and
-    # _decode_b64_safe returns "" (so it still qualifies for the exemption).
-    # This runs for EVERY host, closing the encoded-credential-to-trusted-tenant
-    # gap without re-flagging benign document pointers.
-    if query and _decode_b64_safe(query):
-        return f"Suspicious URL with encoded credential in query: {domain}"
-
-    # Exact-host heuristic exemption (companion-supplied trusted tenants),
-    # matched case-insensitively and EXACTLY (not by suffix) so a shared
-    # multi-tenant domain does not exempt every tenant. The exemption skips ONLY
-    # the raw base64-blob and query-length heuristics below — the ones that
-    # false-positive on legitimate long base64 document pointers. Everything
-    # else stays unconditional: the hard-credential floor above already ran, the
-    # decode-and-scan just above catches ENCODED credentials on every host, and
-    # the heavy percent-encoding detector below runs even for exempted hosts, so
-    # an encoded exfil payload to a trusted tenant is still caught.
+    # Choose the exact payload that receives generic base64/entropy + aggregate
+    # length heuristics. The OAuth-param carve-out is available ONLY to the
+    # dedicated ACP banner-safety path. General text redactors leave the flag
+    # false and remain strict for arbitrary agent/model text.
     _dom = domain.lower()
-    _exempt = _dom in exempt_hosts
-    if not _exempt:
-        # (Valid S3 presigned URLs were already exempted at the top, so no
-        # _is_safe_presigned re-check is needed here.)
-        if len(query) >= _EXFIL_QUERY_MIN_LEN:
+    _oauth_endpoint = (
+        allow_oauth_entropy
+        and is_https
+        and not port
+        and _approved_oauth_authorization_endpoint(_dom, path_and_query.split("?", 1)[0])
+    )
+    if _oauth_endpoint:
+        # Names are matched literally and case-sensitively; encoded/mixed-case
+        # aliases fail closed as unknown parameters.
+        heuristic_query = "&".join(
+            segment
+            for segment in query.split("&")
+            if segment.partition("=")[0] not in _OAUTH_QUERY_PARAMS
+        )
+    elif (
+        _slack_alias := _kirocrew_slack_app_link_alias(
+            _dom,
+            path_and_query.split("?", 1)[0],
+            query,
+            is_https=is_https,
+            port=port,
+        )
+    ) is not None:
+        # Our own app-create link: the payload reproduces the bundled template,
+        # so the constant bytes are what caused the false positive and are
+        # excluded. The alias is the one caller-controlled span, so it STAYS
+        # under the heuristics rather than riding free — zeroing this was a
+        # bypass wide enough for a 40-char alphanumeric secret.
+        heuristic_query = _slack_alias
+    elif _dom in exempt_hosts:
+        heuristic_query = ""
+    else:
+        heuristic_query = query
+
+    if heuristic_query:
+        if len(heuristic_query) >= _EXFIL_QUERY_MIN_LEN:
             return (
-                f"Suspicious URL with long query params ({len(query)} chars): "
+                f"Suspicious URL with long query params ({len(heuristic_query)} chars): "
                 f"{domain}{path_and_query[:60]}..."
             )
-        if _EXFIL_PATTERNS.search(query):
+        if _EXFIL_PATTERNS.search(heuristic_query) or _EXFIL_PATTERNS.search(
+            unquote_plus(heuristic_query)
+        ):
             return f"Suspicious URL with credential-like query data: {domain}"
-
-    # Heavy percent-encoding is a hard heuristic, NOT part of the exempted
-    # base64/length set — it runs for every host (for non-exempt hosts it was
-    # already covered by _EXFIL_PATTERNS above, so this only adds coverage on
-    # exempted hosts).
-    if _EXFIL_PERCENT_RE.search(query):
-        return f"Suspicious URL with credential-like query data: {domain}"
     return None
 
 
 def scan_exfiltration_urls(text: str) -> list[str]:
     """Scan text for URLs that may be exfiltrating data via query params.
 
-    Flags the PAYLOAD, not the destination: the hard-credential floor and the
-    base64/length heuristics inspect the URL path+query for secret patterns
-    regardless of host. The one host-sensitive exception is a companion-supplied
-    exact-host exemption that narrows ONLY the base64/length heuristics for
-    trusted tenants (see _exfil_url_warning); the hard-credential floor and the
-    percent-encoding detector stay unconditional. Returns list of warning
-    strings, empty if clean.
+    Flags the PAYLOAD, not the destination: fixed credentials and the
+    base64/length heuristics inspect the URL path+query regardless of host. Only
+    companion-supplied exact tenant hosts skip the base64/length heuristics here;
+    the OAuth-param carve-out is disabled for this general text scanner. Returns
+    list of warning strings, empty if clean.
     """
     exempt_hosts = _exfil_exempt_hosts()
     warnings: list[str] = []
     for match in _URL_RE.finditer(text):
-        warning = _exfil_url_warning(match.group(1), match.group(3) or "", exempt_hosts)
+        warning = _exfil_url_warning(
+            match.group(1),
+            match.group(3) or "",
+            exempt_hosts,
+            port=match.group(2) or "",
+            is_https=match.group(0).lower().startswith("https://"),
+        )
         if warning:
             warnings.append(warning)
     return warnings
@@ -5372,7 +6060,13 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     result = text
     for match in _URL_RE.finditer(text):
         domain = match.group(1)
-        if _exfil_url_warning(domain, match.group(3) or "", exempt_hosts):
+        if _exfil_url_warning(
+            domain,
+            match.group(3) or "",
+            exempt_hosts,
+            port=match.group(2) or "",
+            is_https=match.group(0).lower().startswith("https://"),
+        ):
             result = result.replace(match.group(0), f"[REDACTED: suspicious URL to {domain}]")
     return result, warnings
 
@@ -5643,6 +6337,35 @@ def _shannon_entropy(token: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 
+def _has_all_three_char_classes(text: str) -> bool:
+    """Return True if *text* holds at least one lowercase, uppercase AND digit.
+
+    One pass with early exit, rather than three ``any()`` scans. Semantically
+    identical, but this is the hottest predicate in the redaction path:
+    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across
+    every base64-alphabet run, so a single 512-char run asks this question 473
+    times. Three ``any()`` scans build three generators per call and cost the
+    SUM of their three first-match offsets; one loop breaks on completion and
+    costs the MAX. Both forms short-circuit, so the saving is generator frames
+    plus that sum-vs-max difference.
+
+    Absence of a class is closed under substring, which is what lets
+    :func:`_contains_bare_secret` ask this about a whole run and retire every
+    window at once.
+    """
+    has_lower = has_upper = has_digit = False
+    for ch in text:
+        if not has_lower and ch.islower():
+            has_lower = True
+        elif not has_upper and ch.isupper():
+            has_upper = True
+        elif not has_digit and ch.isdigit():
+            has_digit = True
+        if has_lower and has_upper and has_digit:
+            return True
+    return False
+
+
 def _decodes_to_printable_text(token: str) -> bool:
     """Return True if *token* base64-decodes to mostly-printable ASCII.
 
@@ -5661,26 +6384,41 @@ def _decodes_to_printable_text(token: str) -> bool:
     return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
 
 
-def _longest_lowercase_run(token: str) -> int:
-    """Return the length of the longest run of consecutive lowercase letters.
+def _lowercase_run_exceeds(token: str, cap: int) -> bool:
+    """Return True if any run of consecutive lowercase letters is longer than *cap*.
 
     Dictionary-word identifiers and file-path segments contain long lowercase
     word runs; a uniformly random base64 secret almost never does. This is the
     primary discriminator that keeps camelCase identifiers and mixed-case file
     paths out of the bare-secret heuristic.
+
+    The only question the caller asks is whether the longest run EXCEEDS a
+    threshold, so this stops at cap+1 rather than scanning the whole token to
+    find the true maximum. On the tokens this gate exists to reject -- the ones
+    with a long lowercase run -- it exits after a handful of characters instead
+    of all 40, which measured 3.97 -> 1.65 us per window.
     """
-    best = current = 0
+    current = 0
     for ch in token:
         if ch.islower():
             current += 1
-            best = max(best, current)
+            if current > cap:
+                return True
         else:
             current = 0
-    return best
+    return False
 
 
 def _vowel_ratio(token: str) -> float:
-    """Return the fraction of alphabetic characters in *token* that are vowels."""
+    """Return the fraction of alphabetic characters in *token* that are vowels.
+
+    Deliberately left in this two-pass comprehension form. A single-pass rewrite
+    measured 1.18x -- about 0.4 us on a 2.89 us gate -- which does not justify
+    replacing the clearest possible expression of "fraction of letters that are
+    vowels", and would owe its own independent-oracle test. Its neighbour
+    :func:`_lowercase_run_exceeds` WAS rewritten because that one measured 2.4x.
+    Do not optimise this unmeasured.
+    """
     letters = [ch for ch in token if ch.isalpha()]
     if not letters:
         return 0.0
@@ -5693,20 +6431,49 @@ def _looks_like_secret_key(token: str) -> bool:
     Conservative, multi-gate classifier for a label-less 40-char base64 secret.
     Every gate must pass; the design bias is toward NOT
     redacting (a false negative merely reverts to today's behavior, a false
-    positive corrupts benign output). Gates, cheapest-first:
+    positive corrupts benign output).
+
+    Gates are ordered by MEASURED cost per rejection, cheapest-per-reject first.
+    Every gate is a pure predicate whose failure returns False, so the order is
+    verdict-neutral and can be chosen purely for cost. Measured on a corpus of
+    1705 windows that clear gates 1-3 (cost per window, share of windows that
+    gate rejects on its own):
+
+        lowercase run   1.65 us   66.5%  ->  2.5 us per rejection
+        vowel ratio     2.89 us   62.3%  ->  4.6 us per rejection
+        entropy         8.48 us   54.5%  -> 15.5 us per rejection
+        decode          3.01 us    0.0%  ->  rejected nothing in that corpus
+
+    These numbers are a SNAPSHOT from one corpus on one machine: treat them as a
+    relative ranking, not a budget, and do not turn them into assertions (this
+    repo's CI enables coverage on 3.12 only, so absolute durations are not
+    comparable across shards). The ordering is the durable claim, and it is
+    guarded by a test that counts which gates get evaluated -- see
+    ``TestSecretGateOrderIsCostOrdered``.
+
+    Putting the two cheap structural gates ahead of the entropy computation, and
+    the decode check last, halves the cost of gates 4-7 and measured -47% on
+    ``redact_credentials`` end to end. Do not reorder these back into
+    "structural last" without re-measuring: the structural gates are both
+    cheaper AND higher-yield than entropy, which is the opposite of the
+    intuition that entropy is the primary discriminator.
 
     1. Length is EXACTLY 40 (AWS secret-key length).
     2. Contains all three of lower + upper + digit (rejects all-lower prose runs,
        all-upper CONSTANT_NAMES, base32, digit strings).
     3. Not an all-hex run (rejects git SHAs, sha256/md5 digests).
-    4. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
+    4. No lowercase run longer than _SECRET_MAX_LOWER_RUN.
+    5. Vowel ratio <= _SECRET_MAX_VOWEL_RATIO. Gates 4 and 5 are the
+       structural-randomness pair: they separate a random key from word-based
+       identifiers and slash-delimited file paths that survive the entropy
+       floor. Both apply to EVERY token (a '/' or '+' does not exempt a token,
+       so 40-char mixed-case file paths stay intact).
+    6. Shannon entropy >= _SECRET_ENTROPY_MIN (rejects low-entropy repeats/prose
        and most code identifiers, which cluster below 4.3).
-    5. Does not base64-decode to printable text (rejects encoded-text blobs).
-    6. Structural randomness: longest lowercase run <= _SECRET_MAX_LOWER_RUN AND
-       vowel ratio <= _SECRET_MAX_VOWEL_RATIO. These separate a random key from
-       word-based identifiers and slash-delimited file paths that survive the
-       entropy floor. Both gates apply to EVERY token (a '/' or '+' does not
-       exempt a token, so 40-char mixed-case file paths stay intact).
+    7. Does not base64-decode to printable text (rejects encoded-text blobs).
+       Last because it is the lowest-yield gate, not because it is optional --
+       it is what keeps legitimate OAuth ``code_challenge`` values in sign-in
+       URLs from being redacted (guarded by the OAuth-URL corpus).
 
     BOUNDARY ASSUMPTION: this classifier deliberately evaluates an EXACTLY-40-char
     window (gate 1). It does NOT itself scan longer runs — a real key glued to an
@@ -5720,21 +6487,17 @@ def _looks_like_secret_key(token: str) -> bool:
     """
     if len(token) != _SECRET_KEY_LEN:
         return False
-    has_lower = any(ch.islower() for ch in token)
-    has_upper = any(ch.isupper() for ch in token)
-    has_digit = any(ch.isdigit() for ch in token)
-    if not (has_lower and has_upper and has_digit):
+    if not _has_all_three_char_classes(token):
         return False
     if _HEX_ONLY_RE.match(token):
         return False
+    if _lowercase_run_exceeds(token, _SECRET_MAX_LOWER_RUN):
+        return False
+    if _vowel_ratio(token) > _SECRET_MAX_VOWEL_RATIO:
+        return False
     if _shannon_entropy(token) < _SECRET_ENTROPY_MIN:
         return False
-    if _decodes_to_printable_text(token):
-        return False
-    return (
-        _longest_lowercase_run(token) <= _SECRET_MAX_LOWER_RUN
-        and _vowel_ratio(token) <= _SECRET_MAX_VOWEL_RATIO
-    )
+    return not _decodes_to_printable_text(token)
 
 
 def _contains_bare_secret(run: str) -> bool:
@@ -5757,13 +6520,30 @@ def _contains_bare_secret(run: str) -> bool:
     sub-windows whose garbage decode looks high-entropy and would clear every
     per-window gate, wrongly redacting a legitimate sign-in URL (regression
     guarded by the OAuth-URL corpus). This is the same bias-toward-not-redacting
-    that :func:`_looks_like_secret_key` already applies per-window (gate 5),
+    that :func:`_looks_like_secret_key` already applies per-window (gate 7),
     lifted to run granularity so a misaligned window cannot defeat it. A genuine
     glued secret (``X`` + key, key + ``ABC``, key + ``X`` + key) does NOT decode
     cleanly as a whole run, so it still reaches the sliding window below.
     """
     if len(run) < _SECRET_KEY_LEN:
         return False
+    # RUN-LEVEL FAST PATH. Two of the per-window gates reject on a property that
+    # is closed under substring, so asking about the whole run once can retire
+    # every window without classifying any of them:
+    #   gate 2 -- a character class absent from the run is absent from all of its
+    #             substrings, so no window can hold all three;
+    #   gate 3 -- every substring of an all-hex run is itself all-hex.
+    # Both answers are False either way, so this only reorders WHICH check
+    # returns False, never the verdict. Guarded on a run longer than one window,
+    # because at exactly 40 chars the sole window pays the same two gates anyway
+    # and the pre-check would be pure duplicate work. This is what keeps the
+    # slide affordable on long non-secret runs (hex digests, lowercase blobs),
+    # which are the common shape in tool output.
+    if len(run) > _SECRET_KEY_LEN:
+        if not _has_all_three_char_classes(run):
+            return False
+        if _HEX_ONLY_RE.match(run):
+            return False
     if _decodes_to_printable_text(run):
         return False
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
@@ -5782,6 +6562,140 @@ def _decode_b64_safe(text: str) -> str:
         except Exception:
             continue
     return ""
+
+
+def _contains_fixed_credential(text: str) -> bool:
+    """Return True for canonical literal or base64-encoded credentials.
+
+    Deliberately excludes the bare 40-character entropy heuristic. OAuth
+    front-channel state and PKCE values are high-entropy by design, while the
+    canonical signatures and decoded credentials remain unambiguous.
+    """
+    return bool(_CREDENTIAL_PATTERNS.search(text) or _decode_b64_safe(text))
+
+
+_PKCE_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+
+
+def _text_contains_bare_secret(text: str) -> bool:
+    """Return True when *text* contains an isolated bare AWS-secret run."""
+    return any(
+        _contains_bare_secret(match.group())
+        for match in _BARE_SECRET_RUN_RE.finditer(text)
+    )
+
+
+def _oauth_credential_scan_target(
+    url: str,
+    query: str,
+    *,
+    approved_endpoint: bool,
+) -> str:
+    """Blank only structurally approved OAuth values from a whole-URL scan."""
+    if not approved_endpoint or not query:
+        return url
+
+    segments = [segment.partition("=") for segment in query.split("&")]
+    s256_methods = [
+        unquote(value)
+        for key, separator, value in segments
+        if separator and key == "code_challenge_method"
+    ]
+    sanitized_segments: list[str] = []
+    for key, separator, value in segments:
+        decoded_value = unquote(value)
+        approved_value = (
+            bool(separator)
+            and key in _OAUTH_QUERY_PARAMS
+            and key == "code_challenge"
+            and s256_methods == ["S256"]
+            and bool(_PKCE_S256_CHALLENGE_RE.fullmatch(decoded_value))
+            and not _contains_fixed_credential(value)
+            and not _contains_fixed_credential(decoded_value)
+            and not _text_contains_bare_secret(decoded_value)
+        )
+        # A value is omitted because it was explicitly approved, never because
+        # its URL component was forgotten by the credential scan.
+        sanitized_segments.append(
+            f"{key}{separator}" if approved_value else f"{key}{separator}{value}"
+        )
+
+    query_start = url.find("?")
+    if query_start == -1:
+        return url
+    fragment_start = url.find("#", query_start + 1)
+    suffix = "" if fragment_start == -1 else url[fragment_start:]
+    sanitized_query = "&".join(sanitized_segments)
+    return url[: query_start + 1] + sanitized_query + suffix
+
+
+def oauth_url_contains_credential(url: str) -> bool:
+    """Return True when an ACP-provided OAuth banner URL is unsafe.
+
+    This is the sole path allowed to exempt standard OAuth entropy from the
+    generic URL heuristics. After subtracting only a structurally valid PKCE
+    challenge at an approved endpoint, credential checks scan every remaining
+    byte of the URL in raw and once-percent-decoded form.
+    """
+    if not url:
+        return False
+
+    decoded_url = unquote(url)
+    if (
+        "\\" in url
+        or "\\" in decoded_url
+        or _contains_fixed_credential(url)
+        or _contains_fixed_credential(decoded_url)
+    ):
+        return True
+
+    try:
+        parsed = urlparse(url)
+        port = f":{parsed.port}" if parsed.port is not None else ""
+    except ValueError:
+        return True
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return True
+
+    # Browsers and RFC-style parsers disagree on userinfo handling.
+    if "@" in parsed.netloc or "@" in unquote(parsed.netloc):
+        return True
+
+    approved_endpoint = (
+        parsed.scheme.lower() == "https"
+        and not port
+        and _approved_oauth_authorization_endpoint(parsed.hostname.lower(), parsed.path)
+    )
+    scan_target = _oauth_credential_scan_target(
+        url,
+        parsed.query,
+        approved_endpoint=approved_endpoint,
+    )
+    for candidate in (scan_target, unquote(scan_target)):
+        if _contains_fixed_credential(candidate) or _text_contains_bare_secret(
+            candidate
+        ):
+            return True
+
+    # Provider consent URLs need neither path params nor fragments. Keep these
+    # parser-differential forms fail-closed after the whole URL has been scanned.
+    if parsed.params or ";" in parsed.path or parsed.fragment:
+        return True
+
+    path_and_query = parsed.path
+    if parsed.query:
+        path_and_query += f"?{parsed.query}"
+    return bool(
+        _exfil_url_warning(
+            parsed.hostname,
+            path_and_query,
+            frozenset(),
+            port=port,
+            is_https=parsed.scheme.lower() == "https",
+            allow_safe_presigned=False,
+            allow_oauth_entropy=True,
+        )
+    )
 
 
 # Standard replacement tag for a redacted credential. Shared between the batch
@@ -6227,6 +7141,7 @@ def is_denied(
     extra_patterns: list[str] | None = None,
     *,
     denied_regexes: list[str] | None = None,
+    reason_notes: dict[str, str] | None = None,
 ) -> str | None:
     """Check tool name against the built-in/effective + extra deny patterns.
 
@@ -6288,12 +7203,35 @@ def is_denied(
             ``auto_deny_tools`` + companion overlay).
         denied_regexes: The effective enabled rule regexes (regex tier).  When
             ``None``, fails closed to all built-in rules enabled.
+        reason_notes: Optional ``{pattern: operator note}`` map.  When the pattern
+            that matched has a note, the note is appended to the refusal on its
+            OWN line.  Presentation only — it never affects whether something is
+            denied.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or
         ``None`` if the input is allowed.
     """
     lower = tool_name.lower()
+
+    def _reason(matched: str) -> str:
+        """Refusal text for *matched*, with the operator note on a SECOND line.
+
+        The first line is byte-for-byte what it has always been. That is load
+        bearing, not stylistic: ``RecoveryCard.tsx`` extracts the pattern with
+        ``/Blocked by security policy:\\s*(.+?)\\s*$/gm`` — per-line and
+        end-anchored — so anything appended to the SAME line is captured as part
+        of the pattern, and ``_denied_by`` in the test suite partitions on the
+        exact ``"Blocked by security policy: "`` separator.  A note therefore
+        goes on its own line, where both readers ignore it.
+
+        Built-in rules never carry a note (the map holds user patterns only), so
+        for them this returns exactly the historical string.
+        """
+        head = f"{DENY_REASON_PREFIX}{matched}"
+        note = (reason_notes or {}).get(matched, "").strip()
+        return f"{head}\n{note}" if note else head
+
     glob_patterns = list(extra_patterns or [])
     if denied_regexes is None:
         regex_patterns = compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ())
@@ -6332,7 +7270,7 @@ def is_denied(
             try:
                 if re.search(interpreter_pattern, joined, re.IGNORECASE):
                     _emit_deny_event(tool_name, interpreter_pattern, lower)
-                    return f"Blocked by security policy: {interpreter_pattern}"
+                    return _reason(interpreter_pattern)
             except re.error:  # pragma: no cover - patterns are validated at load
                 continue
     # Ordered (pattern, is_regex) pairs so the two passes share one code path;
@@ -6358,7 +7296,7 @@ def is_denied(
     if _is_git_publish(lower):
         if _is_push_to_protected_branch(lower):
             _emit_deny_event(tool_name, _GIT_PUBLISH_DENY_LABEL, lower)
-            return f"Blocked by security policy: {_GIT_PUBLISH_DENY_LABEL}"
+            return _reason(_GIT_PUBLISH_DENY_LABEL)
         push_allow_pending = True
 
     # ── Self-protection floor (argv-structural, not a glob) ──
@@ -6378,7 +7316,7 @@ def is_denied(
             # Report the rule's own pattern, exactly as the regex tier does, so
             # the denial reason and the SEL event still map back to the rule id.
             _emit_deny_event(tool_name, pattern, lower)
-            return f"Blocked by security policy: {pattern}"
+            return _reason(pattern)
 
     # ── Pass 1: whole-string deny ──
     # If any pattern matches the full input AND no exception matches the
@@ -6398,7 +7336,7 @@ def is_denied(
             )
             if not whole_string_exception_match:
                 _emit_deny_event(tool_name, pattern, lower)
-                return f"Blocked by security policy: {pattern}"
+                return _reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -6418,14 +7356,14 @@ def is_denied(
                 if exceptions and any(fnmatch.fnmatch(seg_lower, e.lower()) for e in exceptions):
                     if not _emit_deny_exception_event(tool_name, pattern):
                         _emit_deny_event(tool_name, pattern, seg_lower)
-                        return f"Blocked by security policy: {pattern}"
+                        return _reason(pattern)
                     # Exception granted for this pattern on this segment;
                     # continue to evaluate any remaining patterns against
                     # the same segment (a different pattern without an
                     # exception must still cause a deny).
                     continue
                 _emit_deny_event(tool_name, pattern, seg_lower)
-                return f"Blocked by security policy: {pattern}"
+                return _reason(pattern)
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     if push_allow_pending:
@@ -6831,28 +7769,34 @@ def normalize_shell_command(cmd: str) -> list[str]:
     if not cmd or not cmd.strip():
         return []
 
-    # Pre-process: expand $HOME/${HOME} BEFORE shlex splitting so that
-    # expansion happens even inside quoted strings that shlex won't expand.
-    home = os.path.expanduser("~")
-    # Replace via a FUNCTION, not a string template: on Windows the home path
-    # is ``C:\Users\<name>``, and ``re.sub`` parses a str replacement as a
-    # template eagerly -- ``\U`` is an invalid escape, so a string replacement
-    # raises ``re.error`` for EVERY input on that platform, not just ones
-    # containing ``$HOME``.  A callable is substituted literally.
-    preprocessed = _HOME_VAR_RE.sub(lambda _m: home, cmd)
+    # NOTE: $HOME expansion happens AFTER tokenization (in the per-token loop
+    # below), NOT here.  The previous pre-shlex expansion inserted the raw home
+    # path (e.g. ``C:\Users\name`` on Windows) into the command string before
+    # shlex.split(posix=True), which then consumed the backslashes as escape
+    # characters — mangling the path so is_sensitive_path() could not match it.
+    # Moving expansion to per-token mirrors how tilde (``~``) is already
+    # handled: shlex strips quotes and produces a literal ``$HOME/...`` token,
+    # which the loop then expands safely without backslash reinterpretation.
 
     # Tokenize using POSIX shlex — handles quoting, escaping, etc.
     try:
-        tokens = shlex.split(preprocessed, posix=True)
+        tokens = shlex.split(cmd, posix=True)
     except ValueError:
         # Unbalanced quotes or other parse errors — fall back to basic split.
-        tokens = preprocessed.split()
+        tokens = cmd.split()
         tokens = [t.strip("\"'\\") for t in tokens]
 
+    home = os.path.expanduser("~")
     resolved: list[str] = []
     for token in tokens:
         # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
         token = _EMPTY_QUOTE_RE.sub("", token)
+
+        # Expand $HOME/${HOME} per-token (after shlex, so Windows backslashes
+        # in the expanded path are never reinterpreted as escape characters).
+        # Uses a callable replacement to avoid re.error on Windows where the
+        # home path contains ``\U`` which re.sub parses as a template escape.
+        token = _HOME_VAR_RE.sub(lambda _m: home, token)
 
         # Expand tilde (shlex doesn't do tilde expansion)
         if token.startswith("~"):
@@ -6885,6 +7829,27 @@ def resolve_command_paths(tokens: list[str]) -> list[str]:
     return resolved
 
 
+# Drive-letter absolute path (``C:\...`` or ``C:/...``). Anchored to a single
+# ASCII letter + colon + separator so ``key:value`` option tokens do not match.
+_WIN_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _win_anchor_roots() -> tuple[str, ...]:
+    """Roots whose drive/share anchor Windows-native path recognition.
+
+    The user home, and — when set — ``KIROCREW_HOME``: the keystone leaves are
+    re-anchored under it (see ``_home_dir_targets_uncached``) and it may
+    legitimately live on another drive, so a token on that drive must still be
+    routed to ``is_sensitive_path()``. Lexical only: no ``resolve()``, so no
+    filesystem or network is touched deciding whether to recognize a token.
+    """
+    roots = [str(Path.home())]
+    crew_env = os.environ.get("KIROCREW_HOME")
+    if crew_env:
+        roots.append(os.path.expanduser(crew_env))
+    return tuple(roots)
+
+
 def _is_path_like(token: str) -> bool:
     """Heuristic: does this token look like a filesystem path?"""
     if not token:
@@ -6897,6 +7862,47 @@ def _is_path_like(token: str) -> bool:
         return True
     # Relative with explicit directory prefix
     if token.startswith("./") or token.startswith("../"):
+        return True
+    # Windows-native shapes. The shell tool runs on native Windows, where the
+    # sensitive-path fence compares casefolded ``os.sep``-joined targets — a
+    # backslash spelling must reach ``is_sensitive_path()`` through the
+    # normalizer pass, or every fenced dir is reachable through the shell gate
+    # on Windows hosts. A match on the drive (or UNC share) holding one of the
+    # ``_win_anchor_roots()`` — the user home, and ``KIROCREW_HOME`` when set —
+    # is recognized directly; anything else FALLS THROUGH to
+    # the generic checks below rather than being rejected here. That keeps two
+    # properties at once: a forward-slash spelling on another drive
+    # (``D:/kirocrew/security_policy.json`` under a cross-drive
+    # ``KIROCREW_HOME``) stays path-like exactly as it was before these shapes
+    # were recognized, so the keystone fence is not narrowed — while a
+    # pure-backslash foreign-drive token gains no NEW recognition, since
+    # probing it would only feed ``os.path.realpath`` a disconnected mapped
+    # drive or dead UNC host (a synchronous network stall on the caller).
+    if _WIN_DRIVE_PATH_RE.match(token):
+        token_drive = token[:2].casefold()
+        for root in _win_anchor_roots():
+            if (
+                len(root) >= 3
+                and root[1] == ":"
+                and root[2] in "\\/"
+                and token_drive == root[:2].casefold()
+            ):
+                return True
+    elif token.startswith("\\\\"):
+        token_cf = token.casefold()
+        for root in _win_anchor_roots():
+            if not root.startswith("\\\\"):
+                continue
+            # Compare the ``\\server\share`` prefix (first four ``\``-split
+            # parts: '', '', server, share) at a path-segment boundary, so a
+            # share that merely shares a name prefix (``\\srv\homes-dead``)
+            # is not probed.
+            share = "\\".join(root.casefold().split("\\")[:4])
+            if token_cf == share or token_cf.startswith((share + "\\", share + "/")):
+                return True
+    # Backslash-relative traversal resolves against the CWD (local, no
+    # network), so it stays unconditional.
+    if token.startswith(".\\") or token.startswith("..\\"):
         return True
     # Contains path separator and has directory component (not a flag)
     if "/" in token and not token.startswith("-"):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import hashlib
 import json
@@ -12,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
@@ -29,6 +31,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.hooks import safe_read_prefix
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
     is_sensitive_path,
@@ -73,10 +76,6 @@ def _sel():
 
 async def api_reveal_path(request: web.Request) -> web.Response:
     """POST /api/reveal — reveal a file/folder in Finder or open with default app."""
-    import shutil  # noqa: F811
-    import subprocess  # noqa: F811
-    import sys  # noqa: F811
-
     try:
         body = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -91,26 +90,28 @@ async def api_reveal_path(request: web.Request) -> web.Response:
             outcome="denied", error="sensitive_path",
             resources=path, metadata={"action": action})
         return web.json_response({"error": "access denied"}, status=403)
+    # Every ALLOWED outcome leaves through the single audited return below —
+    # including the clipboard answer, which is a granted decision whose host
+    # simply had no file manager. An early return here would drop that decision
+    # from the SEL log, so the branches record what happened instead of exiting.
+    #
+    # Both spawns live in platform_compat, which owns the safety properties:
+    # absolute trusted launchers rather than bare argv names, a folder rather
+    # than the file on the platforms where handing a file to the file manager
+    # would launch it, and Windows refused outright for the launch-by-association
+    # verb. They answer False both for a host with no launcher and for one that
+    # refuses to start, and either way this degrades to the clipboard rather than
+    # failing a click in the file viewer.
     if action == "open":
         if not os.path.isfile(path):
             return web.json_response({"error": "not a regular file"}, status=400)
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        elif shutil.which("xdg-open"):
-            subprocess.Popen(["xdg-open", path])
-        else:
-            return web.json_response({"ok": True, "copy": path})
+        copied = not platform_compat.open_with_default_app(path)
     else:
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", path])
-        elif shutil.which("xdg-open"):
-            subprocess.Popen(["xdg-open", str(Path(path).parent)])
-        else:
-            return web.json_response({"ok": True, "copy": path})
+        copied = not platform_compat.reveal_in_file_manager(path)
     _sel().log_tool_invocation(
         session_key="api", source="api", tool_name="reveal_path",
         outcome="success", resources=path, metadata={"action": action})
-    return web.json_response({"ok": True})
+    return web.json_response({"ok": True, "copy": path} if copied else {"ok": True})
 
 
 async def api_outbox_notify(request: web.Request) -> web.Response:
@@ -752,11 +753,22 @@ def _upload_dir() -> Path:
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
 _MAX_UPLOAD_FILES = 20  # max files per request
+
+# Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
+# (anti-starvation); ``_WALK_MAX_DIRS_VISITED`` bounds directories entered and is
+# what guarantees termination -- see ``_walk_file_search``. Not a multiple of the
+# per-kind budget: in a narrow-deep tree directory names grow at the same rate as
+# directories visited, so a derived ceiling is unreachable exactly when it is
+# needed. Module-level so tests can shrink them.
+_WALK_MAX_SCAN_SCOPED = 50_000
+_WALK_MAX_SCAN_UNSCOPED = 5_000
+_WALK_MAX_DIRS_VISITED = 20_000
 _ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _ALLOWED_TEXT_EXT = {
     ".txt",
     ".md",
     ".json",
+    ".har",
     ".yaml",
     ".yml",
     ".xml",
@@ -1928,6 +1940,14 @@ async def api_file_search(request: web.Request) -> web.Response:
 
     max_results = 15
 
+    # kinds: "all" (default) returns both files and directories; "files" or
+    # "dirs" restricts the result set. Unknown values fall back to "all".
+    kinds = request.query.get("kinds", "all").strip().lower()
+    if kinds not in ("all", "files", "dirs"):
+        kinds = "all"
+    want_files = kinds in ("all", "files")
+    want_dirs = kinds in ("all", "dirs")
+
     # Scope search to project (arbitrary path) or workspace
     project = request.query.get("project", "")
     ws_name = request.query.get("workspace", "")
@@ -1983,9 +2003,9 @@ async def api_file_search(request: web.Request) -> web.Response:
     if scoped and len(safe_roots) == 1:
         idx = state.file_indexes.get(safe_roots[0])
         if idx and idx.is_ready and not idx.truncated:
-            results = await asyncio.to_thread(idx.search, query, _fuzzy_score, max_results)
+            results = await asyncio.to_thread(idx.search, query, _fuzzy_score, max_results, kinds)
             trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results]
-            _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} indexed=true entries={idx.entry_count} results={len(trimmed)}")
+            _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} kinds={kinds} indexed=true entries={idx.entry_count} results={len(trimmed)}")
             return web.json_response({"results": trimmed, "root": safe_roots[0]})
 
     # Fallback: walk filesystem per request
@@ -1995,21 +2015,79 @@ async def api_file_search(request: web.Request) -> web.Response:
         "dist", "build", "env", "out", "target",
     }
 
-    max_scan = 50_000 if scoped else 5_000
+    max_scan = _WALK_MAX_SCAN_SCOPED if scoped else _WALK_MAX_SCAN_UNSCOPED
     max_collect = max_results * 10  # collect enough candidates for good scoring, then stop
 
     def _walk_file_search() -> list[dict]:
-        """Blocking file-system walk — offloaded via asyncio.to_thread."""
-        results: list[dict] = []
-        walked = 0
+        """Blocking file-system walk — offloaded via asyncio.to_thread.
+
+        Files and directories are collected into SEPARATE candidate lists, each
+        with its own ``max_collect`` allowance. A shared list would let a burst
+        of matching directories fill the cap before the files in the same
+        directory are even examined, dropping the likely target before the
+        file-before-dir tie-break ever runs. Files are also scanned first at each
+        level, so under a tight scan budget the file candidates are the ones that
+        survive.
+
+        An independent ``_WALK_MAX_DIRS_VISITED`` ceiling bounds how many
+        directories the walk descends into, so no request can traverse a whole
+        large tree.
+        """
+        found: dict[str, list[dict]] = {"file": [], "dir": []}
+        walked: dict[str, int] = {"file": 0, "dir": 0}
+        dirs_visited = 0
+        wanted = {"file": want_files, "dir": want_dirs}
+
+        def _done(kind: str) -> bool:
+            return (
+                not wanted[kind]
+                or walked[kind] >= max_scan
+                or len(found[kind]) >= max_collect
+            )
+
+        def _full() -> bool:
+            return dirs_visited >= _WALK_MAX_DIRS_VISITED or (_done("file") and _done("dir"))
+
+        def _collect(kind: str, dirpath: str, names: list[str], root_dir: str) -> None:
+            """Score and collect one kind of entry from a single directory level."""
+            for name in names:
+                if _done(kind):
+                    return
+                walked[kind] += 1
+                if kind == "file" and name.startswith("."):
+                    continue
+                full = os.path.join(dirpath, name)
+                score = _fuzzy_score(query, name, os.path.relpath(full, root_dir))
+                if score <= 0:
+                    continue
+                # Resolve symlinks before the sensitivity check so a link into a
+                # sensitive tree cannot slip through.
+                if is_sensitive_path(os.path.realpath(full)):
+                    continue
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                found[kind].append({
+                    "path": full,
+                    "name": name,
+                    "kind": kind,
+                    "size": st.st_size if kind == "file" else 0,
+                    "mtime": int(st.st_mtime),
+                    "_score": score,
+                })
+
         for root_dir in safe_roots:
-            if walked >= max_scan or len(results) >= max_collect:
+            if _full():
                 break
             # macOS: prune the TCC-gated folders. Reaching into them would pop
             # one consent modal PER folder. ``scoped`` means the user NAMED
             # this root (?project= / ?workspace=), so even ``project=$HOME``
             # is deliberate and is searched in full.
             for dirpath, dirnames, filenames in os.walk(root_dir):
+                # Bounds the traversal; the per-kind counters stop advancing once
+                # their kind is done.
+                dirs_visited += 1
                 pruned = [
                     d for d in dirnames
                     if not d.startswith(".") and d not in skip_dirs
@@ -2017,38 +2095,26 @@ async def api_file_search(request: web.Request) -> web.Response:
                 dirnames[:] = pruned if scoped else platform_compat.tcc_prune_walk_dirs(
                     root_dir, dirpath, pruned
                 )
-                for fname in filenames:
-                    if walked >= max_scan or len(results) >= max_collect:
-                        break
-                    walked += 1
-                    if fname.startswith("."):
-                        continue
-                    fpath = os.path.join(dirpath, fname)
-                    rel = os.path.relpath(fpath, root_dir)
-                    sc = _fuzzy_score(query, fname, rel)
-                    if sc <= 0:
-                        continue
-                    if is_sensitive_path(fpath):
-                        continue
-                    try:
-                        st = os.stat(fpath)
-                    except OSError:
-                        continue
-                    results.append({"path": fpath, "name": fname, "size": st.st_size, "mtime": int(st.st_mtime), "_score": sc})
-                if walked >= max_scan or len(results) >= max_collect:
+                # Files first: under a tight scan budget the file candidates are
+                # the ones that survive.
+                _collect("file", dirpath, filenames, root_dir)
+                _collect("dir", dirpath, dirnames, root_dir)
+                if _full():
                     break
-        return results
+        return found["file"] + found["dir"]
 
     results = await asyncio.to_thread(_walk_file_search)
 
-    # Sort by score descending, then shorter name, then recency
+    # Sort by score descending, files before dirs on a tie, then shorter name, then recency
     now = time.time()
-    results.sort(key=lambda r: (-r["_score"], len(r["name"]), now - r["mtime"]))
+    results.sort(key=lambda r: (
+        -r["_score"], r["kind"] == "dir", len(r["name"]), now - r["mtime"],
+    ))
 
     # Strip internal scoring field before response
     trimmed = [{k: v for k, v in r.items() if k != "_score"} for r in results[:max_results]]
 
-    _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} roots={len(safe_roots)} results={len(trimmed)}")
+    _sel().log_api_access(caller=caller, operation="file_search", outcome="allowed", resources=f"q={query} kinds={kinds} roots={len(safe_roots)} results={len(trimmed)}")
     return web.json_response({
         "results": trimmed,
         "root": safe_roots[0] if scoped and safe_roots else "",
@@ -2121,6 +2187,63 @@ async def api_file_diff(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
+    """Walk *base* one level deep and return its visible subdirectories.
+
+    Blocking, and unboundedly so: *base* is caller-chosen and defaults to ``$HOME``,
+    so the scan is as large as that directory, and every surviving entry additionally
+    pays an ``is_sensitive_path`` call that resolves several paths of its own. Run via
+    ``asyncio.to_thread`` so one large directory cannot hold the sole event loop for
+    the duration of the listing.
+    """
+    dirs: list[dict] = []
+    try:
+        for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
+            if entry.is_dir(follow_symlinks=True) and entry.name not in skip and not entry.name.startswith("."):
+                # Resolve symlinks before the sensitivity check — a symlink in
+                # a benign dir pointing at ~/.aws would otherwise pass through.
+                if is_sensitive_path(os.path.realpath(entry.path)):
+                    continue
+                dirs.append({"name": entry.name, "path": entry.path})
+    except PermissionError:
+        pass
+    return dirs
+
+
+def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict]]:
+    """Walk *base* one level deep and return its ``(dirs, files)`` entries.
+
+    The sibling of :func:`_browse_dirs_sync` and blocking for the same reasons, plus a
+    ``stat`` per entry for the mtime the browser sorts on. Offloaded the same way.
+    """
+    dirs: list[dict] = []
+    files: list[dict] = []
+    try:
+        # Sort: dirs before files, then alphabetical
+        for entry in sorted(os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())):
+            if entry.name.startswith("."):
+                continue
+            # Resolve symlinks before the sensitivity check — a symlink in a
+            # benign dir pointing at ~/.aws would otherwise pass through.
+            if is_sensitive_path(os.path.realpath(entry.path)):
+                continue
+            # Capture mtime so the activity-panel browser can offer a
+            # sort-by-date option; fall back to 0 on a race (entry removed
+            # mid-scan) so one unstattable entry never breaks the listing.
+            try:
+                mtime = int(entry.stat(follow_symlinks=True).st_mtime)
+            except OSError:
+                mtime = 0
+            if entry.is_dir(follow_symlinks=True):
+                if entry.name not in skip:
+                    dirs.append({"name": entry.name, "path": entry.path, "mtime": mtime})
+            elif entry.is_file(follow_symlinks=True):
+                files.append({"name": entry.name, "path": entry.path, "mtime": mtime})
+    except PermissionError:
+        pass
+    return dirs, files
+
+
 async def api_browse_dirs(request: web.Request) -> web.Response:
     """GET /api/browse-dirs?path=... — list subdirectories for directory browser."""
     import os  # noqa: F811
@@ -2136,17 +2259,7 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
         _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="denied", resources=base, error="sensitive path")
         return web.json_response({"error": "Access denied"}, status=403)
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim"}
-    dirs: list[dict] = []
-    try:
-        for entry in sorted(os.scandir(base), key=lambda e: e.name.lower()):
-            if entry.is_dir(follow_symlinks=True) and entry.name not in skip and not entry.name.startswith("."):
-                # Resolve symlinks before the sensitivity check — a symlink in
-                # a benign dir pointing at ~/.aws would otherwise pass through.
-                if is_sensitive_path(os.path.realpath(entry.path)):
-                    continue
-                dirs.append({"name": entry.name, "path": entry.path})
-    except PermissionError:
-        pass
+    dirs = await asyncio.to_thread(_browse_dirs_sync, base, skip)
     _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="allowed", resources=base)
     return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs})
 
@@ -2406,31 +2519,7 @@ async def api_browse_files(request: web.Request) -> web.Response:
         _sel().log_api_access(caller=caller, operation="browse_files", outcome="denied", resources=base, error="sensitive path")
         return web.json_response({"error": "Access denied"}, status=403)
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
-    dirs: list[dict] = []
-    files: list[dict] = []
-    try:
-        # Sort: dirs before files, then alphabetical
-        for entry in sorted(os.scandir(base), key=lambda e: (not e.is_dir(follow_symlinks=True), e.name.lower())):
-            if entry.name.startswith("."):
-                continue
-            # Resolve symlinks before the sensitivity check — a symlink in a
-            # benign dir pointing at ~/.aws would otherwise pass through.
-            if is_sensitive_path(os.path.realpath(entry.path)):
-                continue
-            # Capture mtime so the activity-panel browser can offer a
-            # sort-by-date option; fall back to 0 on a race (entry removed
-            # mid-scan) so one unstattable entry never breaks the listing.
-            try:
-                mtime = int(entry.stat(follow_symlinks=True).st_mtime)
-            except OSError:
-                mtime = 0
-            if entry.is_dir(follow_symlinks=True):
-                if entry.name not in skip:
-                    dirs.append({"name": entry.name, "path": entry.path, "mtime": mtime})
-            elif entry.is_file(follow_symlinks=True):
-                files.append({"name": entry.name, "path": entry.path, "mtime": mtime})
-    except PermissionError:
-        pass
+    dirs, files = await asyncio.to_thread(_browse_files_sync, base, skip)
     _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)
     return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs, "files": files})
 
@@ -2482,7 +2571,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # PUT body. Drop them here instead of listing them in _allowed -- they
         # stay unwritable, but a round-tripped read-only field must not 400 an
         # unrelated toggle save.
-        read_only_ignored_keys = {"gitlab_hosts"}
+        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts"}
         body = {
             k: v
             for k, v in body.items()
@@ -2644,5 +2733,505 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # dashboard toggle. The client uses it only to decide which pasted
             # links become source tabs; the provider handler re-checks every URL.
             "gitlab_hosts": list(cfg.dashboard.gitlab_hosts),
+            # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
+            # auto-recognized; self-hosted instances need explicit allowlisting.
+            "jira_hosts": list(cfg.dashboard.jira_hosts),
         }
     )
+
+
+# ── Git status & log endpoints ──────────────────────────────────────────────
+
+
+# Ceiling on captured git stdout for the Git-panel endpoints. Status output is
+# repo-content-sized (an agent-authored repo can make it arbitrarily large) and
+# these endpoints are POLLED by the dashboard, so an unbounded
+# ``capture_output=True`` buffer is a memory-DoS surface. 8 MB comfortably
+# holds the 500-file slice the responses return while bounding the worst case.
+_GIT_PANEL_STDOUT_CAP = 8 * 1024 * 1024
+
+
+def _run_git_bounded(
+    args: list[str], cwd: str, env: dict, timeout: float,
+    cap: int = _GIT_PANEL_STDOUT_CAP,
+) -> tuple[int, str, bool]:
+    """Run git capturing at most ``cap`` bytes of stdout.
+
+    Returns ``(returncode, stdout_text, truncated)``. When the process
+    outlives ``timeout`` or overflows ``cap`` it is killed and reported as
+    truncated with a nonzero returncode -- callers already treat nonzero as
+    "no data", which is the safe degraded answer for a pathological repo.
+    """
+    # OS-sandbox + credential-scrubbed env chokepoint (worktree.py's _run_git
+    # pattern): the repository content is agent-influenced, and git filter
+    # drivers (filter.<name>.clean/process from .git/config) can run during
+    # status re-hashing -- ``-c`` flags cannot neutralize arbitrary driver
+    # names, so isolation, not argument hygiene, is the containment. Fail
+    # CLOSED: no sandbox backend means no data, not an unisolated spawn.
+    cleanup: str | None = None
+    try:
+        argv, env, cleanup = sandboxed_spawn_argv(args, mode="strict", env=env)
+    except RuntimeError:
+        return -9, "", False
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        try:
+            proc = subprocess.Popen(
+                argv, cwd=cwd, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                preexec_fn=resource_limit_preexec(),
+            )
+        except OSError:
+            # The cwd (project dir) can vanish between the handler's isdir
+            # check and this spawn, and the git binary itself can be absent.
+            # Both are "no data", never a 500 out of a polling endpoint.
+            return -9, "", False
+        buf = bytearray()
+        overflow = False
+
+        def _drain() -> None:
+            nonlocal overflow
+            assert proc.stdout is not None
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    return
+                if len(buf) + len(chunk) > cap:
+                    buf.extend(chunk[: cap - len(buf)])
+                    overflow = True
+                    return
+                buf.extend(chunk)
+
+        reader = threading.Thread(target=_drain, daemon=True)
+        reader.start()
+        reader.join(timeout)
+        timed_out = reader.is_alive()
+        if timed_out or overflow:
+            proc.kill()
+            reader.join(5)
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = -9
+        if timed_out or overflow:
+            rc = rc or -9
+        return rc, bytes(buf).decode("utf-8", "replace"), timed_out or overflow
+    finally:
+        if cleanup:
+            with contextlib.suppress(OSError):
+                os.unlink(cleanup)
+
+
+def _porcelain_unquote(path: str) -> str:
+    """Decode a C-quoted porcelain v1 path (``"foo \\"bar\\""`` -> ``foo "bar"``).
+
+    Porcelain v1 wraps a path in double quotes and backslash-escapes it when it
+    contains quotes, backslashes, or control characters (``core.quotePath=false``
+    already keeps plain non-ASCII raw). Returning the quoted display form would
+    point the row -- and a subsequent open/save -- at a file that does not
+    exist. Decode failures fall back to the raw string rather than raising.
+    """
+    if len(path) < 2 or not (path.startswith('"') and path.endswith('"')):
+        return path
+    body = path[1:-1]
+    out = bytearray()
+    i = 0
+    escapes = {"n": 10, "t": 9, "r": 13, "a": 7, "b": 8, "f": 12, "v": 11,
+               "\\": 92, '"': 34}
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\":
+            out.extend(ch.encode("utf-8"))
+            i += 1
+            continue
+        if i + 1 >= len(body):
+            return path  # dangling escape: not valid quoting, keep raw
+        nxt = body[i + 1]
+        if nxt in escapes:
+            out.append(escapes[nxt])
+            i += 2
+        elif nxt.isdigit() and i + 3 < len(body) + 1 and body[i + 1:i + 4].isdigit():
+            out.append(int(body[i + 1:i + 4], 8) & 0xFF)
+            i += 4
+        else:
+            return path
+    return out.decode("utf-8", "replace")
+
+
+# Repo-scoped config keys that hand git a program to run when it touches file
+# content (status re-hashes modified files through ``filter.<name>.clean``).
+# ``-c`` cannot neutralize arbitrary driver names, so a repo declaring one is
+# refused outright — the same fail-closed stance as worktree.py's
+# ``_checkout_filter``.
+_GIT_FILTER_KEY_RE = re.compile(
+    r"^filter\..+\.(process|smudge|clean)$", re.IGNORECASE
+)
+
+
+def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bool:
+    """True when repo-supplied config names a content-filter driver (or the
+    probe cannot prove it does not).
+
+    Mirrors ``worktree.py::_checkout_filter``: drivers can only come from a
+    config file the repository supplies — ``--local`` (``.git/config``) and,
+    when ``extensions.worktreeConfig`` is on, ``--worktree``
+    (``$GIT_DIR/config.worktree``). ``--includes`` is mandatory: a specific-scope
+    query defaults include-following OFF, so a driver reached through
+    ``include.path`` would be invisible to the probe yet still execute.
+    Global/system config is deliberately not probed (the user's own machine
+    setup, e.g. ``git lfs install``, is not repository-supplied). A probe that
+    fails refuses: an unreadable scope cannot be proven filter-free. The probe
+    itself is safe — ``git config`` reads files and never runs drivers.
+    """
+    scopes = ["--local"]
+    ext_rc, ext_out, _ = _run_git_bounded(
+        [*git_cmd, "config", "--bool", "--get", "extensions.worktreeConfig"],
+        cwd=base, env=env, timeout=5,
+    )
+    if ext_rc == 0 and ext_out.strip() == "true":
+        scopes.append("--worktree")
+    for scope in scopes:
+        rc, out, _ = _run_git_bounded(
+            [*git_cmd, "config", scope, "--includes", "--name-only", "--list"],
+            cwd=base, env=env, timeout=5,
+        )
+        if rc != 0:
+            return True
+        for key in out.splitlines():
+            if _GIT_FILTER_KEY_RE.match(key.strip()):
+                return True
+    return False
+
+
+async def api_project_git_status(request: web.Request) -> web.Response:
+    """GET /api/project/git/status?path=... - working tree status for a project dir.
+
+    Returns staged/unstaged/untracked files with per-file line-change counts.
+    Path must match a known project directory (same allow-list as api_project_git).
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    raw = request.query.get("path", "").strip()
+    if not raw:
+        return web.json_response({"error": "path required", "code": "path_required"}, status=400)
+    project = await asyncio.to_thread(
+        _match_known_project_for, _slot_project_snapshot(state), raw
+    )
+    if project is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_status",
+            outcome="denied",
+            resources=raw,
+            error="not a known project directory",
+        )
+        return web.json_response({"error": "Unknown project directory", "code": "unknown_project_dir"}, status=403)
+
+    base = await asyncio.to_thread(
+        lambda: os.path.realpath(os.path.expanduser(project))
+    )
+    # Both probes stat the filesystem (a stalled network mount would block the
+    # event loop), so they run in a worker thread like the realpath above.
+    if await asyncio.to_thread(is_sensitive_path, base):
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_status",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
+    # Log the allow decision here (not after _run) so every authorized access
+    # is audited, including the not-a-directory / not-a-repo early answers.
+    _sel().log_api_access(
+        caller=caller, operation="project_git_status", outcome="allowed", resources=base
+    )
+    if not await asyncio.to_thread(os.path.isdir, base):
+        return web.json_response({"repo": False, "files": []})
+
+    def _run() -> dict:
+        _git_cmd = [
+            "git",
+            "-c", "diff.textconv=",
+            "-c", "core.attributesFile=/dev/null",
+            "-c", f"core.hooksPath={os.devnull}",
+            "-c", "core.fsmonitor=",
+            # Repo-local .gitattributes is still consulted despite the
+            # attributesFile override, so keep driver escape hatches shut and
+            # emit non-ASCII paths raw (UTF-8) instead of C-quoted so the
+            # panel can open them.
+            "-c", "core.quotePath=false",
+        ]
+        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+
+        # Check if it's a repo
+        probe_rc, _probe_out, _ = _run_git_bounded(
+            [*_git_cmd, "rev-parse", "--git-dir"], cwd=base, env=_env, timeout=5,
+        )
+        if probe_rc != 0:
+            return {"repo": False, "files": []}
+
+        # Refuse repos whose own config names a content-filter driver: status
+        # re-hashes modified files through ``filter.<name>.clean``, which would
+        # execute that program on every 5s poll. Degraded-but-safe empty answer.
+        if _repo_declares_filter_driver(_git_cmd, base, _env):
+            return {"repo": True, "files": []}
+
+        # Get repo root and branch info
+        root_rc, root_out, _ = _run_git_bounded(
+            [*_git_cmd, "rev-parse", "--show-toplevel"], cwd=base, env=_env, timeout=5,
+        )
+        repo_root = root_out.strip() if root_rc == 0 else base
+
+        # Branch + ahead/behind via status -b
+        status_rc, status_out, _ = _run_git_bounded(
+            [*_git_cmd, "status", "--porcelain=v1", "-b", "--untracked-files=all"],
+            cwd=base, env=_env, timeout=10,
+        )
+        if status_rc != 0:
+            return {"repo": True, "repoRoot": repo_root, "files": []}
+
+        lines = status_out.splitlines()
+        branch = None
+        ahead = 0
+        behind = 0
+
+        # Parse the branch header line: ## branch...tracking [ahead N, behind M]
+        if lines and lines[0].startswith("## "):
+            header = lines[0][3:]
+            # Extract branch name (before ... or end)
+            dot_idx = header.find("...")
+            if dot_idx >= 0:
+                branch = header[:dot_idx]
+            else:
+                # Could be "## branch" or "## No commits yet on branch"
+                if header.startswith("No commits yet on "):
+                    branch = header[len("No commits yet on "):]
+                else:
+                    branch = header.split()[0] if header else None
+            # Parse ahead/behind
+            bracket_idx = header.find("[")
+            if bracket_idx >= 0:
+                info = header[bracket_idx + 1:header.find("]")]
+                for part in info.split(","):
+                    part = part.strip()
+                    if part.startswith("ahead "):
+                        try:
+                            ahead = int(part[6:])
+                        except ValueError:
+                            pass
+                    elif part.startswith("behind "):
+                        try:
+                            behind = int(part[7:])
+                        except ValueError:
+                            pass
+
+        # Parse file entries
+        files: list[dict] = []
+        for line in lines[1:]:
+            if len(line) < 4:
+                continue
+            x = line[0]  # index status
+            y = line[1]  # worktree status
+            filepath = line[3:]
+
+            # Rename entries quote each side separately ("old" -> "new"), so
+            # split BEFORE unquoting would see the arrow inside quotes; the
+            # porcelain arrow separator is never itself quoted, so splitting
+            # first and unquoting each side is correct for both forms.
+
+            # Handle renames/copies: "R  old -> new". Gate on the status
+            # letters -- a plain modified file legitimately named
+            # "foo -> bar" must NOT be split, or its row would point at an
+            # unrelated file and clicking it edits the wrong one.
+            if (x in ("R", "C") or y in ("R", "C")) and " -> " in filepath:
+                filepath = filepath.split(" -> ", 1)[1]
+            filepath = _porcelain_unquote(filepath)
+
+            # Determine status code and staged flag
+            if x == "?" and y == "?":
+                files.append({"path": filepath, "status": "?", "staged": False})
+            elif x == "!" and y == "!":
+                continue  # ignored
+            else:
+                # If X is non-space/non-?, there's a staged change
+                if x not in (" ", "?", "!"):
+                    files.append({"path": filepath, "status": x, "staged": True})
+                # If Y is non-space, there's an unstaged change
+                if y not in (" ", "?", "!"):
+                    files.append({"path": filepath, "status": y, "staged": False})
+
+        # Merge numstat for line counts (staged + unstaged vs HEAD)
+        try:
+            numstat_rc, numstat_out, _ = _run_git_bounded(
+                [*_git_cmd, "diff", "--numstat", "--no-textconv",
+                 "--no-ext-diff", "HEAD"],
+                cwd=base, env=_env, timeout=10,
+            )
+            if numstat_rc == 0:
+                stats: dict[str, tuple[int | None, int | None]] = {}
+                for ns_line in numstat_out.splitlines():
+                    parts = ns_line.split("\t", 2)
+                    if len(parts) == 3:
+                        add_s, del_s, ns_path = parts
+                        adds = int(add_s) if add_s != "-" else None
+                        dels = int(del_s) if del_s != "-" else None
+                        # numstat C-quotes the same class of paths status does;
+                        # unquote so the merge key matches the parsed rows.
+                        stats[_porcelain_unquote(ns_path)] = (adds, dels)
+                for f in files:
+                    if f["path"] in stats:
+                        adds, dels = stats[f["path"]]
+                        if adds is not None:
+                            f["additions"] = adds
+                        if dels is not None:
+                            f["deletions"] = dels
+        except FileNotFoundError:
+            pass
+
+        result: dict = {"repo": True, "repoRoot": repo_root, "files": files[:500]}
+        if len(files) > 500:
+            result["truncated"] = True
+        if branch:
+            result["branch"] = branch
+        if ahead:
+            result["ahead"] = ahead
+        if behind:
+            result["behind"] = behind
+        return result
+
+    result = await asyncio.to_thread(_run)
+    # Egress redaction: repo content (paths, branch label, repo root) is
+    # agent-influenceable and this response body is rendered by the dashboard,
+    # so it goes through the same redaction as api_project_git. Normal values
+    # pass through unchanged.
+    if result.get("repoRoot"):
+        result["repoRoot"] = redact(result["repoRoot"])
+    if result.get("branch"):
+        result["branch"] = redact(result["branch"])
+    for f in result.get("files", []):
+        f["path"] = redact(f["path"])
+    return web.json_response(result)
+
+
+async def api_project_git_log(request: web.Request) -> web.Response:
+    """GET /api/project/git/log?path=...&limit=N - recent commit log for a project dir.
+
+    Returns short sha, subject, author, date (ISO), and isHead flag.
+    Path must match a known project directory (same allow-list as api_project_git).
+    """
+    state: DashboardState = request.app["state"]
+    caller = request.get("user", "dashboard")
+    raw = request.query.get("path", "").strip()
+    if not raw:
+        return web.json_response({"error": "path required", "code": "path_required"}, status=400)
+
+    limit_s = request.query.get("limit", "20")
+    try:
+        limit = max(1, min(100, int(limit_s)))
+    except (ValueError, TypeError):
+        limit = 20
+
+    project = await asyncio.to_thread(
+        _match_known_project_for, _slot_project_snapshot(state), raw
+    )
+    if project is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_log",
+            outcome="denied",
+            resources=raw,
+            error="not a known project directory",
+        )
+        return web.json_response({"error": "Unknown project directory", "code": "unknown_project_dir"}, status=403)
+
+    base = await asyncio.to_thread(
+        lambda: os.path.realpath(os.path.expanduser(project))
+    )
+    # Both probes stat the filesystem (a stalled network mount would block the
+    # event loop), so they run in a worker thread like the realpath above.
+    if await asyncio.to_thread(is_sensitive_path, base):
+        _sel().log_api_access(
+            caller=caller,
+            operation="project_git_log",
+            outcome="denied",
+            resources=base,
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied", "code": "access_denied"}, status=403)
+    # Log the allow decision here (not after _run) so every authorized access
+    # is audited, including the not-a-directory / not-a-repo early answers.
+    _sel().log_api_access(
+        caller=caller, operation="project_git_log", outcome="allowed", resources=base
+    )
+    if not await asyncio.to_thread(os.path.isdir, base):
+        return web.json_response({"repo": False, "commits": []})
+
+    def _run() -> dict:
+        _git_cmd = [
+            "git",
+            "-c", "diff.textconv=",
+            "-c", "core.attributesFile=/dev/null",
+            "-c", f"core.hooksPath={os.devnull}",
+            "-c", "core.fsmonitor=",
+            # Repo-local .gitattributes is still consulted despite the
+            # attributesFile override, so keep driver escape hatches shut and
+            # emit non-ASCII paths raw (UTF-8) instead of C-quoted so the
+            # panel can open them.
+            "-c", "core.quotePath=false",
+        ]
+        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+
+        # Check if it's a repo
+        probe_rc, _probe_out, _ = _run_git_bounded(
+            [*_git_cmd, "rev-parse", "--git-dir"], cwd=base, env=_env, timeout=5,
+        )
+        if probe_rc != 0:
+            return {"repo": False, "commits": []}
+
+        # Same filter-driver refusal as the status handler (defense in depth:
+        # ``git log`` does not run clean filters, but one uniform invariant --
+        # no git subcommand runs against a repo that names a driver -- is
+        # auditable; per-subcommand carve-outs are not).
+        if _repo_declares_filter_driver(_git_cmd, base, _env):
+            return {"repo": True, "commits": []}
+
+        # Get HEAD sha for isHead marking
+        head_rc, head_out, _ = _run_git_bounded(
+            [*_git_cmd, "rev-parse", "--short", "HEAD"], cwd=base, env=_env, timeout=5,
+        )
+        head_sha = head_out.strip() if head_rc == 0 else ""
+
+        # Separator unlikely in commit data
+        sep = "\x1f"
+        fmt = f"%h{sep}%s{sep}%an{sep}%aI"
+        log_rc, log_out, _ = _run_git_bounded(
+            [*_git_cmd, "log", f"--pretty=format:{fmt}", f"-{limit}"],
+            cwd=base, env=_env, timeout=15,
+        )
+        if log_rc != 0:
+            return {"repo": True, "commits": []}
+
+        commits: list[dict] = []
+        for line in log_out.splitlines():
+            parts = line.split(sep, 3)
+            if len(parts) < 4:
+                continue
+            sha, message, author, date = parts
+            commits.append({
+                "sha": sha,
+                "message": message,
+                "author": author,
+                "date": date,
+                "isHead": sha == head_sha,
+            })
+        return {"repo": True, "commits": commits}
+
+    result = await asyncio.to_thread(_run)
+    # Egress redaction: commit subjects and author names are repo content the
+    # agent can author, and this body is rendered by the dashboard.
+    for c in result.get("commits", []):
+        c["message"] = redact(c["message"])
+        c["author"] = redact(c["author"])
+    return web.json_response(result)

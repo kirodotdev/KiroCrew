@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
-import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2 } from 'lucide-react'
+import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { ChatMessage } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -127,10 +127,10 @@ function EditInput({ initial, onCommit, onCancel }: {
           else if (e.key === 'Escape') { e.preventDefault(); cancel() }
         }}
         onBlur={commit}
-        className="flex-1 min-w-0 bg-white/20 text-warn-fg placeholder:text-warn-fg/50 rounded px-1.5 py-0.5 text-[13px] outline-none border border-white/30 focus:border-white/60"
+        className="flex-1 min-w-0 bg-[var(--bg)] text-[var(--text)] placeholder:text-[var(--muted)] rounded px-1.5 py-0.5 text-[13px] outline-none border border-[var(--border)] focus:border-[var(--accent)]"
         aria-label={i18nT('components.queueStack.edit_queued_message')}
       />
-      <button className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors text-white"
+      <button className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors text-[var(--text)]"
         title={i18nT('components.queueStack.save')} aria-label={i18nT('components.queueStack.save_edit')}
         // mousedown commits before the input's blur can fire with the same value.
         onMouseDown={e => { e.preventDefault(); e.stopPropagation() }}
@@ -141,11 +141,19 @@ function EditInput({ initial, onCommit, onCancel }: {
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = true }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true, pendingIds }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
   onEdit?: (queueId: string, content: string) => void
+  /** Move a queued message one step toward the front (`next`) or the back
+   *  (`later`) of the run order. Index 0 runs first. */
+  onReorder?: (queueId: string, direction: 'next' | 'later') => void
+  /** Queue ids whose cancel/edit is in flight. Their controls are disabled so a
+   *  second click cannot fire a duplicate request — on a surface where the card
+   *  is only retired once the server confirms, that second request races the
+   *  first and comes back 404, reporting a failure for an action that worked. */
+  pendingIds?: ReadonlySet<string>
   /** When true (default) the front collapsed card fuses into the surface directly
    *  below it (the input box) via a negative bottom margin + a flat, borderless bottom
    *  edge. Set false when a non-fusable element sits between the queue and the input box
@@ -268,6 +276,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
             const fused = isFrontCollapsed && fuseBelow
             const queueId = m.meta?.queueId as string | undefined
             const isEditing = !!queueId && editingId === queueId
+            const isPending = !!queueId && !!pendingIds?.has(queueId)
             // Per-card actions show on the front single card or when expanded.
             const showActions = (expanded || messages.length === 1) && !!queueId
 
@@ -307,11 +316,39 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                   ) : (
                     <>
                       <span className="truncate flex-1">{m.content}</span>
+                      {/* Reorder arrows only make sense with 2+ cards, and only
+                          in the expanded stack where the run order is visible.
+                          Index 0 runs first and renders at the BOTTOM of the
+                          expanded stack, so "run sooner" moves the card DOWN
+                          visually: ArrowDown = sooner, ArrowUp = later. */}
+                      {onReorder && expanded && messages.length > 1 && (
+                        <>
+                          <button
+                            className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                            title={i18nT('components.queueStack.run_sooner')}
+                            aria-label={i18nT('components.queueStack.run_sooner')}
+                            disabled={i === 0}
+                            onClick={(e) => { e.stopPropagation(); onReorder(queueId!, 'next') }}
+                          >
+                            <ArrowDown size={13} />
+                          </button>
+                          <button
+                            className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                            title={i18nT('components.queueStack.run_later')}
+                            aria-label={i18nT('components.queueStack.run_later')}
+                            disabled={i === messages.length - 1}
+                            onClick={(e) => { e.stopPropagation(); onReorder(queueId!, 'later') }}
+                          >
+                            <ArrowUp size={13} />
+                          </button>
+                        </>
+                      )}
                       {onEdit && showActions && (
                         <button
-                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
+                          className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.edit_queued_message')}
                           aria-label={i18nT('components.queueStack.edit_queued_message')}
+                          disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); setEditingId(queueId!) }}
                         >
                           <Pencil size={13} />
@@ -319,9 +356,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                       )}
                       {onInterrupt && showActions && (
                         <button
-                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors text-white"
+                          className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors text-[var(--text)] disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.interrupt_current_turn_and_send_this_now')}
                           aria-label={i18nT('components.queueStack.send_now')}
+                          disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); onInterrupt(queueId!) }}
                         >
                           <Zap size={13} fill="currentColor" />
@@ -329,9 +367,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
                       )}
                       {onCancel && showActions && (
                         <button
-                          className="shrink-0 p-0.5 rounded hover:bg-white/20 transition-colors"
+                          className="shrink-0 p-0.5 rounded hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={i18nT('components.queueStack.cancel_and_move_back_to_input')}
                           aria-label={i18nT('components.queueStack.cancel_queued_message')}
+                          disabled={isPending}
                           onClick={(e) => { e.stopPropagation(); onCancel(queueId!) }}
                         >
                           <X size={13} />
@@ -361,8 +400,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, fuseBelow = 
 export default memo(QueueStackInner, (prev, next) =>
   prev.messages.length === next.messages.length &&
   prev.fuseBelow === next.fuseBelow &&
+  prev.pendingIds === next.pendingIds &&
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&
-  prev.onEdit === next.onEdit
+  prev.onEdit === next.onEdit &&
+  prev.onReorder === next.onReorder
 )

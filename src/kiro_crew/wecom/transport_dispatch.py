@@ -287,7 +287,7 @@ class WeComDispatcher:
             self._conv.clear_awaiting(userid)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction(timeout=120.0)
+                await provider.wait_for_compaction()
                 await self._notice_bubble(inbound.req_id, "🗜️ 上下文接近上限，已自动压缩。")
             except Exception:
                 logger.debug("WeCom hard-threshold compaction failed", exc_info=True)
@@ -320,7 +320,7 @@ class WeComDispatcher:
                 await self.client.send_reply(inbound.response_url, "ℹ️ 当前没有可压缩的对话。")
                 return
             await provider.compact()
-            await provider.wait_for_compaction(timeout=120.0)
+            await provider.wait_for_compaction()
             await self.client.send_reply(inbound.response_url, "🗜️ 已压缩上下文。")
         except Exception:
             logger.exception("WeCom /compact failed for %s", session_key)

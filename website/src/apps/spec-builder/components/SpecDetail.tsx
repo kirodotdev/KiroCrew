@@ -37,15 +37,26 @@ const DOC_TABS = [
 
 type DocTabId = (typeof DOC_TABS)[number]['id']
 
+/** How long after a dispatched instruction the detail poll stays fast. The slot's
+ *  ``running`` flag is what normally selects the fast cadence, and it is still
+ *  false when the POST returns, so this window covers the gap. */
+const SEND_FOLLOWUP_MS = 20000
+
 // The button label is copy and is translated; ``msg`` is the instruction sent to
-// the agent and lives in prompts.ts, deliberately untranslated.
-const ADVANCE: Record<string, { labelKey: string; msg: string }> = {
+// the agent and lives in prompts.ts, deliberately untranslated. ``target`` is the
+// document the agent will write next: approving switches to it, so the drafting
+// skeleton is what the user sees instead of the document they just approved.
+const ADVANCE: Record<string, { labelKey: string; pendingKey: string; target: DocTabId; msg: string }> = {
   requirements: {
     labelKey: 'apps.specBuilder.components.specDetail.advance_to_design',
+    pendingKey: 'apps.specBuilder.components.specDetail.drafting_design',
+    target: 'design',
     msg: ADVANCE_PROMPT.requirements,
   },
   design: {
     labelKey: 'apps.specBuilder.components.specDetail.advance_to_tasks',
+    pendingKey: 'apps.specBuilder.components.specDetail.drafting_tasks',
+    target: 'tasks',
     msg: ADVANCE_PROMPT.design,
   },
 }
@@ -68,12 +79,23 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
   // The identity every mutation carries: what THIS view rendered.
   const specId = () => ({ spec_dir: detail?.spec_dir, slot_key: detail?.slot_key })
 
+  // When this view last dispatched an instruction. ``running`` is derived from the
+  // worker slot, and the slot is not running yet when the POST returns — the turn
+  // is dispatched, not awaited. On the idle 6s cadence the whole UI therefore sat
+  // unchanged for seconds after a click, so the approval looked like it had not
+  // registered. A ref, not state: refetchInterval is read per fetch and this must
+  // not itself trigger a render.
+  const lastSendAt = useRef(0)
+
   const detailQuery = useQuery({
     queryKey: ['spec-builder', 'spec', name],
     queryFn: () => specApi.get(name),
     refetchInterval: (q) => {
       const d = q.state.data
-      return d?.running || d?.status === 'executing' ? 2500 : 6000
+      if (d?.running || d?.status === 'executing') return 2500
+      // Catch the slot coming up after a dispatch, then fall back to idle.
+      if (Date.now() - lastSendAt.current < SEND_FOLLOWUP_MS) return 1200
+      return 6000
     },
   })
   const detail: SpecDetailData | null = detailQuery.data ?? null
@@ -156,15 +178,52 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
   // ordering went stale until its own 15s poll.
   const messageMutation = useMutation({
     mutationFn: (msg: string) => specApi.message(name, msg, specId()),
+    onMutate: () => { lastSendAt.current = Date.now() },
     onError: (e) => setErr((e as Error).message),
     onSettled: invalidate,
   })
 
-  const advancing = messageMutation.isPending
+  // Whether the instruction currently in flight is THIS view's phase approval.
+  // messageMutation is shared with the decision tray and the review-comment
+  // tray, so keying the button's "Sending…" label on its isPending flag made the
+  // approval control claim it was sending while a DECISION answer was in flight.
+  const [advancing, setAdvancing] = useState(false)
 
-  const advance = () => {
-    const a = detail?.phase ? ADVANCE[detail.phase] : undefined
-    if (a) messageMutation.mutate(a.msg)
+  // The phase this view approved, held until the backend reports a different one.
+  // ``phase`` is DERIVED from which documents exist on disk, so it stays on the
+  // approved phase until the agent has written the next file — up to a minute. The
+  // button used to spring back to "Approve → Design" in that window, which read as
+  // "nothing happened" and invited a second approval into the same turn.
+  const [approved, setApproved] = useState<string | null>(null)
+  useEffect(() => {
+    if (approved && detail?.phase && detail.phase !== approved) setApproved(null)
+  }, [approved, detail?.phase])
+
+  // ``mutateAsync`` in a try/finally, NOT mutate()'s per-call callbacks: those
+  // live on the mutation observer, and this one mutation is shared with the
+  // decision tray and the review-comment tray. A decision answered while a slow
+  // approval was still in flight REPLACED the approval's callbacks, so
+  // setAdvancing(false) never ran — the control kept the "Sending…" label while
+  // isPending went false underneath it, leaving it enabled and able to queue a
+  // second approval turn. The promise is per call, so it cannot be displaced.
+  const advance = async () => {
+    const phase = detail?.phase
+    const a = phase ? ADVANCE[phase] : undefined
+    if (!a || !phase) return
+    setAdvancing(true)
+    try {
+      await messageMutation.mutateAsync(a.msg)
+      setApproved(phase)
+      // Switch to the document being written: DocView holds its shape with a
+      // drafting skeleton, so there is something to watch instead of the file
+      // that was just approved.
+      setTab(a.target)
+    } catch {
+      // Surfaced by the mutation's onError. Nothing is held: the phase was not
+      // approved, so the button must offer the approval again.
+    } finally {
+      setAdvancing(false)
+    }
   }
   const execute = () => executeMutation.mutate()
   const stop = () => stopMutation.mutate()
@@ -226,13 +285,25 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
         label={fullscreen ? <Minimize2 className="lucide-inline" /> : <Maximize2 className="lucide-inline" />}
       />
       {!fullscreen && !executing && detail?.phase && ADVANCE[detail.phase] && (
-        <Btn
-          label={advancing ? i18nT('apps.specBuilder.components.specDetail.sending') : <><Play className="lucide-inline" /> {i18nT(ADVANCE[detail.phase].labelKey)}</>}
-          primary
-          disabled={advancing}
-          title={i18nT('apps.specBuilder.components.specDetail.tells_the_agent_this_phase_is_approved_and_to_mo')}
-          onClick={advance}
-        />
+        (() => {
+          const a = ADVANCE[detail.phase]
+          const waiting = approved === detail.phase
+          return (
+            <Btn
+              label={advancing
+                ? i18nT('apps.specBuilder.components.specDetail.sending')
+                : waiting
+                  ? i18nT(a.pendingKey)
+                  : <><Play className="lucide-inline" /> {i18nT(a.labelKey)}</>}
+              primary={!waiting}
+              disabled={advancing || messageMutation.isPending || waiting}
+              title={waiting
+                ? i18nT('apps.specBuilder.components.specDetail.the_agent_is_writing_the_next_document')
+                : i18nT('apps.specBuilder.components.specDetail.tells_the_agent_this_phase_is_approved_and_to_mo')}
+              onClick={() => { void advance() }}
+            />
+          )
+        })()
       )}
       {!fullscreen && (executing
         ? (

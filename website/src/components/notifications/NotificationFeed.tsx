@@ -1,5 +1,5 @@
 import { safeSetItem } from '../../utils/safeStorage'
-import { useState, useMemo, useCallback, type ReactNode } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { Bell, BellOff, Check, CheckCheck, Layers, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -52,7 +52,7 @@ function fmtRelative(ts: string): string {
  * detail panel; deleting the selected row clears it naturally because the host
  * derives `selected` from the items list by ts.
  */
-export default function NotificationFeed({ selectedTs, onSelect, variant = 'panel', header, footer }: {
+export default function NotificationFeed({ selectedTs, onSelect, variant = 'panel', header, footer, revealTs = null }: {
   selectedTs: string | null
   onSelect: (n: Notification) => void
   /** 'mac' renders rows as floating Notification Center-style cards. */
@@ -61,6 +61,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   header?: ReactNode
   /** Optional footer row rendered at the bottom of the mac controls card. */
   footer?: ReactNode
+  /** A ts whose row should be brought into view (deep link): expands the
+   *  collapsed group_key stack hiding it, then scrolls it into view. Each
+   *  distinct value is revealed once; selection/ack stay the host's job. */
+  revealTs?: string | null
 }) {
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
@@ -137,8 +141,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   }, [])
 
   type Row = { n: Notification; stackKey?: string; stackCount?: number; stackExpanded?: boolean; isStackChild?: boolean }
-  const stackedGroups = useMemo(() => {
-    const out = new Map<string, Row[]>()
+  const stackedGroups = useMemo(() => {    const out = new Map<string, Row[]>()
     for (const [g, notes] of groups.entries()) {
       const rows: Row[] = []
       const stacks = new Map<string, Notification[]>()
@@ -165,6 +168,41 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     }
     return out
   }, [groups, expandedStacks])
+
+  // Deep-link reveal. The feed owns this (rather than the host querying the
+  // document) because only the feed knows about group_key stacking, and a
+  // document-scoped query could hit the same data-ts row rendered by the
+  // topbar bell popover. Runs until the row is committed: first pass expands
+  // a collapsed stack hiding the target (state change re-runs the effect),
+  // the pass that finds the element scrolls it and marks the ts revealed.
+  // A row that never renders (silenced behind the muted disclosure, or an
+  // unknown ts) is deliberately left alone — reveal is best-effort and the
+  // host's detail panel does not depend on it.
+  const listRef = useRef<HTMLDivElement>(null)
+  const revealedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!revealTs || revealedRef.current === revealTs) return
+    const target = items.find(n => n.ts === revealTs)
+    if (!target) return
+    if (target.group_key) {
+      const g = dateGroup(parseTs(target.ts))
+      const key = `${g}:${target.group_key}`
+      const stackSize = items.filter(n => n.group_key === target.group_key &&
+        dateGroup(parseTs(n.ts)) === g).length
+      if (stackSize > 1 && !expandedStacks.has(key)) {
+        setExpandedStacks(prev => new Set(prev).add(key))
+        return
+      }
+    }
+    const el = listRef.current?.querySelector(`[data-ts="${CSS.escape(revealTs)}"]`)
+    if (el) {
+      revealedRef.current = revealTs
+      // Harmless when the host is about to hide the feed (mobile swaps to the
+      // full-width detail): the row is still mounted at this point and the
+      // scroll is a no-op on a hidden container afterwards.
+      el.scrollIntoView?.({ block: 'center' })
+    }
+  }, [revealTs, items, expandedStacks])
 
   // One-click approval resolution from the feed.
   const resolveApprovalNote = useCallback((n: Notification, action: 'approve' | 'reject') => {
@@ -210,7 +248,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           floating card (search above the disclosure); panel mode puts the
           disclosure first, directly on the popover surface. */}
       {mac ? (
-        <div className="rounded-2xl bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] border border-[color-mix(in_srgb,var(--border)_55%,transparent)] px-2.5 pt-2 pb-1 mb-2 shrink-0">
+        <div className="notif-material rounded-2xl bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] border border-[color-mix(in_srgb,var(--border)_55%,transparent)] px-2.5 pt-2 pb-1 mb-2 shrink-0">
           <div className="flex items-center gap-1.5">
             <div className="flex-1 min-w-0">{header}</div>
             {unread > 0 && (
@@ -242,7 +280,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       )}
 
       {/* List */}
-      <div className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
+      <div ref={listRef} className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {filtered.length === 0 ? (
           <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (
@@ -258,6 +296,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const silenced = !!n.silenced
                 // Priority tiers: critical gets a danger edge, passive dims,
                 // silenced renders as a dashed-border ghost.
+                // The row div below also carries `notif-material`: index.css solidifies
+                // these cards to var(--card) where backdrop-filter is unsupported
+                // (#1817). Keep the hook on every translucent mac-variant surface.
                 const macCard = silenced
                   ? 'bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-xl border border-dashed border-[color-mix(in_srgb,var(--border)_70%,transparent)]'
                   : `bg-[color-mix(in_srgb,var(--card)_55%,transparent)] backdrop-blur-2xl backdrop-saturate-150 shadow-[0_8px_24px_rgba(0,0,0,.10),0_1px_3px_rgba(0,0,0,.06)] ${active ? 'border border-accent bg-accent-subtle' : 'border border-[color-mix(in_srgb,var(--border)_55%,transparent)] hover:bg-[color-mix(in_srgb,var(--card)_70%,transparent)]'}`
@@ -285,9 +326,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const actionBtn = 'px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
                 return (
                   <div key={n.ts} className={isStackChild && !mac ? 'ml-4' : ''}>
-                    <div data-notif-row
+                    {/* data-ts is the reveal effect's DOM anchor for
+                        scroll-into-view, scoped under listRef. */}
+                    <div data-notif-row data-ts={n.ts}
                       className={mac
-                        ? `group flex flex-col px-3 py-2.5 rounded-2xl ${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''} transition-all ${macCard}`
+                        ? `notif-material group flex flex-col px-3 py-2.5 rounded-2xl ${promptChannel || collapsedStack ? 'mb-0' : 'mb-2'} ${promptChannel ? 'rounded-b-none' : ''} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''} transition-all ${macCard}`
                         : `group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
                     >
                       <div className={`flex ${mac ? 'items-start' : 'items-center'} gap-2.5`}>
@@ -370,13 +413,13 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         stack -- click anywhere on the head to expand. */}
                     {mac && collapsedStack && (
                       <div aria-hidden className="mb-2">
-                        <div className={`relative z-[1] h-3 -mt-1.5 mx-2 rounded-b-2xl ${silenced ? 'bg-[color-mix(in_srgb,var(--card)_30%,transparent)]' : 'bg-[color-mix(in_srgb,var(--card)_45%,transparent)]'} backdrop-blur-xl border border-t-0 border-[color-mix(in_srgb,var(--border)_45%,transparent)] shadow-[0_4px_12px_rgba(0,0,0,.06)]`} />
-                        <div className="relative z-0 h-3 -mt-1.5 mx-4 rounded-b-2xl bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-lg border border-t-0 border-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
+                        <div className={`notif-material relative z-[1] h-3 -mt-1.5 mx-2 rounded-b-2xl ${silenced ? 'bg-[color-mix(in_srgb,var(--card)_30%,transparent)]' : 'bg-[color-mix(in_srgb,var(--card)_45%,transparent)]'} backdrop-blur-xl border border-t-0 border-[color-mix(in_srgb,var(--border)_45%,transparent)] shadow-[0_4px_12px_rgba(0,0,0,.06)]`} />
+                        <div className="notif-material relative z-0 h-3 -mt-1.5 mx-4 rounded-b-2xl bg-[color-mix(in_srgb,var(--card)_35%,transparent)] backdrop-blur-lg border border-t-0 border-[color-mix(in_srgb,var(--border)_35%,transparent)]" />
                       </div>
                     )}
                     {promptChannel && (
                       <div className={`flex items-center gap-2 px-3 py-2 border border-t-0 ${mac
-                        ? 'rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
+                        ? 'notif-material rounded-b-2xl mb-2 bg-accent-subtle backdrop-blur-2xl border-[color-mix(in_srgb,var(--border)_55%,transparent)]'
                         : 'rounded-b-md mb-1 bg-accent-subtle border-border'}`}>
                         <Bell className="lucide-inline shrink-0 text-accent" />
                         <div className="flex-1 min-w-0 text-[12px] text-text">{i18nT('components.notifications.notificationFeed.first_notification_from')} <span className="font-semibold">{promptChannel.label}</span>{i18nT('components.notifications.notificationFeed.keep_receiving_these')}</div>

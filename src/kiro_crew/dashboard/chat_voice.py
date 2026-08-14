@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 
@@ -298,6 +299,17 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     if _voices_cache is not None and (now - _voices_cache_ts) < _VOICES_CACHE_TTL:
         return web.json_response({"voices": _voices_cache})
 
+    if await asyncio.to_thread(shutil.which, "aws") is None:
+        # Polly voice listing needs the AWS CLI, which is optional (the
+        # default Piper provider works without it). When the gateway runs
+        # under launchd, its PATH may also lack the dirs where `aws` is
+        # installed (e.g. /usr/local/bin). Degrade to an empty list instead
+        # of a 500 + traceback. Not cached, so the list recovers as soon as
+        # `aws` becomes resolvable. The probe runs in a thread so a wedged
+        # network mount on PATH cannot stall the event loop.
+        logger.info("aws CLI not found on PATH — returning empty voices list")
+        return web.json_response({"voices": []})
+
     cmd = ["aws", "polly", "describe-voices", "--output", "json"]
     if _vc.aws_profile:
         cmd += ["--profile", _vc.aws_profile]
@@ -335,6 +347,17 @@ async def api_voice_voices(request: web.Request) -> web.Response:
             proc.kill()
         await proc.wait()
         return web.json_response({"error": "timeout"}, status=504)
+    except FileNotFoundError:
+        # Defense-in-depth behind the which() guard above: exec can still
+        # fail with ENOENT — the binary was removed between the check and
+        # the spawn, or `aws` is a script whose interpreter is missing.
+        # Same graceful degrade as the guard, with the exception logged so
+        # the non-PATH causes stay diagnosable.
+        logger.info(
+            "aws CLI could not be executed — returning empty voices list",
+            exc_info=True,
+        )
+        return web.json_response({"voices": []})
     except Exception:
         logger.exception("describe-voices error")
         return web.json_response({"error": "Failed to retrieve voices"}, status=500)

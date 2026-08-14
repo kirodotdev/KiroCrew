@@ -45,7 +45,7 @@ class TestUninstallKeepSpecificParsing:
                 ok=True, to_dict=lambda: {"ok": True})),
             patch("kiro_crew.apps.routes.stop_app_backend", return_value=None),
             patch("kiro_crew.apps.routes.deregister_app", return_value=None),
-            patch("kiro_crew.apps.routes.on_app_disable", new_callable=AsyncMock,
+            patch("kiro_crew.apps.teardown.on_app_disable", new_callable=AsyncMock,
                   return_value=None),
             patch("kiro_crew.apps.routes.sel", return_value=MagicMock()),
             patch("kiro_crew.apps.routes.classify_and_clean_for_uninstall",

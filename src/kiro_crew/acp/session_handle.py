@@ -41,9 +41,12 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
+    _consume_future_exception,
+    _effective_prompt_timeout_async,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _raise_acp_error,
+    prompt_timeout_for_ceiling,
     resolve_usable_model,
 )
 from kiro_crew.acp.liveness import (
@@ -57,6 +60,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -78,6 +82,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
+    MODEL_CONFIG_ID,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
@@ -91,6 +96,7 @@ from kiro_crew.acp.types import (
     TurnUsage,
 )
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -99,22 +105,90 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──
 
-_DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours
-
 
 @dataclass(frozen=True)
 class WatchdogSettings:
     """Resolved ``watchdog.*`` config values, read ONCE at handle construction
     (never inside the dispatch loop). Defaults mirror ``WatchdogConfig`` in
     ``config/loader.py`` so a config-less context (tests, early bootstrap)
-    behaves identically to a default config."""
+    behaves identically to a default config.
+
+    Every idle window must stay strictly inside the turn's own wall-clock
+    ceiling — see :func:`_clamp_to_turn_ceiling` for why and
+    :data:`_TURN_CEILING_WINDOW_FRACTION` for the enforced headroom."""
 
     check_after_secs: float = 60.0
     stale_window_secs: float = 300.0
-    tool_stall_suspect_secs: float = 10800.0
-    tool_stall_hard_cap_secs: float = 10800.0
+    tool_stall_suspect_secs: float = 3600.0
+    tool_stall_hard_cap_secs: float = 3600.0
     model_silent_probe_secs: float = 900.0
     wellness_sample_secs: float = 3.0
+
+
+# Fraction of a turn's deadline that a watchdog idle window may occupy. A window
+# at or past the deadline is unreachable: the turn's own timeout fires first, so
+# the UNKNOWN-verdict branch never runs and the user gets the generic "turn hit
+# the limit" card instead of tool-stall recovery (which cancels non-lethally and
+# re-drives with a continue-nudge naming the tool and any redirect log). The
+# headroom covers the cancel + ack grace so recovery lands inside the same turn.
+_TURN_CEILING_WINDOW_FRACTION = 0.9
+# watchdog.* keys bounded by the prompt timeout: each is an idle-seconds window
+# the dispatch loop compares elapsed idle against. wellness_sample_secs is a
+# sampling interval, not a window, so it is not bounded here.
+_TURN_BOUNDED_WINDOWS = (
+    "check_after_secs",
+    "stale_window_secs",
+    "tool_stall_suspect_secs",
+    "tool_stall_hard_cap_secs",
+    "model_silent_probe_secs",
+)
+
+
+def _clamp_to_prompt_ceiling(key: str, value: float, chat_ceiling: float) -> float:
+    """Bound one watchdog window to the transport's per-prompt timeout.
+
+    Resolved via :func:`~kiro_crew.acp.client.prompt_timeout_for_ceiling` on the
+    caller's ALREADY-LOADED ``chat_turn_timeout_secs`` (no second config read;
+    the transport's dispatch loop stops the turn at the same deadline), so it
+    is the only safe bound for a snapshot that is taken once per handle and
+    reused across prompts. It follows a raised ``agent.chat_turn_timeout_secs``
+    and never sits below the 2h default, so a proportionately raised watchdog
+    window is honoured instead of being cut to the default's fraction.
+
+    Mirrors the shape of ``turn_dispatch.chat_turn_timeout_secs``'s clamp
+    against the same timeout: an out-of-range value is honoured as far as the
+    system can honour it, and the clamp is logged at warning level so the
+    misconfiguration is visible instead of silently ignored.
+    """
+    ceiling = prompt_timeout_for_ceiling(chat_ceiling)
+    budget = ceiling * _TURN_CEILING_WINDOW_FRACTION
+    if value <= budget:
+        return value
+    logger.warning(
+        "watchdog.%s=%.0fs leaves no room inside the %.0fs prompt timeout; "
+        "clamping to %.0fs. The turn's own timeout would fire first, so the "
+        "larger window cannot take effect.",
+        key, value, ceiling, budget,
+    )
+    return budget
+
+
+def _warn_if_above_chat_ceiling(key: str, value: float, chat_ceiling: float) -> None:
+    """Advisory: a DASHBOARD turn ends at ``agent.chat_turn_timeout_secs``, so a
+    window above that can never act there.
+
+    Deliberately not clamped. The same handle also serves callers that pass
+    their own, larger prompt timeout (a review run, a cron turn), and shrinking
+    every window to the dashboard's ceiling would cancel their live work. So the
+    mismatch is reported and left to the operator.
+    """
+    if 0 < chat_ceiling < value:
+        logger.warning(
+            "watchdog.%s=%.0fs exceeds agent.chat_turn_timeout_secs=%.0fs — a "
+            "dashboard turn ends before this window can act, so a stall there "
+            "surfaces as the turn-limit card instead of stall recovery.",
+            key, value, chat_ceiling,
+        )
 
 
 def _load_watchdog_settings() -> WatchdogSettings:
@@ -125,14 +199,17 @@ def _load_watchdog_settings() -> WatchdogSettings:
         # circular import: config.loader -> dashboard -> session -> acp
         from kiro_crew.config.loader import KiroCrewConfig
 
-        w = KiroCrewConfig.load().watchdog
+        cfg = KiroCrewConfig.load()
+        w = cfg.watchdog
+        chat_ceiling = float(cfg.agent.chat_turn_timeout_secs)
+        bounded = {}
+        for key in _TURN_BOUNDED_WINDOWS:
+            value = _clamp_to_prompt_ceiling(key, float(getattr(w, key)), chat_ceiling)
+            _warn_if_above_chat_ceiling(key, value, chat_ceiling)
+            bounded[key] = value
         return WatchdogSettings(
-            check_after_secs=float(w.check_after_secs),
-            stale_window_secs=float(w.stale_window_secs),
-            tool_stall_suspect_secs=float(w.tool_stall_suspect_secs),
-            tool_stall_hard_cap_secs=float(w.tool_stall_hard_cap_secs),
-            model_silent_probe_secs=float(w.model_silent_probe_secs),
             wellness_sample_secs=float(w.wellness_sample_secs),
+            **bounded,
         )
     except Exception:
         logger.debug("watchdog settings load failed — using defaults", exc_info=True)
@@ -141,6 +218,22 @@ def _load_watchdog_settings() -> WatchdogSettings:
 
 # How often a WORKING-verdict deferral is logged (evidence trail without spam).
 _WORKING_LOG_INTERVAL_SECS = 600.0
+# Idle ceiling past which a WORKING deferral stops being routine. Below it, a
+# deferral is the expected shape of a long build and logs at INFO. Past it the
+# deferral is on course to consume the whole turn budget, so it logs at WARNING
+# — the default ``agent.log_level``, without which the one decision that can
+# hold a turn silent until its ceiling leaves no trace in production logs. The
+# rate limit above still applies, so escalation does not become a spam source.
+_WORKING_WARN_AFTER_SECS = 1800.0
+# The same mark as a fraction of the turn's own deadline, so escalation still
+# happens with room to spare on a turn shorter than the default: the effective
+# threshold is whichever of the two is lower.
+_WORKING_WARN_DEADLINE_FRACTION = 0.25
+# "No deferral logged yet" marker for the rate-limit clock. It cannot be 0.0:
+# ``time.monotonic()`` counts from boot on Linux, so on a host up for less than
+# the interval above, 0.0 reads as "logged moments ago" and swallows the very
+# first deferral line — exactly the evidence a freshly restarted gateway needs.
+_WORKING_NEVER_LOGGED = float("-inf")
 # Unresponsive-cancel budget: after cancel() is sent, if kiro-cli does not
 # ack (via a cancelled stopReason on the prompt response) within this window,
 # the dispatch loop unblocks the caller with a terminal EVENT_COMPLETE. The
@@ -157,6 +250,27 @@ _POST_COMPACTION_METADATA_GRACE_SECS = 5.0
 # are processed before the first prompt, instead of racing into the first turn.
 _MCP_DRAIN_DURATION = 1.0
 _MCP_DRAIN_IDLE_EXIT = 0.25
+# Hard ceiling while NO MCP server has reported yet. The idle shortcut is only
+# meaningful once reporting has begun — before the first registration frame,
+# queue silence just means the server is still booting (an npx-based stdio
+# server spends seconds on npm resolution plus a Node boot before emitting
+# anything), so the drain keeps waiting up to this ceiling instead. Sized to
+# cover a realistic npx cold start (npm resolve + Node boot, observed 1-6s)
+# while bounding the cost for a session whose agent config has no MCP servers
+# at all — the one case that pays the full ceiling, since nothing ever arms
+# the idle exit. Sessions with fast servers are unaffected: their registration
+# frames are staged during session/new and arm the idle exit immediately.
+_MCP_DRAIN_NO_REPORT_CEILING = 6.0
+# Notification actions that count as "an MCP server reported in" for the
+# drain's arming logic. OAuth requests count: a server that asks for OAuth has
+# booted and reached its auth step, which is the same liveness signal.
+_MCP_DRAIN_REPORT_ACTIONS = frozenset(
+    {
+        "mcp_server_initialized",
+        "mcp_server_init_failure",
+        "mcp_oauth_request",
+    }
+)
 _SENTINEL = object()
 
 
@@ -177,6 +291,16 @@ class AcpRuntimeProtocol(Protocol):
     def pid(self) -> int | None:
         """Subprocess pid (sandbox launcher parent under the Linux namespace
         sandbox) — the liveness oracle scans its descendant tree for evidence."""
+        ...
+
+    @property
+    def acp_backend(self) -> str:
+        """Which ACP backend the process speaks.
+
+        The handle needs it because the backends disagree on verbs, not just on
+        payloads — the model, for one, is a ``session/set_model`` request on
+        kiro-cli and a session config option on KAS.
+        """
         ...
 
     @property
@@ -236,12 +360,18 @@ class AcpSessionHandle:
         # per-session evidence state (tracked child, counter samples).
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings()
         self._oracle = LivenessOracle(sample_min_secs=self._watchdog.wellness_sample_secs)
+        # Keep the executor future, not an await-scoped flag: wait_for can time
+        # out while the underlying thread continues its /proc walk. A pending
+        # future makes the next watchdog tick answer UNKNOWN instead of
+        # submitting a second job, so a wedged walk cannot stack blocked workers
+        # in the shared subprocess_executor().
+        self._consult_future: asyncio.Future[tuple[str, str]] | None = None
         # Snapshot of the most recent EVENT_TOOL_CALL (title/redacted input/
         # dispatch time/shell flag) — the oracle's attribution key. Cleared on
         # EVENT_TOOL_RESULT alongside _tool_dispatched.
         self._inflight_tool: ToolCallState | None = None
         # Last monotonic ts a WORKING-verdict deferral was logged (rate limit).
-        self._working_logged_ts = 0.0
+        self._working_logged_ts = _WORKING_NEVER_LOGGED
         # Terminal compaction status captured by compact() while draining its
         # own prompt turn (kiro-cli may emit _kiro.dev/compaction/status
         # BEFORE end_turn). wait_for_compaction() consumes it first so the
@@ -262,6 +392,16 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._last_stop_reason = ""
+        # Consumer-park accounting, read by the idle clocks in _dispatch_events
+        # and by external observers via parked_for_secs(). `_parked_total` is
+        # cumulative for the turn; `_parked_since` is set only while suspended at
+        # a yield in prompt().
+        self._parked_total: float = 0.0
+        self._parked_since: float | None = None
+        # Set when a permission event is yielded, cleared when it is answered.
+        # Distinguishes "waiting for a human" (legitimate, bounded elsewhere)
+        # from "the consumer stopped pulling for some other reason".
+        self._awaiting_permission: bool = False
         # toolCallId -> redacted input string, written by the shared parser so a
         # later tool result can recover its originating input (mirrors AcpClient).
         self._tool_call_inputs: dict[str, str] = {}
@@ -356,14 +496,19 @@ class AcpSessionHandle:
     # ── Prompt ──
 
     async def prompt(
-        self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, message: str, timeout: float | None = None
     ) -> AsyncIterator[AcpEvent]:
         """Send session/prompt and yield AcpEvent objects until the turn completes.
 
         Dispatches events from the per-session queue with the same logic as
         AcpClient._dispatch_events. Detects turn boundaries via the JSON-RPC
         response matching the prompt's request_id.
+
+        ``timeout=None`` (every dashboard turn) resolves from
+        ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
+        turn ceiling instead of cutting the turn at the 2h default underneath it.
         """
+        timeout = await _effective_prompt_timeout_async(timeout)
         # Guard against concurrent prompts on the same handle: a second call
         # would clear _turn_done and race on the shared _queue, corrupting
         # turn state and losing events. Each caller should use its own handle.
@@ -387,8 +532,14 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._inflight_tool = None
-        self._oracle.reset()
-        self._working_logged_ts = 0.0
+        # Park state is per-turn: carrying it across would charge the previous
+        # turn's consumer time to this one, and a permission left unanswered when
+        # the last turn died would mask this turn's stalls forever.
+        self._parked_total = 0.0
+        self._parked_since = None
+        self._awaiting_permission = False
+        self._retire_liveness_state()
+        self._working_logged_ts = _WORKING_NEVER_LOGGED
         self._tool_call_inputs.clear()
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
@@ -454,10 +605,92 @@ class AcpSessionHandle:
 
         try:
             async for event in self._dispatch_events(req_id, timeout):
-                yield event
+                # Park accounting. The consumer holds this event from here until
+                # it comes back for the next one, and that interval is CONSUMER
+                # time, not backend silence: the dispatch loop is suspended at
+                # its own yield throughout, so its idle clocks would otherwise
+                # charge a consumer-side await to the runtime. Measured at this
+                # single choke point because `_dispatch_events` yields from 15
+                # places and every one of them funnels through this `async for`.
+                self._parked_since = time.monotonic()
+                try:
+                    yield event
+                finally:
+                    # `finally`, not a trailing statement: an abandoned generator
+                    # unwinds with GeneratorExit and would otherwise leave
+                    # `_parked_since` set forever, which reads from outside as a
+                    # turn parked since the abandonment.  Guard against None:
+                    # a turn boundary (line ~517) may reset _parked_since before
+                    # a lingering generator's finally fires on GC.
+                    if self._parked_since is not None:
+                        self._parked_total += time.monotonic() - self._parked_since
+                        self._parked_since = None
         finally:
             if not self._turn_done.is_set():
                 self._turn_done.set()
+
+    # ── Turn park state (readable from OUTSIDE the turn) ──
+
+    def parked_for_secs(self) -> float:
+        """Seconds the consumer has been holding the current event; 0.0 if not parked.
+
+        This is the one signal the in-band watchdog structurally cannot report on
+        itself. That watchdog is the ``except asyncio.TimeoutError`` arm of
+        :meth:`_dispatch_events`, an async generator, so it only advances when a
+        consumer pulls it — a consumer that awaits inside its own ``async for``
+        body freezes the generator at the yield and the arm never executes again
+        for the rest of the turn. It is not slow or mis-configured there; it is
+        not called. An observer with its own timer reads this instead.
+        """
+        since = self._parked_since
+        if since is None:
+            return 0.0
+        # Clamped: a monotonic clock cannot go backwards, but a negative duration
+        # leaking into a caller's threshold comparison would read as "not parked".
+        return max(0.0, time.monotonic() - since)
+
+    @property
+    def parked_since(self) -> float | None:
+        """Monotonic timestamp the current park began, or None if not parked.
+
+        Exposed so an observer can latch on a park's IDENTITY rather than its
+        duration: a park that outlives the observer's tick would otherwise be
+        re-reported on every pass.
+        """
+        return self._parked_since
+
+    @property
+    def awaiting_permission(self) -> bool:
+        """True while a permission event has been yielded and not yet answered.
+
+        A turn parked here is waiting for a HUMAN, which is not a stall: that wait
+        is already bounded by ``agent.tool_approval_timeout_secs``. An external
+        observer must exclude it — otherwise every approval prompt reads as a
+        stalled turn, and two components end up racing to end the same wait on
+        different budgets.
+        """
+        return self._awaiting_permission
+
+    def _end_human_wait(self) -> None:
+        """Close the human-wait segment of the current park.
+
+        The consumer is still parked when a permission is answered — it resolves
+        the approval and then finishes its own branch (an IM send, a hook, a
+        transcript write) before coming back for the next event. Banking the wait
+        into ``_parked_total`` and restarting ``_parked_since`` keeps the in-band
+        correction exact (it wants the WHOLE park, all of which was consumer time
+        from the runtime's point of view) while making ``parked_for_secs()``
+        measure only what the consumer itself has spent since the answer.
+
+        Without this the observer reports a park whose duration is almost
+        entirely the human's thinking time — the same misattribution the in-band
+        clocks were fixed to avoid, reappearing one layer out.
+        """
+        self._awaiting_permission = False
+        if self._parked_since is not None:
+            now = time.monotonic()
+            self._parked_total += max(0.0, now - self._parked_since)
+            self._parked_since = now
 
     # ── Cancel ──
 
@@ -501,6 +734,10 @@ class AcpSessionHandle:
         """
         resolved_id = option_id
         recorded = self._permission_options.pop(request_id, None)
+        # Answered — the turn is no longer waiting on a human. Also closes the
+        # human-wait segment of the park so an observer does not attribute the
+        # person's thinking time to the consumer (see _end_human_wait).
+        self._end_human_wait()
         if recorded:
             if resolved_id is None:
                 resolved_id = recorded.get("once") or recorded.get("always")
@@ -526,6 +763,8 @@ class AcpSessionHandle:
         handles as an ordinary rejection.
         """
         recorded = self._permission_options.pop(request_id, None)
+        # Answered (see approve_tool) — a rejection ends the human wait too.
+        self._end_human_wait()
         reject_id = recorded.get("reject") if recorded else None
         if reject_id:
             await self._runtime.send_response(
@@ -567,10 +806,16 @@ class AcpSessionHandle:
             # Inherit the backend default — nothing to send. For the ephemeral
             # _bg session the current model IS session/new's served default.
             return
-        await self._runtime.send_request(
-            METHOD_SET_MODEL,
-            set_model_params(self._session_id, resolved),
-        )
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            # KAS implements no ``session/set_model``; the model is one of its
+            # session config options instead. Same effect, different verb — so
+            # the bookkeeping below is shared rather than duplicated.
+            await self.set_config_option(MODEL_CONFIG_ID, resolved)
+        else:
+            await self._runtime.send_request(
+                METHOD_SET_MODEL,
+                set_model_params(self._session_id, resolved),
+            )
         self._model = resolved
         # Parity with AcpClient.set_model: keep _resolved_model_id in sync so
         # _backfill_context_window looks up the NEW model's window after a switch
@@ -686,7 +931,9 @@ class AcpSessionHandle:
                     "summary": event.title or "",
                 }
 
-    async def wait_for_compaction(self, timeout: float = 120.0) -> dict[str, str]:
+    async def wait_for_compaction(
+        self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
+    ) -> dict[str, str]:
         """Wait for compaction completed/failed event from the session queue.
 
         Returns {"type": "completed"|"failed"|"timeout", "summary": "..."}.
@@ -848,6 +1095,19 @@ class AcpSessionHandle:
         return self._model
 
     @property
+    def served_model(self) -> str:
+        """Backend-resolved model id serving this session (``""`` until known).
+
+        Prefers the explicit ``set_model`` assignment (``_model``), falling
+        back to the ``session/new|load`` response's ``currentModelId``
+        (``_resolved_model_id``) so a session running on the backend-selected
+        DEFAULT is still readable — ``_model`` stays ``""`` on that path.
+        Both sources are backend-confirmed; the requested alias is never
+        reported here. May be a profile-form id, which is a valid wire id.
+        """
+        return self._model or self._resolved_model_id
+
+    @property
     def config_options(self) -> list[dict[str, Any]]:
         """ACP-reported configOptions (effort, model, mode selectors)."""
         return self._config_options
@@ -996,7 +1256,13 @@ class AcpSessionHandle:
             self._cleanup_transcript()
 
     def _cleanup_transcript(self) -> None:
-        """Best-effort delete of this session's kiro-cli transcript files."""
+        """Best-effort delete of this session's kiro-cli transcript files.
+
+        A NO-OP on the KAS backend: this unlinks from kiro-cli's sessions dir and
+        KAS keeps its own store, so nothing here matches. The ``keep_transcript``
+        guard therefore protects nothing on KAS — that backend's session record is
+        already gone, removed by the same verb that freed the session.
+        """
         sid = self._session_id
         if not sid:
             return
@@ -1070,6 +1336,10 @@ class AcpSessionHandle:
         """Core event dispatch loop. Yields AcpEvent objects from the session queue."""
         deadline = time.monotonic() + timeout
         last_data_ts = time.monotonic()
+        # Consumer time already accounted for at the moment `last_data_ts` was
+        # taken. The idle clocks below measure BACKEND silence, so any park that
+        # happens after this point must be subtracted from them.
+        parked_at_data = self._parked_total
 
         _buffered: list[JsonRpcMessage] = []
         try:
@@ -1136,14 +1406,23 @@ class AcpSessionHandle:
                         continue
                     wd = self._watchdog
                     now = time.monotonic()
+                    # Consumer time since the last frame. Both clocks below are
+                    # meant to measure how long the RUNTIME has been silent, but
+                    # the loop is suspended at its yield for the whole of a
+                    # consumer-side await, so without this the wait a consumer
+                    # spends on an approval, an IM send, or a hook is charged to
+                    # the backend — and a turn can be cancelled moments after a
+                    # human approves it. Subtracted rather than clamped forward so
+                    # a burst of short parks accumulates correctly.
+                    _parked = max(0.0, self._parked_total - parked_at_data)
 
                     if self._tool_dispatched:
-                        _tool_idle = now - last_data_ts
+                        _tool_idle = max(0.0, (now - last_data_ts) - _parked)
                         if _tool_idle <= wd.check_after_secs:
                             continue
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
                         if verdict == VERDICT_WORKING:
-                            self._log_working_deferral(_tool_idle, evidence)
+                            self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
                         # UNKNOWN acts at the suspect window; the hard cap governs
                         # only the stale/model-wait branch below (it bounds the
@@ -1159,12 +1438,22 @@ class AcpSessionHandle:
                         return
 
                     if self._stale_eligible:
-                        _stale_idle = now - max(last_data_ts, self._runtime._last_activity)
+                        # `_parked` is measured from the last QUEUE frame, while
+                        # this clock can key off the newer stderr/keepalive
+                        # activity instead. When it does, some of `_parked`
+                        # predates the reference point and is subtracted twice
+                        # over — which only ever makes this branch MORE patient,
+                        # never quicker to probe, so it errs toward leaving a
+                        # working turn alone.
+                        _stale_idle = max(
+                            0.0,
+                            (now - max(last_data_ts, self._runtime._last_activity)) - _parked,
+                        )
                         if _stale_idle <= wd.check_after_secs:
                             continue
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=True)
                         if verdict == VERDICT_WORKING:
-                            self._log_working_deferral(_stale_idle, evidence)
+                            self._log_working_deferral(_stale_idle, evidence, timeout)
                             continue
                         if verdict != VERDICT_DEAD:
                             # UNKNOWN: probe only past the window. An established-
@@ -1206,6 +1495,7 @@ class AcpSessionHandle:
                     raise AcpProcessDied("Runtime process died during prompt")
 
                 last_data_ts = time.monotonic()
+                parked_at_data = self._parked_total
                 self.last_prompt_stats.event_count += 1
 
                 # Turn-complete response
@@ -1276,6 +1566,10 @@ class AcpSessionHandle:
                 action = self._classify(msg)
 
                 if action == "permission":
+                    # Mark BEFORE the yield: the consumer parks on this event, and
+                    # an observer reading the park mid-flight must be able to tell
+                    # "waiting for a human" from "the consumer stopped pulling".
+                    self._awaiting_permission = True
                     yield self._build_permission_event(msg)
                 elif action == "server_request_unknown":
                     await self._runtime.send_error(msg.id, -32601, "Method not found")
@@ -1414,6 +1708,53 @@ class AcpSessionHandle:
             for _m in _buffered:
                 self._queue.put_nowait(_m)
 
+    def _retire_liveness_state(self) -> None:
+        """Release the tracked consult and swap in a fresh, configured oracle.
+
+        Both boundaries that drop the evidence baseline — turn start in
+        ``prompt()`` and each new tool dispatch — retire rather than
+        ``reset()``, because ``_consult_oracle_offloaded`` submits a BOUND oracle
+        method to ``subprocess_executor()``: a walk whose await already timed out
+        keeps running and keeps a reference to the instance it was handed. Samples
+        are keyed ``"io"``/``"cpu"`` with no PID, so clearing in place lets that
+        late writer repopulate the baseline the next generation reads, and since
+        any nonzero delta counts as movement a flat tick then reads WORKING.
+
+        The tool path has a second, sharper version of the same hazard that the
+        capture path does not: ``_check_shell_child`` matches a descendant against
+        the *dispatched* command and stores it as ``_tracked_child`` for exact
+        exit detection on later ticks. A walk carrying the PREVIOUS tool's
+        ``ToolCallState`` therefore writes a child of the previous command into
+        the live oracle, and the new tool's next tick reports
+        ``WORKING "shell child N alive"`` on a process that has nothing to do with
+        it. Retiring confines both writes to an instance nobody reads.
+
+        Retirement is not a semantic change for the cross-tick tracked-child
+        contract itself: ``fresh()`` starts with exactly the state ``reset()``
+        produced (no tracked child, no grace timestamp, no samples), and the
+        consult resolves ``self._oracle`` at submission, so every tick after the
+        boundary binds and accumulates on the new instance the way it did before.
+
+        The future must be retired TOGETHER with the oracle. Replacing only the
+        oracle would leave a walk wedged in the previous generation answering
+        every later tick "prior consult still in flight", so the new generation
+        would never sample its own process — the tool branch would then run on
+        UNKNOWN and end a healthy tool call at the suspect window.
+
+        Releasing the future costs at most one abandoned worker per boundary
+        instead of one per tick. ``fresh()`` rather than a default construction so
+        the per-session ``wellness_sample_secs`` (and an injected /proc root or
+        clock in tests) survives the swap.
+        """
+        prior_consult = self._consult_future
+        self._consult_future = None
+        if prior_consult is not None:
+            if prior_consult.done():
+                _consume_future_exception(prior_consult)
+            else:
+                prior_consult.add_done_callback(_consume_future_exception)
+        self._oracle = self._oracle.fresh()
+
     async def _consult_oracle_offloaded(self, *, model_wait: bool) -> tuple[str, str]:
         """Oracle verdict, offloaded off the event loop.
 
@@ -1423,6 +1764,13 @@ class AcpSessionHandle:
         ``subprocess_executor()`` — same treatment as the runtime's RSS probe —
         bounded so a hung /proc read can't wedge the watchdog itself. Any
         failure degrades to UNKNOWN, never to a kill.
+
+        A timed-out await does not stop its executor thread. The submitted future
+        is tracked and intervening ticks answer UNKNOWN without submitting again,
+        bounding this handle to one outstanding walk per liveness generation
+        instead of one per tick — otherwise a permanently wedged /proc read grows
+        a new blocked worker every ``check_after_secs`` and starves the shared
+        pool that teardown's ``_get_child_pids`` also draws from.
         """
         pid = getattr(self._runtime, "pid", None)
         call: Callable[..., tuple[str, str]]
@@ -1432,27 +1780,61 @@ class AcpSessionHandle:
         else:
             tool = self._inflight_tool
             if tool is None:
+                # Resolved before the in-flight guard on purpose: this answer is
+                # pure handle state and needs no worker, so a wedged walk must
+                # not mask why the tool branch has nothing to check.
                 return VERDICT_UNKNOWN, "no in-flight tool state"
             call = self._oracle.check_tool
             args = (pid, tool)
+
+        prior = self._consult_future
+        if prior is not None:
+            if not prior.done():
+                return VERDICT_UNKNOWN, "prior consult still in flight"
+            # wait_for cancels shield's outer future, and shield detaches its
+            # inner-done callback in exactly that case. The submission-time
+            # callback below covers that normal path; this consume additionally
+            # covers an already-completed future that never went through it.
+            _consume_future_exception(prior)
+
         try:
+            # Submission stays inside the guard: the caller is a watchdog tick, so
+            # a refused executor job (shut down during teardown, thread creation
+            # refused under load) must read as UNKNOWN rather than abort the turn.
             loop = asyncio.get_running_loop()
-            return await asyncio.wait_for(
-                loop.run_in_executor(subprocess_executor(), call, *args),
-                timeout=10.0,
-            )
+            future = loop.run_in_executor(subprocess_executor(), call, *args)
+            # Attach at SUBMISSION, not only where a later tick or a boundary
+            # observes it: a turn that ends on this verdict returns with the walk
+            # still running and may never be consulted again, and CancelledError
+            # is a BaseException so an `except Exception` arm would miss a turn
+            # cancelled mid-walk. Retrieval is not destructive, so the await
+            # below still sees the result.
+            future.add_done_callback(_consume_future_exception)
+            self._consult_future = future
+            return await asyncio.wait_for(asyncio.shield(future), timeout=10.0)
         except Exception:
             logger.debug("oracle consultation failed/timed out", exc_info=True)
             return VERDICT_UNKNOWN, "oracle offload error"
 
-    def _log_working_deferral(self, idle: float, evidence: str) -> None:
+    def _log_working_deferral(self, idle: float, evidence: str, turn_timeout: float) -> None:
         """Evidence trail for a WORKING deferral, rate-limited to one line per
-        interval so a 40-minute build doesn't spam the journal."""
+        interval so a 40-minute build doesn't spam the journal.
+
+        Escalates to WARNING once idle passes the lower of
+        :data:`_WORKING_WARN_AFTER_SECS` and
+        :data:`_WORKING_WARN_DEADLINE_FRACTION` of this turn's own deadline, so a
+        deferral long enough to matter is visible at the default log level on a
+        short turn as well as a default-length one.
+        """
         now = time.monotonic()
         if now - self._working_logged_ts < _WORKING_LOG_INTERVAL_SECS:
             return
         self._working_logged_ts = now
-        logger.info(
+        warn_after = min(
+            _WORKING_WARN_AFTER_SECS, turn_timeout * _WORKING_WARN_DEADLINE_FRACTION
+        )
+        logger.log(
+            logging.WARNING if idle >= warn_after else logging.INFO,
             "Watchdog deferral on session %s: idle %.0fs but verdict WORKING (%s)",
             self._session_id, idle, evidence,
         )
@@ -1621,29 +2003,70 @@ class AcpSessionHandle:
         self,
         duration: float = _MCP_DRAIN_DURATION,
         idle_exit: float = _MCP_DRAIN_IDLE_EXIT,
+        no_report_ceiling: float | None = None,
+        ignore_queued_reports: bool = False,
     ) -> None:
         """Drain MCP-init / oauth / config frames from the queue after set_mode.
 
         Parity with AcpClient._drain_notifications. During session setup there is
         no in-flight prompt, so every frame on this session's queue is an
         init-time notification. Draining them here keeps them out of the first
-        turn's event stream and gives MCP servers a brief window to report in
-        before the first prompt races ahead. Bounded by ``duration`` with early
-        exit after ``idle_exit`` seconds of silence. ``config_option_update``
-        frames refresh cached configOptions; OAuth requests remain drainable via
+        turn's event stream and gives MCP servers a window to report in before
+        the first prompt races ahead.
+
+        The idle shortcut means "quiet AFTER the servers reported", not "quiet,
+        therefore done": until the first MCP registration frame (initialized /
+        init_failure / oauth_request) is observed, queue silence is treated as a
+        server still booting and the drain keeps waiting, bounded by
+        ``no_report_ceiling`` (defaults to ``_MCP_DRAIN_NO_REPORT_CEILING``,
+        resolved at call time so tests can shrink the module constant). Once a
+        report has been seen, the drain allows up to ``duration`` more and exits
+        after ``idle_exit`` seconds of silence, so warm sessions — whose
+        registration frames were staged during session/new — arm immediately and
+        pay no extra latency. ``config_option_update`` frames refresh cached
+        configOptions; OAuth requests remain drainable via
         ``pop_pending_oauth_requests``; everything else is logged/discarded.
         Best-effort — never raises.
+
+        ``ignore_queued_reports``: registration frames already sitting on the
+        queue when the drain starts describe the roster that initialized during
+        ``session/new`` — for a session whose mode was then SWITCHED via
+        ``set_mode``, that is the PRE-switch agent's roster, and the
+        switched-to agent's own servers may still be booting. Passing True
+        keeps that stale backlog from arming the idle shortcut (the frames are
+        still drained and processed normally); only a report observed after
+        the pre-drain backlog is exhausted counts as the active agent's.
         """
-        deadline = time.monotonic() + duration
+        if no_report_ceiling is None:
+            no_report_ceiling = _MCP_DRAIN_NO_REPORT_CEILING
+        start = time.monotonic()
+        deadline = start + duration
+        hard_deadline = start + max(duration, no_report_ceiling)
+        # A nonpositive ceiling means "do not hold for a first report" — the
+        # caller knows no MCP server can register (MCP-free runtime). The idle
+        # shortcut is then active from the start, i.e. the pre-fix behavior.
+        reported = no_report_ceiling <= 0.0
+        stale_backlog = ignore_queued_reports and not self._queue.empty()
         drained = 0
-        while time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
+        while True:
+            now = time.monotonic()
+            limit = deadline if reported else hard_deadline
+            if now >= limit:
+                break
+            remaining = limit - now
+            if stale_backlog and self._queue.empty():
+                # The pre-drain backlog is exhausted; anything from here on
+                # arrived after set_mode and speaks for the ACTIVE agent.
+                stale_backlog = False
             try:
                 msg = await asyncio.wait_for(
-                    self._queue.get(), timeout=min(remaining, idle_exit)
+                    self._queue.get(),
+                    timeout=min(remaining, idle_exit) if reported else remaining,
                 )
             except asyncio.TimeoutError:
-                break  # queue went quiet — MCP servers done reporting
+                # Armed: queue went quiet after reporting — servers are done.
+                # Unarmed: the no-report ceiling elapsed with nothing to show.
+                break
             if msg is None:
                 # Runtime died during init — re-poison so the next consumer sees it.
                 await self._queue.put(None)
@@ -1651,6 +2074,11 @@ class AcpSessionHandle:
             drained += 1
             try:
                 action = classify_notification(msg)
+                if not reported and not stale_backlog and action in _MCP_DRAIN_REPORT_ACTIONS:
+                    # First server report: arm the idle shortcut and give the
+                    # remaining servers up to ``duration`` from this point.
+                    reported = True
+                    deadline = time.monotonic() + duration
                 if action == "update":
                     params = msg.params or {}
                     update = params.get("update") or {}
@@ -1761,15 +2189,16 @@ class AcpSessionHandle:
                 self._tool_dispatched = True
                 # Attribution snapshot for the liveness oracle: title + the
                 # already-redacted input + dispatch time + the trusted shell
-                # flag. A new dispatch resets the oracle's tracked child and
-                # counter samples so evidence never bleeds across tools.
+                # flag. A new dispatch retires the oracle so its tracked child
+                # and counter samples never bleed across tools — including from a
+                # walk still running against the previous tool's command.
                 self._inflight_tool = ToolCallState(
                     title=ev.title,
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
                     is_shell=ev.is_shell,
                 )
-                self._oracle.reset()
+                self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:
                 self._tool_dispatched = False
                 self._inflight_tool = None

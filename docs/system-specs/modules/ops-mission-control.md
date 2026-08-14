@@ -2908,21 +2908,23 @@ review time, not to simulate the platform.
   install, which is the only path that reaches end users. The cron prompts
   reference `~/.kiro/crew/skills/ops-mission-control/sops/<name>.md` accordingly.
 
-  **Every SOP carries the auth recipe, not just SKILL.md.** The SKILL and all six SOPs
+  **Every SOP names the credentialed tool, not a token recipe.** The SKILL and all six SOPs
   told the agent to call HTTP endpoints and never said how to authenticate. An
   unattended `rotation-check` run therefore improvised: it hardcoded a port belonging to
   a different gateway, collected `{"error": "Token required"}` **65 times**, spent **41
   tool calls** hunting for a token the cron runner *deliberately destroys* before the
   first tool call, and hit the 1800s cron timeout without ever reaching the API. That
-  reads to an operator as "the app is broken" when the fix was six lines of docs.
+  reads to an operator as "the app is broken".
 
-  The recipe derives base URL and token from one `kirocrew token` call and passes
-  `?token=`. It is repeated in each SOP because a cron agent may read **only** its own
-  SOP. Three tests guard it: every SOP mentions `kirocrew token` and `?token=`; no auth
-  code block contains a literal `host:port` (a hardcoded port was the original failure —
-  and this test caught one I had just written myself); and the block passes `bash -n`,
-  because `${URL%%\?*}` is easy to mangle in markdown and an unparseable snippet sends
-  the agent straight back to improvising.
+  A token recipe cannot fix this — the builtin security rules block agents from minting
+  gateway tokens, by design. Agent access goes through the `ops_mission_control_api`
+  MCP tool instead: the MCP server process holds the gateway's internal secret and
+  forwards only a frozen (method, path) allowlist; the agent never sees a credential
+  (the `issue_radar_record_investigation` precedent). Each SOP names the tool and its
+  paths because a cron agent may read **only** its own SOP. Tests pin the three planes
+  to one surface: the allowlist in `validation.py`, the schema rejecting off-surface
+  calls, and the gateway's mixed-internal path set admitting exactly the allowlisted
+  routes — see `tests/test_agent_api_tool.py`.
 
   **The SOP→route contract scanner had silently narrowed to 4 of 10 endpoints.** It
   filtered lines on a literal `GATEWAY/api/apps/...` prefix, so rewriting the SOPs to

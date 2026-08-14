@@ -8,8 +8,9 @@ open before touching that subsystem: see
 
 ## What this is
 
-Kiro Crew is an open-source personal AI agent: chat from Slack, a web dashboard, or
-the CLI; run multi-step tasks unattended; schedule cron jobs; keep memory across
+Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the
+CLI, or a messaging channel like Slack and Discord; run multi-step tasks
+unattended; schedule cron jobs; keep memory across
 sessions. It drives an LLM through the KiroACP provider (the ACP adapter running
 `kiro-cli` over ACP JSON-RPC) plus MCP tools.
 
@@ -34,7 +35,9 @@ in the **same commit** when you change what it documents.
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
 | `acp/`, kiro-cli transport, providers | [acp-client](docs/system-specs/modules/acp-client.md) + [providers](docs/system-specs/modules/providers.md) |
+| adding or adapting an agent harness (BYO, KAS, claude seam) | [harness-parity](docs/system-specs/modules/harness-parity.md) (invariants) + [harness-parity-gate](docs/ci/harness-parity-gate.md) (CI) |
 | sessions, slots, session keys, PIDs | [session](docs/system-specs/modules/session.md) + [history](docs/system-specs/modules/history.md) |
+| session summaries, the chat summary panel, intent extraction | [session-summary](docs/system-specs/modules/session-summary.md) |
 | memory, embeddings, vectors, lessons, skills, hooks | [memory-skills-hooks](docs/system-specs/modules/memory-skills-hooks.md) |
 | MCP servers or tools (adding, changing, statelessness) | [mcp](docs/architecture/mcp.md) |
 | apps, App Kit, manifests, app agents | [app-kit-platform](docs/system-specs/modules/app-kit-platform.md) + [app-kit/](docs/app-kit/README.md) |
@@ -77,7 +80,10 @@ This repo is the de-Amazoned public fork of an internal package. Never re-add:
 - **Other providers.** Kiro Crew is KiroACP-only: `agent.provider` is fixed to
   `acp` and kiro-cli is REQUIRED. Keep the dormant `ACP_BACKEND_CLAUDE` /
   `_is_claude` seam in `acp/client.py` so an internal companion can re-register
-  Claude Code; do NOT re-add the public registration glue.
+  Claude Code; do NOT re-add the public registration glue. A harness added at
+  `agent.acp_backend` is a different question and is governed by
+  [Harness parity](#harness-parity-kiro-is-first-class-the-rest-are-adapted) —
+  adapted, never a second `agent.provider` value.
 - **OSS-flipped defaults:** always-on in-process embeddings, Piper TTS by default,
   a default-open Slack enterprise gate, lazy STT extras.
 - **Fork UX divergences:** the Channels app is hidden from the App Store and the
@@ -146,6 +152,50 @@ Never hardcode a model id (`claude-*`, `opus*`, `sonnet*`, `haiku*`, `gpt-*`,
 
 `code-review.yml` fails on a newly added hardcoded model literal outside
 `model_registry*`, the config schema, and tests.
+
+## Harness parity: Kiro is first-class, the rest are adapted
+
+Never express "this is the Kiro harness" as the ABSENCE of another harness. Kiro
+Crew drives one first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled
+`""`) — and adapts the others (the dormant `ACP_BACKEND_CLAUDE` seam, KAS, and
+any bring-your-own harness). A negative test like `not is_claude_backend` reads
+correctly with two harnesses and then silently hands the third a capability, a
+sandbox waiver, or a session label nobody granted it — and it fails toward the
+permissive answer, so nothing goes red until an operator who never opted into
+that harness pays for it.
+
+- **An added harness ADAPTS, it does not widen.** It may only fit itself to the
+  seams the Kiro harness already runs through: no new conditional, required
+  argument, awaited step, or failure mode on the Kiro path, and no collapsing a
+  per-harness literal (spawn argv, `PROTOCOL_VERSION`, client capabilities) into
+  one form every harness accepts. A harness that cannot land without changing the
+  Kiro path does not land yet.
+- **Identity is positive.** `is_kiro_backend` / `== ACP_BACKEND_KIRO`, or
+  membership in a named `ACP_BACKENDS_*` set in `acp/types.py`. Never a bare
+  string literal, an inequality, or a negation.
+- **Capabilities are opt-in membership sets** (`ACP_BACKENDS_SESSION_SHARING`,
+  `ACP_BACKENDS_STEER`, `ACP_BACKENDS_INTERNAL_SANDBOX`), and every harness's
+  membership is an explicit decision. `is_kiro_cli` is the one that fails OPEN:
+  it makes `sandbox.wrap_argv` SKIP Kiro Crew's own seatbelt in favour of the
+  harness's internal sandbox, so granting it to a harness without one leaves the
+  agent process unconfined.
+- **Kiro is the floor.** `agent.acp_backend` defaults to `ACP_BACKEND_KIRO` and
+  it is in `ACP_BACKENDS_SELECTABLE` unconditionally; an unusable persisted value
+  degrades there with a logged reason (`_normalize_acp_backend`) instead of
+  raising. A harness is selected at `acp_backend` — `agent.provider` stays
+  `enum=["acp"]`.
+- **Registration is additive at the seam** — `platform/interfaces.py`'s
+  `ProviderRegistry`, a v1 addition with no `CONTRACT_VERSION` bump. A new
+  provider capability lands on the `LLMProvider` ABC with a safe default, never
+  as a `hasattr` probe on the Kiro path.
+- Invariant ids, and the test pinning each, are in
+  [harness-parity](docs/system-specs/modules/harness-parity.md). Cite them bare
+  (`H7`) in code comments and review findings.
+
+`scripts/check_harness_parity.py` fails on a newly added negative identity test
+under `src/kiro_crew/` (run it locally with
+`HARNESS_BASE_REF=origin/main python3 scripts/check_harness_parity.py`); the
+judgment half is the `harness-parity` rule in `AUTOSDE.yaml`.
 
 ## Specification management
 
@@ -222,7 +272,7 @@ fail on 3.12 and pass on 3.10 at the same commit.
 | Comments | Explain **behavior and rationale (the why)**: invariants, edge cases, units, non-obvious constraints. NOT a task log: no PR/CR numbers, review-round markers, incident dates, milestone tags, or commit SHAs. No "previously/used to/we now" narration, state current behavior in present tense. Don't restate what the code plainly does. `_vendor/` and pragmas are exempt. |
 | Icons | **Never use emojis in the UI.** Use `lucide-react` with `className="lucide-inline"`. |
 | Product name | The product is **Kiro Crew**: two words, a space, capital `K`. Identifiers keep the spelling their own system gave them (the `kirodotdev/KiroCrew` repo slug, `KiroCrew.dmg` artifacts, the `KiroCrew Nightly` OS identifier, the `kirocrew` CLI, `KIROCREW_*` env vars, `kiro_crew` imports). CI-gates the lines a change adds; run `BRAND_BASE_REF=origin/main python3 scripts/check_brand_name.py` before pushing. |
-| User-facing strings | The dashboard is translated into 11 languages. **Never hardcode a user-facing English string, and never format a date, number, or sort order without naming a locale.** Both are CI-gated. Backend-owned strings have no catalog path yet, so a new non-2xx JSON body MUST carry a machine-readable `code` field. |
+| User-facing strings | The dashboard is translated into 12 languages. **Never hardcode a user-facing English string, and never format a date, number, or sort order without naming a locale.** Both are CI-gated. Backend-owned strings have no catalog path yet, so a new non-2xx JSON body MUST carry a machine-readable `code` field. |
 
 ## Cross-platform: route POSIX calls through `platform_compat`
 

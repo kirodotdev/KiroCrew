@@ -111,6 +111,7 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
 
   return (
     <motion.div
+      data-testid="tip-card"
       className="w-full flex items-start gap-2.5 px-4 py-2 rounded-md text-xs shadow-lg"
       style={{
         background: 'color-mix(in srgb, var(--accent) 6%, var(--bg-elevated))',

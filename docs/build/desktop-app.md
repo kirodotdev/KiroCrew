@@ -61,6 +61,32 @@ an Intel Mac where the universal build cannot run. Per-arch targets:
 | Linux x86_64 | x86_64 Linux | x86_64 `.AppImage` |
 | Linux aarch64 (Graviton/ARM) | aarch64 Linux | aarch64 `.AppImage` |
 
+**Both Linux architectures ship.** `build-desktop.yml` builds them on
+`ubuntu-22.04` and `ubuntu-22.04-arm`, and `publish-linux.yml` runs once per
+arch — each writing its own immutable S3 key, its own electron-updater channel
+file (`latest-linux.yml` for x64, `latest-linux-arm64.yml` for arm64) and its own
+`latest` alias. Published basenames are `KiroCrew-x86_64.AppImage` and
+`KiroCrew-aarch64.AppImage`.
+
+Two properties are load-bearing and worth knowing before you touch that lane:
+
+- **Linux is built natively per arch, never cross-compiled.** `build-desktop.sh`
+  provisions a python-build-standalone interpreter and then *runs* it (pip
+  install, plus the `python -m kiro_crew --version` self-containment gate), so a
+  host that cannot execute the target architecture cannot build it. macOS gets
+  away with one host only because Rosetta 2 executes the x86_64 slice.
+- **The runner's glibc is the floor for every user.** The AppImage links against
+  it, which is why both Linux legs stay on 22.04 (glibc 2.35) rather than moving
+  to 24.04 (2.39) — the newer floor would exclude AL2023, Debian 12 and RHEL 9.
+
+**Building your own package locally.** `make desktop` needs no arch flags: it
+detects the host and emits an AppImage for it, so running it on an ARM box
+produces the aarch64 build with no CI involved. Filenames are arch-qualified
+(`KiroCrew-<version>-<arch>.AppImage`) so several arches can sit in one directory
+without overwriting each other. To validate a packaging change against every
+platform *without* publishing anything, dispatch `build-desktop.yml` manually —
+it builds the full matrix and uploads artifacts, with no publish lane attached.
+
 Anything you **distribute** for macOS should be the universal DMG — the
 host-arch build is a local-machine artifact.
 
@@ -96,6 +122,15 @@ x64 gate doubles as proof the bundle runs under Rosetta. In
 `backend-dist/**` (single-arch Mach-O files inside a universal app are
 intentional there), and `extraResources` ships the `backend-dist/` directory
 wholesale so single- and dual-backend layouts both package.
+
+> **Renaming `backend-dist/` is load-bearing at runtime.** The backend detects
+> "am I the bundled interpreter?" via
+> `platform_compat.is_bundled_interpreter()`
+> (`BUNDLED_BACKEND_DIST_DIRNAME`), which is what stops `pip` from writing
+> into the signed bundle during app builds. `test/test_platform_compat.py`
+> pins that constant to both `extraResources` here and
+> `packaging/build-desktop.sh`, so a rename fails a test — update the constant
+> and the packaging layer in the same change.
 
 **Trade-off:** the DMG carries two full Python backend trees, so it is
 roughly **2× the size** of a per-arch DMG — expect ~350–400 MB. That is the
@@ -165,12 +200,12 @@ bump one, bump the other and the root `version` fields in
 `packages[""].version`, NOT the dependency entries that coincidentally share a
 version), or `npm ci` will complain about a lock mismatch.
 
-> **npm registry pin (required):** both `website/.npmrc` *and*
-> `website/electron/.npmrc` pin `registry=https://registry.npmjs.org/`. The
-> electron pin is load-bearing — without it `npm ci` in `website/electron/`
-> inherits whatever registry the machine's global `~/.npmrc` sets and can fail
-> with an auth error on a non-public registry. Any new npm subproject needs its
-> own public-registry `.npmrc`.
+> **npm registry (system-configured):** the `.npmrc` files deliberately do NOT
+> pin a registry. `npm ci` inherits whatever registry the machine's `~/.npmrc`
+> or environment configures, so mirrors and private registries work for
+> builders who cannot reach `https://registry.npmjs.org/`. If your configured
+> registry lacks a public package or its auth token expired, fix your registry
+> config rather than adding a pin back.
 
 ## Build pipeline
 

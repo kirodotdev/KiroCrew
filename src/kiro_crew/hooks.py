@@ -96,6 +96,17 @@ class HookResult:
 class ToolHookResult:
     action: str  # TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY
     reason: str = ""
+    #: True when a TOOL_DENY came from a hard security check — the attempt
+    #: itself is the problem. False when it came from policy STATE (the
+    #: governance ceiling ∩ profile), where the same attempt becomes allowed
+    #: once the policy loosens. Callers that count refusals against a durable
+    #: budget must only count the security kind: an unattended cron auto-pauses
+    #: after repeated failures, and a policy denial is not a defect in the job.
+    #: The reason string cannot carry this: most security denies never contain
+    #: ``DENY_REASON_PREFIX`` at all (the sensitive-path, write-protected-config
+    #: and deny-by-default-shell messages do not), so matching on it would
+    #: classify a sensitive-path or exfiltration deny as non-security.
+    security_deny: bool = True
 
     @staticmethod
     def allow() -> ToolHookResult:
@@ -107,7 +118,18 @@ class ToolHookResult:
 
     @staticmethod
     def deny(reason: str) -> ToolHookResult:
-        return ToolHookResult(action=TOOL_DENY, reason=reason)
+        """Deny on a hard security check — the attempt is the problem."""
+        return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=True)
+
+    @staticmethod
+    def deny_policy(reason: str) -> ToolHookResult:
+        """Deny on policy STATE, which the same attempt can outlive.
+
+        Kept distinct from :meth:`deny` so a caller counting refusals against a
+        durable budget (cron auto-pause) does not treat a governance ceiling as
+        a defect in what it attempted.
+        """
+        return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=False)
 
 
 # ── Config Types ──
@@ -140,8 +162,6 @@ class TransformHook:
 
 
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = [
-    "kirocrew browse *",
-    "*kirocrew browse *",
 ]
 
 
@@ -173,6 +193,11 @@ class UserDeniedPattern:
     id: str = ""
     pattern: str = ""
     enabled: bool = True
+    # Operator-authored explanation shown to the agent when this rule fires,
+    # INSTEAD of leaving it to infer intent from the raw regex. Metadata only —
+    # it never participates in matching. Declared last so existing positional
+    # construction (``UserDeniedPattern("id", "pat", True)``) keeps working.
+    note: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> UserDeniedPattern:
@@ -186,10 +211,19 @@ class UserDeniedPattern:
             # is present because the operator wanted it enforced, so ambiguous
             # junk should keep it ON (fail safe = keep denying).
             enabled=_coerce_bool(data.get("enabled", True), default=True),
+            # A malformed note degrades to "" rather than raising: it is
+            # cosmetic, so junk here must never abort gateway boot nor weaken
+            # the rule it annotates.
+            note=str(data.get("note", "") or ""),
         )
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "pattern": self.pattern, "enabled": self.enabled}
+        return {
+            "id": self.id,
+            "pattern": self.pattern,
+            "enabled": self.enabled,
+            "note": self.note,
+        }
 
 
 @dataclass
@@ -442,7 +476,10 @@ class HookManager:
         enforce the path/host scopes a display title cannot carry
         (``filesystem.write``, ``network.egress``).  Both default to empty, so a
         caller that does not thread them only loses those two arg-derived scopes,
-        never the title-derived ones.
+        never the title-derived ones.  ``raw_params`` additionally feeds the deny
+        tiers a synthesized ``file-search …`` target (``_search_deny_target``) for a
+        search-shaped call, whose walked root and depth cap exist ONLY in its
+        arguments; a caller that omits ``raw_params`` loses that coverage too.
 
         ``is_shell`` enforces deny-by-default for shell tools: when a caller
         reports a shell tool (``is_shell=True``) but cannot supply the raw
@@ -575,12 +612,22 @@ class HookManager:
         ctx = current_context()
         authority = ctx.security
         denied_regexes = self._effective_denied(ctx)
+        denied_notes = self._denied_notes()
         deny_targets = [normalized, tool_name]
         if command:
             deny_targets.append(command)
+        # A file-search builtin's scope lives only in its arguments — it carries no
+        # ``command``, and its title need not name the root it walks — so this target is
+        # the only form in which a deny rule can see a whole-tree walk.
+        search_target = _search_deny_target(raw_params)
+        if search_target:
+            deny_targets.append(search_target)
         for target in deny_targets:
             reason = authority.is_denied(
-                target, self._config.auto_deny_tools, denied_regexes=denied_regexes
+                target,
+                self._config.auto_deny_tools,
+                denied_regexes=denied_regexes,
+                reason_notes=denied_notes,
             )
             if reason:
                 return ToolHookResult.deny(reason)
@@ -597,7 +644,7 @@ class HookManager:
             ctx, tool_name, session_key, agent, app, tool_kind, raw_params
         )
         if gov_reason:
-            return ToolHookResult.deny(gov_reason)
+            return ToolHookResult.deny_policy(gov_reason)
 
         # App-own MCP server auto-approve — a FIRST-PARTY (builtin) app agent
         # calling its OWN app-scoped MCP server is intra-app, not a host surface.
@@ -688,6 +735,7 @@ class HookManager:
                     canonical_mcp_name,
                     self._config.auto_deny_tools,
                     denied_regexes=denied_regexes,
+                    reason_notes=denied_notes,
                 )
                 if deny_reason:
                     return ToolHookResult.deny(deny_reason)
@@ -695,7 +743,7 @@ class HookManager:
                     ctx, canonical_mcp_name, session_key, agent, app, tool_kind, raw_params
                 )
                 if gov_reason:
-                    return ToolHookResult.deny(gov_reason)
+                    return ToolHookResult.deny_policy(gov_reason)
                 return ToolHookResult.auto_approve()
 
         # Auto-approve — match against both the original title (preserves
@@ -784,7 +832,16 @@ class HookManager:
         """
         return resolve_effective_denied_regexes(self._config, ctx)
 
-    def effective_denied_regexes(self) -> list[str]:
+    def _denied_notes(self) -> dict[str, str]:
+        """Operator notes for the user patterns in the effective denied set.
+
+        Passed alongside ``denied_regexes`` so a refusal can carry the operator's
+        own remediation line. Empty dict when nothing is annotated, which is the
+        pre-existing behavior (reason = the bare pattern).
+        """
+        return resolve_denied_notes(self._config)
+
+    def effective_denied_regexes(self, *, include_governance_pins: bool = True) -> list[str]:
         """Public accessor for the effective regex-tier denied set.
 
         Resolves the platform context itself, so callers outside the tool-call
@@ -792,8 +849,14 @@ class HookManager:
         workflow / heartbeat surfaces) can honor the SAME user opt-out +
         governance-pin state that ``on_tool_call`` enforces, instead of failing
         closed to all built-ins and re-introducing "disabled but still blocked".
+
+        Pass ``include_governance_pins=False`` only to CLASSIFY a deny that has
+        already been decided by the pinned set — never to decide one. See
+        ``resolve_effective_denied_regexes``.
         """
-        return self._effective_denied(current_context())
+        return resolve_effective_denied_regexes(
+            self._config, current_context(), include_governance_pins=include_governance_pins
+        )
 
 
 # ACP semantic tool kinds treated as read-only for the non-shell auto-approve
@@ -876,21 +939,64 @@ def hooks_config_from_config_dict(hooks_section: dict) -> HooksConfig:
     return HooksConfig.from_dict(merged)
 
 
-def resolve_effective_denied_regexes(config: "HooksConfig", ctx: object = None) -> list[str]:
+def resolve_effective_denied_regexes(
+    config: "HooksConfig", ctx: object = None, *, include_governance_pins: bool = True
+) -> list[str]:
     """Effective regex-tier denied set from a HooksConfig (module-level).
 
     Same resolution as ``HookManager._effective_denied`` but usable by callers
     that hold a config rather than a HookManager (e.g. cron command vetting in
     ``mcp_cron``). Honors the user opt-out (disable_all / disabled_ids /
     user_added) with governance pins force-re-added (tightest-wins).
+
+    ``include_governance_pins=False`` resolves the set the USER's own opt-out
+    state would produce on its own. Enforcement must never use it — dropping
+    pins is exactly the opt-out a pin exists to refuse. It answers a different
+    question: comparing a deny against both sets tells a caller whether the
+    match came ONLY from a pin, i.e. whether the block is policy state (which a
+    later loosening reverses) or a rule the user is enforcing themselves.
     """
     return security.compute_effective_denied(
         security.BUILTIN_DENIED_RULES,
         config.denied_commands_disabled_ids,
         config.denied_commands_disable_all,
         [p.pattern for p in config.denied_commands_user_added if p.enabled],
-        _governance_pinned_command_ids(ctx),
+        _governance_pinned_command_ids(ctx) if include_governance_pins else (),
     )
+
+
+def resolve_denied_notes(config: "HooksConfig") -> dict[str, str]:
+    """Map each annotated, enabled user pattern to its operator note.
+
+    The note is what the refusal shows INSTEAD of leaving the agent to infer
+    intent from a raw regex — e.g. "use --maxdepth, or rg/fd" rather than a
+    40-character character-class soup. Keyed by pattern because that is the only
+    identity the matcher carries into ``security.is_denied``; ids are not
+    threaded through the regex tier.
+
+    Only enabled rules with a non-blank note appear. Built-in rules are absent
+    on purpose: their ``description`` is catalog documentation aimed at the
+    Settings reader, not remediation aimed at the caller, so promoting it into
+    every refusal would change the text of rules the operator never annotated.
+
+    A note containing :data:`security.DENY_REASON_MATCH_PREFIX` is DROPPED. The
+    note is emitted on its own line, and ``RecoveryCard.tsx`` parses refusals with
+    a GLOBAL per-line regex, so such a note would be read as a second, fabricated
+    deny pattern. The guard uses the COLON-terminated form, not the emitted prefix:
+    the regex treats the space after the colon as optional, so
+    ``"Blocked by security policy:forged"`` parses as a refusal line without
+    containing the emitted prefix. The add endpoint rejects this at write time;
+    this guard is the one that holds for a keystone file the operator edited by
+    hand. Fail-safe direction: lose the note, keep the pattern.
+    """
+    return {
+        p.pattern: p.note.strip()
+        for p in config.denied_commands_user_added
+        if p.enabled
+        and p.pattern
+        and p.note.strip()
+        and security.DENY_REASON_MATCH_PREFIX not in p.note
+    }
 
 
 def effective_denied_regexes_from_config() -> list[str]:
@@ -1192,6 +1298,253 @@ _TOOL_TITLE_PREFIXES = ("Running: ", "Reading ")
 # ``filesystem.write`` scope. Used to gate the write-only config-file protection
 # so reads are not affected.
 _EDIT_TOOL_KIND = "edit"
+
+# Fixed prefix of the synthesized file-search deny target. A NAMESPACE, not a trust
+# boundary: it exists so a rule can address a search's SCOPE distinctly from a command
+# line. The display title is a deny target in its own right, so a title quoting this
+# prefix trips such a rule too — an over-block, identical to the title tier for every
+# other rule, and it grants nothing.
+_SEARCH_DENY_PREFIX = "file-search"
+
+# ``operation`` values that walk a tree WITHOUT carrying a ``pattern``. Enumerated by
+# name, so a tool with a novel recursive argument shape is not recognized — see the
+# residual limits in ``_search_deny_target``.
+_RECURSIVE_SEARCH_OPERATIONS: frozenset[str] = frozenset(
+    {
+        "search_symbols",
+        "search_codebase_map",
+        "generate_codebase_overview",
+        "find_references",
+    }
+)
+
+# The canonical field carrying the search ROOT. Normalized before emission so one
+# spelling of a tree reaches a rule (``_normalize_search_path``); ``max_depth`` is a
+# number and needs no such treatment.
+_SEARCH_PATH_FIELD = "path"
+
+# The SCOPE-bearing arguments of a file search as ``(canonical, accepted spellings)``,
+# in a fixed order so the synthesized target is deterministic. Scope is the root walked
+# and the depth cap — NOT what is being looked for. ``pattern`` and ``include`` are
+# model-authored free text and are deliberately NOT emitted: a value can mint a field
+# it is not (a pattern containing ``max_depth=`` silences a rule keyed on the absence
+# of a cap), and a benign search whose pattern is ``DROP TABLE`` would match a
+# command-oriented built-in rule. ``pattern`` is read by the shape gate only.
+#
+# Each key is read under every spelling kiro-cli may echo — our schemas declare
+# snake_case but some calls come back in ``rawInput`` camelCased (the same split
+# ``TOOL_PURPOSE_KEYS`` handles) — and emitted under the canonical name, so a rule
+# spells each field once. A missed spelling INVERTS a rule rather than weakening it:
+# with no ``max_depth`` field, a rule keyed on the absence of a cap fires on a search
+# that carries one.
+#
+# The emitted string is a PUBLIC GRAMMAR: operators author deny rules against these
+# field names, this order, and this encoding, so changing any of them silently breaks
+# or inverts rules already installed. Treat additions as append-only.
+_SEARCH_DENY_ARG_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (_SEARCH_PATH_FIELD, ("path", "file_path", "filePath")),
+    ("max_depth", ("max_depth", "maxDepth")),
+)
+
+# What a value must not contribute to the flat ``key=value …`` grammar: ``=`` mints a
+# field name and whitespace mints a field boundary, so a value carrying either could
+# forge a field the call does not have. ``%`` is escaped first so the encoding is
+# unambiguous. It is lossy by design — every whitespace character collapses to ``%20``
+# — because a rule matches a shape and never needs the original bytes back.
+_SEARCH_DENY_ESCAPES: tuple[tuple[str, str], ...] = (("%", "%25"), ("=", "%3D"))
+
+# The ONLY environment variables substituted into a search root. This is an allowlist
+# because the value is MODEL-AUTHORED and the synthesized target is AUDITED: a denied
+# target is written to the security event log as the ``operation`` field, so
+# ``os.path.expandvars`` — which dereferences any variable — let an agent pick a path
+# prefix it knew a rule refuses, append ``$AWS_SECRET_ACCESS_KEY``, and have the deny
+# it deliberately triggered write the expanded secret to a readable log. That turns the
+# deny matcher itself into an exfiltration primitive.
+#
+# These names are safe to expand because their value is the home path, which is
+# precisely what a home-scoped rule matches on — expanding them reveals nothing the
+# target would not already carry. Every other variable stays literal, which under-matches
+# rather than over-matches: a rule keyed on an absolute prefix simply does not fire, the
+# same fail-safe direction as the relative-root decision.
+_SEARCH_HOME_VARS: tuple[str, ...] = ("HOME", "USERPROFILE")
+
+
+def _encode_search_field(value: str) -> str:
+    """Percent-encode the characters a value could use to forge a field."""
+    for raw, encoded in _SEARCH_DENY_ESCAPES:
+        value = value.replace(raw, encoded)
+    return "".join("%20" if ch.isspace() else ch for ch in value)
+
+
+def _expand_home_vars(value: str) -> str:
+    """Substitute only home-denoting variables; leave every other ``$VAR`` literal.
+
+    NOT ``os.path.expandvars``, which dereferences ANY variable. That would turn the
+    match target into a carrier for secret VALUES: the deny decision would depend on,
+    and every downstream consumer of the target or of a rule hit (refusal text shown
+    to the model, audit metadata, operator tooling) could then receive, whatever
+    ``$NAME`` an agent chose to embed — a dereference the gate never needs, because
+    only the home spellings have a value worth collapsing (the home path is what a
+    home rule matches on anyway).
+
+    An UNSET variable is left literal rather than substituted empty: turning
+    ``$HOME/x`` into ``/x`` would claim a root-scope walk the tool never performs, and
+    a rule matching that broader scope would deny the wrong thing.
+    """
+    for name in _SEARCH_HOME_VARS:
+        expanded = os.environ.get(name)
+        if not expanded:
+            continue
+        for spelling in (f"${name}", f"${{{name}}}", f"%{name}%"):
+            value = value.replace(spelling, expanded)
+    return value
+
+
+def _normalize_search_path(value: str) -> str:
+    """Canonicalize a search root so one spelling reaches a rule.
+
+    ``~``, ``$HOME``, and ``.``/``..`` segments all name a tree a rule must be able
+    to refuse under a single spelling — ``path="~"`` walks the home tree just as
+    ``path="/home/alice"`` does, and a rule anchored on the literal root matches
+    only the latter. Mirrors what the sensitive-path keystone on this same gate
+    already does with ``raw_params['path']``.
+
+    Steps: expand the home variables and ``~``, ``normpath``, rewrite separators to
+    ``/``, and collapse a leading ``//`` to ``/`` on POSIX. The separator rewrite keeps
+    the emitted grammar OS-independent: ``normpath`` produces backslash separators on
+    Windows, so a rule authored with ``/`` — the form the spec documents — would
+    silently stop matching there, which fails OPEN. The collapse is POSIX-only
+    because POSIX leaves a path beginning with exactly two slashes
+    implementation-defined while on Windows a leading ``//`` is a UNC or
+    extended-length root that must survive intact.
+
+    Variable expansion is restricted to ``_SEARCH_HOME_VARS`` (see
+    ``_expand_home_vars``) because this value is MODEL-AUTHORED and the resulting
+    target is audited: expanding arbitrary variables would dereference a secret into
+    a log. A non-home variable therefore stays literal, so no rule keyed on an
+    absolute prefix matches it — an over-block/under-match in the same fail-safe
+    direction as the relative-root decision below.
+
+    DELIBERATELY NOT ``abspath``, which is where this diverges from
+    ``governance._norm_item``: absolutizing resolves a relative root against the
+    GATEWAY process cwd, which is not the cwd the tool runs in. That misattribution
+    cuts both ways — a rule denying the tree actually walked is bypassed, and a rule
+    naming the gateway's own tree falsely denies an unrelated search. Governance can
+    absorb that because it is a policy intersection where an ungoverned scope
+    permits; a hard deny cannot. A relative root therefore stays relative and no
+    rule keyed on an absolute prefix matches it (see the residual limits).
+
+    LEXICAL ONLY: no ``realpath``, so a symlink into a denied tree is not resolved.
+    The resolved sensitive-path keystone remains the layer that does not depend on
+    spelling.
+
+    Never raises: this runs inside the permission gate, where an exception is a crash
+    rather than a security decision. On any failure the raw value is returned for the
+    caller to encode, which cannot forge a field.
+
+    Only a BARE ``~`` (alone or followed by a separator) is expanded, NOT ``~name``,
+    and the home directory comes from the ``_SEARCH_HOME_VARS`` environment values
+    ONLY — ``os.path.expanduser`` is never called. Both of its lookup paths reach
+    the account database through synchronous NSS calls that can stall the gateway
+    event loop for seconds on LDAP-backed hosts: ``~name`` via ``pwd.getpwnam``
+    (agent-controlled name), and bare ``~`` with ``HOME`` unset via
+    ``pwd.getpwuid``. When no home variable is set the ``~`` stays literal — the
+    same contract as an unexpanded ``$HOME`` — so the account database is never
+    consulted at all.
+
+    The expansion is built by CONCATENATION, never ``os.path.join``: join discards
+    every earlier component when a later one is absolute, so ``~//etc`` (remainder
+    ``/etc``) would come out as ``/etc`` — the gate would encode a root-scoped target
+    while the search itself resolves under the real home, and a home-scoped deny rule
+    would miss. Leading separators are stripped from the remainder instead, which is
+    exactly what the shells and search tools this gate fronts do with ``~//etc``
+    (``$HOME//etc`` == ``$HOME/etc``). The invariant across this whole branch: agent
+    text is never dereferenced through the environment or account database beyond the
+    fixed HOME spellings and the current user's own home, and once the home prefix is
+    chosen nothing later in the string can displace it.
+    """
+    try:
+        expanded = _expand_home_vars(value)
+        if expanded == "~" or expanded.startswith(("~/", "~" + os.sep)):
+            home = next((h for h in map(os.environ.get, _SEARCH_HOME_VARS) if h), "")
+            if home:
+                rest = expanded[1:].lstrip(os.sep + (os.altsep or ""))
+                expanded = home + os.sep + rest if rest else home
+        path = os.path.normpath(expanded)
+    except (OSError, ValueError):
+        return value
+    path = path.replace(os.sep, "/")
+    if os.altsep:
+        path = path.replace(os.altsep, "/")
+    if os.name != "nt" and path.startswith("//") and not path.startswith("///"):
+        path = path[1:]
+    return path
+
+
+def _is_search_shaped(raw_params: Mapping) -> bool:
+    """Whether these arguments describe a recursive search.
+
+    A non-empty ``pattern`` string, or an ``operation`` naming a recursive walk that
+    carries no pattern of its own.
+    """
+    pattern = raw_params.get("pattern")
+    if isinstance(pattern, str) and pattern:
+        return True
+    operation = raw_params.get("operation")
+    return isinstance(operation, str) and operation in _RECURSIVE_SEARCH_OPERATIONS
+
+
+def _search_deny_target(raw_params: dict | None) -> str:
+    """Synthesize a deny-matcher target from a file-search call's scope arguments.
+
+    Both deny tiers match TEXT, and they are handed the display title plus — for a
+    shell tool — the raw ``command``. A file-search builtin has neither: its title is
+    LLM-authored prose that need not name a path, and it carries no ``command``, so the
+    root it walks and whether that walk is depth-capped reach no deny rule. This target
+    is what a rule matches instead: ``"<prefix> path=… max_depth=…"`` over the scope
+    arguments present, or ``""`` when the arguments are not search-shaped.
+
+    Identification is by ARGUMENT SHAPE, never the title, for the same reason the
+    sensitive-path keystone reads ``raw_params['path']``: the arguments are what the
+    tool runs with. A ``command`` means a shell tool, already covered by the raw-command
+    target.
+
+    Every emitted value is encoded so it cannot forge a field (``_encode_search_field``);
+    without that, model-authored text disarms the very rule shape this mechanism exists
+    to serve.
+
+    Residual limits, deliberately not closed here — this is a defense-in-depth layer
+    over the always-on sensitive-path keystone, not a complete sandbox:
+      * The recursive-``operation`` set is enumerated, so a tool that walks a tree under
+        some other argument shape produces no target.
+      * Only singular path spellings are read; a call passing a ``paths``/``files``
+        sequence, or omitting the root entirely to walk the cwd, emits no ``path``
+        field and a path-keyed rule does not see it.
+      * Path normalization is lexical (see ``_normalize_search_path``): a symlink into a
+        denied tree is not resolved, and a RELATIVE root stays relative, so no rule keyed
+        on an absolute prefix matches it.
+      * What is being searched FOR is never expressible in a rule, only where.
+    """
+    if not isinstance(raw_params, Mapping) or raw_params.get("command"):
+        return ""
+    if not _is_search_shaped(raw_params):
+        return ""
+    fields = [_SEARCH_DENY_PREFIX]
+    for canonical, spellings in _SEARCH_DENY_ARG_KEYS:
+        for key in spellings:
+            value = raw_params.get(key)
+            # ``bool`` is an ``int`` subclass; a boolean depth is meaningless and would
+            # emit a field no rule can match sensibly.
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                continue
+            text = str(value)
+            if not text:
+                continue
+            if canonical == _SEARCH_PATH_FIELD:
+                text = _normalize_search_path(text)
+            fields.append(f"{canonical}={_encode_search_field(text)}")
+            break
+    return " ".join(fields)
 
 
 def _normalize_tool_name(tool_name: str) -> str:
@@ -2218,12 +2571,21 @@ def _emit_internal_read_audit(read_id: str, outcome: str) -> bool:
     return True
 
 
-# Registry of sanctioned audit-only credential reads: read_id -> the
-# credential-bearing location it covers. These are reads of paths that are NOT
-# classified sensitive (so they cannot route through ``safe_read_file_internal``
-# / ``_INTERNAL_READ_ALLOWLIST``) yet still hold a live secret and therefore owe
-# the same SEL audit trail. Every entry requires the same security-review
-# justification discipline as ``_INTERNAL_READ_ALLOWLIST``.
+# Registry of sanctioned audit-only credential accesses: read_id -> the
+# credential-bearing location it covers. Both classes below owe the same SEL
+# audit trail as ``_INTERNAL_READ_ALLOWLIST``, and neither can route through
+# ``safe_read_file_internal`` -- which returns the CONTENT of a FIXED sensitive
+# path:
+#
+#   1. A live secret at a path that is NOT classified sensitive, so the
+#      sensitive-path gate does not apply to it at all.
+#   2. A presence-only access under a classified directory at a per-subject
+#      COMPUTED name: there is no content to return and no fixed relative path
+#      to register, so the gate has nothing to act on -- but the access is still
+#      first-party contact with a credential store and still owes a trail.
+#
+# Every entry requires the same security-review justification discipline as
+# ``_INTERNAL_READ_ALLOWLIST``.
 _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # kiro-cli / amazon-q SQLite auth stores: live SSO bearer token on Linux.
     # Read read-only by ``kiro_crew.dashboard.handlers.kiro_usage_api`` for the
@@ -2231,6 +2593,23 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # justification in _INTERNAL_READ_ALLOWLIST -- identical posture, different
     # storage layout).
     "kiro_usage_api.sqlite_token": ".local/share/{kiro-cli,amazon-q}/data.sqlite3",
+    # Same store, read by ``kiro_crew.kiro_cli.signed_in_via_idc`` to answer one
+    # question for the enterprise MCP-governance diagnostic: did this identity come
+    # from Identity Center? Only the two non-secret ``auth.idc.*`` marker rows are
+    # selected, and only their COUNT leaves the function -- no token row is read and
+    # no value is returned. The audit is owed regardless, because the file holds
+    # live credential material whatever this reader touches.
+    "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
+    # Class 2. kiro-cli's MCP OAuth artifact cache under ``~/.aws/sso/cache``.
+    # ``kiro_crew.connections.mint.grant_present`` STATS the paired
+    # ``<sha256(mcp_url)>.token.json`` / ``.registration.json`` artifacts to learn
+    # whether kiro-cli already holds a grant for ONE provider -- the mint's only
+    # consent-completion signal. The files are never opened, so no token material
+    # can enter the process, and the name is a hex digest of a registry-declared
+    # provider URL, so no other path in that directory is expressible. Audited on
+    # the observation a caller acts on, not per poll; see
+    # ``mint._grant_observed`` for why that boundary is not fail-closed.
+    "connections_mint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
 }
 
 
@@ -2243,6 +2622,10 @@ def emit_internal_read_audit(read_id: str, outcome: str) -> bool:
     still holds a live secret -- e.g. the kiro-cli auth store at
     ``~/.local/share/kiro-cli/data.sqlite3``. Such a reader still owes the same
     audit trail, so it calls this wrapper with its own ``read_id`` and outcome.
+    A presence-only access under a classified directory at a computed name lands
+    here for the mirror-image reason: there is no content to gate and no fixed
+    path to register, but the contact with the credential store is real. See
+    :data:`_AUDIT_ONLY_READ_IDS` for both classes.
 
     The ``read_id`` MUST be registered in ``_AUDIT_ONLY_READ_IDS`` -- this entry
     point enforces its own allowlist, mirroring the ``_INTERNAL_READ_ALLOWLIST``

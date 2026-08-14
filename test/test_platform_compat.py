@@ -12,6 +12,7 @@ output we can assert directly), and the process-helper return contracts.
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import shutil
@@ -21,6 +22,7 @@ import sys
 import tempfile
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -148,6 +150,85 @@ class TestProcessHelpers:
 
     def test_process_matches_false_for_unused_pid(self):
         assert pc.process_matches(2_000_000_000, ("kiro-cli", "claude")) is False
+
+
+class TestProcessCwd:
+    """``process_cwd`` is polled per open terminal, so its contract is that it
+    answers from ``/proc`` or ``libproc`` and NEVER spawns a subprocess. The
+    macOS branch is exercised on every platform by faking the ``libproc``
+    handle, since the byte offsets it slices with are the risky part."""
+
+    def test_returns_own_cwd(self):
+        cwd = pc.process_cwd(os.getpid())
+        if cwd is None:
+            pytest.skip("no /proc and no libproc on this host")
+        assert os.path.samefile(cwd, os.getcwd())
+
+    def test_returns_none_for_unused_pid(self):
+        assert pc.process_cwd(2_000_000_000) is None
+
+    def test_never_spawns_a_subprocess(self, monkeypatch):
+        # The whole point of this helper: a fork+exec of the gateway per poll is
+        # what it exists to avoid, so a regression that reintroduces one here
+        # must fail loudly rather than just get slower.
+        def explode(*a, **k):
+            raise AssertionError("process_cwd must not spawn a subprocess")
+
+        monkeypatch.setattr(subprocess, "run", explode)
+        monkeypatch.setattr(subprocess, "Popen", explode)
+        pc.process_cwd(os.getpid())
+        pc.process_cwd(2_000_000_000)
+
+    @staticmethod
+    def _fake_libproc(path: bytes, *, filled: int | None = None):
+        """A libproc stand-in whose proc_pidinfo writes *path* at the cwd offset."""
+        size = pc._DARWIN_PROC_VNODEPATHINFO_SIZE
+
+        class _Lib:
+            def proc_pidinfo(self, pid, flavor, arg, buf, buffersize):
+                buf.raw = (
+                    b"\0" * pc._DARWIN_VNODE_INFO_SIZE
+                    + path
+                    + b"\0" * (size - pc._DARWIN_VNODE_INFO_SIZE - len(path))
+                )
+                return size if filled is None else filled
+
+        return _Lib()
+
+    def test_darwin_reads_the_path_at_the_cwd_offset(self, monkeypatch):
+        monkeypatch.setattr(
+            pc, "_darwin_libproc_handle", lambda: self._fake_libproc(b"/Users/u/proj"),
+        )
+        assert pc._darwin_process_cwd(4242) == "/Users/u/proj"
+
+    def test_darwin_refuses_a_short_write(self, monkeypatch):
+        # A byte count other than the exact struct size means the layout the
+        # offsets assume no longer matches the kernel's, so the path cannot be
+        # sliced out safely — the caller falls back instead of getting garbage.
+        monkeypatch.setattr(
+            pc,
+            "_darwin_libproc_handle",
+            lambda: self._fake_libproc(b"/Users/u/proj", filled=64),
+        )
+        assert pc._darwin_process_cwd(4242) is None
+
+    def test_darwin_refuses_an_error_return(self, monkeypatch):
+        monkeypatch.setattr(
+            pc, "_darwin_libproc_handle", lambda: self._fake_libproc(b"/x", filled=-1),
+        )
+        assert pc._darwin_process_cwd(4242) is None
+
+    def test_darwin_returns_none_without_libproc(self, monkeypatch):
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: None)
+        assert pc._darwin_process_cwd(4242) is None
+
+    def test_darwin_swallows_a_throwing_libproc(self, monkeypatch):
+        class _Boom:
+            def proc_pidinfo(self, *a):
+                raise OSError("nope")
+
+        monkeypatch.setattr(pc, "_darwin_libproc_handle", lambda: _Boom())
+        assert pc._darwin_process_cwd(4242) is None
 
 
 class TestFindListeningPids:
@@ -1774,7 +1855,7 @@ class TestFindListeningPidsErrors:
 
 class TestKillAsyncVariants:
     """Regression guards for the async ``kill_pid_async`` / ``kill_process_tree_async``
-    variants (Mesh-2801).
+    variants.
 
     The async wrappers exist so async call sites can offload the blocking
     Windows ``taskkill`` spawn to :func:`kiro_crew.executors.subprocess_executor`
@@ -2333,6 +2414,32 @@ def test_trusted_system_bin_rejects_a_name_not_in_system_dirs(tmp_path, monkeypa
     assert platform_compat.trusted_system_bin("ps") is not None
 
 
+def test_trusted_system_bin_dirs_are_not_limited_to_fhs():
+    # A distribution may keep ps/lsof/systemd-run outside /usr/{s}bin; an
+    # FHS-only pin resolves nothing at all there.
+    from kiro_crew import platform_compat
+
+    fhs = {"/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+    assert set(platform_compat._TRUSTED_SYSTEM_BIN_DIRS) - fhs
+
+
+def test_trusted_system_bin_resolves_outside_fhs(tmp_path, monkeypatch):
+    # A tool reachable only through a non-FHS pinned directory still resolves.
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX lookup
+        pytest.skip("POSIX binary resolution")
+
+    system_dir = tmp_path / "sw" / "bin"
+    system_dir.mkdir(parents=True)
+    tool = system_dir / "definitely-not-a-system-tool"
+    tool.write_text("#!/bin/sh\nexit 0\n")
+    tool.chmod(0o755)
+
+    monkeypatch.setattr(platform_compat, "_TRUSTED_SYSTEM_BIN_DIRS", (str(system_dir),))
+    assert platform_compat.trusted_system_bin("definitely-not-a-system-tool") == str(tool)
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
@@ -2618,3 +2725,74 @@ def test_an_absent_tool_reports_no_unpinned_path(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))
 
     assert pc.tool_outside_trusted_dirs("definitely-not-a-system-tool") is None
+
+
+# ── Desktop bundled-interpreter detection ──
+
+_REPO_ROOT = Path(__file__).parent.parent
+
+
+class TestIsBundledInterpreter:
+    """``is_bundled_interpreter`` is the single runtime owner of the desktop
+    packaging-layout sentinel; these tests pin both its behavior and its
+    agreement with the packaging layer, so a bundler directory rename breaks a
+    test here instead of silently un-matching the runtime guard (which would
+    let pip write into the signed macOS bundle)."""
+
+    def test_bundled_interpreter_path_is_detected(self, tmp_path, monkeypatch):
+        """The real desktop layout — a python-build-standalone runtime under
+        ``Resources/backend-dist/`` — must be recognized. The literal directory
+        name is deliberate here: the test pins the real-world layout, not the
+        constant (asserting via the constant would be tautological)."""
+        bundled = (
+            tmp_path
+            / "App.app"
+            / "Contents"
+            / "Resources"
+            / "backend-dist"
+            / "kirocrew-backend-arm64"
+            / "bin"
+            / "python3.12"
+        )
+        monkeypatch.setattr(pc.sys, "executable", str(bundled))
+        assert pc.is_bundled_interpreter() is True
+
+    def test_regular_interpreter_path_is_not_detected(self, tmp_path, monkeypatch):
+        """An ordinary venv interpreter must not trip the guard — a false
+        positive would refuse every Python app build on normal installs."""
+        regular = tmp_path / "gateway-venv" / "bin" / "python3.12"
+        monkeypatch.setattr(pc.sys, "executable", str(regular))
+        assert pc.is_bundled_interpreter() is False
+
+    def test_sentinel_matches_electron_builder_packaging_layout(self):
+        """Pin the constant to electron-builder's ``extraResources`` target so
+        a packaging rename fails HERE, not at runtime inside a signed bundle."""
+        pkg_json = _REPO_ROOT / "website" / "electron" / "package.json"
+        pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+        targets = {
+            res["to"]
+            for res in pkg["build"]["extraResources"]
+            if isinstance(res, dict) and "to" in res
+        }
+        assert pc.BUNDLED_BACKEND_DIST_DIRNAME in targets, (
+            "platform_compat.BUNDLED_BACKEND_DIST_DIRNAME no longer matches the "
+            "electron-builder extraResources target in website/electron/package.json. "
+            "If the desktop packaging directory was renamed, update the constant "
+            "(and this test) in the same change — otherwise the bundled-interpreter "
+            "guard silently stops matching and pip can write into the signed bundle."
+        )
+
+    def test_sentinel_matches_desktop_build_script_staging_dir(self):
+        """Same pin against the build script that stages the runtime trees.
+
+        Asserts the directory NAME as a path component — not any exact
+        shell-quoted expression — so a script refactor that introduces a
+        variable for the staging path does not false-positive this pin."""
+        script = (_REPO_ROOT / "packaging" / "build-desktop.sh").read_text(encoding="utf-8")
+        needle = f"/{pc.BUNDLED_BACKEND_DIST_DIRNAME}"
+        assert needle in script, (
+            "packaging/build-desktop.sh no longer stages anything under a "
+            f"'{pc.BUNDLED_BACKEND_DIST_DIRNAME}' directory — keep "
+            "platform_compat.BUNDLED_BACKEND_DIST_DIRNAME in sync with the "
+            "packaging layer (see is_bundled_interpreter)."
+        )

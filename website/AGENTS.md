@@ -17,7 +17,7 @@ them.
 | shared components, a11y, URL sanitization, data fetching | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |
-| tests (vitest, MSW, Playwright, Electron) | [testing](docs/testing.md) |
+| tests (vitest, MSW, Playwright, Electron), or a test that fails only in CI | [testing](docs/testing.md) |
 | the Electron desktop shell | [electron/README.md](electron/README.md) |
 | anything backend, or a whole-system question | [`../AGENTS.md`](../AGENTS.md) |
 
@@ -46,7 +46,9 @@ copy-paste before a single test executes. Commands and layers:
 ## This is a public OSS fork: don't reintroduce internal couplings
 
 - **Build/infra:** no `npm-pretty-much`, Brazil, AIM, or CodeArtifact registries.
-  The public build is plain npm + Vite; `.npmrc` pins the public registry.
+  The public build is plain npm + Vite; `.npmrc` deliberately does not pin a
+  registry -- the system-configured registry applies (see
+  `docs/build/desktop-app.md`).
 - **Identity/telemetry:** no live Cognito pools or RUM app ids (`src/rum.ts` is an
   inert no-op stub, keep it inert), no `aws-rum-web`.
 - **Removed product surfaces:** internal feature-app pages, tabs, API-client
@@ -69,6 +71,11 @@ ones (e.g. `typeof Notification !== 'undefined'`).
 
 ## Rules that must not wait for a pointer
 
+- **Settings primitives: pass `configKey` on every new `SettingsToggle`/`SettingsField`**
+  that writes a config path. It flows into the generated settings registry and makes
+  `<SettingRef configKey="...">` chips deep-link to the control; omit it and the chip
+  silently degrades to a CLI popover even though a toggle exists. Backend drift guards
+  catch bad keys, not missing ones — this rule is the only gate for the missing case.
 - **Icons: `lucide-react` only, with `className="lucide-inline"`.** Never an emoji,
   never a hand-rolled SVG, never `size={N}`. Enforced by `AUTOSDE.yaml`
   (`use-lucide-icons`, `no-emoji-as-icons`).
@@ -78,7 +85,7 @@ ones (e.g. `typeof Notification !== 'undefined'`).
 - **Never format a date, number, or sort order without naming a locale.** Route
   through the `src/i18n/format.ts` seam; naming a locale explicitly IS the opt-out.
   CI-gated, and the failure (a Chinese UI rendering `7/30/2026`) ships silently.
-- **Never hardcode a user-facing English string.** The dashboard ships in 11
+- **Never hardcode a user-facing English string.** The dashboard ships in 12
   languages; add a catalog key. CI-gated.
 - **Data fetching is React Query**, never `useState` + `useEffect`. Follow the
   existing query-key convention.

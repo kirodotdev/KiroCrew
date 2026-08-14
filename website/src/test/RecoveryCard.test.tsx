@@ -11,8 +11,10 @@ import RecoveryCard, { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 const REFUSAL = '[Tool refusal — automatic recovery]'
 const STALLED = '[Stalled turn — automatic recovery]'
 const TOOL_STALL = '[Tool stall — automatic recovery]'
+const CONNECTION = '[Connection lost — automatic recovery]'
 const POSTTOKEN = '[Interrupted turn — automatic recovery]'
 const EMPTY = '[Empty response — automatic recovery]'
+const BUSY = '[Session busy — automatic recovery]'
 
 /** A refusal body shaped the way build_refusal_recovery_prompt() emits it. */
 function refusalBody(items: string[]): string {
@@ -98,6 +100,32 @@ describe('parseRecoveryMessage', () => {
     const p = parseRecoveryMessage(`${STALLED}\nYour previous turn was interrupted.`)
     expect(p?.body).toBe('Your previous turn was interrupted.')
     expect(p?.body.startsWith('[')).toBe(false)
+  })
+
+  it('labels connection loss as a routine interrupted-turn recovery', () => {
+    const connection = parseRecoveryMessage(
+      `${CONNECTION}\nYour previous turn was interrupted by a lost backend connection.`,
+    )
+    expect(connection?.kind).toBe('connection')
+    expect(connection?.title).toBe('Turn interrupted')
+    expect(connection?.detail).toBe('backend error · continuing automatically')
+    expect(connection?.chip).toBe('')
+  })
+
+  it('names a busy session as the cause without attributing it to a backend error', () => {
+    // Same shape as the connection card and the same routine severity, but the detail
+    // must name the cause that DID happen and not one that did not: nothing was lost
+    // or errored, the session was occupied. Distinguishing the two is why this kind
+    // exists, so the collapsed card carries it rather than only the expandable body.
+    const busy = parseRecoveryMessage(
+      `${BUSY}\nYour previous turn was interrupted because the backend session was still busy.`,
+    )
+    expect(busy?.kind).toBe('busy')
+    expect(busy?.title).toBe('Turn interrupted')
+    expect(busy?.detail).toBe('session busy · continuing automatically')
+    expect(busy?.detail).not.toContain('backend error')
+    expect(busy?.chip).toBe('')
+    expect(busy?.body).toContain('still busy')
   })
 
   it('labels a transient-backend interruption and an empty generation', () => {
@@ -197,6 +225,13 @@ describe('RecoveryCard', () => {
     render(<RecoveryCard parsed={parseRecoveryMessage(`${EMPTY}\nRespond now.`)!} />)
     expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-severity', 'routine')
     expect(screen.getByText('No response returned')).toBeInTheDocument()
+  })
+
+  it('marks a busy-session reset routine, like the other transient causes', () => {
+    render(<RecoveryCard parsed={parseRecoveryMessage(`${BUSY}\nContinue from where it stopped.`)!} />)
+    const card = screen.getByTestId('recovery-card')
+    expect(card).toHaveAttribute('data-kind', 'busy')
+    expect(card).toHaveAttribute('data-severity', 'routine')
   })
 
   it('keeps the attention severity for a refusal', () => {

@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ── Script fallback faces ──
-   zh-CN, ja, hi and bn have no font coverage otherwise: every family in --font-body
+   zh-CN, ja, ko, hi and bn have no font coverage otherwise: every family in --font-body
    and --mono below covers Latin only, so those scripts fall through to the
    browser's per-script fallback, which picks a face per character and silently
    mismatches. CJK punctuation makes it visible — Unicode uses one code point for
@@ -87,6 +87,38 @@
                  U+31C0-31FF, U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF,
                  U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
+/* Korean needs its own alias for a different reason than Japanese does: Hangul
+   (U+AC00-D7AF and the Jamo blocks) is absent from the SC and JP faces' coverage
+   in practice, so leaving zh-CN's alias in front for html:lang(ko) puts an alias
+   that cannot draw Hangul ahead of one that can, and the browser resolves each
+   syllable from the OS cascade instead. The Han ranges are claimed too — Korean
+   copy is Hangul-only, but a quoted 한자 in user content should draw the Korean
+   glyph form, not the Simplified one. */
+@font-face {
+  font-family: 'KC Korean Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Apple SD Gothic Neo'), local('AppleSDGothicNeo-Regular'),
+       local('Malgun Gothic'), local('MalgunGothic'), local('Noto Sans CJK KR'),
+       local('NotoSansCJKkr-Regular'), local('Noto Sans KR'), local('NotoSansKR-Regular'),
+       local('Source Han Sans KR'), local('SourceHanSansKR-Regular'),
+       local('Nanum Gothic'), local('NanumGothic');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Korean Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Apple SD Gothic Neo Bold'), local('AppleSDGothicNeo-Bold'),
+       local('Malgun Gothic Bold'), local('MalgunGothic-Bold'),
+       local('Noto Sans CJK KR Bold'), local('NotoSansCJKkr-Bold'),
+       local('Noto Sans KR Bold'), local('NotoSansKR-Bold'),
+       local('Source Han Sans KR Bold'), local('SourceHanSansKR-Bold'),
+       local('Nanum Gothic Bold'), local('NanumGothic-Bold');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
 /* Monospace Han, for code and CLI surfaces. Rarely installed on a stock machine;
    when absent 'KC Han Fallback' follows it in --script-fallbacks-mono, so Han in a
    code block draws from a proportional face — the same pairing the browser's own
@@ -128,6 +160,26 @@
                  U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
 @font-face {
+  font-family: 'KC Korean Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('D2Coding'), local('D2Coding-Regular'), local('Sarasa Mono K'),
+       local('SarasaMonoK-Regular'), local('Noto Sans Mono CJK KR'),
+       local('NotoSansMonoCJKkr-Regular');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
+  font-family: 'KC Korean Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('D2Coding Bold'), local('D2Coding-Bold'), local('Sarasa Mono K Bold'),
+       local('SarasaMonoK-Bold'), local('Noto Sans Mono CJK KR Bold'),
+       local('NotoSansMonoCJKkr-Bold');
+  unicode-range: U+1100-11FF, U+2E80-2EFF, U+2F00-2FDF, U+3000-303F, U+3130-318F,
+                 U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
+                 U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
+}
+@font-face {
   font-family: 'KC Devanagari Fallback';
   font-style: normal; font-weight: 400;
   src: local('Noto Sans Devanagari'), local('NotoSansDevanagari-Regular'), local('Nirmala UI'),
@@ -167,8 +219,14 @@
      what makes leading safe. */
   --script-fallbacks:'KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --font-body:var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;
-  --mono:var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
+     own faces (see hooks/themeCss.ts). Reading them here means code surfaces
+     follow a pack's monospace face without the user having to switch the whole UI
+     to monospace, and the pack's proportional face is already in place on first
+     paint rather than swapping in when the preference effect runs. Unfilled, each
+     var() falls back to the built-in stack. */
+  --font-body:var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif);
+  --mono:var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace);
   --radius-sm:6px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;
 }
 html:lang(ja) {
@@ -176,6 +234,12 @@ html:lang(ja) {
      falling through lets the browser use its lang-aware Japanese fallback. */
   --script-fallbacks:'KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+}
+html:lang(ko) {
+  /* Never retain the SC or JP aliases here. Neither draws Hangul, so leaving one
+     in front only delays resolution to the browser's lang-aware Korean fallback. */
+  --script-fallbacks:'KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 /* Dark theme shadows */
 :root,[data-theme="dark"],[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="amber-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
@@ -1167,6 +1231,15 @@ html:lang(ja) {
   /* TESTING: disabled to check scroll bug */
   /* :focus-visible{outline:2px solid var(--accent);outline-offset:2px} */
   @media(prefers-reduced-motion:reduce){*:not([data-virtuoso-scroller] *),*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important}}
+  /* The rule above zeroes animation-DURATION but not animation-DELAY, and
+     `animate-rise` uses fill-mode `backwards` — so a stagger-delayed card
+     (Overview stat tiles, Settings cards) would sit fully invisible for its
+     whole delay when the user asked for no motion. Zero the delay for the
+     rise entrance specifically; `!important` is required to beat the inline
+     `animationDelay` the stagger ladder sets. Deliberately NOT global:
+     mc-line-reveal (below) documents that it relies on delays surviving
+     reduced motion. */
+  @media(prefers-reduced-motion:reduce){.animate-rise{animation-delay:0s !important}}
   ::selection{background:var(--accent-subtle);color:var(--text-strong)}
   .bg-accent::selection{background:rgba(255,255,255,.25);color:white}
   ::-webkit-scrollbar{width:6px;height:6px}
@@ -1212,8 +1285,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Streaming highlight (shimmer sweep on trailing words) ── */
 .streaming-glow{background:linear-gradient(90deg,transparent 0%,var(--accent-glow) 40%,var(--accent-glow) 100%);border-radius:2px;padding:0 8px 0 2px;margin:0 -2px;position:relative;overflow:hidden}
-.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);background-size:250% 100%;animation:stream-sweep 2.5s ease-in-out infinite;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
-@keyframes stream-sweep{0%{background-position:150% 0}100%{background-position:-50% 0}}
+/* Animates transform (compositable) rather than background-position, which repaints every
+   frame. The layer stays the size of the box: the gradient is transparent across its outer
+   quarters, so a 25% translate never carries anything visible past the box edge and no
+   clipping is needed -- which matters because this is an inline span that can wrap.
+   `alternate` reverses each cycle so the loop has no restart jump. */
+.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);will-change:transform;animation:stream-sweep 2.5s ease-in-out infinite alternate;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
+@keyframes stream-sweep{0%{transform:translateX(-25%)}100%{transform:translateX(25%)}}
 
 /* ── Streaming caret ──
    Blinking cursor appended after a streaming assistant message. Rendered
@@ -1511,6 +1589,16 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    chips are clickable, hoverable, and drag-reorderable. Ignored in browsers. */
 .side-panel-strip,.side-panel-strip *{-webkit-app-region:no-drag}
 
+/* Draggable title-bar strips laid over a remote-instance pane. The pane is a
+   cross-origin iframe, so the host's injected #electron-drag-bar can't reach
+   into it and the blanket marks the whole iframe no-drag — the pane's header
+   can't move the window. InstancesViewport renders these strips (positioned by
+   the gaps the pane reports) AFTER the iframe, so they re-add a drag region in
+   the pane header's control-free gaps. pointer-events:none so the strip never
+   intercepts a click; app-region drag is honored regardless. Ignored in
+   browsers (no native window). */
+.host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
+
 /* Scrollbar-free scroll container (used by the side panel tab strip — the
    strip scrolls horizontally but a visible scrollbar under the chips reads
    as clutter). Referenced before Tailwind ever defined it; real rules here. */
@@ -1524,6 +1612,14 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
+
+/* ── Follow-up option chip width cap ──
+   An option label is a full user-voice instruction and can run to hundreds of
+   characters. Capped at roughly half the default composer width so at least
+   two options stay side by side and no single chip owns the whole strip; the
+   label itself clamps to two lines. Lives here because the same value is
+   applied to both the chip button and its split-button wrapper. */
+.followup-chip{max-width:min(100%,26rem)}
 
 /* ── Skeleton shimmer placeholder ── */
 .skeleton{
@@ -1565,6 +1661,19 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
 .session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted)}
+/* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
+   briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
+   background, because the revealed row is usually the active one and already
+   carries the accent-subtle background. No transition declared here on
+   purpose: the row's own Tailwind transition-all animates outline-color, and
+   declaring any transition longhand/shorthand at this higher specificity
+   would strip transition-all while the flash is up, making hover styles snap
+   on exactly the row the reveal highlighted. The fade is a color transition
+   (not an animation), so the global reduced-motion animation kill-switch
+   above leaves the confirmation visible. JS removes the classes after the
+   fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
+.session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
+.session-row.session-reveal-flash-fade{outline-color:transparent}
 .session-row.session-colored{position:relative}
 .session-row.session-colored::before{
   content:"";
@@ -1750,6 +1859,33 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   .mobile-sessions-overlay .sidebar-resize-handle { display: none !important; }
 }
 
+/* Composer text must reach WebKit's 16px standard focus size on touch devices.
+   When a field takes focus WebKit scales the viewport by
+   clampTo(16 / fontSize, minimumScale, maximumScale), so anything computing
+   below 16px zooms. The 16 is the hardcoded webViewStandardFontSize:
+   https://github.com/WebKit/WebKit/blob/f010ba868212b2113ca0727ce46f06273cb5fd0a/Source/WebKit/UIProcess/API/ios/WKWebViewIOS.mm#L1752
+   The textarea and paste mirror share this hook to keep their font metrics
+   aligned; pointer: coarse leaves desktop typography unchanged.
+
+   The placeholder stays at the desktop size because the zoom scale is computed
+   from the FIELD's font-size, not this pseudo-element's — so holding the hint
+   at 0.875rem costs no zoom protection and keeps it on one line. At 16px the
+   hint wraps, and an empty composer cannot grow to show the second line: a
+   placeholder contributes nothing to scrollHeight, so applyHeight pins the box
+   at INPUT_MIN_H and the wrapped line is clipped.
+
+   The field selector repeats the attribute to reach specificity (0,2,0). Tailwind's
+   `.text-sm` on the same element is (0,1,0), so a single `[data-composer-typo]`
+   would only TIE and win on source order — leaving the fix inert on device, with
+   no test able to see it, if the utilities are ever emitted after this file. The
+   repeat is used instead of qualifying by element because the hook is on the
+   composer's <textarea> and on the paste mirror's <div>, and the mirror's font
+   metrics must track the field's. */
+@media (pointer: coarse) {
+  [data-composer-typo][data-composer-typo] { font-size: 16px; }
+  [data-composer-typo]::placeholder { font-size: 0.875rem; }
+}
+
 /* ── Diff panel header: theme-conditional bg/border to match Monaco vs/vs-dark ── */
 .diff-panel-header {
   background-color: #ffffff;
@@ -1875,6 +2011,31 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 [data-theme*="dark"] .file-chip:not(.glass-static):hover {
   border-color: rgba(255, 255, 255, 0.09);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* ── No-backdrop-filter fallback (issue #1817) ──
+ * Every glass surface gets ALL of its real opacity from backdrop-filter: the
+ * background tints are 3-8% alpha (.glass-surface) or a transparent color-mix
+ * (.topbar-glass, .notif-material). Where the engine does not support the
+ * property — older Chromium/Electron builds where it was flag-gated, or Linux
+ * builds compiled without it — the blur declaration is dropped at parse time
+ * and only the near-invisible tint remains, i.e. a transparent panel
+ * (issue #1817, Linux AppImage).
+ *
+ * Mirror of the prefers-reduced-transparency fallback below so there is ONE
+ * degradation story: solid themed background, borders/shadows untouched so
+ * panels stay delimited. !important is required — the dark-theme and :hover
+ * glass rules outrank these selectors on specificity, and Tailwind hover
+ * utilities outrank .notif-material — and it matches the a11y overrides,
+ * which stay later in source order so they still win when both apply.
+ * Test BOTH prefixes: Electron/Chromium historically supported one or the
+ * other. Scoped to the glass classes: platforms with working backdrop-filter
+ * never match this query and keep the glass look. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topbar-glass,.glass-surface{ background:var(--bg) !important }
+  /* Floating notification cards (NotificationFeed mac variant) sit OVER page
+     content, so they solidify to the card color, not the page background. */
+  .notif-material{ background:var(--card) !important }
 }
 
 /* ── TIER1 a11y: reduced motion / transparency / contrast ── */

@@ -1,10 +1,28 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Hourglass, Package } from 'lucide-react'
-import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput } from '../../components/settings'
+import { Hourglass, Info, Package } from 'lucide-react'
+import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api } from '../../api/client'
-import { listMicrophones, getPreferredMicId, setPreferredMicId, micAudioConstraints, reportIfMicDenied } from '../../hooks/mic'
+import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
+import { isEmbeddedPane } from '../../lib/embedded'
+import { PttTestStrip } from '../../components/PttTestStrip'
+import {
+  BARE_CODE_LABEL_KEY,
+  BARE_CODE_LABEL_KEY_OTHER,
+  PTT_COPY_KEY,
+  bindingLabel,
+  clampHoldMs,
+  defaultBinding,
+  HOLD_MS_STEP,
+  isBareModifier,
+  IS_MAC,
+  loadPttConfig,
+  type PttMode,
+  savePttConfig,
+  SELECTABLE_BARE_CODES,
+  toSeconds,
+} from '../../lib/pushToTalk'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -101,12 +119,158 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
 }
 
 /**
+ * Catalog KEY for each push-to-talk mode's option label and its explainer.
+ *
+ * Keys, not strings, and module scope, not inside the component: an `i18nT()`
+ * call evaluated at import would freeze the boot language, and a table rebuilt
+ * on every render is pointless churn. Flat `Record`s indexed inline at the
+ * `i18nT()` call — the shape `scripts/check-i18n-keys.mjs` resolves statically,
+ * so these sites stay OUT of the dynamic-key population the gate cannot check.
+ *
+ * The explainer is per-mode rather than one sentence for the row because the
+ * option names cannot carry the semantics: a first-run reader seeing "Both" cold
+ * had no way to learn what it combined.
+ */
+const PTT_MODE_LABEL_KEY: Record<PttMode, string> = {
+  toggle: 'pages.settings.sttSettings.ptt_mode_toggle',
+  ptt: 'pages.settings.sttSettings.ptt_mode_hold',
+  hybrid: 'pages.settings.sttSettings.ptt_mode_hybrid',
+}
+const PTT_MODE_DESC_KEY: Record<PttMode, string> = {
+  toggle: 'pages.settings.sttSettings.ptt_mode_desc_toggle',
+  ptt: 'pages.settings.sttSettings.ptt_mode_desc_hold',
+  hybrid: 'pages.settings.sttSettings.ptt_mode_desc_hybrid',
+}
+const PTT_MODES: readonly PttMode[] = ['toggle', 'ptt', 'hybrid']
+
+/**
+ * Push-to-talk binding editor: which key, how the key behaves, the tap/hold
+ * cutoff, and the live test strip.
+ *
+ * State is BROWSER-LOCAL (see `lib/pushToTalk`), so this block writes
+ * localStorage and does not go through the STT config mutation — the right key
+ * depends on the keyboard in front of you, and pushing one machine's choice to
+ * every other device would be wrong.
+ *
+ * Row ORDER is deliberate and was corrected after a first-run review: key first,
+ * then behaviour, then the cutoff, then the test. Asking "how should the key
+ * behave" before "which key" is unanswerable, and the strip's own prompt
+ * ("Press your shortcut key") already assumes the key has been chosen.
+ *
+ * The `custom` chord recorder is deliberately NOT here yet: the bare modifiers
+ * cover the platform defaults and every key these apps converge on, and a
+ * recorder is a separate surface with its own capture/cancel semantics (see
+ * `SearchEverywhereConfig` in ShortcutsPanel for the pattern to follow). Until
+ * then a chord binding is reachable only as the non-mac default, which is why
+ * the dropdown surfaces it as a read-only entry rather than hiding it.
+ */
+function PushToTalkConfig() {
+  const [cfg, setCfg] = useState(() => loadPttConfig())
+  const patch = (next: Partial<typeof cfg>) => {
+    const merged = { ...cfg, ...next }
+    setCfg(merged)
+    savePttConfig(merged)
+  }
+
+  const bare = isBareModifier(cfg.binding)
+  // A chord binding (the Windows/Linux default) has no entry in the bare-key
+  // list, so it is surfaced as its own option rather than silently displaying
+  // as whatever happens to sort first.
+  const options = bare ? [...SELECTABLE_BARE_CODES] : ['__chord__', ...SELECTABLE_BARE_CODES]
+  const recommended = defaultBinding().code
+  const optionLabels = options.map(code => {
+    if (code === '__chord__') return bindingLabel(cfg.binding)
+    // Indexed directly per branch so the key-reference gate can resolve both.
+    const name = IS_MAC ? i18nT(BARE_CODE_LABEL_KEY[code]) : i18nT(BARE_CODE_LABEL_KEY_OTHER[code])
+    return code === recommended ? i18nT('pages.settings.sttSettings.ptt_key_recommended', { name }) : name
+  })
+  const headingDescKey = IS_MAC ? PTT_COPY_KEY.headingDescMac : PTT_COPY_KEY.headingDescOther
+  const keyDescKey = IS_MAC ? PTT_COPY_KEY.keyDescMac : PTT_COPY_KEY.keyDescOther
+  const keyFieldLabel = i18nT('pages.settings.sttSettings.ptt_key')
+  const modeLabel = i18nT(PTT_MODE_LABEL_KEY[cfg.mode])
+
+  return (
+    <>
+      {/* Names the feature. Without this the rows below are three settings for
+          something the page never identifies — the single biggest finding of the
+          first-run review. */}
+      <div className="flex flex-col gap-1 pt-2 pb-1">
+        <span className="text-[13px] font-semibold text-text-strong">
+          {i18nT('pages.settings.sttSettings.ptt_heading')}
+        </span>
+        <span className="text-[12px] text-muted">
+          {i18nT(headingDescKey)}
+        </span>
+      </div>
+
+      <SettingsSelect
+        label={keyFieldLabel}
+        description={i18nT(keyDescKey)}
+        value={bare ? cfg.binding.code : '__chord__'}
+        options={options}
+        optionLabels={optionLabels}
+        onChange={code => { if (code !== '__chord__') patch({ binding: { code } }) }}
+      />
+
+      {/* Right Alt is AltGr on most non-mac layouts (reports ctrl+alt and
+          composes characters) and a lone left Alt reveals the window menu, so
+          those platforms cannot default to a bare Option. */}
+      {!IS_MAC && (
+        <p className="text-[12px] text-muted my-0.5">
+          {i18nT('pages.settings.sttSettings.ptt_altgr_note')}
+        </p>
+      )}
+
+      {/* The description below the picker changes with the selection, because
+          the option NAMES cannot carry the semantics on their own — a reviewer
+          reading "Both" cold had no way to learn what it combined. */}
+      <SettingsButtonGroup
+        label={i18nT('pages.settings.sttSettings.ptt_mode')}
+        description={i18nT(PTT_MODE_DESC_KEY[cfg.mode])}
+        value={cfg.mode}
+        options={PTT_MODES.map(m => ({ value: m, label: i18nT(PTT_MODE_LABEL_KEY[m]) }))}
+        onChange={v => patch({ mode: v as PttMode })}
+      />
+
+      {/* Hidden rather than disabled outside hybrid: the cutoff has no meaning
+          at all there. Its description names the mode that uses it, so when it
+          IS shown the dependency is explicit rather than inferred from the row
+          appearing and disappearing. */}
+      {cfg.mode === 'hybrid' && (
+        <SettingsStepper
+          label={i18nT('pages.settings.sttSettings.ptt_hold_threshold')}
+          description={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
+          value={i18nT('pages.settings.sttSettings.ptt_hold_seconds', { secs: toSeconds(cfg.holdMs) })}
+          onIncrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs + HOLD_MS_STEP) })}
+          onDecrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs - HOLD_MS_STEP) })}
+        />
+      )}
+
+      <div className="flex flex-col gap-1.5 py-1.5">
+        <span className="text-[13px] font-semibold text-text">{i18nT('components.pttTestStrip.title')}</span>
+        <span className="text-[12px] text-muted">{i18nT('pages.settings.sttSettings.ptt_try_desc')}</span>
+        <PttTestStrip
+          binding={cfg.binding}
+          mode={cfg.mode}
+          holdMs={cfg.holdMs}
+          modeLabel={modeLabel}
+          fieldLabel={keyFieldLabel}
+        />
+      </div>
+    </>
+  )
+}
+
+/**
  * Speech-to-Text settings in the standard settings style, so the Voice page
  * reads consistently. Covers enable, status,
  * provider, model/MLX model, streaming, language, Transcribe AWS creds, runtime,
  * and the local-install flow (Whisper / MLX / Docker image).
  */
-export default function SttSettings() {
+export default function SttSettings({ cardIndex }: {
+  /** Ordinal of this component's card in the hosting panel's stagger ladder. */
+  cardIndex?: number
+} = {}) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
   const [localProfile, setLocalProfile] = useState('')
@@ -127,7 +291,7 @@ export default function SttSettings() {
   const micsNeedGrant = mics.length > 0 && mics.every(d => !d.label)
   const grantMicAccess = async () => {
     try {
-      const s = await navigator.mediaDevices.getUserMedia(micAudioConstraints())
+      const s = await acquireMicStream()
       s.getTracks().forEach(t => t.stop())
       refreshMics()
     } catch (e) {
@@ -187,7 +351,10 @@ export default function SttSettings() {
 
   const stt = sttQ.data
   if (!stt) return (
-    <SettingsCard>
+    // Same ordinal as the loaded card below: the success render replaces this
+    // skeleton at the same position, and a differing delay would hold the
+    // already-loaded content blank for the delay after the swap.
+    <SettingsCard index={cardIndex}>
       <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
     </SettingsCard>
   )
@@ -225,7 +392,15 @@ export default function SttSettings() {
         onDismiss={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}
         className="mb-4 animate-rise"
       />
-      <SettingsCard>
+      {isEmbeddedPane() && (
+        <div className="flex items-start gap-2.5 rounded-md border border-accent/30 bg-accent/5 px-3 py-2.5 mb-3">
+          <Info size={14} className="text-accent flex-none mt-0.5" />
+          <span className="text-[12px] text-muted leading-relaxed">
+            {i18nT('pages.settings.sttSettings.voice_input_remote_instance_note')}
+          </span>
+        </div>
+      )}
+      <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 
         <InfoRow label={i18nT('pages.settings.sttSettings.status')}>
@@ -270,6 +445,8 @@ export default function SttSettings() {
         )}
 
         <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} description={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+        {stt.enabled && <PushToTalkConfig />}
 
         <SettingsSelect label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || 'en-US'} options={languageOptions} onChange={v => set({ language_code: v })} disabled={saving} />
 

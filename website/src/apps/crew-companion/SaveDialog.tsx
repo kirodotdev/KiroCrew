@@ -10,7 +10,7 @@ interface Props {
   onOverwrite: () => void
   onSaveNew: () => void
   onCancel: () => void
-  i18nT: (key: any) => string
+  i18nT: (key: string) => string
 }
 
 export const SaveDialog: React.FC<Props> = ({ visible, onOverwrite, onSaveNew, onCancel, i18nT }) => {

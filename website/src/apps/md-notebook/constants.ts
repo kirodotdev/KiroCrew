@@ -13,6 +13,35 @@ export const ACCENT_FG = 'var(--accent-fg)'
 export const FONT_BODY = 'var(--font-body)'
 export const FONT_MONO = 'var(--mono)'
 
+/**
+ * Heading accent chrome.
+ *
+ * The heading TEXT stays `--text-strong` — the same token the dashboard's own
+ * markdown renderer uses — and the active theme's accent appears only as a rule
+ * or a rail beside it. That split is deliberate and is what makes the styling
+ * safe on every theme: a theme pack may set `--accent` to any value the
+ * allowlist in `hooks/themeCss.ts` accepts, including a colour indistinguishable
+ * from its own `--bg`. Tinting the text with such an accent yields an unreadable
+ * heading, whereas a rule simply fades into faint decoration. Measured across
+ * the 36 built-in themes, no single accent ratio clears WCAG AA once arbitrary
+ * packs are in scope, so no ratio is applied to text at all.
+ *
+ * The `color-mix()` expressions behind the three chrome tokens are declared as
+ * custom properties on `.mdnb-note` in `styles.ts`; see that file for why they
+ * live in the CSS module rather than here.
+ */
+export const HEADING_FG = 'var(--text-strong)'
+/** Rule under h1 — the heaviest accent, on the largest type. */
+export const HEADING_RULE_STRONG = 'var(--mdnb-heading-rule-strong)'
+/** Rule under h2 — lighter, so the two levels stay distinguishable. */
+export const HEADING_RULE_SOFT = 'var(--mdnb-heading-rule-soft)'
+/** Vertical rail beside h3–h6, which are too small to carry a rule legibly. */
+export const HEADING_RAIL = 'var(--mdnb-heading-rail)'
+/** Rail offset into the column gutter, keeping heading text flush with body text. */
+export const HEADING_RAIL_INDENT = 10
+/** Gap between the rail and the heading text. */
+export const HEADING_RAIL_GAP = 8
+
 /** localStorage keys. Renaming one silently resets that preference. */
 export const LS = {
   panelOpen: 'mdnb-panel-open',
@@ -34,6 +63,14 @@ export const LS = {
  * preference into the user's git history on the next sync.
  */
 export const pinnedKey = (vaultId: string): string => `mdnb-pinned-${vaultId}`
+
+/**
+ * Collapsed folder names, per vault for the same reason pins are: two vaults
+ * hold different trees, so a name collapsed in one means nothing in the other.
+ * Local to this machine because it is view state, not content — writing it into
+ * the vault would sync one device's sidebar shape to every other.
+ */
+export const collapsedKey = (vaultId: string): string => `mdnb-collapsed-${vaultId}`
 
 /**
  * Sort options for the notes list. Keys are persisted, so renaming one resets

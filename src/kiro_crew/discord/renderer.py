@@ -36,7 +36,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.renderer import Renderer, apply_options_cap
 from kiro_crew.messaging.transport import TransportCapabilities
 
 if TYPE_CHECKING:
@@ -114,7 +114,9 @@ def build_option_components(options: list[str]) -> list[dict] | None:
     ``custom_id`` is the index only (``opt:<i>``) -- Discord caps it at 100
     chars and the label is recovered from the button text at interaction time.
     Up to 5 buttons per action row, max 5 rows (25 options); labels cap at 80
-    chars per the component spec.
+    chars per the component spec. The ``max_buttons`` cap is applied UPSTREAM
+    via ``apply_options_cap`` (overflow degrades to numbered text); the
+    ``[:25]`` below is the platform hard-limit backstop only.
     """
     if not options:
         return None
@@ -339,7 +341,12 @@ class DiscordRenderer(Renderer):
         # seal -- so the choices ship as buttons on the sealed message instead of
         # being frozen as literal protocol text the user cannot act on.
         body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
+        # apply_options_cap may EXPAND the body (numbered overflow lines), and
+        # the rotation above ran before that expansion -- re-check, or a
+        # near-limit answer with over-cap options seals past the transport cap.
+        await self._rotate_on_length()
         components = build_option_components(opts) if opts else None
         sealed = bool(self._segment_text().strip()) or components is not None
         await self._seal_current(components=components)
@@ -521,6 +528,7 @@ class DiscordRenderer(Renderer):
         # Extract the trailing [OPTIONS:] BEFORE length rotation (see the
         # Telegram renderer's rationale).
         body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
         components = build_option_components(opts) if opts else None
         # No-rotation fallback: steers were injected but no marker rotated —

@@ -21,8 +21,7 @@
 import { X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import './breathing.css'
-import ghostIdleUrl from './assets/kiro_idle.svg'
-import { GhostEyeOverlay } from './GhostEyeOverlay'
+import { PetAvatar, type PetState } from './PetAvatar'
 import { i18nT } from '../../i18n/t'
 import { breathStateAt, BREATH_CYCLES, type BreathState } from './breathing'
 
@@ -35,27 +34,49 @@ export interface BreathingOverlayProps {
 
 const COMPANION_PX = 72
 
+export function breathingAvatarState(state: BreathState): PetState {
+  if (state.ready || state.done) return 'idle'
+  return (['inhale', 'hold', 'exhale'] as const)[state.phaseIndex] ?? 'idle'
+}
+
+export const CUSTOM_PHASE_TRANSITION = 'transform 180ms ease-out'
+
 /**
- * The companion, drawn from the design-system mascot asset.
+ * The companion that breathes with the exercise — the user's CURRENT avatar, not a
+ * hardcoded ghost.
  *
- * Deliberately NOT an inline SVG: `use-lucide-icons` in website/AUTOSDE.yaml blocks
- * added inline SVG elements in any .tsx unconditionally, and its brand-mark exception
- * requires the mascot to live in its own file consumed through a URL import. This is
- * the same art the chat loading carousel uses, so the companion here and the ghost
- * elsewhere in the dashboard are recognisably the same character.
+ * This used to draw the built-in `kiro_idle.svg` directly, so the exercise showed the
+ * default ghost even when the user had picked a capybara. The comment justifying that
+ * ("appearance packs belong to the window layer") did not hold: this overlay renders
+ * inside `panel.tsx`, which IS a window layer, the same one that draws the live pet.
+ *
+ * `PetAvatar` is self-contained — it reads the active appearance from config, resolves
+ * the pack's art, and re-resolves on pack/recolour events — so no appearance data has
+ * to be threaded down here. It also brings the `isDefault` eye gate for free: a custom
+ * pack draws its own eyes, so PetAvatar suppresses the overlay eyes that only belong to
+ * the eyeless built-in ghost (drawing both is a two-pairs-of-eyes bug). The breathing
+ * scale lives on the `.cc-breathe-glyph` wrapper OUTSIDE this, so every pack breathes.
+ *
+ * `anim={null}` holds the body still — the breath IS the motion here; a pack's own idle
+ * fidget playing underneath would fight the scale.
  */
-function CompanionGlyph({ size }: { size: number }) {
+function CompanionGlyph({
+  size,
+  state,
+  onCustomOverrideChange,
+}: {
+  size: number
+  state: PetState
+  onCustomOverrideChange: (active: boolean) => void
+}) {
   return (
     <span style={{ position: 'relative', display: 'block', width: size, height: size }}>
-      <img
-        className="cc-breathe-art"
-        src={ghostIdleUrl}
-        alt=""
-        aria-hidden="true"
-        draggable={false}
-        style={{ width: size, height: size, objectFit: 'contain', display: 'block' }}
+      <PetAvatar
+        size={size}
+        state={state}
+        anim={null}
+        onCustomOverrideChange={onCustomOverrideChange}
       />
-      <GhostEyeOverlay pose="primary" size={size} />
     </span>
   )
 }
@@ -144,6 +165,10 @@ export default function BreathingOverlay({ onDone, onEnd }: BreathingOverlayProp
   const RING_DAMPING = 0.9
   const ringScale = 1 + (state.phase.scale - 1) * RING_DAMPING
 
+  const avatarState = breathingAvatarState(state)
+  const [customPhase, setCustomPhase] = useState(false)
+  const glyphScale = customPhase ? 1 : state.phase.scale
+
   /** The hold has no scale change, so it gets an opacity pulse instead — the
    *  screen is never fully static. */
   const isHold = state.phaseIndex === 1
@@ -174,12 +199,18 @@ export default function BreathingOverlay({ onDone, onEnd }: BreathingOverlayProp
         <span
           className="cc-breathe-glyph"
           style={{
-            transform: `scale(${state.phase.scale})`,
-            // Matches the phase duration, so the motion IS the timing.
-            transition: `transform ${state.phase.ms}ms cubic-bezier(.4,.0,.4,1)`,
+            transform: `scale(${glyphScale})`,
+            // Custom phase art carries its own motion; otherwise Kiro's scale is the fallback.
+            transition: customPhase
+              ? CUSTOM_PHASE_TRANSITION
+              : `transform ${state.phase.ms}ms cubic-bezier(.4,.0,.4,1)`,
           }}
         >
-          <CompanionGlyph size={COMPANION_PX} />
+          <CompanionGlyph
+            size={COMPANION_PX}
+            state={avatarState}
+            onCustomOverrideChange={setCustomPhase}
+          />
         </span>
       </div>
 

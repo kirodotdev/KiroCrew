@@ -34,7 +34,8 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/__init__.py` | Package facade re-exporting the public contracts, approval-mode constants, and Layer-3 helpers |
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
-| `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper |
+| `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement) |
+| `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
 | `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation` |
 | `messaging/conversation.py` | `ConversationState` — per-conversation rotating *generation* bookkeeping (advanced by `/new` and idle/daily reset), seeded from the persisted session map |
 | `slack/transport.py` | Slack reference `MessagingTransport` (`SlackTransport`) over `SlackClientOps` |
@@ -63,7 +64,7 @@ Declares what a channel can do. Defaults are deliberately conservative (the What
 | `rich_blocks` | `False` | feature flag |
 | `threads` | `False` | feature flag |
 | `max_message_chars` | `4096` | quantitative — Slack ~40000, Telegram 4096, Discord 2000, WhatsApp 4096 |
-| `max_buttons` | `3` | interactive choices per prompt (WhatsApp reply buttons = 3) |
+| `max_buttons` | `3` | TOTAL interactive choices per prompt (WhatsApp reply buttons = 3); enforced via `apply_options_cap` — overflow degrades to a numbered text list |
 | `supports_proactive_send` | `True` | send-policy (WhatsApp: `False` outside its 24h window) |
 
 `to_dict()` serializes all fields. The integer *parameters* (not booleans) capture where channels differ quantitatively so the `Renderer` can chunk / degrade rather than assume a single shape.
@@ -127,6 +128,35 @@ Constructed with a `TransportCapabilities`. `dispatch(event)` routes each kind t
 - `on_compaction(context_usage_pct)`, `on_done(stop_reason="")` — abstract.
 - `on_steer_consumed(summary="")` — default no-op; Discord/Telegram seal the pre-steer segment and open the continuation with a native acknowledgement chip using the parsed summary, without receiving raw protocol text.
 
+### `SilentRenderer` — enforcing a dashboard channel disconnect
+
+A `Renderer` whose handlers are all no-ops, substituted for the real renderer when
+the conversation has been **disconnected** in the dashboard (see the pause markers
+in [session](session.md)). Disconnect means "stop talking to me there": the turn
+STILL RUNS and the inbound message still lands in the session, because the binding
+is retained and the dashboard is where that user is now working — only the writes
+back to the muted conversation are dropped, including the typing indicator.
+
+`dispatch.delivery_is_muted(sessions, session_key, channel_type)` is the single
+predicate; `conversation_is_muted(sessions, turn)` delegates to it for the shared
+pipeline. It resolves origin-vs-mirror from the turn itself (a channel-born
+session's key IS its conversation, so a turn arriving in that namespace is the
+origin; anything else came over a mirror/resume binding) and fails OPEN, matching
+the dashboard-side predicates — a muted conversation that stays noisy is a visible
+bug, a live conversation silently dead is worse.
+
+**Every inbound pipeline must consult it.** `drive_turn` does, but Discord and
+Telegram run their OWN copies of the turn loop, so each substitutes independently;
+a new channel that skips this ships a dashboard control with nothing behind it.
+Two contracts matter for the substitute: its `close` accepts `*args/**kwargs`
+because a channel may WIDEN that signature (Telegram passes `failure_reason`), and
+it must be the object that is **closed**, not merely the one streamed to — a
+concrete renderer's `close` posts an error placeholder when a turn produced no
+output, which a muted turn always did. It is also deliberately NOT published into a
+dispatcher's `_active_renderers`, which silences the mid-turn steer chip and keeps
+channel-local APIs (`note_steer`) off the shared class. Slack never reaches these
+pipelines — it drives its own gateway and is gated by `slack_mirror_is_paused`.
+
 ### `chunk_text(text, max_chars) -> list[str]`
 
 Pure helper Renderers use to honor `capabilities.max_message_chars`. Returns `[]` for empty input; a non-positive `max_chars` disables chunking (single chunk); otherwise splits into `max_chars`-sized pieces. Together with the `max_buttons` cap this is how a renderer *degrades* an over-cap message or choice set for a lower-capability channel.
@@ -188,8 +218,16 @@ steer/queue/drain machinery, `telegram/transport_dispatch.py` and
 `discord/transport_dispatch.py`; both read the same
 `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and both implement the same three primitives
-(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`) with
-only the platform call names differing.
+(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
+
+The **channel-neutral half of the queue receipt is shared**, not duplicated:
+`messaging/queue_receipt.py` owns the receipt registry, the lock, the three
+lifecycle transitions and the receipt body formatting. Each channel reaches it
+through a `ReceiptSurface` whose address is bound at construction, which is why
+the shared module never sees a `chat_id` / `channel_id` / forum thread and
+Telegram's forum routing stays entirely channel-local. `_handle_busy` and
+`_drain_queue` deliberately stay per-channel: they re-enter their own
+`handle_message` and own the per-channel `_active_renderers`.
 
 The remaining channels (Webex, WeCom, Teams, Weixin) implement `_handle_busy`
 as **steer-only**: they fold the message into the running turn and reply with a
@@ -210,8 +248,9 @@ the text stream at the exact fold point.
 
 Two preconditions gate the steer, and both matter:
 
-- `provider.supports_steer` (kiro-cli only; the dormant Claude backend seam has
-  no `_session/steer`). When false the message falls through to the queue path.
+- `provider.supports_steer` — membership in `ACP_BACKENDS_STEER`, since the
+  dormant Claude backend seam has no `_session/steer`. When false the message
+  falls through to the queue path.
 - `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
   true through post-turn bookkeeping (success record, turn persist, threshold
   notice, SEL audit, all await points), so it alone cannot distinguish a live
@@ -239,7 +278,7 @@ in place:
 ⏳ Queued (2): "what time is it" · "and the weather?"
 ```
 
-The first five items are listed verbatim (`_RECEIPT_MAX_ITEMS`), the rest
+The first five items are listed verbatim (`RECEIPT_MAX_ITEMS`), the rest
 collapse into `…and N more` so a large burst cannot blow the message cap.
 
 **The receipt is EDITED, never deleted.** At the end of the turn it flips to
@@ -248,8 +287,11 @@ Neither dispatcher calls a delete API on it. This is deliberate: the receipt is
 the durable record of what the user asked and how it was routed, so deleting it
 would erase the only evidence that a message was accepted at all.
 
-The enqueue and the receipt create/grow happen together under `_receipt_lock`,
-which the end-of-turn drain also takes across its dequeue plus flip. That is
+The enqueue and the receipt create/grow happen together under
+`ReceiptQueue.lock`, which the end-of-turn drain also takes across its dequeue
+plus flip. The lock is deliberately **caller-held** rather than acquired inside
+each transition (hence the `_locked` suffixes): moving the acquire inside would
+read tidier and silently reintroduce the orphaned-bubble race. That is
 what makes the two race-free: the drain sees either the message queued **with**
 its receipt or neither yet, never a half state that would orphan a bubble.
 `enqueue(..., force=False)` is a no-op once the semaphore is free, so if the
@@ -265,7 +307,7 @@ behind it** are re-enqueued so FIFO order stays exact, the receipt notes
 `+N deferred`, and the drain loops to pump the remainder. Messages arriving
 during the combined turn open a fresh receipt and drain after it.
 
-The combined turn itself runs outside `_receipt_lock`, and the drain replays via
+The combined turn itself runs outside `ReceiptQueue.lock`, and the drain replays via
 `handle_message(..., interpret_commands=False)`. Drained payloads therefore
 bypass both the command intercept and override parsing, so a queued `/new`
 reaches the model as literal text instead of executing on drain.
@@ -281,14 +323,21 @@ are also accepted for muscle-memory parity with Telegram, which uses `/` only.
 
 The prefix is recognized only when the original text is not itself a command,
 and the payload after it is **turn content, never a command**: `/queue /new`
-queues the literal text `/new`. A bare `/steer` or `/queue` with no body is
-treated as an ordinary message.
+queues the literal text `/new`.
+
+A bare `/steer` or `/queue` carrying no message body matches neither the command
+parser nor the override parser. **Telegram** answers it with the directive's
+usage, because the alternative is handing the literal string `/queue` to the
+model, which then answers it as chat text — indistinguishable, to the user, from
+the feature not existing. **Discord** still treats the bare token as an ordinary
+message; the two channels therefore diverge on this one case until the guard is
+ported.
 
 ### Hard cancel: `/stop`
 
 `/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
 turn, drops every queued message, and finalizes the receipt to `🛑 Cancelled`.
-`clear_queue` and the receipt finalize run together under `_receipt_lock`.
+`clear_queue` and the receipt finalize run together under `ReceiptQueue.lock`.
 
 **Cancel is cooperative before it is fatal.** The dispatchers call
 `provider.cancel(wait_ack_timeout=0)`, which writes an ACP `session/cancel`
@@ -369,6 +418,8 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **Redaction is unconditional**: all LLM/tool-originated text flowing through `TurnDriver` passes `redact_exfiltration_urls()` + `redact_credentials()` before reaching any renderer.
 - **Protocol metadata is not assistant speech**: streamed steering frames are withheld until complete, removed even when split across chunks, and represented as a structured boundary. Summary-bearing compaction activity is never sent to a channel as assistant speech; only a terse receipt may be rendered. `[OPTIONS: …]` remains user-facing and is never stripped by the shared filter.
 - **Conservative capability defaults**: unspecified `TransportCapabilities` degrade safely (WhatsApp-like floor), and renderers must honor `max_message_chars` (`chunk_text`) and `max_buttons`.
+- **A media-only inbound message is a message**: a transport whose text extraction comes back empty may only drop the envelope when there are also no media items. Weixin previously returned early on empty text, so an uncaptioned screenshot was discarded with no reply and no log line — the sender saw a successful send while the agent was never told anything arrived. Emptiness is a reason to drop only when the whole envelope is empty.
+- **Weixin inbound media is CDN-indirect**: iLink envelopes never carry bytes, only a `CDNMedia` reference (`encrypt_query_param` + `aes_key`) whose object is AES-128-ECB encrypted on the WeChat CDN. `weixin/media.py` owns that protocol work (URL construction with percent-encoded params, key decoding, decrypt, a streaming size cap enforced on bytes read rather than `Content-Length`); `weixin/attachments.py` maps the four CDN-backed item types onto the shared `Attachment` and hands them to `messaging/attachments.py`, which keeps classification, limits, signature validation and temp-file ownership channel-neutral. The `aes_key` field carries **two** encodings for the same value — `base64(raw 16 bytes)` for images, `base64(ascii hex)` for file/voice/video — discriminated by decoded length plus a strict hex check, because guessing wrong yields plausible garbage rather than an error. A voice item that already carries server-side `text` short-circuits the download: iLink voice is SILK, which no shipped transcription backend decodes, so the local path is strictly worse than the transcript the server gave us. `files_inbound=True` reflects this; `files_outbound` stays `False` until the `getuploadurl` + encrypted CDN PUT half lands.
 - **A mid-turn queue receipt is edited, never deleted**: it flips in place to `▶️ Now answering` on drain and to `🛑 Cancelled` on `/stop`. It is the durable record that a held message was accepted, so no path may delete it.
 - **A queued burst drains as ONE turn**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact.
 - **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.

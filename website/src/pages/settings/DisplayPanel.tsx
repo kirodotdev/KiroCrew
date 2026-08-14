@@ -16,7 +16,8 @@ import { useSessionPalette } from '../../hooks/useSessionPalette'
 import { PALETTE_NAMES, INTENSITY_NAMES } from '../../utils/sessionColors'
 import type { DefaultColorSetting, PaletteName, IntensityName, SessionColorMode } from '../../utils/sessionColors'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
+import { parseErrorCode } from '../../utils/errorReport'
 import { clampTintCount, RECENT_TINT_COUNT } from '../../utils/recencyTint'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { AUTO_LANGUAGE, PICKABLE_LANGUAGES, languageLabel } from '../../i18n/languages'
@@ -28,6 +29,7 @@ import {
 } from '../../hooks/useTerminalFont'
 
 import { i18nT } from '../../i18n/t'
+import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import ErrorNotice from '../../components/ErrorNotice'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
@@ -67,7 +69,7 @@ export function DisplayPanel() {
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
-  const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching } = useTheme()
+  const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching, overridesDropReport } = useTheme()
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
   const termFont = useTerminalFont()
@@ -80,7 +82,7 @@ export function DisplayPanel() {
   // kirocrewConfig query, so the choice follows the user across browsers/restarts. Optimistic
   // cache write makes the sidebar tint (which reads the same query) re-rank instantly.
   const qc = useQueryClient()
-  const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number } }>({
+  const mcQ = useQuery<{ dashboard?: { recent_tint_count?: number; terminal?: { shell?: string } } }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
@@ -99,6 +101,60 @@ export function DisplayPanel() {
     onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
   })
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // Default shell for the built-in terminal — persisted server-side
+  // (dashboard.terminal.shell) because the SHELL is spawned by the gateway
+  // host, unlike the terminal font above, which is a per-client rendering
+  // choice and stays in localStorage. Drafted locally and committed on blur so
+  // a half-typed path is never persisted. The write mirrors tintMut above:
+  // optimistic cache write + rollback, because onSuccess clears the draft and
+  // React Query serves the stale cache while refetching — without the
+  // optimistic write the just-saved value blinks back to the previous one for
+  // a round-trip, which reads as a failed save. Errors are mapped from the
+  // response's machine-readable `code` to catalog keys: the backend's English
+  // sentence must never render verbatim in a 12-language dashboard.
+  type KirocrewCfg = { dashboard?: { recent_tint_count?: number; terminal?: { shell?: string } } }
+  const serverShell = mcQ.data?.dashboard?.terminal?.shell ?? ''
+  const [shellDraft, setShellDraft] = useState<string | null>(null)
+  const [shellError, setShellError] = useState<string | null>(null)
+  const shellMut = useMutation({
+    mutationFn: (value: string) => api.patchConfig('dashboard.terminal.shell', value),
+    onMutate: async (value: string) => {
+      await qc.cancelQueries({ queryKey: ['kirocrewConfig'] })
+      const prev = qc.getQueryData<KirocrewCfg>(['kirocrewConfig'])
+      const next = structuredClone(prev ?? {})
+      next.dashboard = {
+        ...(next.dashboard ?? {}),
+        terminal: { ...(next.dashboard?.terminal ?? {}), shell: value },
+      }
+      qc.setQueryData(['kirocrewConfig'], next)
+      return { prev }
+    },
+    onSuccess: () => {
+      setShellDraft(null)
+      setShellError(null)
+    },
+    onError: (e, _value, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['kirocrewConfig'], ctx.prev)
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      setShellError(i18nT(
+        code === 'shell_not_executable'
+          ? 'pages.settings.displayPanel.terminal_shell_not_executable'
+          : 'pages.settings.displayPanel.terminal_shell_save_failed',
+      ))
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+  const commitShell = () => {
+    if (shellDraft === null) return
+    const value = shellDraft.trim()
+    if (value === serverShell) {
+      setShellDraft(null)
+      setShellError(null)
+      return
+    }
+    shellMut.mutate(value)
+  }
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
   const [installType, setInstallType] = useState<'github' | 'local'>('github')
@@ -181,7 +237,7 @@ export function DisplayPanel() {
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
-        <SettingsCard>
+        <SettingsCard index={1}>
           {zoomSupported ? (
             <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} description={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
           ) : (
@@ -198,14 +254,14 @@ export function DisplayPanel() {
               </span>
             </div>
           )}
-          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} description={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard')} value={family}
+          <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} description={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard_code_font_follo')} value={family}
             options={[{ value: 'sans', label: 'Sans' }, { value: 'mono', label: 'Mono' }, { value: 'system', label: 'System' }]}
             onChange={v => setFontFamily(v as 'sans' | 'mono' | 'system')} />
         </SettingsCard>
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.displayPanel.terminal')}>
-        <SettingsCard>
+        <SettingsCard index={2}>
           {/* Free-text family: the browser cannot enumerate OS-installed fonts, so
               the user names the font (a monospace / Nerd Font they have installed).
               resolveTerminalFontFamily quotes multi-word names and appends a
@@ -229,11 +285,33 @@ export function DisplayPanel() {
             onDecrement={() => setTerminalFontSize(termFont.fontSize - 1)}
             onReset={() => setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE)}
           />
+          {/* Free text with commit-on-blur, mirroring the font field above: the
+              gateway host's installed shells cannot be enumerated from the
+              browser (reading /etc/shells is host-side and absent on some
+              systems), so the user names the shell and the backend validates
+              it is an executable before persisting. No placeholder: a raw
+              path is Latin the en-XA render gate flags, and it is not
+              translatable copy — the description carries the guidance. */}
+          {/* Disabled while the save is in flight: a slow PATCH's onSuccess
+              clears the draft, and text typed in the meantime would vanish
+              with it. Locking the field for the round-trip makes that
+              interleaving unrepresentable (same pattern as SttSettings). */}
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.terminal_shell')}
+            description={i18nT('pages.settings.displayPanel.terminal_shell_desc')}
+            value={shellDraft ?? serverShell}
+            onChange={setShellDraft}
+            onBlur={commitShell}
+            disabled={shellMut.isPending}
+            configKey="dashboard.terminal.shell"
+            aria-label={i18nT('pages.settings.displayPanel.terminal_shell')}
+          />
+          <ErrorNotice message={shellError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.displayPanel.theme')}>
-        <SettingsCard>
+        <SettingsCard index={3}>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} description={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
@@ -242,6 +320,13 @@ export function DisplayPanel() {
             </div>
             {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
+          {/* Surface scoper-dropped overrides.css rules for the ACTIVE
+              theme. The slug guard is belt-and-braces for the switch race — the
+              provider clears the report on theme change, but a stale report must
+              never be attributed to the wrong pack. */}
+          {overridesDropReport && colorTheme === `custom-${overridesDropReport.slug}` && (
+            <ThemeDroppedRulesNotice report={overridesDropReport} />
+          )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} description={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
             options={[
               { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
@@ -322,7 +407,7 @@ export function DisplayPanel() {
 
       {/* Sidebar Colors */}
       <SettingsSection title={i18nT('pages.settings.displayPanel.sidebar_colors')}>
-        <SettingsCard>
+        <SettingsCard index={4}>
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.palette')}
             description={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}

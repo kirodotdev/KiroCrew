@@ -21,13 +21,53 @@ import PullRequestPanel, {
   CHECK_POLL_MAX_FAILURES,
   pullRequestCheckPollDelay,
   pullRequestCiSignal,
+  pullRequestErrorDetails,
   pullRequestIsLive,
   pullRequestLifecycleState,
   pullRequestMergeBlocker,
+  shouldRetrySourceRead,
+  sourceBusyRetryDelay,
   STATUS_FOLLOWUP_MAX,
   stateLabel,
   statusPollDelay,
 } from '../components/PullRequestPanel'
+
+/** An ApiError-shaped rejection: the human message plus the raw body the client
+ *  preserves, which is where the machine-readable code lives. */
+function apiError(body: Record<string, unknown>): Error & { body: string } {
+  const raw = JSON.stringify(body)
+  return Object.assign(new Error(String(body.error || '')), { body: raw })
+}
+
+describe('source read retry policy', () => {
+  it('retries a busy gateway, bounded', () => {
+    const busy = apiError({ error: 'Too many source requests are pending.', code: 'source_busy' })
+    expect(pullRequestErrorDetails(busy).sourceBusy).toBe(true)
+    expect(shouldRetrySourceRead(0, busy)).toBe(true)
+    expect(shouldRetrySourceRead(1, busy)).toBe(true)
+    // Bounded: a permanently saturated gateway surfaces the error instead of
+    // retrying forever.
+    expect(shouldRetrySourceRead(2, busy)).toBe(false)
+  })
+
+  it('does NOT retry a provider error', () => {
+    const provider = apiError({ error: 'gh could not authenticate', code: 'provider_error' })
+    expect(pullRequestErrorDetails(provider).sourceBusy).toBe(false)
+    expect(shouldRetrySourceRead(0, provider)).toBe(false)
+  })
+
+  it('does not treat an unlabelled error as retryable', () => {
+    // Pre-fix bodies and plain-text network errors carry no code; retrying them
+    // would delay a message the user must act on.
+    expect(shouldRetrySourceRead(0, apiError({ error: 'boom' }))).toBe(false)
+    expect(shouldRetrySourceRead(0, new Error('network down'))).toBe(false)
+  })
+
+  it('backs off between attempts', () => {
+    expect(sourceBusyRetryDelay(0)).toBe(2_000)
+    expect(sourceBusyRetryDelay(1)).toBe(4_000)
+  })
+})
 
 const github: PullRequestSource = {
   provider: 'github',
@@ -443,7 +483,54 @@ describe('PullRequestPanel', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Reviews 3/i }))
     expect(screen.getByText('Please cover this case.')).toBeInTheDocument()
     fireEvent.click(screen.getAllByRole('button', { name: 'Add to chat' })[0])
-    expect(onAddToChat).toHaveBeenCalledWith(expect.stringContaining('PR comment from reviewer'))
+    expect(onAddToChat).toHaveBeenCalledWith(
+      expect.stringContaining('Quoting a pull request comment by reviewer'))
+  })
+
+  it('drops the source strip when there is only one source to pick', async () => {
+    // A single-source host (the Code Review Sage detail pane, whose left rail
+    // already chose the pull request) would otherwise get a tab bar holding one
+    // tab that does nothing. Two sources: the strip earns its row.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url: github.url, provider: 'github', number: 12, repo: 'widgets' }]}
+          selectedUrl={github.url}
+          onSelect={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    expect(screen.queryByRole('tablist', { name: 'Pull requests' })).not.toBeInTheDocument()
+    // The SECTION bar is still there -- only the source picker is suppressed.
+    expect(screen.getByRole('tablist', { name: 'Pull request sections' })).toBeInTheDocument()
+  })
+
+  it('offers the comment composer on a pull request with no comments yet', async () => {
+    // The thread list owns the "comment on this pull request" box, so gating it on
+    // an existing comment would make the FIRST comment the one you cannot post.
+    mockApi.pullRequestSource.mockResolvedValue({ ...github, comments: [] })
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    const sections = screen.getByRole('tablist', { name: 'Pull request sections' })
+    fireEvent.click(within(sections).getByRole('tab', { name: /Reviews/i }))
+    expect(await screen.findByText(/Comment on this pull request/i)).toBeTruthy()
+  })
+
+  it('refreshes the SHARED source cache after a thread write', async () => {
+    // Sage's detail pane observes the same key, so invalidating anything else
+    // leaves both readers showing the state from before the write.
+    mockApi.resolvePullRequestThread.mockResolvedValue({ resolved: true })
+    const { client } = renderPanel()
+    await screen.findByText('Add source tabs')
+    const sections = screen.getByRole('tablist', { name: 'Pull request sections' })
+    fireEvent.click(within(sections).getByRole('tab', { name: /Reviews/i }))
+    const spy = vi.spyOn(client, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    await waitFor(() => expect(mockApi.resolvePullRequestThread).toHaveBeenCalled())
+    await waitFor(() => expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ['pull-request-source', github.url] })))
   })
 
   it('hands a failed CI check off to chat', async () => {
@@ -506,12 +593,18 @@ describe('PullRequestPanel', () => {
     await screen.findByText('Add source tabs')
     fireEvent.click(screen.getByRole('tab', { name: /Reviews 3/i }))
 
-    // One resolvable+unresolved comment gets the button, the resolved one gets the indicator,
-    // the top-level comment gets neither.
-    expect(screen.getAllByRole('button', { name: /Resolve/i })).toHaveLength(1)
-    expect(screen.getByText('Resolved')).toBeInTheDocument()
+    // Only the open, resolvable thread offers Resolve; the top-level comment has
+    // no thread to resolve. Matched exactly -- /Resolve/i also catches the
+    // "Hide resolved" toggle.
+    expect(screen.getAllByRole('button', { name: 'Resolve' })).toHaveLength(1)
 
-    fireEvent.click(screen.getByRole('button', { name: /Resolve/i }))
+    // Resolved threads are settled business, so they are behind a toggle rather
+    // than inline. Revealing one offers Reopen, not Resolve.
+    expect(screen.queryByRole('button', { name: 'Reopen' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Show resolved/i }))
+    expect(screen.getByRole('button', { name: 'Reopen' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
     await waitFor(() =>
       expect(mockApi.resolvePullRequestThread).toHaveBeenCalledWith(github.url, 'PRRT_thread1'),
     )
@@ -523,8 +616,9 @@ describe('PullRequestPanel', () => {
     await screen.findByText('Add source tabs')
     fireEvent.click(screen.getByRole('tab', { name: /Reviews 3/i }))
 
-    fireEvent.click(screen.getByRole('button', { name: /Resolve/i }))
-    expect(await screen.findByText('Could not resolve')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    // The provider's own message, surfaced next to the button that failed.
+    expect(await screen.findByText('boom')).toBeInTheDocument()
   })
 
   it('fetches the selected GitLab merge request', async () => {

@@ -19,6 +19,8 @@ import {
   type MeetingStatus,
   type MeetingsConfig,
   type Task,
+  type TranscriptResponse,
+  type TranscriptSegment,
 } from '../api'
 import { useMeetingTranscription } from './useMeetingTranscription'
 
@@ -92,6 +94,35 @@ export function newSegmentText(
   return trimmed
 }
 
+/** Merge cursor pages and immediate dispatch responses by durable segment id. */
+export function mergeTranscriptSegments(
+  current: readonly TranscriptSegment[],
+  incoming: readonly TranscriptSegment[],
+): TranscriptSegment[] {
+  if (incoming.length === 0) return [...current]
+  const seen = new Set(current.map(segment => segment.id))
+  const merged = [...current]
+  for (const segment of incoming) {
+    if (seen.has(segment.id)) continue
+    seen.add(segment.id)
+    merged.push(segment)
+  }
+  return merged
+}
+
+/** Reconcile a canonical cursor page with responses appended optimistically. */
+export function reconcileTranscriptPage(
+  current: readonly TranscriptSegment[],
+  page: readonly TranscriptSegment[],
+): TranscriptSegment[] {
+  if (page.length === 0) return [...current]
+  const confirmedIds = new Set(page.map(segment => segment.id))
+  return [
+    ...current.filter(segment => !confirmedIds.has(segment.id)),
+    ...page,
+  ]
+}
+
 /** Which agents a preset (or the roster's defaults) turns on. */
 export function resolveEnabledAgents(
   presetName: string,
@@ -129,6 +160,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const scope = ['meetings', meetingId] as const
 
   const [caption, setCaption] = useState('')
+  const [partialTranscript, setPartialTranscript] = useState('')
+  const [fullMeetingId, setFullMeetingId] = useState('')
+  const transcriptFullNoticeRef = useRef('')
   const [chatViewAgents, setChatViewAgents] = useState<string[]>([])
   const [selectedPreset, setSelectedPreset] = useState(config?.default_preset ?? '')
   // `useState` captures its initial value ONCE, and `config` arrives from a query —
@@ -183,6 +217,29 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         : false,
   })
 
+  const transcriptKey = [...scope, 'transcript'] as const
+  const transcriptQuery = useQuery({
+    queryKey: transcriptKey,
+    queryFn: async () => {
+      const current = queryClient.getQueryData<TranscriptResponse>(transcriptKey)
+      const page = await meetingsApi.transcript(meetingId, current?.next_cursor ?? 0)
+      if (!current) return page
+      return {
+        // Dispatch responses are optimistic: concurrent requests can resolve in a
+        // different order from the durable append. The cursor page is canonical,
+        // so overlapping optimistic rows are removed and reinserted in file order.
+        segments: reconcileTranscriptPage(current.segments, page.segments),
+        next_cursor: page.next_cursor,
+      }
+    },
+    enabled: initQuery.isSuccess,
+    refetchInterval: status === 'active'
+      ? (config?.poll_interval_active ?? 5000)
+      : status === 'paused' || status === 'reviewing'
+        ? (config?.poll_interval_idle ?? 30_000)
+        : false,
+  })
+
   const agents = config?.meeting_agents ?? []
   const enabledIds = meta?.agents_enabled ?? resolveEnabledAgents(selectedPreset, config, agents)
   // Is `enabledIds` a real roster, or the empty list that a not-yet-loaded config
@@ -209,10 +266,37 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const mutedAgents = meta?.muted_agents ?? []
   const outputs = outputsQuery.data?.outputs ?? {}
   const tasks: Task[] = outputsQuery.data?.tasks ?? []
+  const transcript: TranscriptSegment[] = transcriptQuery.data?.segments ?? []
+  const transcriptFull = fullMeetingId === meetingId
+
+  const commitTranscriptSegment = useCallback(
+    (segment: TranscriptSegment) => {
+      queryClient.setQueryData<TranscriptResponse>(
+        transcriptKey,
+        current => {
+          const segments = current?.segments ?? []
+          return {
+            segments: mergeTranscriptSegments(segments, [segment]),
+            next_cursor: current?.next_cursor ?? 0,
+          }
+        },
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [queryClient, meetingId],
+  )
+
+  const markTranscriptFull = useCallback(() => {
+    setFullMeetingId(meetingId)
+    if (transcriptFullNoticeRef.current === meetingId) return
+    transcriptFullNoticeRef.current = meetingId
+    notify(i18nT('apps.meetings.transcript.full'), { type: 'error' })
+  }, [meetingId, notify])
 
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: [...scope, 'meta'] })
     void queryClient.invalidateQueries({ queryKey: [...scope, 'outputs'] })
+    void queryClient.invalidateQueries({ queryKey: [...scope, 'transcript'] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient, meetingId])
 
@@ -233,6 +317,10 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
 
   const onTranscriptionError = useCallback(
     (code: string) => {
+      if (code === 'transcript_full') {
+        markTranscriptFull()
+        return
+      }
       // Indexed INSIDE the `i18nT(...)` call rather than via a local `const key`:
       // the gate collects only file-scope consts, so a function-local binding is
       // opaque to it however resolvable its initializer is.
@@ -245,13 +333,15 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         { type: 'error' },
       )
     },
-    [notify],
+    [markTranscriptFull, notify],
   )
 
   const transcription = useMeetingTranscription({
     meetingId,
     onCaption,
     onFinal: onSegment,
+    onPartial: setPartialTranscript,
+    onCommitted: commitTranscriptSegment,
     onError: onTranscriptionError,
   })
 
@@ -273,13 +363,13 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   transcriptionRef.current = transcription
   const transcriptionActive = transcription.active
   useEffect(() => {
-    if (status === 'active' && !transcriptionRef.current.active) {
+    if (status === 'active' && !transcriptFull && !transcriptionRef.current.active) {
       void transcriptionRef.current.start()
     }
-    if (status !== 'active' && transcriptionRef.current.active) {
+    if ((status !== 'active' || transcriptFull) && transcriptionRef.current.active) {
       transcriptionRef.current.stop()
     }
-  }, [status, transcriptionActive])
+  }, [status, transcriptFull, transcriptionActive])
 
   // ── mutations ─────────────────────────────────────────────────────────────
 
@@ -354,8 +444,21 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
 
   const broadcastMutation = useMutation({
     mutationFn: (text: string) => meetingsApi.dispatch(meetingId, text, true),
-    onSuccess: () => notify(i18nT('apps.meetings.session.broadcastSent'), { type: 'info' }),
-    onError: error => failureNotice(error, i18nT('apps.meetings.session.broadcastFailed')),
+    onSuccess: response => {
+      commitTranscriptSegment(response.segment)
+      notify(i18nT('apps.meetings.session.broadcastSent'), { type: 'info' })
+    },
+    onError: error => {
+      if (
+        error instanceof MeetingsApiError
+        && error.status === 413
+        && error.code === 'transcript_too_large'
+      ) {
+        markTranscriptFull()
+        return
+      }
+      failureNotice(error, i18nT('apps.meetings.session.broadcastFailed'))
+    },
   })
 
   const agentMessageMutation = useMutation({
@@ -431,6 +534,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     mutedAgents,
     outputs,
     tasks,
+    transcript,
+    partialTranscript,
+    transcriptFull,
     caption,
     chatViewAgents,
     selectedPreset,
@@ -438,7 +544,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     loading: initQuery.isLoading || metaQuery.isLoading,
     error: (initQuery.error ?? metaQuery.error) as Error | null,
     agentsPaused: Boolean(live?.agents_paused),
-    syncing: metaQuery.isFetching || outputsQuery.isFetching,
+    syncing: metaQuery.isFetching || outputsQuery.isFetching || transcriptQuery.isFetching,
     setSelectedPreset,
     toggleChatView,
     refresh: invalidate,

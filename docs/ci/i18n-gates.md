@@ -1,6 +1,6 @@
 # The i18n gate chain
 
-The dashboard ships in eleven languages. This doc covers the **gates**: what runs,
+The dashboard ships in twelve languages. This doc covers the **gates**: what runs,
 what can fail a PR, what only reports, and the rule that governs relaxing a
 ratchet. The authoring rules (how to add a catalog key, the `src/i18n/format.ts`
 seam, the glossary) live in the frontend docs under `website/`.

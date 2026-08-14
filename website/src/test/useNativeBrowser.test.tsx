@@ -195,71 +195,16 @@ describe('useNativeBrowser', () => {
   })
 })
 
-describe('useNativeBrowser control handoff', () => {
-  it('mirrors the agent-act authorization into the main process', async () => {
-    const { calls } = installBridge()
-    const { rerender } = renderHook(
-      ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
-      { initialProps: { act: false } },
-    )
-    await waitFor(() => expect(calls.agentAct).toEqual([{ panelId: PANEL, enabled: false }]))
-    rerender({ act: true })
-    await waitFor(() => expect(calls.agentAct.at(-1)?.enabled).toBe(true))
-  })
-
-  it('acquires LIGHT (in-process) control of the native view when the Globe turns on', async () => {
-    const { calls } = installBridge()
-    const { rerender } = renderHook(
-      ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
-      { initialProps: { act: false } },
-    )
-    // Globe off → no agent owner.
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('none'))
-    // Globe on → request LIGHT: the native view is driven in-process over CDP,
-    // never PLAYWRIGHT (that owner is a separate external browser process).
-    rerender({ act: true })
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
-    expect(calls.owner.some(c => c.owner === 'playwright')).toBe(false)
-  })
-
-  it('releases control back to NONE when the Globe turns off', async () => {
-    const { calls } = installBridge()
-    const { rerender } = renderHook(
-      ({ act: a }) => useNativeBrowser(PANEL, true, { agentActEnabled: a }),
-      { initialProps: { act: true } },
-    )
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
-    rerender({ act: false })
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('none'))
-  })
-
-  it('drives the control owner even while the panel is disabled (hidden, not destroyed)', async () => {
-    // Control ownership is orthogonal to visibility: a hidden-but-alive view the
-    // agent is mid-task on must keep LIGHT. So the owner effect must NOT be gated
-    // on `enabled` — otherwise glancing at another side-panel tab would drop the
-    // agent's hold on the page.
-    const { calls } = installBridge()
-    renderHook(() => useNativeBrowser(PANEL, false, { agentActEnabled: true }))
-    await waitFor(() => expect(calls.owner.at(-1)?.owner).toBe('light'))
-  })
-})
+// NOTE: the `control handoff` suite that used to live here is gone on purpose.
+// It pinned the renderer mirroring a per-session agent-act grant into the main
+// process and acquiring/releasing LIGHT as a Globe toggle flipped. Browser Mode
+// is now the authorization (see security.py: "Presence alone is the
+// authorization"), and the agent command channel acquires LIGHT itself on every
+// op, so the hook no longer takes `agentActEnabled` and there is no renderer-side
+// authorization to assert. What survives is covered above: bounds reporting,
+// hide-without-close, overlay handling, and open().
 
 describe('useNativeBrowser panel isolation', () => {
-  it('two panels never clobber each other\u2019s agent-act authorization', async () => {
-    // Regression: agent-act and the control owner used to live in ONE
-    // per-window slot, so a second session with a Browser panel overwrote the
-    // first session's authorization (last writer wins).
-    const { calls } = installBridge()
-    renderHook(() => useNativeBrowser('chat-a', true, { agentActEnabled: true }))
-    renderHook(() => useNativeBrowser('chat-b', true, { agentActEnabled: false }))
-
-    await waitFor(() => expect(calls.agentAct.length).toBeGreaterThanOrEqual(2))
-    const a = calls.agentAct.filter(c => c.panelId === 'chat-a')
-    const b = calls.agentAct.filter(c => c.panelId === 'chat-b')
-    expect(a.at(-1)?.enabled).toBe(true)
-    expect(b.at(-1)?.enabled).toBe(false)
-  })
-
   it('each panel reports its own bounds under its own id', async () => {
     const { calls } = installBridge()
     const mk = (id: string, x: number) => {

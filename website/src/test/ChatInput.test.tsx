@@ -58,6 +58,51 @@ describe('ChatInput', () => {
     })
   })
 
+  describe('above-composer stacking order', () => {
+    // The tip / folder-suggestion band must stay flush against the input box:
+    // options belong with the transcript above it, never between it and the
+    // composer. DOCUMENT_POSITION_FOLLOWING === 4.
+    const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING
+
+    it('renders aboveComposer below the options row and above the textarea', () => {
+      renderWithProviders(
+        <ChatInput
+          {...defaultProps}
+          aboveComposer={<div data-testid="tip-band">tip</div>}
+          followUpOptions={['first option', 'second option']}
+          onFollowUpSelect={vi.fn()}
+        />
+      )
+      const option = screen.getByRole('button', { name: 'first option' })
+      const tip = screen.getByTestId('tip-band')
+      const textarea = screen.getByLabelText('Message input')
+
+      expect(option.compareDocumentPosition(tip) & FOLLOWING).toBe(FOLLOWING)
+      expect(tip.compareDocumentPosition(textarea) & FOLLOWING).toBe(FOLLOWING)
+    })
+
+    it('keeps aboveComposer below the knowledge chip', () => {
+      renderWithProviders(
+        <ChatInput
+          {...defaultProps}
+          aboveComposer={<div data-testid="tip-band">tip</div>}
+          knowledgeChip={<div data-testid="knowledge-chip">ctx</div>}
+        />
+      )
+      const chip = screen.getByTestId('knowledge-chip')
+      const tip = screen.getByTestId('tip-band')
+
+      expect(chip.compareDocumentPosition(tip) & FOLLOWING).toBe(FOLLOWING)
+    })
+
+    it('still renders aboveComposer when the options row is absent', () => {
+      renderWithProviders(
+        <ChatInput {...defaultProps} aboveComposer={<div data-testid="tip-band">tip</div>} />
+      )
+      expect(screen.getByTestId('tip-band')).toBeInTheDocument()
+    })
+  })
+
   describe('offline state', () => {
     it('disables Send button when connected=false even with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)
@@ -1148,6 +1193,51 @@ describe('ChatInput', () => {
       fireEvent.click(btn)
       expect(onSend).toHaveBeenCalled()
       expect(onStop).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('a staged session reference does not arm the mid-turn button', () => {
+    // Regression guard for a dead click this feature briefly introduced. A
+    // staged reference correctly enables the IDLE send button, but the mid-turn
+    // split button must stay out of it: its steer mode refuses a payload of refs
+    // alone, so enabling it produced an enabled primary button whose press did
+    // nothing. Before session refs existed, an empty composer mid-turn rendered
+    // the stop button — that is the behaviour to preserve.
+    const refProps = (overrides: Record<string, unknown> = {}) => ({
+      ...defaultProps,
+      value: '',
+      pendingSessions: [{ key: 'chat-9', title: 'Release notes', messages: 12 }],
+      isRunning: true,
+      canSteer: true,
+      onStop: vi.fn(),
+      onSend: vi.fn(),
+      onSteer: vi.fn(),
+      ...overrides,
+    })
+
+    it('renders the stop button, not the split send button, with only a ref staged', () => {
+      renderWithProviders(<ChatInput {...refProps()} />)
+      expect(screen.queryByTestId('busy-send-button')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('busy-send-caret')).not.toBeInTheDocument()
+    })
+
+    it('still shows the chip so the reference is visibly staged, not lost', () => {
+      renderWithProviders(<ChatInput {...refProps()} />)
+      expect(screen.getByTestId('session-ref-chip')).toHaveAttribute('data-session-ref', 'chat-9')
+    })
+
+    it('arms the mid-turn button again as soon as there is real text to steer', () => {
+      renderWithProviders(<ChatInput {...refProps({ value: 'also look at this' })} />)
+      expect(screen.getByTestId('busy-send-button')).toBeInTheDocument()
+    })
+
+    it('does enable the IDLE send button with only a ref staged', () => {
+      const p = refProps({ isRunning: false, canSteer: false })
+      renderWithProviders(<ChatInput {...p} />)
+      const send = screen.getByLabelText('Send')
+      expect(send).not.toBeDisabled()
+      fireEvent.click(send)
+      expect(p.onSend).toHaveBeenCalledTimes(1)
     })
   })
 

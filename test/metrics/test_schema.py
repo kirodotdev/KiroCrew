@@ -185,3 +185,45 @@ class TestRedact:
         TLD-based, so use a long-query exfil shape it flags.
         """
         assert redact("https://attacker.example/c?x=" + "q" * 300) == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# Reach of the entropy backstop — characterisation, not a target
+# ---------------------------------------------------------------------------
+
+
+class TestEntropyBackstopReach:
+    """Pin where the entropy backstop can and cannot fire.
+
+    These record CURRENT behaviour so the boundary is visible to the next
+    reader, not a statement that the boundary is where it should be. Entropy
+    over a value's own character frequencies is bounded by
+    ``log2(distinct characters)``, so the 4.5 threshold needs >= 23 distinct
+    characters before it is attainable at all. Anything that widens the
+    backstop should update these, deliberately.
+
+    Short hex staying visible is a separate, deliberate choice — see
+    ``TestRedact.test_short_hex_32_chars_not_redacted`` and the 40-char pattern
+    bound that spares trace ids.
+    """
+
+    def test_22_distinct_characters_cannot_reach_the_threshold(self):
+        # log2(22) = 4.459 < 4.5: maximal entropy for this length, still under.
+        value = "abcdefghijklmnopqrstuv"
+        assert len(set(value)) == 22
+        assert redact(value) == value
+
+    def test_23_distinct_characters_is_the_first_reachable_length(self):
+        # log2(23) = 4.524 > 4.5.
+        value = "abcdefghijklmnopqrstuvw"
+        assert len(set(value)) == 23
+        assert redact(value) == "[REDACTED]"
+
+    def test_a_small_alphabet_never_reaches_the_threshold(self):
+        # 16 symbols cap entropy at log2(16) = 4.0 whatever the length, so the
+        # backstop alone cannot fire on one. Deliberately not hex: hex of this
+        # length is caught by the explicit pattern, which would hide the effect
+        # being pinned here.
+        value = ("qwertyuiopasdfgh" * 4)[:62]  # 62 chars, 16 distinct, non-hex
+        assert len(set(value)) == 16
+        assert redact(value) == value

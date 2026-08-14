@@ -602,6 +602,12 @@ def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
                         ],
                     },
                     "@playwright/mcp": {"command": "kirocrew", "args": ["mcp-playwright-proxy"]},
+                    # Launched by kirocrew but with a verb that still EXISTS,
+                    # and deliberately NOT one of KIROCREW_BIN_MCP_SERVERS (those
+                    # are purged by the separate install-path rule). Proves the
+                    # new purge matches the deleted VERB, not "anything kirocrew
+                    # launches".
+                    "operator-own-server": {"command": "kirocrew", "args": ["mcp-core"]},
                     "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
                 }
             },
@@ -615,7 +621,13 @@ def test_clean_stale_purges_meshclaw_command_playwright(tmp_path, monkeypatch):
 
     assert "npm:@playwright/mcp" not in remaining  # stale meshclaw-command entry purged
     assert "npm:@playwright/mcp" in removed
-    assert "@playwright/mcp" in remaining  # the live kirocrew proxy kept
+    # Was "the live kirocrew proxy kept". It is no longer live: the
+    # `mcp-playwright-proxy` verb was deleted with the proxy, so this entry now
+    # launches a command that does not exist and takes every kiro-cli session
+    # down with a ModuleNotFoundError. Purging it IS the upgrade path.
+    assert "@playwright/mcp" not in remaining
+    assert "@playwright/mcp" in removed
+    assert "operator-own-server" in remaining  # other kirocrew-launched verb kept
     assert "ai-community-slack-mcp" in remaining  # user server kept
 
 
@@ -657,3 +669,87 @@ def test_first_run_no_global_mcp(tmp_path, monkeypatch):
     assert (tmp_path / ".local" / "bin" / "kirocrew").is_symlink()
     assert marker.exists()  # marker written even with nothing to purge
     assert not mcp.exists()  # purge must not create a global mcp.json
+
+
+# --------------------------------------------------------------------------
+# purge_deleted_proxy_from_config — every-rebuild agent-config purge
+#
+# The first-run marker-guarded purge (clean_stale_managed_mcp) covers the
+# GLOBAL ~/.kiro/settings/mcp.json.  purge_deleted_proxy_from_config covers
+# the assembled agent config on EVERY rebuild, because an entry can be
+# re-injected from ~/.kiro/crew/mcp.json by the merge passes.
+# --------------------------------------------------------------------------
+
+
+def test_rebuild_purge_drops_proxy_entry_even_when_marker_exists(tmp_path):
+    """A config carrying a server whose argv contains mcp-playwright-proxy
+    has it dropped on a rebuild even when the first-run marker EXISTS."""
+    config: dict = {
+        "mcpServers": {
+            "playwright-mcp": {
+                "command": "kirocrew",
+                "args": ["mcp-playwright-proxy"],
+            },
+            "user-server": {"command": "npx", "args": ["some-tool"]},
+        },
+        "tools": ["@playwright-mcp", "@user-server"],
+        "allowedTools": ["@playwright-mcp"],
+    }
+    removed = mcp_cleanup.purge_deleted_proxy_from_config(config)
+
+    assert "playwright-mcp" not in config["mcpServers"]
+    assert "playwright-mcp" in removed
+    assert "user-server" in config["mcpServers"]
+    assert "@playwright-mcp" not in config["tools"]
+    assert "@playwright-mcp" not in config["allowedTools"]
+    assert "@user-server" in config["tools"]
+
+
+def test_rebuild_purge_leaves_operator_playwright_server_untouched():
+    """An operator's own server named playwright-mcp whose argv does NOT
+    invoke the deleted subcommand is left untouched."""
+    config: dict = {
+        "mcpServers": {
+            "playwright-mcp": {
+                "command": "npx",
+                "args": ["@playwright/mcp", "--headless"],
+            },
+        },
+        "tools": ["@playwright-mcp"],
+    }
+    removed = mcp_cleanup.purge_deleted_proxy_from_config(config)
+
+    assert removed == []
+    assert "playwright-mcp" in config["mcpServers"]
+    assert "@playwright-mcp" in config["tools"]
+
+
+def test_rebuild_purge_drops_reinjected_entry_on_second_rebuild():
+    """A re-injected entry is dropped again on a SECOND rebuild — this is
+    the property the deleted converge_playwright_servers existed for."""
+    base_config: dict = {
+        "mcpServers": {
+            "playwright-mcp": {
+                "command": "kirocrew",
+                "args": ["mcp-playwright-proxy"],
+            },
+        },
+        "tools": ["@playwright-mcp"],
+    }
+    # First rebuild purge.
+    removed_1 = mcp_cleanup.purge_deleted_proxy_from_config(base_config)
+    assert "playwright-mcp" in removed_1
+    assert "playwright-mcp" not in base_config["mcpServers"]
+
+    # Simulate re-injection from ~/.kiro/crew/mcp.json on next rebuild.
+    base_config["mcpServers"]["playwright-mcp"] = {
+        "command": "kirocrew",
+        "args": ["mcp-playwright-proxy"],
+    }
+    base_config["tools"].append("@playwright-mcp")
+
+    # Second rebuild purge drops it again.
+    removed_2 = mcp_cleanup.purge_deleted_proxy_from_config(base_config)
+    assert "playwright-mcp" in removed_2
+    assert "playwright-mcp" not in base_config["mcpServers"]
+    assert "@playwright-mcp" not in base_config["tools"]

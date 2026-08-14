@@ -128,7 +128,11 @@ describe('AgentImportFlow', () => {
     renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
 
     const dialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
-    expect(await within(dialog).findByRole('checkbox', { name: /Claude Code/ })).toBeChecked()
+    // The checkbox renders before the useEffect that pre-selects all eligible
+    // sources fires, so wait for the checked state rather than asserting inline.
+    await waitFor(() => {
+      expect(within(dialog).getByRole('checkbox', { name: /Claude Code/ })).toBeChecked()
+    })
     expect(within(dialog).getByRole('checkbox', { name: /MeshClaw/ })).toBeChecked()
     expect(within(dialog).queryByText('Codex')).not.toBeInTheDocument()
     expect(within(dialog).queryByText('Cursor')).not.toBeInTheDocument()

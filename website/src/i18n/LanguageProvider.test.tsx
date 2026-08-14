@@ -133,11 +133,17 @@ describe('LanguageProvider', () => {
     await waitFor(() => expect(document.documentElement.lang).toBe('zh-CN'))
   })
 
-  it('normalizes a Japanese browser tag for the locale-specific font override', async () => {
-    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['ja-JP'])
-    wrap(<Probe />)
-    await waitFor(() => expect(document.documentElement.lang).toBe('ja'))
-  })
+  // A regional tag must land on the bare code, or the locale-specific font
+  // override keyed on it — `html:lang(ja)`, `html:lang(ko)` — never matches and the
+  // script silently renders through the Simplified Chinese alias.
+  it.each([['ja-JP', 'ja'], ['ko-KR', 'ko']])(
+    'normalizes the %s browser tag for the locale-specific font override',
+    async (tag, expected) => {
+      vi.spyOn(navigator, 'languages', 'get').mockReturnValue([tag])
+      wrap(<Probe />)
+      await waitFor(() => expect(document.documentElement.lang).toBe(expected))
+    },
+  )
 
   it('is inert but does not crash outside a provider', () => {
     // An isolated component test shouldn't have to mount the provider.

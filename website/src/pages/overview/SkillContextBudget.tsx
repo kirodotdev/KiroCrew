@@ -110,7 +110,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
   if (isLoading) {
     return (
       <div className="mt-4">
-        <Btn onClick={onBack} className="mb-3 text-muted">
+        <Btn onClick={onBack} className="mb-3">
           <ArrowLeft size={14} /> {i18nT('pages.overview.skillsTab.budget_back')}
         </Btn>
         <Card>
@@ -125,7 +125,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
   if (rows.length === 0) {
     return (
       <div className="mt-4">
-        <Btn onClick={onBack} className="mb-3 text-muted">
+        <Btn onClick={onBack} className="mb-3">
           <ArrowLeft size={14} /> {i18nT('pages.overview.skillsTab.budget_back')}
         </Btn>
         <h4 className="text-lg font-semibold text-text-strong mb-1">{i18nT('pages.overview.skillsTab.budget_title')}</h4>
@@ -143,7 +143,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="mt-4">
-      <Btn onClick={onBack} className="mb-3 text-muted">
+      <Btn onClick={onBack} className="mb-3">
         <ArrowLeft size={14} /> {i18nT('pages.overview.skillsTab.budget_back')}
       </Btn>
       <h4 className="text-lg font-semibold text-text-strong mb-1">{i18nT('pages.overview.skillsTab.budget_title')}</h4>

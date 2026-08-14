@@ -484,4 +484,92 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       expect(drafts['slot-a']).toBe('precious prompt')
     })
   })
+
+  it('restores a staged session reference as a chip, not as raw link text', async () => {
+    // The transport-failure path restores what the user TYPED plus the staged
+    // references, rather than the link-appended text. That puts the composer back
+    // in its exact pre-send state, and is what keeps the retry from appending
+    // each link a second time (see sessionRefs.test.ts for the duplication half).
+    const { api } = await import('../api/client')
+    vi.mocked(api.sendChat).mockRejectedValueOnce(new Error('Network error'))
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    sessionStorage.setItem('mc-chat-session-ref-drafts', JSON.stringify({
+      'slot-a': [{ key: 'chat-ref-1', title: 'Release notes' }],
+    }))
+    await renderAndWaitForInput(store)
+
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.change(input, { target: { value: 'compare these' } }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+
+    await waitFor(() => {
+      const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      const restored = drafts['slot-a'] ?? ''
+      // The typed text came back WITHOUT the serialized link spliced into it.
+      expect(restored).toContain('compare these')
+      expect(restored).not.toContain('sid=chat-ref-1')
+      // The reference came back as a staged ref instead.
+      const refs = JSON.parse(sessionStorage.getItem('mc-chat-session-ref-drafts') || '{}')
+      expect((refs['slot-a'] ?? []).map((r: { key: string }) => r.key)).toContain('chat-ref-1')
+    })
+  })
+
+  it('a REJECTED response (403, not a transport error) also restores the composer', async () => {
+    // The two failure shapes lose the same thing and must recover the same way.
+    // Previously only the transport branch restored, so a dropped connection kept
+    // the user's message while a rejected response threw it away. `sendChat`
+    // RESOLVES here with a non-ok body — it does not reject — which is why this
+    // path needs its own test rather than being covered by the one above.
+    const { api } = await import('../api/client')
+    vi.mocked(api.sendChat).mockResolvedValueOnce({
+      json: async () => ({ ok: false, error: 'forbidden' }),
+    } as unknown as Response)
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    sessionStorage.setItem('mc-chat-session-ref-drafts', JSON.stringify({
+      'slot-a': [{ key: 'chat-ref-9', title: 'Release notes' }],
+    }))
+    await renderAndWaitForInput(store)
+
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.change(input, { target: { value: 'do not lose me' } }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+
+    await waitFor(() => {
+      const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      expect(drafts['slot-a']).toContain('do not lose me')
+      const refs = JSON.parse(sessionStorage.getItem('mc-chat-session-ref-drafts') || '{}')
+      expect((refs['slot-a'] ?? []).map((r: { key: string }) => r.key)).toContain('chat-ref-9')
+    })
+  })
+
+  it('does not clobber a newer draft typed while the send was in flight', async () => {
+    // The send is in flight for up to 10s and the user can type a fresh message.
+    // Recovery must MERGE, not overwrite — otherwise it loses newer work to
+    // recover older. The failed payload is appended after the newer text.
+    const { api } = await import('../api/client')
+    let rejectSend: (e: Error) => void = () => {}
+    vi.mocked(api.sendChat).mockImplementationOnce(
+      () => new Promise((_res, rej) => { rejectSend = rej }) as unknown as Promise<Response>,
+    )
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    await act(async () => { fireEvent.change(input, { target: { value: 'first message' } }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    // Composer cleared on send; the user types something new while it is pending.
+    await act(async () => { fireEvent.change(input, { target: { value: 'second thought' } }) })
+    await act(async () => { rejectSend(new Error('Network error')) })
+
+    await waitFor(() => {
+      const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      const restored = drafts['slot-a'] ?? ''
+      expect(restored).toContain('second thought')   // newer work survived
+      expect(restored).toContain('first message')    // failed payload recovered
+      expect(restored.indexOf('second thought')).toBeLessThan(restored.indexOf('first message'))
+    })
+  })
 })

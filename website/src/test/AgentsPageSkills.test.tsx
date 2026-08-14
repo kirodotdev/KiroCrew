@@ -67,6 +67,9 @@ describe('AgentsPage skills section', () => {
   it('offers the editor when agent detail loaded', async () => {
     mockApi.agentDetail.mockResolvedValue({ ...AGENT, skills: ['kiro-user/prepare-pr'], unmanaged_skills: [] })
     renderPage()
+    // The editor lives behind the Skills tab of the inspector now, so the
+    // prompt, tool chips and guardrails no longer share one scroll box with it.
+    fireEvent.click(await screen.findByRole('tab', { name: /skills/i }))
     expect(await screen.findByRole('button', { name: /add skill/i })).toBeInTheDocument()
   })
 
@@ -80,6 +83,7 @@ describe('AgentsPage skills section', () => {
 
     // The fallback only triggers on an explicit selection whose detail fetch fails.
     fireEvent.click(await screen.findByText('specialist'))
+    fireEvent.click(await screen.findByRole('tab', { name: /skills/i }))
 
     await waitFor(() => expect(screen.getByText(/Could not load this agent/i)).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /add skill/i })).not.toBeInTheDocument()

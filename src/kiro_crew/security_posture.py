@@ -105,6 +105,46 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Browser CLI install failures",
+        "browser_cli/install.py",
+        "The stderr of a failed `npm install -g @playwright/cli` / browser download, "
+        "which reaches TWO surfaces: a `logger.warning` line (durable, and pasted "
+        "into bug reports via `kirocrew logs`) and the Settings > Browser error card. "
+        "npm quotes the command's own environment back on failure, so the text can "
+        "carry a registry `_authToken`, an inline-credential proxy URL, or a "
+        "`*_TOKEN=` echo -- shapes the shared credential family does NOT match, so "
+        "this sink adds its own npm patterns on top of the shared two-pass and "
+        "redacts at the source rather than at either boundary.",
+    ),
+    (
+        "Session intent summaries",
+        "session_summary.py",
+        "Intent-summary payloads persisted to the `.intents` sidecar and served by "
+        "`GET /api/chat/slots/{slot}/summary`. The payload is model output derived "
+        "from transcript text, so a secret or beacon URL pasted into the chat can be "
+        "reproduced inside it; `normalize_payload` runs the whole nested payload "
+        "through the credential + exfiltration-URL chain before the write, because "
+        "the sidecar is durable and read straight back to the panel.",
+    ),
+    (
+        "Session storage inventory",
+        "dashboard/handlers/session_storage.py",
+        "A session's title and its first message, served by "
+        "`GET /api/system/session-storage/sessions` and its per-row detail. Both are "
+        "conversation content read straight off a transcript, so either can carry a "
+        "key someone pasted into a chat — the same output-boundary reason as the "
+        "session-memory titles below.",
+    ),
+    (
+        "Chat pin previews",
+        "dashboard/chat_pins.py",
+        "Message previews submitted to POST /api/chat/pins are persisted to "
+        "chat_pins.json and re-rendered by the pinned-messages panel, so the "
+        "preview is an output boundary; credentials and exfiltration URLs are "
+        "redacted before storage and on every response path (list and "
+        "idempotent duplicate-create) via _redacted_pin.",
+    ),
+    (
         "Skill context budget",
         "dashboard/handlers/skill_budget.py",
         "Skill display names served by `GET /api/skills/-/budget`. An auto-skill's "
@@ -128,6 +168,27 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the browser via the `mochi:notify` broadcast and the chat push; `redact_tree` "
         "scrubs credentials and exfiltration URLs before publish, the same "
         "output-boundary reason as the app plan/activity-log sinks.",
+    ),
+    (
+        "Session transfer bundle",
+        "dashboard/session_transfer.py",
+        "Transcript content copied to another Kiro Crew instance over an Instances "
+        "tunnel. The bundle LEAVES this host, so it is an output boundary: a "
+        "transcript written before the redactors existed (or carried in from a "
+        "channel) can still hold a raw credential on disk, and relying on the "
+        "receiving instance to scrub it would send the secret across the boundary "
+        "first. This covers **Layer A only** — the display transcript, plus the "
+        "title and origin label. The Layer B kiro-cli context is deliberately "
+        "forwarded BYTE-EXACT and is NOT scrubbed: its thinking blocks carry a "
+        "provider signature over their own content, so any rewrite invalidates the "
+        "conversation and the peer's next turn is rejected (measured: a leaf-string "
+        "pass altered a signature in 41% of one developer machine's 704 sessions). "
+        "Redacting that artifact and transplanting it are mutually exclusive. What "
+        "bounds the exposure is the destination rather than the payload — a send "
+        "goes to the OPERATOR'S OWN peer instance over a tunnel they authenticated, "
+        "and the peer stores it 0600 — so Layer B never leaves the operator's own "
+        "trust boundary. Inbound Layer B is validated structurally (parse-only, "
+        "never rewritten) and refused whole if any record does not parse.",
     ),
     (
         "Profile artifact",
@@ -401,6 +462,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Workflow progress summaries injected back into a session.",
     ),
     (
+        "Crew Mode delivery",
+        "crew_chat.py",
+        "Every crew-slot post (`_post`): forwarded subagent summaries/errors, "
+        "decision-agent questions, and topic-meta renders — all LLM-authored — "
+        "written to the transcript, broadcast over WS, and persisted to the "
+        "conversation log.",
+    ),
+    (
         "Onboarding import",
         "onboarding_import.py",
         "Imported foreign-agent history and config before it enters Kiro Crew.",
@@ -415,6 +484,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Discord direct send",
         "discord/transport_dispatch.py",
         "The direct-send path that bypasses TurnDriver, redacted independently.",
+    ),
+    (
+        "Telegram failure reason",
+        "telegram/transport_dispatch.py",
+        "The bounded failure reason a permanent AcpError surfaces in the chat "
+        "reply instead of the generic retry text. The message is backend error "
+        "text rather than stream output, so it bypasses the shared TurnDriver "
+        "redaction and is scanned (credentials, exfiltration URLs, local "
+        "paths) at this egress before the renderer posts it.",
     ),
     (
         "Discord session-resume replay",
@@ -445,6 +523,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Install/start/stop script output and warnings surfaced from an app.",
     ),
     (
+        "App teardown output",
+        "apps/teardown.py",
+        "Output from an app's own onDisable script, scrubbed by the dual-pass "
+        "redact() helper before it becomes a warning on the disable and "
+        "trust-revocation responses.",
+    ),
+    (
         "App activity log",
         "apps/builtins/mochi/activity_log.py",
         "Agent-authored activity entries are redacted before persistence, for the "
@@ -460,6 +545,22 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "over the app's /plan route; a credential or webhook URL an LLM wrote into "
         "a narrative/task field is recursively redacted here before json_response, "
         "the same output-boundary reason as the app activity log.",
+    ),
+    (
+        "Shared options-overflow sink",
+        "messaging/renderer.py",
+        "The one place LLM-authored [OPTIONS:] choices that do not fit a channel's "
+        "interactive widget are written into the message BODY (format_overflow, "
+        "reached from apply_options_cap on slack/telegram/discord). That crosses a "
+        "boundary the widget path does not: a widget label is plain text, while the "
+        "body is markdown-parsed, so a key split by a code span, emphasis or a "
+        "Discord spoiler is broken to every byte-level scan -- including the "
+        "TurnDriver's streaming redactor -- and whole on screen once the platform "
+        "drops the delimiters. Choices are therefore redacted here in DISPLAY form "
+        "(messaging/display_safety.py) BEFORE mention syntax is defanged, since the "
+        "ZWSP insertion is itself a post-scan transformation. Enforced at this sink "
+        "rather than per renderer for the same reason the max_buttons cap lives in "
+        "shared code: a channel cannot forget what it does not call.",
     ),
     (
         "Slack render pipeline",
@@ -505,6 +606,27 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "The file-card JSON pushed over the chat WebSocket is redacted before "
         "broadcast. (This module's other redact() calls are upload GATES — they "
         "abort a send when redaction would alter the content — not egress.)",
+    ),
+    (
+        "MCP custom server specs",
+        "dashboard/handlers/mcp_custom.py",
+        "Editable MCP server specs returned by the dashboard HTTP API to the browser. "
+        "Configured header values receive credential redaction only before they cross "
+        "that boundary.",
+    ),
+    (
+        "MCP probe results",
+        "dashboard/handlers/mcp.py",
+        "Cached MCP probe results returned by the dashboard HTTP API to the browser. "
+        "Configured header values and reflected credentials in probe errors receive "
+        "redaction before they cross that boundary.",
+    ),
+    (
+        "MCP server metadata",
+        "mcp_discovery.py",
+        "McpServerInfo.to_dict() is the serialization boundary for every dashboard "
+        "MCP listing; header values and reflected credentials in probe errors are "
+        "redacted there before the payload leaves the backend.",
     ),
     (
         "MCP app tool results",
@@ -612,6 +734,34 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "exfiltration-URL scanners plus a sensitive-header pass before anything is "
         "written into the archive.",
     ),
+    (
+        "Tag definitions (HTTP + auto-tag)",
+        "dashboard/chat_tags.py",
+        "Tag names supplied by both the POST /api/chat/tags HTTP handler and the "
+        "background auto-tag task are LLM-authored or project-derived and persist "
+        "to tags.json, the dashboard sidebar, and Slack notifications. Both paths "
+        "redact credentials and exfiltration URLs before creation/persistence.",
+    ),
+    (
+        "Background auto-tag (project-derived names)",
+        "dashboard/chat_auto_tag.py",
+        "The background auto-tag task derives tag names from the slot's project "
+        "path and persists them to tags.json and the dashboard sidebar via the "
+        "shared tag-creation path. Names are passed through redact_credentials "
+        "and redact_exfiltration_urls before resolution or persistence.",
+    ),
+    (
+        "Session-pulse survey feedback (Aperture egress)",
+        "dashboard/handlers/feedback.py",
+        "The free-text `feedback` field submitted via POST /api/feedback/submit is "
+        "forwarded to Aperture, a third-party AWS service, so it is a genuine "
+        "external egress boundary — a user typing a credential or exfiltration URL "
+        "while describing their experience would otherwise leave the host "
+        "unredacted. `_customer_responses` runs it through redact_exfiltration_urls "
+        "then redact_credentials before it is included in the outbound payload. "
+        "`rating` (a fixed frontend enum) and `email` (already flagged `pii: True`) "
+        "are not run through this pass.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -632,6 +782,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
         "apps/builtins/mochi/redact.py",
+        # Same shape: applies a redactor the CALLER injects, to scan the form a
+        # platform will actually render (markup collapsed, ANSI stripped). It owns
+        # no output of its own -- the registered sinks are the modules that call
+        # it (slack/format.py, messaging/renderer.py).
+        "messaging/display_safety.py",
         "autonudge_authz.py",
         "acp/_dispatch.py",
         "acp/client.py",
@@ -643,6 +798,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # message with and without redaction, so a raw comparison would keep both
         # copies — nothing redacted here is ever written or shown.
         "channel_transcript_migration.py",
+        # Comparison-only, same shape: the steer settler redacts BOTH the pending
+        # text and the backend's echo purely to compute a match identity. The ACP
+        # layer already redacted the echo on the way in, so comparing it against
+        # raw pending text never matched and the consumed steer got requeued and
+        # run twice. Nothing redacted here is written or shown — the ledger and
+        # the transcript keep the original text.
+        "dashboard/steer_settle.py",
         # DETECTOR, not a redactor: the pre-push content scan calls both scanners only
         # to COUNT findings and then refuses the push. It deliberately discards the
         # cleaned text — rewriting a code diff would corrupt the very fix the gate
@@ -651,6 +813,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # scan hits, and the change degrades to the local queue instead. Lives in
         # push_policy because all three push paths share this one implementation.
         "apps/builtins/auto_improvement/spine/push_policy.py",
+        # Inbound: the crew worker's slot title is derived from an issue title,
+        # which is untrusted text anyone who can open an issue wrote. It is
+        # scrubbed before it becomes a slot title (and fails CLOSED to the slot
+        # key if the redactors are unavailable), so this is inbound sanitisation
+        # rather than an egress boundary — the slot title's user-visible surface
+        # is already covered by the registered dashboard sinks.
+        "apps/builtins/issue_radar/backend/crew_runtime.py",
         # Internal persistence / indexing (the on-disk or in-memory copy), whose
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",
@@ -678,7 +847,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/discover.py",
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/knowledge.py",
-        "dashboard/handlers/mcp.py",
         "dashboard/handlers/memory.py",
         "dashboard/handlers/optimizer.py",
         "dashboard/handlers/prompts.py",
@@ -696,8 +864,22 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "knowledge/ingestion.py",
         "mcp_core.py",
         "mcp_cron.py",
-        "mcp_discovery.py",
         "mcp_gateway/backend.py",
+        # The kirocrew-core tool handlers, moved out of mcp_core.py into their
+        # domain modules. Same classification as mcp_core.py above for the same
+        # reason: a tool result's user-visible surface is a registered sink
+        # downstream, and these redact before returning to it. `learn.py` is
+        # absent because it calls no redactor -- the allowlist is checked for
+        # stale entries too.
+        "mcp_tools/apps.py",
+        "mcp_tools/artifacts.py",
+        "mcp_tools/control.py",
+        "mcp_tools/knowledge.py",
+        "mcp_tools/messaging.py",
+        "mcp_tools/sessions.py",
+        "mcp_tools/skills.py",
+        "mcp_tools/spawn.py",
+        "mcp_tools/workflows.py",
         "workflows/agent_exec.py",
         "workflows/agent_pool.py",
         "workflows/runner.py",
@@ -748,7 +930,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.
-        "browser/setup.py",
         "cli_doctor.py",
         "cloud/connect.py",
         "cloud/login.py",
@@ -796,9 +977,22 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "deploy/scan.py",
         # Bundled app backends: each app's own surface, not core egress.
         "apps/builtins/auto_research/handlers.py",
+        "apps/builtins/code_review_sage/sage_lib/learning.py",
         "apps/builtins/code_review_sage/sage_lib/pipeline.py",
         "apps/builtins/code_review_sage/sage_lib/report.py",
         "apps/builtins/code_review_sage/sage_lib/review_driver.py",
+        # `store` DEFINES this app's redactor (`redact_text`) so every reader in the
+        # app can scrub, not just the posting path; `discovery` calls it when reading
+        # the worker-writable pinned-repo file before the sidebar renders it. Both
+        # are the app's own surface, same classification as its siblings above.
+        "apps/builtins/code_review_sage/sage_lib/store.py",
+        "apps/builtins/code_review_sage/sage_lib/discovery.py",
+        # `chat_session` scrubs every turn of a post-review conversation at its
+        # serialization boundary: the reviewer can repeat a credential it read in
+        # the diff, and a tool title carries the arguments it was called with. Same
+        # classification as its siblings — the app's own surface, rendered by this
+        # app's panel, not a core egress path.
+        "apps/builtins/code_review_sage/sage_lib/chat_session.py",
         "apps/builtins/dev_fleet/server.py",
         "apps/builtins/issue_radar/backend/routes.py",
         "apps/builtins/meetings/backend/domain/session.py",
@@ -1103,7 +1297,10 @@ def _token_auth_items() -> list[PostureItem]:
             "transport that preserves the client address, for the pin to identify one client"
         )
     else:
-        _pin_detail = "A session is bound to the client address that first used it"
+        _pin_detail = (
+            "Per-client: a session is bound to the client address — or the "
+            "daemon-verified tailnet identity — that first used it"
+        )
 
     return [
         PostureItem(

@@ -73,6 +73,12 @@ _MAX_CONCURRENT_FETCHES = 4
 #: attempt is a separate vetted request, so this is a request budget, not a
 #: parsing detail.
 _MAX_ICON_ATTEMPTS = 2
+#: Attempts for the ``prefers-color-scheme: dark`` variant, when a page declares
+#: one at all. One, not two: the fallback chain that justifies a second attempt
+#: for the default icon (``/favicon.ico``) has no dark equivalent, and this lane
+#: buys a nicety — the icon the site drew for a dark surface, instead of a
+#: readable-but-plated light one — so it must not cost a second request.
+_MAX_DARK_ICON_ATTEMPTS = 1
 
 _USER_AGENT = "KiroCrew-LinkPreview/1"
 #: Redirect statuses followed. 300 (multiple choices) is excluded: it has no
@@ -332,14 +338,14 @@ async def _fetch_html(url: str) -> Tuple[VettedUrl, str, bool]:
     raise _UnfurlFailed("too many redirects")
 
 
-async def _fetch_icon(candidates: Tuple[str, ...]) -> str:
+async def _fetch_icon(candidates: Tuple[str, ...], *, budget: int = _MAX_ICON_ATTEMPTS) -> str:
     """Try the icon candidates in order; return a data URI or ``""``.
 
     Every failure mode is non-fatal: a card with no favicon is complete, so a
     404, a wrong type, an oversized image or a blocked host all just mean "no
     icon" rather than failing the whole preview.
     """
-    for candidate in candidates[:_MAX_ICON_ATTEMPTS]:
+    for candidate in candidates[:budget]:
         try:
             vetted = await _vet(candidate)
             status, headers, body, _cut = await _fetch(vetted, MAX_ICON_BYTES, truncate=False)
@@ -369,13 +375,34 @@ async def _build_payload(url: str) -> Dict[str, Any]:
         # untouched: `cut` is False there, so a genuinely titleless page still gets
         # its domain-only preview.
         raise _UnfurlFailed("title did not survive the read cap")
+    icon = await _fetch_icon(meta.icon_candidates)
+    # Fetched only when the page actually declares a dark variant, and after the
+    # default icon rather than beside it: concurrent icon fetches would double
+    # the sockets one unfurl can hold open, and `_MAX_CONCURRENT_FETCHES` bounds
+    # unfurls, not sockets.
+    dark_icon = ""
+    if meta.dark_icon_candidates:
+        dark_icon = await _fetch_icon(
+            meta.dark_icon_candidates, budget=_MAX_DARK_ICON_ATTEMPTS
+        )
+        if dark_icon == icon:
+            # Same bytes carry no information and would double the payload for a
+            # picture the client already has.
+            dark_icon = ""
     return {
         "url": vetted.url,
         "title": meta.title,
         "description": meta.description,
         "site_name": meta.site_name,
         "domain": vetted.domain,
-        "icon": await _fetch_icon(meta.icon_candidates),
+        "icon": icon,
+        # The variant for a dark surface, or "" when the site ships one icon for
+        # every surface. Both are sent because the CLIENT owns the choice: the
+        # theme is a per-tab, runtime-switchable property, while this payload is
+        # cached for 6 h and shared by every tab, so keying the cache on a colour
+        # scheme would double its entries and still need a round trip to repaint
+        # a theme switch.
+        "icon_dark": dark_icon,
         "fetched_at": int(time.time()),
     }
 

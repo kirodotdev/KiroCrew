@@ -122,8 +122,8 @@ describe('side panel + menu (shadcn dropdown)', () => {
 })
 
 describe('newMenuSections', () => {
-  const kinds = (o: { devMode: boolean; terminalEnabled: boolean }) =>
-    newMenuSections(o).map(g => g.map(i => i.kind))
+  const kinds = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled?: boolean }) =>
+    newMenuSections({ summaryEnabled: true, ...o }).map(g => g.items.map(i => i.kind))
 
   it('partitions every catalogued view exactly once', () => {
     // Both gates open, so nothing is filtered but the auto-pinned views. Any
@@ -136,10 +136,52 @@ describe('newMenuSections', () => {
     expect(new Set(flat).size).toBe(flat.length)
   })
 
+  it('hides Summary while session summaries are disabled', () => {
+    // The feature is opt-in and its settings toggle ships separately, so
+    // advertising the row while the flag is false sends every reader to a panel
+    // that says it is off and offers no way to change that.
+    const flat = kinds({ devMode: true, terminalEnabled: true, summaryEnabled: false }).flat()
+    expect(flat).not.toContain('summary')
+    // Only that row goes — its group still carries the rest, so the group is not
+    // dropped and nothing else is collateral.
+    expect(kinds({ devMode: true, terminalEnabled: true, summaryEnabled: false })[0])
+      .toEqual(['issues', 'subagents', 'workflows', 'git'])
+  })
+
+  it('keeps each group id fixed however the gates fall', () => {
+    // The group id is the menu's React key. If it moved when a gate resolved,
+    // React would remount the group and detach the row under the user's cursor
+    // — `summaryEnabled` in particular starts undefined and flips when its
+    // request lands, i.e. potentially mid-click. So the id a group reports must
+    // depend only on its declaration, never on which rows survived.
+    const idsFor = (o: { devMode: boolean; terminalEnabled: boolean; summaryEnabled: boolean }) =>
+      newMenuSections(o).map(g => g.id)
+
+    // Gating a row must not touch its group's id.
+    expect(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: false }))
+      .toEqual(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true }))
+
+    // Dropping a whole group must not renumber the survivors: with Developer
+    // Mode off the diagnostics group disappears, and the two that remain keep
+    // the ids they had.
+    expect(idsFor({ devMode: true, terminalEnabled: true, summaryEnabled: true }))
+      .toEqual(['session-output', 'workspaces', 'diagnostics'])
+    expect(idsFor({ devMode: false, terminalEnabled: true, summaryEnabled: true }))
+      .toEqual(['session-output', 'workspaces'])
+
+    // And ids stay unique, or two groups would collide on one key.
+    for (const devMode of [false, true]) {
+      for (const summaryEnabled of [false, true]) {
+        const ids = idsFor({ devMode, terminalEnabled: true, summaryEnabled })
+        expect(new Set(ids).size).toBe(ids.length)
+      }
+    }
+  })
+
   it('groups by session output, workspaces, then diagnostics', () => {
     expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
-      ['issues', 'subagents', 'workflows'],
-      ['side', 'browser', 'terminal'],
+      ['summary', 'issues', 'subagents', 'workflows', 'git'],
+      ['side', 'browser'],
       ['logs', 'context'],
     ])
   })
@@ -150,21 +192,20 @@ describe('newMenuSections', () => {
     // gate combination.
     for (const devMode of [false, true]) {
       for (const terminalEnabled of [false, true]) {
-        for (const group of newMenuSections({ devMode, terminalEnabled })) {
-          expect(group.length).toBeGreaterThan(0)
+        for (const group of newMenuSections({ devMode, terminalEnabled, summaryEnabled: true })) {
+          expect(group.items.length).toBeGreaterThan(0)
         }
       }
     }
-    // Both gates closed: diagnostics gone outright, Terminal dropped from
-    // Workspaces — two groups, not three with a hole.
+    // Both gates closed: diagnostics gone outright — two groups, not three with a hole.
     expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
-      ['issues', 'subagents', 'workflows'],
+      ['summary', 'issues', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
-    // Terminal back, diagnostics still gated.
+    // Terminal enabled doesn't change menu (terminal moved to app-wide panel).
     expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
-      ['issues', 'subagents', 'workflows'],
-      ['side', 'browser', 'terminal'],
+      ['summary', 'issues', 'subagents', 'workflows', 'git'],
+      ['side', 'browser'],
     ])
   })
 })

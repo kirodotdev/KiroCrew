@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useRef, useEffect } from 'react'
 import type { ContentBlock } from '../types'
 
 const FENCE_OPEN = /^(`{3,})(\w*)\s*$/
@@ -325,11 +325,73 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   return blocks
 }
 
+const THROTTLE_MS = 100
+
+/** Shared empty result so the streaming path allocates nothing per render. */
+const NO_BLOCKS: ContentBlock[] = []
+
 /**
  * Hook that parses raw message text into content blocks.
  * During streaming, unclosed fences or widgets produce provisional blocks.
  * On completion (streaming=false), does a clean full reparse.
+ *
+ * Perf: while streaming, the timer below is the ONLY caller of parseBlocks.
+ * That is what bounds the work, which is otherwise quadratic in response
+ * length because every chunk (~60/s) re-parses the whole accumulated string,
+ * along with the GC pressure from the discarded intermediates. The eager parse
+ * is gated off for the duration of the stream and resumes the moment streaming
+ * ends, so the final output is identical to an unthrottled parse.
  */
 export function useBlockAssembler(rawText: string, streaming: boolean): ContentBlock[] {
-  return useMemo(() => parseBlocks(rawText, streaming), [rawText, streaming])
+  // Gated on !streaming: during a stream this must not parse, or the throttle
+  // below would only be deferring work the render had already paid for.
+  const immediateBlocks = useMemo(
+    () => (streaming ? NO_BLOCKS : parseBlocks(rawText, false)),
+    [rawText, streaming],
+  )
+
+  // Gated too: the early return below never reads this when !streaming, so a
+  // completed message would otherwise pay a second full parse for nothing.
+  const [throttledBlocks, setThrottledBlocks] = useState<ContentBlock[]>(() =>
+    streaming ? parseBlocks(rawText, true) : NO_BLOCKS,
+  )
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestTextRef = useRef(rawText)
+
+  // In an effect, not in render: a render React discards must not move the ref
+  // the timer reads, or the timer would parse text from an abandoned render.
+  useEffect(() => {
+    latestTextRef.current = rawText
+  }, [rawText])
+
+  useEffect(() => {
+    if (!streaming) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      // Primes the snapshot so a later stream resumes from the current parse.
+      setThrottledBlocks(immediateBlocks)
+      return
+    }
+    if (timerRef.current === null) {
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null
+        setThrottledBlocks(parseBlocks(latestTextRef.current, true))
+      }, THROTTLE_MS)
+    }
+  }, [rawText, streaming, immediateBlocks])
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [])
+
+  // This early return, not any effect, is what makes the final render exact.
+  if (!streaming) return immediateBlocks
+  return throttledBlocks
 }

@@ -130,6 +130,7 @@ export const SpriteImporter: React.FC<Props> = ({ existingPack, onDone, onCancel
         })
       }
     })
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: loads existing pack data once on init
   }, [])
 
   const handleSelectFile = useCallback(async () => {

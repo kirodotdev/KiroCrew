@@ -11,7 +11,7 @@ import os
 from typing import NamedTuple
 
 from kiro_crew.beacon import distribution
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.paths import data_home
 
 #: Release channels the installer publishes.
 RELEASE_CHANNELS = ("stable", "insider", "nightly")
@@ -75,13 +75,59 @@ def release_channel() -> str:
     """The release channel this install follows, from ``$KIROCREW_HOME/channel``.
 
     Mirrors ``dashboard/handlers/updates.py::_release_channel``.
+
+    ``data_home()`` rather than ``config_dir()``: this is reached from the async
+    update check, and ``config_dir()`` is resolve-AND-MAINTAIN -- it refreshes the
+    recovery breadcrumb and re-runs the leftover-archive sweep, which can
+    ``shutil.rmtree``. Doing that on the event loop as a side effect of asking
+    where a directory is, is issue #1057.
     """
     try:
-        raw = (config_dir() / "channel").read_text(encoding="utf-8", errors="replace")
+        raw = (data_home() / "channel").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "stable"
     channel = raw.strip().lower()
     return channel if channel in RELEASE_CHANNELS else "stable"
+
+
+def set_release_channel(channel: str) -> str:
+    """Persist the release channel this install follows; return the stored value.
+
+    The channel name becomes a PATH SEGMENT in every feed URL the update check
+    builds (``feed/<channel>/latest-cli.json``) and a shell argument in the
+    recommended installer command, so it is validated against
+    :data:`RELEASE_CHANNELS` here and REJECTED rather than sanitized. Callers get
+    ``ValueError``; nothing unvalidated ever reaches the file, and
+    :func:`release_channel` re-validates on read as defence in depth.
+
+    Written via a temp file + ``os.replace`` so a crash or a full disk cannot
+    leave a half-written channel name behind — a truncated value would silently
+    fall back to ``stable`` and move the install off its lane. The byte format is
+    ``<channel>\\n``, matching what ``cli.sh`` writes, so the two writers stay
+    interchangeable.
+
+    ``data_home()`` for the same reason as :func:`release_channel`: the dashboard
+    calls this from an async request handler.
+    """
+    normalized = str(channel or "").strip().lower()
+    if normalized not in RELEASE_CHANNELS:
+        raise ValueError(
+            f"unknown release channel {channel!r} (expected one of {RELEASE_CHANNELS})"
+        )
+    target = data_home() / "channel"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(f"{normalized}\n", encoding="utf-8")
+        os.replace(tmp, target)
+    finally:
+        # A failed replace leaves the temp file behind; an orphan in the data
+        # home would be read by nothing but is still litter.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return normalized
 
 
 def cdn_bases() -> tuple[str, str]:
@@ -110,6 +156,7 @@ __all__ = [
     "InstallLayout",
     "detect_install_layout",
     "release_channel",
+    "set_release_channel",
     "cdn_bases",
     "wheel_update_command",
     "RELEASE_CHANNELS",

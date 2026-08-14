@@ -83,6 +83,21 @@ _EXCLUDE_NAMES = frozenset(
 )
 
 
+def find_repo_root() -> Optional[Path]:
+    """The Kiro Crew source root, or ``None`` when this is not a checkout.
+
+    The non-raising half of :func:`repo_root`, for callers that must *decide*
+    whether source shipping is possible rather than fail when it is not — e.g. a
+    dashboard launch, which has to work from a wheel/app install where there is no
+    checkout to package.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "install.sh").exists() and (parent / "setup.cfg").exists():
+            return parent
+    return None
+
+
 def repo_root() -> Path:
     """The KiroCrew source root to package (the installed package's repo).
 
@@ -95,14 +110,13 @@ def repo_root() -> Path:
     The caller should pass an explicit ``SourceBucket``-less git-clone path or a
     real checkout in that case.
     """
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if (parent / "install.sh").exists() and (parent / "setup.cfg").exists():
-            return parent
+    found = find_repo_root()
+    if found is not None:
+        return found
     raise aws.AWSError(
         "could not locate the KiroCrew source root (no install.sh + setup.cfg "
         "above this module) — source shipping needs an editable/git checkout. "
-        "Run `kirocrew cloud launch` from a clone, or launch without S3 source "
+        "Run the cloud launcher from a clone, or launch without S3 source "
         "shipping (public git-clone fallback).",
         action="source:PackageLocalCheckout",
     )

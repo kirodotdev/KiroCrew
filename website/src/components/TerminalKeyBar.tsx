@@ -1,7 +1,6 @@
 import type { Terminal } from '@xterm/xterm'
 import { SOFT_KEYS, pressTerminalKey } from '../utils/terminalKeys'
 import { i18nT } from '../i18n/t'
-
 /**
  * A row of soft keys for the keys a touch keyboard omits (Tab, Escape, arrows,
  * ^C). Rendered only on touch devices by the caller.

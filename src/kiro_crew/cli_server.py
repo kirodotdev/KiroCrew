@@ -7,14 +7,12 @@ import http.client
 import json
 import logging
 import os
-import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -22,7 +20,6 @@ from kiro_crew import __version__, platform_compat
 from kiro_crew.beacon import is_default_home
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
-    _DEFAULT_PORT,
     _session_work_dir,
     build_provider_factory,
     config_dir,
@@ -30,12 +27,13 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.constants import DATA_WARNING
 from kiro_crew.context import ContextBuilder
+from kiro_crew.dashboard import tailnet_serve
 from kiro_crew.dashboard.handlers.core import DASHBOARD_HTML_NOT_FOUND_MARKER
 from kiro_crew.dashboard.origin import (
     dashboard_origin,
-    parse_dashboard_url,
     resolve_dashboard_host,
 )
+from kiro_crew.dashboard.tailnet import is_governance_pinned_off, tailnet_origin
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.embeddings import (
     make_sync_embed_fn,
@@ -48,7 +46,28 @@ from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
 from kiro_crew.learn import LessonStore
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.memory import MemoryStore
+
+# Client-side port resolution lives in kiro_crew.port_resolution, a light leaf
+# module the MCP stdio server can import without paying for this module's
+# import graph. Re-exported here (not merely used) because this namespace is
+# the historical public surface: external callers and a large body of tests
+# import and patch these names as ``kiro_crew.cli_server.<name>``, and the
+# chain's internal calls deliberately resolve through this namespace whenever
+# it is loaded (see port_resolution._patchable) so those patches keep
+# intercepting.
+from kiro_crew.port_resolution import (  # noqa: F401
+    _KIROCREW_SERVER_SUBCOMMANDS,
+    _args_look_like_kirocrew,
+    _basename_stem,
+    _config_url_port,
+    _gateway_owns_port,
+    _is_kirocrew_process,
+    _marker_port,
+    resolve_client_port,
+    resolve_client_port_ex,
+)
 from kiro_crew.preflight import run_preflight_checks
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
@@ -56,6 +75,7 @@ from kiro_crew.service import linux as svc_linux
 from kiro_crew.service import macos as svc_macos
 from kiro_crew.service.common import SERVICE_NAME, Platform, current_platform
 from kiro_crew.session import SessionManager
+from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.gateway import run_gateway
 from kiro_crew.taskrunner import TaskRunner
@@ -77,189 +97,6 @@ from kiro_crew.vector_memory import VectorMemoryStore
 _CLI_LOOPBACK = "127.0.0.1"
 
 
-def _config_url_port() -> int | None:
-    """Port explicitly named by ``dashboard.url``, or ``None``.
-
-    Distinct from :func:`parse_dashboard_url`, which substitutes
-    ``_DEFAULT_PORT`` for a portless URL (``http://my.host``). That substitution
-    is right for the *server* (it must bind something) but wrong for a client:
-    it would report "config says 5476" and short-circuit the run-marker
-    fallback below, even though the user never named a port. So detect the
-    explicit case and let a portless URL fall through.
-    """
-    try:
-        cfg = KiroCrewConfig.load()
-        url = cfg.dashboard.url or ""
-    except Exception:
-        # Config load failures must not break client commands.
-        return None
-    if not isinstance(url, str):
-        # ``dashboard.url`` is user-editable JSON and core installs may lack
-        # jsonschema, so the value can be any type (``"url": 123``). urlparse
-        # raises TypeError on a non-str, which is NOT a ValueError — without
-        # this guard a bad config type would crash every client command.
-        logging.getLogger(__name__).warning(
-            "Ignoring non-string dashboard.url of type %s", type(url).__name__
-        )
-        return None
-    if not url:
-        return None
-    try:
-        _, port = parse_dashboard_url(url)
-        # parse_dashboard_url already normalises the scheme, tolerates malformed
-        # URLs and applies the KIROCREW_PORT override; re-split only to learn
-        # whether the port was written down or defaulted in.
-        explicit = urllib.parse.urlsplit(url if "://" in url else f"http://{url}").port
-    except (TypeError, ValueError):
-        return None
-    return port if explicit is not None else None
-
-
-def _gateway_owns_port(port: int) -> bool:
-    """True only when *this user's* gateway process is listening on *port*.
-
-    Reachability is not enough to trust a discovered port. Client commands hand
-    the local secret to whatever answers (``_token`` and ``_logout`` send
-    ``X-Local-Secret``), and ``clear_marker`` runs only on graceful shutdown —
-    so a crashed gateway leaves a marker naming a port some unrelated process
-    may since have bound. A bare TCP connect would walk the secret straight into
-    that process, which could then mint owner tokens against the real gateway.
-
-    A command-line check is not enough either: argv is attacker-chosen, so a
-    listener launched as ``/tmp/kirocrew gateway`` would pass it. The proof used
-    here is an identity the attacker cannot forge, in three parts:
-
-    1. **Recorded pid** — ``run_marker.read_pid(port)`` reads the sidecar the
-       gateway wrote at ``0600`` inside the ``0700`` ``run/`` dir. Another local
-       user cannot write it, so they cannot nominate a process of theirs.
-    2. **Holds the port** — that pid must be among
-       ``platform_compat.find_listening_pids(port)``. This is what makes a stale
-       recorded pid harmless: it has to actually hold the port we are about to
-       send the secret to.
-    3. **Owned by us, and ours** — the pid's uid must equal the caller's
-       (``process_owner_uid``), and its argv must look like a gateway. The uid
-       check is what closes pid *recycling* into a foreign user's process; argv
-       remains only as defense in depth, never as the sole proof.
-
-    A same-user attacker is out of scope by construction: they can already read
-    ``.local_secret`` (mode ``0600``, their own uid), so nothing here can be an
-    escalation for them. The boundary this closes is a *different* local user.
-
-    **Fails closed** at every step: no sidecar, no recorded pid, a pid that does
-    not hold the port, an unresolvable uid, a missing lookup tool
-    (``find_listening_pids`` folds that into an empty list) or a throwing one —
-    all deny, and discovery is skipped in favour of the documented default.
-    ``--port`` and ``KIROCREW_PORT`` remain available on such hosts.
-
-    **Non-POSIX denies outright.** ``process_owner_uid`` cannot report an owner
-    on Windows, and a home that is writable by another user (a shared or
-    misconfigured ``KIROCREW_HOME``) would let them replace both the marker and
-    the sidecar with a forged listener — the file-permission argument that
-    carries step 1 is exactly what stops holding there. Rather than trust
-    steps 1-2 alone, discovery is skipped: Windows users keep ``--port`` /
-    ``KIROCREW_PORT``, which is precisely where they were before this fallback
-    existed, so nothing regresses. This is the one place the feature is
-    deliberately unavailable rather than approximated.
-    """
-    if not platform_compat.IS_POSIX:
-        return False
-    recorded = run_marker.read_pid(port)
-    if recorded is None:
-        return False
-    try:
-        pids = platform_compat.find_listening_pids(port)
-    except Exception:
-        return False
-    if recorded not in pids:
-        return False
-    owner = platform_compat.process_owner_uid(recorded)
-    if owner is None or owner != os.getuid():
-        return False
-    return _is_kirocrew_process(recorded)
-
-
-def _marker_port() -> int | None:
-    """Port of the sole gateway-owned run-marker, or ``None``.
-
-    Zero-configuration discovery for the common single-gateway box: the gateway
-    already advertises itself by writing ``<data-home>/run/gateway-<port>.bin``
-    (see :mod:`kiro_crew.instances.run_marker`), so a client with no ``--port``,
-    no ``KIROCREW_PORT`` and no port in ``dashboard.url`` can read that instead
-    of assuming 5476 and connecting to a dead port.
-
-    Two guards keep this from being a guess:
-
-    * **Ownership.** Only ports where a verified KiroCrew gateway process is
-      listening count (:func:`_gateway_owns_port`); a stale marker, or one whose
-      port has been taken over by an unrelated process, is discarded.
-    * **Ambiguity.** With several gateways up there is no basis to pick one, so
-      this refuses (returns ``None``, landing on the documented default) and
-      tells the user on stderr which ports it saw and how to name one.
-    """
-    try:
-        candidates = run_marker.marker_ports()
-    except Exception:
-        return None
-    if not candidates:
-        return None
-    owned = [p for p in candidates if _gateway_owns_port(p)]
-    if len(owned) == 1:
-        return owned[0]
-    if len(owned) > 1:
-        print(
-            f"⚠️  Multiple gateways are running (ports {', '.join(str(p) for p in owned)}); "
-            f"not guessing which one you meant — using {_DEFAULT_PORT}. "
-            "Pass --port or set KIROCREW_PORT to target a specific gateway.",
-            file=sys.stderr,
-        )
-    return None
-
-
-def resolve_client_port(cli_port: int | None) -> int:
-    """Return the dashboard port a *client* CLI command (token/status/logout/stop)
-    should talk to.
-
-    Resolution order:
-
-    1. Explicit ``--port`` CLI flag if the user passed one (``cli_port`` is not ``None``).
-    2. ``KIROCREW_PORT`` env var if set to a valid integer.
-    3. Port explicitly named by ``dashboard.url`` in the config file
-       (``<data-home>/config.json``), when it parses.
-    4. The sole gateway-owned run-marker (``<data-home>/run/gateway-<port>.bin``)
-       — see :func:`_marker_port`. Skipped when no marker's port is held by a
-       verified gateway process, and refused (with a stderr hint) when several
-       are.
-    5. ``_DEFAULT_PORT`` (5476) as the final fallback.
-
-    Steps 1-3 match the server-side ``parse_dashboard_url()`` logic so that
-    ``kirocrew token`` / ``status`` / ``logout`` / ``stop`` all hit the same
-    port the gateway is actually bound to when the user has configured a
-    non-default ``dashboard.url`` (for example a dev instance on 6777 or an
-    alternative prod port like 7778). Step 4 covers the case where nothing was
-    configured at all but a gateway is up on a non-default port (e.g. started
-    with ``kirocrew gateway --port 6776``): the running gateway's own marker is
-    better evidence than the 5476 default.
-    """
-    if cli_port is not None:
-        return cli_port
-    env_port = os.environ.get("KIROCREW_PORT")
-    if env_port:
-        try:
-            return int(env_port)
-        except ValueError:
-            # Fall through to config/marker/default — main() validates this
-            # early, but guard here too in case the helper is reached via
-            # another path.
-            pass
-    cfg_port = _config_url_port()
-    if cfg_port:
-        return cfg_port
-    discovered = _marker_port()
-    if discovered:
-        return discovered
-    return _DEFAULT_PORT
-
-
 def _probe_dashboard_health(port: int) -> None:
     """Warn on stderr if the gateway is serving a stale dashboard.
 
@@ -271,7 +108,7 @@ def _probe_dashboard_health(port: int) -> None:
     """
     try:
         req = urllib.request.Request(f"http://{_CLI_LOOPBACK}:{port}/", method="GET")
-        with urllib.request.urlopen(req, timeout=2) as resp:  # nosemgrep
+        with loopback_urlopen(req, timeout=2) as resp:  # nosemgrep
             body = resp.read(8192).decode("utf-8", errors="replace")
             if DASHBOARD_HTML_NOT_FOUND_MARKER.lower() in body.lower():
                 print(
@@ -319,7 +156,7 @@ def _token(args: argparse.Namespace) -> None:
         url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
     except Exception as exc:
@@ -331,6 +168,16 @@ def _token(args: argparse.Namespace) -> None:
         sys.exit(1)
     _probe_dashboard_health(port)
 
+    _emit_session_urls(port, token)
+
+
+def _emit_session_urls(port: int, token: str) -> None:
+    """Print every origin the operator can open this session on.
+
+    Extracted from ``_token`` so the URL set is testable without standing up a
+    gateway and minting a real session: the interesting behaviour is which origins
+    get a line, and that is pure given the config and the Tailscale lookup.
+    """
     # Print the SAME canonical loopback host the gateway uses for its auto-open
     # and !dashboard links. resolve_dashboard_host() returns "localhost" for the
     # loopback case — it resolves in every browser and through SSH tunnels (unlike
@@ -340,10 +187,86 @@ def _token(args: argparse.Namespace) -> None:
     # settings appear reset. Keeping the host consistent avoids that.
     host = resolve_dashboard_host(local_only=True)
     print(f"http://{host}:{port}?token={token}")
-    origin = dashboard_origin(KiroCrewConfig.load().dashboard.url)
+    cfg = KiroCrewConfig.load()
+    origin = dashboard_origin(cfg.dashboard.url)
     if origin and "localhost" not in origin:
         print()
         print(f"{origin}/?token={token}")
+
+    # The tailnet origin, when one is trusted. Without this the flow dead-ends: the
+    # gateway derives `https://<MagicDNS name>` itself precisely so the operator does
+    # NOT have to hand-write dashboard.url, but that means the loop above has nothing
+    # to print for it -- and the URL `tailnet up` shows carries no session, so a phone
+    # opening it lands on a login it cannot complete. The operator was left splicing a
+    # query string onto a hostname by hand, or setting the very config key the feature
+    # exists to avoid.
+    #
+    # Gated on the setting, not attempted unconditionally: `tailnet_origin()` shells out
+    # to the Tailscale CLI with a multi-second timeout, and `kirocrew to`+`ken` is a
+    # foreground command an operator runs constantly.
+    if cfg.dashboard.tailscale.enabled:
+        # The stored flag is not the last word: an enterprise ceiling can pin
+        # `capabilities.tailnet_origin` off, and then the gateway derives no tailnet
+        # origin at startup no matter what the config says -- so a URL printed here
+        # would answer 403. Checking the pin also avoids executing the Tailscale CLI on
+        # a host where policy has already settled the question.
+        #
+        # Called WITHOUT `audit_tool` on purpose. That argument routes the decision
+        # through the audited seam, which appends an HMAC-chained SEL record; the
+        # helper's own contract reserves it for ENFORCEMENT call sites, and this is a
+        # read-shaped question ("would such a URL work?") on a foreground command an
+        # operator runs constantly. `tailnet status` reads it the same way.
+        if is_governance_pinned_off():
+            print()
+            print(
+                "⚠️  dashboard.tailscale.enabled is on, but your administrator has "
+                "pinned tailnet access off (capabilities.tailnet_origin), so the "
+                "gateway will not trust a tailnet origin and no tailnet URL is "
+                "printed.",
+                file=sys.stderr,
+            )
+            return
+        tailnet_url = tailnet_origin()
+        if tailnet_url and tailnet_url != origin:
+            # Ownership of the 443/ mount, not just "a tailnet name exists". The URL
+            # carries a bearer session, so printing it when something ELSE is serving
+            # that name hands the operator a link that delivers their token to a
+            # foreign service, which can then replay it against the dashboard.
+            #
+            # That state is reachable, not theoretical: `tailnet up` deliberately
+            # REFUSES to overwrite a foreign 443/ handler, so a host can sit with the
+            # trust flag on and a resolvable name while the mount belongs to something
+            # unrelated. The flag and the name were never evidence of ownership.
+            #
+            # `published` is tri-state and only True is safe: False means nothing is
+            # serving, None means the serve config could not be read -- and unknown
+            # ownership is exactly the risk, so it fails closed.
+            state = tailnet_serve.serve_state(port)
+            if state.published is True:
+                print()
+                print(f"{tailnet_url}/?token={token}")
+            else:
+                print()
+                print(
+                    "⚠️  Not printing a tailnet URL: this dashboard is not verified to "
+                    f"be the service published at {tailnet_url} "
+                    f"({state.detail}). The URL carries a session, so handing it out "
+                    "while another service holds that name would leak it. Run "
+                    "`kirocrew tailnet up` to publish this dashboard, then re-run.",
+                    file=sys.stderr,
+                )
+        elif not tailnet_url:
+            # Say why rather than printing nothing: from the operator's side "the
+            # tailnet line is missing" and "my tailnet name does not resolve" look
+            # identical, and the second one also means the gateway trusted no tailnet
+            # origin at startup -- so the dashboard would answer 403 there anyway.
+            print()
+            print(
+                "⚠️  dashboard.tailscale.enabled is on, but no tailnet name resolves "
+                "right now, so there is no tailnet URL to hand out (and the gateway "
+                "will not trust one either). Check `tailscale status`.",
+                file=sys.stderr,
+            )
 
 
 def _logout(port: int) -> None:
@@ -363,7 +286,7 @@ def _logout(port: int) -> None:
         data=b"{}",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with loopback_urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
                 print("✅ All dashboard sessions revoked.")
@@ -536,141 +459,6 @@ def _stop(cli_port: int | None = None) -> None:
         )
         print(f"No Kiro Crew gateway currently running on port {port} (process already exited).")
         sys.exit(1)
-
-
-# Subcommands that launch a long-running KiroCrew *server* process which
-# ``kirocrew stop`` may need to terminate. These mirror the entry-point
-# subcommands dispatched in ``cli.py`` (``gateway`` / ``dashboard``; ``start``
-# is the historical alias). The task runner (``run``) is intentionally excluded:
-# it is not bound to the dashboard port, so we must never SIGTERM it from
-# ``kirocrew stop``.
-_KIROCREW_SERVER_SUBCOMMANDS = frozenset({"gateway", "dashboard", "start"})
-
-
-def _basename_stem(tok: str) -> str:
-    """Basename of *tok* without a Windows ``.exe`` suffix.
-
-    Lets the venv launchers ``python.exe`` / ``kirocrew.exe`` match the same
-    checks as their POSIX ``python`` / ``kirocrew`` counterparts. ``shlex.split``
-    with ``posix=False`` leaves quotes on some tokens, so strip them too.
-
-    Split on BOTH separators explicitly rather than via ``os.path.basename``:
-    that is host-dependent (``posixpath`` on Linux does NOT split backslashes),
-    so a Windows cmdline classified on the Linux CI fleet would keep its full
-    ``D:\\...\\kirocrew.exe`` path and never match. This is host-independent — a
-    basename is whatever follows the last ``/`` or ``\\``.
-
-    Module scope rather than nested in :func:`_args_look_like_kirocrew` so
-    :func:`_own_console_script` shares the one definition.
-    """
-    cleaned = tok.strip('"')
-    base = cleaned.replace("\\", "/").rsplit("/", 1)[-1]
-    if base.lower().endswith(".exe"):
-        base = base[:-4]
-    return base
-
-
-def _args_look_like_kirocrew(args: str) -> bool:
-    """Return ``True`` if a process command-line *args* string is a KiroCrew server.
-
-    This gates ``os.kill(pid, SIGTERM)`` in :func:`_stop`, so it must be
-    **precise** (never match an unrelated process that merely mentions
-    "kirocrew") while still recognising *every* way the gateway can be spawned.
-
-    Instead of enumerating brittle substring variants (``kiro_crew.gateway`` vs
-    ``kiro_crew gateway`` vs ``kirocrew gateway`` …), we parse the command line
-    *structurally* and key on the real module/binary name plus a known server
-    subcommand (:data:`_KIROCREW_SERVER_SUBCOMMANDS`). This is deterministic and
-    robust to interpreter path, Python version suffix, and whitespace. Two spawn
-    shapes are recognised:
-
-    * **Module invocation** — ``<python> -m kiro_crew <subcmd>`` (the form used by
-      a service install and the launchd/systemd service), plus the legacy dotted
-      form ``<python> -m kiro_crew.<subcmd>``. A Python interpreter must precede
-      ``-m`` so we don't misread some other tool's ``-m`` flag (e.g. ``grep -m``).
-    * **Console script** — ``/path/to/kirocrew <subcmd>`` (used when the
-      ``kirocrew`` wrapper resolves on ``PATH``).
-
-    Examples::
-
-        >>> _args_look_like_kirocrew("/x/python3.10 -m kiro_crew gateway")
-        True
-        >>> _args_look_like_kirocrew("python3 -m kiro_crew.dashboard")
-        True
-        >>> _args_look_like_kirocrew("/usr/local/bin/kirocrew start")
-        True
-        >>> _args_look_like_kirocrew("python -m kiro_crew run /tmp/spec.md")  # task runner
-        False
-        >>> _args_look_like_kirocrew("vim /tmp/kirocrew-notes.txt")
-        False
-    """
-    # ``ps -o args=`` (POSIX) / Win32_Process.CommandLine (Windows WMI) return a
-    # shell-style string; tokenize it the way the host shell would. On Windows
-    # use posix=False so backslash path separators survive (default posix=True
-    # eats them: ``C:\Py\python.exe`` -> ``C:Pypython.exe``, breaking the
-    # interpreter/basename checks below). Fall back to a naive split on a
-    # malformed string (e.g. an odd quote) so this best-effort check never raises.
-    try:
-        tokens = shlex.split(args, posix=not platform_compat.IS_WINDOWS)
-    except ValueError:
-        tokens = args.split()
-
-    for index, token in enumerate(tokens):
-        # --- Module form: "<python> -m kiro_crew <subcmd>" / "-m kiro_crew.<subcmd>"
-        if token == "-m" and index + 1 < len(tokens):
-            # Only treat "-m" as Python's module flag when a Python interpreter
-            # precedes it; otherwise an unrelated tool's "-m" option could be
-            # misread (e.g. "grep -m kiro_crew gateway file").
-            interpreter_seen = any(_basename_stem(t).startswith("python") for t in tokens[:index])
-            if interpreter_seen:
-                # "kiro_crew.gateway" -> ("kiro_crew", "gateway"); a bare
-                # "kiro_crew" -> ("kiro_crew", "").
-                package, _, dotted_subcmd = tokens[index + 1].partition(".")
-                if package == "kiro_crew":
-                    # Dotted submodule form: ``-m kiro_crew.gateway``.
-                    if dotted_subcmd in _KIROCREW_SERVER_SUBCOMMANDS:
-                        return True
-                    # Subcommand-as-argument form: ``-m kiro_crew gateway``. The
-                    # subcommand is argparse's first positional after the module,
-                    # i.e. always at index+2. Check only that slot so a later
-                    # positional/flag value cannot match — e.g.
-                    # ``-m kiro_crew run gateway`` ("gateway" is a file argument
-                    # to the task runner) must NOT be treated as a server.
-                    if (
-                        index + 2 < len(tokens)
-                        and tokens[index + 2] in _KIROCREW_SERVER_SUBCOMMANDS
-                    ):
-                        return True
-
-        # --- Console-script form: ".../kirocrew <subcmd>" (or kirocrew.exe on Win)
-        if (
-            _basename_stem(token) == "kirocrew"
-            and index + 1 < len(tokens)
-            and tokens[index + 1] in _KIROCREW_SERVER_SUBCOMMANDS
-        ):
-            return True
-
-    return False
-
-
-def _is_kirocrew_process(pid: int) -> bool:
-    """Return ``True`` if *pid* looks like a KiroCrew gateway process.
-
-    Resolves the process command line cross-platform via
-    :func:`platform_compat.process_command_line` (Linux ``/proc``, macOS ``ps``,
-    Windows ``Win32_Process`` WMI — the venv ``kirocrew.exe`` re-execs
-    ``python.exe`` so the image name alone is ambiguous there) and defers
-    classification to :func:`_args_look_like_kirocrew`.
-
-    ``process_command_line`` returns ``""`` on any failure (dead PID, missing
-    ``ps``, WMI error), which classifies as "not a match" — _stop()'s separate
-    ``listening_pid_tool_available()`` check already surfaces the tool-absent
-    case, so this never needs to raise.
-    """
-    out = platform_compat.process_command_line(pid)
-    if not out:
-        return False
-    return _args_look_like_kirocrew(out)
 
 
 def _pid_exited(pid: int) -> bool:
@@ -882,7 +670,7 @@ def _probe_gateway_ready(port: int, timeout: int = 3) -> int:
         # Loopback-only probe to our own gateway on 127.0.0.1; the URL is
         # internally derived (never attacker-supplied), so the dynamic-URL SSRF
         # audit rule is a false positive here.
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosemgrep
+        with loopback_urlopen(url, timeout=timeout) as resp:  # nosemgrep
             return int(resp.status)
     except urllib.error.HTTPError as e:
         return int(e.code)
@@ -989,7 +777,7 @@ def _print_token_url(port: int) -> None:
             secret = secret_path.read_text().strip()
             url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
             req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with loopback_urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
                 token = data.get("token", "")
             if token:
@@ -1296,7 +1084,7 @@ def _update() -> None:
         print("  🔄 kiro-cli update")
         subprocess.run(["kiro-cli", "update"], capture_output=True, timeout=120)
 
-    # Ensure Node.js >= 16 for frontend builds
+    # Ensure a supported Node.js for frontend builds
     from kiro_crew.cli import _ensure_node  # circular import: cli -> cli_server -> cli
 
     print("  🔄 Checking Node.js…")
@@ -1473,7 +1261,7 @@ def _status(args: argparse.Namespace) -> None:
     port = resolve_client_port(getattr(args, "port", None))
     url = f"http://127.0.0.1:{port}/api/status"
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with loopback_urlopen(url, timeout=3) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -1535,7 +1323,7 @@ async def _gateway(
     approval_mode: str | None = None,
     test_mode: bool = False,
 ) -> None:
-    """Load config and start the Slack Socket Mode gateway."""
+    """Load config and start the gateway (dashboard + configured messaging channels)."""
     # Activate mise once at gateway start so every subprocess we
     # later spawn — MCP servers, script crons, kiro-cli — inherits the user's
     # mise-managed toolchain. Without this, Node-based MCP servers spawn against
@@ -1688,7 +1476,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     ctx = ContextBuilder(
         memory=memory, skills=skills, hooks=hooks, lessons=lessons, bot_name=cfg.agent.bot_name
     )
-
+    register_skill_read_observer(ctx)
     runner = TaskRunner(
         sessions=sessions,
         context_builder=ctx,
@@ -1873,7 +1661,21 @@ def _logs_cmd(args: argparse.Namespace) -> None:
             sudo_cmd.append("-f")
         os.execvp("sudo", sudo_cmd)
 
-    if plat == Platform.LAUNCHD and svc_macos.STDOUT_LOG.exists():
+    # Both guards mirror checks the systemd arm above already makes on its own
+    # branch. current_platform() returns LAUNCHD for any macOS host whether or
+    # not the agent is installed, so without PLIST_PATH this arm captures `logs`
+    # even when the gateway runs in the foreground; and a 0-byte STDOUT_LOG from
+    # an install that never started the agent still satisfies exists().
+    #
+    # Either miss is silent and total: this arm os.execvp()s, so there is no
+    # fall-through to the config_dir() log below and `kirocrew logs` exits 0
+    # having printed nothing.
+    if (
+        plat == Platform.LAUNCHD
+        and svc_macos.PLIST_PATH.exists()
+        and svc_macos.STDOUT_LOG.exists()
+        and svc_macos.STDOUT_LOG.stat().st_size > 0
+    ):
         cmd = ["tail", "-n", str(lines)]
         if follow:
             cmd.append("-f")

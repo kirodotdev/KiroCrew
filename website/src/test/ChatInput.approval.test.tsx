@@ -609,3 +609,61 @@ describe('ChatInput unattended-source approvals', () => {
     })
   })
 })
+
+
+/**
+ * Regression: a steered user message must NOT remove or deadlock the approval
+ * bar. The user must be able to steer the agent AND still answer a pending
+ * approval (#1667).
+ */
+describe('ChatInput approval bar survives a steered user message (#1667)', () => {
+  it('approval bar remains visible after a steered message is appended via sseChatMessage', async () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    // Verify the approval bar is shown initially
+    await waitFor(() => expect(screen.getByText(/Waiting for approval/)).toBeInTheDocument())
+    expect(screen.getByText('Allow once')).toBeInTheDocument()
+
+    // Dispatch a steered user message (simulates the steer_push WS echo)
+    const { sseChatMessage: sseCM } = await import('../store/chatSlice')
+    store.dispatch(sseCM({ slot: 'slot-1', role: 'user', content: 'also check /var', meta: { steer: true } }))
+
+    // The approval bar must still be visible and functional
+    expect(screen.getByText(/Waiting for approval/)).toBeInTheDocument()
+    expect(screen.getByText('Allow once')).toBeInTheDocument()
+    expect(screen.getByText('Trust')).toBeInTheDocument()
+    expect(screen.getByText('Reject')).toBeInTheDocument()
+  })
+
+  it('approval buttons still resolve the same approval_id after a steer', async () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
+
+    // Dispatch the steer
+    const { sseChatMessage: sseCM } = await import('../store/chatSlice')
+    store.dispatch(sseCM({ slot: 'slot-1', role: 'user', content: 'try another approach', meta: { steer: true } }))
+
+    // Click Allow once — it must still call with the original approval_id
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(api.resolveApproval).toHaveBeenCalledWith('ap-123', 'approve')
+    })
+  })
+
+  it('approval bar remains after an optimistic steer bubble via appendSlotMessage', async () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    await waitFor(() => expect(screen.getByText('Allow once')).toBeInTheDocument())
+
+    // Dispatch the optimistic steer bubble (client-side, before WS echo)
+    const { appendSlotMessage: asm } = await import('../store/chatSlice')
+    store.dispatch(asm({ slot: 'slot-1', message: { role: 'user', content: 'steer text', cls: 'msg msg-u', meta: { steer: true, optimistic: true } } }))
+
+    // Bar must remain
+    await waitFor(() => {
+      expect(screen.getByText(/Waiting for approval/)).toBeInTheDocument()
+      expect(screen.getByText('Allow once')).toBeInTheDocument()
+    })
+  })
+})

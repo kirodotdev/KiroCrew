@@ -11,10 +11,16 @@ and un-configured installs must see byte-identical context.
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from kiro_crew.config.loader import config_path
-from kiro_crew.context import ContextBuilder, _build_ui_language_section
+from kiro_crew.context import (
+    _UI_LANGUAGE_CATALOGS,
+    ContextBuilder,
+    _build_ui_language_section,
+)
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
@@ -101,13 +107,45 @@ class TestUiLanguageSection:
         assert ctx.index("[RUNTIME]") < ctx.index("[UI LANGUAGE]")
         assert ctx.index("[UI LANGUAGE]") < ctx.index("[WORKSPACE IDENTITY]")
 
-    def test_unshipped_but_wellformed_tag_passes_through(self, tmp_path):
-        """The backend validates shape, not membership in the frontend's
-        shipped list (see _LANGUAGE_TAG_RE) — so an unknown tag must not be
-        dropped here either."""
-        _seed_language("ja")
+    def test_non_catalog_tag_injects_nothing(self, tmp_path):
+        """A shape-valid tag with NO shipped catalog must take the identical
+        path to ""/Auto: the SPA's resolveLanguage() falls back to detection
+        for it, so the chrome renders in English while a steered agent would
+        write purpose pills — and the Slack/Discord task titles derived from
+        them — in the unsupported language, durably (purposes persist in
+        session history and are inherited by forked sessions). See #1130."""
+        for tag in ("ar", "th", "zz", "tlh"):
+            _seed_language(tag)
+            ctx = _builder(tmp_path).build_session_context()
+            assert "[UI LANGUAGE]" not in ctx, f"non-catalog {tag!r} was injected"
+
+    def test_regional_variant_resolves_like_the_frontend(self, tmp_path):
+        """Membership is exact, mirroring how the frontend restores a PERSISTED
+        choice: isRestorableLanguage() is SUPPORTED_CODES.includes() — no
+        case-folding, no primary-subtag fallback (those apply only to browser
+        detection tags, which never reach dashboard.language). A stored zh-TW
+        or zh-cn degrades to auto-detect in the SPA, so the backend must inject
+        nothing for it too, or the two disagree about the active language."""
+        for tag in ("zh-TW", "zh-cn", "en-GB", "pt-BR", "zh-Hans-CN"):
+            _seed_language(tag)
+            ctx = _builder(tmp_path).build_session_context()
+            assert "[UI LANGUAGE]" not in ctx, f"{tag!r} injected but not restorable"
+
+    def test_pseudolocale_is_not_injected(self, tmp_path):
+        """en-XA is registered but dev-only: a production build refuses to
+        restore it (isRestorableLanguage), and pseudolocale prose is a
+        generated transform, not a language a model can write. Excluding it
+        keeps injection identical across build modes."""
+        _seed_language("en-XA")
         ctx = _builder(tmp_path).build_session_context()
-        assert "[UI LANGUAGE] ja" in ctx
+        assert "[UI LANGUAGE]" not in ctx
+
+    def test_every_shipped_catalog_still_injects(self, tmp_path):
+        """The gate must not lose a single legitimate language."""
+        for tag in sorted(_UI_LANGUAGE_CATALOGS):
+            _seed_language(tag)
+            ctx = _builder(tmp_path).build_session_context()
+            assert f"[UI LANGUAGE] {tag}" in ctx, f"shipped {tag!r} was dropped"
 
     def test_malformed_tag_is_dropped(self, tmp_path):
         """`PUT /api/config/theme` shape-validates, but it is not the only way a
@@ -145,3 +183,92 @@ class TestUiLanguageSection:
         ctx = _builder(tmp_path).build_session_context()
         assert "[UI LANGUAGE]" not in ctx
         assert _build_ui_language_section(cfg) == ""
+
+
+# ── Catalog drift gate ─────────────────────────────────────────────────────────
+#
+# _UI_LANGUAGE_CATALOGS mirrors the frontend registry. The repo's contract is
+# that "which languages exist" stays a pure frontend data change in
+# website/src/i18n/languages.ts — so this gate is what keeps the backend copy
+# honest: add or remove a language there without updating the Python set and
+# this test fails naming both sides. A silent drift would re-create #1130 for
+# the next added language (backend refuses a tag the UI now renders) or, worse,
+# for a removed one (backend steers the agent to a language the UI no longer
+# ships).
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_LANGUAGES_TS = _REPO_ROOT / "website" / "src" / "i18n" / "languages.ts"
+
+# One registry entry: `{ code: 'xx-YY', label: '...' }`, optionally carrying
+# `devOnly: true`. Anchoring on `code:` inside an object literal keeps the
+# parse honest against comments mentioning tags (e.g. the RTL note naming
+# languages we deliberately do not ship).
+_ENTRY_RE = re.compile(
+    r"\{\s*code:\s*'(?P<code>[^']+)'\s*,\s*label:\s*'[^']*'\s*,?"
+    r"(?P<rest>[^}]*)\}",
+    re.DOTALL,
+)
+
+
+def _frontend_registry() -> tuple[set[str], set[str]]:
+    """(non-dev-only codes, dev-only codes) parsed from languages.ts."""
+    source = _LANGUAGES_TS.read_text(encoding="utf-8")
+    # Strip comments first: the file's docstrings mention codes ('en-XA',
+    # 'zh-CN') that must not be mistaken for entries.
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    source = re.sub(r"//[^\n]*", "", source)
+    body = source.split("SUPPORTED_LANGUAGES", 1)[1].split("] as const", 1)[0]
+    shipped: set[str] = set()
+    dev_only: set[str] = set()
+    for m in _ENTRY_RE.finditer(body):
+        (dev_only if "devOnly: true" in m.group("rest") else shipped).add(m.group("code"))
+    # Fail LOUD on an entry the regex could not parse (reordered fields,
+    # double-quoted strings, ...). Without this the gate fails OPEN: at the
+    # moment a contributor adds an unparseable entry, the backend set also
+    # lacks that code, so both sides omit it and the equality check passes —
+    # recreating #1130 for exactly the language the gate exists to protect.
+    entry_count = body.count("code:")
+    parsed = len(shipped) + len(dev_only)
+    assert parsed == entry_count, (
+        f"parsed {parsed} registry entries but languages.ts declares "
+        f"{entry_count} — an entry no longer matches _ENTRY_RE; update the "
+        "parser in test/test_context_ui_language.py"
+    )
+    return shipped, dev_only
+
+
+class TestCatalogDriftGate:
+    def test_backend_set_matches_the_frontend_registry(self):
+        """_UI_LANGUAGE_CATALOGS == SUPPORTED_LANGUAGES minus devOnly, exactly.
+
+        On failure: edit _UI_LANGUAGE_CATALOGS in src/kiro_crew/context.py to
+        match website/src/i18n/languages.ts — that file stays the single source
+        of truth; the Python set is the derived copy.
+        """
+        shipped, _dev_only = _frontend_registry()
+        assert shipped, "parser found no registry entries — languages.ts moved?"
+        assert _UI_LANGUAGE_CATALOGS == shipped, (
+            "backend catalog set drifted from the frontend registry.\n"
+            f"  missing from backend: {sorted(shipped - _UI_LANGUAGE_CATALOGS)}\n"
+            f"  stale in backend:     {sorted(_UI_LANGUAGE_CATALOGS - shipped)}\n"
+            "Update _UI_LANGUAGE_CATALOGS in src/kiro_crew/context.py."
+        )
+
+    def test_dev_only_pseudolocale_stays_excluded(self):
+        """en-XA must remain registered-but-dev-only upstream AND absent from
+        the backend set — if the frontend ever promotes it (or adds another
+        devOnly code), this forces a deliberate decision instead of a silent
+        inherit."""
+        _shipped, dev_only = _frontend_registry()
+        assert dev_only == {"en-XA"}
+        assert not (_UI_LANGUAGE_CATALOGS & dev_only)
+
+    def test_parser_sees_the_known_shape(self):
+        """The regex parse is only trustworthy while it finds what we know is
+        there: a shipped regional tag and the dev-only marker. If languages.ts
+        is restructured, fail HERE with a clear message rather than letting
+        _frontend_registry() return garbage that happens to compare equal."""
+        shipped, dev_only = _frontend_registry()
+        assert "zh-CN" in shipped
+        assert "en" in shipped
+        assert "en-XA" in dev_only

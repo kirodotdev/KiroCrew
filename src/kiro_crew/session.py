@@ -1,6 +1,7 @@
-"""Session manager — maps Slack thread_ts to LLM provider sessions.
+"""Session manager — maps conversation session keys to LLM provider sessions.
 
-Each Slack thread gets its own LLMProvider instance. Sessions are
+Each conversation (channel thread, dashboard slot, CLI) gets its own
+LLMProvider instance. Sessions are
 cleaned up after idle timeout (default 30 min).
 
 Warm session pool: ``start_pool()`` pre-spawns kiro-cli processes so
@@ -39,7 +40,7 @@ Circuit breaker: after 5 consecutive failures on a session, the session
 is force-reset instead of retrying forever.
 
 Per-session semaphore: serializes prompts on the same session key so
-concurrent Slack messages on the same thread don't interleave.
+concurrent messages on the same conversation don't interleave.
 
 Process Sweep Architecture
 --------------------------
@@ -77,10 +78,12 @@ import asyncio
 import inspect
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -93,6 +96,8 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -101,6 +106,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     normalize_agent_model,
 )
+from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
 from kiro_crew.messaging.link import (
@@ -113,8 +119,9 @@ from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
-from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
+from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG
+from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
 from kiro_crew.session_pid import (
     _build_child_map,
     _cleanup_orphaned_mcp_servers,
@@ -169,6 +176,16 @@ def _is_claude_backend(provider: Any) -> bool:
     return backend == "claude"
 
 
+def _provider_label(provider: Any) -> str:
+    """Backend identity key for *provider* — see ``providers.acp.provider_label``.
+
+    Deferred import for the same reason ``_is_claude_backend`` defers it.
+    """
+    from kiro_crew.providers.acp import provider_label  # circular: providers -> session
+
+    return provider_label(provider)
+
+
 def _provider_effectively_alive(provider: Any) -> bool:
     """Whether a session's provider should be treated as live (NOT stale).
 
@@ -210,7 +227,7 @@ def detect_provider_switch(session_map: "SessionMap", session_key: str, new_prov
     is achieved via KiroCrew's own history replay (build_session_replay), never
     via session_id translation.
     """
-    stored_provider = session_map.get_provider(session_key) or "acp"
+    stored_provider = session_map.get_provider(session_key) or PROVIDER_LABEL_DEFAULT
     if stored_provider == new_provider:
         return False
     # Only counts as a switch if there's actually a stored SID to discard
@@ -265,6 +282,15 @@ _DRAIN_ACTIVE_TURNS_TIMEOUT_SECS = 5.0
 # adversarial; the cap is a safety backstop against pathological churn, never
 # expected to be hit in practice.
 _WON_RACE_MAX_RETRIES = 8
+
+#: How long a turn's consumer may hold one event before the stuck_turn hook
+#: reports it. Not configurable: the hook only reports, so an operator has no
+#: behaviour to tune. Deliberately BELOW the cleanup loop's own tick so a park
+#: worth reporting is caught on the first pass that sees it rather than the
+#: second; re-reporting is prevented by latching on the park's identity, not by
+#: sizing this above the tick (which is derived from `session.timeout_secs` and
+#: so is not a fixed number to sit above).
+_STUCK_TURN_REPORT_SECS = 300.0
 
 _SUBAGENT_PREFIX = "subagent:"
 _CHANNEL_PREFIX = "channel:"
@@ -328,14 +354,35 @@ HEARTBEAT_KEY = "_hb"
 _CONTEXT_WARN_PCT = 70.0
 _CONTEXT_COMPACT_PCT = 80.0
 
-# Hard timeout for an in-place /compact under the session semaphore. A stuck
-# compact would otherwise block all concurrent gets on the same session.
-_COMPACT_TIMEOUT_SECS = 300.0
+# Headroom ADDED to the outer ``asyncio.wait_for`` cap around the kiro-cli
+# in-place compact, so the inner status wait can spend the FULL remaining
+# ``COMPACT_WAIT_TIMEOUT_SECS`` budget and its graceful "no result"
+# diagnostic still lands before the outer cap fires. Subtracting it from the
+# inner wait instead would cut short a compaction completing in the final
+# seconds of the shared budget.
+_COMPACT_RESULT_WAIT_MARGIN_SECS = 5.0
 
-# How long the kiro-cli in-place path waits for the async
-# ``_kiro.dev/compaction/status`` result after issuing /compact. Matches the
-# budget the dashboard's manual /compact and Slack's !compact already use.
-_COMPACT_RESULT_WAIT_SECS = 120.0
+# Minimum inner status wait even when the /compact prompt turn has consumed
+# nearly the whole budget — never zero or negative, and long enough to drain
+# a status notification that is already sitting in the queue.
+_COMPACT_RESULT_WAIT_FLOOR_SECS = 5.0
+
+
+def _compact_result_wait_secs(elapsed: float) -> float:
+    """Inner deadline for the async compaction-status wait.
+
+    The FULL remainder of the shared ``COMPACT_WAIT_TIMEOUT_SECS`` budget
+    after ``elapsed`` seconds — never less, so a compaction completing in the
+    final seconds of the budget is not abandoned early. The outer
+    ``asyncio.wait_for`` carries ``_COMPACT_RESULT_WAIT_MARGIN_SECS`` of
+    headroom on top, keeping this wait's graceful "no result" diagnostic
+    reachable. Clamped to a floor so the wait can never be zero or negative.
+    """
+    return max(
+        _COMPACT_RESULT_WAIT_FLOOR_SECS,
+        COMPACT_WAIT_TIMEOUT_SECS - elapsed,
+    )
+
 
 # After a failed compact, suppress auto-compaction for this many seconds so a
 # broken /compact does not fire on every subsequent turn.
@@ -356,6 +403,34 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # Cap on remembered per-session channel notice targets. reset()/remove() evict
 # their own entries, so this only bounds sessions dropped by some other path.
 _MAX_ORIGIN_LINKS = 512
+
+
+# Trailing ``:gen{N}`` on a session key. Matched here rather than reused from
+# messaging.link because that module's copy is private to its own parser.
+_GEN_SUFFIX_RE = re.compile(r"^gen\d+$")
+
+
+def _opt_out_key(key: str) -> str:
+    """The key an automatic-mirroring refusal is stored under.
+
+    The durable BUCKET, never the generation-suffixed session key. The refusal is
+    a preference about the CONVERSATION, not about one session — the same reason
+    the per-route model choice is not keyed by session — and generations rotate
+    on ``/new`` and on the configured idle/daily reset. Keyed per generation, an
+    idle rotation would silently undo the user's "off" with no action on their
+    part, and every rotated generation would strand its own row that pruning is
+    forbidden to collect. Bucket-keyed, one conversation holds one such row.
+
+    The suffix is stripped textually rather than through the canonical parser,
+    because the shapes that most need it are the ones the parser rejects: a
+    ``dm_scope="unified"`` bucket is ``unified:{agent}``, which is too short for
+    the §9 grammar, so a parser-only rule would leave unified conversations keyed
+    per generation — exactly the bug this function exists to prevent.
+    """
+    canon = canonical_key(key)
+    head, sep, tail = canon.rpartition(":")
+    return head if sep and _GEN_SUFFIX_RE.match(tail) else canon
+
 
 # Background session recycle thresholds (more aggressive than chat compaction)
 _BG_RECYCLE_PCT = 70.0  # recycle at 70% — well before overflow
@@ -435,6 +510,21 @@ class SessionClosingError(RuntimeError):
     once ``close_all`` has set ``_closing``) and by :meth:`SessionManager.begin_turn`
     (the pre-dispatch gate that stops a caller which already holds a lease from
     opening a turn during the shutdown drain window).
+    """
+
+
+class SpeculativeResumeRefused(RuntimeError):
+    """Raised by ``get_or_create(speculative=True)`` on a resumable key.
+
+    A speculative caller must never be the one that resumes a persisted
+    session — unless it passes ``speculative_resume=True`` (resume prefetch),
+    which preserves the observation by arming ``_Session.resumed_armed`` for
+    the first real claimant. Without the opt-in the refusal stands: the real
+    first turn needs to observe ``resumed=True`` to make its
+    history-injection decision, and existing-session reuse would report
+    ``resumed=False``. Raised on the same session-map read that would drive
+    the resume, so there is no window for a mapping to appear between a
+    caller-side check and the create.
     """
 
 
@@ -545,6 +635,16 @@ class _Session:
     # it cannot answer "how long has this session been alive".
     created_at: float = field(default_factory=time.time)
     is_new: bool = True
+    # One-shot companion to ``is_new``, armed only by a SPECULATIVE creator
+    # whose provider start restored the persisted transcript via ACP
+    # session/load. The existing-session fast path and the won-race path
+    # otherwise report ``resumed=False``, which would make the real first turn
+    # inject Kiro Crew history on top of the natively-replayed transcript. Set
+    # atomically at registration (never on its own — only ever alongside an
+    # armed ``is_new``) and consumed together with ``is_new`` by the first
+    # real claimant under the per-session semaphore; a speculative claimant
+    # reads without consuming.
+    resumed_armed: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
@@ -583,6 +683,10 @@ class _Session:
         """
         self.provider = provider
         self.provider_switch_replay = False
+        # The replacement provider is a fresh native session, not a resumed
+        # one — a stale armed observation would make the next first turn skip
+        # history injection it actually needs.
+        self.resumed_armed = False
         self.prompt_count = 0
         self.consecutive_failures = 0
         self.prev_turn_cancelled = False
@@ -810,6 +914,14 @@ class SessionManager:
         # Callback fired when a session expires (idle or orphaned).
         # Used by HistoryConsolidator to trigger skill extraction.
         self.on_session_expire: Callable[[str], None] | None = None
+        # Fired by the stuck_turn hook for a turn whose consumer has stopped
+        # pulling events. A seam, not a policy: this class only reports, and a
+        # surface that can reach the user (a dashboard notification, a Slack DM)
+        # decides what to do with it. Args: (session_key, parked_secs).
+        self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # session key -> the monotonic start of the park already reported for it,
+        # so a park outliving the cleanup tick is reported once, not every pass.
+        self._stuck_reported: dict[str, float] = {}
 
         # Shared runtime for _bg callers (title gen, suggestions, folders, nav).
         # Each caller gets its own ephemeral AcpSessionHandle via get_bg_session().
@@ -846,6 +958,7 @@ class SessionManager:
                 CleanupHook("idle_expiry", self._expire_idle_hook),
                 CleanupHook("orphan_mcp", self._orphan_mcp_hook),
                 CleanupHook("rss_threshold", self._rss_threshold_check),
+                CleanupHook("stuck_turn", self._stuck_turn_check),
             ]
         )
 
@@ -992,9 +1105,7 @@ class SessionManager:
             return
         async with self._lock:
             if BACKGROUND_KEY not in self._sessions:
-                sess = _Session(
-                    provider=provider, is_new=False, agent=BACKGROUND_AGENT
-                )
+                sess = _Session(provider=provider, is_new=False, agent=BACKGROUND_AGENT)
                 self._sessions[BACKGROUND_KEY] = sess
                 logger.info("Background session created")
             else:
@@ -1098,6 +1209,13 @@ class SessionManager:
                     runtime = AcpRuntime(
                         agent="kirocrew-lite",
                         sandbox_mode=getattr(self._cfg.agent, "sandbox", "auto"),
+                        # kirocrew-lite's config is written by Kiro Crew itself
+                        # with an empty mcpServers map, so no MCP server can
+                        # ever report on this runtime. Opting out keeps hot
+                        # one-liner paths (chat titles, suggestions, STT
+                        # endpointing) from holding drain_init() open for a
+                        # first report that cannot arrive.
+                        expect_mcp_reports=False,
                     )
                     await runtime.spawn()
                     self._bg_runtime = runtime
@@ -1480,6 +1598,10 @@ class SessionManager:
         companion subagent runtime spawns with the SAME security posture as the
         parent (sandboxed + MCP-gateway-routed), never a bare unsandboxed
         process. Returns {} when the parent/client can't be resolved.
+
+        The backend travels with the posture: a companion runtime shares its
+        parent's process topology, so resolving it independently would spawn a
+        different agent than the session it belongs to.
         """
         provider = self.get_provider(parent_session_key)
         if provider is None:
@@ -1494,6 +1616,7 @@ class SessionManager:
             ("_mcp_gateway_overlay", "mcp_gateway_overlay"),
             ("_mcp_gateway_settings_mcp_json", "mcp_gateway_settings_mcp_json"),
             ("_mcp_gateway_socket", "mcp_gateway_socket"),
+            ("backend", "acp_backend"),
         ):
             val = getattr(client, attr, None)
             if val is not None:
@@ -1970,11 +2093,7 @@ class SessionManager:
                 # cannot be displayed as an age directly, so project it back
                 # onto the wall clock the consumer subtracts from.
                 spawn = getattr(runtime, "_spawn_monotonic", None)
-                created = (
-                    now_wall - (now_mono - spawn)
-                    if isinstance(spawn, (int, float))
-                    else None
-                )
+                created = now_wall - (now_mono - spawn) if isinstance(spawn, (int, float)) else None
                 rows.append(
                     {
                         "key": label,
@@ -2053,8 +2172,6 @@ class SessionManager:
           mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
           and are re-resolved.
         """
-        from kiro_crew.agent import kiro_agents_dir_path
-
         try:
             dir_mtime = kiro_agents_dir_path().stat().st_mtime
         except OSError:
@@ -2238,6 +2355,8 @@ class SessionManager:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        speculative: bool = False,
+        speculative_resume: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -2261,6 +2380,29 @@ class SessionManager:
                 value like ``"auto"``, in which case it stays ``None`` to let
                 the backend resolve from the agent's own JSON config.  Flows
                 through to the provider factory as the ``model_override`` kwarg.
+            speculative: The caller is pre-creating the session ahead of a real
+                first turn (eager spawn) rather than running one.  Three atomic
+                consequences, all inside this method so no caller-side
+                check-then-act window exists: the one-shot first-turn flag is
+                never consumed (a speculative creator registers the session
+                with it still armed; a speculative claimant leaves it as-is);
+                a key with a resume mapping raises
+                :class:`SpeculativeResumeRefused` instead of resuming (unless
+                ``speculative_resume`` opts in), because
+                the real first turn must be the one that observes
+                ``resumed=True``; and the returned ``is_new`` reflects the
+                flag's state without consuming it.
+            speculative_resume: Only meaningful with ``speculative=True``.
+                Opts in to speculatively resuming a persisted session
+                (resume prefetch): instead of refusing a resumable key, the
+                speculative creator performs the session/load and registers
+                the session with BOTH one-shot markers armed —
+                ``is_new=True`` and ``resumed_armed=True`` when the load
+                actually restored the transcript. The first real claimant
+                consumes both atomically under the per-session semaphore and
+                receives ``(provider, True, True)``, preserving its
+                history-injection decision exactly as if it had performed the
+                resume itself.
         """
         # Fast path: existing session — hold lock only briefly
         # Fold bare/canonical Slack key aliases FIRST: the SessionMap thread
@@ -2270,7 +2412,7 @@ class SessionManager:
         # cold-starts a context-free duplicate (thread split).
         key = self._fold_key(key)
         stale_provider = None
-        _claimed: "tuple[_Session, bool] | None" = None
+        _claimed: "_Session | None" = None
         try:
             async with self._lock:
                 # Refuse to start OR resume any turn once teardown has begun.
@@ -2334,8 +2476,13 @@ class SessionManager:
                         # per spawn so a key collision with a different agent
                         # cannot happen in practice.
                         sess.last_used = time.monotonic()
-                        was_new = sess.is_new
-                        sess.is_new = False
+                        # The one-shot first-turn flag is NOT touched here: it
+                        # is read and consumed below, only after this caller
+                        # actually acquires the session semaphore. Consuming at
+                        # claim time destroys the flag when the claimant is
+                        # cancelled while waiting, or when a queued won-race
+                        # caller acquires first — ownership of the flag must
+                        # follow semaphore acquisition order.
                         # Lazy-save CC session_id: init event fires after
                         # registration, so the first get_or_create that finds
                         # a live session with a populated session_id persists it.
@@ -2357,7 +2504,7 @@ class SessionManager:
                         # _bg ACP process) would otherwise pin self._lock and
                         # freeze get_or_create for EVERY session. Acquire below,
                         # after the lock is released, then re-validate.
-                        _claimed = (sess, was_new)
+                        _claimed = sess
 
                 if _claimed is None:
                     if not self._provider_factory:
@@ -2378,9 +2525,24 @@ class SessionManager:
         # acquiring: another coroutine may have recycled/removed this session
         # while we waited on the semaphore — if so, fall through to cold-start.
         if _claimed is not None:
-            sess, was_new = _claimed
+            sess = _claimed
             if await self._reacquire_and_validate(key, sess):
-                return sess.provider, was_new, False
+                # Consume the one-shot first-turn flags HERE, as the semaphore
+                # owner — not at claim time under self._lock. A claimant
+                # cancelled while waiting must not destroy the flags, and when
+                # several callers queue on an armed (speculatively created)
+                # session, the flags belong to whichever real caller acquires
+                # first. A speculative claimant reads without consuming.
+                # ``resumed_armed`` travels with ``is_new``: both are set only
+                # together at registration and consumed together here, so the
+                # real first turn observes resumed=True exactly when a resume
+                # prefetch restored the transcript.
+                was_new = sess.is_new
+                was_resumed = sess.resumed_armed
+                if not speculative:
+                    sess.is_new = False
+                    sess.resumed_armed = False
+                return sess.provider, was_new, was_resumed
             # Stale between claim and acquire — the semaphore has already been
             # released by the re-validate. If the entry is still ours but the
             # provider died, evict it and shut the dead provider down (mirrors
@@ -2428,6 +2590,17 @@ class SessionManager:
         ) and not self._is_continuable_key(key)
         if not is_stateless:
             resume_sid = self._session_map.get(key)
+        # A speculative caller must never be the one that resumes UNLESS it
+        # opted in via speculative_resume (resume prefetch): the real first
+        # turn needs to observe resumed=True to make its history-injection
+        # decision, and the existing-session fast path would otherwise report
+        # resumed=False. The opt-in path preserves that observation by arming
+        # resumed_armed at registration for the first real claimant to
+        # consume. Checked HERE, on the same map read that would drive the
+        # resume, so no check-then-act window exists for a mapping to appear
+        # in between.
+        if speculative and resume_sid and not speculative_resume:
+            raise SpeculativeResumeRefused(key)
 
         # Try warm pool first (no resume — pooled processes have no prior session)
         logger.info(
@@ -2507,7 +2680,9 @@ class SessionManager:
                         else:
                             _switch_model = model_registry.to_acp_id(model)
                             _cmp_pool = (
-                                model_registry.to_acp_id(_pool_model) if _pool_model else _pool_model
+                                model_registry.to_acp_id(_pool_model)
+                                if _pool_model
+                                else _pool_model
                             )
                         if _pool_model and _switch_model != _cmp_pool:
                             # This is an INHERITED value (the slot's persisted
@@ -2531,15 +2706,13 @@ class SessionManager:
                                 )
                             else:
                                 await provider.client.set_model(_switch_model)
-                                logger.info(
-                                    "Pool post-claim: switched model to %s", _switch_model
-                                )
+                                logger.info("Pool post-claim: switched model to %s", _switch_model)
                 logger.info(
                     "Claimed warm-pool process for %s (agent=%s)", key, agent or self._pool_agent
                 )
                 self._schedule_replenish()
             except (asyncio.CancelledError, Exception):
-                _sync_kill_provider(provider)
+                self._dispatch_hard_kill(provider)
                 raise
         else:
             # Cold start: start provider OUTSIDE the lock so other sessions
@@ -2572,7 +2745,9 @@ class SessionManager:
                 is_cc_now = (
                     ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider)
                 ) or _is_claude_backend(provider)
-                current_provider = "claude_code" if is_cc_now else "acp"
+                current_provider = (
+                    PROVIDER_LABEL_CLAUDE if is_cc_now else _provider_label(provider)
+                )
                 if detect_provider_switch(self._session_map, key, current_provider):
                     resume_sid = None
                     _provider_switched = True
@@ -2597,11 +2772,15 @@ class SessionManager:
                     await provider.start()
                 except (asyncio.CancelledError, Exception):
                     # Provider process may have spawned before the cancel/error —
-                    # shut it down so it doesn't leak.  Use synchronous kill as
-                    # a last resort since asyncio.shield is unreliable during
-                    # cancellation (the awaited future raises CancelledError
-                    # immediately, leaving shutdown fire-and-forget).
-                    _sync_kill_provider(provider)
+                    # shut it down so it doesn't leak. Dispatched to the
+                    # subprocess executor: awaiting an async shutdown here is
+                    # unreliable during cancellation (the awaited future
+                    # re-raises CancelledError immediately), and an inline
+                    # _sync_kill_provider blocks the event loop (os.waitpid /
+                    # taskkill). Resume prefetch makes this path routine — a
+                    # focus flip mid-session/load cancels the loading task —
+                    # so it must not stall the loop.
+                    self._dispatch_hard_kill(provider)
                     raise
 
         # start() has written the provider's PID to kiro_session_pids.txt, but
@@ -2628,7 +2807,36 @@ class SessionManager:
             if isinstance(provider, AcpProvider):
                 resumed = provider.client.resumed
 
+            # A SPECULATIVE RESUME whose load did NOT restore the transcript
+            # (F2 fell back to a fresh session, the mapping vanished between
+            # lookup and load, or a provider switch discarded the sid) is
+            # rejected BEFORE registration. A registered fallback session is
+            # claimable: a real turn that queued during the load would claim
+            # it, the conditional cleanup would no-op, and the turn's
+            # exchanges would land in a session whose native id is unmapped —
+            # the next reopen resumes the OLD sid and silently drops them
+            # from model context. Raising here (the except below kills the
+            # provider) means no claimable session ever exists; the first
+            # real message creates AND maps the fallback itself, running the
+            # normal F2 recovery + history replay in its own coroutine.
+            if speculative and speculative_resume and not resumed:
+                raise SpeculativeResumeRefused(key)
+
             async with self._lock:
+                # Re-check _closing: the entry gate ran BEFORE the multi-second
+                # provider.start(), so close_all() can begin (and finish its
+                # drain + kill snapshot) while the handshake is in flight. A
+                # session registered here after that snapshot is invisible to
+                # the shutdown loop — the kiro-cli process would outlive the
+                # gateway holding the persisted session lock, breaking the
+                # next startup's session/load. Raising sends us to the
+                # except-BaseException below, which kills the provider.
+                if self._closing:
+                    raise SessionClosingError(
+                        "SessionManager began closing during provider startup; "
+                        "refusing to register a session behind the shutdown "
+                        "snapshot"
+                    )
                 # Re-check: another coroutine may have created this key while we
                 # were starting the provider (race on same key). In-place
                 # compaction (kiro-cli and claude) leaves the existing entry
@@ -2661,18 +2869,39 @@ class SessionManager:
                 else:
                     sess = _Session(
                         provider=provider,
-                        is_new=False,
+                        # A real creator consumes the first-turn flag itself
+                        # (is_new=True goes back to it in `result`); a
+                        # speculative creator leaves it ARMED for the first
+                        # real turn, which claims it via the fast path or the
+                        # won-race path. Set atomically at registration, under
+                        # self._lock — this is what replaces the racy
+                        # rearm-after-release design.
+                        is_new=bool(speculative),
+                        # Armed only alongside is_new: a speculative resume
+                        # creator whose session/load actually restored the
+                        # transcript owes the resumed=True observation to the
+                        # first real claimant. A real creator receives
+                        # ``resumed`` directly in its own return tuple.
+                        resumed_armed=bool(speculative and resumed),
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
-                    if _provider_switched or (
+                    _replay_needed = (
                         getattr(provider, "_history_replay_needed", False) is True
-                    ):
+                    )
+                    if _provider_switched or _replay_needed:
                         # provider_switch_replay OR F2 load-recovery fell back to
                         # a fresh native session (stale lock never cleared):
                         # replay KiroCrew's conversation_log into the new session
                         # on the first prompt so the slot isn't context-free.
                         sess.provider_switch_replay = True
+                    if _replay_needed and _provider_label(provider) != PROVIDER_LABEL_DEFAULT:
+                        # SessionMap.get() only self-prunes entries whose kiro
+                        # transcript is gone; a backend that owns its own storage
+                        # is never file-checked, so a failed load is the only
+                        # signal its sid went stale. Drop it here or every later
+                        # turn re-attempts the same doomed load.
+                        self._session_map.clear_sid(key)
                     self._sessions[key] = sess
                     logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
@@ -2683,11 +2912,15 @@ class SessionManager:
                         len(self._sessions),
                     )
 
-                    # Save session mapping for long-lived sessions
+                    # Save session mapping for long-lived sessions. A failed
+                    # speculative resume never reaches this point — it is
+                    # rejected before registration (SpeculativeResumeRefused
+                    # above), so a speculative_resume registration here always
+                    # carries resumed=True and mapping its sid is correct.
                     _cwd_str = provider.cwd
                     if not is_stateless and isinstance(provider, AcpProvider):
                         sid = provider.client._session_id
-                        _prov_label = "claude_code" if _is_claude_backend(provider) else "acp"
+                        _prov_label = _provider_label(provider)
                         if sid:
                             self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                     elif (
@@ -2708,8 +2941,12 @@ class SessionManager:
                     result = (provider, True, resumed)
         except BaseException:
             # CancelledError or any other exception after provider.start()
-            # succeeded — provider is running but never registered.  Kill it.
-            _sync_kill_provider(provider)
+            # succeeded — provider is running but never registered. Kill it
+            # via the executor dispatch: this handler is routine under resume
+            # prefetch (every failed speculative load raises
+            # SpeculativeResumeRefused through here), and an inline
+            # _sync_kill_provider blocks the event loop.
+            self._dispatch_hard_kill(provider)
             raise
         finally:
             # Registration is complete (or the provider was killed) — the PID is
@@ -2731,7 +2968,20 @@ class SessionManager:
                         "Failed to shut down duplicate provider for %s", key, exc_info=True
                     )
             if await self._reacquire_and_validate(key, _won_race_sess):
-                return _won_race_sess.provider, False, False
+                # Mirror the fast path's flag handling: when the race winner
+                # was a SPECULATIVE creator it registered the session with the
+                # first-turn flag still armed, and this loser may be the first
+                # real turn — hardcoding False here would strand the flag and
+                # skip first-turn context injection (then fire it, late, on a
+                # later message). Both-real races are unchanged: the real
+                # winner consumed its own flag at registration, so was_new
+                # reads False exactly as before.
+                was_new = _won_race_sess.is_new
+                was_resumed = _won_race_sess.resumed_armed
+                if not speculative:
+                    _won_race_sess.is_new = False
+                    _won_race_sess.resumed_armed = False
+                return _won_race_sess.provider, was_new, was_resumed
             # Stale winner: the semaphore has already been released by the
             # re-validate; retry from the top (cold-starts cleanly). Bounded so
             # a pathological recycle race can't recurse without limit.
@@ -2749,6 +2999,8 @@ class SessionManager:
                 model=model,
                 cwd=cwd,
                 extra_env=extra_env,
+                speculative=speculative,
+                speculative_resume=speculative_resume,
                 _won_race_retries=_won_race_retries + 1,
                 **extra_factory_kwargs,
             )
@@ -2900,7 +3152,25 @@ class SessionManager:
             if pct > 0:
                 logger.info("Session %s context at %.0f%% (CC-managed)", key, pct)
         elif pct >= self._cfg.session.autocompact_pct:
-            self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
+            # Defensive twin of the rekey-time reset (#2932): compaction is
+            # destructive-ish (it rewrites the conversation), so it must never
+            # fire on a percentage that no telemetry has confirmed for the
+            # CURRENT session binding. Today every path that raises context_pct
+            # also calls note_pct_reported(), so this gate is unreachable in
+            # production — it exists so a future handoff/reset path that
+            # preserves a stale pct while leaving it flagged unknown degrades
+            # to a skipped compaction instead of compacting an empty session.
+            # Fail-quiet on doubles: providers without the probe read as
+            # "confirmed" (unchanged behavior).
+            if _context_pct_is_unknown(provider):
+                logger.info(
+                    "Session %s context %.0f%% is unconfirmed for this session — "
+                    "skipping compaction until telemetry reports",
+                    key,
+                    pct,
+                )
+            else:
+                self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
         elif pct >= _CONTEXT_WARN_PCT:
             logger.warning("Session %s context at %.0f%%", key, pct)
         elif pct > 0:
@@ -2996,13 +3266,14 @@ class SessionManager:
 
         kiro-cli only: if the in-place ``/compact`` fails or times out, the
         session is recycled — killed so the next user message re-seeds context
-        via build_session_context(). The session_map entry is dropped so we
-        don't false-resume from stale state. That recycle happens inside
-        ``_compact_in_place``, under the turn semaphore it already holds, so no
-        queued turn can slip in between the failed compact and the kill. A
-        recycle is never forced through a live turn: if the turn semaphore
-        cannot be acquired within the budget, the attempt is skipped and the
-        next turn-end ``check_context_usage`` re-triggers it.
+        via build_session_context(). The session_map entry's resume sid is
+        cleared so we don't false-resume from stale state, while the entry
+        itself (and the channel bindings it carries) survives. That recycle
+        happens inside ``_compact_in_place``, under the turn semaphore it
+        already holds, so no queued turn can slip in between the failed compact
+        and the kill. A recycle is never forced through a live turn: if the turn
+        semaphore cannot be acquired within the budget, the attempt is skipped
+        and the next turn-end ``check_context_usage`` re-triggers it.
         """
         try:
             session = self._sessions.get(key)
@@ -3019,12 +3290,12 @@ class SessionManager:
                         await claude_session.provider.compact()
 
                 try:
-                    await asyncio.wait_for(_run_compact(), timeout=_COMPACT_TIMEOUT_SECS)
+                    await asyncio.wait_for(_run_compact(), timeout=COMPACT_WAIT_TIMEOUT_SECS)
                 except (Exception, asyncio.TimeoutError) as exc:
                     if isinstance(exc, asyncio.TimeoutError):
                         logger.error(
                             "Compact timed out after %.0fs for %s",
-                            _COMPACT_TIMEOUT_SECS,
+                            COMPACT_WAIT_TIMEOUT_SECS,
                             key,
                         )
                     else:
@@ -3058,7 +3329,7 @@ class SessionManager:
                 logger.warning(
                     "Session %s compaction deferred — turn still active after %.0fs",
                     key,
-                    _COMPACT_TIMEOUT_SECS,
+                    COMPACT_WAIT_TIMEOUT_SECS,
                 )
         except Exception:
             logger.exception("Session compaction/recycle failed for %s", key)
@@ -3066,7 +3337,7 @@ class SessionManager:
             self._compacting.discard(key)
 
     async def _recycle_held(self, key: str, session: "_Session", pct: float) -> None:
-        """Recycle *session* — SIGKILL the provider and drop the map entry.
+        """Recycle *session* — SIGKILL the provider and clear its resume sid.
 
         The caller MUST already hold ``session.semaphore`` and is responsible
         for releasing it: this method neither acquires nor releases it, so the
@@ -3077,6 +3348,14 @@ class SessionManager:
         Operates strictly on the *session object passed in*: pop-by-identity
         means a fresh session registered by a racing cold-start is never
         popped or killed by mistake.
+
+        Housekeeping never removes a session's channel identity; only explicit
+        user actions do. The overflowed native conversation must not be resumed,
+        so this clears the sid (as :meth:`discard_conversation` does) instead of
+        deleting the session-map entry: the entry also carries the mirror
+        binding, the Slack thread/channel linkage and the durable flags, so a
+        full delete silently unlinks a mirrored session and forks its later
+        inbound messages into a new conversation.
         """
         self._recycling[key] = session
         try:
@@ -3092,9 +3371,9 @@ class SessionManager:
                 await session.provider.shutdown()
                 logger.info("Recycled session %s (context overflow; entry already replaced)", key)
             else:
-                self._session_map.delete(key)
+                self._session_map.clear_sid(key)
                 await popped.provider.shutdown()
-                logger.info("Recycled session %s (context overflow)", key)
+                logger.info("Recycled session %s (context overflow; sid cleared)", key)
             await self._fire_compact_callback(key, pct, success=True)
         finally:
             if self._recycling.get(key) is session:
@@ -3107,7 +3386,7 @@ class SessionManager:
         - ``"ok"``: compaction completed; session (and its process) survives.
           The success callback has been fired and the cooldown cleared.
         - ``"busy"``: the turn semaphore could not be acquired within
-          ``_COMPACT_TIMEOUT_SECS`` — a turn is still running. Nothing was
+          ``COMPACT_WAIT_TIMEOUT_SECS`` — a turn is still running. Nothing was
           attempted; the caller must NOT recycle (no mid-turn kill).
         - ``"recycled"``: the compact was attempted and failed (or timed out,
           or the provider has no native compaction — base
@@ -3128,17 +3407,19 @@ class SessionManager:
         hangs holding the semaphore until the 2h prompt timeout, and the
         recycle that would have rescued it gives up at its own acquire
         timeout. Observed in production 2026-08-05: a ``/compact`` reported
-        ``completed`` 161s in, 41s after the 120s async wait had already
-        declared timeout.
+        ``completed`` 161s in, 41s after the async wait
+        had already declared timeout.
         """
         try:
-            await asyncio.wait_for(session.semaphore.acquire(), timeout=_COMPACT_TIMEOUT_SECS)
+            await asyncio.wait_for(session.semaphore.acquire(), timeout=COMPACT_WAIT_TIMEOUT_SECS)
         except asyncio.TimeoutError:
             return "busy"
         started = time.monotonic()
+        result_wait_used: float | None = None
         try:
 
             async def _run() -> None:
+                nonlocal result_wait_used
                 # Lazy import: kiro_crew.acp.__init__ eagerly pulls client/
                 # runtime; a module-level import here would recreate the
                 # providers<->session cycle this file avoids everywhere else.
@@ -3162,21 +3443,29 @@ class SessionManager:
                 if status is None:
                     # No terminal status mid-turn (a "started" may have
                     # streamed) — the result arrives async after end_turn.
-                    result = await session.provider.wait_for_compaction(
-                        timeout=_COMPACT_RESULT_WAIT_SECS
-                    )
+                    # Spend the REST of the shared budget on the wait instead
+                    # of a fixed slice, so a compaction that outlives the
+                    # prompt turn is not abandoned with budget left unused.
+                    result_wait_used = _compact_result_wait_secs(time.monotonic() - started)
+                    result = await session.provider.wait_for_compaction(timeout=result_wait_used)
                     status = result.get("type") if isinstance(result, dict) else None
                 if status != "completed":
                     raise RuntimeError(f"compaction reported {status or 'no result'}")
 
-            await asyncio.wait_for(_run(), timeout=_COMPACT_TIMEOUT_SECS)
+            # Margin headroom on top of the shared budget: the inner status
+            # wait spends the full remaining budget, so this outer backstop
+            # must land strictly AFTER it for the graceful "no result"
+            # diagnostic to stay reachable.
+            await asyncio.wait_for(
+                _run(), timeout=COMPACT_WAIT_TIMEOUT_SECS + _COMPACT_RESULT_WAIT_MARGIN_SECS
+            )
         except (Exception, asyncio.TimeoutError):
             logger.warning(
                 "Session %s in-place /compact failed after %.0fs — recycling "
-                "(semaphore held; async wait budget %.0fs)",
+                "(semaphore held; async status wait %s)",
                 key,
                 time.monotonic() - started,
-                _COMPACT_RESULT_WAIT_SECS,
+                "never reached" if result_wait_used is None else f"{result_wait_used:.0f}s",
                 exc_info=True,
             )
             # Recycle NOW, still holding the semaphore — see the docstring.
@@ -3249,6 +3538,34 @@ class SessionManager:
             await self.release_subagent_runtime(key)
             logger.info("Removed session (map preserved): %s", key)
 
+    async def remove_if_unclaimed(self, key: str) -> bool:
+        """Remove *key* only if its speculative session is still unclaimed.
+
+        The TTL backstop for resume prefetch: a speculatively resumed session
+        holds kiro-cli's native per-session lock, so one the user never
+        returns to must be released cleanly instead of waiting out the idle
+        sweep. "Unclaimed" is checked under the manager lock — the one-shot
+        ``is_new`` marker is still armed (no real turn consumed it) and the
+        per-session semaphore is unheld (no claimant mid-turn). A claimant
+        that has been handed the session object but not yet acquired the
+        semaphore loses the race benignly: its re-validate fails and it
+        cold-starts, exactly as if the prefetch never ran. Returns ``True``
+        when a session was removed. The session map survives (mirrors
+        :meth:`remove`), so the next open resumes normally.
+        """
+        key = self._fold_key(key)
+        async with self._lock:
+            session = self._sessions.get(key)
+            if session is None or not session.is_new or session.semaphore.locked():
+                return False
+            del self._sessions[key]
+            self._compact_cooldown_until.pop(key, None)
+            self._origin_links.pop(key, None)
+        await session.provider.shutdown()
+        await self.release_subagent_runtime(key)
+        logger.info("Removed unclaimed speculative session (map preserved): %s", key)
+        return True
+
     async def destroy(self, key: str) -> None:
         """Permanently destroy a session — no resume possible.
 
@@ -3267,6 +3584,33 @@ class SessionManager:
         finally:
             self._session_map.delete(key)
             logger.info("Destroyed session (map deleted): %s", key)
+
+    async def discard_conversation(self, key: str) -> None:
+        """Tear down the live session and drop ONLY its native conversation.
+
+        Like :meth:`destroy`, the provider is shut down and the resume sid is
+        removed — the next turn cold-starts a fresh native conversation
+        instead of ``session/load``-ing the old one. UNLIKE ``destroy``, the
+        session-map ENTRY survives via ``clear_sid``: the entry also carries
+        the Slack thread/channel linkage (and the reverse thread→session
+        index built from it), so a full ``delete`` would silently unlink a
+        mirrored session and fork later inbound replies into a new
+        conversation. Used by the poisoned-conversation escalation in
+        chat_runner, where the conversation is unusable but the session's
+        channel identity must persist.
+        """
+        key = self._fold_key(key)
+        async with self._lock:
+            session = self._sessions.pop(key, None)
+            self._compact_cooldown_until.pop(key, None)
+        try:
+            if session:
+                await session.provider.shutdown()
+            # Reap any companion subagent runtime keyed by this parent (see remove()).
+            await self.release_subagent_runtime(key)
+        finally:
+            self._session_map.clear_sid(key)
+            logger.info("Discarded native conversation (sid cleared, map entry kept): %s", key)
 
     async def drain_active_turns(self, timeout: float | None = None) -> int:
         """Bring in-flight prompts to a safe boundary before teardown.
@@ -3341,19 +3685,13 @@ class SessionManager:
                     try:
                         await waiter(timeout=timeout)
                     except asyncio.TimeoutError:
-                        logger.debug(
-                            "drain_active_turns: post-cancel wait_turn_done timed out"
-                        )
+                        logger.debug("drain_active_turns: post-cancel wait_turn_done timed out")
                     except Exception:
-                        logger.debug(
-                            "drain_active_turns: wait_turn_done failed", exc_info=True
-                        )
+                        logger.debug("drain_active_turns: wait_turn_done failed", exc_info=True)
 
         try:
             await asyncio.wait_for(
-                asyncio.gather(
-                    *[_drain_one(p) for p in unfinished], return_exceptions=True
-                ),
+                asyncio.gather(*[_drain_one(p) for p in unfinished], return_exceptions=True),
                 # A hair above the per-session budget so an internally-bounded
                 # cancel resolves as its own timeout rather than the gather being
                 # cancelled out from under it.
@@ -3471,7 +3809,7 @@ class SessionManager:
                         # on next startup doesn't see a missing entry, default
                         # to "acp", and falsely fire a switch for users still
                         # on claude_code.
-                        _prov_label = "claude_code" if _is_claude_backend(sess.provider) else "acp"
+                        _prov_label = _provider_label(sess.provider)
                         self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                 elif ClaudeCodeProvider is not None and isinstance(
                     sess.provider, ClaudeCodeProvider
@@ -3486,6 +3824,18 @@ class SessionManager:
                         )
                     ):
                         self._session_map.set(key, sid, provider="claude_code", cwd=_cwd_str)
+
+            # The set() calls above run on the loop and therefore DEFER their
+            # disk write; the gateway exits via os._exit, which never cancels
+            # tasks, so nothing downstream would ever land them. This is the
+            # shutdown durability point: await the off-loop flush so a wedged
+            # filesystem cannot hold the loop past the shutdown deadline.
+            try:
+                await self._session_map.aflush()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("close_all: session map flush failed", exc_info=True)
 
             sessions = dict(self._sessions)
             self._sessions.clear()
@@ -3650,6 +4000,19 @@ class SessionManager:
         """
         return self._session_map.get(self._fold_key(key))
 
+    def resumable_hint(self, key: str) -> bool:
+        """Loop-safe, in-memory probe: *key* MAY be resumable.
+
+        A read-only ``SessionMap`` membership check — no disk I/O, no
+        stale-entry pruning, no map rewrite — so it can run on the event loop
+        (unlike :meth:`resumable_sid`, whose ``SessionMap.get`` prunes and can
+        rewrite the map file). May report a false positive for an entry whose
+        session files are gone; the authoritative pruning lookup inside
+        ``get_or_create``'s resume path settles it, and the speculative load
+        then falls back and is torn down by the caller.
+        """
+        return self._session_map.has_hint(self._fold_key(key))
+
     def seed_conversation(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
         """Write a session-map entry for *key* on demand (spawn_continue).
 
@@ -3692,11 +4055,7 @@ class SessionManager:
         key = self._fold_key(key)
         session = self._sessions.get(key)
         if session:
-            if (
-                cleanup
-                and key.startswith(_SUBAGENT_PREFIX)
-                and not self._is_continuable_key(key)
-            ):
+            if cleanup and key.startswith(_SUBAGENT_PREFIX) and not self._is_continuable_key(key):
                 try:
                     session_id = session.provider.session_id
                     if session_id:
@@ -3867,6 +4226,18 @@ class SessionManager:
         """Remove a session's Slack link (stop mirroring). Returns True if one was present."""
         return self._session_map.clear_slack_link(key)
 
+    def set_slack_paused(self, key: str, paused: bool) -> bool:
+        """Set whether turns reach the linked Slack thread; return the prior state.
+
+        Disconnecting retains the thread binding and its reverse index, so a reply
+        there still resolves to this session.
+        """
+        return self._session_map.set_slack_paused(key, paused)
+
+    def is_slack_paused(self, key: str) -> bool:
+        """True iff this session's Slack thread is disconnected but still bound."""
+        return self._session_map.is_slack_paused(key)
+
     def get_session_for_thread(self, thread_ts: str) -> str | None:
         """Return the session key linked to a Slack thread, or None."""
         return self._session_map.get_session_for_thread(thread_ts)
@@ -3910,6 +4281,67 @@ class SessionManager:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)
 
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        """Record (or withdraw) a refusal of AUTOMATIC origin mirroring.
+
+        A channel that mirrors its own conversation by default needs an
+        in-channel "off" that the NEXT inbound message does not silently undo,
+        and clearing the binding cannot express that: an entry with no ``mirror``
+        is indistinguishable from one that was never linked, so the automatic
+        bind would fire again one message later. This flag is that difference.
+
+        Persisted, because the bind it suppresses is itself re-asserted on every
+        turn and survives a restart — an in-memory refusal would come back on
+        its own. Only the automatic bind consults it; an explicit ``/link`` or
+        dashboard link is a direct instruction and :meth:`set_mirror_link` never
+        reads it.
+        """
+        with self._session_map.batched_save():
+            self._session_map.set_flag(_opt_out_key(key), MIRROR_OPT_OUT_FLAG, opted_out)
+            # Retire a refusal an earlier build stored under the generation key,
+            # so it cannot outlive a withdrawal made through the bucket.
+            legacy = canonical_key(key)
+            if legacy != _opt_out_key(key):
+                self._session_map.set_flag(legacy, MIRROR_OPT_OUT_FLAG, False)
+
+    def mirror_opt_out(self, key: str) -> bool:
+        """True iff this conversation declined automatic origin mirroring.
+
+        Reads the bucket, then falls back to the generation key an earlier build
+        wrote. Without the fallback, upgrading silently restores mirroring for
+        every conversation that had already turned it off — the exact failure the
+        flag exists to prevent, delivered by the fix for it.
+
+        A legacy hit is PROMOTED to the bucket, which is why this read writes.
+        Reading it without promoting would honour the refusal for the generation
+        it was stored under and lose it at the next rotation, so an upgrading user
+        would keep the expiring behaviour this change exists to remove. Retiring
+        the old row in the same write also stops it holding an entry that pruning
+        is forbidden to collect, one per generation.
+        """
+        bucket = _opt_out_key(key)
+        if self._session_map.get_flag(bucket, MIRROR_OPT_OUT_FLAG):
+            return True
+        legacy = canonical_key(key)
+        if legacy == bucket:
+            return False
+        if not self._session_map.get_flag(legacy, MIRROR_OPT_OUT_FLAG):
+            return False
+        with self._session_map.batched_save():
+            self._session_map.set_flag(bucket, MIRROR_OPT_OUT_FLAG, True)
+            self._session_map.set_flag(legacy, MIRROR_OPT_OUT_FLAG, False)
+        return True
+
+    def batched_save(self) -> AbstractContextManager[None]:
+        """Collapse the session-map writes of a related mutation sequence into one.
+
+        Each mutation rewrites the whole map, so a caller making several of them
+        (a link, an unlink) pays that cost once per operation unless it says
+        otherwise. Must not be held across an ``await`` — see
+        :meth:`SessionMap.batched_save`.
+        """
+        return self._session_map.batched_save()
+
     def set_origin_link(self, key: str, link: ChannelLink) -> None:
         """Record the channel conversation this session was started from.
 
@@ -3949,6 +4381,16 @@ class SessionManager:
             inbound_only=inbound_only,
         )
 
+    def mirror_claim_blockers(
+        self,
+        key: str,
+        link: ChannelLink,
+        *,
+        accepts_inbound: bool = False,
+    ) -> list[str]:
+        """Sessions that must stop *key* from binding *link*, or [] if it is free."""
+        return self._session_map.mirror_claim_blockers(key, link, accepts_inbound=accepts_inbound)
+
     def clear_mirror_link(self, key: str) -> bool:
         """Remove a session's outbound mirror binding. Returns True iff present."""
         return self._session_map.clear_mirror_link(key)
@@ -3956,6 +4398,18 @@ class SessionManager:
     def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
         """Clear every session mirroring to an exact location; return cleared keys."""
         return self._session_map.clear_mirror_links_at(link)
+
+    def set_mirror_paused(self, key: str, paused: bool, *, origin: bool = False) -> bool:
+        """Set whether turns reach one non-Slack delivery; return the prior state.
+
+        ``origin`` selects the born-in conversation rather than the explicit
+        mirror binding — a session can hold both, and they mute independently.
+        """
+        return self._session_map.set_mirror_paused(key, paused, origin=origin)
+
+    def is_mirror_paused(self, key: str, *, origin: bool = False) -> bool:
+        """True iff the named non-Slack delivery is disconnected (see the setter)."""
+        return self._session_map.is_mirror_paused(key, origin=origin)
 
     # Backward-compat aliases used by callers not yet migrated
     async def set_channel(self, key: str, channel_id: str) -> None:
@@ -4309,6 +4763,95 @@ class SessionManager:
                 await self._fire_recycle_callback(key, reason=f"memory limit ({rss}MB)")
             except Exception:
                 logger.exception("RSS recycle failed for session %s", key)
+
+    async def _stuck_turn_check(self) -> None:
+        """Report a turn whose consumer has stopped pulling events.
+
+        This exists because the per-turn watchdog cannot report on itself. That
+        watchdog is the ``except asyncio.TimeoutError`` arm of
+        ``AcpSessionHandle._dispatch_events``, an async generator, so it advances
+        only when a consumer pulls it — and a consumer that awaits inside its own
+        ``async for`` body (a tool approval, an IM send, a hook) freezes the
+        generator at the yield, after which that arm never executes again for the
+        rest of the turn. It is not slow or mis-verdicted there; it is not called,
+        which is why such a turn produces no stall WARNING at all. This loop has
+        its own timer and no dependency on any consumer, so it still runs.
+
+        Detection only, for three separate reasons:
+
+        * A turn waiting for a HUMAN is excluded outright. That wait is bounded by
+          ``agent.tool_approval_timeout_secs``, and acting on it here would put
+          two components on different budgets racing to end the same wait.
+        * Ending a live-but-parked turn belongs to the in-band path, which owns
+          the terminal-event seam and the non-lethal continue-nudge recovery. A
+          second terminator would either double-emit or land a cancel ack on a
+          turn that has already completed.
+        * What the park is blocked ON is not knowable from here, so there is no
+          unambiguous action to take. Reporting converts a silent freeze into a
+          named one, which is the whole of the diagnostic gap.
+
+        Swallows its own errors like its sibling hooks: an observer must never be
+        able to break the cleanup pass it rides on.
+        """
+        try:
+            stuck: list[tuple[str, float]] = []
+            live_parks: dict[str, float] = {}
+            async with self._lock:
+                for key, sess in self._sessions.items():
+                    # No turn in flight: the semaphore is the only in-flight
+                    # signal available at this layer, and a park is meaningless
+                    # without one.
+                    if not sess.semaphore.locked():
+                        continue
+                    # Duck-typed on the capability rather than the provider class,
+                    # so any transport that grows the same accessors is covered
+                    # without touching this hook.
+                    handle = getattr(sess.provider, "_handle", None)
+                    if handle is None:
+                        continue
+                    parked_for = getattr(handle, "parked_for_secs", None)
+                    if not callable(parked_for):
+                        continue
+                    parked = float(parked_for())
+                    if parked <= _STUCK_TURN_REPORT_SECS:
+                        continue
+                    if getattr(handle, "awaiting_permission", False):
+                        continue
+                    # Latch on the park's IDENTITY (the monotonic instant it
+                    # began), not its duration. The report threshold is below the
+                    # cleanup tick so a park is caught on the first pass that sees
+                    # it, which means a park outliving the tick would otherwise
+                    # re-warn and re-fire the callback every pass — and any future
+                    # consumer that DMs the user would inherit that dedup burden.
+                    began = getattr(handle, "parked_since", None)
+                    # A handle exposing the duration but not the identity cannot
+                    # be de-duplicated; report it once per tick rather than not
+                    # at all, since a missed stall is worse than a repeated line.
+                    ident = float(began) if isinstance(began, (int, float)) else parked
+                    live_parks[key] = ident
+                    if self._stuck_reported.get(key) == ident:
+                        continue
+                    stuck.append((key, parked))
+            # Drop latches for sessions that are no longer parked, so the same
+            # session parking again later reports afresh instead of being
+            # silenced by a stale entry.
+            self._stuck_reported = live_parks
+            # Reported outside the lock: the callback is consumer-supplied and
+            # must not run while the registry lock is held.
+            for key, parked in stuck:
+                logger.warning(
+                    "Turn on session %s has not been pulled for %.0fs — its "
+                    "consumer is parked, so the in-band watchdog cannot run",
+                    key,
+                    parked,
+                )
+                if self.on_stuck_turn:
+                    try:
+                        self.on_stuck_turn(key, parked)
+                    except Exception:
+                        logger.debug("on_stuck_turn callback failed", exc_info=True)
+        except Exception:
+            logger.exception("Cleanup loop: _stuck_turn_check crashed; continuing")
 
     async def _cleanup_loop(self) -> None:
         timeout = self._cfg.session.timeout_secs

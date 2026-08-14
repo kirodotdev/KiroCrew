@@ -151,10 +151,9 @@ describe('fmtCurrency', () => {
 
 describe('fmtUnit', () => {
   it('formats durations and sizes without Intl.DurationFormat', () => {
-    // DurationFormat is undefined on the Node 20 baseline; this is the
-    // replacement path, and this assertion is what would catch a future
-    // refactor reaching for the unavailable API.
-    expect(typeof (Intl as { DurationFormat?: unknown }).DurationFormat).toBe('undefined')
+    // DurationFormat may or may not exist depending on the Node version;
+    // fmtUnit uses NumberFormat's `unit` style regardless, so the golden
+    // outputs must hold either way.
     expect(fmtUnit(1.5, 'second', { maximumFractionDigits: 1 })).toBe('1.5s') // golden (en)
     expect(fmtUnit(90, 'minute')).toBe('90m') // golden (en)
     expect(fmtUnit(512, 'megabyte')).toBe('512MB') // golden (en)

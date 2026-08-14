@@ -94,8 +94,9 @@ from kiro_crew.computer_use.types import (
     TOOL_SET_VALUE,
     TOOL_TYPE_TEXT,
 )
+from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_core import (
-    _API,
+    _api_base,
     _http_error_body,
     _internal_secret,
     _resolve_session_key_strict,
@@ -642,7 +643,7 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
         {"tool": name, "args": args, "session_key": session_key, "agent": "", "app": ""}
     ).encode()
     request = urllib.request.Request(
-        f"{_API}{INVOKE_PATH}",
+        f"{_api_base()}{INVOKE_PATH}",
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -652,8 +653,8 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
         method="POST",
     )
     try:
-        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_API from dashboard.url config) + a fixed internal path; never agent-controlled  # noqa: E501
-        with urllib.request.urlopen(request, timeout=INVOKE_TIMEOUT_SECS) as response:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_api_base() from config/run-marker) + a fixed internal path; never agent-controlled  # noqa: E501
+        with loopback_urlopen(request, timeout=INVOKE_TIMEOUT_SECS) as response:
             decoded = json.loads(response.read())
     except urllib.error.HTTPError as exc:
         return _http_error_body(exc)

@@ -211,6 +211,30 @@ class TestResolveAgentNameWithProject:
         result = _resolve_agent_name("nonexistent-xyz", str(tmp_path))
         assert result is None
 
+    def test_non_matching_specs_are_never_read(self, tmp_path, monkeypatch):
+        """Resolution runs on the event loop, so it must prefilter on the FILENAME.
+        Reading every spec to compare its declared name stalls Slack and the gateway
+        on a checkout with many agents or slow storage; at most the one matching file
+        is read."""
+        import kiro_crew.slack.handler as h
+
+        kiro = tmp_path / ".kiro"
+        kiro.mkdir()
+        for other in ("alpha", "beta", "gamma"):
+            (kiro / f"{other}.agent-spec.json").write_text(json.dumps({"name": other}))
+        (kiro / "wanted.agent-spec.json").write_text(json.dumps({"name": "wanted-resolved"}))
+
+        read: list[str] = []
+        original = h.project_agent_name
+
+        def _tracking(spec):
+            read.append(spec.name)
+            return original(spec)
+
+        monkeypatch.setattr(h, "project_agent_name", _tracking)
+        assert _resolve_agent_name("wanted", str(tmp_path)) == "wanted-resolved"
+        assert read == ["wanted.agent-spec.json"]
+
     def test_none_project_dir_uses_global_only(self):
         result = _resolve_agent_name("nonexistent-xyz-123")
         assert result is None
@@ -517,14 +541,20 @@ class TestProjectSensitivePathCheck:
 
 
 class TestDiscoverProjectAgentsSensitivePath:
-    """Tests for sensitive path enforcement in _discover_project_agents."""
+    """Sensitive-path enforcement for project agent discovery.
+
+    The guard lives in ``agent_discovery.project_agent_files``, the implementation
+    the Slack handler now shares with the dashboard picker and spawn validation, so
+    it is patched there — patching the Slack module would miss it and the test would
+    pass while enforcing nothing.
+    """
 
     def test_returns_empty_for_sensitive_path(self, tmp_path):
         kiro = tmp_path / ".kiro"
         kiro.mkdir()
         spec = kiro / "agent.agent-spec.json"
         spec.write_text(json.dumps({"name": "agent"}))
-        with patch("kiro_crew.slack.handler.is_sensitive_path", return_value=True):
+        with patch("kiro_crew.agent_discovery.is_sensitive_path", return_value=True):
             result = _discover_project_agents(str(tmp_path))
         assert result == []
 
@@ -533,6 +563,6 @@ class TestDiscoverProjectAgentsSensitivePath:
         kiro.mkdir()
         spec = kiro / "agent.agent-spec.json"
         spec.write_text(json.dumps({"name": "agent"}))
-        with patch("kiro_crew.slack.handler.is_sensitive_path", return_value=False):
+        with patch("kiro_crew.agent_discovery.is_sensitive_path", return_value=False):
             result = _discover_project_agents(str(tmp_path))
         assert len(result) == 1

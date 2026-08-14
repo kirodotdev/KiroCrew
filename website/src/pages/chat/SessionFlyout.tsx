@@ -73,11 +73,15 @@ interface Props {
 }
 
 /** Which status marker a row gets, in the sidebar's own precedence order: an
- *  approval request outranks activity, and activity outranks unread (a running
- *  slot is self-evidently unread). Returns null when the row is quiet — the
- *  slot still reserves the column so titles stay aligned. */
-function statusOf(slot: ChatSlot): 'approval' | 'running' | 'unread' | null {
+ *  approval request outranks an owed answer, an owed answer outranks activity,
+ *  and activity outranks unread (a running slot is self-evidently unread).
+ *  Returns null when the row is quiet — the slot still reserves the column so
+ *  titles stay aligned. */
+function statusOf(slot: ChatSlot): 'approval' | 'question' | 'running' | 'unread' | null {
   if (slot.pending_approval) return 'approval'
+  // Above running deliberately: a blocking question card parks the turn, so the
+  // slot reports running while nothing can advance without the user.
+  if (slot.needs_input) return 'question'
   if (slot.running) return 'running'
   return null
 }
@@ -281,9 +285,10 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
                 aria-hidden
                 className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                   status === 'approval' ? 'bg-warn'
-                    : status === 'running' ? 'bg-accent animate-pulse'
-                      : isUnread ? 'bg-accent'
-                        : 'bg-transparent'
+                    : status === 'question' ? 'bg-info'
+                      : status === 'running' ? 'bg-accent animate-pulse'
+                        : isUnread ? 'bg-accent'
+                          : 'bg-transparent'
                 }`}
               />
               <span className={`min-w-0 flex-1 truncate ${isActive ? 'font-semibold' : ''}`}>{label}</span>

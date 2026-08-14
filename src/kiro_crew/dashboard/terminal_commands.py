@@ -30,9 +30,11 @@ Five properties keep that claim true rather than aspirational:
   ``__complete``, and an ``rm``-shaped tool would act on it — so an unknown
   command yields no completions at all rather than a probe.
 * **Bare names, resolved against a sanitized PATH.** The command word must carry
-  no ``/``, and PATH is filtered to absolute entries before resolution, so a
-  hostile ``gh`` dropped in the session's cwd (or reached through a relative or
-  empty PATH entry) can never be the file that runs.
+  no ``/``, and PATH is filtered before resolution to absolute entries whose whole
+  chain only root or this gateway's own user could have written, so a hostile
+  ``gh`` dropped in the session's cwd, in a project tool directory, or reached
+  through a relative or empty PATH entry can never be the file that runs. See
+  ``_sanitized_path`` for what that ownership rule does and does not bound.
 * **No shell, ever.** An argv LIST handed to ``execve``. The words are never
   joined into a string that something would re-split, so a metacharacter in a word
   the user is mid-way through typing has nothing to escape into.
@@ -336,6 +338,20 @@ def protocol_for(command: str, extra: object = None) -> str | None:
 # ── Binary identity + cache ──────────────────────────────────────────────────
 
 
+#: Group ids whose write bit does not widen the set of accounts that could have
+#: planted a binary, because membership already confers administrator rights.
+#:
+#: macOS's ``admin`` (gid 80) is the only member. It is a fixed system group whose
+#: members can ``sudo`` to root out of the box, so their write access is not an
+#: escalation over the uid-0 tier — and it is the group Homebrew leaves on its own
+#: ``bin``, so without this exemption no Homebrew tool qualifies. A numeric
+#: constant rather than ``grp.getgrnam("admin")`` on purpose: this runs on the
+#: keystroke path, and a group-name lookup goes through directory services, which
+#: on a managed host can block for seconds. Linux gets no exemption — ``root`` or
+#: ``wheel`` membership does not imply sudo rights there (Debian grants those
+#: through a separate ``sudo`` group), so the argument above does not hold.
+_ADMIN_WRITE_GIDS: frozenset[int] = frozenset({80} if platform_compat.IS_MACOS else ())
+
 #: Path segments that mark a directory as PROJECT-LOCAL tooling rather than an
 #: installed program. A binary under one of these is writable by whatever can
 #: write the project — which includes the agent — so resolving a command name to
@@ -365,40 +381,159 @@ def _is_project_local(entry: str) -> bool:
     return any(part in _PROJECT_LOCAL_SEGMENTS for part in parts)
 
 
-def _is_trusted_dir(directory: str) -> bool:
-    """Whether a directory is one only a system administrator can write.
+def _own_uid() -> int | None:
+    """The uid this gateway runs as, or ``None`` where the concept does not exist.
 
-    Every component of the CANONICAL path — not just the leaf — must be owned by
-    uid 0 and not group- or world-writable. The whole chain matters because a
-    root-owned ``bin`` inside a user-writable parent can simply be swapped for a
-    different directory; this is the same reasoning ``sudo``'s secure-path
-    handling applies, and the reason the check walks upward.
+    ``getattr``, not a direct call: ``os.geteuid`` is absent on Windows, and an
+    ``AttributeError`` is not an ``OSError``, so it would escape the guards its
+    callers have. ``None`` means "there is no uid to compare against", which the
+    ownership check treats as no match. Nothing rides on that: Windows reports
+    every ``st_mode`` as world-writable, so the check refuses there regardless, and
+    ``_run_probe`` is POSIX-gated.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid() if geteuid is not None else None
+
+
+def _trusted_owner(st: os.stat_result, own_uid: int | None) -> bool:
+    """Whether only root or this gateway's own user could have written a node.
+
+    Mode bits cannot say whether a file is *safe*; what they can bound is *how
+    small the set of accounts that could have put it there is*. Two owners qualify:
+
+    * **uid 0** — writing here needs administrator access.
+    * **the gateway's own uid** — the account whose shell the terminal panel
+      already exposes. A tool this user installed is inside the same trust
+      boundary as the shell that is about to run it.
+
+    Write access held by anyone ELSE disqualifies the node whoever owns it:
+    world-writable always, and group-writable only for an administrator group
+    (``_ADMIN_WRITE_GIDS``) when this gateway is NOT root.
+    """
+    mode = st.st_mode
+    if mode & stat.S_IWOTH:
+        return False
+    if mode & stat.S_IWGRP:
+        # The administrator-group exemption is for a gateway running as an
+        # ordinary user, where an admin-group member can already sudo and so
+        # gains nothing from the write bit. A ROOT gateway is the opposite case:
+        # anything it spawns is root too, so admitting a group-writable node
+        # would let a merely-admin account substitute a binary that then runs
+        # WITH root privileges — strictly weaker than requiring root ownership.
+        # Root therefore keeps the narrow rule.
+        if own_uid in (None, 0) or st.st_gid not in _ADMIN_WRITE_GIDS:
+            return False
+    return st.st_uid == 0 or (own_uid is not None and st.st_uid == own_uid)
+
+
+def _agent_writable_roots() -> tuple[str, ...] | None:
+    """Trees the agent itself writes: the active project checkout and the LLM
+    workspace root (worktrees, venvs, scratch files, cloned repos).
+
+    ``None`` means the set could not be determined, and every caller treats that as
+    "assume the path IS inside one". A filter that quietly dropped a root it failed
+    to resolve would admit exactly the trees it exists to refuse, and it would do so
+    invisibly — so the failure direction is closed, not open.
+
+    The catch is deliberately broad, and fail-closed is what makes that safe: this
+    runs on a keystroke route where an escaping exception would surface as an HTTP
+    500, so the alternatives are "no completions plus a warning" or "a 500 per
+    keystroke". A regression in the lazy import degrades to the former.
+
+    Read live rather than cached, because a session can retarget its project
+    directory; the callers already run off the event loop, and the workspace lookup
+    is one small local read.
+    """
+    raw = [os.environ.get("KIROCREW_PROJECT_DIR")]
+    try:
+        from kiro_crew.config.loader import workspace_root
+
+        raw.append(str(workspace_root()))
+    except Exception:
+        logger.warning(
+            "workspace root unavailable; refusing every PATH entry for command "
+            "completion", exc_info=True,
+        )
+        return None
+    roots: list[str] = []
+    for entry in raw:
+        if not entry:
+            # An unset project dir is the normal case, not a failure: there is no
+            # checkout to exclude.
+            continue
+        try:
+            roots.append(os.path.realpath(entry))
+        except OSError:
+            logger.warning("agent-writable root could not be canonicalized", exc_info=True)
+            return None
+    return tuple(roots)
+
+
+def _within(path: str, roots: tuple[str, ...] | None) -> bool:
+    """Whether *path* resolves inside one of *roots*, refusing when *roots* is None.
+
+    Compared against ``root + os.sep`` rather than by bare prefix, so a sibling that
+    merely starts with the same characters (``…/workspace-other`` next to
+    ``…/workspace``) is outside. An unresolvable path is treated as inside, for the
+    same fail-closed reason ``_agent_writable_roots`` returns None.
+    """
+    if roots is None:
+        return True
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return True
+    return any(real == root or real.startswith(root + os.sep) for root in roots)
+
+
+def _under_agent_writable_root(path: str) -> bool:
+    """Whether a path lands inside a tree the agent itself can write.
+
+    The ownership rule cannot see this case: a checkout is owned by the same user as
+    the gateway and holds no ``_PROJECT_LOCAL_SEGMENTS`` name, so a repo's own
+    ``bin/`` or ``scripts/`` on PATH — which a ``.envrc`` or dev shell commonly
+    PREPENDS, so it wins resolution over the real tool — would otherwise qualify. A
+    repo-planted shim named after an allowlisted tool is the one substitution vector
+    the model itself controls, which is why ``github_runner.agent_writable_roots``
+    refuses the same trees for provider CLIs.
+
+    Callers testing MANY paths should hoist ``_agent_writable_roots`` and use
+    ``_within`` instead, so one lookup serves the whole list.
+    """
+    return _within(path, _agent_writable_roots())
+
+
+def _is_trusted_dir(directory: str) -> bool:
+    """Whether a directory could only have been written by root or by this user.
+
+    Every component of the CANONICAL path — not just the leaf — must satisfy
+    ``_trusted_owner``. The whole chain matters because a trusted ``bin`` inside a
+    parent someone else can write can simply be swapped for a different directory;
+    this is the same reasoning ``sudo``'s secure-path handling applies, and the
+    reason the check walks upward.
 
     Deliberately NOT ``os.access(d, os.W_OK)``. That question is "can THIS process
     write here", and it answers *yes to everything* when the gateway runs as root
     — which containers routinely do — so it would silently disable the whole tier
     on those hosts while looking like a security win. Ownership and mode ask the
-    question that actually matters: could anything other than an administrator
-    have put a binary here.
+    question that actually matters: which accounts could have put a binary here.
 
-    Note the honest limit: when the gateway itself runs as root, the agent shares
-    that uid and no filesystem property separates them. This check bounds who
-    could have planted a binary, which is the useful half; it cannot bound a
-    same-uid actor, and no permission bit can.
+    The honest limit, and it is a real one: the agent shares this process's uid, so
+    admitting user-owned directories admits directories the agent can write. That
+    trade is argued where it is taken — see ``_sanitized_path``.
     """
     try:
         real = os.path.realpath(directory)
     except OSError:
         return False
+    own_uid = _own_uid()
     node = real
     while True:
         try:
             st = os.stat(node)
         except OSError:
             return False
-        if st.st_uid != 0:
-            return False
-        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        if not _trusted_owner(st, own_uid):
             return False
         parent = os.path.dirname(node)
         if parent == node:
@@ -419,28 +554,55 @@ def _sanitized_path() -> str | None:
     * **Project-local tool directories** (``.venv/bin``, ``node_modules/.bin``,
       …), which are writable by anything that can write the project — including
       the agent.
-    * **Anything not administrator-owned**, unless the operator declared it.
-      This is the general form of the point above: the probe fires while the line
-      is still being TYPED, so a binary planted anywhere on PATH would run before
-      the user could decide not to run it. Requiring a root-owned chain means a
-      plant needs administrator access, which is a different threat entirely.
+    * **Anything inside the agent-writable roots** (``_under_agent_writable_root``)
+      — the project checkout and the workspace root. This is the same class as the
+      point above, reached by location instead of by name, and it is what covers a
+      checkout's own ``bin/`` or ``scripts/``, whose name matches nothing.
+    * **Anything a third party could write.** This is the general form of the
+      points above: the probe fires while the line is still being TYPED, so a
+      binary planted anywhere on PATH would run before the user could decide not
+      to run it. ``_is_trusted_dir`` therefore requires every component of the
+      chain to be owned by root or by the user this gateway runs as, and writable
+      by nobody else.
 
-    The cost is real and deliberate: on a typical machine this drops
-    ``~/.local/bin`` and a version manager's shims, so a USER-LOCAL ``gh`` or
-    ``npm`` is never probed — only a system-packaged one (``/usr/bin/gh`` from
-    apt/dnf) is. There is deliberately NO opt-in to widen this. An earlier revision
-    offered an operator-declared trusted-directory list; review was right that it
-    reinstates the whole vector for anyone who uses it, and "the operator
-    consented" does not make an agent-writable directory safe to execute from
-    mid-keystroke. A tier that completes fewer tools is the correct trade against a
-    tier that can run a planted binary.
+    A ROOT-owned chain is not a tenable requirement on a developer machine.
+    Homebrew installs into a prefix owned by the installing user
+    (``/opt/homebrew``, group ``admin``), so requiring uid 0 leaves macOS with only
+    the handful of tools shipped in ``/usr/bin`` and drops every one this tier
+    exists for: ``gh``, ``docker``, ``kubectl``. A tier that is dead on the most
+    common developer platform is an unused code path, not a security win. This is
+    the policy ``github_runner.validate_provider_executable`` already applies to
+    provider CLIs — accept ``st_uid in (0, uid)``, refuse other accounts, refuse
+    world-writable, refuse the agent-writable trees — reached there for the same
+    reason: requiring a root-owned copy made every stock ``brew install gh`` fail.
+
+    What the ownership tier costs, stated plainly: the agent runs as the same user
+    as the gateway, so a directory kept by this filter is a directory the agent
+    could plant a binary in, and typing that tool's name would then run it. Three
+    things bound that, and the third is why the trade is worth taking. ``_KNOWN``
+    is a closed allowlist, so a plant has to SHADOW a specific real tool name AND
+    win PATH order against the genuine install. The plant does not choose the argv.
+    And an agent that can write files already holds far more reliable execution
+    paths on the same machine — ``~/.zshrc``, a git hook, a LaunchAgent — none of
+    which any PATH filter touches, so refusing the user's own install buys no real
+    containment. The trees the agent most plausibly writes are excluded by
+    location anyway, which is what the bullet above is for.
+
+    There is deliberately NO operator opt-in to widen this further: an
+    operator-declared trusted-directory list reinstates the whole vector for
+    anyone who uses it, and "the operator consented" does not make an
+    agent-writable directory safe to execute from mid-keystroke.
     """
     raw = os.environ.get("PATH")
     if not raw:
         return None
+    # One roots lookup for the whole list: the per-path form would repeat the
+    # workspace read for every PATH entry on a keystroke route.
+    roots = _agent_writable_roots()
     kept = [
         p for p in raw.split(os.pathsep)
-        if p and os.path.isabs(p) and not _is_project_local(p) and _is_trusted_dir(p)
+        if p and os.path.isabs(p) and not _is_project_local(p)
+        and not _within(p, roots) and _is_trusted_dir(p)
     ]
     return os.pathsep.join(kept) or None
 
@@ -472,19 +634,20 @@ def _resolve(command: str) -> tuple[str, tuple] | None:
     # The PATH filter covers the DIRECTORY the name was found in; this covers where
     # that name actually LEADS. A symlink sitting in an allowed prefix and pointing
     # somewhere writable would otherwise reintroduce exactly what the filter
-    # removed, and the target is the file that executes.
+    # removed, and the target is the file that executes — so the target is held to
+    # every test the entry was: name-based, location-based, and ownership.
     target_dir = os.path.dirname(real)
-    if _is_project_local(real):
+    if _is_project_local(real) or _under_agent_writable_root(real):
         return None
     if not _is_trusted_dir(target_dir):
         return None
-    # And the FILE, not only its directory. A root-owned directory cannot receive a
-    # new file from a non-root user — creating one needs write permission on the
-    # directory — but a file already inside it can still be user-owned or
-    # group/world-writable (a bad package, a hand-chmod, a root-created file handed
-    # to a user). The containing directory being trusted does not transfer to its
-    # contents, so the executable is checked on its own terms.
-    if st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    # And the FILE, not only its directory. A trusted directory cannot receive a new
+    # file from an account that cannot write it — creating one needs write permission
+    # on the directory — but a file already inside it can still be owned by a third
+    # account or be group/world-writable (a bad package, a hand-chmod, a root-created
+    # file handed to a user). The containing directory being trusted does not transfer
+    # to its contents, so the executable is checked on its own terms.
+    if not _trusted_owner(st, _own_uid()):
         return None
     return path, (real, st.st_mtime_ns, st.st_size)
 

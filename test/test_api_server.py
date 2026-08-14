@@ -115,6 +115,114 @@ class TestApiServerSpawn:
             assert mock_mgr.spawn.call_args.kwargs.get("max_turns") == 50
 
     @pytest.mark.asyncio
+    async def test_spawn_with_agent_warms_project_cache_first(self, tmp_path, monkeypatch):
+        """An agent-targeted spawn warms the project agent-name cache BEFORE spawn().
+
+        _validate_agent runs on the loop, so it reads only
+        cached_project_agent_names(); without the warm in this (async) handler, a
+        spawn_run naming a project agent is refused until some unrelated session
+        happens to warm that project's cache — a nondeterministic refusal of an
+        agent that verifiably exists.
+        """
+        order: list[str] = []
+        warm = AsyncMock(side_effect=lambda _d: order.append("warm"))
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
+        # The warm only ever touches an ALLOWLISTED cwd; stand in for a config
+        # whose allowed_roots admit tmp_path.
+        monkeypatch.setattr(
+            "kiro_crew.spawn_warm.validate_cwd",
+            lambda cwd, roots: (cwd, ""),
+        )
+        mock_mgr = MagicMock()
+
+        def _spawn(*a, **kw):
+            order.append("spawn")
+            return MagicMock(id="test-789", done=False, error="")
+
+        mock_mgr.spawn.side_effect = _spawn
+        state = _make_state(tmp_path, subagents=mock_mgr)
+        async with TestClient(TestServer(_make_api_app(state))) as client:
+            resp = await client.post(
+                "/api/spawn",
+                json={"task": "hi", "agent": "proj-agent", "cwd": str(tmp_path)},
+            )
+            assert resp.status == 200
+        warm.assert_awaited_once_with(str(tmp_path))
+        assert order == ["warm", "spawn"], f"warm did not precede spawn: {order}"
+
+    @pytest.mark.asyncio
+    async def test_spawn_never_warms_a_cwd_the_allowlist_rejects(self, tmp_path, monkeypatch):
+        """A caller cwd that fails validate_cwd is NOT warmed.
+
+        Regression: the warm read <cwd>/.kiro BEFORE spawn() validated the path
+        against subagent_cwd_allowed_roots — an unauthorized discovery read on a
+        path spawn() itself was about to refuse.
+        """
+        warm = AsyncMock()
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
+        monkeypatch.setattr(
+            "kiro_crew.spawn_warm.validate_cwd",
+            lambda cwd, roots: ("", "cwd not under an allowed root"),
+        )
+        mock_mgr = MagicMock()
+        mock_mgr.spawn.return_value = MagicMock(id="test-791", done=False, error="")
+        state = _make_state(tmp_path, subagents=mock_mgr)
+        async with TestClient(TestServer(_make_api_app(state))) as client:
+            resp = await client.post(
+                "/api/spawn",
+                json={"task": "hi", "agent": "proj-agent", "cwd": "/etc"},
+            )
+            assert resp.status == 200
+        warm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retry_revalidates_stored_cwd_before_warming(self, tmp_path, monkeypatch):
+        """A retry re-checks old.cwd against the CURRENT allowlist before warming.
+
+        Regression: retry warmed the stored cwd unconditionally, so a root
+        removed from subagent_cwd_allowed_roots since the original spawn still
+        had its agent files read before spawn() rejected the stale path.
+        """
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
+
+        warm = AsyncMock()
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
+        monkeypatch.setattr(
+            "kiro_crew.spawn_warm.validate_cwd",
+            lambda cwd, roots: ("", "root no longer allowed"),
+        )
+        old = MagicMock(
+            done=True, outcome="failed", agent="proj-agent", cwd="/was/allowed/repo",
+            _raw_task="t", task="t", parent_session_key="", max_turns=0, model="",
+            approval_mode="", silent=False, include_memory=True, include_lessons=True,
+            include_project=True,
+        )
+        mock_mgr = MagicMock()
+        mock_mgr.get.return_value = old
+        mock_mgr.spawn.return_value = MagicMock(id="retry-1", done=False, error="")
+        state = _make_state(tmp_path, subagents=mock_mgr)
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/spawn/{agent_id}/retry", api_spawn_retry)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/spawn/abc123/retry")
+            assert resp.status == 200
+        warm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_spawn_without_agent_skips_the_warm(self, tmp_path, monkeypatch):
+        """No agent name -> nothing to validate -> no warm round-trip added."""
+        warm = AsyncMock()
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
+        mock_mgr = MagicMock()
+        mock_mgr.spawn.return_value = MagicMock(id="test-790", done=False, error="")
+        state = _make_state(tmp_path, subagents=mock_mgr)
+        async with TestClient(TestServer(_make_api_app(state))) as client:
+            resp = await client.post("/api/spawn", json={"task": "hi"})
+            assert resp.status == 200
+        warm.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_spawn_list_empty(self, tmp_path):
         mock_mgr = MagicMock()
         mock_mgr.list.return_value = []
@@ -195,6 +303,51 @@ class TestApiServerNoUiRoutes:
 
 class TestStartApiServerWiring:
     """Integration test: start_api_server installs middleware and hook store."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_headless_state_carries_the_conversation_log(self, tmp_path, monkeypatch):
+        """Headless mode still runs Slack turns, so it needs the transcript.
+
+        Anything that judges how far a conversation has got reads it through
+        ``state.conversation_log``. Leaving it unset here left those readers on
+        their can't-tell branch, so an OPTIONS control posted under
+        ``--slack-only`` carried no position and every click on it was honoured
+        however stale -- the validation was inert for the whole mode.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.server as _srv
+        import kiro_crew.dashboard.state as _st
+        import kiro_crew.kiro_prerequisite as _prerequisite
+
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        service = MagicMock()
+        service.close = AsyncMock()
+        monkeypatch.setattr(
+            _prerequisite, "KiroPrerequisiteService", MagicMock(return_value=service)
+        )
+
+        from kiro_crew.dashboard.server import start_api_server
+
+        _log = MagicMock(name="conversation_log")
+        runner, state = await start_api_server(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+            assume_kiro_ready=True,
+            conversation_log=_log,
+        )
+        try:
+            assert state.conversation_log is _log
+        finally:
+            await runner.cleanup()
 
     @pytest.mark.asyncio
     async def test_server_has_audit_middleware_and_hook_store(self, tmp_path, monkeypatch):

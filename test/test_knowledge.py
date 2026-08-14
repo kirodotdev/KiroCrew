@@ -213,7 +213,7 @@ class TestFileReader:
 
     def test_supported_formats(self):
         reader = FileReader()
-        for ext in ('.md', '.txt', '.py', '.html', '.json', '.yaml', '.csv'):
+        for ext in ('.md', '.txt', '.py', '.html', '.json', '.jsonl', '.ndjson', '.yaml', '.csv'):
             assert ext in reader.SUPPORTED, f"{ext} missing from SUPPORTED"
 
 

@@ -3,8 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
+import Modal from '../../components/Modal'
+import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { useAvailableModels } from '../../hooks/useAvailableModels'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
@@ -159,6 +162,11 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   const [autoApprove, setAutoApprove] = useState(false)
   const [parallelWorkers, setParallelWorkers] = useState(1)
   const [executionMode, setExecutionMode] = useState<'agent' | 'workflow'>('agent')
+  // Explicit model pick for the campaign's worker. '' = inherit the research
+  // agent's / backend's default (never a concrete id). Options come from the
+  // shared advertised-models list (GET /api/models), same as every picker.
+  const [model, setModel] = useState('')
+  const availableModels = useAvailableModels()
   const [validation, setValidation] = useState<Validation | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -213,7 +221,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
     setSubmitting(true)
     setError(null)
     try {
-      const c = await api.researchCreate({ question, sub_questions: buildSubs(), scope_constraints: scopeConstraints, max_cycles: maxCycles, idle_secs: idleSecs, success_criteria: successCriteria, auto_approve: autoApprove, parallel_workers: parallelWorkers, execution_mode: executionMode })
+      const c = await api.researchCreate({ question, sub_questions: buildSubs(), scope_constraints: scopeConstraints, max_cycles: maxCycles, idle_secs: idleSecs, success_criteria: successCriteria, auto_approve: autoApprove, parallel_workers: parallelWorkers, execution_mode: executionMode, model: executionMode === 'agent' ? model : '' })
       if (c?.id) { await api.researchAction(c.id, 'start'); onDone() }
     } catch {
       setError(i18nT('apps.autoResearch.researchLabPage.failed_to_start_campaign_please_try_again'))
@@ -241,7 +249,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.agent')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.adaptive')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_drives_every_round_itself_deciding_what_t')}</div>
             </button>
-            <button type="button" onClick={() => setExecutionMode('workflow')} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
+            <button type="button" onClick={() => { setExecutionMode('workflow'); setModel('') }} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.dynamic_workflow')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.scripted')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_writes_an_orchestration_script_up_front_a')}</div>
             </button>
@@ -289,6 +297,13 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
           {i18nT('apps.autoResearch.researchLabPage.run_unattended_skip_clarification_questions')}
         </label>
         <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.parallel_workers')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.parallel_workers_2')} min={1} max={5} value={parallelWorkers} className="w-16 text-sm px-3 py-2 rounded-md bg-bg-elevated border border-border text-text outline-none focus-ring" onChange={e => setParallelWorkers(Math.min(5, Math.max(1, Number(e.target.value))))} /><span className="text-xs text-muted">{parallelWorkers > 1 ? `${parallelWorkers} sub-questions investigated in parallel each cycle` : 'sequential (default)'}</span></div>
+        {/* Explicit model pick — agent mode only (the workflow engine resolves
+            its own models, and the backend rejects a pick there). '' = inherit.
+            'auto' is filtered out, mirroring issue-radar's CrewEditor: it would
+            sit next to the clearLabel row as a second "default" with different
+            mechanics ('' inherits the research agent's pin; 'auto' overrides it
+            with an explicit pin subject to the availability withhold). */}
+        {executionMode === 'agent' && <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.model')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.model')} options={availableModels.map(m => m.name).filter(n => n !== 'auto')} clearLabel={i18nT('apps.autoResearch.researchLabPage.model_default_inherit')} value={model} onChange={setModel} /></div>}
       </div>}
 
       {step === 2 && <div className="space-y-3">
@@ -594,10 +609,15 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
   const [answerText, setAnswerText] = useState('')
   const [questionExpanded, setQuestionExpanded] = useState(false)
   const [showReport, setShowReport] = useState(false)
+  // In-app dialog, NOT window.confirm: the native confirm is synchronous and
+  // blocks the renderer's event loop, so a Quit event arriving while it is open
+  // queues behind it and fires the instant it dismisses — tearing the app down
+  // before the DELETE request below is ever sent.
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const { data: reportData } = useQuery<{ report: string }>({ queryKey: ['research-report', id], queryFn: () => api.researchReport(id), enabled: showReport })
   const actionMut = useMutation({ mutationFn: (action: string) => api.researchAction(id, action), onSuccess: () => qc.invalidateQueries({ queryKey: ['research-campaign', id] }) })
   const nudgeMut = useMutation({ mutationFn: (text: string) => api.researchNudge(id, text), onSuccess: () => { setShowNudge(false); setNudgeText(''); setAnswerText(''); qc.invalidateQueries({ queryKey: ['research-campaign', id] }) } })
-  const deleteMut = useMutation({ mutationFn: () => api.researchDelete(id), onSuccess: () => { qc.invalidateQueries({ queryKey: ['research-campaigns'] }); onBack() } })
+  const deleteMut = useMutation({ mutationFn: () => api.researchDelete(id), onSuccess: () => { setConfirmDelete(false); qc.invalidateQueries({ queryKey: ['research-campaigns'] }); onBack() } })
 
   if (!campaign) return <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.loading')}</div>
   const findings = campaign.findings || []
@@ -609,8 +629,24 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       <button className="text-sm text-accent" onClick={onBack}>{i18nT('apps.autoResearch.researchLabPage.back')}</button>
       <h2 className="text-lg font-semibold">{campaign.name}</h2>
       <span className="text-xs px-2 py-0.5 rounded bg-bg-elevated">{campaign.status}</span>
-      <button className="text-xs px-2 py-1 rounded bg-bg-elevated text-danger ml-auto" onClick={() => { if (window.confirm(i18nT('apps.autoResearch.researchLabPage.delete_this_campaign_and_its_report_this_cannot'))) deleteMut.mutate() }}><Trash2 size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.delete')}</button>
+      <button className="text-xs px-2 py-1 rounded bg-bg-elevated text-danger ml-auto" onClick={() => { deleteMut.reset(); setConfirmDelete(true) }}><Trash2 size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.delete')}</button>
     </div>
+    <Modal
+      open={confirmDelete}
+      onClose={() => { if (!deleteMut.isPending) setConfirmDelete(false) }}
+      title={i18nT('apps.autoResearch.researchLabPage.delete_campaign')}
+      maxWidth={400}
+      footer={<>
+        <Btn disabled={deleteMut.isPending} onClick={() => setConfirmDelete(false)}>{i18nT('apps.autoResearch.researchLabPage.cancel')}</Btn>
+        {/* Close only on success (see deleteMut.onSuccess): dismissing before the
+            request resolves would make a failed DELETE silent — the campaign
+            just looks un-deleted with no message and no retry cue. */}
+        <Btn danger disabled={deleteMut.isPending} onClick={() => deleteMut.mutate()}>{deleteMut.isPending ? i18nT('apps.autoResearch.researchLabPage.deleting') : i18nT('apps.autoResearch.researchLabPage.delete_campaign_button')}</Btn>
+      </>}
+    >
+      <p className="text-sm text-muted m-0">{i18nT('apps.autoResearch.researchLabPage.delete_this_campaign_and_its_report_this_cannot')}</p>
+      {deleteMut.isError && <p className="text-danger text-[12px] mt-2 m-0">{deleteMut.error instanceof Error && deleteMut.error.message ? deleteMut.error.message : i18nT('apps.autoResearch.researchLabPage.delete_failed')}</p>}
+    </Modal>
     {campaign.question && (() => {
       const isLong = campaign.question.length > 280
       return <div className="mb-4">

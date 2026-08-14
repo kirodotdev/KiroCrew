@@ -78,3 +78,46 @@ describe('settingsExtract — i18n-aware label resolution', () => {
     expect(skipped).toBe(1)
   })
 })
+
+describe('settingsExtract — quote-aware JSX prop parsing', () => {
+  it('does not terminate tag early on > inside a double-quoted prop value', () => {
+    const { entries } = extractFromSource(
+      `<SettingsSelect label="Threshold" description="lower = more, > 50% is aggressive" value={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].label).toBe('Threshold')
+    expect(entries[0].description).toBe('lower = more, > 50% is aggressive')
+  })
+
+  it('does not terminate tag early on > inside a single-quoted expression prop', () => {
+    // Single-quoted strings inside JSX expression braces
+    const { entries } = extractFromSource(
+      `<SettingsToggle label="Check" description={'if count > limit'} value={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].label).toBe('Check')
+    expect(entries[0].description).toBe('if count > limit')
+  })
+
+  it('handles } inside a quoted string within a JSX expression', () => {
+    const { entries } = extractFromSource(
+      `<SettingsSelect label={t('settings.display.language.label')} description={"use } carefully"} value={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].label).toBe('Language')
+    expect(entries[0].description).toBe('use } carefully')
+  })
+
+  it('handles > inside a JSX expression string', () => {
+    const { entries } = extractFromSource(
+      `<SettingsInput label="Limit" description={"values > 100 are capped"} value={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries).toHaveLength(1)
+    expect(entries[0].label).toBe('Limit')
+    expect(entries[0].description).toBe('values > 100 are capped')
+  })
+})

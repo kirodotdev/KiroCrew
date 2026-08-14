@@ -38,6 +38,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
 from kiro_crew.transcribe import BREW_PATH_DIRS, ensure_ffmpeg_in_path, find_brew, is_available
 
@@ -298,12 +299,15 @@ async def api_ready(request: web.Request) -> web.Response:
 
 #: Accepted shape for ``dashboard.language`` — a conservative BCP-47 subset
 #: (``en``, ``zh-CN``, ``pt-BR``, ``zh-Hans-CN``). Deliberately validates SHAPE,
-#: not membership in the frontend's shipped-language list: keeping the set of
-#: available languages a pure frontend data change (``SUPPORTED_LANGUAGES`` +
-#: one catalog) means adding a language never needs a backend edit. An
-#: unrecognised-but-well-formed tag is safe because the SPA's
-#: ``resolveLanguage()`` falls back to browser detection for any code it has no
-#: catalog for.
+#: not membership in the frontend's shipped-language list: ``""`` and
+#: not-yet-shipped tags must stay writable (the SPA's ``resolveLanguage()``
+#: falls back to detection for any code it has no catalog for, so a persisted
+#: non-catalog value degrades gracefully client-side). Membership IS enforced,
+#: but at the point of use: ``context.ui_language_tag`` gates the agent-steer
+#: read path on ``_UI_LANGUAGE_CATALOGS`` so a non-catalog tag is never claimed
+#: to the model as the UI language (#1130). A new backend consumer of
+#: ``dashboard.language`` must route through that resolver rather than reading
+#: the raw field.
 _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
 
@@ -491,6 +495,7 @@ _STT_LANGUAGE_CODES: tuple[str, ...] = (
     "it-IT",
     "pt-BR",
     "ja-JP",
+    "ko-KR",
     "zh-CN",
 )
 
@@ -880,9 +885,7 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
     """
     prelude = _stt_install_path_prelude()
     if provider == "mlx":
-        return (
-            prelude
-            + r"""
+        return prelude + r"""
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -903,10 +906,7 @@ pipx install --force mlx-whisper 2>&1 || { echo "ERROR: pipx install mlx-whisper
 
 echo "Done. mlx_whisper=$(command -v mlx_whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
-        )
-    return (
-        prelude
-        + r"""
+    return prelude + r"""
 # Pick up ffmpeg from ~/ffmpeg if installed there
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
@@ -975,7 +975,6 @@ echo "Installing openai-whisper..."
 
 echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
-    )
 
 
 async def api_stt_transcribe(request: web.Request) -> web.Response:
@@ -1292,8 +1291,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         # A startup-read key that was merely re-sent with its existing value did
         # not change the enforced cap, so it must not raise the hint.
         restart_required = any(
-            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key)
-            for key in applied
+            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key) for key in applied
         )
         return web.json_response({"ok": True, "restart_required": restart_required})
 
@@ -1364,6 +1362,19 @@ def _validate_role_model(value: str, request: web.Request) -> str | None:
     return None
 
 
+# Keys a caller may reasonably try to PATCH that have a dedicated endpoint whose
+# side effects the generic config write cannot reproduce. Naming the endpoint turns
+# a dead end ("field not editable") into a next step.
+_MOVED_CONFIG_FIELDS: dict[str, str] = {
+    "agent.apps_allow_third_party": (
+        "agent.apps_allow_third_party is not editable here because turning it off "
+        "must also stop the third-party app code it was admitting. Use "
+        "PUT /api/security/trusted-apps/allow-all, which runs that teardown and "
+        "reports anything it could not stop."
+    ),
+}
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
     # Default model for new sessions. Membership can NOT be validated against a
@@ -1408,7 +1419,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
-    "agent.apps_allow_third_party": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {"type": "int", "min": 0, "max": RESULT_FILE_MAX_BYTES},
     "agent.soft_stop_budget_secs": {"type": "float", "min": 0.5, "max": 60.0},
@@ -1417,9 +1427,24 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": 0, "max": 7200},
+    # Intent-level session summaries in the chat right panel. Only the boolean
+    # enable is editable here: it spends tokens on turns the user did not ask to
+    # pay for, so it is off by default and the Settings toggle is the single
+    # opt-in. The cadence/cap fields (min_user_turns, max_intents, …) stay
+    # config-file-only — they are power-user knobs, not first-run choices.
+    "session_summary.enabled": {"type": "bool"},
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # Default shell for the built-in terminal panel (Settings → Display →
+    # Terminal). "" = unset, use $SHELL / the platform default. The executable
+    # check lives as an off-loop special case in the PATCH handler (a PATH
+    # scan must not run inline on the event loop, and validate_fn is called
+    # synchronously); the spawn path re-validates at open time and falls back
+    # rather than failing, so a stale value can never cost the user their
+    # terminal — the save-time check exists to surface a typo immediately in
+    # the Settings field.
+    "dashboard.terminal.shell": {"type": "str", "max_len": 512},
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
@@ -1447,6 +1472,34 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # Nothing about this key is sensitive to read back, so the masked GET
     # already surfaces it for the toggle's initial state.
     "telemetry.beacon_enabled": {"type": "bool"},
+    # Tailnet-derived dashboard origin (RFC §4). Only the boolean enable is
+    # editable: there is no companion key here for a hand-written tailnet name,
+    # because the name is *derived from the local daemon and validated against the
+    # tailnet's own MagicDNS suffix* — accepting one from an API caller would hand
+    # the CSRF origin allowlist an attacker-chosen value, which is the whole thing
+    # ``tailnet._valid_magicdns_name`` exists to prevent. Enabling takes effect on
+    # the next gateway start (the origin set is built once during startup), and an
+    # enterprise ceiling can refuse the enabling write outright — see the
+    # ``capabilities.tailnet_origin`` gate below.
+    "dashboard.tailscale.enabled": {"type": "bool"},
+    # Identity trust for tailnet peers (RFC §2–§3.1). Only the boolean opt-in
+    # and the pin scope are editable here; ``allowed_logins`` is a list and is
+    # deliberately config-file-only — the write surface below has no list type,
+    # and the allowlist is the control that decides who gets in, so it should
+    # be an explicit file edit rather than an API-reachable value. Loader-side
+    # validation keeps every bad combination narrowing-only (trust with an
+    # empty allowlist stays off; an unrecognised pin_scope falls back to node).
+    "dashboard.tailscale.trust_identity": {"type": "bool"},
+    "dashboard.tailscale.pin_scope": {"type": "str", "max_len": 8},
+    # Local OTEL metric collection — the Privacy panel's recording switch. Safe
+    # to expose where beacon_endpoint is not: turning this on writes JSONL under
+    # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —
+    # `_build_recorder` attaches an OTLP reader when `telemetry.otlp_endpoint` is
+    # set — so the gate below refuses the ENABLE on a host that configured an
+    # endpoint, which is what keeps the switch's local-only promise true for every
+    # state it can reach. The endpoint itself stays config-file-only, so a
+    # dashboard caller can neither choose a destination nor start sending to one.
+    "telemetry.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.
     # Bounded to a short string here; the companion login handler re-validates
     # each token against its own flag allowlist before spawning the login PTY
@@ -1470,6 +1523,11 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
     "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
+    "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": 50000},
+    "knowledge.max_sources": {"type": "int", "min": 0, "max": 1000},
+    "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.extraction_model": {"type": "str"},
+    "knowledge.extraction_pool_size": {"type": "int", "min": 1, "max": 10},
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
     # ``computer_use.json`` (see config.loader.computer_use_state_path) so the
@@ -1513,10 +1571,32 @@ def _beacon_governance_pinned_off() -> bool:
     return beacon.is_governance_pinned_off(audit_tool="config_patch_dashboard")
 
 
+def _tailnet_governance_pinned_off() -> bool:
+    """Return whether a ceiling pins ``capabilities.tailnet_origin`` off (blocking).
+
+    The tailnet twin of :func:`_beacon_governance_pinned_off`, and delegating for
+    the same reason: ``tailnet.is_governance_pinned_off`` is the one resolution, so
+    the PATCH gate, the startup derivation gate and the CLI gate cannot disagree
+    about whether a host is pinned.
+
+    Runs in a worker thread (see the call site): the resolution reads the
+    trust-root policy file and the active profile from disk.
+
+    ``audit_tool``: this is an ENFORCEMENT decision (it refuses the write with a
+    403), so it routes through the audited seam and lands a
+    ``governance_decision`` SEL record. The name is distinct per call site so the
+    trail says which control refused; the route additionally logs its own
+    ``config.patch`` denial via ``_log_sel``, which records the API call while
+    this records the governance decision behind it.
+    """
+    from kiro_crew.dashboard import tailnet  # noqa: F811 - local: keeps the import edge lazy
+
+    return tailnet.is_governance_pinned_off(audit_tool="config_patch_dashboard_tailnet")
+
+
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
-    from kiro_crew.agent import _atomic_json_write  # noqa: F811
-    from kiro_crew.config.loader import config_path  # noqa: F811
+    from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 
     caller = request.get("user")
     if not caller:
@@ -1547,6 +1627,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     value = body.get("value")
     spec = _EDITABLE_CONFIG.get(path_key)
     if not spec:
+        # `agent.apps_allow_third_party` was deliberately REMOVED from the editable
+        # set. It is not an ordinary preference: turning it off has to stop the code
+        # it was admitting, which means a teardown sweep (shutdown hooks, backend
+        # processes, cron deregistration) that this generic read-modify-write knows
+        # nothing about. A plain PATCH here would flip the flag and leave every app
+        # it admitted still executing — trust withdrawn on paper only. The dedicated
+        # endpoint owns that sequencing, so point the caller at it instead of
+        # silently accepting a write that cannot honour the setting's meaning.
+        if path_key in _MOVED_CONFIG_FIELDS:
+            return _deny(_MOVED_CONFIG_FIELDS[path_key], f"{path_key}={value}")
         return _deny(f"field not editable: {path_key}", f"{path_key}={value}")
 
     # Validate value
@@ -1596,6 +1686,30 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 
+    # The terminal's default shell must name a program that exists — "" clears
+    # the setting (restores the $SHELL / platform default). shutil.which stats
+    # every PATH entry, so the probe runs off-loop (same rationale as the
+    # governance reads below); the spawn path re-validates at open time and
+    # falls back regardless, so this gate is a UX surface, not the safety
+    # boundary — it exists to refuse a typo visibly at save time instead of
+    # letting it be discovered as a silently different shell on the next
+    # terminal open. The body carries a machine-readable `code` (the AGENTS
+    # contract for new non-2xx JSON): the Settings field maps it to a catalog
+    # key, since rendering this English sentence verbatim would ship an
+    # untranslated string into a 12-language dashboard.
+    if path_key == "dashboard.terminal.shell" and value.strip():
+        resolved = await asyncio.to_thread(shutil.which, value.strip())
+        if not resolved:
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {
+                    "error": "must be an executable shell (an absolute path or a "
+                    "command on PATH); leave empty to use the system default",
+                    "code": "shell_not_executable",
+                },
+                status=400,
+            )
+
     # ── Governance: refuse a write an enterprise ceiling has pinned ──
     # Only re-ENABLING is refused. Writing `false` is always allowed even under a
     # ceiling that already forbids the beacon: the ceiling is a floor on privacy,
@@ -1617,37 +1731,87 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 403,
             )
 
-    # Read, update, write
+    # Local metric collection is offered as local-only ("Nothing is exported"), and
+    # that promise has to hold for every state this route can reach. It would not:
+    # `_build_recorder` attaches an OTLP reader whenever `telemetry.otlp_endpoint`
+    # is set (see metrics/provider.py), so on a host that already configured an
+    # endpoint, enabling collection from the dashboard would start network egress
+    # under a switch that says it does not. Refuse the ENABLE there and let the
+    # config file — which is where the endpoint was chosen — be where that decision
+    # is made. Disabling stays writable for the same reason as the beacon above: a
+    # narrower local choice always composes.
+    if path_key == "telemetry.enabled" and value is True:
+        try:
+            # to_thread: a config load is a fingerprint-cache hit in the steady
+            # state, but a full read plus schema validation (~14ms) when the file
+            # changed — and this handler runs on the event loop.
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            endpoint = str(getattr(cfg.telemetry, "otlp_endpoint", "") or "")
+        except Exception:
+            # Unreadable config: fail closed rather than enabling collection whose
+            # egress posture cannot be established.
+            logger.warning("telemetry config unreadable; refusing to enable", exc_info=True)
+            return _deny("could not read the telemetry configuration", f"{path_key}={value}", 409)
+        if endpoint.strip():
+            return _deny(
+                "telemetry.otlp_endpoint is set, so enabling collection here would "
+                "also export metrics off this machine. Enable it in the config file "
+                "instead, where the endpoint is configured.",
+                f"{path_key}={value}",
+                409,
+            )
+
+    # Same rule, same direction, for the tailnet origin derivation. `false` stays
+    # writable under a ceiling that already forbids it, for the same reason as
+    # above: the ceiling is a floor, a narrower local choice composes with it, and
+    # refusing the write would strand the user if the policy were later lifted.
+    # The 403 exists so a pinned host cannot store `true` behind a control that
+    # does nothing — `resolve_tailnet_host` already refuses to derive, so without
+    # this the config file and the card would both claim "on" while no origin is
+    # ever added.
+    if (
+        path_key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
+        and value is True
+    ):
+        pinned = await asyncio.to_thread(_tailnet_governance_pinned_off)
+        if pinned:
+            return _deny(
+                "tailnet access is disabled by your administrator's security policy",
+                f"{path_key}={value}",
+                403,
+            )
+
+    # Read, update, write — serialized across processes via update_config_locked.
     cfg_path = config_path()
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
     async with _get_config_lock():
+        parts = path_key.split(".")
+
+        def _mutate_config_patch(data: dict) -> dict | None:
+            """Apply a single dotted-key assignment to the raw config dict."""
+            # Walk (creating) intermediate objects, then set the leaf. Handles
+            # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
+            # ("agent.model"), and 3-level ("agent.role_models.background") —
+            # instead of special-cases that would clobber a whole section for a
+            # 3-level key.
+            section = data
+            for part in parts[:-1]:
+                nxt = section.setdefault(part, {})
+                if not isinstance(nxt, dict):
+                    raise ValueError(f"config section '{part}' is not an object")
+                section = nxt
+            section[parts[-1]] = value
+            return data
+
         try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-        except Exception:
+            await asyncio.to_thread(update_config_locked, cfg_path, mutate=_mutate_config_patch)
+        except ConfigReadError:
             _log_sel("error", f"{path_key}=read_failed")
             return web.json_response({"error": "failed to read config file"}, status=500)
-
-        parts = path_key.split(".")
-        # Walk (creating) intermediate objects, then set the leaf. Handles
-        # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
-        # ("agent.model"), and 3-level ("agent.role_models.background") — instead
-        # of the previous special-cases that would clobber a whole section for a
-        # 3-level key.
-        section = data
-        for part in parts[:-1]:
-            nxt = section.setdefault(part, {})
-            if not isinstance(nxt, dict):
-                _log_sel("error", f"{path_key}=section_not_dict")
-                return web.json_response(
-                    {"error": f"config section '{part}' is not an object"}, status=500
-                )
-            section = nxt
-        section[parts[-1]] = value
-
-        try:
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_json_write(cfg_path, data)
+        except ValueError as exc:
+            _log_sel("error", f"{path_key}=section_not_dict")
+            return web.json_response({"error": str(exc)}, status=500)
         except OSError:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)
@@ -1727,6 +1891,22 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 cfg.agent.completion_keep,
                 cfg.agent.completion_keep_chars,
             )
+
+    # The metrics recorder is built once per process and memoized, so a config
+    # write alone would leave the Telemetry panel reporting "on" while every
+    # metric call site stayed a no-op. Dropping the cached recorder makes the next
+    # get_recorder() rebuild from the value just written — collection starts (or
+    # stops, flushing what it had) without a restart. This reaches the gateway
+    # process, which is where the session/turn/HTTP metrics are recorded; other
+    # kirocrew processes pick the value up when they next start.
+    if path_key == "telemetry.enabled":
+        try:
+            # to_thread: shutdown() flushes the exporter and joins the reader
+            # thread, both of which block.
+            await asyncio.to_thread(_metrics_provider.shutdown)
+            logger.info("telemetry.enabled set to %r — metrics recorder rebuilt", value)
+        except Exception:
+            logger.warning("metrics recorder reset after telemetry toggle failed", exc_info=True)
 
     return web.json_response(_masked_config_dict(cfg))
 
@@ -1914,7 +2094,29 @@ async def api_logout(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
-    revoke_all_sessions()
+    # Fail-closed: bump_revocation_gen raises when the persisted counter
+    # cannot be read (bumping from an assumed base could persist a LOWER
+    # counter, resurrecting revoked sessions after restart) or when the write
+    # fails (the counter is left unchanged, so the revocation did not take
+    # effect). Report the failure instead of a false success.
+    try:
+        revoke_all_sessions()
+    except OSError:
+        logger.warning("logout failed: could not persist session revocation", exc_info=True)
+        _sel().log_api_access(
+            caller=request.remote or "unknown",
+            operation="logout",
+            outcome="error",
+            source="cli",
+            resources="revocation-persist-failed",
+        )
+        return web.json_response(
+            {
+                "error": "could not persist session revocation; logout not completed",
+                "code": "revocation_persist_failed",
+            },
+            status=500,
+        )
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="logout",

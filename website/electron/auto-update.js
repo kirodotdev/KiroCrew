@@ -186,18 +186,22 @@ function buildFeedBase({ base, channel }) {
  *
  * @param {string} channel    resolved update channel
  * @param {string} osPlatform process.platform value
+ * @param {string} [osArch]   process.arch value; defaults to the running arch
  * @returns {string|null}
  */
-function manualDownloadUrl(channel, osPlatform) {
+function manualDownloadUrl(channel, osPlatform, osArch = process.arch) {
   if (!KNOWN_CHANNELS.has(channel)) return null;
-  // ARCH ASSUMPTION: the mac dmg is universal, but the only Linux desktop lane
-  // publish-linux.yml builds is x86_64 (LINUX_BASENAME + "-x86_64.AppImage"). If
-  // an aarch64 lane ever ships, this must branch on process.arch or it hands ARM
-  // users an incompatible binary.
+  // The mac DMG is universal, so darwin needs no arch. Linux has no universal
+  // binary: publish-linux.yml publishes one AppImage per arch under the
+  // basenames below, so handing a user the wrong one is an immediate
+  // "cannot execute binary file" — which is exactly the dead end this link
+  // exists to avoid. An arch with no published lane returns null rather than
+  // guessing x86_64.
+  const linuxFile = { x64: "KiroCrew-x86_64.AppImage", arm64: "KiroCrew-aarch64.AppImage" }[osArch];
   const file = osPlatform === "darwin"
     ? "KiroCrew.dmg"
     : osPlatform === "linux"
-      ? "KiroCrew-x86_64.AppImage"
+      ? linuxFile || null
       : null;
   if (!file) return null;
   return `${DOWNLOAD_BASE}/desktop/${channel}/latest/${file}`;
@@ -333,6 +337,9 @@ function classifyError(err) {
  * @param {() => Promise<void>} deps.stopGateway - graceful, awaitable gateway stop
  * @param {string} [deps.platform]             - display arch, e.g. "darwin-arm64"
  * @param {string} [deps.osPlatform]           - process.platform override (tests)
+ * @param {string} [deps.osArch]               - process.arch override (tests). Picks the
+ *   per-arch Linux AppImage for the manual-reinstall link; darwin ignores it
+ *   (the DMG is universal).
  * @param {string} [deps.resourcesPath]        - process.resourcesPath override
  *   (tests). Used only to classify where the bundle runs FROM, so a
  *   translocated / read-only-volume install can be refused an update lane.
@@ -370,6 +377,7 @@ function initAutoUpdate(deps) {
     onInstallFailed = null,
     platform = "darwin-arm64",
     osPlatform = process.platform,
+    osArch = process.arch,
     resourcesPath = process.resourcesPath,
     probeBundleWritable = isBundleContainerWritable,
     // Electron's NATIVE autoUpdater, used only to observe
@@ -388,6 +396,13 @@ function initAutoUpdate(deps) {
   // When the in-app UI is wired (onUpdateState provided), it owns the prompt;
   // the native dialog stays as the fallback for headless / no-renderer cases.
   const uiDriven = typeof onUpdateState === "function";
+  // Last lifecycle payload handed to the UI. Pushed state dies with the
+  // renderer: the post-install-failure recovery path reloads the window, and a
+  // fresh mount that only ever LISTENS would render as if nothing happened --
+  // the failure card (and its Retry) silently vanish. getInfo() carries this
+  // back out so the renderer can replay it on mount, which keeps the boot path
+  // untouched (the renderer already requests the info payload).
+  let lastEmittedState = null;
   // Single channel resolver used for the feed AND everything reported to
   // the UI. Read the preference FRESH on every call: configureFeed() runs
   // per check, so a Settings channel switch takes effect on the next check
@@ -398,14 +413,25 @@ function initAutoUpdate(deps) {
   }
   function emit(state, extra = {}) {
     if (!uiDriven) return;
+    const payload = { state, channel: currentChannel(), version: app.getVersion(), ...extra };
+    // Remembered even when the push below throws: a renderer that missed the
+    // push is exactly the one the getInfo() replay exists to catch up.
+    lastEmittedState = payload;
     try {
-      onUpdateState({ state, channel: currentChannel(), version: app.getVersion(), ...extra });
+      onUpdateState(payload);
     } catch (err) {
       log.error("[update] onUpdateState threw", err);
     }
   }
   function getInfo() {
     const stamped = channelForVersion(app.getVersion());
+    // Observability for the replay path: without this line a replayed state is
+    // indistinguishable from a live emit in the log, so a report of "the
+    // failure card came back / didn't come back" has no evidence to read.
+    if (lastEmittedState) {
+      log.info(`[update] getInfo carrying replay seed: ${lastEmittedState.state}`
+        + (lastEmittedState.phase ? ` (phase ${lastEmittedState.phase})` : ""));
+    }
     return {
       version: app.getVersion(),
       channel: currentChannel(),
@@ -417,7 +443,9 @@ function initAutoUpdate(deps) {
       platform,
       packaged: !!app.isPackaged,
       // Escape hatch for a failed install (see manualDownloadUrl).
-      downloadUrl: manualDownloadUrl(currentChannel(), osPlatform),
+      downloadUrl: manualDownloadUrl(currentChannel(), osPlatform, osArch),
+      // Replay seed for a freshly mounted renderer (see lastEmittedState).
+      lastState: lastEmittedState,
     };
   }
 

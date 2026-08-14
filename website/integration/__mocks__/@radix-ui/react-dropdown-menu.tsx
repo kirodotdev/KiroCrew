@@ -67,37 +67,44 @@ export const Content = React.forwardRef<HTMLDivElement, any>(({ children, classN
 // restore runs on a double rAF so it deterministically lands one frame after a
 // consumer's single-rAF mount focus, and is skipped when the Content's
 // onCloseAutoFocus calls preventDefault.
-export const Item = React.forwardRef<HTMLDivElement, any>(({ children, className, onSelect, ...props }, ref) => {
+/**
+ * The shared close-and-restore click handler for a menu row. Item and RadioItem
+ * differ only in role and checked state, so the focus-restore fidelity that the
+ * rename-guard tests depend on lives in one place.
+ */
+function useRowClick(props: any, onSelect?: (e: any) => void) {
   const { setOpen, triggerRef, closeAutoFocusRef } = useContext(Ctx)
-  return (
-    <div ref={ref} role="menuitem" className={className} {...props}
-      onClick={e => {
-        props.onClick?.(e)
-        onSelect?.(e)
-        // Real Radix keeps the menu open when onSelect prevents default
-        // (used by items that open an inline sub-panel, e.g. cut mode or a
-        // confirm card). Mirror that: only close when not defaultPrevented.
-        if (e.defaultPrevented) return
-        setOpen(false)
-        const trigger = triggerRef.current
-        const handler = closeAutoFocusRef.current
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          const evt = new CustomEvent('closeAutoFocus', { cancelable: true })
-          handler?.(evt)
-          if (evt.defaultPrevented) return
-          // Real Radix focuses the trigger (previously-focused element) here,
-          // which blurs whatever the consumer just focused. jsdom won't focus a
-          // plain trigger reliably, so model the essential browser effect: move
-          // focus off the active element (fires its blur), then focus the
-          // trigger. preventDefault above (the rename guard) skips both.
-          ;(document.activeElement as HTMLElement | null)?.blur()
-          trigger?.focus()
-        }))
-      }}>
-      {children}
-    </div>
-  )
-})
+  return (e: any) => {
+    props.onClick?.(e)
+    onSelect?.(e)
+    // Real Radix keeps the menu open when onSelect prevents default
+    // (used by items that open an inline sub-panel, e.g. cut mode or a
+    // confirm card). Mirror that: only close when not defaultPrevented.
+    if (e.defaultPrevented) return
+    setOpen(false)
+    const trigger = triggerRef.current
+    const handler = closeAutoFocusRef.current
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const evt = new CustomEvent('closeAutoFocus', { cancelable: true })
+      handler?.(evt)
+      if (evt.defaultPrevented) return
+      // Real Radix focuses the trigger (previously-focused element) here,
+      // which blurs whatever the consumer just focused. jsdom won't focus a
+      // plain trigger reliably, so model the essential browser effect: move
+      // focus off the active element (fires its blur), then focus the
+      // trigger. preventDefault above (the rename guard) skips both.
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      trigger?.focus()
+    }))
+  }
+}
+
+export const Item = React.forwardRef<HTMLDivElement, any>(({ children, className, onSelect, ...props }, ref) => (
+  <div ref={ref} role="menuitem" className={className} {...props} onClick={useRowClick(props, onSelect)}>
+    {children}
+  </div>
+))
+
 export const Separator = React.forwardRef<HTMLDivElement, any>((props, ref) => <div ref={ref} role="separator" {...props} />)
 export const Label = React.forwardRef<HTMLDivElement, any>(({ children, ...props }, ref) => <div ref={ref} {...props}>{children}</div>)
 export const Group: React.FC<any> = ({ children }) => <>{children}</>
@@ -116,4 +123,22 @@ export const SubContent = React.forwardRef<HTMLDivElement, any>(({ children, cla
   if (!open) return null
   return <div ref={ref} role="menu" className={className} {...props}>{children}</div>
 })
-export const RadioGroup: React.FC<any> = ({ children }) => <>{children}</>
+const RadioCtx = createContext<string | undefined>(undefined)
+export const RadioGroup: React.FC<any> = ({ children, value }) => (
+  <RadioCtx.Provider value={value}>{children}</RadioCtx.Provider>
+)
+export const RadioItem = React.forwardRef<HTMLDivElement, any>(({ children, className, onSelect, value, ...props }, ref) => {
+  const selected = useContext(RadioCtx)
+  return (
+    <div
+      ref={ref}
+      role="menuitemradio"
+      aria-checked={selected === value}
+      className={className}
+      {...props}
+      onClick={useRowClick(props, onSelect)}
+    >
+      {children}
+    </div>
+  )
+})

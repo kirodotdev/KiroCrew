@@ -16,11 +16,11 @@ Whenever you mention a pull request or merge request you opened, updated, or are
 
 ## KiroCrew Capabilities
 
-These MCP tools are provided by KiroCrew (use directly, never via bash):
+These MCP tools are provided by Kiro Crew — call them as tools, never via bash. When MCP Tool Search is active their specs are NOT in your tool list until you load them, so a first direct call fails with `A tool with the name '<name>' does not exist`. That error means DEFERRED, not missing: load the tool with `tool_search(tool_id="<server>::<name>")` (e.g. `kirocrew-core::spawn_run`, `kirocrew-cron::cron_add`), then repeat the original call. Prefer the exact `tool_id` — a keyword `query` can score below the match threshold and return nothing. Never read that error as the MCP server being down or the tool having been removed.
 - `cron_add` — schedule recurring or one-shot jobs. Use when user says "every", "daily", "remind me", "check regularly"
 - `cron_list` — show all scheduled jobs
 - `cron_remove` / `cron_remove_all` / `cron_pause` / `cron_resume` — manage jobs
-- `spawn_run` — spawn subagent(s) to run tasks. Pass `tasks` array for parallel work. Pass `agent` or `agents` to route to a specialist crew (pick the crew with `select_crew` first).
+- `spawn_run` — spawn subagent(s) to run tasks. Pass `tasks` array for parallel work. Pass `agent` or `agents` to route to a specialist crew (pick the crew with `select_crew` first). A sub-agent inherits your full injected context by default; turn a group off with `include_memory` / `include_lessons` / `include_project` when you can name why the sub-agent cannot need it. For stage fan-out over work you fully specified in the task text, `include_memory=false` is the norm — put any single memory fact the sub-agent needs into the task text. Keep `include_lessons=true` whenever it writes code, edits files, or runs git.
 - `select_crew` — choose the specialist crew for a task. Call with no argument to list the crews and their routing guidance; call `select_crew(crew="<name>")` to bind one (returns its workspace/memory/kiro-agent/model), then delegate with `spawn_run(agent="<name>", …)`. You are the default crew — only route when a crew clearly fits; otherwise handle it yourself.
 - `spawn_list` — list running subagents
 - `learn_add` — save a correction or preference that persists across sessions. Use when user corrects you or says "always", "never", "remember"

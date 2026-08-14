@@ -42,6 +42,23 @@ class TestHelpers:
         assert mcp_core._extract_history_snippet([{"role": "user", "content": "abc"}], "") == ""
         assert mcp_core._extract_history_snippet([{"role": "user", "content": "abc"}], "   ") == ""
 
+    def test_snippet_multi_word_query_falls_back_to_a_token(self):
+        # search_sessions matches a session when every TOKEN appears somewhere, so
+        # this extractor must locate a token too. Searching only the whole phrase
+        # returned "" and the handler suppresses snippet-less rows -- so exactly
+        # the multi-word queries token-wise matching enables came back bare.
+        msgs = [{"role": "user", "content": "the ack path shows contention under load"}]
+        snip = mcp_core._extract_history_snippet(msgs, "ack contention hypotheses")
+        assert snip, "a scattered multi-word match must still yield a snippet"
+        assert "<<<" in snip and ">>>" in snip, "the located token must be delimited"
+
+    def test_snippet_prefers_the_exact_phrase_over_a_token(self):
+        # Phrase first: when the words DO sit together, the snippet centres on the
+        # phrase rather than on whichever token happens to appear earliest.
+        msgs = [{"role": "user", "content": "ping alone, then the ping pong bench"}]
+        snip = mcp_core._extract_history_snippet(msgs, "ping pong")
+        assert "<<<ping pong>>>" in snip
+
     def test_snippet_full_casefold_match_is_delimited(self):
         # The selection (str.casefold().find) and the wrap must use the SAME full
         # casefolding: 'straße'.casefold() == 'strasse' matches 'STRASSE', but a

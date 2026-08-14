@@ -20,19 +20,17 @@ channel follows.
 
 ## Authenticate first
 
-```bash
-URL=$(kirocrew token 2>/dev/null | grep -oE 'http://[^ ]+' | head -1)
-BASE="${URL%%\?*}"; TOKEN="${URL#*token=}"
-```
-
-Reuse `$BASE`/`$TOKEN` for every call below and pass `?token=$TOKEN`. Never hardcode a
-port and never hunt for a token elsewhere — see SKILL.md § Calling the API for why.
+Every app API call goes through the `ops_mission_control_api` MCP tool — it
+carries the gateway's own credential and always reaches this instance. Never
+call the API over raw HTTP and never hunt for a credential — see SKILL.md
+§ Calling the API for why. Paths below are relative to the app base, exactly
+as the tool takes them.
 
 ## Pass 1 — signals that cleared
 
-1. `GET /api/apps/ops-mission-control/incidents?status=investigating`, then again
+1. `GET /incidents` with `query="status=investigating"`, then again
    for `needs_human` and `dispatched`.
-2. `GET /api/apps/ops-mission-control/signals`. Read five things from the response:
+2. `GET /signals`. Read five things from the response:
    - **`firing`** — what is still firing (already state-filtered for you; do NOT use
      the raw `signals` list, which includes signals a provider reported as recovered).
    - **`cleared`** — signals a provider POSITIVELY reports as recovered.
@@ -66,12 +64,11 @@ port and never hunt for a token elsewhere — see SKILL.md § Calling the API fo
    not recovery, and resolving on it would close live work on a successful poll. For those
    sources, resolve only from an explicit entry in `cleared` (step 4).
 
-   ```bash
+   ```
    # Only for an incident whose source polled OK, or one listed in `cleared`.
-   curl -sS -X POST "$GATEWAY/api/apps/ops-mission-control/incident/transition" \
-     -H 'Content-Type: application/json' \
-     -d '{"id": "INV-7", "status": "resolved",
-          "resolution": "signal cleared at the provider — no longer firing"}'
+   ops_mission_control_api(method="POST", path="/incident/transition",
+     body_json='{"id": "INV-7", "status": "resolved",
+                 "resolution": "signal cleared at the provider — no longer firing"}')
    ```
 
    A `409` means that transition is not legal from the incident's current state.

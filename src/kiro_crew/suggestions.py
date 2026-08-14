@@ -29,7 +29,7 @@ _REFRESH_INTERVAL_SECS = 30 * 60
 _FALLBACK_SUGGESTIONS = [
     "Summarize my recent activity",
     "Search my code for usage examples",
-    "Summarize this week's Slack activity",
+    "Summarize this week's chat activity",
     "Help me write a design doc",
     "Review my latest changes",
     "What should I work on next?",

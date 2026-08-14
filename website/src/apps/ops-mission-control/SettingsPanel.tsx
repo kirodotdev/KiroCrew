@@ -1394,6 +1394,9 @@ export default function SettingsPanel() {
   const rotationQuery = useQuery({
     queryKey: ['ops-mission-control', 'rotation'],
     queryFn: () => opsApi.rotation(),
+    // settingsMutation sends a replace-all PUT from this cache; finite staleTime
+    // lets focus-refetch fire here (global default is Infinity).
+    staleTime: 30_000,
   })
 
   // Slack status rides on /state (it depends on live gateway state, not config

@@ -1,8 +1,20 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
   isElectron: true,
+  // Absolute filesystem path for a File the OS handed the renderer (drag-drop,
+  // file input). Browsers deliberately hide real paths, and Electron removed
+  // File.path, so webUtils in the preload is the only remaining bridge. Returns
+  // "" when no path can be resolved (synthetic File) so callers can treat any
+  // falsy result as "no path available" and keep their browser fallback.
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || "";
+    } catch {
+      return "";
+    }
+  },
 });
 
 contextBridge.exposeInMainWorld("electronAPI", {
@@ -58,6 +70,21 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Privacy-pane dialog only if macOS is actually the one saying no. Without
   // this the toast is a dead end: macOS never re-prompts after a denial.
   reportMicDenied: () => ipcRenderer.send("mic:denied"),
+  // The system-wide summon hotkey as ACTUALLY bound by main.js (registration
+  // can degrade to the default or to nothing when a key is taken), so the
+  // shortcuts UI advertises what really works. Resolves
+  // { accelerator, default } — accelerator is "" when nothing is bound.
+  getGlobalHotkey: () => ipcRenderer.invoke("global-hotkey:get"),
+});
+
+// Local-gateway switch for the Settings > Developer toggle. The choice lives in
+// the app's own config, which page JS cannot read or write, so the renderer
+// round-trips through main.js. Both calls resolve with the stored value.
+// Absent in plain browsers and in the PWA — the renderer hides the toggle when
+// the bridge is missing, since a browser tab has no local gateway to manage.
+contextBridge.exposeInMainWorld("localGatewayAPI", {
+  get: () => ipcRenderer.invoke("local-gateway:get"),
+  set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
 });
 
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
@@ -108,7 +135,24 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser:set-control-owner", panelId, owner),
   getControl: (panelId) => ipcRenderer.invoke("browser:get-control", panelId),
   control: (panelId, op, args) => ipcRenderer.invoke("browser:control", panelId, op, args),
+  // Declares that a chat session may host a browser panel, so the agent command
+  // channel polls for it even before the Browser tab is ever opened. Grants no
+  // authorization — authorization to drive the built-in browser is Browser Mode
+  // (the Settings toggle), and the gate is just the view precondition. This is
+  // the ONLY session-declaration channel: reachability is simply the active slots
+  // the renderer declares here.
+  trackSession: (panelId, tracked) =>
+    ipcRenderer.invoke("browser:track-session", panelId, !!tracked),
   // Events carry their own panelId so a listener can ignore other panels'.
+  // `onAgentOpened` fires when the AGENT bootstrapped a native view for a
+  // session whose Browser panel may not be mounted yet — the dashboard must
+  // surface that panel so it can report bounds, or the page would render to
+  // nowhere.
+  onAgentOpened: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("browser:agent-opened", handler);
+    return () => ipcRenderer.removeListener("browser:agent-opened", handler);
+  },
   onDidNavigate: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on("browser:did-navigate", handler);

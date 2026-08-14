@@ -132,8 +132,8 @@ export default function ScopingPicker(p: Props) {
           />
           <button style={{ ...S.bigStart, ...(picked.length ? {} : S.startOff) }} disabled={!picked.length} onClick={p.runScoped}>
             <PencilRuler size={16} />
-            {picked.length > 1 ? 'Critique this flow · ' + picked.length + ' screens'
-              : picked.length === 1 ? 'Critique this screen' : 'Pick at least one screen'}
+            {picked.length > 1 ? i18nT('apps.designCritique.scopingPicker.critique_this_flow_count_screens', { count: picked.length })
+              : picked.length === 1 ? i18nT('apps.designCritique.scopingPicker.critique_this_screen') : i18nT('apps.designCritique.scopingPicker.pick_at_least_one_screen')}
           </button>
           <button style={{ ...S.linkBtn, alignSelf: 'center' }} onClick={p.onStartOver}>{i18nT('apps.designCritique.scopingPicker.start_over')}</button>
         </div>

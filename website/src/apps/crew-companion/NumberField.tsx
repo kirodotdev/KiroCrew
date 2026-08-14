@@ -26,6 +26,7 @@ export const NumberField: React.FC<Props> = ({ label, value, min, max, onChange,
     <div style={style}>
       {label && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2, display: 'block' }}>{label}</span>}
       <input type="number" value={text} min={min} max={max}
+        aria-label={label}
         onChange={e => { setText(e.target.value); const n = Number(e.target.value); if (!isNaN(n)) onChange(n) }}
         onBlur={() => { const c = Math.max(min ?? -Infinity, Math.min(max ?? Infinity, value)); onChange(c); setText(String(c)) }}
         style={{ ...inputStyle, width }} />
