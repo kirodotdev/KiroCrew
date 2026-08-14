@@ -112,8 +112,11 @@ complete in seconds.
 | API | adds an API Gateway HTTP API to a Lambda at `/<slug>/api/*` | API-backed demo |
 | Stateful | adds a DynamoDB table | app that persists data |
 
-The Lambda is invoked only by API Gateway rather than exposed through a world-accessible Function
-URL, so accounts running automated guardrails against public Function URLs do not flag it.
+The Lambda is invoked only by API Gateway — its resource policy is scoped to
+`apigateway.amazonaws.com`, so the function is never directly reachable from the internet. A
+Function URL would instead require a `Principal:"*"` policy, making the Lambda itself
+world-accessible; this shape is therefore also fine in accounts running automated guardrails
+against public Function URLs.
 
 ---
 

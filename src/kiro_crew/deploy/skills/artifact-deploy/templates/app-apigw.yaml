@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   KiroCrew One-Click Deploy - per-app backend (API Gateway HTTP API -> Lambda).
-  Guardrail-safe: the Lambda is invoked ONLY by API Gateway (scoped
-  apigateway.amazonaws.com permission), NOT via a world-accessible Function URL,
-  so the Lambda-world-accessible detector never fires. The public entry is the
-  shared CloudFront distribution at /<slug>/api/*. One stack per slug.
+  The Lambda is invoked ONLY by API Gateway (resource policy scoped to
+  apigateway.amazonaws.com), never through a Function URL, which would require a
+  Principal:"*" policy and make the function world-accessible. The public entry is
+  the shared CloudFront distribution at /<slug>/api/*. One stack per slug.
 
 Parameters:
   Slug:
