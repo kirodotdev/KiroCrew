@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { Copy, Check } from 'lucide-react'
 import { copyCode } from '../utils/clipboard'
 import { highlightAsync } from '../utils/highlightClient'
+import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 
 import { i18nT } from '../i18n/t'
 export function HighlightedCode({ code, lang, className }: { code: string; lang: string | undefined; className: string }) {
@@ -51,7 +52,7 @@ export const CodeBlock = memo(function CodeBlock(
     <div className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
         <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
-        <div className="flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity">
+        <div className={`flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
           {headerActions}
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')} aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}>
             {copied ? <Check size={13} /> : <Copy size={13} />}

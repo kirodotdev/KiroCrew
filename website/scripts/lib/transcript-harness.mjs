@@ -26,6 +26,10 @@ import { json, makeFixedApi, handleBootRoute } from './boot-api.mjs'
  * @param {unknown} opts.detail         body for `/api/chat/slots/<key>`
  * @param {object} [opts.viewport]      browser viewport
  * @param {number} [opts.deviceScaleFactor]
+ * @param {boolean} [opts.hasTouch]     emulate a touch device — this is what
+ *   makes `(hover: none)` / `(pointer: coarse)` media queries match in
+ *   Chromium (CDP `Emulation.setEmulatedMedia` does NOT cover those two
+ *   features)
  * @returns {Promise<{browser: import('playwright').Browser, page: import('playwright').Page, base: string, load: (theme?: string, waitFor?: {selector?: string, settle?: number}) => Promise<void>, close: () => Promise<void>}>}
  */
 export async function openTranscriptHarness({
@@ -35,10 +39,11 @@ export async function openTranscriptHarness({
   detail,
   viewport = { width: 1280, height: 900 },
   deviceScaleFactor = 2,
+  hasTouch = false,
 }) {
   const { srv, base } = await serveDist()
   const browser = await chromium.launch()
-  const context = await browser.newContext({ viewport, deviceScaleFactor })
+  const context = await browser.newContext({ viewport, deviceScaleFactor, hasTouch })
   const page = await context.newPage()
   await page.routeWebSocket(/\/api\/ws/, () => {})
 

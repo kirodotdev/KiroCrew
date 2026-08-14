@@ -1,5 +1,6 @@
 import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
+import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
 import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
@@ -396,7 +397,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
         <button
           aria-label={i18nT('components.diagramLightbox.enlarge_diagram')}
           title={i18nT('components.diagramLightbox.enlarge_diagram')}
-          className="absolute top-1.5 right-1.5 p-1.5 rounded-md bg-bg-elevated/90 border border-border text-muted hover:text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer"
+          className={`absolute top-1.5 right-1.5 p-1.5 rounded-md bg-bg-elevated/90 border border-border text-muted hover:text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer ${HOVER_NONE_ACTION_BTN_CLS}`}
           onClick={() => setEnlarged(true)}
         >
           <Maximize2 className="lucide-inline" aria-hidden="true" />

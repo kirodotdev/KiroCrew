@@ -358,6 +358,21 @@ export default [
               //      flagged, so it lands in the baseline. Accepted: a false positive
               //      costs one baseline entry, a false negative hides copy forever.
               '^(?![a-z]+(?: [a-z]+)+$)[\\s\\-a-z0-9:/\\[\\]().%#]+$',
+              // Tailwind ARBITRARY-VARIANT clusters, e.g. the shared touch-target
+              // overrides in utils/touchActions.ts:
+              // `[@media(hover:none)]:opacity-100 [@media(hover:none)]:[&_button]:p-2.5`.
+              // The class shape above cannot cover these: its char class forbids
+              // `@`, `&` and `_`, which are exactly what an arbitrary variant is
+              // made of. Such constants live at module level under ALL-CAPS names,
+              // so `i18n-strict` looks inside them.
+              //
+              // Deliberately NARROWER than the general class shape: every
+              // space-separated token must BEGIN with a bracketed `@`-variant
+              // (`[@media(...)]:` or `[@supports(...)]:`), so admitting this shape
+              // admits no new prose — copy never opens with `[@`. A cluster
+              // merely containing such a token alongside a plain word still
+              // fails, because every token must match end to end.
+              String.raw`^\[@(?:media|supports)\([^)\s]*\)\]:[^\s]+(?:\s+\[@(?:media|supports)\([^)\s]*\)\]:[^\s]+)*$`,
               // CSS SELECTOR LISTS, e.g. `[role="dialog"],[data-x]` or
               // `a,button,[tabindex]` — a comma-joined list of type selectors and
               // bracketed attribute selectors, as passed to querySelector. The

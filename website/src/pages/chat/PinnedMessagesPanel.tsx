@@ -4,6 +4,7 @@ import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
+import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import Clickable from '../../components/Clickable'
 import type { ChatPin } from '../../api/pins'
 
@@ -104,8 +105,8 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
             <div className="text-sm text-text line-clamp-2 leading-snug">
               {pin.preview}
             </div>
-            {/* Hover actions */}
-            <div className="flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 transition-opacity">
+            {/* Hover actions — forced visible + 40px targets where the pointer cannot hover */}
+            <div className={`flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
               <button
                 onClick={(e) => { e.stopPropagation(); copyToClipboard(pin.preview) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
