@@ -68,6 +68,13 @@ const markPinnedSeen = vi.fn()
 const openWidgetExternal = vi.fn()
 const readLocalImage = vi.fn(async (_path: string): Promise<string | null> => null)
 
+// The reveal action on a file chip exists only inside the Electron shell (it
+// delegates to the shell bridge); these tests exercise that surface.
+vi.mock('../lib/electron', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isElectron: true,
+}))
+
 vi.mock('../apps/mochi/src/mochiApi', () => ({
   api: {
     getMochiConfig: async () => ({ petName: 'Mochi', theme: 'mocha' }),
