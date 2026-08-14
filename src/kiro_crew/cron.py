@@ -2614,6 +2614,26 @@ class CronService:
             if job.last_status != "error":
                 job.last_status = "ok"
                 job.last_error = None
+                # Reset the auto-pause budget: without this, CronService-run
+                # jobs count failures monotonically (record_failure fires on
+                # the error/timeout paths but nothing ever reset the counter
+                # here), so any job accumulating _AUTO_PAUSE_THRESHOLD
+                # transient failures over its LIFETIME — successes in
+                # between notwithstanding — silently auto-paused. Guarded by
+                # the "error" check above so the deliberately-neutral paths
+                # (governance/fire-time denials, which set last_status =
+                # "error" without counting a failure) stay neutral: a policy
+                # denial neither spends nor refills the budget. Callback
+                # paths that already called record_success() are unaffected
+                # (resetting 0 to 0 is idempotent). The _cancelled_jobs
+                # check closes a cancel race: cancel() kills the sandboxed
+                # subprocess BEFORE task.cancel(), and the gateway's
+                # cancelled branch returns None without setting last_status,
+                # so a callback returning in that window would otherwise
+                # reach this branch — and cancel() documents that it leaves
+                # consecutive_failures untouched.
+                if job.id not in self._cancelled_jobs:
+                    job.record_success()
         except Exception as exc:
             job.last_status = "error"
             job.last_error = str(exc)
