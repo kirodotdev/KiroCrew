@@ -169,6 +169,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "snapshot_dir",
         "timezone",
         "auto_update",
+        "update_drain_timeout_secs",
         "registries",
     }
 )
@@ -5398,6 +5399,15 @@ class KiroCrewConfig:
         default=True,
         metadata=_meta("Auto Update", "Enable automatic update checks."),
     )
+    update_drain_timeout_secs: int = field(
+        default=300,
+        metadata=_meta(
+            "Update Drain Timeout (secs)",
+            "Max seconds an update waits for in-flight agent work (turns, "
+            "cron runs, subagents) to finish before restarting the gateway. "
+            "0 restarts immediately.",
+        ),
+    )
     timezone: str = field(
         default="",
         metadata=_meta(
@@ -6254,6 +6264,9 @@ class KiroCrewConfig:
                 cursor_motion=_safe_bool(computer_use_data.get("cursor_motion", False), False),
             ),
             auto_update=data.get("auto_update", True),
+            update_drain_timeout_secs=_safe_int(
+                data.get("update_drain_timeout_secs", 300), 300, lo=0
+            ),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),
             registries=[
@@ -6487,6 +6500,7 @@ class KiroCrewConfig:
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,
             "auto_update": self.auto_update,
+            "update_drain_timeout_secs": self.update_drain_timeout_secs,
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]

@@ -2256,6 +2256,11 @@ class DashboardState:
         # constructed. The central chat runner reads this latch so every turn
         # entry path is protected, including task/workflow continuations.
         self.kiro_prerequisite_service: Any = None
+        # Callable returning the gateway's in-flight work count (turns, cron
+        # runs, subagents) — set by the gateway, consumed by the update/restart
+        # handlers to drain before restarting (RFC §5 step 5). None (e.g. in
+        # tests or API-only setups without a counter) means "skip draining".
+        self.count_in_flight: Callable[[], int] | None = None
         self.subagents = subagents
         # Crew Mode control plane; attached by the gateway after
         # SubagentManager construction (None = crew mode unavailable).

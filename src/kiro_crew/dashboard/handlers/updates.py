@@ -17,7 +17,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import shutdown_event
+from kiro_crew import shutdown_event, update_drain
 from kiro_crew.beacon import distribution
 from kiro_crew.changelog import Release, build_release_list
 from kiro_crew.config.loader import (
@@ -911,41 +911,105 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     return True
 
 
-async def _restart_gateway(state: DashboardState) -> None:
-    """Save state, close sessions, and exec the same Python process."""
-    state.push_update_progress("restarting", "Restarting server…")
-    exe = sys.executable
-    if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
-        state.push_update_progress("error", "Cannot restart: invalid Python executable path")
-        return
-    # circular import: kiro_crew.dashboard.chat imports from
-    # kiro_crew.dashboard.handlers (which re-exports this module), so this
-    # must stay inline to avoid an import cycle at module load.
-    from kiro_crew.dashboard.chat import save_all_slots_to_history
-    from kiro_crew.executors import subprocess_executor
+async def _restart_gateway(
+    state: DashboardState,
+    *,
+    drain: bool = True,
+    lease: "update_drain.UpdateLease | None" = None,
+) -> None:
+    """Save state, close sessions, and exec the same Python process.
 
+    When ``drain`` is true (default) and the gateway registered an in-flight
+    counter, waits — bounded by ``update_drain_timeout_secs`` — for running
+    turns, cron executions, and subagents to finish first (RFC §5 step 5), so
+    an intentional restart doesn't kill work mid-prompt.
+
+    ``lease`` is the caller-held update lease for a BARE restart (no code
+    swap): just before the exec it is marked as a restart-only handoff
+    (``expect_change=False``) so the next boot's verification consumes it
+    silently. The update path marks its own lease and passes None here.
+    """
+    gate_entered = False
+    # getattr: duck-typed states (tests, embedded setups) may not define the
+    # counter attribute at all — treat that the same as "no counter wired".
+    count_in_flight = getattr(state, "count_in_flight", None)
+    if drain and count_in_flight is not None:
+        state.push_update_progress("restarting", "Waiting for in-flight agent work to finish…")
+        try:
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            timeout = float(cfg.update_drain_timeout_secs)
+        except Exception:
+            timeout = update_drain.DEFAULT_DRAIN_TIMEOUT_SECS
+        # The gate stays held from here THROUGH the execv: releasing it after
+        # the drain but before the exec reopens background intake for the
+        # history-save/session-cleanup/final-sleep window, and a cron or
+        # autonudge fire starting in that window is killed mid-operation by
+        # the exec. The finally below runs only on the non-restart exits
+        # (early return, exception) — a successful execv never returns.
+        update_drain.drain_gate.enter()
+        gate_entered = True
     try:
-        # Offload the synchronous per-slot save (per-session lock + disk I/O)
-        # to the bounded subprocess_executor with a deadline: on the event loop
-        # a contended session raises HistoryLockTimeout and a wedged disk would
-        # block the restart, so a slot's final save must run off-loop and be
-        # time-bounded rather than stall (or silently drop) here.
-        await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), save_all_slots_to_history, state
-            ),
-            timeout=5.0,
-        )
-    except Exception:
-        logger.debug("History save before restart failed", exc_info=True)
-    try:
-        await state.sessions.close_all()
-    except Exception:
-        logger.debug("Session cleanup before restart failed", exc_info=True)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    await asyncio.sleep(0.5)
-    os.execv(exe, [exe, "-m", "kiro_crew"] + sys.argv[1:])
+        if gate_entered:
+            await update_drain.drain_in_flight(
+                shutdown_event,
+                count_in_flight,
+                drain_timeout=timeout,
+                what="restart",
+            )
+            if shutdown_event.is_set():
+                # A real shutdown owns the process now — don't race
+                # _shutdown() with an execv.
+                logger.warning("Restart aborted: shutdown began during drain")
+                return
+        state.push_update_progress("restarting", "Restarting server…")
+        exe = sys.executable
+        if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+            state.push_update_progress("error", "Cannot restart: invalid Python executable path")
+            return
+        # circular import: kiro_crew.dashboard.chat imports from
+        # kiro_crew.dashboard.handlers (which re-exports this module), so this
+        # must stay inline to avoid an import cycle at module load.
+        from kiro_crew.dashboard.chat import save_all_slots_to_history
+        from kiro_crew.executors import subprocess_executor
+
+        try:
+            # Offload the synchronous per-slot save (per-session lock + disk I/O)
+            # to the bounded subprocess_executor with a deadline: on the event loop
+            # a contended session raises HistoryLockTimeout and a wedged disk would
+            # block the restart, so a slot's final save must run off-loop and be
+            # time-bounded rather than stall (or silently drop) here.
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), save_all_slots_to_history, state
+                ),
+                timeout=5.0,
+            )
+        except Exception:
+            logger.debug("History save before restart failed", exc_info=True)
+        if lease is not None:
+            # §5 step 8→9 for a bare restart: hand the lease to the next boot
+            # marked "no version change expected" so verification consumes it
+            # silently instead of reporting a failed update. The handoff write
+            # MUST precede close_all(): mark_restarting raises on a failed
+            # write (disk full, rename failure), and once close_all() has set
+            # _closing every subsequent agent turn is rejected — aborting
+            # there would leave a live gateway permanently closing. Failing
+            # here instead aborts the restart while the gateway is still
+            # fully serving.
+            await lease.mark_restarting_async(expect_change=False)
+        try:
+            await state.sessions.close_all()
+        except Exception:
+            logger.debug("Session cleanup before restart failed", exc_info=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        await asyncio.sleep(0.5)
+        os.execv(exe, [exe, "-m", "kiro_crew"] + sys.argv[1:])
+    finally:
+        # Reached only when the restart did NOT happen — a leaked gate would
+        # silently freeze cron claims and autonudge fires forever.
+        if gate_entered:
+            update_drain.drain_gate.exit()
 
 
 async def api_update_channel(request: web.Request) -> web.Response:
@@ -1072,6 +1136,23 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
 
+    # Atomically ACQUIRE the shared update lease for the restart (not merely
+    # read it): a read-then-schedule check leaves a TOCTOU window — an update
+    # could take the lease during the 250ms response-flush delay and the
+    # delayed exec would swap the process mid-`pip install`. Holding the
+    # lease also serializes concurrent restart requests. The refusal covers
+    # both "an update is applying" and "a restart is already scheduled".
+    restart_lease = update_drain.UpdateLease()
+    refusal = await restart_lease.acquire_async(from_version=_local_version, source="gateway_restart")
+    if refusal:
+        return web.json_response(
+            {
+                "error": f"Restart refused: {refusal}",
+                "code": "update_in_flight",
+            },
+            status=409,
+        )
+
     # Reply BEFORE restarting. os.execv replaces the process image, so a restart
     # kicked off inline would tear down the connection mid-response and the
     # client could not distinguish "restarting" from "the request failed".
@@ -1079,10 +1160,15 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
         # Let the response flush before the process image is replaced.
         await asyncio.sleep(0.25)
         try:
-            await _restart_gateway(state)
+            await _restart_gateway(state, lease=restart_lease)
         except Exception:
             logger.exception("Gateway restart failed")
             state.push_update_progress("failed", "Restart failed — check logs")
+        finally:
+            # Reached only when the exec did NOT happen (abort or failure) —
+            # a successful execv never returns, and its marked handoff is
+            # consumed by the next boot's verification.
+            await restart_lease.release_async()
 
     task = asyncio.create_task(_restart())
     state._background_tasks.add(task)
@@ -1148,8 +1234,51 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # RFC §5 step 2: one update in flight, ever. The lease also closes a
+    # previously-unguarded race — two concurrent POSTs each drove their own
+    # git pull + pip install + execv. Acquired BEFORE the background task is
+    # created so the refused caller gets an honest 409, not an "ok" whose
+    # apply then dies against the winner's.
+    lease = update_drain.UpdateLease()
+    refusal = await lease.acquire_async(from_version=_local_version, source="dashboard_apply")
+    if refusal:
+        logger.warning("Update refused: %s", refusal)
+        return web.json_response(
+            {"error": f"Update refused: {refusal}", "code": "update_in_flight"},
+            status=409,
+        )
+
     async def _apply() -> None:
+        # §5 step 3: quiesce background intake (cron claims, autonudge fires)
+        # for the whole apply, not merely the final drain — on the git engine
+        # the pull below already mutates the running install, so work started
+        # mid-apply would run on half-swapped code (issue #2324).
+        update_drain.drain_gate.enter()
+        restarted = False
         try:
+            # §5 step 5: drain BEFORE the first mutation, not just before the
+            # restart. The pull/rebuild/pip below replace the very modules a
+            # running cron or subagent may lazily import mid-job — draining
+            # only at restart time would let that work execute on a mixed
+            # old/new module set while pip swaps its dependencies.
+            state.push_update_progress("pulling", "Waiting for in-flight agent work to finish…")
+            try:
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                timeout = float(cfg.update_drain_timeout_secs)
+            except Exception:
+                timeout = update_drain.DEFAULT_DRAIN_TIMEOUT_SECS
+            await update_drain.drain_in_flight(
+                shutdown_event,
+                # getattr: DashboardState defines this, but duck-typed states
+                # (tests, embedded/API-only setups) may not — no counter
+                # simply means nothing to drain.
+                getattr(state, "count_in_flight", None),
+                drain_timeout=timeout,
+                what="dashboard update",
+            )
+            if shutdown_event.is_set():
+                logger.warning("Update aborted: shutdown began during drain")
+                return
             state.push_update_progress("pulling", "Pulling latest changes…")
             pull = await asyncio.create_subprocess_exec(
                 "git",
@@ -1184,11 +1313,39 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")
-            await _restart_gateway(state)
+            # §5 step 8→9 handoff: record the post-pull HEAD as the
+            # handshake's primary identity (the git engine updates
+            # per-commit; __version__ rarely changes, so a version-keyed
+            # handshake would report false failures for successful pulls).
+            # The probe is centralized in update_drain (trusted-path git
+            # resolution; '' degrades to version comparison).
+            head_sha = await update_drain.current_head_commit_async()
+            await lease.mark_restarting_async(target_commit=head_sha)
+            restarted = True
+            # drain=True (a SECOND, usually-instant drain): the pull/build/
+            # install above takes minutes, and an interactive turn that
+            # STARTED during it would die at the execv — background intake is
+            # gated, but interactive turns are deliberately not refused
+            # (#2217). On an idle gateway this re-drain returns immediately.
+            await _restart_gateway(state, drain=True)
+            # _restart_gateway returns (instead of exec'ing) only when it
+            # aborted — e.g. a real shutdown arrived mid-drain.
+            restarted = False
         except Exception:
+            # An exception anywhere means the process did NOT exec into the
+            # new code (a successful execv never returns OR raises).
+            restarted = False
             logger.exception("Update failed")
             state.push_update_progress("failed", "Update failed — check logs")
             state.push_refresh("update_failed")
+        finally:
+            update_drain.drain_gate.exit()
+            if not restarted:
+                # The process did not exec into the new code — a lease left
+                # behind would block every future update until the next boot
+                # consumes it, and a 'restarting' state at next boot would
+                # misreport this failed apply as an interrupted restart.
+                await lease.release_async()
 
     task = asyncio.create_task(_apply())
     state._background_tasks.add(task)

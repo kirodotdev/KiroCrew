@@ -31,6 +31,7 @@ import logging
 from collections.abc import Callable
 from typing import Protocol
 
+from kiro_crew import update_drain
 from kiro_crew.dashboard.handlers.core import _DIST_INDEX
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,8 @@ async def run_stale_asset_watchdog(
     down.
 
     Once a vanish is confirmed, in-flight backend work is *drained* before the
-    shutdown event is set (see ``_drain_in_flight``): the prune only breaks
+    shutdown event is set (see :func:`kiro_crew.update_drain.drain_in_flight`,
+    the shared §5 drain): the prune only breaks
     static-asset serving, so active ACP turns can finish rather than being
     killed mid-prompt when the supervisor restarts a fresh process.
 
@@ -174,7 +176,20 @@ async def run_stale_asset_watchdog(
                 # Someone else shut us down during the confirm window; don't
                 # log a misleading "watchdog fired" CRITICAL.
                 return
-            await _drain_in_flight(
+            if update_drain.drain_gate.is_draining():
+                # A coordinated update is applying right now (lease held,
+                # RFC §5): the vanish is the update's own build step pruning
+                # and re-staging the bundle, and the apply path owns the
+                # drain + restart. Firing here would double-trigger — a
+                # SIGTERM-style shutdown racing the update's execv. Stand
+                # down; if the apply fails and leaves the assets gone, the
+                # gate is released and the next tick handles it normally.
+                logger.info(
+                    "Stale-asset watchdog: assets missing during a "
+                    "coordinated update apply — standing down this tick."
+                )
+                continue
+            await _drain_with_gate(
                 shutdown_event,
                 count_in_flight,
                 drain_timeout=drain_timeout,
@@ -187,7 +202,7 @@ async def run_stale_asset_watchdog(
             # Re-check once more now that in-flight work has drained. This
             # covers a rebuild that outlives the confirmation but finishes
             # while turns are still draining; it adds no grace on an idle
-            # gateway, where _drain_in_flight returns immediately. Without it a
+            # gateway, where the drain returns immediately. Without it a
             # drain long enough for the assets to reappear still ends in a
             # shutdown — the healthy-gateway kill the confirmation exists to
             # prevent.
@@ -207,89 +222,30 @@ async def run_stale_asset_watchdog(
             return
 
 
-async def _drain_in_flight(
+async def _drain_with_gate(
     shutdown_event: _ShutdownSignal,
     count_in_flight: Callable[[], int] | None,
     *,
     drain_timeout: float,
     drain_poll: float,
 ) -> None:
-    """Wait (bounded) for in-flight backend turns to finish before shutdown.
+    """Run the shared drain while HOLDING the drain gate.
 
-    An update prune breaks only static-asset serving; live ACP turns keep
-    working. Draining lets active turns complete (result captured, history
-    saved) instead of being killed mid-prompt when the supervisor restarts —
-    directly preventing the "❌ lost to gateway restart / no result captured"
-    orphaning seen on an abrupt prune.
-
-    Returns as soon as any of the following is true:
-      * there is no in-flight work,
-      * the ``drain_timeout`` elapses (remaining tasks are snapshotted for
-        resume by the normal shutdown path), or
-      * an external shutdown is signalled mid-drain (SIGTERM wins).
-
-    Any failure to count in-flight work is treated as "idle" — a broken
-    predicate must never wedge shutdown.
+    Holding the gate here does two things the raw drain does not: it stops
+    cron/autonudge from starting new work that the imminent supervisor
+    restart would kill, and it wakes cron jobs sleeping in their jitter
+    window (they wait on the gate's drain event) so a claimed invocation
+    executes and is waited for instead of being killed mid-sleep after its
+    scheduled minute has passed.
     """
-    if count_in_flight is None or drain_timeout <= 0:
-        return
+    update_drain.drain_gate.enter()
     try:
-        pending = count_in_flight()
-    except Exception:
-        logger.debug(
-            "Stale-asset watchdog: initial in-flight count failed — "
-            "skipping drain.",
-            exc_info=True,
+        await update_drain.drain_in_flight(
+            shutdown_event,
+            count_in_flight,
+            drain_timeout=drain_timeout,
+            drain_poll=drain_poll,
+            what="stale-asset watchdog",
         )
-        return
-    if pending <= 0:
-        return
-
-    logger.warning(
-        "Stale-asset watchdog: draining %d in-flight task(s) before shutdown "
-        "(up to %.0fs)…",
-        pending,
-        drain_timeout,
-    )
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + drain_timeout
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            break
-        # Sleep interruptibly: an external SIGTERM sets shutdown_event and
-        # wakes us immediately so we don't keep draining past a real shutdown.
-        try:
-            await asyncio.wait_for(
-                shutdown_event.wait(), timeout=min(drain_poll, remaining)
-            )
-            logger.warning(
-                "Stale-asset watchdog: external shutdown during drain — "
-                "stopping drain."
-            )
-            return
-        except asyncio.TimeoutError:
-            pass
-        try:
-            pending = count_in_flight()
-        except Exception:
-            logger.debug(
-                "Stale-asset watchdog: in-flight count failed mid-drain — "
-                "proceeding with shutdown.",
-                exc_info=True,
-            )
-            return
-        if pending <= 0:
-            logger.warning(
-                "Stale-asset watchdog: all in-flight tasks drained — "
-                "proceeding with shutdown."
-            )
-            return
-
-    logger.warning(
-        "Stale-asset watchdog: drain timeout (%.0fs) elapsed with %d task(s) "
-        "still in flight — proceeding with shutdown; open sessions resume "
-        "from snapshot on restart.",
-        drain_timeout,
-        pending,
-    )
+    finally:
+        update_drain.drain_gate.exit()

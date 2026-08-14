@@ -227,6 +227,13 @@ from kiro_crew.subagent_completion_meta import (
     wave_final_meta,
 )
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.update_drain import (
+    UpdateLease,
+    current_head_commit_async,
+    drain_gate,
+    drain_in_flight,
+    verify_after_restart,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -1116,11 +1123,12 @@ class GatewayOrchestrator:
     def _count_in_flight_work(self) -> int:
         """Count in-flight backend tasks that an abrupt restart would lose.
 
-        Used by the stale-asset watchdog to drain before shutting down: an
-        update prune only breaks static-asset serving, not live ACP turns, so
-        letting active turns finish avoids the "❌ lost to gateway restart /
-        no result captured" orphaning. Counts active provider turns (dashboard
-        chat + task-runner sessions) plus in-flight Slack session turns.
+        Used by the stale-asset watchdog and the update drain (RFC §5 step 5)
+        to wait before restarting: letting active work finish avoids the
+        "❌ lost to gateway restart / no result captured" orphaning. Counts
+        active provider turns (dashboard chat + task-runner sessions),
+        in-flight Slack session turns, executing cron jobs, and running
+        subagents (whose kiro-cli processes are children of this gateway).
 
         Defensive: any failure to introspect a surface is treated as idle, so
         a broken accessor can never wedge shutdown.
@@ -1146,6 +1154,25 @@ class GatewayOrchestrator:
         for task in list(self._session_tasks.values()):
             if not task.done():
                 count += 1
+        # Executing cron jobs. A cron mid-run holds an agent session (or a
+        # script/command subprocess) that an abrupt restart kills; jobs merely
+        # *due* don't count — the post-restart scan picks those up.
+        if self.cron_svc is not None:
+            try:
+                count += self.cron_svc.executing_count()
+            except Exception:
+                logger.debug("in-flight count: cron executing_count() failed", exc_info=True)
+        # Subagent work across its whole lifecycle: running agents (kiro-cli
+        # processes are CHILDREN of this gateway — they die with it), spawns
+        # accepted into the queue but not yet started (they'd vanish without
+        # a completion event), and terminal reports still delivering a
+        # finished run's result. A drain must wait for all three.
+        try:
+            mgr = getattr(self, "subagent_mgr", None)
+            if mgr is not None:
+                count += mgr.drainable_work_count
+        except Exception:
+            logger.debug("in-flight count: subagent drainable_work_count failed", exc_info=True)
         return count
 
     # ------------------------------------------------------------------
@@ -5922,6 +5949,13 @@ class GatewayOrchestrator:
             self.dashboard_state.slack_client = self.slack
         if self.dashboard_state:
             self.dashboard_state.no_crons = self._no_crons  # dashboard mode
+            # Wire the in-flight counter HERE, synchronously with dashboard
+            # creation and before the next await: the HTTP server is already
+            # accepting requests, and an early POST /api/update or /api/restart
+            # arriving before the counter is wired would see None and restart
+            # without draining — killing e.g. an overdue cron that started at
+            # boot (RFC §5 step 5).
+            self.dashboard_state.count_in_flight = self._count_in_flight_work
 
     async def _init_api_server(self) -> None:
         """Start a minimal API-only HTTP server for MCP tool transport."""
@@ -5958,6 +5992,9 @@ class GatewayOrchestrator:
                 self._dashboard_port = addresses[0][1]
         if self.dashboard_state:
             self.dashboard_state.no_crons = self._no_crons  # API-only mode
+            # Same wiring as the dashboard path — the API-only server exposes
+            # the update/restart endpoints too.
+            self.dashboard_state.count_in_flight = self._count_in_flight_work
 
     async def _start_embeddings(self) -> None:
         """Wire in-process embeddings and kick background model download.
@@ -6394,6 +6431,23 @@ class GatewayOrchestrator:
             from kiro_crew import __version__ as _running_version
             from kiro_crew.dashboard.handlers import _do_update_check, _update_info
 
+            # §5 step 9: if the previous process restarted for an update,
+            # verify the swap actually took — a lease in 'restarting' state
+            # at boot is the prior process's handoff. Runs BEFORE this boot's
+            # own check so a failed swap is reported (not silently retried
+            # into a loop) and so the consumed lease can't refuse this
+            # check's own auto-apply. Off-loop: it reads/unlinks a file.
+            try:
+                outcome = await asyncio.to_thread(verify_after_restart, _running_version)
+                if outcome:
+                    print(f"👻 {outcome}")
+                    # A FAILED handshake must reach a surface the user sees —
+                    # a headless/systemd install never shows the console.
+                    if self.dashboard_state and "did NOT take effect" in outcome:
+                        self.dashboard_state.push_update_progress("failed", outcome)
+            except Exception:
+                logger.debug("Update verification at boot failed", exc_info=True)
+
             await _do_update_check()
             from kiro_crew.platform.update_governance import min_version, update_required
 
@@ -6508,6 +6562,12 @@ class GatewayOrchestrator:
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if not proj:
             return
+        # RFC §5 (drain-then-swap) state, function-scoped so the outer except
+        # can release exactly what THIS invocation took. The lease serializes
+        # updates across paths and processes; the gate quiesces background
+        # intake (cron claims, autonudge fires) while draining.
+        lease: UpdateLease | None = None
+        gate_entered = False
         try:
             # Detect current branch
             branch_proc = await asyncio.create_subprocess_exec(
@@ -6584,6 +6644,42 @@ class GatewayOrchestrator:
                 # No diff — already up to date
                 if self.dashboard_state:
                     self.dashboard_state.clear_update_progress()
+                return
+
+            # New commits confirmed — the tree WILL be mutated from here on.
+            # On the git engine, install and swap are the same step: the
+            # `reset --hard` below replaces the running install's files
+            # (issue #2324 — assets swapped under a live gateway). So the §5
+            # sequence starts NOW, before the first mutation, not just before
+            # the restart: take the lease (one update in flight, ever), stop
+            # claiming new background work, and drain what is already running.
+            lease = UpdateLease()
+            refusal = await lease.acquire_async(
+                from_version=kiro_crew.__version__, source="auto_apply"
+            )
+            if refusal:
+                lease = None
+                logger.warning("Auto-update: refused — %s", refusal)
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                return
+            drain_gate.enter()
+            gate_entered = True
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "pulling", "Waiting for in-flight agent work to finish…"
+                )
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            await drain_in_flight(
+                shutdown_event,
+                self._count_in_flight_work,
+                drain_timeout=float(cfg.update_drain_timeout_secs),
+                what="auto-update",
+            )
+            if shutdown_event.is_set():
+                # A real shutdown arrived mid-drain — it owns the process now;
+                # applying an update during teardown would race _shutdown().
+                logger.warning("Auto-update: shutdown during drain — aborting apply")
                 return
 
             # Warn if local tracked-file edits will be discarded
@@ -6709,6 +6805,22 @@ class GatewayOrchestrator:
                     )
 
             logger.info("Auto-update: rebuild complete, restarting")
+            # Re-drain before checkpoint + handoff + exec (usually instant):
+            # the fetch/reset/build/pip above take minutes, and an interactive
+            # turn or manually-triggered cron that STARTED during them would
+            # die at the execv — the gate blocks scheduled background intake,
+            # but not interactive turns (#2217) or manual cron triggers. Must
+            # run BEFORE close_all(), which kills the very turns being waited
+            # for.
+            await drain_in_flight(
+                shutdown_event,
+                self._count_in_flight_work,
+                drain_timeout=float(cfg.update_drain_timeout_secs),
+                what="auto-update pre-exec",
+            )
+            if shutdown_event.is_set():
+                logger.warning("Auto-update: shutdown during pre-exec drain — aborting")
+                return
             # Re-read version from rebuilt package
             importlib.reload(kiro_crew)
             new_ver = kiro_crew.__version__
@@ -6735,6 +6847,25 @@ class GatewayOrchestrator:
                         "Dashboard slot save before auto-update restart failed",
                         exc_info=True,
                     )
+            # §5 step 8→9 handoff: record that the swap succeeded and the
+            # restart is imminent. The relaunched process (same PID — execv)
+            # finds this lease state at boot and verifies the version actually
+            # changed before reporting the update successful. The handoff
+            # write MUST precede close_all(): mark_restarting raises on a
+            # failed write (disk full, rename failure), and once close_all()
+            # has set _closing every subsequent agent turn is rejected —
+            # failing here instead aborts the restart while the gateway is
+            # still fully serving.
+            if lease is not None:
+                # Record the post-swap HEAD as the handshake's primary
+                # identity — the git engine updates per-commit, and
+                # __version__ alone makes verification vacuous (target is
+                # read from the post-reset tree, so version match proves
+                # nothing about the swap). The probe is centralized in
+                # update_drain (trusted-path git resolution; '' degrades to
+                # version comparison).
+                head_sha = await current_head_commit_async()
+                await lease.mark_restarting_async(target=new_ver, target_commit=head_sha)
             if self.sessions:
                 await self.sessions.close_all()
             # Use -m kiro_crew rather than sys.argv[0] so the restart resolves
@@ -6749,6 +6880,17 @@ class GatewayOrchestrator:
                 self.dashboard_state.push_update_progress(
                     "failed", f"Restart failed — run: {restart_command_hint()}"
                 )
+        finally:
+            # Reached only when the apply did NOT restart (early return,
+            # refusal, or failure) — a successful os.execv never returns, so
+            # the marked-restarting lease deliberately survives for the boot
+            # verification handshake. Everything else must clean up: a leaked
+            # gate would silently stop cron claims and autonudge fires forever,
+            # and a leaked lease would block every future update for hours.
+            if gate_entered:
+                drain_gate.exit()
+            if lease is not None:
+                await lease.release_async()
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -7118,7 +7260,9 @@ class GatewayOrchestrator:
         # install's static assets and triggers graceful shutdown so the
         # supervisor can restart a fresh process. It first drains in-flight
         # backend turns (count_in_flight) so active work isn't killed
-        # mid-prompt by the restart.
+        # mid-prompt by the restart. (The dashboard's own count_in_flight
+        # handle is wired at dashboard creation in _init_dashboard /
+        # _init_api_server — before the HTTP server takes requests.)
         _watchdog = asyncio.create_task(
             run_stale_asset_watchdog(shutdown_event, count_in_flight=self._count_in_flight_work)
         )

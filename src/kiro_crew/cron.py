@@ -46,7 +46,7 @@ except ImportError:
     get_description = None  # type: ignore[assignment]
 from croniter import croniter  # type: ignore[import-untyped]
 
-from kiro_crew import cron_script, platform_compat, sel, shutdown_event
+from kiro_crew import cron_script, platform_compat, sel, shutdown_event, update_drain
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
@@ -2069,6 +2069,24 @@ class CronService:
         """Return whether a job is currently executing."""
         return job_id in self._executing
 
+    def executing_count(self) -> int:
+        """Number of jobs currently executing (jitter sleepers included).
+
+        Consulted by the gateway's in-flight-work counter so an update drain
+        (RFC §5 step 5) waits for a mid-run job — its agent session or script
+        subprocess dies with the gateway. Jobs merely DUE are not in
+        ``_executing`` at all (the post-restart tick picks them up).
+
+        Jitter sleepers COUNT: every drain path holds the drain gate, and the
+        jitter sleep in ``_run_job_isolated`` wakes on the gate's drain event
+        and runs immediately — so by the time a drain polls this count, a
+        claimed job is real work in flight, not a 59-minute sleep burning the
+        drain timeout. Excluding sleepers (the previous behavior) silently
+        lost cron-expression invocations: the drain reported idle, the exec
+        killed the sleeper, and the scheduled minute had passed by relaunch.
+        """
+        return len(self._executing)
+
     def running_since(self, job_id: str) -> float | None:
         """Return the epoch start time of a running job, or None."""
         return self._job_start_times.get(job_id)
@@ -2376,6 +2394,23 @@ class CronService:
             for j in snapshot
             if j.enabled and j.id not in self._executing and self._is_due(j, now)
         ]
+        # Quiesce gate (RFC §5 step 3): while an update is draining, claim NO
+        # due work — the swap is imminent and a job claimed now extends the
+        # drain the swap is waiting on. Interval ('every') and one-shot ('at')
+        # schedules stay due until they run, so the relaunched gateway's first
+        # tick picks them up. A cron-expression job is due only inside its
+        # matching minute: it is claimed after the swap if that minute has not
+        # passed, and a swap that crosses the minute boundary skips that one
+        # invocation — the drain design accepts this so the swap window stays
+        # free of new work. Already-executing jobs are untouched: the drain
+        # counts them via executing_count() and waits (bounded) for them.
+        if update_drain.drain_gate.is_draining():
+            if due:
+                logger.info(
+                    "Cron tick: update drain in progress — deferring %d due-job claim(s)",
+                    len(due),
+                )
+            return
 
         if not due:
             return
@@ -2422,7 +2457,24 @@ class CronService:
             # real result as "cancelled".
             if jitter > 0:
                 logger.debug("Cron: applying %.0fs jitter to job '%s'", jitter, job.name)
-                await asyncio.sleep(jitter)
+                # Drain-aware sleep: if an update drain begins while this job
+                # is in its jitter window, wake and run IMMEDIATELY. The exec
+                # that follows a drain would otherwise kill the sleeper, and
+                # for cron-expression jobs the scheduled minute has passed by
+                # the relaunch, so the invocation would be silently lost.
+                # Jitter is load-spreading, not semantics — running at the
+                # scheduled minute during a drain is more correct, and the
+                # drain then waits for this run like any other in-flight work.
+                try:
+                    await asyncio.wait_for(
+                        update_drain.drain_gate.drain_event().wait(), timeout=jitter
+                    )
+                    logger.info(
+                        "Cron: update drain began during jitter for '%s' — running now",
+                        job.name,
+                    )
+                except asyncio.TimeoutError:
+                    pass  # normal path: jitter elapsed, no drain
             exec_started_at = time.time()
             # Notify dashboard that the job has started executing so the live
             # is_running badge appears without a manual reload.

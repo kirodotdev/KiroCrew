@@ -269,7 +269,7 @@ class TestApiUpdateApplyVenvDispatch:
             pip_called.append(True)
             return True
 
-        async def fake_restart(s):
+        async def fake_restart(s, *, drain=True):
             restart_called.append(True)
 
         monkeypatch.setattr(
@@ -318,7 +318,7 @@ class TestApiUpdateApplyVenvDispatch:
         async def fake_pip(p, s):
             return False  # pip install failed
 
-        async def fake_restart(s):
+        async def fake_restart(s, *, drain=True):
             restart_called.append(True)
 
         monkeypatch.setattr(

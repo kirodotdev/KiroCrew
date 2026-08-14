@@ -79,6 +79,7 @@ from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.gateway import run_gateway
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.update_drain import UpdateLease, _consume_lease_if_unchanged, _pid_alive
 from kiro_crew.vector_memory import VectorMemoryStore
 
 # Loopback address used for the CLI's OWN requests to the gateway. Deliberately
@@ -956,16 +957,47 @@ def _update() -> None:
     * **externally managed** (desktop app, Docker) — print guidance on how
       to update via the correct surface instead of failing with an opaque error.
     """
-    from kiro_crew.platform.update_layout import (
-        EXTERNALLY_MANAGED,
-        InstallLayout,
-    )
-
     print("👻 Updating Kiro Crew…\n")
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     proj_path = Path(proj) if proj else None
     is_git = proj_path is not None and (proj_path / ".git").exists()
+
+    # Serialize with every other update path via the shared lease — ACQUIRED,
+    # not just read. A read-then-proceed check is a TOCTOU: the dashboard (or
+    # boot auto-apply) can acquire immediately after a clean read and both
+    # would mutate the same checkout/venv concurrently. Holding the lease for
+    # the whole update makes the CLI a first-class §5 participant: the
+    # gateway paths refuse while we hold it, and vice versa. A dead holder's
+    # leftover (crashed apply) is consumed through the guarded consume path
+    # (cross-process lock + identity re-check) and the acquire retried once,
+    # so a stale file keeps not blocking a manual update.
+    lease = UpdateLease()
+    refusal = lease.acquire(from_version=__version__, source="cli_update")
+    if refusal is not None:
+        stale = lease.read()
+        holder_alive = stale is not None and _pid_alive(int(stale.get("pid") or 0))
+        if stale is not None and not holder_alive and _consume_lease_if_unchanged(lease, stale):
+            refusal = lease.acquire(from_version=__version__, source="cli_update")
+        if refusal is not None:
+            print(
+                "  ❌ Another update is in flight — running two updates over "
+                "the same tree can corrupt the install.\n"
+                f"     {refusal}"
+            )
+            return
+    try:
+        _update_locked(proj, proj_path, is_git)
+    finally:
+        lease.release()
+
+
+def _update_locked(proj: str, proj_path: Path | None, is_git: bool) -> None:
+    """The update body proper; runs with the update lease held (see _update)."""
+    from kiro_crew.platform.update_layout import (
+        EXTERNALLY_MANAGED,
+        InstallLayout,
+    )
 
     if not is_git:
         # Not a git checkout — check if externally managed or wheel install.

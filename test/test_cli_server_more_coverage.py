@@ -1009,6 +1009,68 @@ class TestUpdateGitPath:
         assert "Agent config refresh failed" in out
 
 
+class TestUpdateLeaseSerialization:
+    """`_update()` ACQUIRES and holds the shared update lease for its whole
+    run — a read-then-proceed check is a TOCTOU that lets the dashboard
+    acquire right after a clean read and mutate the tree concurrently."""
+
+    def test_live_holder_refuses_without_touching_the_tree(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        from kiro_crew.update_drain import UpdateLease
+
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        other = UpdateLease()
+        assert other.acquire(from_version="0.0.1", source="dashboard_apply") is None
+        try:
+            cli_server._update()
+        finally:
+            other.release()
+        assert "in flight" in capsys.readouterr().out
+        assert not stub.calls, "no git command may run while another update holds the lease"
+
+    def test_acquires_for_the_body_and_releases_on_exit(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        from kiro_crew.update_drain import UpdateLease
+
+        monkeypatch.setattr(subprocess, "run", _GitStub(diff=0))  # "already up to date"
+        held: dict = {}
+        orig = cli_server._update_locked
+
+        def probe(proj, proj_path, is_git):
+            held["payload"] = UpdateLease().read()
+            return orig(proj, proj_path, is_git)
+
+        monkeypatch.setattr(cli_server, "_update_locked", probe)
+        cli_server._update()
+        assert held["payload"] and held["payload"]["source"] == "cli_update", (
+            "the lease must be held while the update body runs"
+        )
+        assert UpdateLease().read() is None, "the lease must be released on exit"
+
+    def test_dead_holder_leftover_is_consumed_and_update_proceeds(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        import json as _json
+
+        from kiro_crew.update_drain import UpdateLease
+
+        leftover = UpdateLease()
+        leftover.path.parent.mkdir(parents=True, exist_ok=True)
+        leftover.path.write_text(
+            _json.dumps({"pid": 424242, "acquired_at": 1.0, "state": "draining"})
+        )
+        monkeypatch.setattr(cli_server, "_pid_alive", lambda pid: False)
+        monkeypatch.setattr(subprocess, "run", _GitStub(diff=0))
+        cli_server._update()
+        assert "Already up to date" in capsys.readouterr().out
+        assert UpdateLease().read() is None, (
+            "the dead holder's leftover must be consumed and our own lease released"
+        )
+
+
 class TestUpdateWheelDispatch:
     """No git checkout means the wheel path gets a correctly shaped layout."""
 

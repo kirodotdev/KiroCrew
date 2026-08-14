@@ -5637,6 +5637,83 @@ class TestCountInFlightWork:
         orch._session_tasks = {"x": undone}
         assert orch._count_in_flight_work() == 2
 
+    def test_counts_executing_cron_jobs(self):
+        """A cron mid-run dies with the gateway — it must count (RFC §5)."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch._session_tasks = {}
+        orch.subagent_mgr = None
+        cron = MagicMock()
+        cron.executing_count.return_value = 2
+        orch.cron_svc = cron
+        assert orch._count_in_flight_work() == 2
+
+    def test_counts_running_subagents(self):
+        """Subagent kiro-cli processes are gateway children — they count."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch._session_tasks = {}
+        orch.cron_svc = None
+        mgr = MagicMock()
+        mgr.drainable_work_count = 3
+        orch.subagent_mgr = mgr
+        assert orch._count_in_flight_work() == 3
+
+    def test_subagent_count_covers_whole_lifecycle(self):
+        """Queued spawns and in-flight terminal reports die with the process
+        just like running agents — the drain must count all three, or an
+        update restart drops accepted work (queued spawn vanishes, finished
+        result never delivered)."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch._session_tasks = {}
+        orch.cron_svc = None
+        undone_report = MagicMock()
+        undone_report.done.return_value = False
+        done_report = MagicMock()
+        done_report.done.return_value = True
+        from kiro_crew.subagent import SubagentManager
+
+        mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+        mgr._running_count = 1
+        mgr._queue = [{"task": "queued-a"}, {"task": "queued-b"}]
+        mgr._report_tasks = {undone_report, done_report}
+        orch.subagent_mgr = mgr
+        # 1 running + 2 queued + 1 undelivered report; the done report is not work.
+        assert orch._count_in_flight_work() == 4
+
+    def test_cron_and_subagent_introspection_failures_are_idle(self):
+        """Broken accessors on the NEW surfaces must not wedge shutdown."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch._session_tasks = {}
+        cron = MagicMock()
+        cron.executing_count.side_effect = RuntimeError("boom")
+        orch.cron_svc = cron
+        mgr = MagicMock()
+        # property access raising via PropertyMock on the type
+        type(mgr).drainable_work_count = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError())
+        )
+        orch.subagent_mgr = mgr
+        assert orch._count_in_flight_work() == 0
+
+    def test_all_four_surfaces_sum(self):
+        orch = _make_orchestrator()
+        state = MagicMock()
+        state.sessions.active_providers.return_value = [_provider(True)]
+        orch.dashboard_state = state
+        undone = MagicMock()
+        undone.done.return_value = False
+        orch._session_tasks = {"x": undone}
+        cron = MagicMock()
+        cron.executing_count.return_value = 1
+        orch.cron_svc = cron
+        mgr = MagicMock()
+        mgr.drainable_work_count = 1
+        orch.subagent_mgr = mgr
+        assert orch._count_in_flight_work() == 4
+
 
 class TestChannelTransportStartGate:
     """`_start_channel_transports` gates each non-Slack transport start on the

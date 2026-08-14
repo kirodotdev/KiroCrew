@@ -276,7 +276,7 @@ class TestRestartEndpoint:
         """
         started = asyncio.Event()
 
-        async def _fake_restart(_state: object) -> None:
+        async def _fake_restart(_state: object, **_kw: object) -> None:
             started.set()
 
         async def _run() -> web.Response:

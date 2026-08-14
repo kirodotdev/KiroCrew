@@ -2526,6 +2526,25 @@ class SubagentManager:
     def running_count(self) -> int:
         return self._running_count
 
+    @property
+    def drainable_work_count(self) -> int:
+        """Work an abrupt gateway restart would lose, across the lifecycle.
+
+        ``running_count`` alone undercounts: a spawn accepted into the queue
+        has not incremented it yet (it is admitted by ``_drain_queue`` later),
+        and a finished run's terminal report may still be delivering its
+        result after the slot was released. Both die with the process — a
+        queued spawn vanishes without ever producing a completion event, and
+        a killed report strands a tombstoned result nobody is told about —
+        so the update/asset drains must wait for them like any running turn.
+        The report-task overlap with a still-counted slot can briefly double
+        count; drains only ever poll this until it reaches zero, so counting
+        high is safe where counting low loses work.
+        """
+        count = self._running_count + len(self._queue)
+        count += sum(1 for t in self._report_tasks if not t.done())
+        return count
+
     def running_agents_for(self, parent_key: str) -> list[dict]:
         """Return summary dicts for agents belonging to *parent_key*."""
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls

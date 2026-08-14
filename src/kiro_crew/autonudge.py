@@ -40,7 +40,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator
 
-from kiro_crew import platform_compat, shutdown_event
+from kiro_crew import platform_compat, shutdown_event, update_drain
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir
 from kiro_crew.config.paths import legacy_home
@@ -1073,6 +1073,17 @@ class AutoNudgeService:
             )
             await self.update(loop.id, active=False, stopped_reason="runtime_budget")
             self._emit("expired", loop)
+            return
+        # Quiesce gate (RFC §5 step 3): while an update is draining, firing a
+        # nudge would start a brand-new agent turn seconds before an
+        # intentional restart — the turn dies mid-prompt and the cycle is
+        # wasted. Defer by re-arming with a short delay instead: the loop's
+        # bookkeeping is untouched (no cycle consumed, nothing persisted), and
+        # loops survive the restart anyway (autonudge.json re-arms at boot),
+        # so on the slow path the relaunched gateway fires it instead.
+        if update_drain.drain_gate.is_draining():
+            logger.info("AutoNudge: update drain in progress — deferring fire for %s", loop.id)
+            self._arm_timer(loop, delay=min(30.0, loop.idle_secs))
             return
         # Fire. Update state only if the callback reports actual delivery —
         # otherwise skipped nudges (e.g. slot mid-turn) inflate cycle_count and

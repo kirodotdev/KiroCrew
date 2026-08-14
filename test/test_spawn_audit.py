@@ -182,6 +182,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # would hide and break the callback. The child is SIGKILLed on timeout or
         # task cancellation, so it never orphans.
         "acp/kas_auth.py::resolve_kas_access_token",
+        # Update-verification HEAD probe (RFC drain-then-swap step 9): one
+        # fixed argv — ``[<trusted git>, "rev-parse", "HEAD"]`` — with a 10s
+        # timeout, no shell, and cwd pinned to ``KIROCREW_PROJECT_DIR`` (operator
+        # environment, not agent input). The binary is resolved via
+        # ``platform_compat.trusted_system_bin`` (fixed system dirs, PATH
+        # ignored), and the probe degrades to '' without it. Read-only; output
+        # is compared against the lease's recorded target commit and never
+        # executed or echoed to an agent surface.
+        "update_drain.py::current_head_commit",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
         # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",
@@ -608,7 +617,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_doctor.py::_linger_enabled",
         "cli_server.py::_logs_cmd",
         "cli_server.py::_spawn_detached_gateway",
-        "cli_server.py::_update",
+        # The lease-holding update body (git fetch/reset/pip over the operator's
+        # own checkout; argv is fixed, cwd is KIROCREW_PROJECT_DIR).
+        "cli_server.py::_update_locked",
         "cli_server.py::_update_wheel",
         "cli_setup.py::_setup_electron",
         # Cursor Motion overlay renderer: `<this interpreter> -m
