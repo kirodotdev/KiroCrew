@@ -897,13 +897,35 @@ def _sel_hook_rejected(event: str, command: str, reason: str) -> None:
         logger.debug("SEL audit for rejected hook failed", exc_info=True)
 
 
+# Kiro Crew-internal hook keys that must NOT appear in generated kiro-cli agent  # brand-ok
+# specs (kiro-cli rejects unknown keys). Excluded when deriving _VALID_HOOK_EVENTS
+# from bundled defaults below, so an internal key never round-trips as an event.
+_INTERNAL_HOOK_KEYS = frozenset(
+    {"auto_approve_tools", "auto_deny_tools", "auto_replies", "transforms"}
+)
+
+# Valid kiro-cli hook event names — the UNION of the hardcoded baseline (kiro-cli's
+# known schema) and any event key present in bundled defaults. Used as the single
+# filter on both the generation path (bundled defaults -> generated spec) and the
+# repair/validation path (on-disk repair, user-input) — a new event added to
+# defaults.json is automatically accepted on both without a matching allowlist
+# update (#3362).
 _VALID_HOOK_EVENTS = frozenset(
     {"preToolUse", "postToolUse", "userPromptSubmit", "agentSpawn", "stop"}
+) | frozenset(
+    k
+    for k in (_load_json(_BUNDLED_CFG_DIR / "defaults.json") or {}).get("hooks", {})
+    if k not in _INTERNAL_HOOK_KEYS
 )
 
 
 def _kiro_hooks_only(hooks: dict) -> dict:
-    """Return only kiro-cli valid hook keys, stripping KiroCrew-internal ones."""
+    """Return only kiro-cli valid hook keys, stripping everything else.
+
+    Used on both the generation path (trusted bundled defaults) and the
+    repair/validation path (on-disk repair, user-supplied config) — screens
+    unknown keys that kiro-cli would reject.
+    """
     return {k: v for k, v in hooks.items() if k in _VALID_HOOK_EVENTS}
 
 
@@ -1497,6 +1519,9 @@ def build_agent_config() -> dict:
     bundled_hooks = bundled.get("hooks")
     if not bundled_hooks:
         raise RuntimeError("Cannot build agent config: hooks missing from bundled defaults")
+    # Strip Kiro Crew-internal keys (auto_approve_tools etc.) that kiro-cli  # brand-ok
+    # rejects. _VALID_HOOK_EVENTS already unions in every non-internal bundled
+    # event key, so this never drops a new event added to bundled defaults (#3362).
     config["hooks"] = _kiro_hooks_only(bundled_hooks)
 
     # Strip the retired deniedCommands/autoAllowReadonly injection so a config

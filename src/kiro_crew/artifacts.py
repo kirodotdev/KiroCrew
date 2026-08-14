@@ -252,6 +252,9 @@ class ArtifactPublication:
     collab_mode: str = "mirror"
     last_pushed_sha256: str = ""  # concurrency guard for the next version push
     last_synced_kirocrew_version: int = 0
+    #: Wrapper envelope revision at the time of the last push — compared against
+    #: ``publish_sync.WRAPPER_REVISION`` to detect wrapper-only staleness (#3373).
+    wrapper_revision: int = 0
     # Maps str(kirocrew_version) -> remote_version_number.
     version_map: dict[str, int] = field(default_factory=dict)
     published_at: str = ""
@@ -3298,6 +3301,10 @@ class ArtifactStore:
             last_synced = int(raw_pub.get("last_synced_kirocrew_version", 0) or 0)
         except (TypeError, ValueError):
             last_synced = 0
+        try:
+            wrapper_rev = int(raw_pub.get("wrapper_revision", 0) or 0)
+        except (TypeError, ValueError):
+            wrapper_rev = 0
         return ArtifactPublication(
             artifact_id=str(artifact_id),
             view_url=str(raw_pub.get("view_url") or ""),
@@ -3308,6 +3315,7 @@ class ArtifactStore:
             collab_mode=("live" if raw_pub.get("collab_mode") == "live" else "mirror"),
             last_pushed_sha256=str(raw_pub.get("last_pushed_sha256") or ""),
             last_synced_kirocrew_version=last_synced,
+            wrapper_revision=wrapper_rev,
             version_map=version_map,
             published_at=str(raw_pub.get("published_at") or ""),
             published_by=str(raw_pub.get("published_by") or ""),

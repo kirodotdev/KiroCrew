@@ -92,6 +92,11 @@ _STANDALONE_THEME_VARS: dict[str, str] = {
     "--info": "#2563eb",
 }
 
+# Monotonically increasing revision counter for the wrap_widget_html envelope.
+# Bump this whenever the wrapper's CSP, scripts, or structural HTML changes so
+# that already-published widgets are detected as stale and re-pushed (#3373).
+WRAPPER_REVISION: int = 2
+
 # CSP for the published standalone widget document (wrap_widget_html).
 #
 # 'unsafe-eval' is NOT granted: the vendored Tailwind v4 runtime inlined by
@@ -467,6 +472,7 @@ async def publish(
         collab_mode=_collab_mode_for(provider),
         last_pushed_sha256=res.concurrency_token,
         last_synced_kirocrew_version=art.version,
+        wrapper_revision=WRAPPER_REVISION if art.kind == "widget" else 0,
         version_map={str(art.version): res.version_number},
         published_at=_now_iso(),
         published_by=res.owner,
@@ -527,7 +533,13 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     # NOT dedupe on content — the 1:1 mapping is intentional, and a provider's
     # stored bytes (e.g. the provider's HTML auto-injection) won't match a
     # locally-computed hash anyway.
-    if not force and fresh.version == pub.last_synced_kirocrew_version:
+    # Also re-push when the wrapper envelope has changed (CSP, CDN scripts) even
+    # if the artifact content version hasn't moved (#3373).
+    wrapper_stale = (
+        fresh.kind == "widget"
+        and WRAPPER_REVISION > (pub.wrapper_revision or 0)
+    )
+    if not force and fresh.version == pub.last_synced_kirocrew_version and not wrapper_stale:
         return
 
     provider = _resolve_provider(pub.provider)
@@ -579,6 +591,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
             art.slug,
             last_pushed_sha256=res.concurrency_token or pub.last_pushed_sha256,
             last_synced_kirocrew_version=fresh.version,
+            wrapper_revision=WRAPPER_REVISION if fresh.kind == "widget" else pub.wrapper_revision,
             version_map=version_map,
             last_error="",
             **extra_pub,
@@ -913,10 +926,15 @@ async def upstream_status(slug: str) -> dict[str, object]:
         remote_hash = await _live_remote_hash(provider, ext_id)
         baseline = pub.last_synced_remote_hash
         upstream_ahead = bool(baseline) and bool(remote_hash) and remote_hash != baseline
+        local_ahead_live = (
+            art.version > pub.last_synced_kirocrew_version
+            # Wrapper envelope changed since last push — widget needs re-render (#3373).
+            or (art.kind == "widget" and WRAPPER_REVISION > (pub.wrapper_revision or 0))
+        )
         base.update(
             {
                 "upstream_ahead": bool(upstream_ahead),
-                "local_ahead": bool(art.version > pub.last_synced_kirocrew_version),
+                "local_ahead": bool(local_ahead_live),
                 "conflict": False,
                 "cloud_version": cur_v if isinstance(cur_v, int) else None,
             }
@@ -926,7 +944,11 @@ async def upstream_status(slug: str) -> dict[str, object]:
     local_ahead = (
         is_pub
         and art.publication is not None
-        and art.version > art.publication.last_synced_kirocrew_version
+        and (
+            art.version > art.publication.last_synced_kirocrew_version
+            # Wrapper envelope changed since last push — widget needs re-render (#3373).
+            or (art.kind == "widget" and WRAPPER_REVISION > (art.publication.wrapper_revision or 0))
+        )
     )
     base.update(
         {

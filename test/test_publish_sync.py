@@ -331,6 +331,40 @@ async def test_push_version_skips_already_synced_version(store, fake_client):
 
 
 @pytest.mark.asyncio
+async def test_push_version_re_pushes_widget_on_wrapper_revision_bump(store, fake_client, monkeypatch):
+    """A widget with stale wrapper_revision is re-pushed even if content version matches (#3373)."""
+    store.create(name="Widget", content="<p>hi</p>", kind="widget", slug="w")
+    await publish_sync.publish("w")
+    art = store.get("w")
+    assert art.publication.last_synced_kirocrew_version == 1
+    assert art.publication.wrapper_revision == publish_sync.WRAPPER_REVISION
+
+    # Simulate a wrapper bump (CSP tightened) — revision goes up by 1.
+    monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
+    fake_client.calls.clear()
+
+    # Same artifact version, but wrapper is stale → should re-push.
+    await publish_sync.push_version(store.get("w"))
+    assert len(fake_client.called("upload_version")) == 1
+    # After push, wrapper_revision is updated.
+    art = store.get("w")
+    assert art.publication.wrapper_revision == publish_sync.WRAPPER_REVISION
+
+
+@pytest.mark.asyncio
+async def test_push_version_skips_non_widget_on_wrapper_revision_bump(store, fake_client, monkeypatch):
+    """Non-widget artifacts ignore wrapper_revision — only widgets wrap with CSP (#3373)."""
+    store.create(name="Doc", content="hello", kind="text", slug="t")
+    await publish_sync.publish("t")
+    monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
+    fake_client.calls.clear()
+
+    await publish_sync.push_version(store.get("t"))
+    # Text artifact → no wrapper staleness → skip.
+    assert fake_client.called("upload_version") == []
+
+
+@pytest.mark.asyncio
 async def test_push_version_conflict_sets_last_error(store, fake_client):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     await publish_sync.publish("d")
@@ -1134,6 +1168,18 @@ async def test_upstream_status_reports_ahead(store, fake_client, tmp_path):
     assert status["cloud_version"] == 5
     assert status["source"] == "publication"
     assert status["live_dirty"] is False
+
+
+@pytest.mark.asyncio
+async def test_upstream_status_reports_local_ahead_on_wrapper_revision_bump(store, fake_client, tmp_path, monkeypatch):
+    """Widget with stale wrapper_revision shows local_ahead even if content hasn't changed (#3373)."""
+    art = store.create(name="W", content="<p>x</p>", kind="widget")
+    _track_publication(store, art.slug)
+    # Simulate wrapper bump.
+    monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
+    fake_client.get_response = _remote_get(tmp_path, "ignored", version=1, sha="sha-v1")
+    status = await publish_sync.upstream_status(art.slug)
+    assert status["local_ahead"] is True
 
 
 @pytest.mark.asyncio
