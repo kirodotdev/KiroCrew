@@ -105,10 +105,10 @@ def _sanitize_response(payload: Any) -> Any:
     """Recursively apply credential + exfiltration redaction to all str values in a response payload.
 
     Deploy handler error responses echo LLM-controlled values (local_dir,
-    site_id, profile) without BOTH redaction passes. This helper walks dict/list
-    structures and applies _redact_text to every str leaf. Applied at the three
-    chokepoint handlers (_handle_deploy, _handle_recall, _handle_destroy) so
-    ALL paths through _do_* are covered in one place.
+    site_id, profile), which need BOTH redaction passes. This helper walks
+    dict/list structures and applies _redact_text to every str leaf. Applied at
+    the three chokepoint handlers (_handle_deploy, _handle_recall,
+    _handle_destroy) so ALL paths through _do_* are covered in one place.
     """
     if isinstance(payload, str):
         return _redact_text(payload)
@@ -130,8 +130,7 @@ def _redact_profile_fields(profiles: list[dict[str, Any]]) -> list[dict[str, Any
         entry: dict[str, Any] = {}
         for k, v in p.items():
             if isinstance(v, str) and v:
-                v, _ = redact_credentials(v)
-                v, _ = redact_exfiltration_urls(v)
+                v = _redact_text(v)
             entry[k] = v
         out.append(entry)
     return out
@@ -210,10 +209,7 @@ def _safe_err(exc: BaseException) -> str:
     AWS CLI stderr can contain credential fragments (access key ids, session
     tokens, etc.) — never surface the raw exception in response payloads.
     """
-    msg = str(exc)
-    msg, _ = redact_credentials(msg)
-    msg, _ = redact_exfiltration_urls(msg)
-    return msg
+    return _redact_text(str(exc))
 
 
 # --- local_dir input validation (security-controls) ------------
@@ -303,7 +299,7 @@ def _allowed_local_roots() -> list[Path]:
                 pass
     except Exception:
         pass
-    # Always allow the deploy staging dir (for artifact staging, F2/F3).
+    # Always allow the deploy staging dir, where artifacts are staged for publish.
     try:
         sr = _staging_root()
         roots.append(sr.resolve())
@@ -1307,8 +1303,6 @@ def _internal_denied(func):  # type: ignore[no-untyped-def]
     A new handler without this decorator (and not in the allowlist) will trip the
     registration-time assertion in register_routes.
     """
-    import functools
-
     @functools.wraps(func)
     async def _wrapper(request: web.Request) -> web.Response:
         if _is_internal_secret_request(request):
