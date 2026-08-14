@@ -14,6 +14,7 @@ import ast
 import inspect
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +27,10 @@ from kiro_crew.mcp_gateway.rewriter import (
     rewrite_agents,
 )
 
-# Absolute on POSIX and treated as absolute by ntpath (leading slash), so the
-# ``shutil.which`` bare-name resolution path is never entered and the fixture
-# behaves identically on every CI platform.
-_CMD = "/usr/bin/env"
+# The running interpreter: absolute, exists, and executable on every CI
+# platform, so the fixture passes the resolver's absolute-path exec check
+# and the ``shutil.which`` bare-name path is never entered.
+_CMD = sys.executable
 
 
 def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
@@ -76,18 +77,16 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
 #   * STALE only          -> the read is gone; prune the entry.
 _AMBIENT_READ_ALLOWLIST = frozenset(
     {
-        # PATH feeds shutil.which(); fingerprinted as path_env, and the probe
-        # RESULTS are stored + re-run on the cache-hit path.
-        ("_build_stub_entry", "os.environ:PATH"),
         # Baked into every overlay ``command``; fingerprinted as "python".
         ("_build_stub_entry", "sys.executable"),
         # The fingerprint builder reading its own declared inputs.
         ("_rewrite_inputs_fingerprint", "os.environ:PATH"),
         ("_rewrite_inputs_fingerprint", "os.environ:PATHEXT"),
         ("_rewrite_inputs_fingerprint", "sys.executable"),
-        # Selects warning TEXT only; documented output-neutral in the
-        # ``_rewrite_inputs_fingerprint`` docstring (gatewayd re-reads the
-        # flag at spawn time, not from the overlay).
+        # Output-AFFECTING since issue #3495: decides whether an env-declaring
+        # server is pooled at all. Read once per pass in rewrite_agents and
+        # fingerprinted as "forward_declared_env" (see
+        # test_forward_declared_env_change_invalidates).
         ("forward_declared_env_enabled", "config-import:kiro_crew.config.loader"),
     }
 )
@@ -295,6 +294,21 @@ def _mk_tree(root: Path, *, n_agents: int = 2, with_env: bool = True) -> Path:
     return src
 
 
+@pytest.fixture(autouse=True)
+def _forward_declared_env_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force declared-env forwarding ON for this module.
+
+    Since issue #3495 (cause B pre-classification) a poolable server that
+    declares env while forwarding is OFF is left unwrapped — which would gut
+    every ``with_env=True`` fixture here (no stub, no sidecar, no target_env).
+    These tests exercise the fingerprint/caching machinery, not the
+    classification policy (covered in test_mcp_gateway_rewriter.py), so pin
+    the flag ON. ``test_forward_declared_env_change_invalidates`` overrides
+    this per-call to prove the flag is itself a fingerprint input.
+    """
+    monkeypatch.setattr(rewriter, "forward_declared_env_enabled", lambda: True)
+
+
 def _rewrite(root: Path, **overrides: Any) -> tuple[dict[str, int], dict[str, str]]:
     kwargs: dict[str, Any] = dict(
         source_dir=root / "agents",
@@ -344,6 +358,29 @@ def test_unchanged_inputs_skip_the_rewrite_and_return_identical_result(
     # result must be exactly what a full rewrite would have returned.
     assert warm == cold
     assert warm[1]  # non-trivial: target env actually carries entries
+
+
+def test_forward_declared_env_change_invalidates(
+    tmp_path: Path,
+    rewrite_counter: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flipping ``mcp_gateway.forward_declared_env`` regenerates the overlays.
+
+    The flag decides whether an env-declaring server is pooled at all (issue
+    #3495 cause B), so serving a cached overlay across a flip would keep a
+    server pooled that the new policy declassifies (or vice versa).
+    """
+    _mk_tree(tmp_path, with_env=True)
+    on = _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 2
+    assert on[0]  # forwarding on: env-declaring servers are wrapped
+
+    monkeypatch.setattr(rewriter, "forward_declared_env_enabled", lambda: False)
+    off = _rewrite(tmp_path)
+    assert rewrite_counter["n"] == 4, "flag flip must not serve the cache"
+    # Forwarding off: the env-declaring servers are declassified (unwrapped).
+    assert off != on
 
 
 def test_source_content_change_invalidates(

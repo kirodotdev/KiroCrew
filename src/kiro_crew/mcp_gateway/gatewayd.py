@@ -74,6 +74,7 @@ from kiro_crew.mcp_gateway.rewriter import (
 )
 from kiro_crew.mcp_gateway.shutdown_budget import DRAIN_SECS, POOL_SHUTDOWN_SECS
 from kiro_crew.mcp_gateway.spill import cleanup_old_spill_files
+from kiro_crew.mcp_gateway.stub import fallback_counts as stub_fallback_counts
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.platform_compat import IS_WINDOWS
@@ -1970,6 +1971,10 @@ async def _handle_connection(
         snapshot = await pool.metrics_snapshot_async()
         if hot_keys is not None:
             snapshot.update(hot_keys.hit_stats())
+        # Plain blocking file I/O (≤ ~2 MiB of JSONL under the rotation cap) —
+        # off the event loop, or every concurrent gateway task stalls behind a
+        # stats poll.
+        snapshot["stub_fallbacks"] = await asyncio.to_thread(stub_fallback_counts)
         await _write_json_line(writer, {"type": "stats", **snapshot})
         return
 

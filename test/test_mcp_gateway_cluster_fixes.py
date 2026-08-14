@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -281,7 +282,7 @@ class TestNamingMigration:
         (agents_dir / "test.json").write_text(json.dumps({
             "name": "test",
             "mcpServers": {
-                "pooled": {"command": "/bin/srv", "args": ["--stdio"]},
+                "pooled": {"command": sys.executable, "args": ["--stdio"]},
             },
         }), encoding="utf-8")
         overlay_dir = tmp_path / "overlay"
