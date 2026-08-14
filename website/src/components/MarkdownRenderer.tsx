@@ -1645,15 +1645,23 @@ function rehypeStreamingCaret() {
 // real code renders with literal backticks. One missing space corrupts the
 // rest of the message.
 //
+// The same swallow takes the CLOSING `**` of a bold-wrapped URL, the shape
+// `**https://…**（revision 1）` that CJK prose writes with no space between the
+// emphasis and the punctuation after it. GFM trims a TRAILING `*`, so this only
+// breaks when a non-space follows: the `**` stops being a delimiter, the opening
+// `**` renders as two literal asterisks, and every later `**` in the paragraph
+// re-pairs against the wrong partner.
+//
 // This has to be fixed at the SOURCE level, not on the mdast: re-splitting the
 // link node after the fact cannot restore the code-span pairing, because the
 // pairing is decided while micromark tokenizes the whole paragraph. So force
 // the boundary before parsing by re-emitting the URL head as an angle autolink
 // `<url>`, which has an explicit end and renders identically.
 //
-// The cut is EVIDENCE-BASED, not character-based — see cjkCutIndex. CJK
-// punctuation reaches real URLs raw (`…/wiki/苹果（公司）`), so cutting on the
-// character alone would break links that render correctly today.
+// The cut is EVIDENCE-BASED, not character-based — see cjkCutIndex and
+// strongDelimCutIndex. CJK punctuation reaches real URLs raw
+// (`…/wiki/苹果（公司）`), so cutting on the character alone would break links
+// that render correctly today.
 //
 // Which regions are off-limits is read off remark's OWN parse (see
 // autolinkLiteralSpans) rather than a hand-rolled scanner: only a real GFM
@@ -1685,6 +1693,28 @@ const CJK_SENTENCE_ENDERS = '\u3002\uff0e\uff01\uff1f\u2026\uff61'
 // is also the character whose loss does the real damage: the run eats an opening
 // code-span delimiter and every later backtick pairing in the paragraph shifts.
 const MD_ACTIVE_RE = /`/
+
+// Strong-emphasis delimiters. A single `*` or `_` is NOT included: both are legal
+// in a URL and common in query strings (`?q=foo，*test`, `?a=b_c`), so an unpaired
+// one before the URL is too weak to act on. A DOUBLED delimiter carries the
+// structural evidence instead — see strongDelimCutIndex.
+const STRONG_DELIMS = ['**', '__']
+const STRONG_DELIM_RE = /\*\*|__/
+
+// CommonMark's character classes for delimiter flanking. Unicode-aware on
+// purpose: the text this runs on is CJK prose, where the neighbour of a `**` is
+// routinely a fullwidth punctuation mark (`：`, `）`) that ASCII classes miss —
+// and misclassifying a neighbour flips whether a run can open emphasis.
+const UNICODE_WS_RE = /[\s\p{Zs}]/u
+const UNICODE_PUNCT_RE = /[\p{P}\p{S}]/u
+/**
+ * East Asian WIDE or FULLWIDTH characters — ideographs, kana, hangul, and the
+ * fullwidth forms that carry CJK punctuation (`：（），。`). Ambiguous-width marks
+ * (`·`, `…`, curly quotes) are deliberately absent: the renderer's amendment
+ * treats those as ordinary punctuation, so this class must too.
+ */
+const CJK_WIDE_RE =
+  /[\u1100-\u115f\u2e80-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]|[\u{20000}-\u{3fffd}]/u
 
 // Where a bare URL may START, and the run GFM's tokenizer would take from there
 // (everything up to ASCII whitespace or `<`). Only needed for a SECOND URL
@@ -1856,6 +1886,222 @@ function cjkCutIndex(run: string, prefix: string): number {
   return -1
 }
 
+/**
+ * Whether a delimiter run with `before`/`after` as its neighbours can OPEN
+ * and/or CLOSE emphasis, per CommonMark's flanking rules. Callers pass `' '` for
+ * start/end of line, which the spec treats as whitespace.
+ *
+ * This is the load-bearing distinction: a textual count of `**`/`__` cannot tell
+ * a real delimiter from a run GFM renders literally. An intraword `__`
+ * (`report__final.pdf`) can neither open nor close, and a `**` with whitespace on
+ * both sides (`a ** b`) is not flanking at all — treating either as a delimiter
+ * truncates a URL that renders correctly today.
+ */
+function flankingFor(
+  before: string,
+  after: string,
+  ch: string,
+): { canOpen: boolean; canClose: boolean } {
+  const wsBefore = UNICODE_WS_RE.test(before)
+  const wsAfter = UNICODE_WS_RE.test(after)
+  // The CJK-friendly amendment that `remark-cjk-friendly` implements — and this
+  // pass must measure the SAME grammar the renderer runs — classifies a wide or
+  // fullwidth character as CJK rather than as punctuation, so CJK punctuation no
+  // longer blocks emphasis, and admits a CJK neighbour where CommonMark admits
+  // only whitespace or punctuation. Without this, `**中文。**` reads as two
+  // openers here while the renderer pairs it as one closed strong.
+  const cjkBefore = CJK_WIDE_RE.test(before)
+  const cjkAfter = CJK_WIDE_RE.test(after)
+  const punctBefore = UNICODE_PUNCT_RE.test(before) && !cjkBefore
+  const punctAfter = UNICODE_PUNCT_RE.test(after) && !cjkAfter
+  const leftFlanking = !wsAfter && (!punctAfter || wsBefore || punctBefore || cjkBefore)
+  const rightFlanking = !wsBefore && (!punctBefore || wsAfter || punctAfter || cjkAfter)
+  // `_` additionally cannot do intraword emphasis; `*` can. That extra condition tests
+  // punct-or-whitespace in the RAW sense, where CJK punctuation counts — the amendment
+  // above excludes wide characters from the punctuation class used for FLANKING only.
+  // Reusing the amended class here would leave a fullwidth `：` reading as neither
+  // punctuation nor whitespace, so `：__url__` would look intraword and open nothing.
+  if (ch === '_') {
+    const rawBefore = wsBefore || UNICODE_PUNCT_RE.test(before)
+    const rawAfter = wsAfter || UNICODE_PUNCT_RE.test(after)
+    return {
+      canOpen: leftFlanking && (!rightFlanking || rawBefore),
+      canClose: rightFlanking && (!leftFlanking || rawAfter),
+    }
+  }
+  return { canOpen: leftFlanking, canClose: rightFlanking }
+}
+
+/** Flanking for the run at `[start, end)` of `line`. */
+function delimFlanking(
+  line: string,
+  start: number,
+  end: number,
+  ch: string,
+): { canOpen: boolean; canClose: boolean } {
+  return flankingFor(
+    start > 0 ? line[start - 1] : ' ',
+    end < line.length ? line[end] : ' ',
+    ch,
+  )
+}
+
+/**
+ * Whether the character at `at` is backslash-escaped, i.e. preceded by an ODD
+ * number of backslashes. `\**` is a literal asterisk followed by a lone `*` and
+ * cannot be a strong delimiter, while `\\**` escapes the backslash itself and
+ * leaves the `**` intact. Parity is what tells those apart.
+ */
+function isEscapedAt(line: string, at: number): boolean {
+  let n = 0
+  while (at - n - 1 >= 0 && line[at - n - 1] === '\\') n++
+  return n % 2 === 1
+}
+
+/**
+ * Whether the delimiter run `line[at, end)` sits between two ordinary word
+ * characters — neither side whitespace, punctuation, nor CJK. Start of line and
+ * end of line count as whitespace, so they are never intraword.
+ */
+function isIntrawordAt(line: string, at: number, end: number): boolean {
+  const before = at > 0 ? line[at - 1] : ' '
+  const after = end < line.length ? line[end] : ' '
+  const plain = (c: string) =>
+    !UNICODE_WS_RE.test(c) && !UNICODE_PUNCT_RE.test(c) && !CJK_WIDE_RE.test(c)
+  return plain(before) && plain(after)
+}
+
+/**
+ * Whether `line[0, upTo)` leaves a strong-emphasis opener OPEN — i.e. the author
+ * was still inside a `**`/`__` when the URL started.
+ *
+ * CommonMark consumes delimiter CHARACTERS, not whole runs, so this counts
+ * characters: an unambiguous opener adds its length, an unambiguous closer takes
+ * back up to that many, and a strong opener is open when at least two characters
+ * are still unmatched. Counting runs instead would call `**foo*` a pending strong
+ * opener, when the lone `*` has in fact eaten one of the two and CommonMark renders
+ * `*<em>foo</em>` — no strong opener survives to wrap the URL.
+ *
+ * A run that could be either an opener or a closer (`a**b`) makes the whole line
+ * inconclusive, because a count that guesses can be wrong in both directions. A run
+ * GFM would render literally — an intraword `__`, or a `**` with whitespace on both
+ * sides — is not flanking at all and contributes nothing, which is why a lone `*`
+ * used as prose (`2 * 3 = 6`) does not disturb the count.
+ */
+function hasPendingStrongOpener(line: string, upTo: number, delim: string): boolean {
+  const ch = delim[0]
+  let open = 0
+  let i = 0
+  while (i < upTo) {
+    if (line[i] !== ch) {
+      i++
+      continue
+    }
+    let end = i
+    while (end < line.length && line[end] === ch) end++
+    if (end > upTo) break
+    // An escaped first character is a literal, so the delimiter run effectively
+    // starts one character later: `\**` carries no delimiter at all, `\***` carries
+    // one. Flanking is then measured from that later start, whose left neighbour is
+    // the literal asterisk — punctuation, which is what it renders as.
+    const from = isEscapedAt(line, i) ? i + 1 : i
+    if (end > from) {
+      const { canOpen, canClose } = delimFlanking(line, from, end, ch)
+      // An INTRAWORD run — a word character on both sides, no whitespace, no
+      // punctuation, no CJK — is the shape every counter-example to this rule has
+      // used (`report__final.pdf`, `?q=foo**-bar`). CommonMark lets `*` pair there,
+      // but the renderer leaves such a line literal, so claiming to know the pairing
+      // is how a working URL gets truncated. Treat the line as inconclusive.
+      if (canOpen && canClose && isIntrawordAt(line, from, end)) return false
+      // A run that can do both otherwise is the ordinary shape in CJK prose (`：**`,
+      // `。**`). The renderer resolves it the way a delimiter stack does: close an
+      // opener when one is waiting, otherwise open.
+      if (canClose && open >= delim.length) open -= Math.min(end - from, open)
+      else if (canOpen) open += end - from
+    }
+    i = end
+  }
+  return open >= delim.length
+}
+
+/**
+ * Index in `run` of a strong-emphasis delimiter the author wrote to CLOSE an
+ * opener that sits before the URL, or -1 when there is none.
+ *
+ * This evidence is structural rather than lexical: it does not claim to know
+ * where the URL ended, it observes that the current reading is one no author
+ * writes — a delimiter PAIR wrapping the URL, whose closing half GFM has
+ * swallowed into the href. Leaving it there costs the emphasis its delimiter, so
+ * the opener degrades to two literal asterisks and every later `**` in the
+ * paragraph re-pairs against the wrong partner.
+ *
+ * BOTH ends must be real, and both are judged against the text the author wrote:
+ * the prefix must leave an opener open (hasPendingStrongOpener) AND the candidate
+ * inside the run must itself be a legitimate closer. Checking only the opener is
+ * not enough — `__See https://example.com/a__b for details__` opens a real `__`
+ * and then hits an INTRAWORD `__` in the path, which closes nothing, so cutting
+ * there truncates a correct link and the emphasis stays open anyway.
+ *
+ * The candidate must also be followed by CJK PUNCTUATION — the same class the two
+ * rules above already act on. Flanking cannot carry this: in `?q=foo**-bar` the
+ * `**` has a word character before it and punctuation after it, which is exactly
+ * the shape of a real closer before punctuation, and a candidate followed by a
+ * fullwidth mark is right-flanking by construction (a run holds no whitespace, and
+ * the mark itself is punctuation), so a closer check on it can never refuse
+ * anything. The requirement is deliberately narrower than "any non-ASCII": an
+ * ideograph is legal mid-path (`?q=a**中文`), so treating one as a boundary would
+ * truncate a working URL.
+ *
+ * Consequences worth knowing, both accepted:
+ *  - An all-ASCII paragraph is never cut, and neither is `**url**已合并` (an
+ *    ideograph, not punctuation, follows the delimiter). This pass carries `Cjk` in
+ *    its name; the shape it is for is `**url**（…` / `**url**，…`.
+ *  - A URL whose path genuinely carries a fullwidth mark straight after a `**`
+ *    (`…/wiki/苹果**（公司）`) would be cut short. That is the SAME residual risk
+ *    rules 1 and 2 already accept, on the same character class.
+ *
+ * A trailing delimiter never reaches here: GFM trims a trailing `*`/`_` off the
+ * autolink literal, so `**https://x.com/a**` — which renders correctly today —
+ * yields a node whose source stops at `a`, with no delimiter inside the run.
+ */
+function strongDelimCutIndex(run: string, prefix: string, suffix: string): number {
+  // Flanking is decided by a delimiter's NEIGHBOURS, so the prefix alone is not
+  // enough context: the character after a prefix-terminal `**` is the URL's
+  // first character.
+  const line = prefix + run
+  let best = -1
+  for (const delim of STRONG_DELIMS) {
+    if (!hasPendingStrongOpener(line, prefix.length, delim)) continue
+    // If the prose after the URL still has a delimiter available to close that
+    // opener, the author's pair spans the URL and the `**` inside it is part of the
+    // URL. Cutting there would truncate the href AND orphan the real closer.
+    if (hasUnmatchedCloserAfter(suffix, delim)) continue
+    for (let at = run.indexOf(delim); at > 0; at = run.indexOf(delim, at + 1)) {
+      // An escaped delimiter closes nothing, so it is no evidence of a boundary.
+      // Skipping rather than adjusting is enough here: the next iteration starts one
+      // character later, which is exactly the run `\***` leaves behind.
+      if (isEscapedAt(line, prefix.length + at)) continue
+      const after = at + delim.length < run.length ? run[at + delim.length] : ' '
+      if (!CJK_PUNCT_RE.test(after)) continue
+      if (best < 0 || at < best) best = at
+      break
+    }
+  }
+  return best
+}
+
+/**
+ * The earliest boundary any evidence rule can prove, or -1. Rules are
+ * independent: each one alone is enough, and the shortest URL among them is the
+ * conservative choice.
+ */
+function earliestCut(run: string, prefix: string, suffix: string): number {
+  const cuts = [cjkCutIndex(run, prefix), strongDelimCutIndex(run, prefix, suffix)].filter(
+    (i) => i > 0,
+  )
+  return cuts.length > 0 ? Math.min(...cuts) : -1
+}
+
 function isAutolinkableHost(head: string): boolean {
   const m = AUTOLINKABLE_HOST_RE.exec(head)
   if (!m) return false
@@ -1902,17 +2148,66 @@ function prosePrefix(content: string, nonProse: Uint8Array, at: number): string 
   return out
 }
 
+/** `prosePrefix`'s mirror: the prose from `at` to the end of that line. */
+function proseSuffix(content: string, nonProse: Uint8Array, at: number): string {
+  let lineEnd = content.indexOf('\n', at)
+  if (lineEnd < 0) lineEnd = content.length
+  let out = ''
+  for (let i = at; i < lineEnd; i++) out += nonProse[i] ? ' ' : content[i]
+  return out
+}
+
 /**
- * Close a bare `http(s)://` run where CJK punctuation shows the URL has ended,
- * by re-emitting its head as an angle autolink. Returns `content` unchanged when
- * there is no such evidence.
+ * Whether the prose AFTER the URL still offers a delimiter that could close the
+ * opener waiting from before it — i.e. the author's pair is `**prose … prose**`
+ * and the `**` inside the URL is part of the URL.
+ *
+ * Parity is the whole point, and it is what makes this usable where a plain
+ * "is there another `**` later" test is not: in
+ * `已建好：**url**（revision 1），说明见 **文档**。` the two trailing delimiters pair
+ * with EACH OTHER, so none is left over for the opener, and the boundary inside
+ * the run really is the only reading that closes it. In `**See url**（x） for
+ * details**` the single trailing delimiter has no partner, so it is the closer and
+ * the run's `**` belongs to the URL.
+ */
+function hasUnmatchedCloserAfter(suffix: string, delim: string): boolean {
+  const ch = delim[0]
+  let open = 0
+  let i = 0
+  while (i < suffix.length) {
+    if (suffix[i] !== ch) {
+      i++
+      continue
+    }
+    let end = i
+    while (end < suffix.length && suffix[end] === ch) end++
+    const from = isEscapedAt(suffix, i) ? i + 1 : i
+    if (end - from >= delim.length) {
+      const { canOpen, canClose } = delimFlanking(suffix, from, end, ch)
+      // Nothing local is waiting, so a closer here can only be closing the opener
+      // that sits before the URL.
+      if (canClose && open < delim.length) return true
+      if (canClose) open -= Math.min(end - from, open)
+      else if (canOpen) open += end - from
+    }
+    i = end
+  }
+  return false
+}
+
+/**
+ * Close a bare `http(s)://` run whose boundary is provable — CJK punctuation
+ * that could not be part of the URL, or a strong-emphasis delimiter swallowed
+ * out of the surrounding markup — by re-emitting its head as an angle autolink.
+ * Returns `content` unchanged when there is no such evidence.
  *
  * NOT safe to run when `data-sourcepos` is in play: it inserts two characters
  * per fixed URL, which shifts every later column on that line and would
  * mis-anchor an inline comment. Callers gate on that (see MarkdownBlock).
  */
 export function fixCjkAutolinkBoundaries(content: string): string {
-  if (!content.includes('://') || !CJK_PUNCT_RE.test(content)) return content
+  if (!content.includes('://')) return content
+  if (!CJK_PUNCT_RE.test(content) && !STRONG_DELIM_RE.test(content)) return content
   const { literals, nonProse } = autolinkLiteralSpans(content)
   const inserts: Array<[number, string]> = []
   for (const [start, end] of literals) {
@@ -1926,7 +2221,11 @@ export function fixCjkAutolinkBoundaries(content: string): string {
       const at = start + m.index
       if (at < consumedTo) continue
       const run = URL_RUN_AT_RE.exec(content.slice(at, end))?.[0] ?? ''
-      const cut = cjkCutIndex(run, prosePrefix(content, nonProse, at))
+      const cut = earliestCut(
+        run,
+        prosePrefix(content, nonProse, at),
+        proseSuffix(content, nonProse, at + run.length),
+      )
       if (cut < 0) {
         // The whole run is one URL — mask it, so a bracket in its query string
         // cannot pose as prose context for a later URL.
