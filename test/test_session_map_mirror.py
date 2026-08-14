@@ -383,6 +383,71 @@ class TestPrunePreservesMirror:
             assert pruned == 0
             assert sm.get_mirror_link("dashboard:chat-1") is not None
 
+    def test_stale_sid_repairs_a_resume_binding_instead_of_dropping_it(self, tmp_path):
+        """A restart after kiro-cli collected the session file must not unlink.
+
+        The entry is stale by the ``sid`` predicate, but it carries the inbound
+        resume binding: delete it and the next message from that channel falls
+        back to the channel's own session instead of resuming the linked one.
+        """
+        key = "dashboard:chat-1"
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm = SessionMap()
+            sm.set(key, "sid-that-no-longer-exists")
+            sm.set_mirror_link(key, link, accepts_inbound=True)
+            assert sm.prune() == 0
+            assert sm.get_mirror_link(key) == link
+            assert sm.mirror_accepts_inbound(key) is True
+            assert (sm._data.get(key) or {}).get("sid") == ""
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            reloaded = SessionMap()
+        # The repair reached disk, so the next startup does not redo it.
+        assert reloaded.get_mirror_link(key) == link
+        assert reloaded.mirror_accepts_inbound(key) is True
+        assert not (reloaded._data.get(key) or {}).get("sid")
+
+    def test_stale_sid_repairs_a_slack_thread_binding(self, tmp_path):
+        """Same branch for Slack, whose binding lives in the dedicated fields.
+
+        The thread has to keep resolving to this session after the restart, or
+        the next reply in it starts a new conversation.
+        """
+        key = "dashboard:chat-1"
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm = SessionMap()
+            sm.set(key, "sid-that-no-longer-exists")
+            sm.set_slack_link(key, "1700000000.000100", "C123")
+            assert sm.prune() == 0
+            assert (sm._data.get(key) or {}).get("sid") == ""
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            reloaded = SessionMap()
+        assert reloaded.get_session_for_thread("1700000000.000100") == key
+        assert not (reloaded._data.get(key) or {}).get("sid")
+
+    def test_stale_sid_with_no_binding_is_still_collected(self, tmp_path):
+        """Repair is for entries that carry state; a bare stale row is garbage."""
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm = SessionMap()
+            sm.set("dashboard:chat-1", "sid-that-no-longer-exists")
+            assert sm.prune() == 1
+            assert "dashboard:chat-1" not in sm._data
+
+    def test_a_live_sid_with_a_mirror_is_left_alone(self, tmp_path):
+        """Prune only touches entries whose session file is gone."""
+        key = "dashboard:chat-1"
+        link = ChannelLink(channel_type="discord", channel_id="dm-1")
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm = SessionMap()
+            sm.set(key, "sid-alive")
+            sm.set_mirror_link(key, link, accepts_inbound=True)
+            with patch("kiro_crew.session_map._kiro_sessions_dir", return_value=tmp_path):
+                (tmp_path / "sid-alive.json").write_text("{}", encoding="utf-8")
+                assert sm.prune() == 0
+            assert (sm._data.get(key) or {}).get("sid") == "sid-alive"
+            assert sm.get_mirror_link(key) == link
+            assert sm.mirror_accepts_inbound(key) is True
+
 
 class TestPersistence:
     def test_inbound_resume_marker_round_trips_to_disk(self, tmp_path):

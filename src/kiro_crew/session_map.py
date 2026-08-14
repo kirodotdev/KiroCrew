@@ -82,6 +82,19 @@ def _has_durable_flag(entry: dict) -> bool:
     return any(flags.get(name) for name in _DURABLE_FLAGS)
 
 
+def _survives_prune(entry: dict) -> bool:
+    """True iff *entry* holds state that must outlive its native session.
+
+    The ONE predicate behind every stale branch of :meth:`SessionMap.prune`, so
+    they cannot disagree about what a missing session file is allowed to take
+    with it. Two kinds of state qualify: a durable flag (a per-conversation
+    setting) and a channel binding — a Slack thread or a ``mirror`` — which is
+    the identity that routes a conversation back to its channel. Prune may clear
+    a stale ``sid`` on such an entry, but never discards the entry itself.
+    """
+    return bool(_has_durable_flag(entry) or entry.get("slack_thread_ts") or entry.get("mirror"))
+
+
 # Serializes every structural access to the map. MODULE-level, not per-instance,
 # because the instances are not the unit of exclusion: the read-only call sites
 # build their own throwaway ``SessionMap()`` (``handlers/session_storage.py``,
@@ -766,14 +779,20 @@ class SessionMap:
     def prune(self) -> int:
         """Remove entries whose session files no longer exist.
 
-        An entry carrying a DURABLE flag is never deleted, and when its ``sid``
-        has gone stale the ``sid`` is cleared instead. A durable flag is a
+        An entry carrying a DURABLE flag or a channel binding is never deleted,
+        and when its ``sid`` has gone stale the ``sid`` is cleared instead —
+        :func:`_survives_prune` is the single predicate both stale branches ask,
+        so neither can start discarding what the other keeps. A durable flag is a
         per-conversation SETTING, not session state: it can be written before the
         conversation has ever run a turn (``/unlink`` as the very first message
         leaves no ``sid``, no thread and no mirror), and it must outlive the
-        native session the conversation happened to be using. Deleting the entry
-        either way would silently revert the setting at the next restart, and the
-        user's next message would land on the default they had just turned off.
+        native session the conversation happened to be using. A channel binding
+        (``slack_thread_ts``, ``mirror``) is the conversation's identity: it is
+        what routes an inbound channel message back to this session. Deleting the
+        entry either way would silently revert user state at the next restart —
+        the setting returns to the default they had just turned off, or the next
+        message from the channel opens a fresh session instead of resuming the
+        one it is bound to.
 
         Session-SCOPED flags (a temporary or incognito thread) are deliberately
         NOT durable: they describe one session, so keeping their entries alive
@@ -792,19 +811,14 @@ class SessionMap:
             if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
                 continue
             sid = entry.get("sid")
-            durable = _has_durable_flag(entry)
+            survives = _survives_prune(entry)
             if sid and not (sessions_dir / f"{sid}.json").exists():
-                if durable:
+                if survives:
                     entry["sid"] = ""
                     repaired = True
                 else:
                     stale.append(key)
-            elif (
-                not sid
-                and not entry.get("slack_thread_ts")
-                and not entry.get("mirror")
-                and not durable
-            ):
+            elif not sid and not survives:
                 stale.append(key)
         for k in stale:
             del self._data[k]
