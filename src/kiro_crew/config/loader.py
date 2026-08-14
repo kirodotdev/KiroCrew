@@ -1184,9 +1184,9 @@ class AgentConfig:
         default="",
         metadata=_meta(
             "ACP Backend",
-            "Which ACP agent to drive. Only '' (kiro-cli) is selectable; the "
-            "'kas' plumbing is present but not yet usable.",
-            enum=[""],
+            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
+            "KAS runs chat but has no native subagent progress reporting yet.",
+            enum=["", "kas"],
         ),
     )
     default_agent: str = field(

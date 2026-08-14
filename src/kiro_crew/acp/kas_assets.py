@@ -35,6 +35,14 @@ KAS_NODE_FLAGS = ("--experimental-wasm-modules",)
 #: KAS defaults to stdio, but state it so the transport is visible in ps output.
 KAS_TRANSPORT_ARG = "--transport=stdio"
 
+#: Auth mode: KAS keeps no refresh token and calls back over ACP
+#: (``_kiro/auth/getAccessToken``) whenever it needs an access token. The
+#: runtime answers that callback by shelling out to kiro-cli (see
+#: :mod:`kas_auth`). The alternative -- omitting ``--auth`` -- makes KAS use its
+#: file auth provider, which reads a ``~/.aws/sso/cache`` token that
+#: ``kiro-cli login`` does NOT write, so a cli-only machine has no token there.
+KAS_AUTH_ACP_CALLBACK_ARG = "--auth=acp-callback"
+
 #: Where the entry script sits inside a version directory. Checked before any
 #: recursive walk, because the staged tree holds hundreds of packages.
 _SCRIPT_RELATIVE_PATHS = (
@@ -145,9 +153,20 @@ def resolve_kas_entry() -> tuple[Path, Path]:
 def build_kas_argv(node: Path, server_script: Path) -> list[str]:
     """argv for a KAS stdio session.
 
-    ``--auth`` is deliberately absent: without it KAS selects its file auth
-    provider and reads/refreshes the token itself, so Kiro Crew never handles a
-    credential. Passing ``--auth=acp-callback`` would force this process to
-    implement ``_kiro/auth/getAccessToken`` instead.
+    Launched with ``--auth=acp-callback``: KAS keeps no refresh token and asks
+    this host for an access token over ACP whenever it needs one. The runtime
+    fulfils that ``_kiro/auth/getAccessToken`` callback by shelling out to
+    ``kiro-cli chat _ get-kas-token`` (see :mod:`kas_auth`), so the refresh token
+    never leaves kiro-cli's own store and this process only ever handles a
+    short-lived access token in transit. This works on any machine where
+    ``kiro-cli login`` succeeded -- unlike the file auth provider (omit
+    ``--auth``), which needs a ``~/.aws/sso/cache`` token that the cli does not
+    write.
     """
-    return [str(node), *KAS_NODE_FLAGS, str(server_script), KAS_TRANSPORT_ARG]
+    return [
+        str(node),
+        *KAS_NODE_FLAGS,
+        str(server_script),
+        KAS_TRANSPORT_ARG,
+        KAS_AUTH_ACP_CALLBACK_ARG,
+    ]

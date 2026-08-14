@@ -47,16 +47,45 @@ provider.
 
 | Value | Agent | Status |
 |-------|-------|--------|
-| `""` (default) | kiro-cli | the only supported value |
-| `kas` | kiro-agent (KAS) | plumbed, **not yet usable** |
+| `""` (default) | kiro-cli | full support |
+| `kas` | kiro-agent (KAS) | runs chat; some surfaces still missing |
 
-**Leave this unset.** The KAS backend's spawn and session plumbing is in place,
-but Kiro Crew does not yet send your configured agent to KAS, so every session
-would fail to activate it. Setting `kas` is refused at startup with that reason
-rather than failing on your first message.
+**What works on `kas`:** normal chat — your configured agent, its prompt, its tool
+allowlist, and session resume.
+
+**What does not, yet:**
+
+- Native subagent progress reporting (subagents run; their live progress does not
+  surface in the UI).
+- Context-usage percentage, compaction status, and agent-switch echoes — KAS
+  reports these differently and the mapping is not wired up.
+- Slash-command execution.
+- Auto-approve (`allowedTools`) is not carried over, so KAS applies its own
+  default approval policy.
+- `spawn_continue` works for runs started with an explicit keep, but not for
+  opportunistically-retained shared subagents.
+- Model selection is unverified: KAS advertises no model list on an
+  unauthenticated session, and Kiro Crew only sends a model the session
+  advertised, so a session may simply run KAS's own default model.
+
+**KAS gets its token from kiro-cli.** Kiro Crew launches KAS with
+`--auth=acp-callback`, so KAS keeps no credential of its own: whenever it needs
+an access token it calls back over ACP (`_kiro/auth/getAccessToken`) and Kiro
+Crew answers by shelling out to `kiro-cli chat _ get-kas-token`, which
+resolves-and-refreshes the token. The refresh token never leaves kiro-cli's own
+store, and this process only ever holds a short-lived access token in transit —
+never cached, never logged. This works on any machine where `kiro-cli login` has
+succeeded; a machine that is not signed in gets an auth error on the first
+prompt (the session still starts cleanly). Sign in with kiro-cli before
+switching.
+
+It also needs a KAS bundle already extracted on the machine by kiro-cli; set
+`KIROCREW_KAS_NODE` / `KIROCREW_KAS_SCRIPT` to point elsewhere.
 
 An unrecognized value logs a warning and falls back to the default backend, so a
 typo costs you a line in the log rather than a gateway that will not start.
+
+Set via `kirocrew config set agent.acp_backend kas`.
 
 ## Key Settings
 

@@ -60,6 +60,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -81,6 +82,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
+    MODEL_CONFIG_ID,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
@@ -289,6 +291,16 @@ class AcpRuntimeProtocol(Protocol):
     def pid(self) -> int | None:
         """Subprocess pid (sandbox launcher parent under the Linux namespace
         sandbox) — the liveness oracle scans its descendant tree for evidence."""
+        ...
+
+    @property
+    def acp_backend(self) -> str:
+        """Which ACP backend the process speaks.
+
+        The handle needs it because the backends disagree on verbs, not just on
+        payloads — the model, for one, is a ``session/set_model`` request on
+        kiro-cli and a session config option on KAS.
+        """
         ...
 
     @property
@@ -794,10 +806,16 @@ class AcpSessionHandle:
             # Inherit the backend default — nothing to send. For the ephemeral
             # _bg session the current model IS session/new's served default.
             return
-        await self._runtime.send_request(
-            METHOD_SET_MODEL,
-            set_model_params(self._session_id, resolved),
-        )
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            # KAS implements no ``session/set_model``; the model is one of its
+            # session config options instead. Same effect, different verb — so
+            # the bookkeeping below is shared rather than duplicated.
+            await self.set_config_option(MODEL_CONFIG_ID, resolved)
+        else:
+            await self._runtime.send_request(
+                METHOD_SET_MODEL,
+                set_model_params(self._session_id, resolved),
+            )
         self._model = resolved
         # Parity with AcpClient.set_model: keep _resolved_model_id in sync so
         # _backfill_context_window looks up the NEW model's window after a switch
@@ -1238,7 +1256,13 @@ class AcpSessionHandle:
             self._cleanup_transcript()
 
     def _cleanup_transcript(self) -> None:
-        """Best-effort delete of this session's kiro-cli transcript files."""
+        """Best-effort delete of this session's kiro-cli transcript files.
+
+        A NO-OP on the KAS backend: this unlinks from kiro-cli's sessions dir and
+        KAS keeps its own store, so nothing here matches. The ``keep_transcript``
+        guard therefore protects nothing on KAS — that backend's session record is
+        already gone, removed by the same verb that freed the session.
+        """
         sid = self._session_id
         if not sid:
             return

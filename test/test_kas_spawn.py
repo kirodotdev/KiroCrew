@@ -7,13 +7,13 @@ KAS's dialect, and completes ``initialize`` -> ``session/new`` -> ``session/prom
 not exercise the real KAS build, which is not present on a machine whose kiro-cli
 has never unpacked it.
 
-Driving the REAL build is deliberately NOT a test here. KAS authenticates itself
-through its file auth provider, so it reads and may rewrite the operator's token —
-state no ``tmp_path`` contains — and an env-var opt-in is not enough protection
-when that variable can be set in a shell profile or a CI matrix and then reached
-by an ordinary ``pytest`` run. Pointing KAS at a synthetic token dir is not an
-option either: it would select a provider with no credentials and so prove nothing
-about the auth path being verified.
+Driving the REAL build is deliberately NOT a test here. KAS is launched with
+``--auth=acp-callback``, so a real prompt makes it call back for a token, which
+the runtime answers by shelling out to ``kiro-cli chat _ get-kas-token`` — that
+touches the operator's live credential store, state no ``tmp_path`` contains, and
+an env-var opt-in is not enough protection when that variable can be set in a
+shell profile or a CI matrix and then reached by an ordinary ``pytest`` run.
+Faking the callback proves nothing about the real auth path either.
 
 When working on the backend, run it by hand instead::
 
@@ -32,11 +32,10 @@ When working on the backend, run it by hand instead::
     asyncio.run(main())
     EOF
 
-That last call is the current blocker: KAS advertises only its own built-in modes
-(``vibe``, ``spec``, ``plan``, ...), and Crew's agent reaches it through
-``_meta.kiro.customAgents`` on ``session/new``, which is not wired up — so the mode
-guard refuses rather than running a broader agent than the caller asked for. This
-is why ``agent.acp_backend`` does not accept ``kas`` yet.
+That call now succeeds: Crew injects its agent through ``_meta.kiro.customAgents``
+on ``session/new`` and activates it with ``session/set_mode``, and with
+``--auth=acp-callback`` a real prompt round-trip completes (the host answers KAS's
+token callback by shelling out to kiro-cli). ``agent.acp_backend`` accepts ``kas``.
 """
 
 from __future__ import annotations
@@ -121,19 +120,21 @@ class TestArgv:
     def test_shape(self, tmp_path):
         argv = build_kas_argv(tmp_path / "node", tmp_path / "acp-server.js")
         assert argv[0].endswith("node")
-        assert argv[-1] == KAS_TRANSPORT_ARG
+        assert KAS_TRANSPORT_ARG in argv
         for flag in KAS_NODE_FLAGS:
             assert flag in argv
 
-    def test_no_auth_flag_is_passed(self, tmp_path):
-        """Omitting --auth is what keeps token handling out of this codebase.
+    def test_auth_acp_callback_is_passed(self, tmp_path):
+        """We now launch KAS with --auth=acp-callback.
 
-        With no --auth, KAS selects its file auth provider and reads/refreshes
-        the token itself. Passing --auth=acp-callback would instead force this
-        process to implement ``_kiro/auth/getAccessToken``.
+        KAS then keeps no refresh token and asks this host for an access token
+        over ACP (``_kiro/auth/getAccessToken``), which the runtime answers by
+        shelling out to kiro-cli. This works on a cli-only machine, unlike the
+        file auth provider (omit --auth) whose SSO-cache token ``kiro-cli login``
+        does not write.
         """
         argv = build_kas_argv(tmp_path / "node", tmp_path / "acp-server.js")
-        assert not any(a.startswith("--auth") for a in argv)
+        assert "--auth=acp-callback" in argv
 
     def test_no_agent_flag_is_passed(self, tmp_path):
         argv = build_kas_argv(tmp_path / "node", tmp_path / "acp-server.js")

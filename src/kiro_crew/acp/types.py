@@ -50,6 +50,12 @@ METHOD_SESSION_LOAD = "session/load"
 # grows without bound as sessions accumulate. Handler: acp_agent.rs -> Session
 # ManagerRequestData::TerminateSession (self.sessions.remove + handle.shutdown).
 METHOD_SESSION_TERMINATE = "_kiro.dev/session/terminate"
+#: KAS's equivalent. Its extension namespace is ``_kiro/`` (no ``.dev``), and it
+#: has no evict-only verb: this disposes the resident session AND removes its
+#: persisted record. Both are wanted here — the disposal is the memory reclaim
+#: ``terminate`` exists for, and the record is what would otherwise accumulate.
+#: Takes the same ``{"sessionId": ...}`` params and is idempotent.
+METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
 METHOD_COMPACTION_STATUS = "_kiro.dev/compaction/status"
 METHOD_CLEAR_STATUS = "_kiro.dev/clear/status"
 METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"
@@ -59,6 +65,19 @@ METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"
 METHOD_KIRO_SESSION_UPDATE = "_kiro.dev/session/update"
 METHOD_SET_CONFIG_OPTION = "session/set_config_option"
+#: ``configId`` under which KAS exposes the session model. KAS implements no
+#: ``session/set_model``, so this is the only way to switch a model on it.
+MODEL_CONFIG_ID = "model"
+
+#: KAS→client auth callback (server-initiated REQUEST) sent when KAS is launched
+#: with ``--auth=acp-callback``. Connection-level: it carries NO sessionId, so
+#: the runtime answers it directly rather than routing it to a session. Note the
+#: single-underscore ``_kiro/`` namespace, distinct from the ``_kiro.dev/`` ones.
+METHOD_KAS_AUTH_GET_ACCESS_TOKEN = "_kiro/auth/getAccessToken"
+#: JSON-RPC error code returned when the auth callback cannot be fulfilled. KAS
+#: treats any rejection as an expired-token signal, so the exact code is not
+#: load-bearing; -32000 is the ACP server-error range.
+KAS_AUTH_CALLBACK_ERROR_CODE = -32000
 
 # kiro-cli exposes its task/TODO list as an ordinary tool call whose real name
 # arrives in `_meta.kiro.toolName` (the visible `title` is a prose sentence like
@@ -110,13 +129,11 @@ ACP_BACKENDS_KNOWN = frozenset(
     }
 )
 # What an operator may actually persist in ``agent.acp_backend``, which is a
-# narrower question than what the code understands. KAS is plumbed and tested but
-# cannot serve a session yet: production names an agent on every session, KAS
-# advertises only its own built-in modes, and Crew's agent reaches it through
-# ``_meta.kiro.customAgents`` on ``session/new`` — not wired up yet. Config
-# resolution degrades an unselectable value to the default so the refusal lands
-# at startup with a reason instead of on the operator's first message.
-ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO})
+# narrower question than what the code understands: ``ACP_BACKEND_CLAUDE`` is a
+# dormant seam reached by its own provider, not something to select here. Config
+# resolution degrades an unselectable value to the default, so a typo costs a log
+# line rather than a gateway that will not start.
+ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # ── Capability membership (harness-parity H6, H7) ──
 # Every capability a backend may claim is an OPT-IN set here, never a negation at
@@ -128,9 +145,14 @@ ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO})
 # docs/system-specs/modules/harness-parity.md.
 
 # Backends whose single process can host N concurrent ACP sessions (AcpRuntime
-# demux), which is what subagent session sharing requires. claude-agent-acp runs
-# through AcpClient (one process per session) and is not a member.
-ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# demux) AND can persist a SHARED subagent session across teardown. KAS runs on
+# AcpRuntime (multi-session), but its teardown maps to _kiro/session/delete,
+# which removes the persisted session — so a shared subagent would strand
+# spawn_continue (conversation_gone). KAS therefore opts in only once a
+# keep-aware teardown lands (native subagent work); until then its subagents get
+# dedicated sessions. claude-agent-acp runs through AcpClient (one process per
+# session) and is not a member.
+ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer).
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})

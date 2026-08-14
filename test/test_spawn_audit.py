@@ -172,6 +172,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # version into versions.txt. The binary name is a module constant; a
         # resource ceiling / sandbox adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
+        # KAS auth callback token fetch (--auth=acp-callback): a single fixed
+        # argv ``[<kiro-cli>, "chat", "_", "get-kas-token"]`` with a 20s timeout,
+        # no shell and no agent-influenced arguments — the subcommand tail is a
+        # module constant and the binary is the same kiro-cli Crew already spawns
+        # as its agent runtime (``resolve_kiro_cli``). Deliberately NOT
+        # sandbox-routed: kiro-cli must reach its OWN auth/token store to mint the
+        # KAS access token (same reason ``gh`` is not routed), which a sandbox
+        # would hide and break the callback. The child is SIGKILLed on timeout or
+        # task cancellation, so it never orphans.
+        "acp/kas_auth.py::resolve_kas_access_token",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
         # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",

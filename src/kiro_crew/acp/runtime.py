@@ -40,10 +40,18 @@ from kiro_crew.acp.client import (
     _KiroExecutableTrustError,
     _resolve_kiro_bin_for_spawn,
 )
+from kiro_crew.acp.kas_agents import (
+    KasAgentTranslationError,
+    build_kas_custom_agents,
+)
 from kiro_crew.acp.kas_assets import (
     KasAssetsMissing,
     build_kas_argv,
     resolve_kas_entry,
+)
+from kiro_crew.acp.kas_auth import (
+    KasAuthCallbackError,
+    resolve_kas_access_token,
 )
 from kiro_crew.acp.session_handle import (
     AcpRuntimeDead,
@@ -56,7 +64,10 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_CLIENT_CAPABILITIES,
+    KAS_AUTH_CALLBACK_ERROR_CODE,
     KAS_CLIENT_CAPABILITIES,
+    METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
+    METHOD_KAS_SESSION_DELETE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -1229,6 +1240,24 @@ class AcpRuntime:
                     logger.debug("Unmatched response id=%d", req_id)
                     continue
 
+                # Inbound server→client REQUEST (method + id, no result/error).
+                # The KAS auth callback is connection-level: it carries NO
+                # sessionId, so it cannot be routed to a session and must be
+                # answered by the runtime itself. Handle it OFF this loop —
+                # shelling out to kiro-cli for a token must not block stdout
+                # demux for every other multiplexed session. Everything else
+                # (e.g. session/request_permission, which IS session-scoped and
+                # carries a sessionId) falls through to the routing below
+                # unchanged.
+                if (
+                    msg.id is not None
+                    and msg.result is None
+                    and msg.error is None
+                    and msg.is_method(METHOD_KAS_AUTH_GET_ACCESS_TOKEN)
+                ):
+                    asyncio.ensure_future(self._answer_get_access_token(msg.id))
+                    continue
+
                 # Route notifications by sessionId
                 session_id = (msg.params or {}).get("sessionId")
                 if session_id:
@@ -1284,6 +1313,65 @@ class AcpRuntime:
             # crash) so a trickle that never reached the interval is still
             # accounted for instead of vanishing with the task.
             self._flush_dropped_frames()
+
+    async def _answer_get_access_token(self, request_id: int | str) -> None:
+        """Answer KAS's ``_kiro/auth/getAccessToken`` callback (see :mod:`kas_auth`).
+
+        Runs OFF the reader loop. Resolves a fresh access token by shelling out
+        to kiro-cli and hands it straight back to KAS. The token is a transient
+        local here — never cached, never logged. On any failure KAS is sent a
+        JSON-RPC error (which it treats as an expired token, prompting re-login)
+        rather than being left to hang on the callback.
+        """
+        # Defensive: only KAS is spawned with --auth=acp-callback, so no other
+        # backend ever sends this. Deliver on the KAS path; refuse elsewhere
+        # rather than shell out for a credential.
+        if self._acp_backend == ACP_BACKEND_KAS:
+            await self._deliver_kas_access_token(request_id)
+            return
+        try:
+            await self.send_error(
+                request_id, KAS_AUTH_CALLBACK_ERROR_CODE, "Method not found"
+            )
+        except AcpRuntimeDead:
+            pass
+
+    async def _deliver_kas_access_token(self, request_id: int | str) -> None:
+        """Resolve a KAS token via kiro-cli and hand it back, leak-safe.
+
+        Split from :meth:`_answer_get_access_token` so backend dispatch stays a
+        positive ``== ACP_BACKEND_KAS`` check (harness-parity H5); this body is
+        only ever reached on the KAS path.
+        """
+        try:
+            result = await resolve_kas_access_token()
+        except KasAuthCallbackError as exc:
+            # str(exc) is token-free by construction (see kas_auth), so it is
+            # safe to log and to return as the error reason.
+            logger.warning("KAS auth callback failed: %s", exc)
+            try:
+                await self.send_error(request_id, KAS_AUTH_CALLBACK_ERROR_CODE, str(exc))
+            except AcpRuntimeDead:
+                pass
+            return
+        except Exception as exc:  # noqa: BLE001
+            # An UNEXPECTED exception's message could carry unredacted bytes, so
+            # log only its type and return a generic reason — never str(exc).
+            # Also: a token task must never crash the single-owner runtime.
+            logger.warning("KAS auth callback error: %s", type(exc).__name__)
+            try:
+                await self.send_error(
+                    request_id, KAS_AUTH_CALLBACK_ERROR_CODE, "auth callback failed"
+                )
+            except AcpRuntimeDead:
+                pass
+            return
+
+        try:
+            await self.send_response(request_id, result)
+        except AcpRuntimeDead:
+            # Process gone before we could answer; nothing to do.
+            pass
 
     def saw_not_logged_in(self) -> bool:
         """True if kiro-cli's 'not logged in' auth-failure appeared on stderr.
@@ -1473,19 +1561,39 @@ class AcpRuntime:
             if not self._dead and self._process is not None:
                 try:
                     await self._send_and_await(
-                        METHOD_SESSION_TERMINATE,
+                        self._session_teardown_method(),
                         {"sessionId": session_id},
                         timeout=_TERMINATE_TIMEOUT,
                     )
                 except Exception:
                     logger.debug(
-                        "session/terminate failed for %s (runtime dead/slow); "
+                        "session teardown failed for %s (runtime dead/slow); "
                         "proceeding with local unregister",
                         session_id,
                         exc_info=True,
                     )
         finally:
             self.unregister_session(session_id)
+
+    def _session_teardown_method(self) -> str:
+        """The verb that frees one session on this backend.
+
+        kiro-cli's terminate evicts the session from the process and leaves the
+        transcript on disk for the caller to deal with. KAS offers no evict-only
+        equivalent, so its delete does both at once.
+
+        That difference is invisible here but matters to the caller: on KAS the
+        local ``AcpSessionHandle._cleanup_transcript`` is a NO-OP, because it
+        unlinks from kiro-cli's sessions dir and KAS keeps its own store. So the
+        ``keep_transcript`` guard does not protect anything on KAS — a KAS
+        session's record is gone once this verb returns. The only capability that
+        loses is opportunistic ``spawn_continue`` on a shared subagent, which
+        degrades to a typed ``conversation_gone`` and a re-spawn; explicitly
+        continuable runs are dedicated sessions that never reach this path.
+        """
+        if self._acp_backend == ACP_BACKEND_KAS:
+            return METHOD_KAS_SESSION_DELETE
+        return METHOD_SESSION_TERMINATE
 
     # ── Session Management ──
 
@@ -1524,6 +1632,39 @@ class AcpRuntime:
             return True
         return agent in ids
 
+    async def _kas_custom_agents(self, agent: str) -> list[dict[str, Any]] | None:
+        """Agent definitions to carry on ``session/new``, or None for kiro-cli.
+
+        kiro-cli takes its agent from the ``--agent`` spawn flag and reads the
+        spec off disk itself; KAS has neither, so the definition has to travel
+        over the wire or the session silently stays on KAS's default mode.
+
+        Materializes first for the same reason the kiro spawn path does: the
+        managed default spec may not exist yet, and reading it is what the
+        projection needs. File I/O is offloaded — this runs on the loop.
+        """
+        if self._acp_backend == ACP_BACKEND_KAS and agent:
+
+            def _build() -> list[dict[str, Any]]:
+                try:
+                    ensure_agent_materialized(agent)
+                except Exception:
+                    logger.warning(
+                        "pre-session agent materialization failed for %r", agent, exc_info=True
+                    )
+                return build_kas_custom_agents(kiro_agents_dir(), agent)
+
+            try:
+                return await asyncio.to_thread(_build)
+            except KasAgentTranslationError as exc:
+                # Fail loud: continuing would create a session on KAS's own default
+                # mode, which for a restricted agent means running a BROADER agent
+                # than the caller asked for.
+                raise AcpRuntimeError(
+                    f"cannot project agent {agent!r} onto KAS: {exc}"
+                ) from exc
+        return None
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -1544,9 +1685,19 @@ class AcpRuntime:
             mcp_servers = await asyncio.to_thread(
                 pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
             )
+        # The agent to run: an explicit request, else the runtime default. KAS
+        # has no --agent spawn flag, so its default must be BOTH injected (below)
+        # and activated (via set_mode after session/new); the kiro default is
+        # already active from the --agent spawn.
+        active_agent = agent or self._agent
+        # Adapter-only seam: _kas_custom_agents returns None on the kiro backend,
+        # so the kiro construction path gains no conditional, no new required
+        # argument, and no new failure mode (harness-parity H13).
+        kas_agents = await self._kas_custom_agents(active_agent)
         params = build_session_new_params(
             cwd if cwd else self._work_dir,
             mcp_servers=mcp_servers,
+            kas_custom_agents=kas_agents,
         )
 
         self._session_inits_in_flight += 1
@@ -1592,11 +1743,19 @@ class AcpRuntime:
         # rather than silently leaving the session on kiro-cli's default mode: for
         # a restricted/app agent that would run a BROADER agent than requested (a
         # privilege escalation), so we terminate and raise an actionable error.
-        if agent and self._mode_available(agent, resp):
+        # The agent to ACTIVATE. An explicit request always applies. When a KAS
+        # custom agent was injected (``kas_agents`` non-empty) the runtime
+        # default must be activated too: KAS has no --agent flag, so an injected
+        # default that is not set here stays registered-but-inactive and the
+        # session silently runs KAS's own default mode. On kiro ``kas_agents`` is
+        # None and the --agent spawn already selected the default, so only an
+        # explicit override reaches set_mode here.
+        mode_agent = agent or (self._agent if kas_agents else None)
+        if mode_agent and self._mode_available(mode_agent, resp):
             try:
                 await self._send_and_await(
                     METHOD_SET_MODE,
-                    set_mode_params(session_id, agent),
+                    set_mode_params(session_id, mode_agent),
                 )
             except Exception:
                 await self.terminate_session(session_id)
@@ -1608,14 +1767,14 @@ class AcpRuntime:
             # must not arm the drain's idle shortcut while the switched-to
             # agent's own servers may still be booting.
             _ids, _current, _adv = parse_session_modes(resp)
-            mode_switched = bool(_current) and agent != _current
-        elif agent:
+            mode_switched = bool(_current) and mode_agent != _current
+        elif mode_agent:
             _ids, _current, _adv = parse_session_modes(resp)
             await self.terminate_session(session_id)
             raise AcpRuntimeError(
-                f"Agent mode {agent!r} is not available on this session "
+                f"Agent mode {mode_agent!r} is not available on this session "
                 f"(advertised modes: {_ids or 'none'}); its "
-                f"~/.kiro/agents/{agent}.json is likely missing. Refusing to run "
+                f"~/.kiro/agents/{mode_agent}.json is likely missing. Refusing to run "
                 f"the backend default mode {_current or '(unknown)'} in its place. "
                 f"Run `kirocrew setup --agent-only` to materialize the agent config."
             )

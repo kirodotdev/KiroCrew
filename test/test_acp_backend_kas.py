@@ -212,17 +212,18 @@ class TestConfigRoundTrip:
     def test_absent_key_loads_as_the_default(self, tmp_path):
         assert _load_agent_config({}, tmp_path).agent.acp_backend == ACP_BACKEND_KIRO
 
-    def test_kas_is_not_selectable_yet(self, tmp_path):
-        """Degraded at the boundary, so the refusal is a log line at startup.
+    def test_kas_survives_a_load_from_disk(self, tmp_path):
+        """The selectable value must reach the provider, not degrade.
 
-        KAS cannot serve a session until Crew sends the configured agent over
-        ``session/new``; letting the value through would instead fail on the
-        operator's first message.
+        This is the round trip the field exists for: ``load()`` lists every
+        field explicitly, so one it forgets is dropped to the default and the
+        next ``save()`` writes that default back over the operator's setting.
         """
         cfg = _load_agent_config({"acp_backend": ACP_BACKEND_KAS}, tmp_path)
-        assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
+        assert cfg.agent.acp_backend == ACP_BACKEND_KAS
+        assert cfg.to_dict()["agent"]["acp_backend"] == ACP_BACKEND_KAS
         provider = cfg.create_provider_factory()(session_key="test:rt", agent="")
-        assert provider.is_kiro_backend is True
+        assert provider.is_kas_backend is True
 
     @pytest.mark.parametrize("bad", ["kiro-cli", "KAS", "claude_code", 7, None, []])
     def test_unselectable_values_degrade_to_the_default(self, bad, tmp_path):
