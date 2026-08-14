@@ -280,11 +280,75 @@ class TestSttPrereqCommands:
         assert len(cmds) == 1
         assert "install.sh" in cmds[0]
 
-    def test_mlx_with_homebrew_present_is_clean(self, monkeypatch) -> None:
+    def test_mlx_with_homebrew_and_ffmpeg_present_is_clean(self, monkeypatch) -> None:
+        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: True)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/local/bin/ffmpeg")
+        monkeypatch.setattr(core_mod, "find_brew", lambda: "/opt/homebrew/bin/brew")
+        assert core_mod._stt_prereq_commands("mlx") == []
+
+    def test_mlx_surfaces_ffmpeg_when_missing(self, monkeypatch) -> None:
+        """A ready mlx install that later loses ffmpeg has no Install button —
+        the prereq list is what the ready-state warning renders."""
         monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
         monkeypatch.setattr(core_mod, "find_brew", lambda: "/opt/homebrew/bin/brew")
-        assert core_mod._stt_prereq_commands("mlx") == []
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        assert core_mod._stt_prereq_commands("mlx") == ["brew install ffmpeg"]
+
+    def test_transcribe_prereq_targets_the_gateway_interpreter(self, monkeypatch) -> None:
+        """Transcribe's requirement is the `voice` extra importable by THIS
+        process, so the command must name the gateway's own interpreter — a
+        system python or --user install would not be importable here."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(core_mod.os, "name", "posix")
+        cmds = core_mod._stt_prereq_commands("transcribe")
+        assert len(cmds) == 1
+        assert "kirocrew[voice]" in cmds[0]
+        assert "-m pip install" in cmds[0]
+        assert core_mod.shlex.quote(core_mod.sys.executable) in cmds[0]
+
+    def test_transcribe_prereq_windows_uses_call_operator(self, monkeypatch) -> None:
+        """POSIX single-quoting breaks on Windows shells; the PowerShell form
+        must be emitted there instead."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
+        monkeypatch.setattr(core_mod.os, "name", "nt")
+        cmds = core_mod._stt_prereq_commands("transcribe")
+        assert cmds == [f'& "{core_mod.sys.executable}" -m pip install "kirocrew[voice]"']
+
+    def test_transcribe_prereq_without_install_channel_is_empty(self, monkeypatch) -> None:
+        """When no install channel can make the extra importable (frozen build,
+        pip-less interpreter, PEP 668), emitting a pip command would recreate
+        the press-and-nothing-changes dead end — the UI shows the unsupported
+        notice via `transcribe_unsupported` instead."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: False)
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
+        assert core_mod._stt_prereq_commands("transcribe") == []
+
+    def test_transcribe_prereq_self_suppresses_when_extra_present(self, monkeypatch) -> None:
+        """Like every other branch of this function, the pip command must not
+        be shown once the requirement is met (e.g. STT merely disabled)."""
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: True)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+        assert core_mod._stt_prereq_commands("transcribe") == []
+
+    def test_transcribe_prereq_includes_ffmpeg_when_missing(self, monkeypatch) -> None:
+        """Transcribe needs ffmpeg to remux the browser's .webm, and
+        is_available() only logs a warning when it is absent — this list is the
+        one user-visible surface for that gap."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod.os, "name", "posix")
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
+        cmds = core_mod._stt_prereq_commands("transcribe")
+        assert len(cmds) == 2
+        assert "kirocrew[voice]" in cmds[0]
+        assert cmds[1] == "brew install ffmpeg"
 
     def test_darwin_lists_license_brew_and_packages(self, monkeypatch) -> None:
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
@@ -345,6 +409,68 @@ class TestSttPrereqCommands:
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         cmds = core_mod._stt_prereq_commands()
         assert cmds == ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
+
+
+class TestPipInstallChannel:
+    @pytest.fixture(autouse=True)
+    def _not_bundled(self, monkeypatch):
+        """Pin the desktop-bundle probe; the bundled case has its own test."""
+        monkeypatch.setattr(
+            core_mod.platform_compat, "is_bundled_interpreter", lambda: False
+        )
+
+    def test_frozen_build_has_no_channel(self, monkeypatch) -> None:
+        monkeypatch.setattr(core_mod.sys, "frozen", True, raising=False)
+        assert core_mod._pip_install_channel_available() is False
+
+    def test_bundled_desktop_interpreter_has_no_channel(self, monkeypatch) -> None:
+        """A pip install into the desktop app's code-signed bundle breaks
+        launches/updates and is discarded on every app update — the command
+        must not be offered there even though pip itself may exist."""
+        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
+        monkeypatch.setattr(
+            core_mod.platform_compat, "is_bundled_interpreter", lambda: True
+        )
+        assert core_mod._pip_install_channel_available() is False
+
+    def test_pipless_interpreter_has_no_channel(self, monkeypatch) -> None:
+        """uv tool installs and some pipx layouts ship no `pip` module, so
+        `<python> -m pip` fails immediately — the command must not be shown."""
+        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
+        real = core_mod.importlib.util.find_spec
+        monkeypatch.setattr(
+            core_mod.importlib.util,
+            "find_spec",
+            lambda name, *a: None if name == "pip" else real(name, *a),
+        )
+        assert core_mod._pip_install_channel_available() is False
+
+    def test_externally_managed_python_has_no_channel(self, monkeypatch, tmp_path) -> None:
+        """PEP 668: pip refuses installs into an externally-managed
+        interpreter (distro/brew pythons) — but only outside a venv."""
+        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
+        monkeypatch.setattr(core_mod.sys, "prefix", core_mod.sys.base_prefix)
+        (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
+        monkeypatch.setattr(core_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        assert core_mod._pip_install_channel_available() is False
+
+    def test_venv_on_managed_base_has_a_channel(self, monkeypatch, tmp_path) -> None:
+        """Inside a venv pip ignores PEP 668, and `sysconfig.get_path("stdlib")`
+        resolves to the BASE interpreter's directory where distro pythons put
+        the marker — the recommended install layout (venv on a Debian/brew
+        python) must not be misread as unsupported."""
+        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
+        monkeypatch.setattr(core_mod.sys, "prefix", str(tmp_path / "venv"))
+        monkeypatch.setattr(core_mod.sys, "base_prefix", str(tmp_path / "base"))
+        (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
+        monkeypatch.setattr(core_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        assert core_mod._pip_install_channel_available() is True
+
+    def test_ordinary_venv_has_a_channel(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.delattr(core_mod.sys, "frozen", raising=False)
+        monkeypatch.setattr(core_mod.sys, "prefix", core_mod.sys.base_prefix)
+        monkeypatch.setattr(core_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        assert core_mod._pip_install_channel_available() is True
 
 
 class TestAl2023Detection:
@@ -529,6 +655,16 @@ class TestSttConfigEndpoint:
         assert body["available"] is False
         assert body["prereqs"] == []
         assert body["install_step"] in ("idle", "done", "error")
+        # This test venv has a working pip channel, so the unsupported flag
+        # must be False regardless of installed extras.
+        assert body["transcribe_unsupported"] is False
+        # Cause discriminator for the unsupported notice: the desktop bundle
+        # needs different guidance than a pip-less/PEP 668 interpreter. A test
+        # venv is never the bundled app.
+        assert body["bundled_interpreter"] is False
+        # Served independently of `available` so the UI can flag the .webm
+        # remux gap even when the provider reads ready.
+        assert isinstance(body["ffmpeg_missing"], bool)
 
 
 # ── STT install endpoint ────────────────────────────────────────────────
@@ -554,6 +690,28 @@ class TestSttInstall:
         resp = await core_mod.api_stt_install(_req())
         assert resp.status == 409
         assert "already in progress" in json.loads(resp.body)["error"]
+        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_install_is_refused(self, fake_sel, stt_status) -> None:
+        """The install script only knows local Whisper runtimes; running it for
+        Transcribe succeeds while changing nothing. The endpoint must refuse
+        instead, and must NOT flip the status machine (a 400 that left
+        `starting` behind would deadlock the 409 gate)."""
+        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"stt": {"provider": "transcribe"}}) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        resp = await core_mod.api_stt_install(_req())
+        assert resp.status == 400
+        body = json.loads(resp.body)
+        assert body["code"] == "stt_no_local_install"
+        assert "voice" in body["error"]
+        assert core_mod._stt_install_status["step"] == "idle"
         assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
 
     @pytest.mark.asyncio

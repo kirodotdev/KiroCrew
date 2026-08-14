@@ -1067,13 +1067,14 @@ class TestSttProviderGating:
         assert "apple" not in core._stt_providers()
 
     def test_mlx_prereqs_empty_when_brew_present(self, monkeypatch):
-        """The Install button installs ffmpeg/pipx/mlx-whisper, so when brew is
-        present there are no manual prereqs to surface (no duplication)."""
+        """The Install button installs pipx/mlx-whisper, so with brew present
+        and ffmpeg on PATH there are no manual prereqs to surface."""
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
         monkeypatch.setattr(core, "find_brew", lambda: "/opt/homebrew/bin/brew")
+        monkeypatch.setattr(core.shutil, "which", lambda _n: "/opt/homebrew/bin/ffmpeg")
         assert core._stt_prereq_commands("mlx") == []
 
     def test_mlx_prereqs_empty_when_brew_off_path(self, monkeypatch):
@@ -1089,7 +1090,10 @@ class TestSttProviderGating:
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
-        monkeypatch.setattr("shutil.which", lambda _name, **_kw: None)
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name, **_kw: "/opt/homebrew/bin/ffmpeg" if name == "ffmpeg" else None,
+        )
         monkeypatch.setattr("os.path.isfile", lambda p: p == "/opt/homebrew/bin/brew")
         monkeypatch.setattr("os.access", lambda p, _mode: p == "/opt/homebrew/bin/brew")
         assert core._stt_prereq_commands("mlx") == []

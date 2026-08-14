@@ -3937,14 +3937,11 @@
         "failed_to_save_skills_setting": "Failed to save skills setting"
       },
       "sttSettings": {
-        "docker": "Docker",
         "failed_to_save_stt_config": "Failed to save STT config",
         "install_failed": "Install failed",
         "installs_mlx_whisper_via_pipx_ffmpeg_apple_silic": "Installs mlx-whisper via pipx + ffmpeg. Apple Silicon (arm64) only.",
         "installs_openai_whisper_ffmpeg_uses_system_pytho": "Installs openai-whisper + ffmpeg. Uses system python3 (≥ 3.10).",
         "microphone_2": "Microphone {{n}}",
-        "native": "Native",
-        "pulls_python_3_11_slim_for_docker_based_transcri": "Pulls python:3.11-slim for Docker-based transcription (AL2).",
         "system_default": "System default",
         "whisper_installed_but_ffmpeg_is_missing_voice_tr": "Whisper installed but ffmpeg is missing — voice transcription needs ffmpeg.",
         "endpointing": "Auto-submit when I finish speaking",
@@ -3962,7 +3959,6 @@
         "step_installing_python": "Installing Python…",
         "step_installing_whisper": "Installing whisper (~1.6 GB)…",
         "step_installing_xcode": "Installing Xcode CLI Tools…",
-        "step_pulling": "Pulling Docker image…",
         "step_starting": "Starting…",
         "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn't respond here, use the local (parent) dashboard instead."
       },

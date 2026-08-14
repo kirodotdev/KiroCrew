@@ -408,7 +408,7 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
   if (path === '/api/config/stt') {
     return done({
       enabled: false, provider: '0007', model: '', mlx_model: '',
-      available: false, docker_mode: false, models: {}, mlx_models: {},
+      available: false, models: {}, mlx_models: {},
     })
   }
   // APP STORE + APP DETAIL. `handleBootRoute`'s fallback answers `/api/apps` and

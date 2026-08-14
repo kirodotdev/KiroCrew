@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hmac
+import importlib.util
 import json
 import logging
 import math
@@ -14,6 +15,8 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
+import sysconfig
 from pathlib import Path
 
 from aiohttp import web
@@ -568,8 +571,25 @@ async def api_stt_config(request: web.Request) -> web.Response:
     # _stt_prereq_commands probes for a system python/brew via subprocess; run it
     # off the event loop so a slow/again-spawned interpreter check can't stall the
     # gateway (observed as "event-loop heartbeat: lag" on Windows where the probe
-    # is heavier). The GET is read-only, so threading it is safe.
-    prereqs = await asyncio.to_thread(_stt_prereq_commands, provider)
+    # is heavier). The GET is read-only, so threading it is safe. The ffmpeg and
+    # install-channel probes ride in the same thread: ensure_ffmpeg_in_path,
+    # find_spec and the PEP 668 marker check all touch the filesystem, which
+    # does not belong on the loop either.
+
+    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool]:
+        cmds = _stt_prereq_commands(provider)
+        ensure_ffmpeg_in_path()
+        no_ffmpeg = shutil.which("ffmpeg") is None
+        unsupported = not _voice_extra_importable() and not _pip_install_channel_available()
+        # The bundled desktop app is the one unsupported cause with different
+        # user guidance (no Python environment of the user's own to fix), so
+        # the UI needs to distinguish it from the pip-less/PEP 668 causes.
+        bundled = platform_compat.is_bundled_interpreter()
+        return cmds, no_ffmpeg, unsupported, bundled
+
+    prereqs, ffmpeg_missing, transcribe_unsupported, bundled_app = await asyncio.to_thread(
+        _prereqs_and_probes
+    )
     return web.json_response(
         {
             "enabled": cfg.stt.enabled,
@@ -596,8 +616,104 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "install_detail": _stt_install_status["detail"],
             "install_error": _stt_install_status["error"],
             "prereqs": prereqs,
+            # True when no install channel can make Transcribe's import
+            # requirement (`boto3` + `amazon-transcribe`) satisfiable in this
+            # process — frozen build, pip-less interpreter, or PEP 668
+            # externally-managed python. The Settings page shows an unsupported
+            # notice instead of an empty prerequisite panel. Computed in the
+            # threaded probe above: find_spec and the marker check touch the
+            # filesystem.
+            "transcribe_unsupported": transcribe_unsupported,
+            "bundled_interpreter": bundled_app,
+            # ffmpeg is required to remux the browser's .webm for the
+            # non-streaming path, but is_available() only logs a warning when
+            # it is absent — so availability can read "ready" while dictation
+            # would fail. Served separately so the UI can surface the gap even
+            # when the provider is otherwise available.
+            "ffmpeg_missing": ffmpeg_missing,
         }
     )
+
+
+def _voice_extra_importable() -> bool:
+    """True when the ``voice`` extra actually imported in this process.
+
+    Reads ``kiro_crew.transcribe``'s own import outcome (its module-level
+    try/except sets ``boto3 = None`` on failure) rather than probing specs: a
+    partial installation whose dist-info exists but whose import fails must
+    surface the repair command, not suppress it. Runs off the event loop —
+    ``transcribe`` is already imported at module load, so this is an attribute
+    read, but callers batch it with the other filesystem probes anyway.
+    """
+    from kiro_crew import transcribe
+
+    if transcribe.boto3 is None:
+        return False
+    try:
+        import amazon_transcribe  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _pip_install_channel_available() -> bool:
+    """True when ``<gateway python> -m pip install`` can plausibly succeed.
+
+    Three environments make that command a guaranteed dead end, and surfacing
+    it there recreates the press-and-nothing-changes failure this surface
+    exists to avoid:
+
+    - a frozen backend: its import set is fixed at build time (the packaging
+      spec excludes the voice extra), so no install can become importable;
+    - the desktop app's bundled interpreter (see
+      :func:`platform_compat.is_bundled_interpreter`): pip may exist, but a
+      pip install writes into the code-signed bundle — breaking launches and
+      updates — and is discarded on every app update;
+    - an interpreter without the ``pip`` module (uv tool installs, some
+      pipx layouts);
+    - a PEP 668 externally-managed interpreter (distro/brew pythons), where
+      pip refuses to install. Checked only outside a venv: inside one, pip
+      works and deliberately ignores the marker, so a venv returns True.
+    """
+    if getattr(sys, "frozen", False):
+        return False
+    if platform_compat.is_bundled_interpreter():
+        return False
+    if importlib.util.find_spec("pip") is None:
+        return False
+    # PEP 668 applies to the environment pip would install into. Inside a venv
+    # pip deliberately ignores the marker, and `sysconfig.get_path("stdlib")`
+    # resolves to the BASE interpreter's directory — where distro/brew pythons
+    # place it — so checking it from a venv would misfire on the recommended
+    # install layout (venv on a Debian/Ubuntu/Homebrew python).
+    if sys.prefix != sys.base_prefix:
+        return True
+    return not (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").exists()
+
+
+def _ffmpeg_install_commands() -> list[str]:
+    """Platform command(s) that put ffmpeg on PATH, or ``[]`` when it already is."""
+    ensure_ffmpeg_in_path()
+    if shutil.which("ffmpeg"):
+        return []
+    system = platform.system()
+    if system == "Darwin":
+        return ["brew install ffmpeg"]
+    if system == "Windows":
+        return ["winget install --id Gyan.FFmpeg"]
+    if shutil.which("apt-get"):
+        return ["sudo apt-get install -y ffmpeg"]
+    # Amazon Linux: no ffmpeg in the distro repos — build minimal ffmpeg from
+    # source (the official recommendation).
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    script = os.path.join(proj, "scripts", "build-ffmpeg.sh") if proj else ""
+    if script and os.path.isfile(script):
+        return [
+            "sudo dnf install -y gcc make nasm diffutils 2>/dev/null"
+            " || sudo yum install -y gcc make nasm diffutils",
+            f"bash {shlex.quote(script)}",
+        ]
+    return ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
 
 
 def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
@@ -607,10 +723,38 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
     mlx-whisper``) and only needs ffmpeg beyond that — it does not require the
     system-python/whisper toolchain.
     """
+    if provider == "transcribe":
+        # AWS Transcribe's availability is "boto3 + amazon-transcribe importable
+        # by THIS gateway process" (see kiro_crew.transcribe.is_available); the
+        # optional ``voice`` extra provides both, and there is no separate
+        # binary, so the Install button flow does not apply.
+        cmds: list[str] = []
+        if not _voice_extra_importable():
+            if not _pip_install_channel_available():
+                # No install channel can make the extra importable in this
+                # build/interpreter — the Settings page shows an unsupported
+                # notice (`transcribe_unsupported`) instead of a command that
+                # cannot succeed.
+                return []
+            # The command targets the gateway's own interpreter: the import
+            # happens in-process, so a system python or ``--user`` install is
+            # not importable here.
+            if os.name == "nt":
+                # POSIX quoting is wrong for Windows shells; ``&`` is
+                # PowerShell's call operator for a quoted executable path.
+                cmds.append(f'& "{sys.executable}" -m pip install "kirocrew[voice]"')
+            else:
+                cmds.append(f"{shlex.quote(sys.executable)} -m pip install 'kirocrew[voice]'")
+        # The non-streaming path remuxes the browser's .webm through ffmpeg, and
+        # is_available() only logs a warning when ffmpeg is absent — this list
+        # is the one user-visible surface for that gap.
+        cmds.extend(_ffmpeg_install_commands())
+        return cmds
+
     ensure_ffmpeg_in_path()
 
     system = platform.system()
-    cmds: list[str] = []
+    cmds = []
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     if provider == "mlx":
@@ -630,7 +774,10 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
                 '/bin/bash -c "$(curl -fsSL'
                 ' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
             ]
-        return []
+        # ffmpeg is still surfaced when missing: the Install button covers it
+        # during setup, but a ready mlx install that later loses ffmpeg has no
+        # button — this list is what the ready-state warning renders.
+        return _ffmpeg_install_commands()
 
     has_python = _find_suitable_python() is not None
 
@@ -664,20 +811,7 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
                 # AL2: python3.7 is too old for whisper; Docker mode handles it
                 pass
         if not has_ffmpeg:
-            if shutil.which("apt-get"):
-                cmds.append("sudo apt-get install -y ffmpeg")
-            else:
-                # AL2023/AL2: build minimal ffmpeg from source (official recommendation)
-                proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-                script = os.path.join(proj, "scripts", "build-ffmpeg.sh") if proj else ""
-                if script and os.path.isfile(script):
-                    cmds.append(
-                        "sudo dnf install -y gcc make nasm diffutils 2>/dev/null"
-                        " || sudo yum install -y gcc make nasm diffutils"
-                    )
-                    cmds.append(f"bash {shlex.quote(script)}")
-                else:
-                    cmds.append("echo 'Build ffmpeg from source:" " https://ffmpeg.org/releases/'")
+            cmds.extend(_ffmpeg_install_commands())
     return cmds
 
 
@@ -740,10 +874,30 @@ async def api_stt_install(request: web.Request) -> web.Response:
             {"error": f"Install already in progress: {_stt_install_status['step']}"}, status=409
         )
 
+    # Native install via shell script, tailored to the configured provider.
+    # Transcribe has no local runtime to install (its requirement is the
+    # ``voice`` extra importable by this process, surfaced as a prerequisite
+    # command) — reject rather than installing a Whisper runtime, which cannot
+    # change Transcribe's availability.
+    provider = KiroCrewConfig.load().stt.provider
+    if provider == "transcribe":
+        _sel().log_api_access(
+            caller=caller,
+            operation="stt.install",
+            outcome="denied",
+            error="no local install for provider=transcribe",
+        )
+        return web.json_response(
+            {
+                "code": "stt_no_local_install",
+                "error": "AWS Transcribe has no local install;"
+                " run the prerequisite command to add the 'voice' extra instead",
+            },
+            status=400,
+        )
+
     _stt_install_status = {"step": "starting", "detail": "", "error": ""}
 
-    # Native install via shell script, tailored to the configured provider.
-    provider = KiroCrewConfig.load().stt.provider
     _sel().log_api_access(
         caller=caller,
         operation="stt.install",

@@ -30,7 +30,6 @@ const stt = {
   provider: 'whisper',
   model: 'base',
   available: true,
-  docker_mode: false,
   streaming: false,
   endpointing: false,
   dictation_panel: true,

@@ -4,6 +4,24 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **The Speech-to-Text settings page no longer offers to install Whisper when
+  the provider is AWS Transcribe.** With `stt.provider = "transcribe"` the page
+  showed an "Install Whisper" button (installing an engine Transcribe never
+  uses, so Status stayed "Not installed" forever), listed a Python/Whisper
+  prerequisite toolchain that is irrelevant to Transcribe, and rendered a
+  Runtime row that could only ever read "Native" because the backend never
+  serves `docker_mode`. The install button is now hidden for Transcribe, the
+  prerequisite block surfaces the real requirement — installing the `voice`
+  extra into the gateway's own interpreter, plus a restart hint — the backend
+  refuses `POST /api/stt/install` for Transcribe instead of silently installing
+  the wrong package, and the dead Runtime row is gone. Where no install channel
+  can make the extra importable (frozen build, pip-less interpreter, PEP 668
+  externally-managed python) the page shows an honest unsupported notice
+  instead of a command that cannot succeed, and a missing ffmpeg — which
+  Transcribe's availability check treats as optional even though browser
+  recordings need it — is now flagged with its install command even while the
+  status reads ready. (#3559)
+
 - **`kirocrew` commands start up to ~0.8 s faster, and each MCP stdio server
   drops ~58 MB of resident memory.** `cli.py` imported its full 132-subcommand
   dispatch table at module scope — including the Slack gateway, the dashboard
