@@ -159,6 +159,23 @@ class RepoUnreadable(RuntimeError):
     """
 
 
+def _repo() -> str:
+    """The resolved main checkout path, guaranteed non-empty.
+
+    The single gate between ``MAIN_REPO`` and every git argv or path built from
+    it. ``git -C ""`` does not fail — it silently runs against this process's
+    working directory — and ``Path("")`` is ``Path(".")``, so an unresolved
+    checkout reaching a consumer would operate on an arbitrary directory and
+    return plausible results. Raising here makes that state fail loud at every
+    call site, instead of each site carrying (or forgetting) its own guard.
+    Sites that deliberately degrade instead of failing catch
+    ``RepoNotConfigured`` and say what the degraded answer is.
+    """
+    if not MAIN_REPO:
+        raise RepoNotConfigured("no Kiro Crew checkout found to manage")
+    return MAIN_REPO
+
+
 def _own_source_checkout() -> str | None:
     """The source checkout whose code this process is EXECUTING, or None.
 
@@ -340,13 +357,15 @@ async def _upstream_remote() -> str:
     global _UPSTREAM_REMOTE
     if _UPSTREAM_REMOTE is not None:
         return _UPSTREAM_REMOTE
-    if not MAIN_REPO:
-        # `git -C ""` runs against this process's working directory, so a repo
-        # that never resolved must not reach git at all — it would answer for
-        # whatever tree the backend happens to sit in.
+    try:
+        repo = _repo()
+    except RepoNotConfigured:
+        # A repo that never resolved must not reach git at all — it would
+        # answer for whatever tree the backend happens to sit in. Remote
+        # resolution degrades to git's conventional default instead of failing.
         return "origin"
     rc, out, _ = await _run_cmd(
-        ["git", "-C", MAIN_REPO, "config", f"branch.{BASE_BRANCH}.remote"],
+        ["git", "-C", repo, "config", f"branch.{BASE_BRANCH}.remote"],
         timeout=5,
     )
     cand = out.strip() if rc == 0 else ""
@@ -354,7 +373,7 @@ async def _upstream_remote() -> str:
     # that later argv interpolation (`git rebase {remote}/main`) would parse
     # as a flag. Accept only a plausible remote NAME that git itself lists.
     if cand and not cand.startswith("-") and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", cand):
-        rc2, remotes, _ = await _run_cmd(["git", "-C", MAIN_REPO, "remote"], timeout=5)
+        rc2, remotes, _ = await _run_cmd(["git", "-C", repo, "remote"], timeout=5)
         if rc2 == 0 and cand in remotes.split():
             _UPSTREAM_REMOTE = cand
             return _UPSTREAM_REMOTE
@@ -380,17 +399,16 @@ def _build_pending() -> bool:
     dashboard never told the user there was a build to apply.
     """
     try:
-        if not MAIN_REPO:
-            # Path("") is Path("."), which would stat this process's own tree.
-            return False
-        dist = Path(MAIN_REPO) / "src" / "kiro_crew" / "static" / "dist"
+        # Path("") is Path("."), which would stat this process's own tree —
+        # no checkout means nothing can be pending.
+        dist = Path(_repo()) / "src" / "kiro_crew" / "static" / "dist"
         if not dist.exists():
             return False
         # stat() follows a symlink on purpose: a source-tree install points
         # static/dist at website/dist, and the rebuild time we care about is the
         # target's.
         return dist.stat().st_mtime > _START_EPOCH
-    except OSError:
+    except (OSError, RepoNotConfigured):
         return False
 
 
@@ -686,24 +704,27 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
 
 async def _load_fallback_repos() -> None:
     global _FALLBACK_REPOS
-    if not MAIN_REPO:
+    try:
+        repo = _repo()
+    except RepoNotConfigured:
+        # No checkout, no remotes to enumerate; the fallback list stays empty.
         return
     repos: list[str] = []
     upstream = await _upstream_remote()
-    rc, out, _err = await _run_cmd(["git", "-C", MAIN_REPO, "remote"], timeout=5)
+    rc, out, _err = await _run_cmd(["git", "-C", repo, "remote"], timeout=5)
     if rc == 0:
         for remote in out.split():
             if remote == upstream:
                 continue
             rc2, _, _ = await _run_cmd(
-                ["git", "-C", MAIN_REPO, "merge-base", "--is-ancestor",
+                ["git", "-C", repo, "merge-base", "--is-ancestor",
                  f"{remote}/{BASE_BRANCH}", f"{upstream}/{BASE_BRANCH}"],
                 timeout=10,
             )
             if rc2 != 0:
                 continue
             rc3, url, _ = await _run_cmd(
-                ["git", "-C", MAIN_REPO, "remote", "get-url", remote], timeout=5,
+                ["git", "-C", repo, "remote", "get-url", remote], timeout=5,
             )
             if rc3 == 0:
                 m = re.search(r"[:/]([^/]+/[^/]+?)(?:\.git)?$", url.strip())
@@ -1334,8 +1355,16 @@ _OWNER_REPO_RETRY_AT: float = 0.0  # monotonic deadline before retrying a failed
 async def _repo_owner_name() -> str | None:
     """Derive owner/repo from the upstream remote URL."""
     remote = await _upstream_remote()
+    try:
+        repo = _repo()
+    except RepoNotConfigured:
+        # Best-effort helper: an unresolved checkout is "not derivable", the
+        # same answer every other failure below produces. Without the accessor
+        # this ran `git -C ""` and could report whatever repository the
+        # backend's working directory happened to be.
+        return None
     rc, stdout, _ = await _run_cmd(
-        ["git", "-C", MAIN_REPO, "remote", "get-url", remote], timeout=5
+        ["git", "-C", repo, "remote", "get-url", remote], timeout=5
     )
     if rc != 0:
         return None
@@ -1569,9 +1598,14 @@ async def _html_repo_base() -> str | None:
     if _HTML_BASE:
         return _HTML_BASE
     remote = await _upstream_remote()
-    rc, out, _ = await _run_cmd(
-        ["git", "-C", MAIN_REPO, "remote", "get-url", remote], timeout=5
-    )
+    try:
+        rc, out, _ = await _run_cmd(
+            ["git", "-C", _repo(), "remote", "get-url", remote], timeout=5
+        )
+    except RepoNotConfigured:
+        # Same degrade as a failed get-url: fall through to the cached
+        # owner/repo lookup (which answers None in this state too).
+        rc, out = 1, ""
     if rc == 0:
         base = _parse_html_repo_base(out.strip())
         if base:
@@ -1714,12 +1748,11 @@ def _parse_worktree_porcelain(raw: str) -> list[dict]:
 
 async def _discover_worktrees() -> list[dict]:
     """List git worktrees of MAIN_REPO."""
-    if not MAIN_REPO:
-        # Nothing to discover, and `git -C ""` would silently answer for this
-        # process's own working directory. The setup state is the caller's job.
-        raise RepoNotConfigured("no Kiro Crew checkout found to manage")
+    # Nothing to discover when no checkout resolved; _repo() raises
+    # RepoNotConfigured and the setup state is the caller's job.
+    repo = _repo()
     rc, stdout, stderr = await _run_cmd(
-        ["git", "-C", MAIN_REPO, "worktree", "list", "--porcelain"], timeout=10
+        ["git", "-C", repo, "worktree", "list", "--porcelain"], timeout=10
     )
     if rc != 0:
         # Propagate sandbox/git failures as a RuntimeError so callers can
@@ -1756,7 +1789,7 @@ async def _discover_worktrees() -> list[dict]:
         # it). Same "Blocking — executor only" convention as _is_checkout().
         loop = asyncio.get_running_loop()
         repo_is_git = await loop.run_in_executor(
-            subprocess_executor(), (Path(MAIN_REPO) / ".git").exists
+            subprocess_executor(), (Path(repo) / ".git").exists
         )
         if not repo_is_git:
             # Name the mechanism that supplied the path: the remedy is to edit
@@ -1766,13 +1799,13 @@ async def _discover_worktrees() -> list[dict]:
             # stall the gateway loop on the way to rendering an error banner.
             hint = await loop.run_in_executor(subprocess_executor(), _repo_source_hint)
             raise RepoUnreadable(
-                f"main checkout not found: {MAIN_REPO} is missing or not a git "
+                f"main checkout not found: {repo} is missing or not a git "
                 f"checkout. {hint}"
             )
         # The repo exists but git failed for some other reason (corrupt repo,
         # permissions): surface git's own message, redacted and bounded.
         raise RepoUnreadable(
-            f"git worktree discovery failed in {MAIN_REPO}: "
+            f"git worktree discovery failed in {repo}: "
             f"{_redact(raw)[:_GIT_ERR_MAX] or 'unknown git error'}"
         )
     entries = _parse_worktree_porcelain(stdout)
@@ -2032,13 +2065,16 @@ async def _serving_install_reason(worktrees: "list[dict]") -> str | None:
     managed = tuple(sorted(
         str(wt["path"]) for wt in worktrees if wt.get("path")
     ))
-    key = (MAIN_REPO, managed)
+    # Reached only with a built fleet in hand, so the accessor cannot raise
+    # here; it exists to keep the path build off the bare global.
+    repo = _repo()
+    key = (repo, managed)
     if _SERVING_REASON is not None and _SERVING_REASON[0] == key:
         return _SERVING_REASON[1]
     loop = asyncio.get_running_loop()
     reason = await loop.run_in_executor(
         subprocess_executor(),
-        functools.partial(_serving_install_reason_sync, MAIN_REPO, managed),
+        functools.partial(_serving_install_reason_sync, repo, managed),
     )
     _SERVING_REASON = (key, reason)
     return reason
@@ -2169,7 +2205,7 @@ async def _build_fleet() -> dict:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "worktrees": wts,
-        "main_repo": MAIN_REPO,
+        "main_repo": _repo(),
         "base_branch": BASE_BRANCH,
         "sync_run_id": _SYNC_RID,
         "build_pending": _build_pending(),
@@ -2436,7 +2472,7 @@ def _build_env(*, with_credentials: bool = False) -> dict:
 
 def _pod_env() -> dict:
     """Environment for pod CLI subprocesses (allowlisted base + pod repo)."""
-    return {**_build_env(), "KIROCREW_POD_REPO": MAIN_REPO}
+    return {**_build_env(), "KIROCREW_POD_REPO": _repo()}
 
 
 def _read_pin_strict(cfg: Any, name: str) -> tuple[bool, str | None]:
@@ -2547,7 +2583,7 @@ async def _pod_up(name: str) -> dict:
     # `pod up` runs the provision chain (npm ci + vite) when asked to.
     await _warm_build_path()
     cmd = _find_cli() + ["pod", "up", name, "--json"]
-    rc, stdout, stderr = await _run_cmd(cmd, cwd=MAIN_REPO, env=_pod_env(), timeout=180)
+    rc, stdout, stderr = await _run_cmd(cmd, cwd=_repo(), env=_pod_env(), timeout=180)
     if rc != 0:
         return {"ok": False, "error": _redact(stderr or stdout)}
     # Post-start verification (symmetry with _pod_down): rc==0 is not proof the
@@ -2580,7 +2616,7 @@ async def _pod_down(name: str) -> dict:
         return {"ok": False, "error": guard}
     await _warm_build_path()
     cmd = _find_cli() + ["pod", "down", name]
-    rc, stdout, stderr = await _run_cmd(cmd, cwd=MAIN_REPO, env=_pod_env(), timeout=30)
+    rc, stdout, stderr = await _run_cmd(cmd, cwd=_repo(), env=_pod_env(), timeout=30)
     if rc != 0:
         return {"ok": False, "error": _redact(stderr or stdout)}
     # Post-stop verification: a CLI exit 0 is NOT proof the unit stopped (a
@@ -2676,7 +2712,7 @@ async def _pod_provision(name: str) -> dict:
             ),
         )
         rid = await _start_run(
-            "provision " + name, p_argv, cwd=MAIN_REPO, env=p_env,
+            "provision " + name, p_argv, cwd=_repo(), env=p_env,
             cleanup_paths=[p_cleanup] if p_cleanup else None,
         )
         _PROVISION_INFLIGHT[name] = rid
@@ -2742,6 +2778,9 @@ async def _worktree_remove(
     target, err = await _find_worktree(name)
     if target is None:
         return {"ok": False, "error": err}
+    # _find_worktree ran discovery, so the checkout is resolved from here on;
+    # the accessor keeps the removal git calls off the bare global.
+    repo = _repo()
     if target.get("is_main"):
         return {"ok": False, "error": "refusing: cannot remove the main checkout"}
     path = target["path"]
@@ -2846,7 +2885,7 @@ async def _worktree_remove(
     # Hoisted before the fresh-MERGED gate so containment uses the SAME pinned
     # OID (closing a two-reads inconsistency where the first could fail while
     # the second succeeds on retry).
-    verdict_oid = (await _git(MAIN_REPO, "rev-parse", f"refs/heads/{branch}")) if branch else None
+    verdict_oid = (await _git(repo, "rev-parse", f"refs/heads/{branch}")) if branch else None
     if branch and branch != BASE_BRANCH and not verdict_oid:
         logger.info(
             "worktree_removal_audit: worktree=%s branch=%s caller=%s force=%s "
@@ -2907,7 +2946,7 @@ async def _worktree_remove(
             # rev-parse that could diverge from the first.
             assert verdict_oid  # guaranteed by the refused_unpinnable guard above
             if not await _head_contained_in_pr(
-                MAIN_REPO, verdict_oid.strip(), fresh_head.strip()
+                repo, verdict_oid.strip(), fresh_head.strip()
             ):
                 logger.info(
                     "worktree_removal_audit: worktree=%s branch=%s caller=%s "
@@ -3099,7 +3138,7 @@ async def _worktree_remove(
                         "ok": False,
                         "error": f"cannot re-verify pod state before removal: {_redact(str(exc))}",
                     }
-        cmd = ["git", "-C", MAIN_REPO, "worktree", "remove", path]
+        cmd = ["git", "-C", repo, "worktree", "remove", path]
         if force_use_git_force:
             cmd.append("--force")
         rc, stdout, stderr = await _run_cmd(cmd, timeout=60)
@@ -3132,7 +3171,7 @@ async def _worktree_remove(
                 remote = await _upstream_remote()
                 rc_anc, _, _ = await _run_cmd(
                     [
-                        "git", "-C", MAIN_REPO, "merge-base", "--is-ancestor",
+                        "git", "-C", repo, "merge-base", "--is-ancestor",
                         verdict_oid.strip(), f"{remote}/{BASE_BRANCH}",
                     ],
                     timeout=10,
@@ -3146,11 +3185,11 @@ async def _worktree_remove(
                     )
                     if head_oid:
                         should_delete = await _head_contained_in_pr(
-                            MAIN_REPO, verdict_oid.strip(), head_oid.strip()
+                            repo, verdict_oid.strip(), head_oid.strip()
                         )
             if should_delete:
                 await _git(
-                    MAIN_REPO, "update-ref", "-d",
+                    repo, "update-ref", "-d",
                     f"refs/heads/{branch}", verdict_oid.strip(), timeout=10,
                 )
 
@@ -3240,10 +3279,14 @@ async def _sync_start_locked() -> dict:
     """Start the sync run. Caller holds _SYNC_LOCK."""
     global _SYNC_RID  # noqa: F824 (assigned below after await)
 
-    if not MAIN_REPO:
-        return {"ok": False, "error": "no Kiro Crew checkout found to manage"}
+    try:
+        repo = _repo()
+    except RepoNotConfigured as exc:
+        # Sync answers a UI action, so the unresolved state degrades to the
+        # same {"ok": False} shape every other refusal here uses.
+        return {"ok": False, "error": str(exc)}
     await _warm_build_path()
-    head = await _git(MAIN_REPO, "symbolic-ref", "--short", "HEAD")
+    head = await _git(repo, "symbolic-ref", "--short", "HEAD")
     if head is None:
         return {"ok": False, "error": "cannot determine checked-out branch (git failed)"}
     if head.strip() != BASE_BRANCH:
@@ -3258,11 +3301,11 @@ async def _sync_start_locked() -> dict:
     # — `pip install -e .` with it would re-point that venv's editable install
     # at MAIN_REPO, hijacking the running gateway's code identity on its next
     # restart (observed live: gateway silently became the main repo's code).
-    target_py = _venv_python(MAIN_REPO)
+    target_py = _venv_python(repo)
     if target_py is None:
         return {"ok": False, "error": (
             "main checkout has no .venv — provision it first "
-            f"(expected under {Path(MAIN_REPO) / '.venv'})"
+            f"(expected under {Path(repo) / '.venv'})"
         )}
     # Both binary lookups stat the filesystem (`_trusted_bin` walks the trusted
     # dirs; `_toolchain_bin` adds a `shutil.which` over the node bin dirs, which
@@ -3346,8 +3389,8 @@ async def _sync_start_locked() -> dict:
             # pins the pull, which makes an unpinned `.` actively misleading:
             # the line reads as if it were cwd-independent. Quoting covers the
             # spaces that are normal in a Windows home directory.
-            f'git -C "{MAIN_REPO}" pull --ff-only '
-            f'&& "{target_py}" -m pip install -e "{MAIN_REPO}"'
+            f'git -C "{repo}" pull --ff-only '
+            f'&& "{target_py}" -m pip install -e "{repo}"'
         )}
     raw_steps: list[tuple[list[str], str, dict, str]] = [
         ([git_bin, "fetch", remote, BASE_BRANCH], "standard",
@@ -3401,7 +3444,7 @@ async def _sync_start_locked() -> dict:
             ([sys.executable, "-c",
               "import sys;from kiro_crew.frontend import build_and_stage;"
               "sys.exit(0 if build_and_stage(sys.argv[1], npm=sys.argv[2]) else 1)",
-              MAIN_REPO, npm_bin],
+              repo, npm_bin],
              "strict", _build_env(), "npm build + stage"),
         ]
     cleanups: list[str] = []
@@ -3425,7 +3468,7 @@ async def _sync_start_locked() -> dict:
         # errors="replace" additionally guarantees no print can be fatal.
         "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
         f"steps = json.loads({json.dumps(json.dumps(wrapped_steps))})\n"
-        f"cwd = {json.dumps(MAIN_REPO)}\n"
+        f"cwd = {json.dumps(repo)}\n"
         "for i, st in enumerate(steps):\n"
         "    print(f'::step::{i}::{st[\"label\"]}', flush=True)\n"
         # reconfigure() above rebinds only THIS process's stdout object. Each
@@ -3705,7 +3748,9 @@ _AUTO_PRUNE_DEFAULT_INTERVAL_S = 3600
 
 async def _status_refresher() -> None:
     """Background task: periodically fetch upstream + refresh fleet cache."""
-    if not MAIN_REPO:
+    try:
+        repo = _repo()
+    except RepoNotConfigured:
         # No checkout to fetch or cache. Returning ends the task instead of
         # logging a RepoNotConfigured traceback on every cycle forever; the
         # resolved value only changes on restart, so there is nothing to wait for.
@@ -3715,7 +3760,7 @@ async def _status_refresher() -> None:
         try:
             remote = await _upstream_remote()
             await _run_cmd(
-                ["git", "-C", MAIN_REPO, "fetch", remote, BASE_BRANCH, "--quiet"],
+                ["git", "-C", repo, "fetch", remote, BASE_BRANCH, "--quiet"],
                 timeout=90,
             )
             await _fleet_refresh()
@@ -4078,12 +4123,17 @@ async def dev_fleet_startup(app: web.Application) -> None:
     # Full discovery here rather than at import: it reads config.json and stats
     # candidate directories, both of which would block the event loop on the
     # route-registration path. Then normalize to the primary checkout, so a hint
-    # naming a linked worktree still manages the whole fleet.
-    MAIN_REPO = await loop.run_in_executor(subprocess_executor(), _discover_main_repo)
-    if MAIN_REPO:
-        MAIN_REPO = await loop.run_in_executor(
-            subprocess_executor(), _resolve_primary_checkout, MAIN_REPO
+    # naming a linked worktree still manages the whole fleet. Discovery runs on
+    # a local so the global is written exactly once — this keeps the startup
+    # hook out of the AST ratchet's allowlist, so a future git call added here
+    # (where MAIN_REPO is most often still unresolved) cannot read the bare
+    # global unnoticed.
+    discovered = await loop.run_in_executor(subprocess_executor(), _discover_main_repo)
+    if discovered:
+        discovered = await loop.run_in_executor(
+            subprocess_executor(), _resolve_primary_checkout, discovered
         )
+    MAIN_REPO = discovered
     await _load_trusted_credential_helpers()
     await _load_fallback_repos()
     await _upstream_remote()

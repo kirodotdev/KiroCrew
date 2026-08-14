@@ -57,10 +57,19 @@ When no tier resolves, `MAIN_REPO` is `""` — never a synthesized path. Discove
 `RepoNotConfigured` and `/fleet` answers `{"worktrees": [], "needs_setup": true}` with no
 `error` field, which the page renders as a setup prompt. A synthesized default instead
 produces a red "Discovery Error" naming a directory the user never chose, which reads as a
-broken app rather than an unanswered question. Because `""` would make `git -C ""` operate
-on the backend's own working directory, the unresolved state also short-circuits worktree
-discovery, upstream-remote resolution, fallback-remote loading, build-pending detection,
-sync, and both background loops.
+broken app rather than an unanswered question.
+
+Because `""` would make `git -C ""` operate on the backend's own working directory (and
+`Path("")` is `Path(".")`), no consumer reads the global directly: every site that runs git
+against the checkout or builds paths from it resolves it through the `_repo()` accessor,
+which returns the path or raises `RepoNotConfigured`. Sites that deliberately degrade
+instead of failing catch it and say what the degraded answer is — upstream-remote
+resolution falls back to `origin`, build-pending detection reports nothing pending,
+fallback-remote loading leaves the list empty, sync refuses with its usual
+`{"ok": false}` shape, and the background refresher idles. Bare `MAIN_REPO` loads outside
+the accessor are limited to truthiness guards, enforced for loads within `server.py` by an
+AST ratchet (`test/test_dev_fleet_repo_accessor.py`); a helper split out into a sibling
+module must route through `_repo()` by convention, since the ratchet only sees this file.
 
 Every OTHER route that resolves a worktree (`/worktree`, `/disk`, `/prune-candidates`,
 `/prune-run`, the pod routes, `/rebase`, `/make-live`) reaches `_discover_worktrees` too, so
