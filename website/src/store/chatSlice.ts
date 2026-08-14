@@ -3387,6 +3387,12 @@ const chatSlice = createSlice({
         state.toolLog = []
         state.subagents = {}
         state.activityTab = 'files'
+        // A brand-new chat starts with the side panel CLOSED, like every other
+        // slot-entry path (switchSlot / resumeFromHistory read `?? false` for a
+        // slot they have no cached bucket for). Without this the panel state of
+        // the chat being left leaked into the new one — and was not persisted
+        // under the new slot's key either, so a reload silently closed it again.
+        state.activityOpen = false
         state.slotRunning = false
         state.slotStopping = false
         state.slotState = 'idle'

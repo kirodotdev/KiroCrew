@@ -1503,6 +1503,35 @@ describe('slotHistory — session navigation stack', () => {
     expect(state.activeSlot).toBe('new-slot')
   })
 
+  it('createSlot.fulfilled starts the new chat with the side panel CLOSED', () => {
+    // The panel is open on the chat being left. A brand-new slot has no cached
+    // activity bucket, so it must land closed — the same `?? false` every other
+    // slot-entry path applies. Leaking the flag also left it unpersisted under
+    // the new slot's key, so a reload silently closed the panel again.
+    let state = { ...initial, activeSlot: 'A', activityOpen: true }
+    state = reducer(state, {
+      type: 'chat/createSlot/fulfilled',
+      meta: { arg: undefined, requestId: 'r1', requestStatus: 'fulfilled' as const, originActiveSlot: 'A' },
+      payload: { key: 'new-slot' },
+    })
+    expect(state.activityOpen).toBe(false)
+    // The chat being left keeps its own open state in its bucket.
+    expect(state.slotActivity['A']?.activityOpen).toBe(true)
+  })
+
+  it('createSlot.fulfilled leaves the panel alone when the user switched away', () => {
+    // Switched-away guard: the create must not touch the view at all, panel
+    // state included.
+    let state = { ...initial, activeSlot: 'B', activityOpen: true }
+    state = reducer(state, {
+      type: 'chat/createSlot/fulfilled',
+      meta: { arg: undefined, requestId: 'r1', requestStatus: 'fulfilled' as const, originActiveSlot: 'A' },
+      payload: { key: 'new-slot' },
+    })
+    expect(state.activeSlot).toBe('B')
+    expect(state.activityOpen).toBe(true)
+  })
+
   it('deleteSlot.fulfilled cleans deleted key from history', () => {
     let state = { ...initial, activeSlot: 'C', slotHistory: ['A', 'B'] }
     state = reducer(state, {

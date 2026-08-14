@@ -87,6 +87,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "session.autocompact_pct"
   },
   {
+    "id": "chat.auto-open-git-in-side-panel",
+    "label": "Auto-Open Git in Side Panel",
+    "labelKey": "pages.settings.chatPanel.auto_open_git_panel",
+    "description": "Expand the side panel to the Git tab each time you start a chat in a git project. The Git tab is created either way.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.background-effort",
     "label": "Background Effort",
     "labelKey": "pages.settings.chatPanel.background_effort",

@@ -104,5 +104,6 @@ export interface DashboardConfig {
   tail_fork_enabled: boolean
   link_previews: boolean
   mcp_app_panel: boolean
+  auto_open_git_panel: boolean
   folder_suggestions_enabled: boolean
 }

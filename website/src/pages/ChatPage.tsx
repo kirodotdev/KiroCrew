@@ -793,10 +793,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // MCP Apps in the side panel (dashboard.mcp_app_panel, opt-in). When on, a new
   // render opens the panel to its own `app` tab instead of drawing inline in the
   // bubble — same auto-open path the web-preview marker uses.
-  const { data: appPanelCfg } = useQuery<{ mcp_app_panel?: boolean }>({
+  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean }>({
     queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000,
   })
   const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
+  // Opt-in: expand the side panel to the Git tab on sight of a git project
+  // (dashboard.auto_open_git_panel). See the git-panel effect for why it is off
+  // by default.
+  const autoOpenGitPanel = appPanelCfg?.auto_open_git_panel === true
+  // Whether that value is KNOWN yet. The git effect consumes a one-shot
+  // localStorage marker, so acting while this query is still in flight would
+  // burn the marker with the flag reading false and an opted-in user would never
+  // get the panel. A FAILED query counts as known and resolves to the documented
+  // default (off) — otherwise a config endpoint that is down would withhold the
+  // Git tab itself, which the flag does not govern.
+  const autoOpenGitPanelKnown = appPanelCfg !== undefined || appPanelCfgError
   // Tool-call ids already routed to a tab, so re-renders of the same app don't
   // yank focus back to the panel on every streaming update.
   useEffect(() => {
@@ -4694,10 +4705,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
 
   // Auto-open the Git panel when the slot has a project dir that is a git repo.
-  // Once per slot+path (dismissed via localStorage marker if the user closes it).
+  // OPT-IN (dashboard.auto_open_git_panel, default off) because the marker below
+  // cannot make this the once-per-project nudge it reads like: a new slot inherits
+  // `dashboard.default_project`, so keying on slot+path re-fires for every new
+  // chat in the same repo — forever. The Git TAB is still created unconditionally
+  // (same as the folder tab below), so the panel is one click away when off.
   useEffect(() => {
     if (!activeSlot || !_slotProject || projectGitError) return
     if (!projectGit?.repo) return
+    // Do not consume the marker before the opt-in's value is known — see
+    // `autoOpenGitPanelKnown`.
+    if (!autoOpenGitPanelKnown) return
     const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
     if (localStorage.getItem(key)) return
     // If the marker cannot be persisted (quota), skip the auto-open entirely:
@@ -4705,8 +4723,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would make it open again forever.
     try { localStorage.setItem(key, '1') } catch { return }
     tabsCtl.openView('git')
-    dispatch(openActivityPanel())
-  }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch])
+    if (autoOpenGitPanel) dispatch(openActivityPanel())
+  }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
   // Auto-open the folder tab for the project dir once per slot+path.
   useEffect(() => {
@@ -5826,6 +5844,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     mo.observe(document.body, { childList: true, subtree: true })
     return () => mo.disconnect()
   }, [isMobile, embedMode])
+  /** True while the INLINE side panel (mobile / embed, no actbar column) is
+   *  mounted AND visible.
+   *
+   *  Mobile has no actbar grid column, so the panel renders as a flex sibling of
+   *  the chat pane at the full window width — it covers the content area
+   *  outright. Anything the chat pane floats over that area (the sessions FAB
+   *  below) would land on top of the panel's own controls, so it is gated on
+   *  this. Reuses the panel's own mount/visibility predicates rather than
+   *  re-deriving them from `activityOpen`, which is only one of their inputs (a
+   *  live app or browser tab keeps the panel mounted through a close, and the
+   *  find pane hides it while owning the dock). */
+  const inlineSidePanelShowing = !activitySlot
+    && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
+    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
   const openSidebar = useCallback(() => setMobileSessions(true), [])
   const closeSidebar = useCallback(() => setMobileSessions(false), [])
   useSwipeEdge(chatContainerRef, { enabled: isMobile && !mobileSessions, edge: 'left', edgeZone: 0.35, onSwipe: openSidebar })
@@ -6164,7 +6196,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             <button onClick={dismissPinStatus} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="w-4 h-4" /></button>
           </div>
         )}
-        {isMobile && !sidebarOpen && !(activeSlot && (messages.length > 0 || slotRunning)) && (
+        {/* Floating sessions opener — mobile only, and only on a chat with
+            nothing in it yet (a conversation gets the in-header control
+            instead). Suppressed while the inline side panel is showing: it is
+            `fixed` at the same top-left corner as the panel's own collapse
+            button and, carrying z-10 against that button's auto z-index, paints
+            OVER it — leaving no way to close a panel that covers the whole
+            screen. It would also be pointing at a chat pane the panel has
+            squeezed to zero width. Sessions stay reachable meanwhile via the
+            left-edge swipe (useSwipeEdge above). */}
+        {isMobile && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-[42px] left-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}

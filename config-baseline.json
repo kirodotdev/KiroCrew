@@ -4135,6 +4135,7 @@
         "quick_send": false,
         "session_grid": false,
         "mcp_app_panel": false,
+        "auto_open_git_panel": false,
         "terminal": {
           "enabled": true
         },
@@ -4459,6 +4460,20 @@
       "tags": [],
       "label": "Open MCP Apps in the side panel",
       "help": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat bubble. The panel opens automatically and can be expanded; the chat keeps a compact placeholder linking to it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.auto_open_git_panel",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-open Git in the side panel",
+      "help": "Expand the chat's right side panel to its Git tab each time a session starts in a project directory that is a git repository. The Git tab itself is always created either way, so it is one click away.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

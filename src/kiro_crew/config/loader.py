@@ -2618,6 +2618,20 @@ class DashboardConfig:
             "placeholder linking to it.",
         ),
     )
+    # Off by default because the panel's dismissal marker is keyed by slot and a
+    # new session inherits `dashboard.default_project`: with this on, every new
+    # chat in a git project opens the panel, which is not the once-per-project
+    # nudge the behaviour looks like. That reasoning is the flag's rationale, not
+    # something a user reading the setting needs, so it stays out of `help`.
+    auto_open_git_panel: bool = field(
+        default=False,
+        metadata=_meta(
+            "Auto-open Git in the side panel",
+            "Expand the chat's right side panel to its Git tab each time a session "
+            "starts in a project directory that is a git repository. The Git tab "
+            "itself is always created either way, so it is one click away.",
+        ),
+    )
     terminal: dict = field(
         default_factory=lambda: {"enabled": True},
         metadata=_meta(
@@ -6137,6 +6151,7 @@ class KiroCrewConfig:
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
                 mcp_app_panel=dashboard_data.get("mcp_app_panel", False),
+                auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
                 widget_density=dashboard_data.get("widget_density", "more"),
                 verbosity=dashboard_data.get("verbosity", "default"),
                 link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
