@@ -180,7 +180,7 @@ function shortMsg(slot: ChatSlot): string {
 export function sessionStatus(
   slot: ChatSlot,
   unread: string[],
-  statusDetail?: { kind?: string; text?: string; toolName?: string },
+  statusDetail?: { kind?: string; label?: string; purpose?: string },
   // Defaults to the ChatSettings default (on) so callers that don't care about
   // the preference keep the purpose-first behavior.
   simplifiedToolNames = true,

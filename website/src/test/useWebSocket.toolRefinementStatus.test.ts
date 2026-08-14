@@ -127,7 +127,7 @@ describe('useWebSocket tool-call refinement status detail', () => {
 
   const detail = () => globalStore.getState().chat.slotStatusDetail['slot-1']
   /** What the session-list row actually paints, under the default
-   *  `simplifiedToolNames` preference. The stored `text` is only half the input
+   *  `simplifiedToolNames` preference. The stored `purpose` is only half the input
    *  — toolStatusLabel owns the fallback from an absent purpose to the title —
    *  so the label is the assertion that matches what a user sees. */
   const label = () => toolStatusLabel(detail(), true, 'en')
@@ -140,10 +140,10 @@ describe('useWebSocket tool-call refinement status detail', () => {
     expect(label()).toBe('List the temp dir')
 
     act(() => { ws.simulateMessage(refinement()) })
-    // The purpose survives; the refined title still lands on toolName so raw
+    // The purpose survives; the refined title still lands on label so raw
     // mode (simplifiedToolNames off) shows the real command, not the stub.
     expect(label()).toBe('List the temp dir')
-    expect(detail().toolName).toBe('ls /tmp')
+    expect(detail().label).toBe('ls /tmp')
     expect(toolStatusLabel(detail(), false, 'en')).toBe('ls /tmp')
   })
 
@@ -160,7 +160,7 @@ describe('useWebSocket tool-call refinement status detail', () => {
 
     act(() => { ws.simulateMessage(refinement()) })
     expect(label()).toBe('ls /tmp')
-    expect(detail().text).toBe('')
+    expect(detail().purpose).toBe('')
   })
 
   it('adopts a purpose the refinement does supply', () => {
@@ -184,7 +184,7 @@ describe('useWebSocket tool-call refinement status detail', () => {
 
     // A kind-only refinement must not blank the row into an empty label.
     expect(label()).toBe('List the temp dir')
-    expect(detail().toolName).toBe('Terminal')
+    expect(detail().label).toBe('Terminal')
   })
 
   it('does not let a refinement inherit a parallel call\u2019s purpose', () => {
@@ -212,6 +212,6 @@ describe('useWebSocket tool-call refinement status detail', () => {
 
     // A fresh (non-update) frame is authoritative — no merge, no stale purpose.
     expect(label()).toBe('Find the caller')
-    expect(detail().toolName).toBe('grep')
+    expect(detail().label).toBe('grep')
   })
 })

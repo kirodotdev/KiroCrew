@@ -16,7 +16,7 @@ import {
 type MockState = {
   dashboard: { slots: ChatSlot[]; unreadSlots: string[] }
   chat: {
-    slotStatusDetail: Record<string, { kind?: string; text?: string; toolName?: string; ts?: number }>
+    slotStatusDetail: Record<string, { kind?: string; label?: string; purpose?: string; ts?: number }>
   }
 }
 
@@ -244,7 +244,7 @@ describe('sessionStatus — running detail', () => {
   it('surfaces the live tool call instead of the generic Thinking label', () => {
     expect(
       sessionStatus(slot({ running: true }), [], {
-        text: 'Running: read /workspace/src/app.ts',
+        label: 'Running: read /workspace/src/app.ts',
       }),
     ).toMatchObject({
       style: 'dot',
@@ -264,7 +264,7 @@ describe('sessionStatus — running detail', () => {
   it('shows the raw tool title when simplifiedToolNames is off', () => {
     // Same preference the inline tool pill obeys, so the palette row and the
     // transcript agree instead of the row always showing the purpose.
-    const detail = { kind: 'tool', text: 'Reading the app entrypoint', toolName: 'fs_read /workspace/src/app.ts' }
+    const detail = { kind: 'tool', purpose: 'Reading the app entrypoint', label: 'fs_read /workspace/src/app.ts' }
     expect(sessionStatus(slot({ running: true }), [], detail, false)).toMatchObject({
       label: 'fs_read /workspace/src/app.ts',
     })
@@ -291,7 +291,8 @@ describe('useRecentsProvider — live status bridge', () => {
     mocks.state.chat.slotStatusDetail = {
       dashboard_live: {
         kind: 'tool',
-        text: 'Running: read /workspace/src/app.ts',
+        label: 'read /workspace/src/app.ts',
+        purpose: 'Running: read /workspace/src/app.ts',
         ts: 123,
       },
     }
@@ -312,8 +313,8 @@ describe('useRecentsProvider — live status bridge', () => {
     mocks.state.chat.slotStatusDetail = {
       dashboard_live: {
         kind: 'tool',
-        text: 'Reading the app entrypoint',
-        toolName: 'fs_read /workspace/src/app.ts',
+        purpose: 'Reading the app entrypoint',
+        label: 'fs_read /workspace/src/app.ts',
         ts: 123,
       },
     }
