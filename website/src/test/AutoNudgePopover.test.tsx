@@ -173,3 +173,47 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     expect(body.idle_secs).toBe(45)
   })
 })
+
+describe('AutoNudgePopover trigger chip — interrupted state', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetForTests()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  const renderChip = (loop: AutoNudgeLoop | null, interrupted: boolean) => render(
+    <AutoNudgePopover
+      slotKey={SLOT}
+      loop={loop}
+      open={false}
+      onOpenChange={() => {}}
+      onChange={() => {}}
+      interrupted={interrupted}
+    />,
+  )
+
+  it('pulses while the loop is active and the session is healthy', () => {
+    renderChip(makeLoop({ cycle_count: 47 }), false)
+    const chip = screen.getByTitle('Goal active (cycle 47)')
+    expect(chip.className).toContain('animate-pulse')
+    expect(chip.textContent).toContain('47')
+  })
+
+  it('stops pulsing and explains itself when the last turn was interrupted (the reported bug)', () => {
+    // The composer is showing Resume: nothing runs until the user acts or the
+    // next idle-timer cycle fires, so a pulsing chip would claim active work
+    // for that whole gap.
+    renderChip(makeLoop({ cycle_count: 47 }), true)
+    const chip = screen.getByTitle(/last turn was interrupted/)
+    expect(chip.className).not.toContain('animate-pulse')
+    // The cycle count survives — it is state, not a liveness claim.
+    expect(chip.textContent).toContain('47')
+  })
+
+  it('ignores interrupted when no loop is active (plain set-a-goal chip)', () => {
+    renderChip(null, true)
+    const chip = screen.getByTitle('Set a goal')
+    expect(chip.className).not.toContain('animate-pulse')
+  })
+})

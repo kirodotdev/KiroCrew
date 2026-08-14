@@ -394,6 +394,95 @@ def parse_cls_meta(cls_val: str) -> dict | None:
     return meta
 
 
+def is_stop_event_row(m: dict) -> bool:
+    """True when *m* is the card recorded because the user pressed Stop.
+
+    Three carriers, and the in-memory one is the easy miss: the stop is appended
+    as ``slot.append("system", stop_msg, stop_msg)`` with **no** ``meta=`` kwarg,
+    so ``_ChatSlot.append`` never creates a ``meta`` key and the discriminator
+    exists ONLY inside the JSON-encoded ``cls``/``content``. ``parse_cls_meta()``
+    is what unpacks it, and it runs on the way OUT to a client
+    (``_prepare_messages`` / ``_broadcast_chat_message``) — which is why the
+    frontend sees ``meta.kind`` while the live window does not. Checking only
+    ``kind``/``meta.kind`` here therefore matched a restored row but never a
+    freshly-stopped one, silently diverging from the frontend mirror in exactly
+    the case the two must agree on.
+
+    Mirrors ``isStopEvent`` in ``website/src/store/chatSlice.ts``.
+    """
+    if m.get("kind") == "stop_event":
+        return True
+    meta = m.get("meta") or {}
+    if meta.get("kind") == "stop_event":
+        return True
+    # Live window: the discriminator is still JSON inside `cls`. Prefilter on
+    # the literal before parsing — this runs from `to_dict()` on the
+    # push_slots_update path for every walked tail row, and `parse_cls_meta`
+    # costs a json.loads plus credential/URL redaction when the row carries a
+    # string tool_input (permission cards). `"stop_event"` is the literal
+    # discriminator, so a cls without the substring can never parse to a match.
+    # Non-string `cls` (an object-valued row from a foreign writer or a
+    # corrupted transcript) is refused up front: the membership test would
+    # raise on it, and `parse_cls_meta` would only swallow it into None anyway.
+    cls_val = m.get("cls") or ""
+    if not isinstance(cls_val, str) or "stop_event" not in cls_val:
+        return False
+    parsed = parse_cls_meta(cls_val)
+    return bool(parsed and parsed.get("kind") == "stop_event")
+
+
+def is_turn_interrupted(messages: list[dict]) -> bool:
+    """True when the transcript shows a turn that ended without a reply.
+
+    Two shapes qualify: the last conversational row is the USER's (nothing came
+    back at all — a gateway restart mid-turn leaves exactly this), or it is the
+    ASSISTANT's but an error row follows it (the turn streamed partway then died,
+    which is otherwise shape-identical to a clean completion).
+
+    One shape is explicitly excluded: a trailing ``stop_event``. The user pressing
+    Stop is a deliberate ending, not an interruption, and stopping before the
+    reply emitted any text produces the same ``[user, ...]`` tail as a crash.
+
+    Selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
+    ``_MANUAL_CONTINUE_MSG``), gates whether the composer offers the Resume
+    control (the ``continuable && interrupted`` composition in
+    ``website/src/pages/ChatPage.tsx``), and feeds the ``interrupted`` field of
+    the slot summary so the sidebar can stop rendering a goal loop as actively
+    working while its session sits behind a Resume button. A False result means
+    "as far as the transcript shows, the last turn finished or was ended on
+    purpose", NOT "there is nothing to do": a force-quit runs no ``finally``, so
+    the error row that would have proved an interruption was never written.
+
+    Mirrors ``selectTurnInterrupted`` in ``website/src/store/chatSlice.ts`` —
+    the two must agree, or the composer promises one thing and the agent is
+    told another.
+
+    Deliberately does not distinguish "produced some output" from "produced
+    none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the
+    distinction would buy a branch and nothing else.
+    """
+    saw_trailing_error = False
+    for m in reversed(messages):
+        role = m.get("role")
+        meta = m.get("meta") or {}
+        # A deliberate Stop ENDS the turn; it does not interrupt it. Tested
+        # before the user/assistant branch because stopping before the reply
+        # emitted any text leaves ``[user, stop_event]`` -- shape-identical to
+        # "the gateway died before anything came back". See ``is_stop_event_row``
+        # for why the discriminator has to be resolved from three carriers.
+        # Only the NEWEST turn's terminator reaches here -- an older stop card
+        # is never scanned, because a later user/assistant row returns first.
+        if is_stop_event_row(m):
+            return False
+        if role == "assistant" and meta.get("kind") == "compaction":
+            continue
+        if role in ("user", "assistant") and m.get("content"):
+            return True if role == "user" else saw_trailing_error
+        if role == "error":
+            saw_trailing_error = True
+    return False
+
+
 def _mark_permission_resolved(
     messages: list[dict],
     request_id: str,
@@ -2179,6 +2268,16 @@ class _ChatSlot:
         # Separate from `pending_approval`, whose answer is allow/deny on a tool
         # rather than input, and which keeps its own precedence and label.
         needs_input = bool(self._question_pending)
+        # interrupted: the transcript shows the last turn ending without the
+        # assistant handing the floor back (trailing error row, or an unanswered
+        # user row) — the state behind the composer's Resume button. Surfaced on
+        # the summary because the sidebar has no transcript to derive it from,
+        # and it must stop rendering a goal-loop session as actively working
+        # while the session actually sits dead until the user resumes it (or the
+        # loop's next idle-timer cycle fires, up to idle_secs away). Gated on
+        # ``not running``: while a turn is in flight the trailing error belongs
+        # to a superseded turn and the live status already tells the truth.
+        interrupted = not self.running and is_turn_interrupted(self.messages)
         # If an approval is pending, surface the tool metadata from the most
         # recent unresolved permission message so the Board can show inline
         # Approve/Trust/Reject buttons without a second API call.
@@ -2236,6 +2335,7 @@ class _ChatSlot:
             "last_activity_ts": last_activity_ts,
             "waiting_for_input": waiting_for_input,
             "needs_input": needs_input,
+            "interrupted": interrupted,
             "stop_state": self._stop_state,
             # In-flight `wait` sleep, or None. Carries the absolute deadline the
             # transcript counts down against and the wait_id the "End wait"

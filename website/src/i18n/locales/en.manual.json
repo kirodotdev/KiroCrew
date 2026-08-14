@@ -1112,6 +1112,7 @@
     },
     "autoNudgePopover": {
       "goal_active_cycle": "Goal active (cycle {{cycle}})",
+      "goal_interrupted_cycle": "Goal loop armed (cycle {{cycle}}) — last turn was interrupted; resume the chat or wait for the next cycle",
       "never": "never",
       "save": "Save",
       "start_loop": "Start loop"
@@ -2708,11 +2709,13 @@
       "folder_options_for": "Folder options for {{name}}",
       "goal_loop_cycle": "Goal loop · cycle {{count}} of {{total}}",
       "goal_loop_cycle_no_cap": "Goal loop · cycle {{count}} (no cap)",
+      "goal_loop_interrupted_title": "Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle",
       "hidden_because_parent_hidden": "{{name}} is hidden because a parent folder is hidden",
       "hide_from_flat_view": "Hide {{name}} from flat view",
       "in_folder": "In folder: {{name}}",
       "loop": "Loop {{count}}/{{total}}",
       "loop_2": "Loop · {{count}}",
+      "loop_interrupted": "interrupted",
       "running_queued": "{{started}} running · {{queued}} queued",
       "show_in_flat_view": "Show {{name}} in flat view",
       "streaming": "Streaming",

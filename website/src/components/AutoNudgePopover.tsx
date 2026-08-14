@@ -23,11 +23,18 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onChange: (loop: AutoNudgeLoop | null) => void
+  /**
+   * True when the slot's last turn ended interrupted (the composer is showing
+   * Resume). The chip stops pulsing and turns warn-coloured: the loop is still
+   * armed, but nothing is running until the user resumes or the next idle-timer
+   * cycle fires, and a pulsing chip would claim active work for that whole gap.
+   */
+  interrupted?: boolean
 }
 
 const DEFAULT_MSG = `Your north star is in north_star.md, roadmap in roadmap.md, tasks in tasks.md. Pick the single highest-leverage next step toward the goal and execute it. Update tasks.md. Post a blocker ONCE if genuinely stuck. To halt the loop, create {{STOP_FILE}}`
 
-export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange }: Props) {
+export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, onChange, interrupted = false }: Props) {
   // `||` (not `??`) is deliberate on the loop tier: it preserves the fallback
   // so a loop with idle_secs/max_cycles of 0 or an empty message still shows
   // the 60 / 0 / default template rather than a bare 0 / "".
@@ -165,11 +172,13 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         <button
           className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
             loop?.active
-              ? 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
+              ? interrupted
+                ? 'text-warn hover:text-warn hover:bg-warn/10'
+                : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.set_a_goal')}
-          aria-label={loop?.active ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })) : i18nT('components.autoNudgePopover.set_a_goal')}
+          aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: loop.cycle_count }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: loop.cycle_count })) : i18nT('components.autoNudgePopover.set_a_goal')}
         >
           <Goal size={16} className="shrink-0" />
           {loop?.active && loop.cycle_count > 0 ? loop.cycle_count : null}

@@ -544,6 +544,11 @@ export interface ChatSlot {
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
    * and separate from `pending_approval` (a tool gate). */
   needs_input?: boolean
+  /** The transcript shows the last turn ending without a reply (trailing error
+   * row or unanswered user row) — the state behind the composer's Resume
+   * button. Always false while `running`. Lets the sidebar stop rendering a
+   * goal-loop session as actively working when it is actually stalled. */
+  interrupted?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** In-flight `wait` tool sleep, absent when nothing is sleeping. `deadline_ts`

@@ -430,6 +430,11 @@ interface Slot {
   // An unanswered question card the turn is parked on. Its own subtitle, and it
   // suppresses the "your turn" dot for the same reason an approval does.
   needs_input?: boolean
+  // The transcript shows the last turn ending without a reply (trailing error
+  // row or unanswered user row) — the state behind the composer's Resume
+  // button. Always false while a turn runs. Read by the goal-loop subtitle so a
+  // stalled loop stops pulsing as if it were working.
+  interrupted?: boolean
   mode?: string
   agent?: string
   model?: string  // '' / absent = provider-default ("auto")
@@ -2432,6 +2437,15 @@ function ChatSidebar({
       : goalLoop.max_cycles > 0
         ? i18nT('pages.chatSidebar.loop', { count: goalLoop.cycle_count, total: goalLoop.max_cycles })
         : i18nT('pages.chatSidebar.loop_2', { count: goalLoop.cycle_count })
+    // The loop is armed but its session's last turn died — a trailing error row
+    // or an unanswered user row, the state behind the composer's Resume button —
+    // and nothing is executing on its behalf. The pulsing dot below would claim
+    // active work for the whole gap until the user resumes or the next
+    // idle-timer cycle fires (up to idle_secs away), so this renders as a static
+    // warn dot with an explicit "interrupted" instead. Guarded on the raw turn
+    // flag plus workflow/subagent activity: while any of those run, the loop IS
+    // working and `s.interrupted` only describes a superseded turn.
+    const goalLoopStalled = !!goalLoop && !!s.interrupted && !s.midTurn && !wfActive && subagentCount === 0
     // Whatever this row would have said if no loop were running, reused as the
     // loop line's trailing detail. This is why the loop branch can outrank the
     // working signals below without swallowing them: live workflow/subagent/tool
@@ -2701,9 +2715,11 @@ function ChatSidebar({
               // read as unattended progress. Nothing is lost by ranking it high
               // — `goalLoopDetail` carries whatever the lower branch would have
               // shown, so this line reads "Loop 7/24 · 3 agents running".
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
-                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden />
-                <span className="truncate"><span className="font-medium text-accent">{goalLoopLabel}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
+              // Stalled (see `goalLoopStalled`): static warn dot + "interrupted",
+              // never the pulse — the pulse means work is happening.
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${goalLoopStalled ? 'bg-warn' : 'bg-accent animate-pulse'}`} aria-hidden />
+                <span className="truncate"><span className={`font-medium ${goalLoopStalled ? 'text-warn' : 'text-accent'}`}>{goalLoopLabel}{goalLoopStalled ? ` — ${i18nT('pages.chatSidebar.loop_interrupted')}` : ''}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
               </div>
             ) : wfActive ? (
               // A dynamic-workflow run launched from this session is still
