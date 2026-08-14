@@ -87,6 +87,11 @@ rollback, one-command `delete-stack` teardown. AMI resolves from the public
 failed bootstrap folds the on-box setup-log tail into the signal reason so the
 cause survives the rollback.
 
+The instance bootstrap runs `install.sh --voice` on both its initial attempt and
+retry. This installs the existing `voice` extra (`boto3` and
+`amazon-transcribe`) before the gateway first imports its Transcribe provider;
+installing those SDKs after startup would otherwise require a gateway restart.
+
 Because the public repo is private, the box can't `git clone` it: the launcher
 packages the local checkout and uploads it to a launcher-owned bucket
 (`kirocrew-src-<account>-<region>`); the instance downloads it with its own IAM
@@ -366,6 +371,9 @@ exits non-zero.
 `aws` CLI + `session-manager-plugin` + Python are present, then hand off to
 `kirocrew cloud launch`. They install *client* prerequisites only — the gateway
 always runs on the Linux EC2 box, never on Windows.
+`cloud-install.sh --voice` additionally installs the existing `voice` extra in
+the launcher's managed client venv; the EC2 bootstrap includes that extra by
+default regardless of this client-side flag.
 
 `kirocrew cloud launch` runs `python -m kiro_crew`, which imports the whole CLI —
 including gateway/cron/session modules (plus `apps/bridges` and the PTY

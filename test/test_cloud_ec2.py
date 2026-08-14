@@ -260,6 +260,12 @@ class TestTemplate:
         text = ec2.load_template()
         assert "KIROCREW_REQUIRE_FRONTEND=1" in text
 
+    def test_bootstrap_installs_voice_extra_before_gateway_boot(self):
+        # Remote instances need the Transcribe SDK in their venv before the
+        # gateway imports boto3. Keep both the first attempt and retry aligned.
+        text = ec2.load_template()
+        assert text.count("bash install.sh --voice") == 2
+
     def test_instance_enforces_imdsv2(self):
         text = ec2.load_template()
         assert "MetadataOptions" in text

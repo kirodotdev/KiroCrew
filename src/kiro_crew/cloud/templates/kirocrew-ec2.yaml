@@ -535,10 +535,10 @@ Resources:
           export KIROCREW_REQUIRE_FRONTEND=1
           # One retry: first-boot contention can signal-kill the first build;
           # the warm re-run reliably succeeds (see "Source fetch" above).
-          if ! bash install.sh; then
+          if ! bash install.sh --voice; then
             echo "install.sh failed on first attempt - settling then retrying once"
             sleep 20
-            bash install.sh
+            bash install.sh --voice
           fi
           KCFETCH
           chmod +x /tmp/kcfetch.sh
