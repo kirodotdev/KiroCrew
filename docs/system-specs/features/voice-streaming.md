@@ -30,14 +30,14 @@ Piper:  POST /api/voice/synthesize → synthesize_speech() one WAV
 
 ## Streaming Auto-Speak Flow
 
-1. User sends a message; `spokenLenRef` resets to 0
+1. User sends a message; `voiceProgressRef` clears its prior message identity
 2. Backend streams `chat_chunk` events via WebSocket
 3. Frontend accumulates text in a `streaming` message in Redux
 4. On each chunk, regex scans for sentence boundaries (`[.!?]` followed by whitespace)
 5. New complete sentences (≥10 chars) are sent to `POST /api/voice/synthesize`
 6. Backend calls Polly per sentence, broadcasts `voice_chunk` (base64 MP3) via WS
 7. Frontend decodes chunks into blob URLs, queues them, plays sequentially
-8. On `chat_done`, any remaining unspoken tail text is synthesized
+8. On `chat_segment` or `chat_done`, any remaining unspoken tail text is synthesized before finalization
 9. `voice_complete` event carries the stitched full MP3 for replay
 
 ## Interrupt Mechanism
@@ -49,7 +49,7 @@ Sending a new message while voice is playing triggers an interrupt:
 3. `stopVoice()` pauses the active `Audio` element, clears the queue, and sets `voiceMutedRef = true`
 4. Incoming `voice_chunk` events from the old response are dropped while muted
 5. `chat_done` for the old response skips remaining-text synthesis when muted
-6. When the new response's first sentence is detected (`spokenLenRef === 0`), `voiceMutedRef` resets to `false`
+6. When a new response message identity is observed, `voiceMutedRef` resets to `false`
 
 The DOM event pattern avoids prop drilling between `ChatPage` (where send lives) and `useWebSocket` (where audio state lives, called from `App.tsx`).
 
@@ -154,9 +154,12 @@ placeholders so listeners know content exists without hearing raw syntax.
 When the assistant calls a tool mid-response, the backend emits a `chat_segment`
 event that finalizes the current streaming message and starts a new one.
 
-The frontend resets `spokenLenRef` to 0 on `chat_segment` so the new segment's
-text is spoken from the beginning. Without this reset, the offset from segment 1
-would cause segment 2 to be skipped until its length exceeded the old offset.
+The frontend keys `voiceProgressRef` by `{slot, messageId}`. Before
+`chat_segment` finalizes the current streaming message, it synthesizes any
+unspoken tail of at least 10 characters and marks that message consumed. The
+next segment receives a new message identity and therefore starts at offset 0.
+This also prevents a background slot's segment event from resetting speech
+progress for the active slot.
 
 ## Synthesize Serialization
 
@@ -194,7 +197,7 @@ async pipeline: markdown strip → SSML → Polly → Slack file upload.
 | `voicePlayingRef` | `boolean` | True while an Audio element is playing |
 | `activeAudioRef` | `HTMLAudioElement` | Currently playing audio (for pause on interrupt) |
 | `autoSpeakRef` | `boolean` | Cached auto-speak preference from server |
-| `spokenLenRef` | `number` | Character offset of text already sent to TTS |
+| `voiceProgressRef` | `{ slot, messageId, spokenLen }` | Message-scoped character offset already sent to TTS |
 | `voiceMutedRef` | `boolean` | Suppresses incoming voice chunks after interrupt |
 | `synthChainRef` | `Promise` | Serializes synthesize calls to prevent out-of-order audio |
 

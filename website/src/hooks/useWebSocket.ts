@@ -14,10 +14,24 @@ import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
-import type { StatusData, ChatSlot, Notification, PullRequestStatusBatch, TodoList } from '../types'
+import type { StatusData, ChatMessage, ChatSlot, Notification, PullRequestStatusBatch, TodoList } from '../types'
 import { i18nT } from '../i18n/t'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
+
+type VoiceProgress = {
+  slot: string
+  messageId: string
+  spokenLen: number
+}
+
+function voiceMessageId(message: ChatMessage): string {
+  const clientId = message.meta?.clientTs
+  if (typeof clientId === 'string' && clientId) return clientId
+  if (message.ts) return message.ts
+  const serverId = message.meta?.mid
+  return typeof serverId === 'string' ? serverId : ''
+}
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
 /** The server-side IDENTITY of a held card: a blocking ask's `ask_id`, or a
@@ -188,12 +202,10 @@ export function useWebSocket() {
   const voicePlayingRef = useRef(false)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const autoSpeakRef = useRef(false)
-  const spokenLenRef = useRef(0)  // chars already sent to TTS during streaming
-  // Whether the streaming path synthesized anything this turn. chat_segment
-  // resets spokenLenRef to 0, so the completion pass cannot tell "nothing
-  // spoken yet" (speak the whole reply) from "spoken, then segment-reset"
-  // (speaking from 0 repeats the entire reply) without this.
-  const spokeThisTurnRef = useRef(false)
+  // Speech offsets belong to one concrete message. A segment for another slot
+  // must not reset the active message, and a new post-tool segment must start
+  // from zero even while the previous message remains in the transcript.
+  const voiceProgressRef = useRef<VoiceProgress | null>(null)
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
   // #1 streaming-chunk coalescing: accumulate per-slot chunk text and flush
@@ -224,6 +236,35 @@ export function useWebSocket() {
     voicePlayingRef.current = false
     dispatch(setVoicePlaying(false))
   }, [dispatch])
+
+  const voiceProgressFor = useCallback((slot: string, message: ChatMessage): VoiceProgress | null => {
+    const messageId = voiceMessageId(message)
+    if (!messageId) return null
+    const current = voiceProgressRef.current
+    if (!current || current.slot !== slot || current.messageId !== messageId) {
+      const next = { slot, messageId, spokenLen: 0 }
+      voiceProgressRef.current = next
+      voiceMutedRef.current = false
+      return next
+    }
+    return current
+  }, [])
+
+  const enqueueVoiceSynthesis = useCallback((slot: string, text: string) => {
+    synthChainRef.current = synthChainRef.current
+      .then(() => api.voiceSynthesize(slot, text))
+      .catch(() => {})
+  }, [])
+
+  const flushVoiceTail = useCallback((slot: string, message: ChatMessage) => {
+    const progress = voiceProgressFor(slot, message)
+    if (!progress) return
+    const remaining = message.content.slice(progress.spokenLen).trim()
+    // Mark the whole message consumed even when its tail is below the speech
+    // floor, so a later completion event cannot reconsider or repeat it.
+    progress.spokenLen = message.content.length
+    if (remaining.length >= 10) enqueueVoiceSynthesis(slot, remaining)
+  }, [enqueueVoiceSynthesis, voiceProgressFor])
 
   const playNextVoiceChunk = useCallback(() => {
     if (voicePlayingRef.current || voiceQueueRef.current.length === 0) return
@@ -404,35 +445,28 @@ export function useWebSocket() {
     // after the batched content has landed in the store. (Moved here from the
     // per-chunk path so it reads the post-dispatch streaming content.)
     if (dispatchedActive && autoSpeakRef.current && activeSlot) {
-      if (spokenLenRef.current === 0) voiceMutedRef.current = false
       const msgs = store.getState().chat.messages
       const streaming = [...msgs].reverse().find(m => m.role === 'streaming')
       if (streaming) {
+        const progress = voiceProgressFor(activeSlot, streaming)
+        if (!progress) return
         const full = streaming.content
-        // The counter is 0 with the spoke-flag still set only right after a
-        // chat_segment reset. New streaming content in that state is a fresh
-        // post-segment block — the trailing message is no longer the
-        // already-spoken one, so the completion pass must not skip it.
-        if (spokenLenRef.current === 0 && full.length > 0) spokeThisTurnRef.current = false
         let lastBound = -1
         const re = /[.!?](?:\s|$)/g
         let match
         while ((match = re.exec(full)) !== null) {
-          if (match.index + 1 > spokenLenRef.current) lastBound = match.index + 1
+          if (match.index + 1 > progress.spokenLen) lastBound = match.index + 1
         }
-        if (lastBound > spokenLenRef.current) {
-          const newText = full.slice(spokenLenRef.current, lastBound).trim()
+        if (lastBound > progress.spokenLen) {
+          const newText = full.slice(progress.spokenLen, lastBound).trim()
           if (newText.length >= 10) {
-            spokenLenRef.current = lastBound
-            spokeThisTurnRef.current = true
-            synthChainRef.current = synthChainRef.current
-              .then(() => api.voiceSynthesize(activeSlot, newText))
-              .catch(() => {})
+            progress.spokenLen = lastBound
+            enqueueVoiceSynthesis(activeSlot, newText)
           }
         }
       }
     }
-  }, [dispatch])
+  }, [dispatch, enqueueVoiceSynthesis, voiceProgressFor])
 
   const scheduleChunkFlush = useCallback(() => {
     if (chunkFlushScheduledRef.current) return
@@ -859,7 +893,7 @@ export function useWebSocket() {
             // trigger (no-op unless an L2 theme with that manifest sound is
             // active + unmuted). User/tool messages don't chime.
             if (data.role === 'assistant') emitThemeSound('message-received')
-            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); spokenLenRef.current = 0; spokeThisTurnRef.current = false; synthChainRef.current = Promise.resolve() }
+            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); voiceProgressRef.current = null; synthChainRef.current = Promise.resolve() }
             if (data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))
             }
@@ -1170,11 +1204,16 @@ export function useWebSocket() {
             }
             break
           }
-          case 'chat_segment':
+          case 'chat_segment': {
             flushChunks()
+            const segmentSlot = data.slot as string
+            if (autoSpeakRef.current && !voiceMutedRef.current && segmentSlot === store.getState().chat.activeSlot) {
+              const streaming = [...store.getState().chat.messages].reverse().find(m => m.role === 'streaming')
+              if (streaming) flushVoiceTail(segmentSlot, streaming)
+            }
             dispatch(sseChatMessage({ ...data, role: '_segment' }))
-            spokenLenRef.current = 0
             break
+          }
           case 'chat_status':
             if (data.slot && data.status) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: data.status, ts: Date.now() }))
@@ -1186,6 +1225,14 @@ export function useWebSocket() {
           case 'chat_done':
             flushChunks()
             if (data.slot) chunkBufRef.current.delete(data.slot)
+            // Consume the tail while the streaming row still carries the same
+            // identity used by sentence-boundary progress tracking.
+            if (autoSpeakRef.current && !voiceMutedRef.current && data.slot === store.getState().chat.activeSlot) {
+              const msgs = store.getState().chat.messages
+              const last = [...msgs].reverse().find(m => m.role === 'streaming')
+                ?? [...msgs].reverse().find(m => m.role === 'assistant')
+              if (last) flushVoiceTail(data.slot, last)
+            }
             dispatch(sseChatMessage({ ...data, role: '_done' }))
             // Turn-complete chime: sound-only (no feed entry, no toast).
             // Plays on every real turn completion — active or background
@@ -1229,25 +1276,7 @@ export function useWebSocket() {
               queryClient.invalidateQueries({ queryKey: ['pull-request-source'], refetchType })
               queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'], refetchType })
             }
-            // Auto-speak: speak any remaining unspoken text from streaming
-            if (autoSpeakRef.current && !voiceMutedRef.current && data.slot === store.getState().chat.activeSlot) {
-              const msgs = store.getState().chat.messages
-              const last = [...msgs].reverse().find(m => m.role === 'assistant')
-              if (last) {
-                const remaining = last.content.slice(spokenLenRef.current).trim()
-                // spokenLen 0 after streaming spoke means chat_segment reset
-                // the counter — "remaining" would then be the whole reply,
-                // repeating everything already spoken.
-                const segmentReset = spokeThisTurnRef.current && spokenLenRef.current === 0
-                if (remaining.length >= 10 && !segmentReset) {
-                  synthChainRef.current = synthChainRef.current
-                    .then(() => api.voiceSynthesize(data.slot, remaining))
-                    .catch(() => {})
-                }
-              }
-              spokenLenRef.current = 0
-              spokeThisTurnRef.current = false
-            } else if (data.slot === store.getState().chat.activeSlot) {
+            if ((!autoSpeakRef.current || voiceMutedRef.current) && data.slot === store.getState().chat.activeSlot) {
               // Re-check config in case it changed
               api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
             }

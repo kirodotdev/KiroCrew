@@ -4,8 +4,9 @@
  * spoken-length counter to 0, so after a segment the completion pass would
  * slice the finished reply from 0 and speak EVERYTHING a second time.
  *
- * These tests pin both sides: a segment-reset turn is not re-spoken, and a
- * reply that never streamed through the sentence path is still spoken in full.
+ * These tests pin the message-scoped progress contract: segment tails are
+ * flushed once, unrelated slots cannot reset the offset, and non-streamed
+ * replies still get their completion-only synthesis.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
@@ -106,6 +107,48 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-1' } }) })
     await act(async () => {})
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
+
+    hook.unmount()
+  })
+
+  it('flushes an unspoken tail before chat_segment finalizes it', async () => {
+    const { hook, ws } = await mount()
+    const tail = 'An unpunctuated segment tail that still needs speech'
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: tail, seq: 1 } })
+      ws.simulateMessage({ type: 'chat_segment', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+
+    expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', tail)
+
+    hook.unmount()
+  })
+
+  it('does not let a background segment reset active-slot speech progress', async () => {
+    const { hook, ws } = await mount()
+    const tail = 'an unpunctuated continuation after the sentence'
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: SENTENCE, seq: 1 } })
+      // A segment for another slot synchronously flushes the active chunk, but
+      // must not reset the active message's already-spoken offset.
+      ws.simulateMessage({ type: 'chat_segment', data: { slot: 'slot-2' } })
+    })
+    await act(async () => {})
+    expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: tail, seq: 2 } })
+      ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-1' } })
+    })
+    await act(async () => {})
+
+    expect(api.voiceSynthesize).toHaveBeenCalledTimes(2)
+    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(1, 'slot-1', SENTENCE.trim())
+    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(2, 'slot-1', tail)
 
     hook.unmount()
   })
