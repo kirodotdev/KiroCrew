@@ -1437,6 +1437,21 @@ class AgentConfig:
             "they end the turn between cycles and survive restarts.",
         ),
     )
+    session_start_timeout_secs: int = field(
+        default=90,
+        metadata=_meta(
+            "Session Start Timeout (secs)",
+            "Budget for ACP session/new and session/load on the shared "
+            "runtime. kiro-cli blocks the response while it initializes the "
+            "agent's MCP servers, so session start scales with server count "
+            "and per-server cold-start cost (sandboxed launchers, remote "
+            "servers, loaded hosts). Raise this when a large agent "
+            "legitimately needs longer than the 90s default. The floor is "
+            "the default itself: the budget must stay comfortably above the "
+            "backend's 30s OAuth authorization wait, so values below 90 are "
+            "clamped up.",
+        ),
+    )
     tool_approval_timeout_secs: int = field(
         default=600,
         metadata=_meta(
@@ -3390,6 +3405,21 @@ POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 CHAT_TURN_TIMEOUT_MIN = 300
 CHAT_TURN_TIMEOUT_MAX = 86400
 
+# agent.session_start_timeout_secs — budget for ACP session/new + session/load
+# on the shared runtime (acp/runtime.py ``_SESSION_NEW_TIMEOUT`` is the built-in
+# default). kiro-cli blocks the session/new response while it initializes the
+# session's MCP servers, so start time scales with the agent's server count and
+# per-server cold-start cost (observed: a 71-server agent with no pending OAuth
+# completes in ~14s; a 17-server agent behind a sandboxed per-server launcher on
+# a loaded host takes ~50s). The floor IS the default: the budget must stay
+# comfortably ABOVE the backend's 30s OAuth authorization wait (issue #2946) —
+# a lower value recreates the session-start race the dedicated budget exists to
+# prevent, so out-of-range values clamp UP to it. The max bounds a typo'd
+# value: a session start slower than 15 minutes is pathological and should
+# surface as a timeout, not wait forever.
+SESSION_START_TIMEOUT_MIN = 90
+SESSION_START_TIMEOUT_MAX = 900
+
 # agent.tool_approval_timeout_secs — how long a chat turn parks waiting for a
 # human to answer a tool-approval prompt. The floor keeps the window long enough
 # for a human who is actually present to reach the dashboard. The max is pinned
@@ -3445,6 +3475,12 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
+    (
+        "agent",
+        "session_start_timeout_secs",
+        SESSION_START_TIMEOUT_MIN,
+        SESSION_START_TIMEOUT_MAX,
+    ),
     (
         "agent",
         "tool_approval_timeout_secs",
@@ -5775,6 +5811,12 @@ class KiroCrewConfig:
                     7200,
                     CHAT_TURN_TIMEOUT_MIN,
                     CHAT_TURN_TIMEOUT_MAX,
+                ),
+                session_start_timeout_secs=_safe_int(
+                    agent_data.get("session_start_timeout_secs", 90),
+                    90,
+                    SESSION_START_TIMEOUT_MIN,
+                    SESSION_START_TIMEOUT_MAX,
                 ),
                 tool_approval_timeout_secs=_safe_int(
                     agent_data.get("tool_approval_timeout_secs", 600),

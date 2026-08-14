@@ -135,6 +135,9 @@ _REQUEST_TIMEOUT = 30.0
 # it (observed: remaining servers register within ~1s after the wait; a
 # 71-server agent with no pending OAuth completes in ~14s) — do NOT "tidy" it
 # back down to _REQUEST_TIMEOUT. See issue #2946.
+# This is the built-in default AND floor; ``agent.session_start_timeout_secs``
+# raises it for agents whose MCP fleet legitimately needs longer (see
+# _resolve_session_start_timeout below).
 _SESSION_NEW_TIMEOUT = 90.0
 _INIT_NOTIFICATION_BUFFER_LIMIT = 100
 # Teardown must be snappy: a session is usually terminated on a hot path
@@ -490,6 +493,29 @@ def _get_rss_tree_mb(pid: int) -> float | None:
     return total_kib / 1024.0
 
 
+def _resolve_session_start_timeout() -> float:
+    """Snapshot ``agent.session_start_timeout_secs`` from config.
+
+    Function-level import (mirrors ``_load_watchdog_settings`` in
+    session_handle.py) avoids the config -> dashboard -> acp import cycle;
+    any failure falls back to the built-in default rather than breaking a
+    runtime. The loader clamps the on-disk value to
+    [SESSION_START_TIMEOUT_MIN, SESSION_START_TIMEOUT_MAX]; the ``max`` here
+    is belt-and-braces so a degraded load can never shrink the budget below
+    the built-in floor — a session-start budget under the backend's 30s OAuth
+    wait recreates the race issue #2946 fixed.
+    """
+    try:
+        # circular import: config.loader -> dashboard -> session -> acp
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        return max(_SESSION_NEW_TIMEOUT, float(cfg.agent.session_start_timeout_secs))
+    except Exception:
+        logger.debug("session-start timeout load failed — using default", exc_info=True)
+        return _SESSION_NEW_TIMEOUT
+
+
 class AcpRuntime:
     """Owns one kiro-cli acp subprocess with single-reader demux.
 
@@ -555,6 +581,13 @@ class AcpRuntime:
         # bound unbounded growth.
         self._max_age_secs = max_age_secs
         self._max_rss_mb = max_rss_mb
+
+        # session/new + session/load budget — resolved lazily on first use
+        # (never in __init__: KiroCrewConfig.load() is a synchronous disk
+        # read + schema validation on a cache miss, and runtimes are
+        # constructed on the event loop) and cached for the runtime's
+        # lifetime. See _session_start_budget().
+        self._session_start_timeout: float | None = None
 
         # Process state
         self._process: asyncio.subprocess.Process | None = None
@@ -1665,6 +1698,22 @@ class AcpRuntime:
                 ) from exc
         return None
 
+    async def _session_start_budget(self) -> float:
+        """The session/new + session/load budget, resolved lazily off-loop.
+
+        ``_resolve_session_start_timeout`` calls ``KiroCrewConfig.load()``,
+        which on a cache miss is a synchronous disk read + schema validation
+        — never run it on the event loop. Resolved once per runtime and
+        cached: the request paths must not re-read config per call, and a
+        changed config value applies to newly spawned runtimes (same
+        snapshot semantics as ``watchdog.*`` in session_handle.py).
+        """
+        if self._session_start_timeout is None:
+            self._session_start_timeout = await asyncio.to_thread(
+                _resolve_session_start_timeout
+            )
+        return self._session_start_timeout
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -1700,11 +1749,12 @@ class AcpRuntime:
             kas_custom_agents=kas_agents,
         )
 
+        budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
         session_id = ""
         try:
             resp = await self._send_and_await(
-                METHOD_SESSION_NEW, params, timeout=_SESSION_NEW_TIMEOUT
+                METHOD_SESSION_NEW, params, timeout=budget
             )
             session_id = str(resp.get("sessionId") or "")
             if not session_id:
@@ -1826,6 +1876,7 @@ class AcpRuntime:
             # the session itself from sessionId is called with an empty path, and
             # sending the field anyway would advertise a path that does not exist.
             load_params["_meta"] = {"_kiro.dev/session_file": session_file}
+        budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
         loaded_session_id = ""
         try:
@@ -1837,7 +1888,7 @@ class AcpRuntime:
             # docs/system-specs/modules/acp-client.md "loading a session
             # triggers MCP re-initialization") — so it gets the same budget.
             resp = await self._send_and_await(
-                METHOD_SESSION_LOAD, load_params, timeout=_SESSION_NEW_TIMEOUT
+                METHOD_SESSION_LOAD, load_params, timeout=budget
             )
 
             # A genuine resume echoes "modes" in the response (same signal AcpClient

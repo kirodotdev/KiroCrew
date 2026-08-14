@@ -2686,6 +2686,33 @@ class TestSecurityBoundClamping:
             cfg = _load_from_dict({"session": {"pool_size": 1000}})
         assert cfg.session.pool_size == POOL_SIZE_MAX == 10
 
+    def test_session_start_timeout_default(self) -> None:
+        """Omitted from config.json, the budget is the built-in 90s default."""
+        cfg = _load_from_dict({})
+        assert cfg.agent.session_start_timeout_secs == 90
+
+    def test_session_start_timeout_custom_in_range(self) -> None:
+        """An in-range value from disk is preserved verbatim."""
+        cfg = _load_from_dict({"agent": {"session_start_timeout_secs": 240}})
+        assert cfg.agent.session_start_timeout_secs == 240
+
+    def test_session_start_timeout_floored_to_min(self) -> None:
+        """A value below the floor is clamped UP: a session-start budget under
+        the backend's 30s OAuth authorization wait recreates the race the
+        dedicated budget exists to prevent (issue #2946)."""
+        from kiro_crew.config.loader import SESSION_START_TIMEOUT_MIN
+
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
+            cfg = _load_from_dict({"agent": {"session_start_timeout_secs": 10}})
+        assert cfg.agent.session_start_timeout_secs == SESSION_START_TIMEOUT_MIN == 90
+
+    def test_session_start_timeout_clamped_to_max(self) -> None:
+        with unittest.mock.patch("kiro_crew.config.loader._log_config_clamp_event"):
+            cfg = _load_from_dict({"agent": {"session_start_timeout_secs": 99999}})
+        from kiro_crew.config.loader import SESSION_START_TIMEOUT_MAX
+
+        assert cfg.agent.session_start_timeout_secs == SESSION_START_TIMEOUT_MAX == 900
+
     def test_full_pentest_reproduction_clamped(self) -> None:
         """The exact tester payload is clamped, and to_dict() (what the GET API
         serializes) reports the clamped values, not the inflated ones."""

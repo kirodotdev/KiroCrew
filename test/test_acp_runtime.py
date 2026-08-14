@@ -5270,6 +5270,82 @@ async def test_session_load_call_site_passes_budget_above_request_timeout(monkey
 
 
 @pytest.mark.asyncio
+async def test_session_start_budget_follows_config(monkeypatch):
+    """agent.session_start_timeout_secs raises the session/new budget: the
+    configured value is resolved lazily (off-loop, on first session start —
+    never in __init__, where a config cache miss would block the event loop)
+    and handed to _send_and_await, so a large agent whose MCP fleet needs
+    longer than the 90s default (many servers, sandboxed per-server
+    launchers, loaded hosts) can extend the budget without patching the
+    constant. Resolved once per runtime and cached thereafter."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    fake_cfg = SimpleNamespace(agent=SimpleNamespace(session_start_timeout_secs=240))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake_cfg))
+
+    rt, _, _ = _make_runtime()
+    rt._expect_mcp_reports = False
+    # Lazy: construction must not have resolved (or read) config.
+    assert rt._session_start_timeout is None
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            seen["timeout"] = timeout
+            return {"sessionId": "sid-cfg"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.create_session(cwd="/w", mcp_servers=[])
+
+    assert seen["timeout"] == 240.0
+    # Cached: later session starts on this runtime reuse the snapshot.
+    assert rt._session_start_timeout == 240.0
+    assert await rt._session_start_budget() == 240.0
+
+
+def test_runtime_construction_never_touches_config(monkeypatch):
+    """AcpRuntime.__init__ runs on the event loop; KiroCrewConfig.load() is a
+    synchronous disk read + schema validation on a cache miss, so the budget
+    must resolve lazily (off-loop) on first session start — never at
+    construction."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def _boom(cls):
+        raise AssertionError("config must not be consulted at construction")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+    rt = AcpRuntime(work_dir="/tmp")
+    assert rt._session_start_timeout is None
+
+
+def test_resolve_session_start_timeout_floors_and_falls_back(monkeypatch):
+    """The resolver never returns below the built-in floor (a budget under the
+    backend's 30s OAuth wait recreates the #2946 race), and any config-load
+    failure degrades to the default instead of breaking runtime construction."""
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.runtime import _resolve_session_start_timeout
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    # Below-floor value (belt-and-braces: the loader clamp already prevents
+    # this on disk, but a degraded load must not shrink the budget either).
+    low_cfg = SimpleNamespace(agent=SimpleNamespace(session_start_timeout_secs=10))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: low_cfg))
+    assert _resolve_session_start_timeout() == _SESSION_NEW_TIMEOUT
+
+    # Config load blowing up falls back to the default.
+    def _boom(cls):
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+    assert _resolve_session_start_timeout() == _SESSION_NEW_TIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_send_and_await_timeout_error_names_the_budget():
     """The timeout message must carry the budget that elapsed so a 90s
     session-start timeout is distinguishable from a generic 30s one. The
