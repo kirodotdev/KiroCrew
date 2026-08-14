@@ -18,6 +18,7 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { Badge, Btn, EmptyState, FormSkeleton, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { isElectron } from '../../lib/electron'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import type { DashboardConfig } from '../chat/ChatSettings'
 import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
@@ -106,6 +107,7 @@ export function BrowserPanel() {
     mutationFn: (value: string) => api.setBrowserToken(value),
     onSuccess: () => { setToken(''); void qc.invalidateQueries({ queryKey: INSTALL_KEY }) },
   })
+  const ime = useImeGuard()
 
   const installMut = useMutation({
     mutationFn: api.installBrowserCli,
@@ -327,6 +329,11 @@ export function BrowserPanel() {
                     autoComplete="off"
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
+                    {...ime.bindEnter({
+                      onEnter: () => {
+                        if (!tokenMut.isPending && token.trim()) tokenMut.mutate(token)
+                      },
+                    })}
                     placeholder={
                       data.token
                         ? i18nT('pages.settings.browserPanel.token_set')
