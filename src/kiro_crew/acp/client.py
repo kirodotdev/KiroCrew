@@ -1080,6 +1080,14 @@ _RE_USAGE_LIMIT = re.compile(
 # flipping an otherwise-terminal error.
 _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
 
+# kiro-cli's wording for a concurrent in-flight prompt on the session, read by
+# the user-facing formatter below and by `_raise_acp_error`'s AcpPromptBusy
+# classification. One pattern, but two haystacks: the formatter scopes to the
+# provider `data` field while the classifier also searches the JSON-RPC
+# `message`, so an echo carried only by `message` raises AcpPromptBusy under the
+# unrecognised-shape text.
+_PROMPT_BUSY_RE = re.compile(r"already in progress", re.IGNORECASE)
+
 # kiro-cli's envelope for a failure that happened mid-stream. The text after the
 # colon is the provider's own message — the same words the CLI prints in a
 # terminal — so it is what a user needs to see.
@@ -1452,7 +1460,7 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
                 "to a different model in the picker."
                 f"{req_id_suffix}"
             )
-        elif re.search(r"already in progress", data, re.IGNORECASE):
+        elif _PROMPT_BUSY_RE.search(data):
             # The backend still has an in-flight prompt on this session.
             # This means a previous turn didn't complete cleanly (tool stall,
             # timeout, or race between messages). The session will auto-recover
@@ -1509,9 +1517,6 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
 
 
 # ---------------------------------------------------------------------------
-_PROMPT_BUSY_RE = re.compile(r"already in progress", re.IGNORECASE)
-
-
 def _rejected_model_from_error(error: object) -> str | None:
     """Return the model id a prompt-time error reports as invalid/unavailable.
 
@@ -5320,34 +5325,37 @@ class AcpClient:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if entry.get("kind") == "ToolResults":
-                        for c in entry.get("data", {}).get("content", []):
-                            if c.get("kind") == "toolResult":
-                                tr = c.get("data")
-                                if not isinstance(tr, dict):
-                                    continue
-                                tool_use_id = tr.get("toolUseId", "")
-                                output_parts: list[str] = []
-                                for rc in tr.get("content", []):
-                                    if isinstance(rc, dict):
-                                        if rc.get("kind") == "json":
-                                            d = rc.get("data", {})
-                                            if isinstance(d, dict) and "stdout" in d:
-                                                out = d.get("stdout", "")
-                                                if out:
-                                                    output_parts.append(out[:4000])
-                                            else:
-                                                output_parts.append(json.dumps(d, indent=2)[:4000])
-                                        elif rc.get("kind") == "text":
-                                            output_parts.append(str(rc.get("data", ""))[:4000])
-                                if output_parts:
-                                    results.append(
-                                        AcpEvent(
-                                            kind=EVENT_TOOL_RESULT,
-                                            tool_call_id=tool_use_id,
-                                            tool_output="\n".join(output_parts)[:8000],
-                                        )
-                                    )
+                    if entry.get("kind") != "ToolResults":
+                        continue
+                    for c in entry.get("data", {}).get("content", []):
+                        if c.get("kind") != "toolResult":
+                            continue
+                        tr = c.get("data")
+                        if not isinstance(tr, dict):
+                            continue
+                        tool_use_id = tr.get("toolUseId", "")
+                        output_parts: list[str] = []
+                        for rc in tr.get("content", []):
+                            if not isinstance(rc, dict):
+                                continue
+                            if rc.get("kind") == "json":
+                                d = rc.get("data", {})
+                                if isinstance(d, dict) and "stdout" in d:
+                                    out = d.get("stdout", "")
+                                    if out:
+                                        output_parts.append(out[:4000])
+                                else:
+                                    output_parts.append(json.dumps(d, indent=2)[:4000])
+                            elif rc.get("kind") == "text":
+                                output_parts.append(str(rc.get("data", ""))[:4000])
+                        if output_parts:
+                            results.append(
+                                AcpEvent(
+                                    kind=EVENT_TOOL_RESULT,
+                                    tool_call_id=tool_use_id,
+                                    tool_output="\n".join(output_parts)[:8000],
+                                )
+                            )
         except Exception:
             logger.debug("Failed to read JSONL for tool results", exc_info=True)
         if results:

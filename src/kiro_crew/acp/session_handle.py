@@ -2198,9 +2198,11 @@ class AcpSessionHandle:
                 # them so the meter resets and fresh telemetry re-derives real
                 # numbers (parity with the kiro-cli compaction handler).
                 self.last_prompt_stats.reset_after_compaction()
-            status_type = "completed" if kind == "summarization_completed" else (
-                "failed" if kind == "summarization_failed" else "started"
-            )
+                status_type = "completed"
+            elif kind == "summarization_failed":
+                status_type = "failed"
+            else:
+                status_type = "started"
             # conversationSummary is backend-echoed, LLM-influenced text that
             # reaches the dashboard — redact exfil URLs/credentials first.
             summary = redact_text(str(kiro.get("conversationSummary", "") or ""))
