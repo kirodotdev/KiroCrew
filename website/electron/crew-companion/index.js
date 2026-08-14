@@ -54,6 +54,14 @@ let fetchLocalToken = null;
 let log = () => {};
 let timer = null;
 let reconciling = false;
+/**
+ * Resolve the dashboard window a notification should be opened in.
+ *
+ * Supplied by main.js, which owns window lifecycle; the same shape `initMochi`
+ * takes its `getMainWindow` in. Absent when the companion is initialised without
+ * it, in which case the CTA reports that it could not act rather than pretending.
+ */
+let getDashboardWindow = null;
 
 /**
  * Ask the gateway whether the app is enabled.
@@ -88,6 +96,42 @@ function probeEnabled(token) {
     });
     req.on("error", () => resolve("unknown"));
   });
+}
+
+/**
+ * Surface the dashboard for a notification's session.
+ *
+ * The overlay cannot do this itself: it is a full-display, non-focusable window
+ * that knows nothing about the dashboard's windows, so — exactly like the panel's
+ * `crew-companion:panel-open` — it asks the main process to raise the right one.
+ * The route is the dashboard's own session deep link, the same `?sid=` the System
+ * page's session rows and the app SDK build.
+ *
+ * An empty *slotKey* means the notification names no session (an approval raised
+ * with no owning conversation carries `slot: ""`). The dashboard is still
+ * surfaced — that is where the approvals surface lives — but nothing is routed,
+ * because navigating away from whatever the user had open would claim to have
+ * opened a session that was never identified.
+ *
+ * @param {string} slotKey dashboard slot key, or "" when there is no session.
+ * @returns {boolean} true when the dashboard was surfaced; false when there was
+ *   no window able to receive the request, so the caller can KEEP a notification
+ *   it could not act on instead of dismissing it.
+ */
+function openDashboardSession(slotKey) {
+  const win = getDashboardWindow && getDashboardWindow();
+  if (!win || win.isDestroyed()) return false;
+  // Resolved BEFORE the window is raised: a routing request that cannot be
+  // delivered must fail whole, not leave the dashboard focused on the wrong
+  // session while the overlay is told the session was opened.
+  const view = win._mcView;
+  const wc = view && view.webContents;
+  if (slotKey && (!wc || wc.isDestroyed())) return false;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (slotKey) wc.send("navigate", `/chat?sid=${encodeURIComponent(slotKey)}`);
+  return true;
 }
 
 async function reconcileOnce() {
@@ -132,12 +176,14 @@ async function reconcileOnce() {
 /**
  * Start following the app's enabled state.
  *
- * @param {{backendUrl: string, fetchLocalToken: () => Promise<string>, glog: (m: string) => void}} deps
+ * @param {{backendUrl: string, fetchLocalToken: () => Promise<string>, glog: (m: string) => void,
+ *   getDashboardWindow?: () => (object | null)}} deps
  */
 function initCrewCompanion(deps) {
   backendUrl = (deps && deps.backendUrl) || "";
   fetchLocalToken = deps && deps.fetchLocalToken;
   log = (deps && deps.glog) || (() => {});
+  getDashboardWindow = (deps && deps.getDashboardWindow) || null;
   setOverlayLogger(log);
   setPanelLogger(log);
   setGalleryLogger(log);
@@ -178,6 +224,18 @@ function initCrewCompanion(deps) {
     if (focusable) win.focus();
   });
 
+  /**
+   * "Open session" on a waiting-on-you bubble.
+   *
+   * `handle`, not `on`, because the answer is what makes the CTA honest: the
+   * overlay clears the notification only once the dashboard has actually been
+   * surfaced, and a sticky approval bubble is the only pointer the user has back
+   * to the blocked session. `removeHandler` first so a second init cannot throw
+   * on the duplicate registration.
+   */
+  ipcMain.removeHandler("crew-companion:open-session");
+  ipcMain.handle("crew-companion:open-session", (_event, slotKey) =>
+    openDashboardSession(typeof slotKey === "string" ? slotKey : ""));
 
   if (timer) clearInterval(timer);
   timer = setInterval(() => void reconcileOnce(), TICK_MS);
@@ -206,4 +264,5 @@ module.exports = {
   // Exported for tests: they drive the tick directly rather than waiting 5s.
   reconcileOnce,
   probeEnabled,
+  openDashboardSession,
 };

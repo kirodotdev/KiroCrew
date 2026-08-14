@@ -18,6 +18,33 @@ export function writePrefill(slotKey: string, prompt: string): void {
 }
 
 /**
+ * The chat session a dashboard path names, or `''` when it names none.
+ *
+ * `/chat?sid=<slotKey>` is the dashboard's session deep link — the System page's
+ * session rows, Telemetry's conversation links and the app SDK all build it — and
+ * `?slot=` is the legacy spelling ChatPage still reads. A `/chat/<slug>` prefix is
+ * decorative (ChatPage writes it from the session title), so it is accepted too.
+ *
+ * Used to tell a session deep link apart from an ordinary route, because the two
+ * cannot be honoured the same way: `navigate()` alone only selects a session while
+ * ChatPage is MOUNTING, so a link followed while /chat is already open lands on
+ * the page with the previous session still selected.
+ */
+export function chatDeepLinkSlot(path: string): string {
+  let url: URL
+  try {
+    // A relative path needs some base to parse against; only the path and query
+    // are ever read back off it.
+    url = new URL(path, 'http://dashboard.invalid')
+  } catch {
+    return ''
+  }
+  const onChat = url.pathname === '/chat' || url.pathname.startsWith('/chat/')
+  if (!onChat) return ''
+  return url.searchParams.get('sid') || url.searchParams.get('slot') || ''
+}
+
+/**
  * Perform a navigation intent forwarded from a popout window, in THIS main
  * dashboard window. Order matters: the prefill must be in sessionStorage
  * before the slot switch + route change so ChatPage's slot-restore effect

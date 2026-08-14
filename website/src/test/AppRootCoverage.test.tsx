@@ -400,6 +400,24 @@ describe('App — Electron bridges', () => {
     act(() => navigateFromMenu?.('//example.com/steal'))
     expect(screen.getByTestId('logs-page')).toBeInTheDocument()
   })
+
+  it('a session deep link SELECTS the session, not just the route', async () => {
+    // The Crew Companion's "Open session" CTA arrives on this same channel. A
+    // bare navigate would be enough only from another page: ChatPage reads `?sid`
+    // while it MOUNTS, so from an already-open /chat the window would come
+    // forward with the previous session still on screen — the notification would
+    // appear to have opened nothing, which is the bug the CTA is meant to fix.
+    let navigateFromMain: ((path: string) => void) | undefined
+    setElectronBridge({ onNavigate: cb => { navigateFromMain = cb; return () => { navigateFromMain = undefined } } })
+    const { store } = renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByTestId('chat-page')
+    expect(store.getState().chat.activeSlot).not.toBe('chat-2-200')
+
+    act(() => navigateFromMain?.('/chat?sid=chat-2-200'))
+
+    expect(store.getState().chat.activeSlot).toBe('chat-2-200')
+    expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+  })
 })
 
 describe('App — developer mode', () => {

@@ -9,7 +9,7 @@
  * bubble still will not close on screen, the fault is in the hitbox, not here.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { act, render, screen, fireEvent, cleanup } from '@testing-library/react'
 
 import { Bubble } from '../apps/crew-companion/Bubble'
 
@@ -25,6 +25,17 @@ afterEach(() => {
 /** The exit animation runs before onDismiss fires, so tests must step past it. */
 function flushExit() {
   vi.advanceTimersByTime(400)
+}
+
+/**
+ * Let a CTA whose handler reports asynchronously finish reporting.
+ *
+ * The verdict arrives in a microtask, and the state it drives has to be applied
+ * before the exit timer is stepped — otherwise the timer is advanced past a
+ * dismissal that has not been scheduled yet, and the test reads a pass as a fail.
+ */
+async function settleAction() {
+  await act(async () => {})
 }
 
 describe('closing a bubble', () => {
@@ -122,6 +133,54 @@ describe('closing a bubble', () => {
     fireEvent.click(cta!)
     flushExit()
     expect(onAction).toHaveBeenCalledWith('open-session')
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('a CTA whose action could not be carried out does NOT clear the bubble', async () => {
+    // The dismissal used to be unconditional, which is worst exactly where it
+    // matters: an approval has no ✕ and ignores body clicks, so clearing it on a
+    // failed open destroys the only pointer back to the blocked session.
+    const onDismiss = vi.fn()
+    const { container } = render(
+      <Bubble
+        text="needs your OK"
+        kind="approval"
+        onDismiss={onDismiss}
+        onAction={() => Promise.resolve(false)}
+      />,
+    )
+    fireEvent.click(container.querySelector('.cc-bubble-cta')!)
+    await settleAction()
+    flushExit()
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(container.querySelector('.cc-bubble-wrap')?.className).not.toContain('cc-bubble-out')
+  })
+
+  it('a CTA that reports success clears the bubble once the action lands', async () => {
+    const onDismiss = vi.fn()
+    const { container } = render(
+      <Bubble
+        text="needs your OK"
+        kind="approval"
+        onDismiss={onDismiss}
+        onAction={() => Promise.resolve(true)}
+      />,
+    )
+    fireEvent.click(container.querySelector('.cc-bubble-cta')!)
+    await settleAction()
+    flushExit()
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('a synchronous CTA still clears the bubble synchronously', () => {
+    // The breathing nudge's handler opens the panel and returns nothing; routing
+    // every CTA through a promise would delay an exit that cannot fail.
+    const onDismiss = vi.fn()
+    const { container } = render(
+      <Bubble text="Try a breath" kind="break-breathe" onDismiss={onDismiss} onAction={() => {}} />,
+    )
+    fireEvent.click(container.querySelector('.cc-bubble-cta')!)
+    flushExit()
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
