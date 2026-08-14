@@ -1,6 +1,8 @@
 // SpecStatePanel — the structured state card under the docs pane. Decisions are
-// clickable until answered, answering posts a chat message through the parent's
-// mutation, and the CONTEXT table only lists the rows the payload actually has.
+// clickable until answered; a clicked decision collapses to its chosen option
+// immediately (marked "sending…" until the agent writes the real answer back),
+// answering posts a chat message through the parent's mutation, and the CONTEXT
+// table only lists the rows the payload actually has.
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { SpecDetail } from '../apps/spec-builder/api'
@@ -81,7 +83,7 @@ describe('SpecStatePanel', () => {
     expect(sent.endsWith(': zz-opt-a')).toBe(true)
   })
 
-  it('blocks a second answer while one is in flight, then re-enables', async () => {
+  it('collapses the clicked decision to "sending…" and blocks the others while in flight', async () => {
     let release: (() => void) | undefined
     const sendMessage = vi.fn(() => new Promise<void>(res => { release = () => res() }))
     render(
@@ -98,18 +100,22 @@ describe('SpecStatePanel', () => {
       />,
     )
     fireEvent.click(screen.getByText('zz-opt-a'))
-    fireEvent.click(screen.getByText('zz-opt-b'))
+    // The clicked decision collapses to its chosen option right away — the
+    // sibling option is gone, and the badge shows the send is under way.
+    expect(screen.queryByText('zz-opt-b')).not.toBeInTheDocument()
+    expect(screen.getByText('→ zz-opt-a')).toBeInTheDocument()
+    expect(screen.getByText('sending…')).toBeInTheDocument()
+    // The unrelated decision is dimmed and inert while another one is answering.
+    expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '0.5' })
     fireEvent.click(screen.getByText('zz-opt-c'))
     expect(sendMessage).toHaveBeenCalledTimes(1)
-    // The unrelated decision is dimmed while another one is answering.
-    expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '0.5' })
     release?.()
     await waitFor(() => expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '1' }))
     fireEvent.click(screen.getByText('zz-opt-c'))
     expect(sendMessage).toHaveBeenCalledTimes(2)
   })
 
-  it('swallows a send failure and re-enables the options', async () => {
+  it('a send failure reopens the decision so it can be answered again', async () => {
     const sendMessage = vi.fn().mockRejectedValue(new Error('zz-send-failed'))
     render(
       <SpecStatePanel
@@ -118,7 +124,56 @@ describe('SpecStatePanel', () => {
       />,
     )
     fireEvent.click(screen.getByText('zz-opt-a'))
-    await waitFor(() => expect(screen.getByText('zz-opt-a').closest('[aria-label]')).toHaveStyle({ opacity: '1' }))
+    // The instruction never reached the agent, so the local mark is dropped and
+    // the option comes back clickable instead of sitting on a false "sending…".
+    await waitFor(() => expect(screen.getByText('zz-opt-a')).toBeInTheDocument())
+    expect(screen.queryByText('sending…')).not.toBeInTheDocument()
+    expect(screen.getByText('pending')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('zz-opt-a'))
+    expect(sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('the server answer wins over the local sending mark', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = render(
+      <SpecStatePanel
+        detail={detail({ state: { decisions: [{ id: 'd1', title: 'zz-one', options: ['zz-opt-a', 'zz-opt-b'] }] } })}
+        sendMessage={sendMessage}
+      />,
+    )
+    fireEvent.click(screen.getByText('zz-opt-a'))
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+    rerender(
+      <SpecStatePanel
+        detail={detail({ state: { decisions: [{ id: 'd1', title: 'zz-one', options: ['zz-opt-a', 'zz-opt-b'], answer: 'zz-opt-b' }] } })}
+        sendMessage={sendMessage}
+      />,
+    )
+    expect(screen.getByText('answered')).toBeInTheDocument()
+    expect(screen.getByText('→ zz-opt-b')).toBeInTheDocument()
+  })
+
+  it('an id that comes back carrying a different question is open again', async () => {
+    // The agent rewrites .spec-state.json wholesale, so the same id can return
+    // with a new question; the local mark is keyed on id+title and must not
+    // claim the new question was already answered.
+    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const { rerender } = render(
+      <SpecStatePanel
+        detail={detail({ state: { decisions: [{ id: 'd1', title: 'zz-one', options: ['zz-opt-a'] }] } })}
+        sendMessage={sendMessage}
+      />,
+    )
+    fireEvent.click(screen.getByText('zz-opt-a'))
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
+    rerender(
+      <SpecStatePanel
+        detail={detail({ state: { decisions: [{ id: 'd1', title: 'zz-other-question', options: ['zz-opt-z'] }] } })}
+        sendMessage={sendMessage}
+      />,
+    )
+    expect(screen.getByText('pending')).toBeInTheDocument()
+    expect(screen.getByText('zz-opt-z')).toBeInTheDocument()
   })
 
   it('surfaces a blocking note on its own', () => {
