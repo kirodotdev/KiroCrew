@@ -1311,6 +1311,55 @@ class TestTimeoutContext:
         mock_redact.assert_called_once_with("some_tool")
         assert "last tool: [REDACTED]" in ctx
 
+    def test_unset_cap_omitted_not_slash_zero(self) -> None:
+        """max_turns=0 (no per-spawn cap) must not render a misleading 'turn N/0'."""
+        from kiro_crew.subagent import SubagentInfo, _timeout_context
+
+        info = SubagentInfo(id="t1", task="test", turns=41, max_turns=0, started=time.time() - 10)
+        ctx = _timeout_context(info)
+        assert "turn 41" in ctx
+        assert "turn 41/" not in ctx
+
+    def test_resolved_turn_limit_used_over_raw_zero(self) -> None:
+        """The caller-resolved effective cap is shown when the raw override is unset."""
+        from kiro_crew.subagent import SubagentInfo, _timeout_context
+
+        info = SubagentInfo(id="t1", task="test", turns=41, max_turns=0, started=time.time() - 10)
+        ctx = _timeout_context(info, turn_limit=100)
+        assert "turn 41/100" in ctx
+
+
+class TestEffectiveTurnLimit:
+    """Resolution chain: per-spawn max_turns → manager default → hardcoded."""
+
+    def _manager(self, default_turn_limit: int) -> "SubagentManager":
+        return SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=None,
+            default_turn_limit=default_turn_limit,
+        )
+
+    def test_per_spawn_override_wins(self) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = self._manager(default_turn_limit=50)
+        info = SubagentInfo(id="t1", task="test", max_turns=30)
+        assert manager._effective_turn_limit(info) == 30
+
+    def test_falls_back_to_manager_default(self) -> None:
+        from kiro_crew.subagent import SubagentInfo
+
+        manager = self._manager(default_turn_limit=50)
+        info = SubagentInfo(id="t1", task="test", max_turns=0)
+        assert manager._effective_turn_limit(info) == 50
+
+    def test_falls_back_to_hardcoded_limit(self) -> None:
+        from kiro_crew.subagent import _TURN_LIMIT, SubagentInfo
+
+        manager = self._manager(default_turn_limit=0)
+        info = SubagentInfo(id="t1", task="test", max_turns=0)
+        assert manager._effective_turn_limit(info) == _TURN_LIMIT
+
 
 class TestAgentInheritance:
     """Agent name is inherited from parent session when not explicitly specified."""

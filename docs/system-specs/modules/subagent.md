@@ -24,7 +24,7 @@ Supports `on_tool_approval` callback for interactive tool approval (routed throu
 
 Priority (highest wins): **per-spawn `max_turns`** → **config `agent.subagent_max_turns`** → **hardcoded default (100)**
 
-A value of `0` means "not set" and falls through to the next level. Implemented as `info.max_turns or self._default_turn_limit or _TURN_LIMIT` in `_run_subagent()`.
+A value of `0` means "not set" and falls through to the next level. Implemented as `SubagentManager._effective_turn_limit()`, shared by the enforcement path in `_run_inner()` and the timeout/reap error strings (`_timeout_context()`).
 
 ### Concurrency Auto-Sizing — Memory Probe (per platform)
 

@@ -423,9 +423,16 @@ def _digest_hold_secs() -> float:
 DIGEST_HOLD_SECS = _digest_hold_secs()
 
 
-def _timeout_context(info: "SubagentInfo", *, include_elapsed: bool = True) -> str:
-    """Build a human-readable context string for timeout errors."""
-    parts = [f"turn {info.turns}/{info.max_turns}"]
+def _timeout_context(info: "SubagentInfo", *, include_elapsed: bool = True, turn_limit: int = 0) -> str:
+    """Build a human-readable context string for timeout errors.
+
+    ``turn_limit`` is the resolved effective turn cap (per-spawn override →
+    manager default → hardcoded). ``info.max_turns`` alone is only the raw
+    per-spawn override, which is 0 when unset and would render a misleading
+    ``turn N/0``. When no positive cap is known, the cap is omitted entirely.
+    """
+    limit = turn_limit or info.max_turns
+    parts = [f"turn {info.turns}/{limit}" if limit > 0 else f"turn {info.turns}"]
     if info.last_tool:
         parts.append(f"last tool: {_redact(info.last_tool)}")
     if include_elapsed:
@@ -1296,6 +1303,14 @@ class SubagentManager:
             )
         except Exception:
             self._spawn_stagger_secs = 2.0
+
+    def _effective_turn_limit(self, info: SubagentInfo) -> int:
+        """Resolved turn cap for a run: per-spawn ``max_turns`` → config
+        default (``agent.subagent_max_turns``) → hardcoded ``_TURN_LIMIT``.
+
+        ``0`` at any level means "not set" and falls through to the next.
+        """
+        return info.max_turns or self._default_turn_limit or _TURN_LIMIT
 
     def update_completion_keep(self, mode: str, max_chars: int) -> None:
         """Update the live completion-keep mode and char budget.
@@ -2300,9 +2315,9 @@ class SubagentManager:
             if not info.error and not info.user_stopped:
                 # A user stop is neutral — never synthesize a reap error for it.
                 if reason == "startup_timeout":
-                    info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False)}]"
+                    info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._effective_turn_limit(info))}]"
                 else:
-                    info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
+                    info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._effective_turn_limit(info))}]"
             if not info.user_stopped:
                 # A user-initiated stop is a neutral outcome, not a failure.
                 Stats().inc_subagent_failed()
@@ -4314,7 +4329,7 @@ class SubagentManager:
             )
         except asyncio.TimeoutError:
             if not info.reaped:
-                info.error = f"Timed out after {self._default_timeout // 60} minutes [{_timeout_context(info)}]"
+                info.error = f"Timed out after {self._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._effective_turn_limit(info))}]"
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._write_tombstone(info, "timeout")
@@ -4926,7 +4941,7 @@ class SubagentManager:
 
         result_text = ""
         turns = 0
-        turn_limit = info.max_turns or self._default_turn_limit or _TURN_LIMIT
+        turn_limit = self._effective_turn_limit(info)
         # Reports inherited agent (not just info.agent) so telemetry shows
         # the actual agent used for this subagent session.
         await self._fire_event(
