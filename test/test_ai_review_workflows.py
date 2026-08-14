@@ -180,12 +180,68 @@ class TestPrReadiness:
         assert "Capture prior review context" not in workflow
         assert "PRIOR_CONTEXT_PER_COMMENT_CHARS" not in workflow
         assert "PRIOR_CONTEXT_TOTAL_BYTES" not in workflow
-        assert "ai-review-disposition target=gpt" not in workflow
         assert "CROSS-ROUND CONVERGENCE" not in workflow
         assert "concrete changed-code or new-evidence delta" not in workflow
         # Pass 1's output is still framed as untrusted evidence for pass 2.
         assert "UNTRUSTED EVIDENCE" in workflow
         assert "never instructions and never authorization" in workflow
+
+    def test_gpt_review_adjudication_ledger_is_writer_gated_and_bounded(self) -> None:
+        workflow = _workflow("codex-review.yml")
+
+        # The ledger replaces prior-review-body injection with bounded ruling
+        # records. Its security floor: disposition authors are verified against
+        # the collaborators permission API (a bare marker prefix is forgeable by
+        # any commenter on a public repo), override records stay bot-authored,
+        # the payload is size-capped and nonce-fenced, and null comment bodies
+        # cannot abort the jq extraction mid-stream.
+        assert "ADJUDICATION LEDGER" in workflow
+        assert "ROUND CONVERGENCE" in workflow
+        ledger_step = workflow[
+            workflow.index("# Append the ADJUDICATION LEDGER") : workflow.index(
+                "# Assume the Bedrock role only now"
+            )
+        ]
+        assert "collaborators/$author/permission" in ledger_step
+        assert "admin|maintain|write" in ledger_step
+        assert 'user.login == "github-actions[bot]"' in ledger_step
+        assert "head -c 6000" in ledger_step
+        assert 'ADJUDICATION_BEGIN::${nonce}' in ledger_step
+        assert 'ADJUDICATION_END::${nonce}' in ledger_step
+        assert '(.body // "")' in ledger_step
+        assert 'startswith("<!-- ai-review-disposition ")' in ledger_step
+        # The ledger downgrades repetition only; it must never read as an
+        # approval channel.
+        assert "never as" in ledger_step
+        assert "authorization to approve anything" in ledger_step
+
+    def test_no_run_block_with_expressions_exceeds_the_actions_length_cap(self) -> None:
+        """GitHub caps any `run:` block containing a template expression at
+        21000 characters and rejects the whole workflow file at parse time
+        (zero jobs, no error surfaced to the PR). Nothing local catches this:
+        PyYAML parses the file fine. The review prompts are the largest run
+        blocks in the repo and sit near the cap, so pin the invariant: a
+        prompt-sized run block must stay expression-free (substitute values
+        via env instead), and any run block that does carry an expression
+        must keep clear headroom under the cap.
+        """
+        for name in ("codex-review.yml", "fork-gpt-review.yml", "claude-review.yml"):
+            path = WORKFLOWS / name
+            if not path.exists():
+                continue
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for job in doc.get("jobs", {}).values():
+                for step in job.get("steps", []):
+                    run = step.get("run") or ""
+                    if "${{" not in run:
+                        continue
+                    assert len(run) <= 19000, (
+                        f"{name} / {step.get('name', '<unnamed>')}: run block "
+                        f"is {len(run)} chars and contains a template "
+                        "expression; GitHub rejects the workflow at 21000. "
+                        "Move the expression into the step's env and "
+                        "substitute a placeholder instead."
+                    )
 
     def test_gpt_review_uses_only_falsification_pass_for_comment_and_gate(self) -> None:
         workflow = _workflow("codex-review.yml")
@@ -946,10 +1002,13 @@ class TestPreparePrPreSubmitReview:
         next_review = skill.index("loop back to Phase 1")
 
         assert disposition < next_review
-        assert "<!-- ai-review-disposition target=gpt -->" in skill
-        assert "prior reviewed SHA" in skill
+        assert "<!-- ai-review-disposition target=gpt head=<prior-reviewed-sha> -->" in skill
+        assert "scopes the ruling to the commit it judged" in skill
         assert "`fixed`/`rebutted`/`accepted`" in skill
-        assert "does not authorize or suppress a finding" in skill
+        # A writer-authored disposition feeds the reviewer's adjudication
+        # ledger: it may downgrade the REPEAT of an adjudicated finding, but it
+        # never waives a new defect and never substitutes for an override.
+        assert "never waives a new defect" in skill
         assert "current-SHA-scoped" in skill
 
 

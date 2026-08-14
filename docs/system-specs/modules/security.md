@@ -331,26 +331,27 @@ top verdict plus one sentence: `✅ no blocking findings`,
 state, so a green verdict from the previous commit is never left looking
 current.
 
-When no current-SHA override is active, GPT 5.6 captures convergence context
-before replacing its marker-keyed comment: the prior bot review, prior
-bot-recorded GPT/`all` override decisions, and recent review dispositions from
-authors whose current collaborator permission is `write`, `maintain`, or
-`admin`. Bodies are capped at 6,000 characters each and the complete bundle at
-24,000 bytes. The two discovery outputs are likewise capped at 12,000 bytes
-each before prompt assembly. The bundle is nonce-delimited and explicitly
-untrusted: old SHA-scoped decisions are evidence only, never authorization for
-a new SHA.
+When no current-SHA override is active, GPT 5.6 injects a bounded
+ADJUDICATION LEDGER into the review prompt: the bot-authored override
+records, plus the marker and finding-title lines of review-disposition
+comments whose authors' current collaborator permission is `write`,
+`maintain`, or `admin` (verified per login against the collaborators
+permission API — the same check the override handler applies to its actor).
+Prior review bodies are never injected. The ledger is nonce-delimited,
+capped at 6,000 bytes, and explicitly untrusted data: it can downgrade the
+repetition of an adjudicated finding class to advisory, and it can never
+waive a new defect or authorize a green verdict.
 
-GPT still makes exactly three model calls. Passes 1 and 2 discover candidates;
-pass 3 receives both bounded discovery outputs plus the bounded cross-round
-context, rechecks the full diff, resolves contradictions, deduplicates, and
-emits the only verdict exposed to the comment and gate. A materially identical
-settled finding, or a reversal of earlier GPT guidance, must identify a concrete
-changed-code or newly identified evidence delta; a new SHA alone is not a
-delta. A prior disposition never hides a currently provable bug, but absent such
-a delta the reconciler drops the repeated or contradictory finding. Any failed
-call makes the three-pass review incomplete and leaves no current-SHA reviewed
-marker, so the gate fails closed.
+GPT makes exactly two model calls. Pass 1 discovers candidates across the
+full diff; pass 2 attempts to falsify each candidate and emits the only
+verdict exposed to the comment and gate. Pass 2 also drops or downgrades a
+candidate whose proposed fix violates the FIX BAR, a BLOCKING candidate that
+cannot be anchored to an AUTOSDE rule or residual defect class, and a
+relocated variant of a ledger-adjudicated class; an adjudication goes stale
+for lines the current head materially changed. A prior disposition never
+hides a currently provable new defect. Any failed call makes the review
+incomplete and leaves no current-SHA reviewed marker, so the gate fails
+closed.
 
 ### Pull Request Readiness (`.github/workflows/` + `prepare-pr`)
 
