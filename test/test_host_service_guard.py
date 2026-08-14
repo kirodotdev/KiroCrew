@@ -465,3 +465,215 @@ class TestXdgRedirect:
         dropin = mod._dropin_path().resolve()
         real = (pathlib.Path.home() / ".config" / "systemd" / "user").resolve()
         assert real not in dropin.parents, f"{dropin} is inside the operator's real config dir"
+
+
+class TestRepositoryRootResidueGuard:
+    """The checkout is host state, and this is the only layer that guards it.
+
+    A test writing into the repository is invisible to every other check: the test
+    passes, CI is green, and the review bots see nothing, because the write happens
+    in a grandchild process against an inherited CWD with no ``touch`` or ``open``
+    in the test's own source. So what these pin is the guard's judgement, in both
+    directions -- it must name a real artifact, and it must stay silent on anything
+    the runner or git already owns, because a guard that cries wolf gets deleted
+    and then protects nothing.
+    """
+
+    def test_it_reports_a_name_git_does_not_ignore(self) -> None:
+        root = _load_root_conftest()
+
+        assert root._not_ignored({"INJECTED"}) == ["INJECTED"]
+
+    def test_it_stays_silent_on_names_git_ignores(self) -> None:
+        """Toolchain scratch is declared ignorable, so it is not residue.
+
+        Deferred to `git check-ignore` rather than a pattern list in the guard,
+        which is what keeps the two from drifting apart.
+        """
+        root = _load_root_conftest()
+
+        assert root._not_ignored({".pytest_cache"}) == []
+
+    def test_an_empty_set_needs_no_subprocess(self) -> None:
+        root = _load_root_conftest()
+
+        with mock.patch.object(
+            root.subprocess, "run", side_effect=AssertionError("must not spawn")
+        ):
+            assert root._not_ignored(set()) == []
+
+    @pytest.mark.parametrize(
+        "boom",
+        [OSError("no git"), subprocess.SubprocessError("broken")],
+        ids=["git-missing", "spawn-failed"],
+    )
+    def test_it_reports_unclassifiable_when_git_cannot_be_run(self, boom: Exception) -> None:
+        """``None`` is a third answer: git never looked, so neither verdict holds."""
+        root = _load_root_conftest()
+
+        with mock.patch.object(root.subprocess, "run", side_effect=boom):
+            assert root._not_ignored({"INJECTED", ".pytest_cache"}) is None
+
+    def test_a_fatal_git_exit_is_not_read_as_nothing_ignored(self) -> None:
+        """The route the real cases take, and the one an exception test misses.
+
+        MEASURED: `check-ignore` exits 1 with empty stdout when nothing is
+        ignored, and 128 with empty stdout when it could not look at all -- a
+        non-git export, or a checkout git refuses for dubious ownership. Reading
+        128 as "nothing is ignored" would report every toolchain artifact as
+        residue and fail the whole suite on such a host.
+        """
+        root = _load_root_conftest()
+        fatal = subprocess.CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal")
+
+        with mock.patch.object(root.subprocess, "run", return_value=fatal):
+            assert root._not_ignored({"INJECTED", ".pytest_cache"}) is None
+
+    def test_nothing_ignored_is_distinguished_from_cannot_look(self) -> None:
+        """Exit 1 with the same empty stdout means every name IS residue."""
+        root = _load_root_conftest()
+        none_ignored = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+
+        with mock.patch.object(root.subprocess, "run", return_value=none_ignored):
+            assert root._not_ignored({"INJECTED"}) == ["INJECTED"]
+
+    def test_an_unclassifiable_root_does_not_fail_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A guard that reds the suite on an unanswerable question gets deleted,
+        and then it protects nothing."""
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", set())
+        monkeypatch.setattr(root, "_root_entries", lambda: {"INJECTED"})
+        monkeypatch.setattr(root, "_not_ignored", lambda names: None)
+        session = self._session_with_residue(root, pytest.ExitCode.OK)
+
+        root.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        assert session.exitstatus == pytest.ExitCode.OK
+
+    def test_runner_scratch_is_exempt_regardless_of_what_git_says(self) -> None:
+        """MEASURED: the same `.pytest_cache` at the same commit reports ignored on
+        Linux and NOT ignored on the Windows runner. Leaning only on git therefore
+        failed three Windows shards on which every test passed. pytest and coverage
+        create these, so they are outside what this guard looks for."""
+        root = _load_root_conftest()
+
+        assert root._runner_owned(".pytest_cache") is True
+        assert root._runner_owned(".coverage") is True
+        assert root._runner_owned(".cache") is True
+        # Coverage writes one file per process, so an exact-name list would miss them.
+        assert root._runner_owned(".coverage.fv-az1234.4321.XmYqRt") is True
+
+    def test_a_test_written_file_is_not_exempt(self) -> None:
+        root = _load_root_conftest()
+
+        assert root._runner_owned("INJECTED") is False
+        assert root._runner_owned("scratch.txt") is False
+
+    def test_runner_scratch_never_reaches_the_verdict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exemption is applied BEFORE git is consulted, so a host where git
+        misclassifies the cache cannot fail the run over it. Asserted on the spawn
+        rather than the helper: the helper short-circuits an empty set, and it is
+        the subprocess that would carry the misclassification."""
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", set())
+        monkeypatch.setattr(root, "_root_entries", lambda: {".pytest_cache", ".coverage"})
+        monkeypatch.setattr(
+            root.subprocess, "run", lambda *a, **k: pytest.fail("git spawned for runner scratch")
+        )
+        session = self._session_with_residue(root, pytest.ExitCode.OK)
+
+        root.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        assert session.exitstatus == pytest.ExitCode.OK
+
+    def test_a_real_artifact_still_fails_alongside_runner_scratch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exempting the cache must not exempt what shipped next to it."""
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", set())
+        monkeypatch.setattr(root, "_root_entries", lambda: {".pytest_cache", "INJECTED"})
+        seen: list[set[str]] = []
+        monkeypatch.setattr(
+            root, "_not_ignored", lambda names: seen.append(names) or sorted(names)
+        )
+        session = self._session_with_residue(root, pytest.ExitCode.OK)
+
+        root.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        assert seen == [{"INJECTED"}], "runner scratch must be filtered before git"
+        assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+
+    def test_only_the_controller_snapshots(self) -> None:
+        """Every xdist worker shares this filesystem. Letting each one snapshot
+        and report would turn one stray file into one failure per worker."""
+        root = _load_root_conftest()
+        worker = SimpleNamespace(config=SimpleNamespace(workerinput={}))
+        before = root._ROOT_BASELINE
+
+        root.pytest_sessionstart(worker)
+
+        assert root._ROOT_BASELINE is before
+
+    def _session_with_residue(self, root, exitstatus: int):
+        """A finished session whose run left one residue entry."""
+        session = SimpleNamespace(
+            config=SimpleNamespace(pluginmanager=SimpleNamespace(get_plugin=lambda _n: None)),
+            exitstatus=exitstatus,
+        )
+        return session
+
+    @pytest.mark.parametrize(
+        "exitstatus",
+        [
+            pytest.ExitCode.INTERRUPTED,
+            pytest.ExitCode.INTERNAL_ERROR,
+            pytest.ExitCode.USAGE_ERROR,
+            pytest.ExitCode.NO_TESTS_COLLECTED,
+        ],
+        ids=["interrupted", "internal-error", "usage-error", "no-tests"],
+    )
+    def test_it_does_not_overwrite_a_more_specific_exit_status(
+        self, monkeypatch: pytest.MonkeyPatch, exitstatus: pytest.ExitCode
+    ) -> None:
+        """INTERRUPTED and INTERNAL_ERROR say the run did not finish. Reporting
+        TESTS_FAILED instead would tell a caller it completed and failed, which is
+        a different fact, so a residue report must not launder one into the other.
+        """
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", set())
+        monkeypatch.setattr(root, "_root_entries", lambda: {"INJECTED"})
+        monkeypatch.setattr(root, "_not_ignored", lambda names: sorted(names))
+        session = self._session_with_residue(root, exitstatus)
+
+        root.pytest_sessionfinish(session, exitstatus)
+
+        assert session.exitstatus == exitstatus
+
+    def test_it_promotes_only_a_clean_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", set())
+        monkeypatch.setattr(root, "_root_entries", lambda: {"INJECTED"})
+        monkeypatch.setattr(root, "_not_ignored", lambda names: sorted(names))
+        session = self._session_with_residue(root, pytest.ExitCode.OK)
+
+        root.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+
+    def test_a_clean_root_leaves_the_exit_status_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard must be inert on the overwhelmingly common path."""
+        root = _load_root_conftest()
+        monkeypatch.setattr(root, "_ROOT_BASELINE", {"src"})
+        monkeypatch.setattr(root, "_root_entries", lambda: {"src"})
+        session = self._session_with_residue(root, pytest.ExitCode.OK)
+
+        root.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+        assert session.exitstatus == pytest.ExitCode.OK

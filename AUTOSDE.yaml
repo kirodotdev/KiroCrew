@@ -171,10 +171,29 @@ custom-rules:
     rule: |
       A test must have no side effects outside its own tmp dir. Never register a
       real cron job, write into the operator's real ~/.kiro/crew or HOME, start
-      or reconfigure a gateway/service, or create directories in the repo or
-      anywhere else that outlives the run. Both shapes have already bitten us: a
-      unit test registered a live cron job, and test runs accumulated stray
-      directories under the developer's home.
+      or reconfigure a gateway/service, or create files or directories in the
+      repo or anywhere else that outlive the run. These shapes have already
+      bitten us: a unit test registered a live cron job, test runs accumulated
+      stray directories under the developer's home, and an empty file a test
+      left at the repository root was committed and shipped to main.
+
+      A CHILD PROCESS INHERITS THE CWD, and pytest's CWD is the repository root.
+      A test that spawns one MUST pass `cwd=` pointing inside its own tmp dir,
+      or anything the child writes with a relative path lands in the repo. This
+      is the shape the paragraph above does not catch by reading the test: no
+      line says `touch` or `open(...,"w")`, the write happens in a grandchild
+      process, and the test can assert against its tmp dir and still pass while
+      the artifact sits at the repo root. So for any test that runs a child:
+      - pass `cwd=<a directory under tmp_path>` to any child that MAY CREATE a
+        file, and to every helper that spawns one. A read-only query is exempt
+        and sometimes has to be: `git check-ignore` run against the checkout is
+        answering a question about the checkout, and pointing it at a tmp dir
+        would test nothing.
+      - scope an assertion about a file the child MIGHT create to where that
+        child's CWD actually is, not to where you hope it wrote. An assertion
+        over `tmp_path` proves nothing about a child that ran somewhere else,
+        and a security test whose payload escapes its own assertion is worse
+        than no test, because it reports the guarantee it failed to check.
 
       Know which floor you are standing on — it is NOT the same everywhere:
       - Tests under `test/` inherit the autouse fixtures in `test/conftest.py`

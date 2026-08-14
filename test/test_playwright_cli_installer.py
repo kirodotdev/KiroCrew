@@ -143,8 +143,8 @@ def _fake_npm_succeeding(
     """
     if browser_failure is None:
         browser_step = (
-            '  printf "%s\\\\n" "\\${PLAYWRIGHT_DOWNLOAD_HOST:-unset}" \\\\\n'
-            '    > "$npm_config_prefix/install-browser-called"\n'
+            '  printf "%s\\n" "${PLAYWRIGHT_DOWNLOAD_HOST:-unset}" \\\n'
+            '    > "$(dirname "$0")/../install-browser-called"\n'
             "  exit 0\n"
         )
     else:
@@ -163,12 +163,19 @@ def _fake_npm_succeeding(
         "  exit 1\n"
         "fi\n"
         'mkdir -p "$npm_config_prefix/bin"\n'
-        'cat > "$npm_config_prefix/bin/playwright-cli" <<EOF\n'
+        # QUOTED delimiter, and the marker path is resolved from $0 at RUN time
+        # rather than interpolated at write time. With an unquoted `<<EOF` the
+        # shell expanded `$npm_config_prefix` into the generated script as live
+        # source, so a prefix containing `$(...)` -- which
+        # `test_wrapper_generation_escapes_the_paths_it_embeds` deliberately
+        # supplies -- executed when the installer ran this stub. That made the
+        # one test guarding the installer's path escaping inject from its own
+        # fixture instead, and it wrote its marker into the process CWD where
+        # that test's `tmp_path` assertion could not see it.
+        "cat > \"$npm_config_prefix/bin/playwright-cli\" <<'EOF'\n"
         "#!/bin/sh\n"
-        f'[ "\\$1" = "--version" ] && echo "{version}" && exit 0\n'
-        # Records the install-time browser fetch, and the download host it saw, so
-        # a test can tell a real CDN step from a skipped one.
-        'if [ "\\$1" = "install-browser" ]; then\n'
+        f'[ "$1" = "--version" ] && echo "{version}" && exit 0\n'
+        'if [ "$1" = "install-browser" ]; then\n'
         f"{browser_step}"
         "fi\n"
         "exit 0\n"
@@ -1013,6 +1020,13 @@ def test_wrapper_generation_escapes_the_paths_it_embeds(
     _fake_npm_succeeding(stubs)
     prefix = tmp_path / hostile / "prefix"
     bindir = tmp_path / "bin"
+    # Both child processes run with their CWD inside tmp_path. A payload that
+    # escapes would `touch INJECTED` relative to the CWD, so anchoring it here is
+    # what puts the artifact where the assertion below looks. Left at the default
+    # the marker landed in the repo root instead, and this test passed while its
+    # own payload had executed.
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
     result = _run(
         tmp_path,
         stubs,
@@ -1022,6 +1036,7 @@ def test_wrapper_generation_escapes_the_paths_it_embeds(
         str(prefix),
         "--bin-dir",
         str(bindir),
+        cwd=workdir,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -1034,9 +1049,17 @@ def test_wrapper_generation_escapes_the_paths_it_embeds(
     # preserved the path rather than merely neutering it.
     # Bounded and given an isolated environment: this spawns the wrapper, which
     # spawns node, so an unbounded call leaves a process tree behind on hang.
-    ran = run_bounded([str(wrapper), "--version"], env=_isolated_tool_env(tmp_path), timeout=120)
+    ran = run_bounded(
+        [str(wrapper), "--version"],
+        env=_isolated_tool_env(tmp_path),
+        cwd=str(workdir),
+        timeout=120,
+    )
     assert ran.returncode == 0, ran.stderr
     assert "0.1.18" in ran.stdout
+    # Re-checked after the wrapper ran: the exec line is the other place an
+    # unescaped path would fire.
+    assert not list(tmp_path.rglob("INJECTED"))
 
 
 # ── enterprise credential hygiene ────────────────────────────────────
