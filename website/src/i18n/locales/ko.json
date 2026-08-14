@@ -8237,11 +8237,9 @@
       "no_checkout_found_action": "아래 환경 변수를 설정하거나, 설정을 유지하려면 Kiro Crew 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에 dev_fleet.repo_path를 추가한 후 게이트웨이를 다시 시작하세요."
     },
     "developer": {
-      "previewSurfacesCard": {
+      "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "수신 웹훅 토큰, 등록된 컨텍스트, 실행 기록입니다. API는 동작하지만 페이지는 아직 완성되지 않았습니다.",
         "open_webhooks": "Webhooks 열기",
-        "preview_surfaces": "미리 보기 페이지",
-        "unreleased_pages_hidden_from_the_sidebar_and_fro": "아직 출시되지 않은 페이지입니다. 여기서 켜기 전에는 사이드바와 전체 검색에 표시되지 않습니다. 이 기기에만 적용되며, 페이지는 의도적으로 미완성 상태입니다.",
         "webhooks": "Webhooks"
       }
     },
@@ -8253,8 +8251,12 @@
           "label": "아카이브"
         },
         "config": {
-          "description": "미리 보기 페이지 켜기, 그리고 Kiro Crew 및 에이전트 구성 뷰어(읽기 전용)",
+          "description": "Kiro Crew 및 에이전트 구성 뷰어(읽기 전용)",
           "label": "설정"
+        },
+        "featurePreviews": {
+          "description": "아직 출시되지 않은 기능과 페이지입니다. 여기서 켜기 전에는 사이드바와 전체 검색에 표시되지 않습니다. 이 기기에만 적용되며, 의도적으로 미완성 상태입니다.",
+          "label": "기능 미리 보기"
         },
         "logs": {
           "description": "레벨 필터와 검색을 지원하는 실시간 로그 뷰어",

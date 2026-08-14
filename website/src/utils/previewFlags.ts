@@ -7,7 +7,7 @@
  * release loses the work and the review history; shipping it visible releases
  * an unpolished page. A preview flag keeps the code on `main`, keeps the route
  * routable, and simply does not advertise the surface anywhere in the UI until
- * the operator turns it on from Developer > Config.
+ * the operator turns it on from Developer > Feature Previews.
  *
  * Deliberately localStorage, not backend config: this is a per-device "show me
  * the unfinished thing" switch with no server behavior attached (the surface's
@@ -16,8 +16,8 @@
  * a fleet-wide setting and a backend contract that does not exist.
  *
  * Retiring a flag is the goal, not an afterthought: when the surface is
- * polished, delete its `previewFlag` from the registry entry and its row from
- * the Developer > Config card. The stale localStorage key then reads as an
+ * polished, delete its `previewFlag` from the registry entry and its card from
+ * Developer > Feature Previews. The stale localStorage key then reads as an
  * ordinary unused key and no longer gates anything.
  */
 import { safeGetItem, safeSetItem } from './safeStorage'

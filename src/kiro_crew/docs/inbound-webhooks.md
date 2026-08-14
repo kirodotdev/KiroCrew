@@ -18,9 +18,9 @@ that holds the opt-in is itself behind a gate:
 1. **Settings > Developer > Developer Mode** — off by default, and while it is
    off there is no **Developer** row in the sidebar at all. Turn it on first, or
    step 2 has nowhere to happen.
-2. **Developer > Config > Preview pages** — switch **Webhooks** on. A
+2. **Developer > Feature Previews** — switch **Webhooks** on. A
    **Webhooks** row appears in the sidebar immediately (and an "Open Webhooks"
-   link on the card itself).
+   link on the feature's own card).
 
 Nothing about the API changes either way — tokens, the kill switch, and delivery
 all behave the same whether the page is visible or not. The one consequence is

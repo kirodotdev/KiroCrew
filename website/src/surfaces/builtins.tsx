@@ -90,7 +90,7 @@ registerBuiltinSurface({
 //
 //   previewFlag    — WHETHER to advertise it at all. The page works but is not
 //                    polished enough to release, so nothing surfaces it until
-//                    the operator enables it in Developer > Config.
+//                    the operator enables it in Developer > Feature Previews.
 //   hiddenFromNav  — WHERE it lives once advertised. It is operator
 //                    configuration touched once at setup, not a daily
 //                    destination, and a top-level rail slot overstated it next
@@ -101,7 +101,7 @@ registerBuiltinSurface({
 // the rail and palette never see it and cannot apply the preview gate
 // themselves. The two places that DO surface it — the Settings tab
 // (`SettingsPage`) and the palette entry (`pagesProvider` EXTRA_PAGES) — read
-// PREVIEW_WEBHOOKS directly, so the Developer > Config toggle still controls
+// PREVIEW_WEBHOOKS directly, so the Developer > Feature Previews toggle still controls
 // visibility end to end. Dropping `previewFlag` to release means dropping it in
 // those two readers and the PREVIEW_SURFACES row too.
 //

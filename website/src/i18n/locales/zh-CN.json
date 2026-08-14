@@ -8237,11 +8237,9 @@
       "no_checkout_found_action": "请设置下方环境变量，或在 Kiro Crew 数据目录（默认为 ~/.kiro/crew）的 config.json 中添加 dev_fleet.repo_path 以长期生效，然后重启网关。"
     },
     "developer": {
-      "previewSurfacesCard": {
+      "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
-        "preview_surfaces": "预览页面",
-        "unreleased_pages_hidden_from_the_sidebar_and_fro": "尚未发布的页面。在此开启之前，它们不会出现在侧边栏和全局搜索中。设置仅对本设备生效，且这些页面有意保留未完善的状态。",
         "webhooks": "Webhook"
       }
     },
@@ -8253,8 +8251,12 @@
           "label": "归档"
         },
         "config": {
-          "description": "预览页面开关，以及 Kiro Crew 和代理配置查看器（只读）",
+          "description": "Kiro Crew 和代理配置查看器（只读）",
           "label": "配置"
+        },
+        "featurePreviews": {
+          "description": "尚未发布的功能和页面。在此开启之前，它们不会出现在侧边栏和全局搜索中。设置仅对本设备生效，且这些内容有意保留未完善的状态。",
+          "label": "功能预览"
         },
         "logs": {
           "description": "支持按级别筛选和搜索的实时日志查看器",

@@ -5,14 +5,28 @@
  * which is a claim about EVERY consumer of the surface registry, not about one
  * component. So this file pins the gate at each door a user could walk through:
  * the storage primitive, the registry predicate, the Search Everywhere Pages
- * provider, and the Developer > Config toggle that opens them all. A test that
- * only covered the nav rail would have passed while the palette still shipped a
- * one-keystroke path to the same page.
+ * provider, and the Developer > Feature Previews toggle that opens them all. A
+ * test that only covered the nav rail would have passed while the palette still
+ * shipped a one-keystroke path to the same page.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+
+// DeveloperPage's sibling tabs are heavy and irrelevant here — the last describe
+// only needs the page's tab rail and the Feature Previews pane behind it.
+vi.mock('../pages/LogsPage', () => ({ LogViewer: () => <div /> }))
+vi.mock('../pages/SystemPage', () => ({ default: () => <div /> }))
+vi.mock('../pages/TelemetryPanel', () => ({ default: () => <div /> }))
+vi.mock('../pages/SessionArchive', () => ({ default: () => <div /> }))
+vi.mock('../pages/LocalStorageDebug', () => ({ default: () => <div /> }))
+vi.mock('../pages/settings/McpManagement', () => ({ McpManagement: () => <div /> }))
+vi.mock('../pages/overview', () => ({
+  KiroCrewCfgTab: () => <div data-testid="kirocrew-cfg" />,
+  AgentCfgTab: () => <div />,
+}))
+vi.mock('../pages/overview/MemoryGraphTab', () => ({ default: () => <div /> }))
 
 import {
   registerBuiltinSurface,
@@ -30,7 +44,8 @@ import {
 } from '../utils/previewFlags'
 import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
-import { PreviewSurfacesCard } from '../pages/developer/PreviewSurfacesCard'
+import { FeaturePreviewsTab } from '../pages/developer/FeaturePreviewsTab'
+import DeveloperPage from '../pages/DeveloperPage'
 
 const TEST_ICON: ReactElement = <span />
 const GATED_FLAG = `${PREVIEW_FLAG_PREFIX}test-surface`
@@ -235,9 +250,9 @@ describe('usePreviewFlagRevision', () => {
   })
 })
 
-describe('Developer > Config preview card', () => {
-  const renderCard = () =>
-    render(<MemoryRouter><PreviewSurfacesCard /></MemoryRouter>)
+describe('Developer > Feature Previews', () => {
+  const renderTab = () =>
+    render(<MemoryRouter><FeaturePreviewsTab /></MemoryRouter>)
 
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
@@ -245,13 +260,13 @@ describe('Developer > Config preview card', () => {
     screen.getByRole('switch', { name: /webhooks/i }).getAttribute('aria-checked')
 
   it('starts off and offers no way into the hidden page', () => {
-    renderCard()
+    renderTab()
     expect(toggleState()).toBe('false')
     expect(screen.queryByRole('button', { name: /open webhooks/i })).toBeNull()
   })
 
   it('persists the opt-in and then links to the page', async () => {
-    renderCard()
+    renderTab()
     await act(async () => {
       screen.getByRole('switch', { name: /webhooks/i }).click()
     })
@@ -261,7 +276,20 @@ describe('Developer > Config preview card', () => {
 
   it('reflects an opt-in made in another tab', () => {
     localStorage.setItem(PREVIEW_WEBHOOKS, '1')
-    renderCard()
+    renderTab()
     expect(toggleState()).toBe('true')
+  })
+
+  it('is its own tab on the Developer page, not part of Config', async () => {
+    // Pin both halves of the move: Config must not carry the switch, and the
+    // rail must offer the tab that does — otherwise the opt-ins become
+    // unreachable while every unit test above still passes.
+    render(<MemoryRouter initialEntries={['/developer?tab=config']}><DeveloperPage /></MemoryRouter>)
+    expect(screen.getByTestId('kirocrew-cfg')).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: /webhooks/i })).toBeNull()
+
+    const tab = screen.getByRole('button', { name: /feature previews/i })
+    await act(async () => { tab.click() })
+    expect(screen.getByRole('switch', { name: /webhooks/i })).toBeTruthy()
   })
 })

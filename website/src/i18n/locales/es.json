@@ -8455,11 +8455,9 @@
       "no_checkout_found_action": "Define la variable de entorno de abajo, o añade dev_fleet.repo_path al config.json de tu directorio de datos de Kiro Crew (~/.kiro/crew por defecto) para que persista, y reinicia la puerta de enlace."
     },
     "developer": {
-      "previewSurfacesCard": {
+      "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Tokens de webhooks entrantes, contextos registrados e historial de ejecuciones. La API funciona; la página no está terminada.",
         "open_webhooks": "Abrir Webhooks",
-        "preview_surfaces": "Páginas en vista previa",
-        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Páginas sin publicar, ocultas de la barra lateral y de Buscar en todo hasta que las actives aquí. Solo para este dispositivo y sin terminar a propósito.",
         "webhooks": "Webhooks"
       }
     },
@@ -8471,8 +8469,12 @@
           "label": "Archivo"
         },
         "config": {
-          "description": "Activación de páginas en vista previa, más los visores de configuración de Kiro Crew y del agente (solo lectura)",
+          "description": "Visores de configuración de Kiro Crew y del agente (solo lectura)",
           "label": "Configuración"
+        },
+        "featurePreviews": {
+          "description": "Funciones y páginas sin publicar, ocultas de la barra lateral y de Buscar en todo hasta que las actives aquí. Solo para este dispositivo y sin terminar a propósito.",
+          "label": "Vistas previas de funciones"
         },
         "logs": {
           "description": "Visor de registros en vivo con filtrado por nivel y búsqueda",

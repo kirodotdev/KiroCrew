@@ -8455,11 +8455,9 @@
       "no_checkout_found_action": "Imposta la variabile d'ambiente qui sotto, oppure aggiungi dev_fleet.repo_path al config.json nella directory dati di Kiro Crew (~/.kiro/crew per impostazione predefinita) per renderla permanente, poi riavvia il gateway."
     },
     "developer": {
-      "previewSurfacesCard": {
+      "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Token dei webhook in ingresso, contesti registrati e cronologia delle esecuzioni. L’API funziona, ma la pagina non è finita.",
         "open_webhooks": "Apri Webhooks",
-        "preview_surfaces": "Pagine in anteprima",
-        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Pagine non rilasciate, nascoste dalla barra laterale e da Cerca in tutto finché non le attivi qui. Valgono solo per questo dispositivo e sono incomplete di proposito.",
         "webhooks": "Webhooks"
       }
     },
@@ -8471,8 +8469,12 @@
           "label": "Archivio"
         },
         "config": {
-          "description": "Attivazione delle pagine in anteprima, più i visualizzatori di configurazione di Kiro Crew e dell'agente (solo lettura)",
+          "description": "Visualizzatori di configurazione di Kiro Crew e dell'agente (solo lettura)",
           "label": "Configurazione"
+        },
+        "featurePreviews": {
+          "description": "Funzionalità e pagine non rilasciate, nascoste dalla barra laterale e da Cerca in tutto finché non le attivi qui. Valgono solo per questo dispositivo e sono incomplete di proposito.",
+          "label": "Anteprime delle funzionalità"
         },
         "logs": {
           "description": "Visualizzatore dei log in tempo reale con filtro per livello e ricerca",

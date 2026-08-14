@@ -8455,11 +8455,9 @@
       "no_checkout_found_action": "Définissez la variable d'environnement ci-dessous, ou ajoutez dev_fleet.repo_path au config.json de votre répertoire de données Kiro Crew (~/.kiro/crew par défaut) pour la rendre permanente, puis redémarrez la passerelle."
     },
     "developer": {
-      "previewSurfacesCard": {
+      "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Jetons de webhooks entrants, contextes enregistrés et historique des exécutions. L'API fonctionne, mais la page n'est pas terminée.",
         "open_webhooks": "Ouvrir Webhooks",
-        "preview_surfaces": "Pages en avant-première",
-        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Pages non publiées, masquées dans la barre latérale et dans Rechercher partout jusqu'à ce que vous les activiez ici. Valable pour cet appareil uniquement, et inachevées à dessein.",
         "webhooks": "Webhooks"
       }
     },
@@ -8471,8 +8469,12 @@
           "label": "Archives"
         },
         "config": {
-          "description": "Activation des pages en avant-première, ainsi que les visualiseurs de configuration de Kiro Crew et de l'agent (lecture seule)",
+          "description": "Visualiseurs de configuration de Kiro Crew et de l'agent (lecture seule)",
           "label": "Configuration"
+        },
+        "featurePreviews": {
+          "description": "Fonctionnalités et pages non publiées, masquées dans la barre latérale et dans Rechercher partout jusqu'à ce que vous les activiez ici. Valable pour cet appareil uniquement, et inachevées à dessein.",
+          "label": "Aperçus de fonctionnalités"
         },
         "logs": {
           "description": "Visualiseur de journaux en direct avec filtrage par niveau et recherche",

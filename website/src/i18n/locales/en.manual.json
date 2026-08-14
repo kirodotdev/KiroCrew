@@ -2939,8 +2939,12 @@
           "label": "Archive"
         },
         "config": {
-          "description": "Preview-page opt-ins, plus Kiro Crew and agent configuration viewers (read-only)",
+          "description": "Kiro Crew and agent configuration viewers (read-only)",
           "label": "Config"
+        },
+        "featurePreviews": {
+          "description": "Unreleased features and pages, hidden from the sidebar and from Search Everywhere until you turn them on here. Per-device, and unpolished on purpose.",
+          "label": "Feature Previews"
         },
         "logs": {
           "description": "Live log viewer with level filtering and search",
