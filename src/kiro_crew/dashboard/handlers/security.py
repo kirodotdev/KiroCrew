@@ -48,6 +48,7 @@ from aiohttp import web
 
 from kiro_crew.apps.execution import APP_NAME_RE, builtin_app_names, trusted_app_names
 from kiro_crew.apps.manager import disable_app, get_app, list_apps
+from kiro_crew.apps.official_catalog import CatalogUnavailable
 from kiro_crew.apps.registry import get_registry_app
 from kiro_crew.apps.routes import app_lifecycle_lock
 from kiro_crew.apps.teardown import teardown_app_runtime
@@ -1000,7 +1001,15 @@ async def api_trusted_app_grant(request: web.Request) -> web.Response:
         # Offloaded: both read from disk (installed.json + app.json; the registry
         # file and its cached external-index snapshots).
         def _is_known_app() -> bool:
-            return get_app(name) is not None or get_registry_app(name) is not None
+            if get_app(name) is not None:
+                return True
+            try:
+                return get_registry_app(name) is not None
+            except CatalogUnavailable:
+                # Resolution was refused because the catalog could not be consulted.
+                # Treat as not-known: this gates an execution grant, so declining
+                # while the source cannot be confirmed is the safe direction.
+                return False
 
         # Whether the app is INSTALLED right now, kept separate from "known". A
         # registry-only name is grantable on purpose (the install-consent flow grants

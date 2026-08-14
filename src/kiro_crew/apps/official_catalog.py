@@ -44,7 +44,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps.manifest import KEBAB_RE
+from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -248,39 +248,16 @@ def load_official_catalog(fetcher: Any = None) -> list[dict[str, Any]]:
     if doc is None:
         return []
 
-    version = doc.get("schemaVersion")
-    # `type(...) is int` rather than `==` or `isinstance`: `1.0 == 1` and
-    # `True == 1` are both true in Python, and `bool` is a subclass of `int`, so
-    # either looser test accepts a document whose version field is not an
-    # integer at all. A version we cannot identify exactly is a contract we do
-    # not know, which is the whole reason this gate exists.
-    if type(version) is not int or version != SUPPORTED_SCHEMA_VERSION:
-        logger.warning(
-            "official catalog declares schemaVersion %r, expected %r; ignoring it",
-            version,
-            SUPPORTED_SCHEMA_VERSION,
-        )
+    # One rulebook, two reporting styles: this reader logs and degrades to `[]` so the
+    # store still renders, while `fetch_inventory_entries` raises so a caller cannot
+    # mistake a bad envelope for "no such app". What makes an envelope bad is stated once,
+    # in `_envelope_error` -- spelled twice, a schema bump or a new tombstone key updated
+    # here would silently weaken the other reader.
+    problem = _envelope_error(doc)
+    if problem is not None:
+        logger.warning("ignoring the official catalog: %s", problem)
         return []
-
-    # Refuse rather than ignore: see the module docstring. A non-empty history
-    # means an app has been withdrawn, and rendering the rest of the document
-    # while skipping the withdrawal is the one outcome this catalog exists to
-    # prevent.
-    for key in ("removed", "reinstated"):
-        if doc.get(key):
-            logger.warning(
-                "official catalog carries a non-empty %r list, which this client "
-                "cannot yet resolve; ignoring the whole catalog so a withdrawn app "
-                "is never rendered",
-                key,
-            )
-            return []
-
-    apps = doc.get("apps")
-    if not isinstance(apps, list):
-        logger.warning("official catalog has no usable apps list; ignoring it")
-        return []
-    return [a for a in apps if isinstance(a, dict) and isinstance(a.get("name"), str)]
+    return [a for a in doc["apps"] if isinstance(a, dict) and isinstance(a.get("name"), str)]
 
 
 #: Mirrors `ASSET_REF_PATTERN` in the catalog's publisher: a ref is a PATH, never
@@ -335,6 +312,284 @@ def _curated_tags(value: Any) -> list[str]:
     return [t for t in value if isinstance(t, str)]
 
 
+#: A git object name as the published document must spell it: sha1 (40 hex) or
+#: sha256 (64 hex). Defined here rather than imported from ``registry`` because
+#: that module imports THIS one; the duplication is one regex against a circular
+#: import.
+#:
+#: Every pattern in this group ends at ``\Z``, not ``$``. Python's ``$`` matches
+#: before a trailing newline, so ``$`` here accepted a 40-hex pin with ``"\n"``
+#: appended -- a value that then reaches a ``git`` argument vector. Interior line
+#: breaks are caught by the character classes; only the trailing one needs the
+#: stricter anchor, which is exactly the case an interior-newline test misses.
+#: One slug segment, which is what an app name has to be before it can become a
+#: directory. The name reaches ``app_source_dir(name)`` and the persistent app
+#: data root, so a document-supplied ``"../../x"`` or an absolute value would
+#: escape into paths this client owns. The url, commit and subdir were validated
+#: from the start; the name reaching a filesystem path was the gap.
+_MAX_NAME_LEN = 64
+
+_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+#: An https clone URL with no room for a control character, whitespace, or a
+#: leading ``-``. The scheme restriction is the load-bearing part: ``ext::``
+#: hands a command line to a shell and ``file://`` reads local paths, and this
+#: value reaches ``git`` on the user's machine.
+_CLONE_URL_RE = re.compile(r"^https://[^\s\x00-\x1f\x7f]+\Z")
+
+#: A contained relative path inside the app's repository. No leading slash, no
+#: ``..`` segment, no backslash: the value is joined to a clone root, and the
+#: join is re-checked there -- this is the first of the two gates, not the only
+#: one.
+_SUBDIR_RE = re.compile(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|\Z))[A-Za-z0-9_./-]+\Z")
+
+
+def _coordinates(source: Any) -> dict[str, str] | None:
+    """Validated fetch coordinates for a ``git`` source, or None to skip the row.
+
+    This is the FIRST place the document's ``source`` block is examined at all:
+    ``load_official_catalog`` checks the envelope and each entry's ``name``, and
+    nothing below it looked inside ``source``. So every field is validated here
+    for TYPE as well as shape -- the document arrives over the network, and a
+    coordinate that reaches ``git`` unchecked is an argument-injection surface,
+    not a cosmetic problem.
+
+    A row that fails any check is DROPPED rather than repaired. There is no safe
+    repair for a coordinate: guessing a branch when the pin is malformed would
+    install bytes nobody attested, which is the one outcome the pin exists to
+    prevent.
+    """
+    if not isinstance(source, dict) or source.get("type") != "git":
+        return None
+    url = source.get("url")
+    commit = source.get("ref")
+    subdir = source.get("subdir", "")
+    if not isinstance(url, str) or not _CLONE_URL_RE.match(url):
+        return None
+    if not isinstance(commit, str) or not _COMMIT_RE.match(commit):
+        return None
+    if subdir not in ("", None):
+        if not isinstance(subdir, str) or not _SUBDIR_RE.match(subdir):
+            return None
+    return {"url": url, "commit": commit, "subdirectory": subdir or ""}
+
+
+def inventory(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Materialise installable rows from the catalog's ``git`` entries.
+
+    This is what makes the catalog the SHELF rather than a decoration on one:
+    :func:`annotate` can only change a row that already exists, so an app the
+    catalog lists but the bundled seed does not was previously unlistable and
+    therefore uninstallable -- adding one required shipping a release.
+
+    ``builtin`` entries produce nothing here on purpose. Their code ships in the
+    wheel and is discovered from disk; a row for code this client does not have
+    would render an install control that cannot work.
+
+    Two fields are deliberately ABSENT from the rows this returns:
+
+    - ``branch``, because these rows are pinned. Emitting one would let the
+      install path silently fall back to a branch tip (``entry.get("branch",
+      "main")``) and succeed, recording the tip's commit as provenance while the
+      pin did nothing -- the one failure mode here that is both quiet and
+      "successful". Callers assert on ``commit`` instead.
+    - ``_index_author``, so these rows do NOT mint the verified badge. The
+      catalog's signature is not checked yet, and the same restraint already
+      governs :func:`annotate`'s curated author.
+
+    ``version`` IS set, and it is the point: the store owns update availability.
+    A developer pushing to their repository is not an approved update; a
+    republished catalog entry is. This is also what lets the caller skip the
+    per-app manifest clone, since the row already carries everything the list
+    renders.
+    """
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        name = entry.get("name")
+        if not isinstance(name, str):
+            continue
+        # `app_name_error` is the project's SINGLE app-name contract -- its own
+        # docstring says every path admitting an app funnels through it so a name
+        # refused at one door cannot enter by another. A local regex here was exactly
+        # that other door: it accepted reserved names like `system` (which shadows a
+        # notification channel namespace) and Windows device names, and those reach
+        # the build before any canonical check runs.
+        if app_name_error(name) is not None:
+            logger.warning("dropping catalog entry with inadmissible name %r", name)
+            continue
+        if len(name) > _MAX_NAME_LEN:
+            # NOT a competing identity rule -- `app_name_error` owns admissibility,
+            # and it does not bound length. This is a bound on the name AS A DIRECTORY
+            # COMPONENT, kept local because raising it into the shared contract would
+            # change every admission path in the product, which this change is not
+            # scoped to do.
+            logger.warning("dropping catalog entry with an over-long name %r", name)
+            continue
+        if name in seen:
+            # Two rows with one name make identity ambiguous: consent is shown for
+            # whichever row the listing rendered, while a later name-only lookup can
+            # resolve the other one -- a different repository under a granted name.
+            logger.warning("dropping duplicate catalog entry for %r", name)
+            continue
+        coords = _coordinates(entry.get("source"))
+        if coords is None:
+            continue
+        row: dict[str, Any] = {
+            "name": name,
+            "gitUrl": coords["url"],
+            # `repo` is the legacy alias `_entry_git_url` falls back to, and
+            # `_pinned_registry_entry` matches an installed app's recorded
+            # sourceUrl against it. Both names carry one value.
+            "repo": coords["url"],
+            "commit": coords["commit"],
+            "_catalog": True,
+        }
+        if coords["subdirectory"]:
+            row["subdirectory"] = coords["subdirectory"]
+        if version := _curated_str(entry.get("version")):
+            row["version"] = version
+        if display := _curated_str(entry.get("displayName")):
+            row["displayName"] = display
+        if summary := _curated_str(entry.get("summary")):
+            row["description"] = summary
+        if tags := _curated_tags(entry.get("tags")):
+            row["tags"] = tags
+        # `author` is deliberately NOT set here even though the catalog states one.
+        # `list_registry` snapshots `_index_author = entry["author"]`
+        # unconditionally, and `_apply_trust_fields` derives the first-party
+        # `verified` badge from that snapshot -- so an author on this row is a path
+        # from an unsigned document to the badge. :func:`annotate` sets it for
+        # DISPLAY after the snapshot has already been taken, which is the whole
+        # reason that ordering exists.
+        if icon := _resolve_ref(entry.get("iconRef")):
+            row["iconUrl"] = icon
+        if dark := _resolve_ref(entry.get("iconRefDark")):
+            row["iconUrlDark"] = dark
+        if hero := _resolve_ref(entry.get("heroRef")):
+            row["heroImage"] = hero
+        seen.add(name)
+        rows.append(row)
+    return rows
+
+
+def _envelope_error(doc: Any) -> str | None:
+    """Why *doc* is not a usable catalog envelope, or None when it is.
+
+    ONE copy of the rules, because this document's two readers disagree only about how to
+    REPORT a bad envelope, never about what makes one bad. Spelled twice, a schema bump or
+    a new tombstone key updated in one place silently weakened the other.
+
+    ``type(...) is int`` rather than ``==`` or ``isinstance``: ``1.0 == 1`` and
+    ``True == 1`` are both true in Python and ``bool`` subclasses ``int``, so either
+    looser test accepts a document whose version field is not an integer at all.
+    """
+    if not isinstance(doc, dict):
+        return "the official catalog could not be fetched or is not a JSON object"
+    version = doc.get("schemaVersion")
+    if type(version) is not int or version != SUPPORTED_SCHEMA_VERSION:
+        return f"unsupported catalog schemaVersion: {version!r}"
+    for key in ("removed", "reinstated"):
+        if doc.get(key):
+            # A withdrawn app must never render, and this client cannot resolve the
+            # tombstone lists, so the whole document is refused rather than partly used.
+            return f"catalog carries a whole-document {key!r} marker"
+    if not isinstance(doc.get("apps"), list):
+        return "catalog document has no usable 'apps' list"
+    return None
+
+
+class CatalogUnavailable(Exception):
+    """The catalog could not be consulted, so absence cannot be asserted.
+
+    Exists because ``None`` and "I could not ask" are answers a caller must be able
+    to tell apart. While every failure returned ``None``, a CDN outage was
+    indistinguishable from "this app is not in the catalog" -- and the install path
+    reads the latter as permission to use the unpinned bundled coordinates, so a
+    network failure silently downgraded a pinned app to a branch tip.
+    """
+
+
+def fetch_inventory_entries() -> list[dict[str, Any]]:
+    """The catalog's entries from a FRESH HTTPS fetch, never the on-disk cache.
+
+    Raises :class:`CatalogUnavailable` when the document cannot be fetched or
+    interpreted, so a caller cannot mistake "could not ask" for "nothing there".
+
+    This is the only source allowed to MATERIALISE inventory. The cache under the
+    data home is agent-writable, which is harmless while it supplies display copy
+    for rows that exist anyway (:func:`annotate` skips rows carrying ``_registry``,
+    so it cannot even re-dress an external row). It is NOT harmless once a cached
+    row can CREATE a listed row: a planted name would render with official
+    provenance and deduplicate the real same-named external row out of the listing,
+    so the consent prompt would describe an official app while the name grant it
+    produces installs the external one. App trust is keyed by name, so the display
+    the consent decision is made on is part of the trust boundary.
+    """
+    # Respect the module's failure memory before paying another timeout.
+    #
+    # `load_official_catalog` remembers a failed fetch precisely so the next caller does
+    # not wait again, and skipping that made every store listing during a CDN outage pay
+    # a full HTTPS timeout. Reading it here is safe in a way that reading cached ENTRIES
+    # would not be: the memory can only make this function refuse EARLIER, never make it
+    # answer. The file is agent-writable, so an attacker can clear the memory -- and the
+    # worst that buys them is one real fetch attempt, which is the same fail-closed
+    # answer by a slower route.
+    cached = _read_cache()
+    if isinstance(cached, dict) and _FAILED_KEY in cached:
+        raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
+
+    doc = fetch_document(OFFICIAL_CATALOG_URL)
+    if not isinstance(doc, dict):
+        _write_failure()
+    problem = _envelope_error(doc)
+    if problem is not None:
+        raise CatalogUnavailable(problem)
+    assert isinstance(doc, dict)  # narrowed by _envelope_error
+    return [a for a in doc["apps"] if isinstance(a, dict)]
+
+
+def inventory_for_install(name: str) -> dict[str, Any] | None:
+    """The row named *name*, resolved WITHOUT reading the on-disk cache.
+
+    The cache under the data home is not a sensitive path, so the agent's own file
+    tools can write it (verified against ``security.is_sensitive_write_path``). That
+    is harmless while the cache only supplies display copy, which is all
+    :func:`annotate` consumes. It is NOT harmless once a row supplies install
+    coordinates: an attacker who can write that file chooses which repository a name
+    the owner has already permitted for execution installs from, and app trust is
+    keyed by NAME. Reading coordinates from an agent-writable file would make the
+    name-to-URL binding attacker-controlled.
+
+    So the install path re-fetches the document over HTTPS and ignores the cache
+    entirely. Someone able to write a local file cannot answer for
+    ``apps.crew.kiro.dev``, and TLS to our own domain is the trust basis this module
+    already documents. This is NOT a substitute for verifying the ``.sig`` sidecar --
+    that would also close the case where the CDN itself is wrong -- but it removes
+    the local surface, which is the one this client creates for itself.
+
+    Returns None ONLY when a valid catalog document does not name *name* -- an
+    authoritative absence. Every other outcome raises :class:`CatalogUnavailable`,
+    because a caller that cannot tell "not in the catalog" from "could not reach the
+    catalog" will treat a network failure as permission to install from unpinned
+    coordinates.
+    """
+    apps = fetch_inventory_entries()
+    rows = list(inventory(apps))
+    for row in rows:
+        if row.get("name") == name:
+            return row
+    if any(a.get("name") == name for a in apps):
+        # The catalog DOES name this app, but `inventory` dropped it -- a builtin
+        # (no git coordinates) or a row whose `source` failed validation. Reporting
+        # absence here would let a caller fall back to unpinned coordinates for an
+        # app the catalog is actually curating.
+        raise CatalogUnavailable(
+            f"catalog names {name!r} but supplies no usable install coordinates"
+        )
+    return None
+
+
 def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
     """Overlay curated fields from *entries* onto matching *rows*, in place.
 
@@ -372,6 +627,11 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
         # the verified mark, but it runs AFTER this overlay, so the copy and the
         # icon would land regardless.
         if row.get("_registry"):
+            continue
+        if row.get("_catalog"):
+            # Already materialised FROM this document by `inventory`, so overlaying it
+            # again can only change the row if two sources disagree -- and a second
+            # source for one row's identity is the thing to avoid, not a feature.
             continue
         entry = by_name.get(row.get("name"))
         if entry is None:

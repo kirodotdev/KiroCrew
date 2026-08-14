@@ -1691,7 +1691,7 @@ class TestCatalogFailureNeverBreaksTheStore:
         def boom():
             raise exc
 
-        monkeypatch.setattr(registry, "load_official_catalog", boom)
+        monkeypatch.setattr(registry.official_catalog, "fetch_inventory_entries", boom)
         rows = await self._rows(monkeypatch)
         assert "seed-app" in rows, "the seed listing must survive a catalog failure"
 
@@ -1700,7 +1700,9 @@ class TestCatalogFailureNeverBreaksTheStore:
         """The overlay is the half that touches untrusted field types, so it is
         the half most likely to raise on a document we did not anticipate."""
         monkeypatch.setattr(
-            registry, "load_official_catalog", lambda: [{"name": "seed-app"}]
+            registry.official_catalog,
+            "fetch_inventory_entries",
+            lambda: [{"name": "seed-app"}],
         )
 
         def boom(rows, entries):
@@ -1715,13 +1717,19 @@ class TestCatalogFailureNeverBreaksTheStore:
         self, monkeypatch, caplog
     ):
         """A broad catch is only acceptable because it is loud: without the
-        traceback this would hide our own bugs instead of a bad document."""
+        traceback this would hide our own bugs instead of a bad document.
+
+        Patched at `fetch_inventory_entries` because that is the source the listing
+        now uses; the cache-fed loader is no longer on this path at all.
+        """
 
         def boom():
             raise RuntimeError("kaboom")
 
-        monkeypatch.setattr(registry, "load_official_catalog", boom)
+        monkeypatch.setattr(
+            registry.official_catalog, "fetch_inventory_entries", boom
+        )
         with caplog.at_level("WARNING", logger=registry.logger.name):
             await self._rows(monkeypatch)
-        assert any("official catalog" in r.message for r in caplog.records)
+        assert any("catalog" in r.message for r in caplog.records)
         assert any(r.exc_info for r in caplog.records), "expected a traceback"
