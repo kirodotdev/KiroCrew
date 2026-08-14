@@ -23,8 +23,12 @@ folder, reparent a folder, and file a live session into one. Create and move
 only — no delete and no rename, so nothing here can lose a conversation. Every
 tool is a thin proxy over the dashboard's existing endpoints (loopback +
 ``X-Internal-Secret``); the endpoints keep owning every tree invariant, and the
-gateway audits each write with ``source=mcp`` so the log can tell an agent's
-move from the user's own.
+gateway audits each write with the caller's declared component name — this
+server's requests carry ``X-Internal-Caller: kirocrew-dashboard`` (attached
+centrally by ``run_mcp_stdio_loop`` + the ``mcp_core`` request helpers), which
+``chat_folders._audit_origin`` validates against its known-caller set — so the
+log can tell an agent's move from the user's own, and from any future internal
+caller's.
 
 Why the set needs no second gate behind the assignment: these tools grant no
 read the agent does not already have (``list_sessions`` in ``kirocrew-core`` is
