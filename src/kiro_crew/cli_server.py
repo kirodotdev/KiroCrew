@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import http.client
 import json
 import logging
@@ -1445,7 +1446,18 @@ async def _run_task(args: argparse.Namespace) -> None:
     conv_log = ConversationLog()
     conv_log.init()
     lessons = LessonStore()
-    skills = SkillsLoader()
+    # Constructed on a running loop, so construction-time sync skips itself;
+    # standalone `kirocrew run` has no gateway to own the sync, so run the
+    # explicit seam in a worker thread (mirrors gateway startup). A failed
+    # sync must not gate the task: continue with the skills already on disk.
+    skills = SkillsLoader(install_builtins=False)
+    try:
+        await asyncio.to_thread(skills.sync_builtins)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "builtin-skill sync failed; continuing with the skills already "
+            "on disk", exc_info=True,
+        )
     consolidator = HistoryConsolidator(
         log=conv_log,
         memory=memory,

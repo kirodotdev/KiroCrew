@@ -679,9 +679,15 @@ class _FakeStore:
     def __init__(self, *a, **kw) -> None:
         self.kwargs = kw
         self.inited = False
+        self.builtins_synced = False
 
     def init(self) -> None:
         self.inited = True
+
+    def sync_builtins(self) -> None:
+        # _run_task now syncs builtin skills through the explicit seam
+        # (SkillsLoader(install_builtins=False) + to_thread(sync_builtins)).
+        self.builtins_synced = True
 
 
 class _FakeVectorStore(_FakeStore):
@@ -799,6 +805,48 @@ class TestRunTask:
         assert taskrunner_env["observed"]  # skill-read observer registered
         out = capsys.readouterr().out
         assert "Task completed" in out and "(3 steps)" in out
+
+    def test_builtin_sync_runs_through_the_explicit_seam(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # _run_task runs on a loop, where construction-time sync skips
+        # itself: the loader must be built with install_builtins=False and
+        # have sync_builtins driven through the explicit off-loop seam.
+        created: list[_FakeStore] = []
+
+        class _SpyLoader(_FakeStore):
+            def __init__(self, *a, **kw) -> None:
+                super().__init__(*a, **kw)
+                created.append(self)
+
+        monkeypatch.setattr(cli_server, "SkillsLoader", _SpyLoader)
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=True, fresh=False, timeout=90, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+        assert any(
+            inst.kwargs.get("install_builtins") is False and inst.builtins_synced
+            for inst in created
+        )
+
+    def test_failed_builtin_sync_does_not_gate_the_task(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # A read-only skills dir (or any sync error) must degrade to the
+        # skills already on disk, not kill the run before it starts.
+        class _BrokenLoader(_FakeStore):
+            def sync_builtins(self) -> None:
+                raise OSError("skills dir unavailable")
+
+        monkeypatch.setattr(cli_server, "SkillsLoader", _BrokenLoader)
+        taskrunner_env["install_runner"](_Result("completed"))
+        spec = _spec(tmp_path)
+        args = argparse.Namespace(
+            spec=str(spec), no_test=True, fresh=False, timeout=90, name=""
+        )
+        asyncio.run(cli_server._run_task(args))  # must not raise
+        assert taskrunner_env["ran"] == (spec.resolve(), "")
 
     def test_fresh_flag_is_forwarded_and_announced(
         self, taskrunner_env, tmp_path, capsys

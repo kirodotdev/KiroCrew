@@ -145,7 +145,10 @@ def _on_tracked_done(task: asyncio.Task[object]) -> None:
 def _get_skills_loader() -> SkillsLoader:
     global _skills_loader  # noqa: PLW0603
     if _skills_loader is None:
-        _skills_loader = SkillsLoader()
+        # Listing only: the gateway startup already ran the builtin sync (in a
+        # worker thread). Re-syncing here would put its filesystem work on the
+        # event loop that renders the Slack Home tab.
+        _skills_loader = SkillsLoader(install_builtins=False)
     return _skills_loader
 
 

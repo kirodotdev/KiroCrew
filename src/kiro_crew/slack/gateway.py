@@ -1726,8 +1726,10 @@ class GatewayOrchestrator:
         ``SessionManager.__init__`` creates asyncio primitives (locks,
         semaphores, queues), so hopping the whole method into a worker thread
         would trade a blocking bug for a thread-affinity one. (Other sync
-        filesystem steps — agent-config install, builtin-skills copy — remain
-        on the loop; they are bounded small-file work, not usage-scaled.)
+        filesystem steps — e.g. agent-config install — remain on the loop;
+        they are bounded small-file work, not usage-scaled. The builtin-skills
+        sync verifies user-owned trees before replacing them, so it runs as a
+        tracked background task in a worker thread and never gates readiness.)
         """
         if not self._slack_enabled:
             logger.info("Slack not configured — starting without the Slack gateway")
@@ -1839,7 +1841,23 @@ class GatewayOrchestrator:
         await asyncio.to_thread(self.vector_memory.init)
         memory.vector_store = self.vector_memory
 
-        skills = SkillsLoader()
+        # Bind-fast: construct the loader WITHOUT syncing (it reads whatever
+        # is on disk now) and run the builtin sync as a tracked background
+        # task in a worker thread. The sync verifies user-owned trees before
+        # it may replace them, so its cost scales with what users put in the
+        # skills dir — it must gate neither the event loop nor the dashboard
+        # socket. Listings pick the synced skills up as soon as it completes.
+        skills = SkillsLoader(install_builtins=False)
+
+        async def _sync_builtin_skills() -> None:
+            try:
+                await asyncio.to_thread(skills.sync_builtins)
+            except Exception:
+                logger.warning("builtin-skill sync failed", exc_info=True)
+
+        _skills_sync_task = asyncio.create_task(_sync_builtin_skills())
+        self._background_tasks.add(_skills_sync_task)
+        _skills_sync_task.add_done_callback(self._background_tasks.discard)
         # Opt-out state comes from the keystone denied_commands.json (agent-
         # unwritable), not config.json's hooks section.
         hooks = HookManager(hooks_config_from_config_dict(self._cfg.hooks))
