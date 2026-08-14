@@ -982,7 +982,7 @@ class TestCronCli:
             "--agent",
             "ea-briefing",
         ]
-        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron") as mock_cron:
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli_commands._cron") as mock_cron:
             from kiro_crew.cli import main
 
             main()
@@ -1005,7 +1005,7 @@ class TestCronCli:
             "--every",
             "300",
         ]
-        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron") as mock_cron:
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli_commands._cron") as mock_cron:
             from kiro_crew.cli import main
 
             main()
@@ -1024,7 +1024,7 @@ class TestCronCli:
             "--agent",
             "oncall-agent",
         ]
-        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron") as mock_cron:
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli_commands._cron") as mock_cron:
             from kiro_crew.cli import main
 
             main()
@@ -1045,7 +1045,7 @@ class TestCronCli:
             "--name",
             "renamed",
         ]
-        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron") as mock_cron:
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli_commands._cron") as mock_cron:
             from kiro_crew.cli import main
 
             main()
@@ -1073,7 +1073,7 @@ class TestPortEnvValidatedAtEntry:
             monkeypatch.setenv("KIROCREW_PORT", bad)
             dispatched = []
             with patch.object(sys, "argv", ["kirocrew", "cron", "list"]), patch(
-                "kiro_crew.cli._cron", lambda _ns: dispatched.append(True)
+                "kiro_crew.cli_commands._cron", lambda _ns: dispatched.append(True)
             ):
                 from kiro_crew.cli import main
 
@@ -1089,7 +1089,7 @@ class TestPortEnvValidatedAtEntry:
         monkeypatch.setenv("KIROCREW_PORT", "5477")
         dispatched = []
         with patch.object(sys, "argv", ["kirocrew", "cron", "list"]), patch(
-            "kiro_crew.cli._cron", lambda _ns: dispatched.append(True)
+            "kiro_crew.cli_commands._cron", lambda _ns: dispatched.append(True)
         ):
             from kiro_crew.cli import main
 
@@ -1125,7 +1125,7 @@ class TestSandboxActiveMarkerCleared:
             seen["marker"] = os.environ.get("KIROCREW_SANDBOX_ACTIVE")
             seen["level"] = os.environ.get("KIROCREW_SANDBOX_LEVEL")
 
-        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._cron", _capture):
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli_commands._cron", _capture):
             from kiro_crew.cli import main
 
             main()
@@ -4104,7 +4104,7 @@ class TestSeedDispatch:
         mock_seed = MagicMock(return_value=0)
         with (
             patch("kiro_crew.cli.seed_cmd", mock_seed),
-            patch("kiro_crew.cli._gateway"),
+            patch("kiro_crew.cli_server._gateway"),
             patch("kiro_crew.cli.asyncio.run"),
         ):
             from kiro_crew.cli import main
@@ -4129,7 +4129,7 @@ class TestSeedDispatch:
         mock_seed = MagicMock()
         with (
             patch("kiro_crew.cli.seed_cmd", mock_seed),
-            patch("kiro_crew.cli._gateway"),
+            patch("kiro_crew.cli_server._gateway"),
             patch("asyncio.run"),
         ):
             from kiro_crew.cli import main
@@ -4147,7 +4147,7 @@ class TestSeedDispatch:
         mock_seed = MagicMock(return_value=0)
         with (
             patch("kiro_crew.cli.seed_cmd", mock_seed),
-            patch("kiro_crew.cli._gateway"),
+            patch("kiro_crew.cli_server._gateway"),
             patch("asyncio.run"),
         ):
             from kiro_crew.cli import main

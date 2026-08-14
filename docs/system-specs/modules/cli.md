@@ -4,6 +4,27 @@
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
+## Import Weight Contract
+
+`cli.py` is the shared dispatcher for every subcommand — including the
+long-lived MCP stdio servers (`kirocrew mcp-core` / `mcp-cron` /
+`mcp-computer`), which hold its module-scope imports resident for their whole
+lifetime. Its module scope therefore stays light: `cli_commands`,
+`cli_server` (which pulls `slack.gateway`) and `dashboard.state` (which pulls
+`vector_memory` → `numpy`) are imported inside the one `main()` dispatch
+branch that uses each name, never at module scope. Deferring them cuts a
+fresh `import kiro_crew.cli` from ~1.3 s / ~112 MB to ~0.5 s / ~54 MB, paid
+per CLI invocation and per MCP backend process.
+`test/test_cli_lazy_imports.py` ratchets the contract: after
+`import kiro_crew.cli` in a fresh interpreter, none of those modules may be
+present in `sys.modules`, and every deferred dispatch import must resolve.
+
+The entry point itself is not negotiable: all invocation forms
+(`kirocrew <sub>`, `python -m kiro_crew <sub>`, and the frozen desktop
+binary) land in `cli.main()`, whose prelude runs `boot_platform()`
+(fail-closed for non-standalone profiles), sandbox env hygiene, and
+`KIROCREW_PROJECT_DIR` resolution before any dispatch.
+
 ## Source Checkout Launcher
 
 The POSIX wrapper at `bin/kirocrew` resolves symlinks to find the real checkout,

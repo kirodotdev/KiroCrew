@@ -774,7 +774,7 @@ class TestNoCronsFlag:
         with patch.object(sys, "argv", ["kirocrew", "gateway", "--no-crons"]):
             from kiro_crew.cli import main
 
-            with patch("kiro_crew.cli._gateway", new_callable=AsyncMock) as mock_gw, patch(
+            with patch("kiro_crew.cli_server._gateway", new_callable=AsyncMock) as mock_gw, patch(
                 "kiro_crew.cli.asyncio"
             ) as mock_asyncio:
                 mock_asyncio.run = MagicMock()

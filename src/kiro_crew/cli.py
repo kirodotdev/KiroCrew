@@ -48,8 +48,6 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
-from kiro_crew.dashboard.state import set_build_info
-from kiro_crew.dashboard.urls import parse_dashboard_url
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -560,6 +558,12 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
     if override is not None:
         return None if str(override).lower() == "auto" else int(override)
     try:
+        # Deferred import: ``dashboard.urls`` is a stdlib-only leaf, but
+        # importing it executes ``dashboard/__init__`` — keep it out of
+        # cli.py's module scope so non-gateway commands and the MCP stdio
+        # servers never touch the dashboard package (see issue #3504).
+        from kiro_crew.dashboard.urls import parse_dashboard_url
+
         return parse_dashboard_url(KiroCrewConfig.load().dashboard.url)[1]
     except Exception:
         # Diagnosis only — never let it break the refusal path it decorates.
@@ -2199,6 +2203,13 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # The asyncio loop handler is installed later inside run().
         _install_crash_guard()
         gw_kwargs = _resolve_gateway_args(args)
+        # Deferred imports (issue #3504): ``dashboard.state`` pulls
+        # vector_memory → numpy (~56 MB) and ``cli_server`` pulls
+        # slack.gateway (~549 ms) — only the gateway command needs either,
+        # so no other subcommand (and no MCP stdio server) pays for them.
+        from kiro_crew.cli_server import _gateway
+        from kiro_crew.dashboard.state import set_build_info
+
         # Resolve the running build's git branch+commit ONCE here in the sync
         # entrypoint: provably AFTER KIROCREW_PROJECT_DIR detection (top of main())
         # and BEFORE asyncio.run() starts the loop. Resolving it at state.py import
@@ -2237,16 +2248,28 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             url=getattr(args, "url", False),
         )
     elif args.command == "cron":
+        from kiro_crew.cli_commands import _cron
+
         _cron(args)
     elif args.command == "spawn":
+        from kiro_crew.cli_commands import _spawn
+
         _spawn(args)
     elif args.command == "run":
+        from kiro_crew.cli_server import _run_task
+
         asyncio.run(_run_task(args))
     elif args.command == "learn":
+        from kiro_crew.cli_commands import _learn
+
         _learn(args)
     elif args.command == "artifact":
+        from kiro_crew.cli_commands import _artifact
+
         _artifact(args)
     elif args.command == "memory":
+        from kiro_crew.cli_commands import _memory_cmd
+
         _memory_cmd(args)
     elif args.command == "mcp-cron":
         from kiro_crew.mcp_cron import run_mcp_server as run_mcp_cron_server
@@ -2272,12 +2295,20 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
+        from kiro_crew.cli_commands import _run_eval
+
         asyncio.run(_run_eval(args))
     elif args.command == "security":
+        from kiro_crew.cli_commands import _security
+
         _security(args)
     elif args.command == "tailnet":
+        from kiro_crew.cli_commands import _tailnet
+
         _tailnet(args)
     elif args.command == "telemetry":
+        from kiro_crew.cli_commands import _telemetry
+
         _telemetry(args)
     elif args.command == "policy":
         from kiro_crew.cli_commands import _policy
@@ -2286,26 +2317,46 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command == "knowledge":
         _knowledge(args)
     elif args.command == "pod":
+        from kiro_crew.cli_commands import _pod
+
         _pod(args)
     elif args.command == "update":
+        from kiro_crew.cli_server import _update
+
         _update()
     elif args.command == "stop":
+        from kiro_crew.cli_server import _stop
+
         _stop(args.port)
     elif args.command == "restart":
+        from kiro_crew.cli_server import _restart
+
         _restart(args.port)
     elif args.command == "service":
+        from kiro_crew.cli_server import _service_cmd
+
         sys.exit(_service_cmd(args))
     elif args.command == "sandbox":
+        from kiro_crew.cli_server import _sandbox_cmd
+
         sys.exit(_sandbox_cmd(args))
     elif args.command == "cloud":
         sys.exit(handle_cloud(args))
     elif args.command == "logs":
+        from kiro_crew.cli_server import _logs_cmd
+
         _logs_cmd(args)
     elif args.command == "token":
+        from kiro_crew.cli_server import _token
+
         _token(args)
     elif args.command == "logout":
+        from kiro_crew.cli_server import _logout, resolve_client_port
+
         _logout(resolve_client_port(args.port))
     elif args.command == "status":
+        from kiro_crew.cli_server import _status
+
         _status(args)
     elif args.command == "consolidate":
         _consolidate_cmd(args)
@@ -2336,10 +2387,16 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         if rc:
             raise SystemExit(rc)
     elif args.command == "agent":
+        from kiro_crew.cli_commands import _handle_agent
+
         _handle_agent(args)
     elif args.command == "workspace":
+        from kiro_crew.cli_commands import _handle_workspace
+
         _handle_workspace(args)
     elif args.command == "app":
+        from kiro_crew.cli_commands import _handle_app
+
         _handle_app(args)
     else:
         print(BANNER)
@@ -2349,43 +2406,22 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
+# NOTE (issue #3504): ``cli_commands`` and ``cli_server`` are deliberately NOT
+# imported at module scope. ``cli_commands`` costs ~556 ms and ``cli_server``
+# ~549 ms (it pulls ``slack.gateway``), and the MCP stdio servers
+# (``kirocrew mcp-core`` / ``mcp-cron`` / ``mcp-computer``) — which dispatch
+# through this module and hold its imports RESIDENT for their whole lifetime —
+# need neither. Every name from those two modules is imported inside the one
+# ``main()`` dispatch branch that uses it. ``test_cli_lazy_imports.py`` ratchets
+# this: a new module-scope import that reaches them fails the suite.
 from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
 from kiro_crew.cli_chat import _run_chat  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
-from kiro_crew.cli_commands import (  # noqa: E402
-    _artifact,
-    _cron,
-    _handle_agent,
-    _handle_app,
-    _handle_workspace,
-    _learn,
-    _memory_cmd,
-    _pod,
-    _run_eval,
-    _security,
-    _spawn,
-    _tailnet,
-    _telemetry,
-)
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
 from kiro_crew.cli_desktop import desktop_cmd, register_desktop_parser  # noqa: E402
 from kiro_crew.cli_doctor import _doctor  # noqa: E402
 from kiro_crew.cli_perf import perf_cmd, register_perf_parser  # noqa: E402
-from kiro_crew.cli_server import (  # noqa: E402
-    _gateway,
-    _logout,
-    _logs_cmd,
-    _restart,
-    _run_task,
-    _sandbox_cmd,
-    _service_cmd,
-    _status,
-    _stop,
-    _token,
-    _update,
-    resolve_client_port,
-)
 from kiro_crew.cli_setup import (  # noqa: E402, F401
     _fix_shell_profiles,
     _manifest,

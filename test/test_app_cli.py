@@ -59,7 +59,7 @@ class TestHandleApp:
     def test_install_and_list(self, tmp_path, app_env):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         src = _make_app_source(tmp_path)
 
@@ -76,7 +76,7 @@ class TestHandleApp:
     def test_enable_disable(self, tmp_path, app_env):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -99,7 +99,7 @@ class TestHandleApp:
     def test_info(self, tmp_path, app_env, capsys):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -114,7 +114,7 @@ class TestHandleApp:
     def test_uninstall_preserves_data_by_default(self, tmp_path, app_env):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -134,7 +134,7 @@ class TestHandleApp:
     def test_uninstall_purge_data_requires_explicit_flag(self, tmp_path, app_env):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -151,7 +151,7 @@ class TestHandleApp:
     def test_install_invalid_source(self, app_env):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         ns = argparse.Namespace(app_action="install", source="/nonexistent")
         with pytest.raises(SystemExit):
@@ -160,7 +160,7 @@ class TestHandleApp:
     def test_no_action_prints_usage(self, app_env, capsys):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         ns = argparse.Namespace(app_action=None)
         _handle_app(ns)
@@ -191,7 +191,7 @@ class TestEnableRegistersCrons:
     def _enable(self):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         ns = argparse.Namespace(app_action="enable", name="cli-test-app")
         _handle_app(ns)
@@ -263,7 +263,7 @@ class TestEnableRegistersCrons:
     def test_disable_removes_registered_crons(self, tmp_path, app_env):
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
 
         src = _make_app_source(tmp_path, crons=self.CRONS)
         install_app(src)
