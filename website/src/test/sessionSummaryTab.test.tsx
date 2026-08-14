@@ -12,14 +12,34 @@ import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 
 import SessionSummaryTab from '../pages/chat/SessionSummaryTab'
+import { createTestStore } from './helpers'
+import { setActiveSlot, setSlotState } from '../store/chatSlice'
+import { ApiError } from '../api/client'
 import type { SessionSummary, SessionIntent } from '../types/sessionSummary'
 
 const sessionSummary = vi.fn()
+const generateSessionSummary = vi.fn()
 vi.mock('../api/client', () => ({
+  // A real-shaped class, not a stub: the generate failure path narrows with
+  // `e instanceof ApiError` before it may read `.body`, so a bare object would
+  // make every rejection fall to the generic message and the code mapping would
+  // never be exercised.
+  ApiError: class ApiError extends Error {
+    status: number
+    body: string
+    constructor(status: number, message: string, body = '') {
+      super(message)
+      this.name = 'ApiError'
+      this.status = status
+      this.body = body
+    }
+  },
   api: {
     sessionSummary: (slot: string) => sessionSummary(slot),
+    generateSessionSummary: (slot: string) => generateSessionSummary(slot),
   },
 }))
 
@@ -52,17 +72,33 @@ function payload(over: Partial<SessionSummary> = {}): SessionSummary {
   }
 }
 
-function mount(slot = 'chat-1') {
+/** SlotState is not exported from chatSlice, so the union is restated here.
+ *  Keep it in step with `SlotState` in `website/src/store/chatSlice.ts`. */
+type StreamState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
+
+/** The panel subscribes to the store for the live-turn signal
+ *  (`selectSlotStreamState`), so a Provider is part of the harness rather than an
+ *  extra for one test — without it every case in this file unmounts on
+ *  "could not find react-redux context value". `streamState` is dispatched
+ *  through the real reducer (setActiveSlot, then setSlotState — the former resets
+ *  the latter to idle) so the selector is exercised as it runs in the app. */
+function mount(slot = 'chat-1', streamState: StreamState = 'idle') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const store = createTestStore()
+  store.dispatch(setActiveSlot(slot))
+  if (streamState !== 'idle') store.dispatch(setSlotState(streamState))
   return render(
-    <QueryClientProvider client={client}>
-      <SessionSummaryTab slot={slot} />
-    </QueryClientProvider>,
+    <Provider store={store}>
+      <QueryClientProvider client={client}>
+        <SessionSummaryTab slot={slot} />
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
 beforeEach(() => {
   sessionSummary.mockReset()
+  generateSessionSummary.mockReset()
   localStorage.clear()
 })
 
@@ -148,6 +184,271 @@ describe('empty and error states', () => {
     // ONE freshness line, in the footer: the timestamp and the behind-ness are
     // the same sentence, so they cannot disagree across two corners.
     expect(screen.getByText(/behind the conversation/i)).toBeTruthy()
+  })
+})
+
+describe('on-demand generation', () => {
+  /** The empty panel has THREE causes and only one is actionable, so each state
+   *  is pinned on its own copy AND on the affordance it does or does not offer.
+   *  Asserting the copy alone would let two states collapse into one button. */
+  const GENERATE = /^summarize$/i
+  const CHECK_AGAIN = /check again/i
+
+  it('offers the generate button when the server says ready', async () => {
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    mount()
+    await screen.findByText(/no summary yet/i)
+
+    expect(screen.getByText(/has not been summarized yet/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: GENERATE })).toBeTruthy()
+    // And it must NOT read as the free refresh this panel shipped with.
+    expect(screen.queryByRole('button', { name: CHECK_AGAIN })).toBeNull()
+  })
+
+  it('says there is not enough to summarize, and offers no button at all', async () => {
+    // A disabled button invites hunting for the thing that would enable it, and
+    // an enabled one could only fail. The only honest affordance is a sentence.
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'too_few_turns' }))
+    mount()
+    await screen.findByText(/no summary yet/i)
+
+    expect(screen.getByText(/not enough here to summarize/i)).toBeTruthy()
+    // Absence, asserted over the whole branch: this state renders before the
+    // header, so zero buttons is the real contract, not "no generate button".
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    expect(screen.queryByText(/has not been summarized yet/i)).toBeNull()
+  })
+
+  it('degrades to the read-only Check again state when generate_state is absent', async () => {
+    // The backwards-compatible path: a gateway that predates the POST route
+    // sends no verdict, and a button the backend cannot serve is worse than the
+    // read-only panel this replaced.
+    sessionSummary.mockResolvedValue(payload({ intents: [] }))
+    mount()
+    await screen.findByText(/no summary yet/i)
+
+    expect(screen.getByText(/when a turn finishes/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: GENERATE })).toBeNull()
+    expect(screen.queryByText(/uses tokens for one pass/i)).toBeNull()
+
+    // And the fallback control still refetches rather than merely existing.
+    sessionSummary.mockResolvedValue(payload({ intents: [intent({ title: 'older gateway' })] }))
+    fireEvent.click(screen.getByRole('button', { name: CHECK_AGAIN }))
+    expect(await screen.findByText('older gateway')).toBeTruthy()
+    expect(generateSessionSummary).not.toHaveBeenCalled()
+  })
+
+  it('degrades the same way when the server says unavailable', async () => {
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'unavailable' }))
+    mount()
+    await screen.findByText(/no summary yet/i)
+
+    expect(screen.getByText(/when a turn finishes/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: CHECK_AGAIN })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: GENERATE })).toBeNull()
+  })
+
+  it('summarizes once on click, then renders what the refetch brings back', async () => {
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockResolvedValue(payload({ intents: [] }))
+    mount()
+    await screen.findByText(/no summary yet/i)
+    expect(sessionSummary).toHaveBeenCalledTimes(1)
+
+    // The POST's own body is deliberately NOT written into the cache — the GET
+    // is the one shape the panel reads — so the summary must arrive via refetch.
+    sessionSummary.mockResolvedValue(payload({ intents: [intent({ title: 'freshly summarized' })] }))
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    expect(await screen.findByText('freshly summarized')).toBeTruthy()
+    // Exactly once: a double-POST spends the person's tokens twice.
+    expect(generateSessionSummary).toHaveBeenCalledTimes(1)
+    expect(generateSessionSummary).toHaveBeenCalledWith('chat-1')
+    expect(sessionSummary).toHaveBeenCalledTimes(2)
+  })
+
+  it('names the work and disables the button while the pass is running', async () => {
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    let finish: (v: SessionSummary) => void = () => {}
+    generateSessionSummary.mockImplementation(
+      () => new Promise<SessionSummary>(res => { finish = res }),
+    )
+    mount()
+    await screen.findByText(/no summary yet/i)
+
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    // In flight the label switches to the progressive form and the control
+    // locks, which is what stops a second paid pass being queued behind this one.
+    const busy = await screen.findByRole('button', { name: /summarizing…/i })
+    expect(busy).toBeDisabled()
+    expect(screen.queryByRole('button', { name: GENERATE })).toBeNull()
+
+    finish(payload({ intents: [] }))
+    // Settles back to an offered, enabled button rather than staying locked.
+    await waitFor(() => expect(screen.getByRole('button', { name: GENERATE })).toBeEnabled())
+    expect(generateSessionSummary).toHaveBeenCalledTimes(1)
+  })
+
+  it('says a pass is already running when the backend rejects with summary_in_flight', async () => {
+    // The distinction is the point: "already running" means wait, while the
+    // generic failure means try again. One message for both teaches the person
+    // to retry a pass that is already spending their tokens.
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockRejectedValue(
+      new ApiError(409, 'conflict', JSON.stringify({ code: 'summary_in_flight' })),
+    )
+    mount()
+    await screen.findByText(/no summary yet/i)
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    expect(await screen.findByText(/already being written/i)).toBeTruthy()
+    expect(screen.queryByText(/could not summarize this session/i)).toBeNull()
+    // The failure is recoverable, so the button comes back.
+    expect(screen.getByRole('button', { name: GENERATE })).toBeEnabled()
+  })
+
+  it('keeps a generated summary when the reconciling refetch fails', async () => {
+    // The person has already paid for this pass, so the summary must not depend
+    // on a second network call succeeding. Without seeding the cache from the
+    // POST's own body, a failed refetch leaves the query in its error state and
+    // the panel says "could not load the summary" about a summary that exists.
+    sessionSummary.mockResolvedValueOnce(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockResolvedValue(
+      payload({ intents: [intent({ title: 'paid for and kept' })] }),
+    )
+    mount()
+    await screen.findByText(/no summary yet/i)
+
+    // The reconciling read fails right after the POST succeeds.
+    sessionSummary.mockRejectedValue(new Error('network gone'))
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    expect(await screen.findByText(/paid for and kept/i)).toBeTruthy()
+    expect(screen.queryByText(/could not load the summary/i)).toBeNull()
+  })
+
+  it('re-reads server state after a refusal, so the button stops offering a rejected action', async () => {
+    // A refusal is news about the server, not just about this click. If the
+    // feature was switched off while the panel sat here, refetching only on
+    // success would leave an enabled button whose action the backend now
+    // rejects -- the person would click it again and get the same failure.
+    sessionSummary.mockResolvedValueOnce(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockRejectedValue(
+      new ApiError(409, 'conflict', JSON.stringify({ code: 'summary_disabled' })),
+    )
+    mount()
+    await screen.findByText(/no summary yet/i)
+    expect(sessionSummary).toHaveBeenCalledTimes(1)
+
+    // The re-read reports the feature as off, which is the state that arrived
+    // while this panel was open.
+    sessionSummary.mockResolvedValue(payload({ enabled: false }))
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    await waitFor(() => expect(sessionSummary).toHaveBeenCalledTimes(2))
+    // The panel now shows the off state rather than a stale Summarize button.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: GENERATE })).toBeNull(),
+    )
+  })
+
+  it('shows the generic failure for any other backend code', async () => {
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockRejectedValue(
+      new ApiError(503, 'nope', JSON.stringify({ code: 'summary_unavailable' })),
+    )
+    mount()
+    await screen.findByText(/no summary yet/i)
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    expect(await screen.findByText(/could not summarize this session/i)).toBeTruthy()
+    expect(screen.queryByText(/already being written/i)).toBeNull()
+  })
+
+  it('shows the generic failure when the rejection carries no code at all', async () => {
+    // A network-level throw is not an ApiError and has no body to read, so the
+    // mapping has to fall through rather than crash on `.body`.
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockRejectedValue(new Error('offline'))
+    mount()
+    await screen.findByText(/no summary yet/i)
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    expect(await screen.findByText(/could not summarize this session/i)).toBeTruthy()
+  })
+})
+
+describe('generation while a turn is running', () => {
+  const GENERATE = /^summarize$/i
+  /** The English copy for pages.chat.sessionSummary.generate_turn_running,
+   *  asserted verbatim: the tooltip and the server-refusal line are meant to be
+   *  the SAME sentence, and a regex loose enough to match both would not prove
+   *  it. */
+  const BLOCKED = 'Cannot summarize while a turn is running. Wait for this turn to finish.'
+
+  it('leaves the button live, and silent, while the slot is idle', async () => {
+    // The counterpart to the blocked case: without it, a button hardcoded to
+    // disabled would satisfy every other assertion in this block.
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    mount('chat-1', 'idle')
+    await screen.findByText(/no summary yet/i)
+
+    expect(screen.getByRole('button', { name: GENERATE })).toBeEnabled()
+    // No always-on tooltip: on a button that works, the explanation is noise.
+    expect(screen.queryByTitle(BLOCKED)).toBeNull()
+    expect(screen.queryByText(BLOCKED)).toBeNull()
+  })
+
+  it('disables the button while a turn is in flight and says why on the wrapper', async () => {
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    mount('chat-1', 'streaming')
+    await screen.findByText(/no summary yet/i)
+
+    // Offered, not withdrawn: the state is temporary, so removing the control
+    // would read as "this session cannot be summarized".
+    const btn = screen.getByRole('button', { name: GENERATE })
+    expect(btn).toBeDisabled()
+
+    // The hover target is the WRAPPER, because a disabled button gets no
+    // pointer events and browsers never surface a `title` set on it. Asserting
+    // only "some element has the title" would pass with it back on the button,
+    // where the person can never see it.
+    const hoverTarget = screen.getByTitle(BLOCKED)
+    expect(hoverTarget.tagName).toBe('SPAN')
+    expect(hoverTarget).toContainElement(btn)
+    expect(btn.getAttribute('title')).toBeNull()
+  })
+
+  it('spends nothing when the blocked button is clicked', async () => {
+    // `disabled` is the whole guard — there is no second check in onGenerate —
+    // so this is what proves a click cannot start a paid pass.
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    mount('chat-1', 'streaming')
+    await screen.findByText(/no summary yet/i)
+
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+    await waitFor(() => expect(generateSessionSummary).not.toHaveBeenCalled())
+    // And the click produces no failure line either: nothing happened at all.
+    expect(screen.queryByText(/could not summarize this session/i)).toBeNull()
+  })
+
+  it('gives the same reason when the backend refuses with summary_turn_running', async () => {
+    // Reachable despite the disabled button: the store's per-slot state falls
+    // back to idle for a turn this client never saw start, so the server stays
+    // the authority — and must say the same sentence the tooltip does, not the
+    // generic "try again".
+    sessionSummary.mockResolvedValue(payload({ intents: [], generate_state: 'ready' }))
+    generateSessionSummary.mockRejectedValue(
+      new ApiError(409, 'conflict', JSON.stringify({ code: 'summary_turn_running' })),
+    )
+    mount('chat-1', 'idle')
+    await screen.findByText(/no summary yet/i)
+    fireEvent.click(screen.getByRole('button', { name: GENERATE }))
+
+    expect(await screen.findByText(BLOCKED)).toBeTruthy()
+    expect(screen.queryByText(/could not summarize this session/i)).toBeNull()
+    expect(screen.queryByText(/already being written/i)).toBeNull()
   })
 })
 

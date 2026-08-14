@@ -1389,6 +1389,17 @@ export const api = {
    *  error) when the feature is off, so the panel can explain itself. */
   sessionSummary: (slot: string) =>
     fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/summary').then(j) as Promise<SessionSummary>,
+  /** Summarize this session NOW, on the person's explicit request.
+   *
+   *  Same path as the GET, different verb: reading a summary must stay free of
+   *  side effects, so spending tokens is a separate verb rather than a flag on
+   *  the read. Rejects with the body's `code` (`summary_in_flight`,
+   *  `too_few_turns`, `summary_unavailable`, `summary_disabled`) so the panel can
+   *  say which rather than showing one generic failure. */
+  generateSessionSummary: (slot: string) =>
+    fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/summary', {
+      method: 'POST',
+    }).then(j) as Promise<SessionSummary>,
   beaconStatus: () => fetch('/api/telemetry/beacon').then(j),
   /** Local metric-collection posture for the Privacy panel's recording switch.
    *  Separate from telemetryStartup(), which parses every shard in the window. */

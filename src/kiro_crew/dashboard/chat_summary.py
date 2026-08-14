@@ -133,7 +133,14 @@ TRANSCRIPT
 """
 
 
-def _should_summarize(cfg: KiroCrewConfig, slot: Any, user_turns: int | None) -> str:
+def _should_summarize(
+    cfg: KiroCrewConfig,
+    slot: Any,
+    user_turns: int | None,
+    *,
+    force: bool = False,
+    holding_guard: bool = False,
+) -> str:
     """Return "" when a summary should be generated, else the reason to skip.
 
     Returning a reason rather than a bool keeps the decision auditable in logs:
@@ -143,30 +150,54 @@ def _should_summarize(cfg: KiroCrewConfig, slot: Any, user_turns: int | None) ->
     Pass ``user_turns=None`` to run only the cheap slot-level gates -- the
     generator does that before reading the transcript from disk, so the common
     skip cases (disabled, unclean stop) cost no IO.
+
+    ``force`` is for a pass the PERSON asked for. It lifts exactly the two gates
+    that exist to bound spending nobody requested -- the clean-stop requirement
+    and the regeneration cadence -- because an explicit click already carries the
+    consent they stand in for. It lifts none of the others: ``disabled`` is the
+    feature's off switch, ``in_flight`` prevents two passes racing the same
+    sidecar, ``memory_mode`` protects a transcript that must not outlive itself,
+    ``running`` keeps a turn that is still streaming from being cached as if it    had finished, and ``too_few_turns`` still holds because a two-message session
+    has no intent structure to find and spending a model call to discover that is
+    the waste this gate exists to prevent.
     """
     if not cfg.session_summary.enabled:
         return "disabled"
-    if getattr(slot, "_summary_in_flight", False):
+    if getattr(slot, "_summary_in_flight", False) and not holding_guard:
         return "in_flight"
     # An incognito/temporary session forbids deriving durable artifacts: its
     # transcript is discarded, so persisting a summary to the .intents sidecar
     # would leave conversation content on disk after the conversation is gone.
     if is_incognito_transcript(getattr(slot, "memory_mode", "")):
         return "memory_mode"
+    # A turn IN FLIGHT has no boundary worth summarizing, and `force` cannot tell
+    # that from stop reason alone: the marker is cleared at turn start, so
+    # `_last_stop_reason` is empty BOTH for the idle restored session an
+    # on-demand pass exists to serve AND for a turn streaming right now. Liveness
+    # is the signal that separates them, so it is consulted directly and holds
+    # under force -- otherwise a click mid-turn would cache a partial transcript
+    # as the whole session, and the cache's mtime signature would serve it as
+    # current until the next append.
+    if getattr(slot, "running", False):
+        return "running"
     # Require EXACTLY a clean end_turn. The marker is cleared at turn start,
     # so an empty value means the turn never reached EVENT_COMPLETE (ACP
     # failure, transport drop) -- summarizing that transcript would cache an
-    # incomplete turn as if it finished.
-    stop = getattr(slot, "_last_stop_reason", "") or ""
-    if stop != STOP_REASON_END_TURN:
-        return f"stop_reason:{stop or 'missing'}"
+    # incomplete turn as if it finished. An on-demand pass skips this: an idle
+    # session restored in a later process carries no stop reason at all, which
+    # is the ordinary state of every session a person opens to catch up on.
+    if not force:
+        stop = getattr(slot, "_last_stop_reason", "") or ""
+        if stop != STOP_REASON_END_TURN:
+            return f"stop_reason:{stop or 'missing'}"
     if user_turns is None:
         return ""
     if user_turns < cfg.session_summary.min_user_turns:
         return "too_few_turns"
-    mark = getattr(slot, "_summary_turn_mark", 0) or 0
-    if mark and user_turns - mark < cfg.session_summary.regenerate_after_turns:
-        return "cadence"
+    if not force:
+        mark = getattr(slot, "_summary_turn_mark", 0) or 0
+        if mark and user_turns - mark < cfg.session_summary.regenerate_after_turns:
+            return "cadence"
     return ""
 
 
@@ -195,12 +226,18 @@ async def generate_session_summary(
     slot: _ChatSlot,
     *,
     cfg: KiroCrewConfig | None = None,
+    force: bool = False,
 ) -> bool:
     """Generate and cache an intent summary for *slot*. Never raises.
 
     Returns True when a new summary was stored. The in-flight guard is taken
     before the first await so a fast follow-up turn cannot start a second pass
     over the same transcript.
+
+    ``force`` marks a pass the person explicitly asked for; see
+    :func:`_should_summarize` for exactly which gates that lifts. A forced pass
+    is still free when the cached summary is current -- the cache check below is
+    deliberately NOT skipped, so a second click cannot buy an identical answer.
     """
     log = state.conversation_log
     if log is None:
@@ -218,11 +255,45 @@ async def generate_session_summary(
 
     # Cheap slot-level gates BEFORE touching the transcript: the common cases
     # (feature disabled, unclean stop) must cost no disk IO.
-    skip = _should_summarize(cfg, slot, None)
+    skip = _should_summarize(cfg, slot, None, force=force)
     if skip:
         logger.debug("Session summary skipped for %s: %s", key, skip)
         return False
 
+    # Take the in-flight guard HERE -- immediately after the gate that reads it,
+    # and before every remaining await. On-demand generation gave this function a
+    # concurrent, user-driven entry point: two clicks from two clients (or a click
+    # racing a turn-end pass) both awaited the flush/mtime/read before either set
+    # the marker, so both passed the `in_flight` gate and both spent a model call.
+    # The signature guard made that safe but not free -- it prevents the second
+    # write, after the tokens are already gone.
+    slot._summary_in_flight = True
+    try:
+        return await _generate_locked(state, slot, cfg, key, log, force=force)
+    except Exception:
+        # A summary is a convenience. Losing one must never surface as a failed
+        # turn, and the previous cached summary stays valid.
+        logger.warning("Session summary generation failed for %s", key, exc_info=True)
+        return False
+    finally:
+        slot._summary_in_flight = False
+
+
+async def _generate_locked(
+    state: Any,
+    slot: Any,
+    cfg: KiroCrewConfig,
+    key: str,
+    log: Any,
+    *,
+    force: bool,
+) -> bool:
+    """The body of a pass, run with ``slot._summary_in_flight`` already held.
+
+    Split out so the guard can be taken before the first await without wrapping
+    the whole function in one long ``try`` -- the caller owns setting and clearing
+    it, and this stays a straight-line read of what a pass does.
+    """
     # Land this slot's pending transcript write BEFORE capturing the signature.
     # ``_ChatSlot.append`` only marks the slot dirty; the bytes reach disk on the
     # 5s ``_flush_loop``. This pass is dispatched from ``_finish_queue_cycle`` in
@@ -265,68 +336,82 @@ async def generate_session_summary(
     )
     user_turns = count_user_turns(turns)
 
-    skip = _should_summarize(cfg, slot, user_turns)
+    # Re-run the gates now that the turn count is known. This second pass is not
+    # redundant: the awaits above (flush, mtime, transcript read) are suspension
+    # points, so a turn can have STARTED since the first gate -- `running` catches
+    # that. `holding_guard` excludes only the in-flight marker, which this pass set
+    # itself and which would otherwise make every pass refuse itself.
+    skip = _should_summarize(cfg, slot, user_turns, force=force, holding_guard=True)
     if skip:
         logger.debug("Session summary skipped for %s: %s", key, skip)
         return False
 
-    slot._summary_in_flight = True
-    try:
-        cached = await asyncio.to_thread(log.get_cached_intent_summary, key)
-        if cached is not None:
-            # The transcript has not changed since the last pass, so the stored
-            # summary is still exactly right and the pass would cost tokens for
-            # an identical result.
-            slot._summary_turn_mark = user_turns
-            return False
-
-        prompt = _PROMPT + render_input(turns)
-        model = cfg.agent.resolve_model(_SUMMARY_ROLE)
-        text = await run_bg_oneliner(
-            state.sessions,
-            prompt,
-            model=model,
-            sel_source="session_summary",
-        )
-        payload = normalize_payload(
-            _parse_reply(text),
-            max_intents=cfg.session_summary.max_intents,
-            max_constraints=cfg.session_summary.max_constraints,
-        )
-        if payload is None:
-            logger.info("Session summary: no usable intents for %s", key)
-            return False
-
-        payload["generated_at"] = time.time()
-        payload["user_turns"] = user_turns
-        payload["last_activity"] = last_activity_ts(turns)
-        stored = await asyncio.to_thread(log.set_cached_intent_summary, key, payload, sig)
-        if not stored:
-            # The transcript was deleted or changed while the model call was in
-            # flight; the write was refused so a permanent delete stays deleted.
-            # Don't push a WS update for a summary that was never stored, and
-            # don't advance the turn mark -- the next turn should retry.
-            logger.info("Session summary discarded for %s: transcript gone or moved", key)
-            return False
+    cached = await asyncio.to_thread(log.get_cached_intent_summary, key)
+    if cached is not None:
+        # The transcript has not changed since the last pass, so the stored
+        # summary is still exactly right and the pass would cost tokens for
+        # an identical result.
         slot._summary_turn_mark = user_turns
-        logger.info(
-            "Session summary stored for %s (%d intents, %d user turns)",
-            key,
-            len(payload["intents"]),
-            user_turns,
-        )
-        # Notify with the SLOT key, not the transcript key used for storage.
-        # Two identifiers for two purposes: the sidecar is keyed to the
-        # transcript file, while a UI notification has to carry the identifier
-        # the dashboard addresses slots by (the same one push_slot_title uses).
-        # Sending the transcript key here would broadcast an id no client has a
-        # cache entry for, so the panel would silently never refresh.
-        state.push_session_summary(slot.key)
-        return True
-    except Exception:
-        # A summary is a convenience. Losing one must never surface as a failed
-        # turn, and the previous cached summary stays valid.
-        logger.warning("Session summary generation failed for %s", key, exc_info=True)
         return False
-    finally:
-        slot._summary_in_flight = False
+
+    prompt = _PROMPT + render_input(turns)
+    model = cfg.agent.resolve_model(_SUMMARY_ROLE)
+    text = await run_bg_oneliner(
+        state.sessions,
+        prompt,
+        model=model,
+        sel_source="session_summary",
+    )
+    payload = normalize_payload(
+        _parse_reply(text),
+        max_intents=cfg.session_summary.max_intents,
+        max_constraints=cfg.session_summary.max_constraints,
+    )
+    if payload is None:
+        logger.info("Session summary: no usable intents for %s", key)
+        return False
+
+    # Re-validate the slot's IN-MEMORY state before publishing. The mtime guard
+    # inside ``set_cached_intent_summary`` only sees the DISK: a turn that started
+    # during the model call and has not reached the 5s flush yet leaves the mtime
+    # untouched, so the write would be accepted and broadcast a summary that omits
+    # that turn -- as CURRENT, not stale, until the flush finally moves the mtime.
+    # ``running`` catches a turn that has begun but not yet appended; ``_dirty``
+    # catches an append still only in memory. Together with the mtime comparison
+    # they cover both sides of the same question: is the transcript I summarized
+    # still the whole session?
+    #
+    # This narrows the window rather than closing it absolutely -- the check and
+    # the locked write are not one atomic step -- but it shrinks it from the
+    # duration of a model call (tens of seconds) to a few synchronous statements,
+    # and the disk side stays covered by the signature under the lock.
+    if getattr(slot, "running", False) or getattr(slot, "_dirty", False):
+        logger.info("Session summary discarded for %s: session moved on during generation", key)
+        return False
+
+    payload["generated_at"] = time.time()
+    payload["user_turns"] = user_turns
+    payload["last_activity"] = last_activity_ts(turns)
+    stored = await asyncio.to_thread(log.set_cached_intent_summary, key, payload, sig)
+    if not stored:
+        # The transcript was deleted or changed while the model call was in
+        # flight; the write was refused so a permanent delete stays deleted.
+        # Don't push a WS update for a summary that was never stored, and
+        # don't advance the turn mark -- the next turn should retry.
+        logger.info("Session summary discarded for %s: transcript gone or moved", key)
+        return False
+    slot._summary_turn_mark = user_turns
+    logger.info(
+        "Session summary stored for %s (%d intents, %d user turns)",
+        key,
+        len(payload["intents"]),
+        user_turns,
+    )
+    # Notify with the SLOT key, not the transcript key used for storage.
+    # Two identifiers for two purposes: the sidecar is keyed to the
+    # transcript file, while a UI notification has to carry the identifier
+    # the dashboard addresses slots by (the same one push_slot_title uses).
+    # Sending the transcript key here would broadcast an id no client has a
+    # cache entry for, so the panel would silently never refresh.
+    state.push_session_summary(slot.key)
+    return True

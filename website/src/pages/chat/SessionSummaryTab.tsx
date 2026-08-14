@@ -1,12 +1,15 @@
 import { useCallback, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ChevronRight, ListChecks, ListTree, RefreshCw, Clock, RotateCcw, MoveUpRight } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, ChevronRight, ListChecks, ListTree, RefreshCw, Clock, RotateCcw, MoveUpRight, Sparkles, Loader2 } from 'lucide-react'
 
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
+import { parseErrorCode } from '../../utils/errorReport'
 import { i18nT } from '../../i18n/t'
 import { fmtRelative } from '../../i18n/format'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { Btn, PanelSectionHeader } from '../../components/ui'
+import { useAppSelector } from '../../store'
+import { selectSlotStreamState } from '../../store/chatSlice'
 import {
   collectTriage,
   TRIAGE_VISIBLE,
@@ -239,6 +242,69 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
   const [openMap, setOpenMap] = useState<Record<string, boolean>>(() => loadOpen(slot))
   const [notesOpen, setNotesOpen] = useState<boolean>(() => loadNotesOpen(slot))
   const [triageOpen, setTriageOpen] = useState<Record<string, boolean>>(() => loadTriageOpen(slot))
+  // Generation is the one thing this panel does that spends money, so its
+  // in-flight and failure states are local rather than folded into the query's:
+  // `isFetching` already means "re-reading the sidecar", which is free, and a
+  // spinner that means two different things is how a person learns to distrust
+  // it. Keyed to nothing — a slot switch unmounts the tab.
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState<string | null>(null)
+  // A turn in flight has no boundary worth summarizing, and the backend refuses
+  // one. Read it from the store rather than the payload: the summary query is
+  // invalidated only when a summary is WRITTEN, so a server-sent flag would
+  // still say "running" after a turn that ended without producing one. This
+  // selector is live, so the button re-enables the moment the turn ends.
+  const turnRunning = useAppSelector(s => selectSlotStreamState(s, slot) !== 'idle')
+  const qc = useQueryClient()
+
+  const onGenerate = useCallback(async () => {
+    setGenerating(true)
+    setGenerateError(null)
+    try {
+      // Seed the query from the POST's own body BEFORE reconciling. The person
+      // has already paid for this summary, so it must not depend on a second
+      // network call succeeding: if the refetch below fails, an unseeded cache
+      // leaves the query in its error state and the panel renders "could not
+      // load the summary" for a summary that exists and was just generated. The
+      // POST returns the GET's body shape precisely so this is safe.
+      const fresh = await api.generateSessionSummary(slot)
+      qc.setQueryData(['session-summary', slot], fresh)
+    } catch (e) {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      // Map the backend's machine-readable code to a localized string. The
+      // response also carries English prose, but showing that would put an
+      // untranslatable sentence in a dashboard that ships in 12 languages.
+      // `summary_turn_running` is reachable despite the disabled button: the
+      // store's per-slot state falls back to idle for a slot whose turn started
+      // somewhere this client never saw, so the server stays the authority and
+      // the panel reports the same reason the tooltip gives.
+      setGenerateError(
+        code === 'summary_in_flight'
+          ? i18nT('pages.chat.sessionSummary.generate_in_flight')
+          : code === 'summary_turn_running'
+            ? i18nT('pages.chat.sessionSummary.generate_turn_running')
+            : i18nT('pages.chat.sessionSummary.generate_failed'),
+      )
+    } finally {
+      setGenerating(false)
+      // Re-read on SETTLEMENT, not just on success -- one refetch covers both
+      // outcomes. On success it is how the new summary arrives: refetching
+      // rather than writing the POST's body into the cache keeps the GET as the
+      // single shape the rest of the panel reads, which survives a future field
+      // being added to only one of the two. On failure it is equally news about
+      // server state -- `summary_disabled` means the feature was turned off
+      // while this panel sat here, and refetching only on success would leave
+      // the button offering an action the backend now rejects. The failure line
+      // still says what happened; this makes the affordance agree with it.
+      // Swallow a refetch error: the generate outcome is what the person asked
+      // about, and the query keeps its own error state for the rest.
+      try {
+        await refetch()
+      } catch {
+        /* the query keeps its own error state */
+      }
+    }
+  }, [slot, refetch, qc])
 
   const toggleIntent = useCallback(
     (key: string, currentlyOpen: boolean) => {
@@ -298,7 +364,14 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
     )
   }
 
-  if (error) {
+  // `error && !data` — NOT `error` alone. React Query keeps the last good `data`
+  // when a REFETCH fails, so testing the error flag by itself replaces a summary
+  // that is sitting right there with a load-failure screen. That is reachable
+  // three ways: a websocket invalidation refetching while the network is down, a
+  // reconciling read after a successful generate, and the manual reload button.
+  // In all three the honest state is the summary the person already has. The
+  // failure screen belongs to the case with genuinely nothing to render.
+  if (error && !data) {
     // Give the failure the same icon + title + body shape the off and
     // not-generated states use, and a Retry. A failure needs at least the weight
     // of the two harmless empty states: it is the one state with something to
@@ -336,26 +409,81 @@ export default function SessionSummaryTab({ slot }: { slot: string }) {
   }
 
   if (intents.length === 0) {
+    // Three states, because "no summary" has three different causes and only one
+    // of them is actionable. `generate_state` is the server's verdict, absent on
+    // a gateway that predates the POST route — treated as `unavailable`, which
+    // degrades to the read-only behaviour this panel shipped with.
+    const gen = data?.generate_state ?? 'unavailable'
     return (
       <Centered>
         <ListTree className="lucide-inline" />
         <div className="text-text">{i18nT('pages.chat.sessionSummary.empty_title')}</div>
-        <div className="text-[12px] text-muted max-w-[280px] text-center">
-          {i18nT('pages.chat.sessionSummary.empty_body')}
-        </div>
-        {/* Refresh, not generate. The endpoint is read-only by design, so this
-            recovers the case where a summary was written while the panel sat
-            here and the invalidation was missed — it cannot conjure one for a
-            session that has never produced a turn since the feature was on.
-            The body copy names what actually triggers generation, so the button
-            is not the only answer a reader is offered. */}
-        <Btn
-          onClick={() => refetch()}
-          className="mt-1 text-[12px] border-border-strong bg-card"
-        >
-          <RefreshCw className={`lucide-inline ${isFetching ? 'animate-spin' : ''}`} />
-          {i18nT('pages.chat.sessionSummary.reload')}
-        </Btn>
+        {gen === 'ready' ? (
+          <>
+            <div className="text-[12px] text-muted max-w-[280px] text-center">
+              {i18nT('pages.chat.sessionSummary.empty_generate_body')}
+            </div>
+            {/* Sparkles, not the refresh glyph the sibling button uses: this
+                click CREATES a summary rather than re-reading one, and an icon
+                that says "reload" next to a label that says "summarize" makes
+                the reader trust neither. Loader2 while it runs, matching how the
+                rest of the dashboard renders an in-flight action. */}
+            {/* The tooltip is on a WRAPPER, not on the button. A disabled button
+                receives no pointer events, so Chrome and Safari never surface a
+                `title` set on it — the span is the hover target that survives
+                the disabled state. Set only while blocked: an always-on tooltip
+                on a button that works is noise. */}
+            <span
+              className="mt-1 inline-flex"
+              title={
+                turnRunning
+                  ? i18nT('pages.chat.sessionSummary.generate_turn_running')
+                  : undefined
+              }
+            >
+              <Btn
+                onClick={onGenerate}
+                disabled={generating || turnRunning}
+                className="text-[12px] border-border-strong bg-card"
+              >
+                {generating
+                  ? <Loader2 className="lucide-inline animate-spin" />
+                  : <Sparkles className="lucide-inline" />}
+                {generating
+                  ? i18nT('pages.chat.sessionSummary.generating')
+                  : i18nT('pages.chat.sessionSummary.generate')}
+              </Btn>
+            </span>
+          </>
+        ) : gen === 'too_few_turns' ? (
+          // No button at all: the only honest affordance for a session with
+          // nothing to summarize is a sentence saying so. A disabled button
+          // invites hunting for the thing that would enable it.
+          <div className="text-[12px] text-muted max-w-[280px] text-center">
+            {i18nT('pages.chat.sessionSummary.empty_too_few')}
+          </div>
+        ) : (
+          <>
+            <div className="text-[12px] text-muted max-w-[280px] text-center">
+              {i18nT('pages.chat.sessionSummary.empty_body')}
+            </div>
+            {/* Refresh, not generate: recovers the case where a summary was
+                written while the panel sat here and the invalidation was
+                missed. */}
+            <Btn
+              onClick={() => refetch()}
+              className="mt-1 text-[12px] border-border-strong bg-card"
+            >
+              <RefreshCw className={`lucide-inline ${isFetching ? 'animate-spin' : ''}`} />
+              {i18nT('pages.chat.sessionSummary.reload')}
+            </Btn>
+          </>
+        )}
+        {generateError && (
+          <div className="text-[11px] text-warn-strong max-w-[280px] text-center">
+            {generateError}
+          </div>
+        )}
       </Centered>
     )
   }

@@ -183,7 +183,8 @@ indistinguishable from one that is broken.
 | Reason | Cause |
 |---|---|
 | `disabled` | The flag is off — the common case, and it costs nothing |
-| `in_flight` | A pass for this slot is already running |
+| `in_flight` | A pass for this slot is already running. The marker is taken **before the first await**, so two concurrent callers cannot both reach the model call — on-demand generation made that reachable from two clients at once |
+| `running` | A turn is in flight (`slot.running`). Consulted directly rather than inferred from the stop reason, because the marker is cleared at turn start: an empty `_last_stop_reason` means BOTH "idle session restored in a later process" and "streaming right now". **Holds under `force`** |
 | `memory_mode` | Incognito or temporary: no derived artifact from this conversation (mirrors `history.INCOGNITO_MEMORY_MODES` — a temporary transcript is discarded, so a persisted summary would outlive it) |
 | `stop_reason:<r>` | The turn did not cleanly end |
 | `too_few_turns` | Below `min_user_turns` |
@@ -263,7 +264,7 @@ behavior the feature exists to remove.
 
 | Response | Meaning |
 |---|---|
-| `200` | `{enabled, stale, intents, constraints, generated_at, user_turns, last_activity}` |
+| `200` | `{enabled, stale, intents, constraints, generated_at, user_turns, last_activity, generate_state}` |
 | `200` with `enabled: false` | Feature off; the panel explains itself rather than erroring |
 | `404` `{"code": "slot_not_found"}` | Unknown slot, or a slot the calling app does not own |
 
@@ -275,8 +276,49 @@ endpoint under the same react-query key the tab uses, so it is one cheap
 read-only request per slot that doubles as the tab's prefetch, and it fails OPEN
 so a slow response can never hide a feature that is enabled.
 
-`stale: true` means a summary exists but the transcript has moved on. The stored
-payload is still returned: an empty panel reads as "this is broken" while a stale
+### `POST /api/chat/slots/{slot}/summary` — generate on request
+
+Same path, different verb, because **reading must stay free of side effects**: the
+GET runs on every panel mount, and a query flag that could spend tokens on a read
+would make opening the panel a purchase. This route exists because the turn-end
+trigger alone leaves every session that predates the feature — or that has not been
+touched since it was switched on — permanently empty, with nothing a person can do
+about it from the panel.
+
+Explicit consent is the whole justification for the spend, so there is **no batch
+form**: one request summarizes one session.
+
+| Response | Meaning |
+|---|---|
+| `200` | The GET's body, once a summary exists |
+| `409` `summary_disabled` / `summary_in_flight` / `summary_turn_running` / `summary_unavailable` | No summary could be produced; the code says which, so the panel can distinguish "wait" from "refused" |
+| `404` `{"code": "slot_not_found"}` | Unknown slot, or a slot the calling app does not own |
+
+A forced pass lifts **exactly two** gates — `stop_reason` and `cadence` — because
+those bound spending nobody asked for, and an explicit click already carries the
+consent they stand in for. `disabled`, `in_flight`, `memory_mode`, `running` and
+`too_few_turns` all still hold, and the cache check is not skipped, so a second
+click cannot buy an identical answer.
+
+`generate_state` on the GET tells the panel which affordance to offer:
+`ready` / `too_few_turns` / `unavailable`. It is decided server-side so the frontend
+never re-implements the turn threshold, and it is **optional** in the payload so a
+dashboard talking to an older gateway degrades to the read-only behaviour instead of
+rendering a button the backend cannot serve. A turn in flight is deliberately NOT one
+of its values: the field is only refreshed when a summary is *written*, so a mid-turn
+verdict would arrive stale and stick when a turn ends without producing one. The
+panel derives that state from its own live per-slot turn signal and disables the
+button; the server stays authoritative via the `summary_turn_running` 409.
+
+**Publishing requires the session to be quiescent, checked on both sides.** The
+signature comparison in `set_cached_intent_summary` covers DISK (any append moves the
+mtime and the write is refused). It cannot see MEMORY: a turn that starts during the
+model call and has not reached the 5s flush leaves the mtime untouched, so the write
+would be accepted and broadcast a summary omitting that turn as *current*. So
+`running` and `_dirty` are re-read immediately before the write. Together the three
+answer one question — is the transcript I summarized still the whole session?
+
+`stale: true` means a summary exists but the transcript has moved on. The storedpayload is still returned: an empty panel reads as "this is broken" while a stale
 one reads as "not regenerated yet", which is the truth. `read_intent_summary()` is
 the non-strict accessor for this; `get_cached_intent_summary()` is the strict one
 the generator uses.

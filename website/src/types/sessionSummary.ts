@@ -47,6 +47,14 @@ export interface SessionIntent {
   origin_turn: number | null
 }
 
+/** Which on-demand affordance the panel offers, decided server-side so the
+ *  frontend never re-implements the turn threshold.
+ *
+ *  `ready` — offer the button. `too_few_turns` — say so and offer nothing, since
+ *  a click could only fail. `unavailable` — the feature is off, a pass is already
+ *  running, or the session is incognito and must not leave a durable artifact. */
+export type SummaryGenerateState = 'ready' | 'too_few_turns' | 'unavailable'
+
 export interface SessionSummary {
   /** False when the feature is switched off. The panel explains itself rather
    *  than erroring, because the Settings toggle ships separately. */
@@ -62,6 +70,10 @@ export interface SessionSummary {
   generated_at: number | null
   user_turns: number | null
   last_activity: string | null
+  /** Server's verdict on the on-demand affordance. Optional so a panel talking
+   *  to a gateway that predates the POST route degrades to the read-only
+   *  behaviour instead of rendering a button the backend cannot serve. */
+  generate_state?: SummaryGenerateState
 }
 
 /** An open item hoisted out of an intent into the triage block at the top.

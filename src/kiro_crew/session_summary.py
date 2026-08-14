@@ -178,6 +178,35 @@ def count_user_turns(turns: list[TranscriptTurn]) -> int:
     return sum(1 for t in turns if t.role == "user" and not t.injected)
 
 
+def count_user_turns_in_records(records: list[dict]) -> int:
+    """Count genuine user turns straight from raw transcript *records*.
+
+    Same rule as :func:`extract_turns` plus :func:`count_user_turns` -- notably
+    the same ``_is_injected`` test, so a cron or subagent injection is not
+    mistaken for a person typing -- without building excerpted turns.
+
+    Exists because the one caller needs the count and nothing else: the panel
+    endpoint asks "does this session have enough turns to offer a button?" on
+    every mount, and it answers from ``slot.messages`` -- an in-memory window the
+    persistence layer caps, not a whole transcript. Excerpting that window into
+    TranscriptTurns would allocate a string per assistant message to answer a
+    yes/no question. The saving is small and bounded by the window, not the
+    session: the reason to keep this separate is that the count is all the caller
+    wants, not a measured transcript-size win.
+    """
+    total = 0
+    for rec in records:
+        if not isinstance(rec, dict) or rec.get("role") != "user":
+            continue
+        content = rec.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if _is_injected(content):
+            continue
+        total += 1
+    return total
+
+
 def last_activity_ts(turns: list[TranscriptTurn]) -> str | None:
     """Timestamp of the most recent row that carries one."""
     for turn in reversed(turns):
