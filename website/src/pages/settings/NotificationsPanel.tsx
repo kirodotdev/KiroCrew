@@ -278,8 +278,13 @@ export function NotificationsPanel() {
                     options={opts}
                     optionLabels={optLabels}
                     onChange={v => {
-                      if (v === DEFAULT_SENTINEL) clearCategoryOverride(cat)
-                      else setCategoryPreset(cat, v as SoundPreset)
+                      if (v === DEFAULT_SENTINEL) {
+                        clearCategoryOverride(cat)
+                        if (fallback !== 'none') playPreset(fallback, settings.volume)
+                      } else {
+                        setCategoryPreset(cat, v as SoundPreset)
+                        if (v !== 'none') playPreset(v as SoundPreset, settings.volume)
+                      }
                     }}
                     disabled={!settings.enabled}
                   />
