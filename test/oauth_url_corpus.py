@@ -26,6 +26,19 @@ from __future__ import annotations
 
 # Each item: (provider_label, authorization_url)
 LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
+    # Asana V2 MCP OAuth authorization + PKCE.
+    # developers.asana.com/docs/integrating-with-asanas-mcp-server
+    (
+        "asana-mcp-v2",
+        "https://app.asana.com/-/oauth_authorize"
+        "?client_id=1234567890123456"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&response_type=code"
+        "&resource=https%3A%2F%2Fmcp.asana.com%2Fv2"
+        "&state=af0ifjsldkj"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256",
+    ),
     # GitHub OAuth apps + PKCE.
     # docs.github.com/.../authorizing-oauth-apps
     (

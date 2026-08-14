@@ -5343,6 +5343,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
     {
         ("accounts.google.com", "/o/oauth2/v2/auth"),
         ("api.notion.com", "/v1/oauth/authorize"),
+        ("app.asana.com", "/-/oauth_authorize"),
         ("auth.atlassian.com", "/authorize"),
         ("github.com", "/login/oauth/authorize"),
         ("linear.app", "/oauth/authorize"),
