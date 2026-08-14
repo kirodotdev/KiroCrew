@@ -98,10 +98,15 @@ describe('SpecStatePanel', () => {
       />,
     )
     fireEvent.click(screen.getByText('zz-opt-a'))
-    fireEvent.click(screen.getByText('zz-opt-b'))
+    // The clicked decision settles immediately on the local "sent" mark: its
+    // options leave the DOM and the card shows the chosen answer as text, so
+    // the sibling option cannot be double-clicked at all.
+    expect(screen.queryByText('zz-opt-b')).not.toBeInTheDocument()
+    expect(screen.getByText('→ zz-opt-a')).toBeInTheDocument()
+    // The unrelated decision stays rendered but dimmed and inert while the
+    // answer is in flight.
     fireEvent.click(screen.getByText('zz-opt-c'))
     expect(sendMessage).toHaveBeenCalledTimes(1)
-    // The unrelated decision is dimmed while another one is answering.
     expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '0.5' })
     release?.()
     await waitFor(() => expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '1' }))

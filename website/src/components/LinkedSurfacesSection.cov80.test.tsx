@@ -1,8 +1,12 @@
+// LinkedSurfacesSection — ONE row per channel whose LABEL is the action:
+// `Disconnect from X` while output flows there, `Connect to X` otherwise.
+// The role/offline badges, reminder and release items were deliberately
+// removed; these tests exercise the current contract only.
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { addSlotOptimistic } from '../store/dashboardSlice'
-import { api } from '../api/client'
+import { ApiError, api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import type { ChatSlot, ConfiguredChannelTarget, SessionLink } from '../types'
 
@@ -13,11 +17,10 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       channelTargets: vi.fn(),
+      pauseSlack: vi.fn(),
+      pauseMirror: vi.fn(),
       slackLink: vi.fn(),
-      unlinkSlack: vi.fn(),
       linkMirror: vi.fn(),
-      remindMirror: vi.fn(),
-      unlinkMirror: vi.fn(),
     },
   }
 })
@@ -32,11 +35,15 @@ function stubItem(prefix: string) {
     children?: React.ReactNode
     onSelect?: (e: Event) => void
     'aria-disabled'?: boolean
+    'aria-busy'?: boolean
+    title?: string
     className?: string
   }) => (
     <button
       type="button"
       aria-disabled={rest['aria-disabled']}
+      aria-busy={rest['aria-busy']}
+      title={rest.title}
       className={rest.className}
       onClick={() => onSelect?.(new Event('select', { cancelable: true }))}
     >
@@ -56,11 +63,10 @@ vi.mock('./ui/context-menu', async importOriginal => ({
 }))
 
 const channelTargets = vi.mocked(api.channelTargets)
+const pauseSlack = vi.mocked(api.pauseSlack)
+const pauseMirror = vi.mocked(api.pauseMirror)
 const slackLink = vi.mocked(api.slackLink)
-const unlinkSlack = vi.mocked(api.unlinkSlack)
 const linkMirror = vi.mocked(api.linkMirror)
-const remindMirror = vi.mocked(api.remindMirror)
-const unlinkMirror = vi.mocked(api.unlinkMirror)
 
 const SLOT = 'zzq-slot'
 const L = (k: string, vars?: Record<string, unknown>) =>
@@ -103,297 +109,210 @@ describe('LinkedSurfacesSection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     channelTargets.mockResolvedValue([] as never)
+    pauseSlack.mockResolvedValue({ ok: true } as never)
+    pauseMirror.mockResolvedValue({ ok: true } as never)
     slackLink.mockResolvedValue({ ok: true, channel: 'C-zzq', thread_ts: '1.2' } as never)
-    unlinkSlack.mockResolvedValue({ ok: true } as never)
     linkMirror.mockResolvedValue({ ok: true, conversation_id: 'conv-zzq' } as never)
-    remindMirror.mockResolvedValue({ ok: true } as never)
-    unlinkMirror.mockResolvedValue({ ok: true } as never)
   })
 
-  describe('ConnectedBadge', () => {
-    it('labels an origin link Origin and offers no actions', async () => {
+  describe('bound-channel rows', () => {
+    it('a connected channel reads Disconnect, under the brand label', async () => {
+      mount({ links: [link()] })
+      expect(await screen.findByText(L('disconnect_from', { label: 'Discord' }))).toBeInTheDocument()
+    })
+
+    it('a disconnected channel reads Connect — same row, other verb', async () => {
+      mount({ links: [link({ paused: true })] })
+      expect(await screen.findByText(L('connect_to', { label: 'Discord' }))).toBeInTheDocument()
+    })
+
+    it('an origin row is a normal control, not a badge', async () => {
       mount({ links: [link({ direction: 'origin' })] })
-      expect(await screen.findByRole('status')).toHaveTextContent(
-        L('connected', { label: 'zzq-guild' }),
-      )
-      expect(screen.getByRole('status')).toHaveTextContent(L('origin'))
-      expect(screen.queryByRole('button')).not.toBeInTheDocument()
+      expect(await screen.findByText(L('disconnect_from', { label: 'Discord' }))).toBeInTheDocument()
     })
 
-    it('labels a two-way link Two-way', async () => {
-      mount({ links: [link({ direction: 'both' })] })
-      expect(await screen.findByRole('status')).toHaveTextContent(L('two_way'))
+    it('an unrecognised channel type falls back to the link label', async () => {
+      mount({ links: [link({ channel: 'zzq-exotic', label: 'zzq-exotic-label' })] })
+      expect(
+        await screen.findByText(L('disconnect_from', { label: 'zzq-exotic-label' })),
+      ).toBeInTheDocument()
     })
 
-    it('appends Offline to a dead mirror and hides the reminder action', async () => {
-      mount({ links: [link({ live: false })] })
-      const badge = await screen.findByRole('status')
-      expect(badge).toHaveTextContent(`${L('mirror')} · ${L('offline')}`)
-      expect(screen.queryByText(L('post_reminder', { label: 'zzq-guild' }))).not.toBeInTheDocument()
-      // The release action survives, so a dead link can still be let go.
-      expect(screen.getByText(L('stop_mirroring', { label: 'zzq-guild' }))).toBeInTheDocument()
+    it('two links on one channel collapse to ONE row that acts on both', async () => {
+      const { store } = mount({
+        links: [link({ direction: 'origin', target: 'o-1' }), link({ target: 'm-1' })],
+      })
+      const rows = await screen.findAllByText(L('disconnect_from', { label: 'Discord' }))
+      expect(rows).toHaveLength(1)
+      fireEvent.click(rows[0])
+      await waitFor(() => expect(pauseMirror).toHaveBeenCalledTimes(2))
+      expect(pauseMirror).toHaveBeenCalledWith(SLOT, true, true)
+      expect(pauseMirror).toHaveBeenCalledWith(SLOT, true, false)
+      await waitFor(() => expect(slotOf(store).links?.every(l => l.paused)).toBe(true))
     })
 
-    it('an offline origin link keeps its role and is never marked Offline', async () => {
-      mount({ links: [link({ direction: 'origin', live: false })] })
-      expect(await screen.findByRole('status')).toHaveTextContent(L('origin'))
-      expect(screen.getByRole('status')).not.toHaveTextContent(L('offline'))
-    })
-  })
-
-  describe('legacy slack_linked slot', () => {
-    it('synthesises a Slack link row with both Slack actions', async () => {
-      mount({ slack_linked: true })
-      expect(await screen.findByRole('status')).toHaveTextContent(
-        L('connected', { label: 'Slack' }),
-      )
-      expect(screen.getByText(i18nT('components.slackLinkSection.post_reminder_in_slack')))
-        .toBeInTheDocument()
+    it('a mixed group reads Disconnect and one click stops the remainder', async () => {
+      mount({
+        links: [link({ direction: 'origin', paused: true, target: 'o-1' }), link({ target: 'm-1' })],
+      })
+      fireEvent.click(await screen.findByText(L('disconnect_from', { label: 'Discord' })))
+      await waitFor(() => expect(pauseMirror).toHaveBeenCalledTimes(2))
+      expect(pauseMirror).toHaveBeenCalledWith(SLOT, true, false)
     })
 
-    it('posting a Slack reminder sends no explicit channel', async () => {
-      mount({ slack_linked: true })
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.post_reminder_in_slack')),
-      )
-      await waitFor(() => expect(slackLink).toHaveBeenCalledWith(SLOT, undefined))
+    it('a Slack row toggles through the slack-pause path and flips the verb', async () => {
+      const { store } = mount({ links: [link({ channel: 'slack', label: 'zzq-slack' })] })
+      fireEvent.click(await screen.findByText(L('disconnect_from', { label: 'Slack' })))
+      await waitFor(() => expect(pauseSlack).toHaveBeenCalledWith(SLOT, true))
+      await waitFor(() => expect(slotOf(store).links?.[0].paused).toBe(true))
+      expect(await screen.findByText(L('connect_to', { label: 'Slack' }))).toBeInTheDocument()
+      expect(pauseMirror).not.toHaveBeenCalled()
     })
 
-    it('a successful re-link stores the returned channel and thread', async () => {
-      const { store } = mount({ slack_linked: true })
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.post_reminder_in_slack')),
-      )
-      await waitFor(() => expect(slotOf(store).slack_channel).toBe('C-zzq'))
-      expect(slotOf(store).slack_thread_ts).toBe('1.2')
+    it('reconnecting a paused channel sends paused=false and patches the store', async () => {
+      const { store } = mount({ links: [link({ paused: true })] })
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'Discord' })))
+      await waitFor(() => expect(pauseMirror).toHaveBeenCalledWith(SLOT, false, false))
+      await waitFor(() => expect(slotOf(store).links?.[0].paused).toBe(false))
     })
 
-    it('a not-ok Slack response leaves the slot untouched', async () => {
-      slackLink.mockResolvedValue({ ok: false } as never)
-      const { store } = mount({ slack_linked: true })
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.post_reminder_in_slack')),
-      )
-      await waitFor(() => expect(slackLink).toHaveBeenCalled())
-      expect(slotOf(store).slack_channel).toBeUndefined()
-    })
-
-    it('unlinking clears the Slack fields and drops the link', async () => {
-      const { store } = mount({ slack_linked: true, links: [link({ channel: 'slack' })] })
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.unlink_from_slack')),
-      )
-      await waitFor(() => expect(slotOf(store).slack_linked).toBe(false))
-      expect(slotOf(store).links).toEqual([])
-      expect(slotOf(store).slack_channel).toBeUndefined()
-    })
-
-    it('a failed unlink warns and keeps the session linked', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      unlinkSlack.mockRejectedValue(new Error('zzq-unlink-failed'))
-      const { store } = mount({ slack_linked: true })
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.unlink_from_slack')),
-      )
-      await waitFor(() => expect(warn).toHaveBeenCalledWith(
-        'unlinkSlack failed; session stays linked', expect.any(Error),
-      ))
-      expect(slotOf(store).slack_linked).toBe(true)
-      warn.mockRestore()
-    })
-
-    it('a failed link warns without clearing anything', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      slackLink.mockRejectedValue(new Error('zzq-link-failed'))
-      mount({ slack_linked: true })
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.post_reminder_in_slack')),
-      )
-      await waitFor(() => expect(warn).toHaveBeenCalledWith(
-        'slackLink failed', expect.any(Error),
-      ))
-      warn.mockRestore()
-    })
-  })
-
-  describe('mirror reminder', () => {
-    it('a delivered reminder is reported in the notification feed', async () => {
+    it('a failed disconnect is reported with the backend reason and the row stays connected', async () => {
+      pauseMirror.mockRejectedValue(new Error('zzq-pause-broke'))
       const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('post_reminder', { label: 'zzq-guild' })))
+      fireEvent.click(await screen.findByText(L('disconnect_from', { label: 'Discord' })))
       await waitFor(() => expect(notifications(store)).toEqual([
-        `success:${L('reminder_sent', { label: 'zzq-guild' })}`,
+        `error:${L('disconnect_failed', { label: 'Discord', reason: 'zzq-pause-broke' })}`,
       ]))
-      expect(remindMirror).toHaveBeenCalledWith(SLOT)
+      expect(slotOf(store).links?.[0].paused).toBeUndefined()
     })
 
-    it("a rejected reminder surfaces the backend's own reason", async () => {
-      remindMirror.mockRejectedValue(new Error('zzq-503-not-live'))
-      const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('post_reminder', { label: 'zzq-guild' })))
+    it('a failed connect on a paused row reports connect_failed', async () => {
+      pauseMirror.mockRejectedValue(new Error('zzq-resume-broke'))
+      const { store } = mount({ links: [link({ paused: true })] })
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'Discord' })))
       await waitFor(() => expect(notifications(store)).toEqual([
-        `error:${L('reminder_failed', { reason: 'zzq-503-not-live' })}`,
+        `error:${L('connect_failed', { label: 'Discord', reason: 'zzq-resume-broke' })}`,
       ]))
     })
 
-    it('a non-Error rejection falls back to the generic reason', async () => {
-      remindMirror.mockRejectedValue('zzq-not-an-error')
-      const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('post_reminder', { label: 'zzq-guild' })))
+    it('a non-Error failure falls back to the generic reason', async () => {
+      pauseSlack.mockRejectedValue('zzq-not-an-error')
+      const { store } = mount({ links: [link({ channel: 'slack' })] })
+      fireEvent.click(await screen.findByText(L('disconnect_from', { label: 'Slack' })))
       await waitFor(() => expect(notifications(store)).toEqual([
-        `error:${L('reminder_failed', { reason: 'unknown error' })}`,
+        `error:${L('disconnect_failed', { label: 'Slack', reason: L('unknown_error') })}`,
       ]))
     })
-  })
 
-  describe('stopping a mirror', () => {
-    it('a declined confirm leaves the link in place', async () => {
-      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-      const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('stop_mirroring', { label: 'zzq-guild' })))
-      expect(confirm).toHaveBeenCalledWith(L('confirm_stop_mirroring', { label: 'zzq-guild' }))
-      expect(unlinkMirror).not.toHaveBeenCalled()
-      expect(slotOf(store).links).toHaveLength(1)
-      confirm.mockRestore()
-    })
-
-    it('a one-way mirror is stopped, not released', async () => {
-      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-      const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('stop_mirroring', { label: 'zzq-guild' })))
-      await waitFor(() => expect(slotOf(store).links).toEqual([]))
-      expect(notifications(store)).toEqual([
-        `success:${L('mirror_stopped', { label: 'zzq-guild' })}`,
-      ])
-      confirm.mockRestore()
-    })
-
-    it('a two-way binding is released, with the release confirm and message', async () => {
-      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-      const { store } = mount({ links: [link({ direction: 'both' })] })
-      fireEvent.click(await screen.findByText(L('release', { label: 'zzq-guild' })))
-      expect(confirm).toHaveBeenCalledWith(L('confirm_release', { label: 'zzq-guild' }))
-      await waitFor(() => expect(notifications(store)).toEqual([
-        `success:${L('released', { label: 'zzq-guild' })}`,
-      ]))
-      confirm.mockRestore()
-    })
-
-    it('a failed stop is reported and the link stays', async () => {
-      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-      unlinkMirror.mockRejectedValue(new Error('zzq-stop-failed'))
-      const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('stop_mirroring', { label: 'zzq-guild' })))
-      await waitFor(() => expect(notifications(store)).toEqual([
-        `error:${L('stop_failed', { reason: 'zzq-stop-failed' })}`,
-      ]))
-      expect(slotOf(store).links).toHaveLength(1)
-      confirm.mockRestore()
-    })
-
-    it('a non-Error stop failure falls back to the generic reason', async () => {
-      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-      unlinkMirror.mockRejectedValue('zzq-not-an-error')
-      const { store } = mount({ links: [link()] })
-      fireEvent.click(await screen.findByText(L('stop_mirroring', { label: 'zzq-guild' })))
-      await waitFor(() => expect(notifications(store)).toEqual([
-        `error:${L('stop_failed', { reason: 'unknown error' })}`,
-      ]))
-      confirm.mockRestore()
-    })
-  })
-
-  describe('configured-target picker', () => {
-    it('renders nothing while the target list has not resolved', async () => {
+    it('a click on a row whose mutation is in flight is swallowed', async () => {
       let release: (v: unknown) => void = () => {}
-      channelTargets.mockReturnValue(new Promise(r => { release = r }) as never)
-      const { container } = mount()
-      await waitFor(() => expect(channelTargets).toHaveBeenCalled())
-      expect(container.textContent).toBe('')
-      release([])
+      pauseMirror.mockReturnValue(new Promise(r => { release = r }) as never)
+      mount({ links: [link()] })
+      const row = await screen.findByText(L('disconnect_from', { label: 'Discord' }))
+      fireEvent.click(row)
+      await waitFor(() => expect(row.closest('button')).toHaveAttribute('aria-busy', 'true'))
+      fireEvent.click(row)
+      expect(pauseMirror).toHaveBeenCalledTimes(1)
+      release({ ok: true })
     })
+  })
 
-    it('a non-array payload degrades to an empty picker instead of throwing', async () => {
-      channelTargets.mockResolvedValue({ oops: true } as never)
-      const { container } = mount()
-      await waitFor(() => expect(channelTargets).toHaveBeenCalled())
-      expect(container.querySelectorAll('button')).toHaveLength(0)
-    })
-
-    it('links an available target and keeps any origin link', async () => {
+  describe('configured-target offers', () => {
+    it('an unbound target is offered under its OWN label and links on click', async () => {
       channelTargets.mockResolvedValue([target()] as never)
       const { store } = mount()
-      fireEvent.click(await screen.findByText('zzq-target-label'))
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-target-label' })))
       await waitFor(() => expect(linkMirror).toHaveBeenCalledWith(SLOT, 'discord', 'zzq-target'))
-      await waitFor(() => expect(slotOf(store).links).toEqual([{
-        channel: 'discord', label: 'zzq-target-label', target: 'conv-zzq',
-        direction: 'out', live: true,
-      }]))
-    })
-
-    it('falls back to the configured target id when no conversation is returned', async () => {
-      channelTargets.mockResolvedValue([target()] as never)
-      linkMirror.mockResolvedValue({ ok: true } as never)
-      const { store } = mount()
-      fireEvent.click(await screen.findByText('zzq-target-label'))
-      await waitFor(() => expect(slotOf(store).links?.[0].target).toBe('zzq-target'))
-    })
-
-    it('a not-ok link response writes no link', async () => {
-      channelTargets.mockResolvedValue([target()] as never)
-      linkMirror.mockResolvedValue({ ok: false } as never)
-      const { store } = mount()
-      fireEvent.click(await screen.findByText('zzq-target-label'))
-      await waitFor(() => expect(linkMirror).toHaveBeenCalled())
+      expect(notifications(store)).toEqual([])
+      // Deliberately NO onSuccess store write: the link row arrives via refetch,
+      // never from a captured snapshot that could drop a concurrent toggle's row.
       expect(slotOf(store).links).toBeUndefined()
     })
 
-    it('a failed link is reported in the notification feed', async () => {
+    it('a bound channel gets no second offer', async () => {
       channelTargets.mockResolvedValue([target()] as never)
-      linkMirror.mockRejectedValue(new Error('zzq-link-refused'))
-      const { store } = mount()
-      fireEvent.click(await screen.findByText('zzq-target-label'))
-      await waitFor(() => expect(notifications(store)).toEqual([
-        `error:${L('link_failed', { reason: 'zzq-link-refused' })}`,
-      ]))
+      mount({ links: [link()] })
+      await waitFor(() => expect(channelTargets).toHaveBeenCalled())
+      expect(screen.queryByText(L('connect_to', { label: 'zzq-target-label' }))).not.toBeInTheDocument()
+      expect(screen.getByText(L('disconnect_from', { label: 'Discord' }))).toBeInTheDocument()
     })
 
-    it('a non-Error link failure falls back to the generic reason', async () => {
-      channelTargets.mockResolvedValue([target()] as never)
-      linkMirror.mockRejectedValue('zzq-not-an-error')
-      const { store } = mount()
-      fireEvent.click(await screen.findByText('zzq-target-label'))
-      await waitFor(() => expect(notifications(store)).toEqual([
-        `error:${L('link_failed', { reason: 'unknown error' })}`,
-      ]))
-    })
-
-    it('a slack target routes through the slack-link path, not the mirror path', async () => {
+    it('a slack offer routes through the slack-link path and stores the returned thread', async () => {
       channelTargets.mockResolvedValue([
-        target({ channel_type: 'slack', target_id: 'dm', label: 'zzq-unused' }),
+        target({ channel_type: 'slack', target_id: 'C-dm', label: 'zzq-slack-dm' }),
       ] as never)
-      mount()
-      fireEvent.click(
-        await screen.findByText(i18nT('components.slackLinkSection.send_to_slack')),
-      )
-      await waitFor(() => expect(slackLink).toHaveBeenCalledWith(SLOT, 'dm'))
+      const { store } = mount()
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-slack-dm' })))
+      await waitFor(() => expect(slackLink).toHaveBeenCalledWith(SLOT, 'C-dm'))
+      await waitFor(() => expect(slotOf(store).slack_linked).toBe(true))
+      expect(slotOf(store).slack_channel).toBe('C-zzq')
+      expect(slotOf(store).slack_thread_ts).toBe('1.2')
       expect(linkMirror).not.toHaveBeenCalled()
     })
 
-    it('a non-dm slack target keeps its own label', async () => {
+    it('a not-ok slack response leaves the slot untouched', async () => {
+      slackLink.mockResolvedValue({ ok: false } as never)
       channelTargets.mockResolvedValue([
-        target({ channel_type: 'slack', target_id: 'C-zzq', label: 'zzq-chan' }),
+        target({ channel_type: 'slack', target_id: 'C-dm', label: 'zzq-slack-dm' }),
       ] as never)
-      mount()
-      fireEvent.click(await screen.findByText('zzq-chan'))
-      await waitFor(() => expect(slackLink).toHaveBeenCalledWith(SLOT, 'C-zzq'))
+      const { store } = mount()
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-slack-dm' })))
+      await waitFor(() => expect(slackLink).toHaveBeenCalled())
+      expect(slotOf(store).slack_linked).toBeUndefined()
     })
 
-    it('an unavailable target explains itself and refuses the click', async () => {
+    it('a failed slack connect is reported under the brand label', async () => {
+      slackLink.mockRejectedValue(new Error('zzq-slack-refused'))
+      channelTargets.mockResolvedValue([
+        target({ channel_type: 'slack', target_id: 'C-dm', label: 'zzq-slack-dm' }),
+      ] as never)
+      const { store } = mount()
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-slack-dm' })))
+      await waitFor(() => expect(notifications(store)).toEqual([
+        `error:${L('connect_failed', { label: 'Slack', reason: 'zzq-slack-refused' })}`,
+      ]))
+    })
+
+    it('a 409 conversation_occupied connect reports the conversation as in use', async () => {
+      linkMirror.mockRejectedValue(
+        new ApiError(409, 'conflict', JSON.stringify({ code: 'conversation_occupied' })),
+      )
+      channelTargets.mockResolvedValue([target()] as never)
+      const { store } = mount()
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-target-label' })))
+      await waitFor(() => expect(notifications(store)).toEqual([
+        `error:${L('held_elsewhere', { label: 'zzq-target-label' })}`,
+      ]))
+    })
+
+    it('a 409 with a different code stays an ordinary connect failure', async () => {
+      linkMirror.mockRejectedValue(
+        new ApiError(409, 'zzq-target-down', JSON.stringify({ code: 'configured_target_unavailable' })),
+      )
+      channelTargets.mockResolvedValue([target()] as never)
+      const { store } = mount()
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-target-label' })))
+      await waitFor(() => expect(notifications(store)).toEqual([
+        `error:${L('connect_failed', { label: 'zzq-target-label', reason: 'zzq-target-down' })}`,
+      ]))
+    })
+
+    it('a non-Error mirror-connect failure falls back to the generic reason', async () => {
+      linkMirror.mockRejectedValue('zzq-not-an-error')
+      channelTargets.mockResolvedValue([target()] as never)
+      const { store } = mount()
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-target-label' })))
+      await waitFor(() => expect(notifications(store)).toEqual([
+        `error:${L('connect_failed', { label: 'zzq-target-label', reason: L('unknown_error') })}`,
+      ]))
+    })
+
+    it('an unavailable target shows its reason, refuses the click and calls nothing', async () => {
       channelTargets.mockResolvedValue([
         target({ available: false, unavailable_reason: 'zzq-transport-absent' }),
       ] as never)
       const { store } = mount()
-      const row = await screen.findByText('zzq-target-label')
+      const row = await screen.findByText(L('connect_to', { label: 'zzq-target-label' }))
       expect(screen.getByText('zzq-transport-absent')).toBeInTheDocument()
       expect(row.closest('button')).toHaveAttribute('aria-disabled', 'true')
       fireEvent.click(row)
@@ -404,31 +323,36 @@ describe('LinkedSurfacesSection', () => {
     it('an unavailable target with no reason uses the generic explanation', async () => {
       channelTargets.mockResolvedValue([target({ available: false })] as never)
       const { store } = mount()
-      fireEvent.click(await screen.findByText('zzq-target-label'))
+      fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-target-label' })))
       await waitFor(() => expect(notifications(store)).toEqual([`error:${L('unavailable')}`]))
     })
 
-    it('the picker is hidden once a mirror exists', async () => {
-      channelTargets.mockResolvedValue([target()] as never)
-      mount({ links: [link()] })
+    it('a non-array payload degrades to an empty picker instead of throwing', async () => {
+      channelTargets.mockResolvedValue({ oops: true } as never)
+      const { container } = mount()
       await waitFor(() => expect(channelTargets).toHaveBeenCalled())
-      expect(screen.queryByText('zzq-target-label')).not.toBeInTheDocument()
+      expect(container.querySelectorAll('button')).toHaveLength(0)
     })
   })
 
   it('behaves identically inside the context-menu family', async () => {
     channelTargets.mockResolvedValue([target()] as never)
     mount({}, 'context')
-    fireEvent.click(await screen.findByText('zzq-target-label'))
+    fireEvent.click(await screen.findByText(L('connect_to', { label: 'zzq-target-label' })))
     await waitFor(() => expect(linkMirror).toHaveBeenCalledWith(SLOT, 'discord', 'zzq-target'))
   })
 
-  it('renders nothing at all for an unknown slot key', async () => {
-    channelTargets.mockResolvedValue([] as never)
-    const { container } = renderWithProviders(
+  it('renders only offers for an unknown slot key — no link rows', async () => {
+    channelTargets.mockResolvedValue([target()] as never)
+    renderWithProviders(
       <LinkedSurfacesSection slotKey="zzq-missing" variant="dropdown" />,
     )
-    await waitFor(() => expect(channelTargets).toHaveBeenCalled())
-    expect(container.textContent).toBe('')
+    // The slot is read defensively (`slot?.links ?? []`): a store entry that has
+    // not landed yet must still get its Connect offers, or a mount race leaves
+    // the session menu with no way to connect a channel.
+    expect(
+      await screen.findByText(L('connect_to', { label: 'zzq-target-label' })),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(L('disconnect_from', { label: 'Discord' }))).not.toBeInTheDocument()
   })
 })

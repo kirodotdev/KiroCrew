@@ -1,16 +1,13 @@
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+// InboundLinkChip — an INFORMATION-ONLY header chip for a session driven from
+// another channel. The Release button was deliberately removed (connecting and
+// disconnecting live in the session menu's one row per channel), so these tests
+// assert the chip carries no interactive elements at all.
+import { screen } from '@testing-library/react'
 import { createTestStore, renderWithProviders } from '../test/helpers'
 import InboundLinkChip from './InboundLinkChip'
 import { sseSlots } from '../store/dashboardSlice'
-import { api } from '../api/client'
+import { i18nT } from '../i18n/t'
 import type { ChatSlot, SessionLink } from '../types'
-
-vi.mock('../api/client', async importOriginal => {
-  const mod = await importOriginal<typeof import('../api/client')>()
-  return { ...mod, api: { ...mod.api, unlinkMirror: vi.fn() } }
-})
-
-const unlinkMirror = vi.mocked(api.unlinkMirror)
 
 function link(over: Partial<SessionLink> = {}): SessionLink {
   return { channel: 'slack', label: 'zzq-chan', target: 'C1', direction: 'both', live: true, ...over }
@@ -27,13 +24,15 @@ function storeWith(links: SessionLink[]) {
 }
 
 describe('InboundLinkChip', () => {
-  beforeEach(() => {
-    unlinkMirror.mockReset()
-    unlinkMirror.mockResolvedValue(undefined as never)
-  })
-
   it('renders nothing without a slotKey', () => {
     const { container } = renderWithProviders(<InboundLinkChip />, { store: storeWith([link()]) })
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('renders nothing for an unknown slot key', () => {
+    const { container } = renderWithProviders(<InboundLinkChip slotKey="zzq-missing" />, {
+      store: storeWith([link()]),
+    })
     expect(container.firstChild).toBeNull()
   })
 
@@ -44,48 +43,22 @@ describe('InboundLinkChip', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('renders the chip for a two-way link', () => {
+  it('renders the chip for a two-way link, with no action attached', () => {
     renderWithProviders(<InboundLinkChip slotKey="zzq-slot" />, { store: storeWith([link()]) })
-    expect(screen.getByText(/zzq-chan/)).toBeInTheDocument()
-    expect(screen.getByRole('button')).toBeEnabled()
+    expect(
+      screen.getByText(i18nT('components.inboundLinkChip.driven_from', { label: 'zzq-chan' })),
+    ).toBeInTheDocument()
+    // Information only: the old Release button is deliberately gone, and the
+    // chip must not grow a second, contradictory control.
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
-  it('a declined confirm leaves the link alone', () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    renderWithProviders(<InboundLinkChip slotKey="zzq-slot" />, { store: storeWith([link()]) })
-    fireEvent.click(screen.getByRole('button'))
-    expect(confirm).toHaveBeenCalled()
-    expect(unlinkMirror).not.toHaveBeenCalled()
-    confirm.mockRestore()
-  })
-
-  it('a confirmed release calls the API, drops the link and notifies', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const store = storeWith([link(), link({ direction: 'origin', label: 'zzq-keep' })])
-    renderWithProviders(<InboundLinkChip slotKey="zzq-slot" />, { store })
-
-    fireEvent.click(screen.getByRole('button'))
-    await waitFor(() => expect(unlinkMirror).toHaveBeenCalledWith('zzq-slot'))
-
-    await waitFor(() => {
-      const links = store.getState().dashboard.slots[0].links ?? []
-      expect(links.map(l => l.direction)).toEqual(['origin'])
+  it('stays visible when the channel is disconnected (paused stops outbound only)', () => {
+    renderWithProviders(<InboundLinkChip slotKey="zzq-slot" />, {
+      store: storeWith([link({ paused: true })]),
     })
-    const notes = store.getState().notifications.items ?? []
-    expect(notes.some(n => n.kind === 'success')).toBe(true)
-  })
-
-  it('a failed release notifies with the error reason and keeps the link', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    unlinkMirror.mockRejectedValue(new Error('zzq-unlink-broke'))
-    const store = storeWith([link()])
-    renderWithProviders(<InboundLinkChip slotKey="zzq-slot" />, { store })
-
-    fireEvent.click(screen.getByRole('button'))
-    await waitFor(() => {
-      const notes = store.getState().notifications.items ?? []
-      expect(notes.some(n => n.kind === 'error' && n.title.includes('zzq-unlink-broke'))).toBe(true)
-    })
-    expect(store.getState().dashboard.slots[0].links).toHaveLength(1)
+    expect(
+      screen.getByText(i18nT('components.inboundLinkChip.driven_from', { label: 'zzq-chan' })),
+    ).toBeInTheDocument()
   })
 })
