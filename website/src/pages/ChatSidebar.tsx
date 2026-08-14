@@ -105,7 +105,10 @@ function slotStatusText(detail: { kind?: string; text?: string; toolName?: strin
  *  - Dragging a session: prefer the innermost droppable under the pointer
  *    (folder/root drop target), falling back to closestCenter.
  */
-const sidebarCollision: CollisionDetection = (args) => {
+// Exported for a call-site unit test (ChatSidebar.folderNestBandCallSite.test.tsx):
+// asserts the collision uses the MEASURED header height, not
+// FOLDER_HEADER_DROP_BAND — the specific regression codex flagged in review.
+export const sidebarCollision: CollisionDetection = (args) => {
   const activeData = args.active?.data?.current as { type?: string; nested?: boolean; subtree?: string[] } | undefined
   const activeType = activeData?.type
   if (activeType === 'folder') {
@@ -128,6 +131,16 @@ const sidebarCollision: CollisionDetection = (args) => {
     // header's top/bottom edges and everything below fall through to the
     // sortable reorder, so even a collapsed folder (whose whole block is
     // just the header) can still be reordered against at its edges.
+    //
+    // Band width is a DISCOVERABILITY lever: the original middle-50% (0.25–0.75)
+    // of the header was easy to miss, so users concluded folder nesting did not
+    // exist. Widening to the middle-60% (0.2–0.8, via FOLDER_HEADER_NEST_BAND_*)
+    // makes the nest gesture — and its ring cue — easier to land, while the
+    // top/bottom 20% of the header plus the entire folder BODY below it stay
+    // reorder targets (closestCenter fallback), so reordering siblings is
+    // preserved. The band is taken from the MEASURED header height below, not a
+    // px constant, so it is correct for both the taller list header and the
+    // shorter board header.
     if (args.pointerCoordinates) {
       const dropContainers = args.droppableContainers.filter(c => {
         const d = c.data?.current as { type?: string; folderId?: string | null } | undefined
@@ -137,8 +150,22 @@ const sidebarCollision: CollisionDetection = (args) => {
       const first = within[0]
       const rect = first?.data?.droppableContainer?.rect?.current
       if (rect) {
+        // Anchor the nest band to the MEASURED header height, not a constant.
+        // The droppable rect spans the whole folder BLOCK (header + expanded
+        // body), so a fraction of rect.height would balloon the nest zone on an
+        // expanded folder. The header is the block's first child; its real
+        // height differs by layout — list headers (text-sm py-1.5) are taller
+        // than board headers (text-[12px] py-1) — so a single px constant that
+        // fit one layout mis-sized the other (the board over-nest bug). Reading
+        // the header rect makes the middle-60% band correct for both. Falls back
+        // to FOLDER_HEADER_DROP_BAND, clamped to the block, if the node is
+        // unavailable (e.g. before first measure).
+        const node = first?.data?.droppableContainer?.node?.current
+        const headerEl = node?.firstElementChild as HTMLElement | null
+        const headerH = headerEl?.getBoundingClientRect().height
+          || Math.min(rect.height, FOLDER_HEADER_DROP_BAND)
         const offsetY = args.pointerCoordinates.y - rect.top
-        if (offsetY >= FOLDER_HEADER_DROP_BAND * 0.25 && offsetY <= FOLDER_HEADER_DROP_BAND * 0.75) {
+        if (isFolderNestBand(offsetY, headerH)) {
           return [first]
         }
       }
@@ -285,6 +312,26 @@ function ChatPaneDropZone({ refused }: { refused: boolean }) {
  *  edges (and everything below the header) stay sortable-reorder gestures —
  *  the VS Code / Notion "thirds" tree-DnD pattern. */
 const FOLDER_HEADER_DROP_BAND = 34
+/** Fraction of the MEASURED header height that re-parents INTO the folder (the
+ *  nest zone). The middle 60% (0.2–0.8) is a modest widening of the original
+ *  middle-50% — enough to make the nest gesture reliably hittable (its ring cue
+ *  discoverable) without starving reorder: the top/bottom 20% of the header stay
+ *  reorder edges, and the whole folder BODY below the header is always reorder.
+ *  sidebarCollision multiplies these by the measured header height (not a px
+ *  constant) so the same fractions are correct for both the taller list header
+ *  and the shorter board header. */
+const FOLDER_HEADER_NEST_BAND_LO = 0.2
+const FOLDER_HEADER_NEST_BAND_HI = 0.8
+
+/** True when a pointer at `offsetY` px below a folder header's top falls in the
+ *  NEST band (re-parent INTO the folder); false means the top/bottom edge, which
+ *  falls through to sortable REORDER. `headerH` is the MEASURED header height so
+ *  the same fractions work for the taller list header and the shorter board
+ *  header. Extracted + exported so the reorder-vs-nest boundary is unit-tested
+ *  directly (the DOM-marker tests can't reach this math). */
+export function isFolderNestBand(offsetY: number, headerH: number): boolean {
+  return offsetY >= headerH * FOLDER_HEADER_NEST_BAND_LO && offsetY <= headerH * FOLDER_HEADER_NEST_BAND_HI
+}
 
 
 /** Dashed always-reachable drop target shown in the root lane while dragging
@@ -338,13 +385,18 @@ function SortableFolderBlock({ folder, subtree, renderFolderBlock }: { folder: C
  *  sortable positioning — identical to the list-view pattern. Reorders route
  *  through the same global reorderFolders() path, so order stays consistent
  *  across every column and the list view. */
-function SortableColumnFolder({ folder, columnId, colSlotKeys, renderColumnFolder }: {
+function SortableColumnFolder({ folder, columnId, colSlotKeys, subtree, renderColumnFolder }: {
   folder: ChatFolder
   columnId: string
   colSlotKeys: Set<string>
+  subtree?: readonly string[]
   renderColumnFolder: (f: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode
 }) {
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder' } })
+  // `subtree` mirrors the list-view SortableFolderBlock: sidebarCollision reads it
+  // to exclude the dragged folder's own descendants from the nest drop targets, so
+  // a folder can never be dropped into itself or a child (moveFolderTo guards this
+  // too, but excluding them up front keeps the highlight honest).
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree } })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' as const }
   // While dragging, the body is force-collapsed so the source shrinks to a
   // single row — the drop-target gap (and the DragOverlay ghost) stay compact,
@@ -2203,12 +2255,27 @@ function ChatSidebar({
     // the inline input stays usable.
     const draggable = !!dragHandleProps && !(editingId === folder.id && editScope === columnId)
     return (
-      // Drag-and-drop folder drop zone: the drag handlers make this a mouse-only
-      // drop target with no keyboard analogue, so scope-disable the static-interaction rule.
+      // Two drop mechanisms coexist on this block, one per drag SOURCE:
+      //  • Native HTML5 onDrop (below) — SESSION cards drag natively (they set
+      //    dataTransfer text/plain), so a session dropped here is assigned to
+      //    this folder via assignToFolder.
+      //  • dnd-kit DndDroppable (this wrapper) — FOLDERS drag via the pointer
+      //    sensor (SortableColumnFolder), never via native DnD, so their active
+      //    data lives in active.data.current, unreadable by onDrop. The
+      //    folder-drop droppable is what lets handleSidebarDragEnd re-parent a
+      //    folder dropped here (moveFolderTo). The two never collide: a native
+      //    drag never fires dnd-kit's onDragEnd and a dnd-kit drag never fires
+      //    the DOM drop event. Id is column-scoped because a root folder renders
+      //    once per board column and dnd-kit droppable ids must be unique.
+      <DndDroppable key={`col-${columnId}-folder-drop-${folder.id}`} id={`col-${columnId}-folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
+        {({ setNodeRef, isOver }) => (
+      // The drag handlers below make this a mouse-only drop target with no
+      // keyboard analogue, so scope-disable the static-interaction rule.
       // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-      <div key={`col-${columnId}-folder-${folder.id}`}
+      <div ref={setNodeRef}
         data-testid={`col-${columnId}-folder-${folder.id}`}
-        className="rounded-md transition-all mb-0.5"
+        data-folder-drop={folder.id}
+        className={`rounded-md transition-all mb-0.5${isOver ? ' ring-1 ring-accent' : ''}`}
         onDragOver={e => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('ring-1', 'ring-accent') }}
         onDragLeave={e => { e.stopPropagation(); e.currentTarget.classList.remove('ring-1', 'ring-accent') }}
         onDrop={e => {
@@ -2300,6 +2367,8 @@ function ChatSidebar({
           </div>
         </FolderBody>
       </div>
+        )}
+      </DndDroppable>
     )
   }
 
@@ -3893,9 +3962,9 @@ function ChatSidebar({
                            *  is consistent across columns. Native session-card
                            *  drop (HTML5 DnD) is untouched — it uses drag events,
                            *  not the pointer sensor. */}
-                          <DndContext sensors={dndSensors} collisionDetection={closestCenter} measuring={{ droppable: { strategy: MeasuringStrategy.Always } }} onDragStart={handleSidebarDragStart} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
+                          <DndContext sensors={dndSensors} collisionDetection={sidebarCollision} measuring={{ droppable: { strategy: MeasuringStrategy.Always } }} onDragStart={handleSidebarDragStart} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
                             <SortableContext items={relevantFolders.map(f => f.id)} strategy={verticalListSortingStrategy}>
-                              {relevantFolders.map(f => <SortableColumnFolder key={f.id} folder={f} columnId={col.id} colSlotKeys={colSlotKeys} renderColumnFolder={renderColumnFolder} />)}
+                              {relevantFolders.map(f => <SortableColumnFolder key={f.id} folder={f} columnId={col.id} colSlotKeys={colSlotKeys} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} renderColumnFolder={renderColumnFolder} />)}
                             </SortableContext>
                             {/* Compact ghost follows the pointer while a folder drags —
                              *  same visual as the list-view overlay. DragOverlay renders
