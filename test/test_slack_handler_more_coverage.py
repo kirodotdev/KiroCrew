@@ -40,6 +40,8 @@ from kiro_crew.acp.types import (
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY, ToolHookResult
 from kiro_crew.slack.handler import handle_interaction, handle_message
+from kiro_crew.task_models import Project, Task, TaskStatus
+from kiro_crew.task_reporter import build_status
 
 # ──────────────────────────────────────────────────────────────────────
 # doubles
@@ -435,6 +437,36 @@ class _FakeRunner:
         self.started.append(spec_path)
 
 
+class _LiveTask:
+    """Stand-in for an in-flight asyncio task; ``build_status`` only calls done()."""
+
+    @staticmethod
+    def done() -> bool:
+        return False
+
+
+def _running_status(*, completed: int = 2, total: int = 5, current: int = 3) -> dict:
+    """A real ``build_status()`` payload for one in-flight run.
+
+    Progress lives per run inside ``runs``; there is no top-level
+    ``completed``/``steps``/``current_step`` for a renderer to read.
+    """
+    statuses = [TaskStatus.PASSED] * completed + [TaskStatus.PENDING] * (total - completed)
+    run = Project(
+        spec_path="/tmp/spec.md",
+        spec_content="",
+        task_id="live",
+        name="Live Task",
+        status="executing",
+        current_task=current,
+        tasks=[
+            Task(index=i + 1, title=f"t{i + 1}", description="", status=s)
+            for i, s in enumerate(statuses)
+        ],
+    )
+    return build_status({"live": run}, {"live": _LiveTask()}, "kirocrew")
+
+
 class TestRunCommand:
     @pytest.mark.asyncio
     async def test_status_when_idle(self):
@@ -445,10 +477,7 @@ class TestRunCommand:
 
     @pytest.mark.asyncio
     async def test_status_when_running(self):
-        runner = _FakeRunner(
-            running=True,
-            status={"running": True, "status": "step", "completed": 2, "steps": 5, "current_step": 3},
-        )
+        runner = _FakeRunner(running=True, status=_running_status())
         out = await h._handle_run_command("task run status", runner, MockSlackClient(), "C1", "t1")
         assert "Steps: 2/5" in out
         assert "Current: step 3" in out

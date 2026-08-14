@@ -4865,13 +4865,18 @@ async def _handle_run_command(
     # "run status"
     if arg.lower() == "status":
         status = runner.status()
-        if not status.get("running") and not status.get("status"):
+        if not status.get("running"):
             return "No task running."
+        # Progress is reported per run: build_status() puts only `running`,
+        # `agent` and `runs` at the top level. Prefer the live run when the
+        # runner is tracking several.
+        runs = status.get("runs") or []
+        run = next((r for r in runs if r.get("running")), runs[0] if runs else {})
         return (
             f"*Task Runner*\n"
-            f"Status: {status.get('status', 'idle')}\n"
-            f"Steps: {status.get('completed', 0)}/{status.get('steps', 0)}\n"
-            f"Current: step {status.get('current_step', 0)}"
+            f"Status: {run.get('status', 'idle')}\n"
+            f"Steps: {run.get('completed', 0)}/{run.get('tasks', 0)}\n"
+            f"Current: step {run.get('current_task', 0)}"
         )
 
     # "run cancel"
