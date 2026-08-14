@@ -48,6 +48,7 @@ from kiro_crew.messaging.dispatch import delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
+    UNBIND_REASON_ORIGIN_REBIND,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
@@ -1006,12 +1007,18 @@ class DiscordDispatcher:
             # it mutates anything, so ordering it first leaves the batch clean
             # and nothing is written.
             with self.sessions.batched_save():
-                self.sessions.set_mirror_link(key, self._origin_mirror_link(channel_id))
+                self.sessions.set_mirror_link(
+                    key,
+                    self._origin_mirror_link(channel_id),
+                    reason=UNBIND_REASON_ORIGIN_REBIND,
+                )
                 self.sessions.set_mirror_opt_out(key, False)
                 # Drop any pre-unification row so a stale binding cannot outlive
                 # the rebind (reads prefer the channel key, but a leftover row
                 # would still answer a clear).
-                self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
+                self.sessions.clear_mirror_link(
+                    legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_ORIGIN_REBIND
+                )
         except ConversationOwnershipConflict:
             # Reachable past the resumed-session check above because that check
             # fails CLOSED on duplicate inbound bindings: with two of them at this

@@ -115,16 +115,25 @@ def _default_redactor(text: str) -> str:
     return out
 
 
-def _display_safe(choice: str) -> str:
-    """Redact *choice* against what the platform will SHOW, then defang mentions.
+def display_safe(text: str) -> str:
+    """Redact *text* against what the platform will SHOW, then defang mentions.
+
+    The shared outbound display sink: every surface that renders untrusted text
+    into a channel message goes through here, so one text cannot be sanitized two
+    ways. Used by this module's overflow list and by the dashboard's channel
+    notices.
 
     Order matters. Redaction runs FIRST, on the canonical display form, because
     the ZWSP insertion below is itself a transformation applied after the scan
     -- exactly the class of reassembly hazard the display redactor exists to
     close, and inserting the ZWSP first could split a key so the regex stops
     matching it while the platform still renders it whole.
+
+    The defang covers both mention grammars because the callers are
+    channel-neutral: ``@`` for Discord/Telegram users and ``@everyone``, ``<!``
+    for Slack's ``<!channel>``.
     """
-    safe, _ = redact_for_display(choice or "", _default_redactor)
+    safe, _ = redact_for_display(text or "", _default_redactor)
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
@@ -155,7 +164,7 @@ def format_overflow(overflow: list[str], start: int) -> str:
       breaks slack broadcast ranges (``<!channel>``, ``<!here>``,
       ``<!everyone>``).
     """
-    return "\n".join(f"{start + i + 1}. {_display_safe(c)}" for i, c in enumerate(overflow))
+    return "\n".join(f"{start + i + 1}. {display_safe(c)}" for i, c in enumerate(overflow))
 
 
 def apply_options_cap(

@@ -283,3 +283,74 @@ class TestBindOriginMirror:
     def test_no_exception_from_the_claim_escapes(self) -> None:
         sess = _Sessions(raise_on_set=RuntimeError("session map on fire"))
         assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+
+
+class TestUnbindReasonVocabulary:
+    """The audited reason strings are a closed set with one home.
+
+    A call site that invents a spelling fragments the audit trail into groups
+    nothing can join, and a duplicate value makes two causes indistinguishable in
+    it. Both are cheap to pin and impossible to notice by reading a diff.
+    """
+
+    def test_the_vocabulary_is_closed_and_unambiguous(self) -> None:
+        from kiro_crew.messaging import link as link_mod
+
+        declared = [
+            value
+            for name, value in vars(link_mod).items()
+            if name.startswith("UNBIND_REASON_") and isinstance(value, str)
+        ]
+        # Closed set, and no two causes share a spelling — a duplicate would make
+        # them indistinguishable in the audit.
+        assert set(declared) == set(link_mod.UNBIND_REASONS)
+        assert len(declared) == len(set(declared))
+
+    def test_no_call_site_passes_a_bare_reason_literal(self) -> None:
+        """A literal at a binding call site bypasses the vocabulary entirely.
+
+        Scoped by AST to the methods that actually carry an unbind reason —
+        ``reason=`` is an ordinary kwarg name elsewhere in the package (autonudge
+        stop reasons, history archive reasons), and a text scan would flag those.
+        The planted sample proves the scanner fires at all.
+        """
+        import ast
+        from pathlib import Path
+
+        import kiro_crew
+
+        binding_calls = {
+            "clear_mirror_link",
+            "clear_mirror_links_at",
+            "set_mirror_link",
+            "delete",
+        }
+
+        def _bare_reasons(tree: ast.AST) -> list[int]:
+            hits = []
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name not in binding_calls:
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "reason" and isinstance(kw.value, ast.Constant):
+                        hits.append(kw.value.lineno)
+            return hits
+
+        planted = ast.parse('s.clear_mirror_link(key, reason="made_up")\n')
+        assert len(_bare_reasons(planted)) == 1, "the scanner does not fire"
+
+        pkg = Path(kiro_crew.__file__).resolve().parent
+        offenders = [
+            f"{path.relative_to(pkg)}:{line}"
+            for path in pkg.rglob("*.py")
+            if "_vendor" not in path.parts
+            for line in _bare_reasons(ast.parse(path.read_text(encoding="utf-8")))
+        ]
+        assert not offenders, (
+            "unbind reasons must come from messaging.link's UNBIND_REASON_* "
+            f"constants, not bare literals: {offenders}"
+        )

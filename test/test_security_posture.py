@@ -691,9 +691,18 @@ class TestRedactionSinkRegistry:
         # Wrappers that run BOTH scanners internally, so a sink using one is fully
         # covered: StreamRedactor (rolling dual-pass), redact() (the dual-pass
         # helper), redact_and_truncate() (redact-then-slice, so a credential cannot
-        # straddle the truncation boundary), and redact_via_context() (routes to
-        # CredentialPolicy.redact, whose Default delegates to security.redact).
-        dual_pass = ("StreamRedactor", "redact(", "redact_tree", "redact_and_truncate", "redact_via_context")
+        # straddle the truncation boundary), redact_via_context() (routes to
+        # CredentialPolicy.redact, whose Default delegates to security.redact), and
+        # display_safe() (redact_for_display with the exfil+credential redactor,
+        # then the mention defang).
+        dual_pass = (
+            "StreamRedactor",
+            "redact(",
+            "redact_tree",
+            "redact_and_truncate",
+            "redact_via_context",
+            "display_safe",
+        )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
             full = any(w in text for w in dual_pass) or (
@@ -724,6 +733,7 @@ class TestRedactionSinkRegistry:
             "streamredactor": "StreamRedactor",
             "redact_and_truncate": "redact_and_truncate",
             "redact_via_context": "redact_via_context",
+            "display_safe": "display_safe",
             "exfiltration-url scanning only": "redact_exfiltration_urls",
         }
         for label, module, detail in security_posture._REDACTION_SINKS:

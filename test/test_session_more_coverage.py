@@ -39,7 +39,7 @@ import pytest
 
 from kiro_crew import platform_compat
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.session import (
     BACKGROUND_KEY,
     SessionManager,
@@ -151,8 +151,18 @@ class TestSessionMapDelegation:
     def test_set_mirror_link_forwards_accepts_inbound_as_a_keyword(self, mgr, smap) -> None:
         link = ChannelLink(channel_type="discord", channel_id="C9")
         mgr.set_mirror_link("dashboard:a", link, accepts_inbound=True)
+        # The unbind reason rides along on the same call: a rebind through this
+        # wrapper can displace an inbound binding, and the map's audit is what
+        # records which caller did it.
         smap.set_mirror_link.assert_called_once_with(
-            "dashboard:a", link, accepts_inbound=True
+            "dashboard:a", link, accepts_inbound=True, reason=UNBIND_REASON_UNSPECIFIED
+        )
+
+    def test_set_mirror_link_forwards_a_callers_reason(self, mgr, smap) -> None:
+        link = ChannelLink(channel_type="discord", channel_id="C9")
+        mgr.set_mirror_link("dashboard:a", link, reason="origin_rebind")
+        smap.set_mirror_link.assert_called_once_with(
+            "dashboard:a", link, accepts_inbound=False, reason="origin_rebind"
         )
 
     def test_get_mirror_link_returns_the_stored_link(self, mgr, smap) -> None:

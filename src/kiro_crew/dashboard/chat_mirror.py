@@ -35,7 +35,12 @@ from kiro_crew.dashboard.chat_runner import _resolve_channel_target, _resolve_mi
 from kiro_crew.dashboard.chat_slack import list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink, is_channel_session_key
+from kiro_crew.messaging.link import (
+    SLACK_NAMESPACE,
+    UNBIND_REASON_DASHBOARD_UNLINK,
+    ChannelLink,
+    is_channel_session_key,
+)
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
@@ -637,7 +642,9 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     session_key = effective_session_key(slot)
-    cleared = state.sessions.clear_mirror_link(session_key)
+    cleared = state.sessions.clear_mirror_link(
+        session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK
+    )
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",

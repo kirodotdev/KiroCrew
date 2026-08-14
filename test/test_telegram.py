@@ -19,7 +19,11 @@ from unittest.mock import patch
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
-from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
+from kiro_crew.messaging.link import (
+    UNBIND_REASON_UNSPECIFIED,
+    ChannelLink,
+    legacy_dashboard_mirror_key,
+)
 from kiro_crew.messaging.renderer import (
     DONE,
     STEER_CONSUMED,
@@ -319,7 +323,9 @@ class FakeSessions:
     def max_generation(self, bucket: str) -> int:
         return -1
 
-    def set_mirror_link(self, key: str, link: Any) -> None:
+    def set_mirror_link(
+        self, key: str, link: Any, *, reason: str = UNBIND_REASON_UNSPECIFIED
+    ) -> None:
         self.batched_writes.append(self.batch_depth > 0)
         self.mirror_links[key] = link
 
@@ -344,11 +350,13 @@ class FakeSessions:
     def mirror_opt_out(self, key: str) -> bool:
         return _opt_out_key(key) in self.mirror_opt_outs
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, *, reason: str = UNBIND_REASON_UNSPECIFIED) -> bool:
         self.batched_writes.append(self.batch_depth > 0)
         return self.mirror_links.pop(key, None) is not None
 
-    def clear_mirror_links_at(self, link: Any) -> list[str]:
+    def clear_mirror_links_at(
+        self, link: Any, *, reason: str = UNBIND_REASON_UNSPECIFIED
+    ) -> list[str]:
         cleared = [key for key, candidate in self.mirror_links.items() if candidate == link]
         for key in cleared:
             self.mirror_links.pop(key, None)

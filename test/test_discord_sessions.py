@@ -9,7 +9,7 @@ import pytest
 from kiro_crew.discord.client import DiscordInteraction
 from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
-from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session import _opt_out_key
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -96,6 +96,9 @@ class _Sessions:
         self.origin_links: dict[str, ChannelLink] = {}
         self.inbound_keys: set[str] = set()
         self.mirror_opt_outs: set[str] = set()
+        # Every reason a clear was made with, so a test can assert the in-channel
+        # unlink is attributed rather than landing as unattributed in the audit.
+        self.unbind_reasons: list[str] = []
         self.last_key = ""
         self.provider = _Provider()
 
@@ -105,6 +108,7 @@ class _Sessions:
         link: ChannelLink,
         *,
         accepts_inbound: bool = False,
+        reason: str = UNBIND_REASON_UNSPECIFIED,
     ) -> None:
         # Interface parity with the real SessionMap: a conversation is exclusive
         # once it is inbound-committed — this claim is inbound-capable, or an
@@ -160,11 +164,15 @@ class _Sessions:
             if candidate == link and (not inbound_only or key in self.inbound_keys)
         ]
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, *, reason: str = UNBIND_REASON_UNSPECIFIED) -> bool:
+        self.unbind_reasons.append(reason)
         self.inbound_keys.discard(key)
         return self.mirror_links.pop(key, None) is not None
 
-    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+    def clear_mirror_links_at(
+        self, link: ChannelLink, *, reason: str = UNBIND_REASON_UNSPECIFIED
+    ) -> list[str]:
+        self.unbind_reasons.append(reason)
         cleared = self.find_mirror_sessions(link)
         for key in cleared:
             self.inbound_keys.discard(key)

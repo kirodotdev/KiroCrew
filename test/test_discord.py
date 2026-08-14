@@ -57,7 +57,11 @@ from kiro_crew.discord.transport_dispatch import (
     DiscordDispatcher,
 )
 from kiro_crew.messaging.attachments import cleanup
-from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
+from kiro_crew.messaging.link import (
+    UNBIND_REASON_UNSPECIFIED,
+    ChannelLink,
+    legacy_dashboard_mirror_key,
+)
 from kiro_crew.messaging.queue_receipt import receipt_text as _receipt_text
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session import _opt_out_key
@@ -265,6 +269,7 @@ class FakeSessions:
         link: Any,
         *,
         accepts_inbound: bool = False,
+        reason: str = UNBIND_REASON_UNSPECIFIED,
     ) -> None:
         # Interface parity with the real SessionMap: a conversation is exclusive
         # once it is inbound-committed — this claim is inbound-capable, or an
@@ -323,13 +328,15 @@ class FakeSessions:
             if candidate == link and (not inbound_only or key in self.inbound_mirror_keys)
         ]
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, *, reason: str = UNBIND_REASON_UNSPECIFIED) -> bool:
         self.batched_writes.append(self.batch_depth > 0)
         self.inbound_mirror_keys.discard(key)
         self.batched_writes.append(self.batch_depth > 0)
         return self.mirror_links.pop(key, None) is not None
 
-    def clear_mirror_links_at(self, link: Any) -> list[str]:
+    def clear_mirror_links_at(
+        self, link: Any, *, reason: str = UNBIND_REASON_UNSPECIFIED
+    ) -> list[str]:
         self.batched_writes.append(self.batch_depth > 0)
         cleared = self.find_mirror_sessions(link)
         for key in cleared:

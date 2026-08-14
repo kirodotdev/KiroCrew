@@ -2016,7 +2016,9 @@ class TestDestroy:
         with patch.object(mgr._session_map, "delete") as mock_delete:
             await mgr.destroy("k1")
         provider.shutdown.assert_awaited_once()
-        mock_delete.assert_called_once_with("k1")
+        # The reason is part of the call: a destroyed session takes any inbound
+        # resume binding with it, and the map audits the removal under this name.
+        mock_delete.assert_called_once_with("k1", reason="session_destroyed")
         assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
@@ -2024,7 +2026,7 @@ class TestDestroy:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         with patch.object(mgr._session_map, "delete") as mock_delete:
             await mgr.destroy("nonexistent")
-        mock_delete.assert_called_once_with("nonexistent")
+        mock_delete.assert_called_once_with("nonexistent", reason="session_destroyed")
 
     @pytest.mark.asyncio
     async def test_destroy_shutdown_exception_still_deletes_map(self, cfg):
@@ -2036,7 +2038,7 @@ class TestDestroy:
             with pytest.raises(RuntimeError, match="boom"):
                 await mgr.destroy("k1")
         # finally block still runs
-        mock_delete.assert_called_once_with("k1")
+        mock_delete.assert_called_once_with("k1", reason="session_destroyed")
 
 
 class TestDiscardConversation:

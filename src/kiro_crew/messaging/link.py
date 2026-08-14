@@ -187,6 +187,52 @@ def session_key(channel_type: str, conversation_id: str) -> str:
     return f"{channel_type}:{conversation_id}"
 
 
+# ── Why an inbound resume binding was removed ────────────────────────────────
+# The audited vocabulary, kept in this leaf module because both sides need it:
+# ``SessionMap`` stamps it on the audit event and normalizes to it, and the
+# transports that clear a binding pass it. Every clearing call site names one of
+# these constants — a bare literal grows a spelling the audit cannot group by, so
+# ``UNBIND_REASONS`` below is the closed set.
+
+# No caller named a reason. Its appearance in the trail is itself the finding: it
+# names a clearing path that has not been threaded yet.
+UNBIND_REASON_UNSPECIFIED = "unspecified"
+
+# The user asked for it in the conversation and got a reply there, so a notice
+# would be an echo. The audit still happens; only the announcement is suppressed,
+# and the suppressing side is the listener rather than the map.
+UNBIND_REASON_USER_UNLINK = "user_unlink"
+
+# The dashboard's mirror-unlink endpoint. The click happens on a surface the bound
+# channel cannot see, so this is the reason the notice exists for.
+UNBIND_REASON_DASHBOARD_UNLINK = "dashboard_unlink"
+
+# A transport re-binding the conversation it is being read in as its own origin
+# mirror, which displaces whatever binding that key held.
+UNBIND_REASON_ORIGIN_REBIND = "origin_rebind"
+
+# An explicit, irreversible session teardown; the entry and every binding on it go.
+UNBIND_REASON_SESSION_DESTROYED = "session_destroyed"
+
+# A whole-entry delete whose caller named no motive — the shape of the removal
+# rather than its cause.
+UNBIND_REASON_ENTRY_DELETED = "entry_deleted"
+
+#: The closed vocabulary. A reason outside this set is normalized to
+#: ``unspecified`` at the map's choke point, so it can neither fragment the audit
+#: trail nor reach the channel notice's phrasing map as a miss.
+UNBIND_REASONS: frozenset[str] = frozenset(
+    {
+        UNBIND_REASON_UNSPECIFIED,
+        UNBIND_REASON_USER_UNLINK,
+        UNBIND_REASON_DASHBOARD_UNLINK,
+        UNBIND_REASON_ORIGIN_REBIND,
+        UNBIND_REASON_SESSION_DESTROYED,
+        UNBIND_REASON_ENTRY_DELETED,
+    }
+)
+
+
 # ── Canonical address parsing (RFC §9 rule 4: exactly ONE parser module) ──
 
 
@@ -424,9 +470,13 @@ def release_conversation_location(
     the opt-out write) still gets a single write.
     """
     with sessions.batched_save():
-        cleared = int(sessions.clear_mirror_link(key))
-        cleared += int(sessions.clear_mirror_link(legacy_dashboard_mirror_key(key)))
-        swept = sessions.clear_mirror_links_at(location)
+        cleared = int(sessions.clear_mirror_link(key, reason=UNBIND_REASON_USER_UNLINK))
+        cleared += int(
+            sessions.clear_mirror_link(
+                legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_USER_UNLINK
+            )
+        )
+        swept = sessions.clear_mirror_links_at(location, reason=UNBIND_REASON_USER_UNLINK)
     if swept:
         logger.info(
             "%s: unlink swept %d mirror binding(s) at this conversation: %s",

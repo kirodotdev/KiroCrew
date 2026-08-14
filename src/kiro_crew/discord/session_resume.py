@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
-from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.link import UNBIND_REASON_USER_UNLINK, ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -155,7 +155,9 @@ class DiscordSessionResume:
             # the dispatcher's own sweep — clearing only *key* here would leave
             # that mirror occupying the location and reproduce the "already
             # attached" refusal after an apparently successful unlink.
-            cleared = self.sessions.clear_mirror_links_at(self.link_for(channel_id))
+            cleared = self.sessions.clear_mirror_links_at(
+                self.link_for(channel_id), reason=UNBIND_REASON_USER_UNLINK
+            )
             logger.info(
                 "discord: released resumed session %s (cleared bindings: %s)",
                 key,

@@ -41,6 +41,7 @@ from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
+    UNBIND_REASON_ORIGIN_REBIND,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
@@ -1414,11 +1415,17 @@ class TelegramDispatcher:
         # for what is one user-visible action.
         with self.sessions.batched_save():
             self.sessions.set_mirror_opt_out(key, False)
-            self.sessions.set_mirror_link(key, self._origin_mirror_link(route, chat_id))
+            self.sessions.set_mirror_link(
+                key,
+                self._origin_mirror_link(route, chat_id),
+                reason=UNBIND_REASON_ORIGIN_REBIND,
+            )
             # Drop any pre-unification row so a stale binding cannot outlive the
             # rebind (reads prefer the channel key, but a leftover row would still
             # answer a clear).
-            self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
+            self.sessions.clear_mirror_link(
+                legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_ORIGIN_REBIND
+            )
         await self._reply(
             chat_id,
             "✅ Linked. Replies from the dashboard for this conversation will "

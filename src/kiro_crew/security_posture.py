@@ -370,6 +370,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "to the browser.",
     ),
     (
+        "Session detach notice",
+        "dashboard/state.py",
+        "The notice sent to a channel whose session-resume binding was cleared — a "
+        "separate egress boundary from the browser payload, and its session title is "
+        "user-controlled, so the rendered notice is re-scanned through the shared "
+        "display_safe sink before it reaches the transport.",
+    ),
+    (
         "Channel session surfacing",
         "dashboard/channel_slots.py",
         "Titles and hydrated transcript of a Slack/Discord/Teams conversation as it is "

@@ -317,6 +317,51 @@ class TestMirrorUnlink:
             assert resp.status == 200
             assert (await resp.json())["was_linked"] is False
 
+    @pytest.mark.asyncio
+    async def test_unlink_names_the_dashboard_as_the_reason(self, tmp_path, monkeypatch):
+        """The audit has to say which surface cleared the binding.
+
+        A dashboard click is invisible to the bound channel, so it is the reason
+        the notice exists for — an unattributed clear would land in the trail as
+        ``unspecified`` and read as a path nobody threaded.
+        """
+        from kiro_crew.messaging.link import UNBIND_REASON_DASHBOARD_UNLINK
+
+        state = _prep(tmp_path, monkeypatch)
+        state.sessions.clear_mirror_link = MagicMock(return_value=True)
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/mirror-unlink")
+            assert resp.status == 200
+
+        assert state.sessions.clear_mirror_link.call_args.kwargs["reason"] == (
+            UNBIND_REASON_DASHBOARD_UNLINK
+        )
+
+    @pytest.mark.asyncio
+    async def test_link_reports_a_conversation_claimed_mid_flight(self, tmp_path, monkeypatch):
+        """The genuine race: the precheck passed, then someone else claimed it.
+
+        Reported as the same 409 conflict rather than a 500, so the client offers
+        "unlink there first" instead of inviting a retry of a request that is
+        behaving correctly.
+        """
+        from kiro_crew.session_map import ConversationOwnershipConflict
+
+        state = _prep(tmp_path, monkeypatch)
+        transport = _fake_transport("telegram")
+        state.register_channel_transport(transport)
+        state.sessions.mirror_claim_blockers = MagicMock(return_value=[])
+        state.sessions.set_mirror_link = MagicMock(
+            side_effect=ConversationOwnershipConflict("claimed")
+        )
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": "telegram", "target_id": "user:123"},
+            )
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "conversation_occupied"
+
 
 class TestMirrorReminder:
     @pytest.mark.asyncio

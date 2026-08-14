@@ -2334,6 +2334,8 @@ async def start_dashboard(
     state.wire_session_compact_callback()
     # Visible notice when the watchdog recycles a dashboard session (e.g. RSS)
     state.wire_session_recycle_callback()
+    # Visible notice in a channel that just lost its session-resume binding
+    state.wire_session_unbind_listener()
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
@@ -3288,6 +3290,8 @@ async def start_api_server(
     state.wire_session_compact_callback()
     # Visible notice when the watchdog recycles a dashboard session (e.g. RSS)
     state.wire_session_recycle_callback()
+    # Visible notice in a channel that just lost its session-resume binding
+    state.wire_session_unbind_listener()
 
     app = web.Application(
         client_max_size=60 * 1024 * 1024
