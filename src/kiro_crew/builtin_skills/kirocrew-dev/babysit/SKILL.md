@@ -222,7 +222,7 @@ open review threads still exits `0`. Before you declare review-ready and call
 5. **no finding on the current head lacks a disposition.** Not "zero findings" —
    that can never be reached. A **fixed** finding disappears from the bot's
    in-place-updated body on the next review, but one you **rebutted** or
-   **accepted-and-deferred** keeps being re-raised, so a zero-findings test
+   **accepted-and-deferred** (or **needs-a-decision**) keeps being re-raised, so a zero-findings test
    deadlocks the loop against your own correct answer. The test is *unanswered*,
    which is also what the `autonudge_stop` prohibition below is keyed on. The
    mechanical half of this condition is the script's, not yours: `pr_status.py`
