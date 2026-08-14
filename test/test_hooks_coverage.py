@@ -100,7 +100,10 @@ def _same(a: str, b: str) -> bool:
     returns the long one, so a raw string compare passes on POSIX and fails
     only on Windows.
     """
-    return os.path.realpath(a) == os.path.realpath(b)
+    def _normalized(path: str) -> str:
+        return os.path.normcase(os.path.normpath(os.path.realpath(path)))
+
+    return _normalized(a) == _normalized(b)
 
 
 def _identity(path: Path) -> tuple[int, int]:
@@ -484,9 +487,13 @@ class TestFdRealPath:
             got = _fd_real_path(fd)
         finally:
             os.close(fd)
-        # A platform with no supported mechanism fails closed (None); where one
-        # exists it must name the same file.
-        assert got is None or _same(got, str(f))
+        # Windows is a supported descriptor-containment platform. Other
+        # platforms without a supported mechanism still fail closed (None).
+        if os.name == "nt":
+            assert got is not None
+            assert _same(got, str(f))
+        else:
+            assert got is None or _same(got, str(f))
 
 
 class TestSafeReadPrefix:

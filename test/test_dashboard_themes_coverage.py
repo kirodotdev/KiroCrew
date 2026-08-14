@@ -6,18 +6,16 @@ aiohttp handlers (list / create / install / detail / asset / overlay / topbar),
 the blocking workers they offload to the discovery pool (``_list_themes_sync``,
 ``_do_install``), the local/GitHub source resolvers, and the refusal branches —
 invalid JSON, slug traversal, governance denial, read-only installed packs,
-unsupported asset types, and the honest 501 the pack routes return on Windows.
+unsupported asset types, and cross-platform pack install/serving.
 
 Every test points ``KIROCREW_HOME`` at ``tmp_path`` so ``_themes_dir()``
 resolves inside the sandbox: nothing is written outside it. No network, no git,
 no real subprocess — ``_clone_github``'s spawn is replaced with a stub so only
 its URL guard and error mapping are exercised.
 
-Platform notes: the pack routes are gated behind ``_THEMES_WIN_UNSUPPORTED``
-because the install/serve reads funnel through the POSIX-only nolink chokepoint
-(``safe_read_file_bytes_nolink``). Tests that only need the non-nolink half pin
-that flag to ``False`` so they run on Windows too; tests that genuinely need the
-chokepoint (install promotion, asset bytes, symlink refusals) are skipped there.
+Platform notes: install and serving exercise the real descriptor-containment
+chokepoint on every supported OS. Tests that need to create symbolic links run
+where the process has that capability, including privileged Windows CI runners.
 """
 
 from __future__ import annotations
@@ -33,12 +31,8 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.platform.governance_profiles as gov_mod
+from conftest import requires_symlinks
 from kiro_crew.dashboard.handlers import themes as th
-
-_NOT_POSIX = os.name == "nt"
-_posix_only = pytest.mark.skipif(
-    _NOT_POSIX, reason="needs the POSIX-only nolink read chokepoint / symlinks"
-)
 
 # _validate_theme_data only *requires* --bg/--text/--accent per mode.
 _VALID_VARS: dict[str, dict[str, str]] = {
@@ -116,18 +110,6 @@ def themes_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def pack_routes_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the platform gate off so the non-nolink half runs on Windows too."""
-    monkeypatch.setattr(th, "_THEMES_WIN_UNSUPPORTED", False)
-
-
-@pytest.fixture
-def pack_routes_win(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the platform gate on to exercise the honest-501 branches anywhere."""
-    monkeypatch.setattr(th, "_THEMES_WIN_UNSUPPORTED", True)
-
-
-@pytest.fixture
 def allow_install(monkeypatch: pytest.MonkeyPatch) -> None:
     """Governance admits the install (default-allow standalone), deterministically."""
 
@@ -140,17 +122,6 @@ def allow_install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         gov_mod, "governance_permits", lambda *a, **k: _Allowed(), raising=True
     )
-
-
-# ── the Windows gate ───────────────────────────────────────────────────────
-
-
-class TestWinUnsupportedResponse:
-    def test_is_501_naming_the_tracking_issue(self) -> None:
-        resp = th._win_unsupported_response()
-        assert resp.status == 501
-        assert "Windows" in _body(resp)["error"]
-        assert "#311" in _body(resp)["error"]
 
 
 # ── _list_themes_sync ──────────────────────────────────────────────────────
@@ -205,7 +176,7 @@ class TestListThemesSync:
         _write_json(themes_dir / ".lcars.old-abc" / "theme.json", {"name": "Y"})
         assert th._list_themes_sync() == []
 
-    @_posix_only
+    @requires_symlinks
     def test_symlinked_directory_is_never_listed(self, themes_dir: Path, tmp_path: Path) -> None:
         real = _make_pack(tmp_path / "outside")
         (themes_dir / "linked").symlink_to(real, target_is_directory=True)
@@ -324,7 +295,7 @@ class TestResolveLocalSource:
         assert src is None
         assert err is not None and "not a directory" in err
 
-    @_posix_only
+    @requires_symlinks
     def test_symlinked_source_is_rejected(self, tmp_path: Path) -> None:
         real = _make_pack(tmp_path / "real")
         link = tmp_path / "link"
@@ -411,6 +382,22 @@ class TestCloneGithubGuard:
         self._stub_run(monkeypatch, FileNotFoundError("git"))
         err = th._clone_github("https://github.com/o/r", tmp_path / "clone")
         assert err == "git is not available on the server"
+
+    def test_sandbox_unavailable_is_reported_without_spawning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _unavailable(*args: object, **kwargs: object) -> object:
+            raise th.SandboxUnavailableError(
+                "no backend", kind="no_backend", detail="unsupported host"
+            )
+
+        monkeypatch.setattr(th, "sandboxed_spawn_argv", _unavailable)
+        seen = self._stub_run(monkeypatch, AssertionError("must not spawn"))
+
+        err = th._clone_github("https://github.com/o/r", tmp_path / "clone")
+
+        assert err == th._THEME_GIT_SANDBOX_UNAVAILABLE
+        assert seen == []
 
     def test_timeout_is_reported(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -584,7 +571,6 @@ class TestReadThemeBytesNolink:
         _write_json(target, {})
         assert th._read_theme_bytes_nolink("../escape", target) is None
 
-    @_posix_only
     def test_reads_a_regular_file_inside_the_pack(self, themes_dir: Path) -> None:
         target = themes_dir / "lcars" / "theme.json"
         _write_json(target, {"slug": "lcars"})
@@ -612,8 +598,21 @@ class TestDoInstallRefusals:
         assert theme is None and status == 400
         assert err is not None and "only https" in err
 
+    def test_github_sandbox_unavailable_is_a_503(
+        self, themes_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            th,
+            "_clone_github",
+            lambda url, dest: th._THEME_GIT_SANDBOX_UNAVAILABLE,
+        )
 
-@_posix_only
+        theme, err, status = th._do_install("github", {"url": "https://github.com/o/r"})
+
+        assert theme is None and err == th._THEME_GIT_SANDBOX_UNAVAILABLE
+        assert status == 503
+
+
 class TestDoInstallPromotion:
     def test_source_containing_the_themes_dir_is_rejected(self, themes_dir: Path) -> None:
         # The themes directory lives under KIROCREW_HOME, so installing FROM
@@ -633,6 +632,7 @@ class TestDoInstallPromotion:
         assert theme is None and status == 400 and err
         assert list(themes_dir.glob(".install-staging-*")) == []
 
+    @requires_symlinks
     def test_symlinked_subdirectory_is_refused(self, themes_dir: Path, tmp_path: Path) -> None:
         src = _make_pack(tmp_path / "packlink")
         elsewhere = tmp_path / "elsewhere"
@@ -645,6 +645,7 @@ class TestDoInstallPromotion:
         assert err is not None and "symlinked directory" in err
         assert list(themes_dir.glob(".install-staging-*")) == []
 
+    @requires_symlinks
     def test_non_regular_entry_is_refused(self, themes_dir: Path, tmp_path: Path) -> None:
         src = _make_pack(tmp_path / "packdangle")
         # A dangling symlink is walked as a FILE entry, so it is refused by the
@@ -704,15 +705,9 @@ class TestDoInstallPromotion:
 
 class TestApiThemesInstall:
     @pytest.mark.asyncio
-    async def test_windows_returns_an_honest_501(self, pack_routes_win: None) -> None:
-        resp = await th.api_themes_install(_request("POST", "/api/themes/install"))
-        assert resp.status == 501
-
-    @pytest.mark.asyncio
     async def test_policy_denial_is_403_and_audited(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         class _Denied:
@@ -737,7 +732,6 @@ class TestApiThemesInstall:
     async def test_governance_failure_fails_closed(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         def _boom(*a: object, **k: object) -> object:
@@ -757,7 +751,7 @@ class TestApiThemesInstall:
 
     @pytest.mark.asyncio
     async def test_malformed_json_is_400(
-        self, themes_dir: Path, pack_routes_enabled: None, allow_install: None
+        self, themes_dir: Path, allow_install: None
     ) -> None:
         resp = await th.api_themes_install(
             _request("POST", "/api/themes/install", body=None)
@@ -771,7 +765,6 @@ class TestApiThemesInstall:
         self,
         payload: object,
         themes_dir: Path,
-        pack_routes_enabled: None,
         allow_install: None,
     ) -> None:
         resp = await th.api_themes_install(
@@ -784,7 +777,6 @@ class TestApiThemesInstall:
     async def test_worker_error_and_status_pass_through(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         allow_install: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -802,10 +794,36 @@ class TestApiThemesInstall:
         assert _body(resp)["error"] == "nope"
 
     @pytest.mark.asyncio
+    async def test_sandbox_unavailable_has_retryable_status_and_code(
+        self,
+        themes_dir: Path,
+        allow_install: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            th,
+            "_do_install",
+            lambda stype, source: (None, th._THEME_GIT_SANDBOX_UNAVAILABLE, 503),
+        )
+
+        resp = await th.api_themes_install(
+            _request(
+                "POST",
+                "/api/themes/install",
+                body={"source": {"type": "github", "url": "https://github.com/o/r"}},
+            )
+        )
+
+        assert resp.status == 503
+        assert _body(resp) == {
+            "error": th._THEME_GIT_SANDBOX_UNAVAILABLE,
+            "code": "theme_install_sandbox_unavailable",
+        }
+
+    @pytest.mark.asyncio
     async def test_success_returns_the_descriptor(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         allow_install: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -857,22 +875,11 @@ class TestApiThemeDetailDelete:
         assert not (themes_dir / "sunset.json").exists()
 
     @pytest.mark.asyncio
-    async def test_removes_an_installed_pack(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_removes_an_installed_pack(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         resp = await th.api_theme_detail(_detail("DELETE", "lcars"))
         assert resp.status == 200 and _body(resp) == {"ok": True}
         assert not (themes_dir / "lcars").exists()
-
-    @pytest.mark.asyncio
-    async def test_pack_removal_is_501_on_windows(
-        self, themes_dir: Path, pack_routes_win: None
-    ) -> None:
-        _make_pack(themes_dir / "lcars")
-        resp = await th.api_theme_detail(_detail("DELETE", "lcars"))
-        assert resp.status == 501
-        assert (themes_dir / "lcars").is_dir()
 
     @pytest.mark.asyncio
     async def test_unknown_slug_is_404(self, themes_dir: Path) -> None:
@@ -962,7 +969,7 @@ class TestApiThemeDetailGet:
 
     @pytest.mark.asyncio
     async def test_installed_pack_detail_carries_level_and_assets(
-        self, themes_dir: Path, pack_routes_enabled: None
+        self, themes_dir: Path
     ) -> None:
         _make_pack(themes_dir / "lcars")
         resp = await th.api_theme_detail(_detail("GET", "lcars"))
@@ -975,17 +982,7 @@ class TestApiThemeDetailGet:
         assert "assets" in payload
 
     @pytest.mark.asyncio
-    async def test_installed_pack_detail_is_501_on_windows(
-        self, themes_dir: Path, pack_routes_win: None
-    ) -> None:
-        _make_pack(themes_dir / "lcars")
-        resp = await th.api_theme_detail(_detail("GET", "lcars"))
-        assert resp.status == 501
-
-    @pytest.mark.asyncio
-    async def test_invalid_installed_pack_is_500(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_invalid_installed_pack_is_500(self, themes_dir: Path) -> None:
         # A directory with a manifest but no formatVersion fails validation on
         # the READ path too — the route reports 500 rather than a silent empty.
         _write_json(themes_dir / "lcars" / "theme.json", {"name": "LCARS"})
@@ -997,7 +994,6 @@ class TestApiThemeDetailGet:
     async def test_manifest_read_failure_falls_back_to_an_empty_manifest(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _make_pack(themes_dir / "lcars")
@@ -1033,30 +1029,19 @@ def _asset_request(slug: str, path: str) -> web.Request:
 
 class TestApiThemeAsset:
     @pytest.mark.asyncio
-    async def test_windows_returns_501(self, pack_routes_win: None) -> None:
-        resp = await th.api_theme_asset(_asset_request("lcars", "branding/logo.svg"))
-        assert resp.status == 501
-
-    @pytest.mark.asyncio
-    async def test_unsafe_slug_is_400(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_unsafe_slug_is_400(self, themes_dir: Path) -> None:
         resp = await th.api_theme_asset(_asset_request("../etc", "logo.svg"))
         assert resp.status == 400
         assert _body(resp)["error"] == "invalid theme slug"
 
     @pytest.mark.asyncio
-    async def test_missing_asset_is_404(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_missing_asset_is_404(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         resp = await th.api_theme_asset(_asset_request("lcars", "branding/logo.svg"))
         assert resp.status == 404
 
     @pytest.mark.asyncio
-    async def test_unsupported_extension_is_400(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_unsupported_extension_is_400(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         _write_text(themes_dir / "lcars" / "notes.txt", "hello\n")
         resp = await th.api_theme_asset(_asset_request("lcars", "notes.txt"))
@@ -1067,7 +1052,6 @@ class TestApiThemeAsset:
     async def test_unreadable_bytes_are_404(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _make_pack(themes_dir / "lcars")
@@ -1077,9 +1061,8 @@ class TestApiThemeAsset:
         assert resp.status == 404
 
     @pytest.mark.asyncio
-    @_posix_only
     async def test_serves_the_asset_with_a_locked_down_csp(
-        self, themes_dir: Path, pack_routes_enabled: None
+        self, themes_dir: Path
     ) -> None:
         _make_pack(themes_dir / "lcars")
         _write_text(themes_dir / "lcars" / "branding" / "logo.svg", "<svg/>")
@@ -1101,31 +1084,22 @@ def _overlay_request(slug: str, oid: str) -> web.Request:
 
 class TestApiThemeOverlay:
     @pytest.mark.asyncio
-    async def test_windows_returns_501(self, pack_routes_win: None) -> None:
-        resp = await th.api_theme_overlay(_overlay_request("lcars", "scanner"))
-        assert resp.status == 501
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("oid", ["", "../etc", "a/b", "a.b"])
     async def test_unsafe_overlay_id_is_400(
-        self, oid: str, themes_dir: Path, pack_routes_enabled: None
+        self, oid: str, themes_dir: Path
     ) -> None:
         resp = await th.api_theme_overlay(_overlay_request("lcars", oid))
         assert resp.status == 400
         assert _body(resp)["error"] == "invalid overlay id"
 
     @pytest.mark.asyncio
-    async def test_unsafe_slug_is_400(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_unsafe_slug_is_400(self, themes_dir: Path) -> None:
         resp = await th.api_theme_overlay(_overlay_request("Bad", "scanner"))
         assert resp.status == 400
         assert _body(resp)["error"] == "invalid theme slug"
 
     @pytest.mark.asyncio
-    async def test_missing_overlay_is_404(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_missing_overlay_is_404(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         resp = await th.api_theme_overlay(_overlay_request("lcars", "scanner"))
         assert resp.status == 404
@@ -1134,7 +1108,6 @@ class TestApiThemeOverlay:
     async def test_unreadable_overlay_is_404(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _make_pack(themes_dir / "lcars")
@@ -1144,10 +1117,7 @@ class TestApiThemeOverlay:
         assert resp.status == 404
 
     @pytest.mark.asyncio
-    @_posix_only
-    async def test_serves_overlay_html_sandboxed(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_serves_overlay_html_sandboxed(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         _write_text(
             themes_dir / "lcars" / "overlays" / "scanner.html", "<div>scan</div>"
@@ -1168,31 +1138,22 @@ def _topbar_request(slug: str, mode: str) -> web.Request:
 
 class TestApiThemeTopbar:
     @pytest.mark.asyncio
-    async def test_windows_returns_501(self, pack_routes_win: None) -> None:
-        resp = await th.api_theme_topbar(_topbar_request("lcars", "dark"))
-        assert resp.status == 501
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["", "DARK", "sepia", "../dark"])
     async def test_unknown_mode_is_400(
-        self, mode: str, themes_dir: Path, pack_routes_enabled: None
+        self, mode: str, themes_dir: Path
     ) -> None:
         resp = await th.api_theme_topbar(_topbar_request("lcars", mode))
         assert resp.status == 400
         assert _body(resp)["error"] == "mode must be dark or light"
 
     @pytest.mark.asyncio
-    async def test_unsafe_slug_is_400(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_unsafe_slug_is_400(self, themes_dir: Path) -> None:
         resp = await th.api_theme_topbar(_topbar_request("Bad", "dark"))
         assert resp.status == 400
         assert _body(resp)["error"] == "invalid theme slug"
 
     @pytest.mark.asyncio
-    async def test_missing_topbar_is_404(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_missing_topbar_is_404(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         resp = await th.api_theme_topbar(_topbar_request("lcars", "light"))
         assert resp.status == 404
@@ -1201,7 +1162,6 @@ class TestApiThemeTopbar:
     async def test_unreadable_topbar_is_404(
         self,
         themes_dir: Path,
-        pack_routes_enabled: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _make_pack(themes_dir / "lcars")
@@ -1211,10 +1171,7 @@ class TestApiThemeTopbar:
         assert resp.status == 404
 
     @pytest.mark.asyncio
-    @_posix_only
-    async def test_serves_topbar_html_sandboxed(
-        self, themes_dir: Path, pack_routes_enabled: None
-    ) -> None:
+    async def test_serves_topbar_html_sandboxed(self, themes_dir: Path) -> None:
         _make_pack(themes_dir / "lcars")
         _write_text(themes_dir / "lcars" / "topbar" / "dark.html", "<div>bar</div>")
         resp = await th.api_theme_topbar(_topbar_request("lcars", "dark"))
