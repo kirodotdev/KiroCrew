@@ -92,3 +92,15 @@ DEFAULT_TOKEN_PROBE_TIMEOUT_SECS: float = 2.0
 # request is still bounded rather than unlimited, so an unresponsive peer
 # surfaces as a clean transfer error instead of hanging the caller's turn.
 DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS: float = 30.0
+
+
+# Accepted shape for a dashboard-token lifetime: a positive integer of at most
+# four digits followed by ``h`` or ``m``. Canonical here because three layers
+# need the SAME answer — the registry that persists it and both token minters
+# that spend it. A value one layer accepts and another rejects is stored happily
+# and then fails at the next connect, blaming the tunnel for a bad edit.
+#
+# Anchored with ``\Z`` rather than ``$``: Python's ``$`` also matches just BEFORE
+# a trailing newline, so a ``"20h\n"`` would pass a ``$``-anchored check and then
+# reach the mint argument list carrying an embedded newline.
+TTL_PATTERN = r"^[1-9][0-9]{0,3}[hm]\Z"

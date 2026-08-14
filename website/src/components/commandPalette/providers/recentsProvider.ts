@@ -201,6 +201,16 @@ export function sessionStatus(
       detail: shortMsg(slot) || undefined,
     }
   }
+  if (slot.needs_input) {
+    // Ranked with the approval pill and above "Thinking…": both are things the
+    // user owes the session, and a blocking question card leaves `running` true.
+    return {
+      style: 'pill',
+      colorVar: '--info',
+      label: i18nT('components.commandPalette.providers.recentsProvider.answer'),
+      detail: shortMsg(slot) || undefined,
+    }
+  }
   if (slot.running) {
     return {
       style: 'dot',

@@ -27,6 +27,7 @@ except ImportError:
     import sqlite3
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import (
     _copy_tree_no_overwrite,
@@ -253,6 +254,131 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
         return False, f"Invalid manifest: {e}", {}
 
 
+#: Stands in for a job name when the whole store had to be replaced, so the
+#: import summary can say something happened without inventing a name.
+_UNREADABLE_STORE = "<the whole cron store was unreadable>"
+
+
+def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
+    """Make an imported cron store safe to load and safe to run.
+
+    Returns ``(dropped, paused)`` — two lists, because they are two different
+    outcomes and a caller that conflates them tells the user the wrong thing. A
+    dropped job is gone; a paused one is fully restored and simply waiting to be
+    switched on. Rewrites *crons_path* in place. A missing file is left alone.
+
+    Three rules, each closing a different way an archive can act on the host:
+
+    1. A job that is not an object, or whose ``schedule`` is not one, is DROPPED.
+       ``CronService._load`` subscripts ``j["id"]`` and ``j["schedule"]["kind"]``
+       directly and catches only ``JSONDecodeError``/``KeyError``, so ``null`` or
+       a scalar in ``jobs`` raises ``TypeError`` straight out of the load. An
+       importer must not be able to write a store the loader cannot read.
+
+    2. A ``command`` is vetted with ``mcp_cron._vet_shell_command``, so it is
+       judged exactly as the same command would be at ``cron_add`` (deny-list,
+       sensitive-path, credential-path and exfiltration checks). A failure DROPS
+       the job, and so does the vet itself raising — an unverifiable command must
+       not be scheduled.
+
+    3. A job that survives with a ``command``, and any job naming a ``script``,
+       is imported DISABLED (``user_paused``) rather than live, and reported as
+       PAUSED, not rejected. The vet bounds what a command may do, not whether the
+       user asked for THIS command on THIS machine, and a ``script`` cannot be
+       vetted at all: the export never carries the ``crons/`` directory, so the
+       name resolves against whatever the target already has there. Both become an
+       ambush if they start running on their own. Disabling keeps the restore — the
+       jobs, their schedules and their history are all still there — while making
+       the first run an explicit human action. Message-only jobs are untouched:
+       they prompt an agent, they do not execute anything on the host.
+    """
+    if not crons_path.is_file():
+        return [], []
+    try:
+        data = json.loads(crons_path.read_text())
+    except (ValueError, OSError):
+        # Unparseable bytes are not installable as a cron store either, but they
+        # are also not something this function can reason about — an empty store
+        # is the only safe thing to hand the loader.
+        crons_path.write_text(json.dumps({"jobs": []}, indent=2))
+        return [_UNREADABLE_STORE], []
+    # A store whose top level is not an object, or whose `jobs` is not a list, is
+    # REPLACED rather than left alone. Returning early used to leave it in place,
+    # and the file is then copied into the target: `CronService._load` calls
+    # `data.get("jobs")` on it and raises AttributeError for `[]`/`null`/a scalar,
+    # which its `except (JSONDecodeError, KeyError)` does not catch. Not touching
+    # a malformed file only looks conservative — it installs the crash.
+    if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+        crons_path.write_text(json.dumps({"jobs": []}, indent=2))
+        return [_UNREADABLE_STORE], []
+    jobs = data["jobs"]
+
+    kept: list = []
+    dropped: list[str] = []
+    paused: list[str] = []
+    changed = False
+
+    def _name_of(job: object) -> str:
+        name = job.get("name") if isinstance(job, dict) else None
+        return str(name) if name else "<unnamed>"
+
+    for job in jobs:
+        # Rule 1: a shape the loader cannot read must not survive the import.
+        # `_load` subscripts these four directly, and its `except` catches only
+        # JSONDecodeError/KeyError — so a missing key is not merely a skipped job:
+        # it discards the WHOLE store (`self._jobs = []`), and a non-dict raises
+        # TypeError straight out of the load. Both are worse than dropping the one
+        # job here.
+        if (
+            not isinstance(job, dict)
+            or not all(isinstance(job.get(f), str) for f in ("id", "name", "message"))
+            or not isinstance(job.get("schedule"), dict)
+            or not isinstance(job["schedule"].get("kind"), str)
+        ):
+            dropped.append(_name_of(job))
+            changed = True
+            continue
+
+        command = job.get("command", "")
+        script = job.get("script", "")
+
+        # Rule 2: the command is judged exactly as `cron_add` would judge it.
+        if command:
+            try:
+                reason = _vet_shell_command(command)
+            except Exception:  # noqa: BLE001 — unverifiable command must fail closed
+                reason = "command could not be verified"
+            if reason is not None:
+                dropped.append(_name_of(job))
+                changed = True
+                # Same audit obligation as a `cron_add` denial: the dropped
+                # command never reaches the ACP permission/hook flow, so this is
+                # the only place the denial can be recorded. Named for where it
+                # happened, so an import-time drop is not read as an attempted
+                # `cron_add`.
+                _log_cron_denial("settings_import", reason)
+                continue
+
+        # Rule 3: anything that EXECUTES arrives paused, awaiting a human.
+        if command or script:
+            if not job.get("user_paused", False):
+                job["user_paused"] = True
+                job["enabled"] = False
+                changed = True
+                paused.append(_name_of(job))
+                _log_cron_denial(
+                    "settings_import",
+                    "Error: an imported job that runs a command or script is "
+                    "restored paused until it is enabled by hand",
+                )
+        kept.append(job)
+
+    if changed:
+        data["jobs"] = kept
+        crons_path.write_text(json.dumps(data, indent=2))
+    return dropped, paused
+
+
 def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
     """Extract and apply an import zip.
 
@@ -295,6 +421,26 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                 f"Expected 1 top-level directory in zip, found {len(snap_dirs)}"
             )
         snap = snap_dirs[0]
+
+        # Re-vet imported cron commands before ANY path below consumes
+        # crons.json (merge, copy, or replace). An import archive is
+        # attacker-influenced — the threat is a "settings backup" a user is
+        # talked into importing — and a cron ``command`` is a free-form shell
+        # string the scheduler later runs via ``sh -c``, entirely outside the
+        # ACP permission/hook flow. ``cron_add`` guards exactly that out-of-band
+        # execution with ``_vet_shell_command`` at storage time; the import path
+        # wrote crons.json directly and so skipped it, turning a crafted archive
+        # into arbitrary command execution with no CSRF, prompt injection, or
+        # auth bypass required (CWE-502, CWE-862). Apply the identical guard here
+        # and drop any job that fails, so a mostly-benign backup still restores
+        # its safe jobs instead of the whole import aborting.
+        dropped_crons, paused_crons = _sanitize_imported_crons(snap / "crons.json")
+        if dropped_crons:
+            summary["rejected_crons"] = dropped_crons
+        # Reported separately: these are restored in full and only need switching
+        # on, so calling them "rejected" would tell the user their jobs are gone.
+        if paused_crons:
+            summary["paused_crons"] = paused_crons
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace

@@ -526,26 +526,27 @@ class TestFindOrphanMcpCandidates:
 
         assert result == []
 
-    def test_excludes_peer_gateway(self) -> None:
-        """Peer gateways (gatewayd processes) are never candidates.
+    def test_excludes_peer_gateway(self, tmp_path: Path) -> None:
+        """Peer gateways with a LIVE socket path are never candidates.
 
         Age is patched above the min-age floor so the assertion depends on the
         _GATEWAY_MARKERS exclusion in _is_orphan_mcp, not on the age guard
-        short-circuiting before the exclusion logic ever runs.
+        short-circuiting before the exclusion logic ever runs. The socket path
+        must exist on disk: a gatewayd whose socket is GONE is deliberately
+        sweepable via the reachability path (_is_sweepable_orphan_gatewayd).
         """
         from kiro_crew.session_pid import find_orphan_mcp_candidates
 
+        live_sock = tmp_path / "gw.sock"
+        live_sock.write_text("")
+        cmdline = (
+            b"python3\x00-m\x00kiro_crew.mcp_gateway.gatewayd"
+            b"\x00--socket\x00" + os.fsencode(str(live_sock))
+        )
         with (
             patch("kiro_crew.session_pid._our_orphan_pids", return_value=[360]),
             patch("kiro_crew.session_pid.sys") as mock_sys,
-            patch.object(
-                Path,
-                "read_bytes",
-                return_value=(
-                    b"python3\x00-m\x00kiro_crew.mcp_gateway.gatewayd"
-                    b"\x00--socket\x00/tmp/gw.sock"
-                ),
-            ),
+            patch.object(Path, "read_bytes", return_value=cmdline),
             patch("os.getpid", return_value=1),
             patch("kiro_crew.session_pid._linux_pid_age", return_value=300.0),
         ):

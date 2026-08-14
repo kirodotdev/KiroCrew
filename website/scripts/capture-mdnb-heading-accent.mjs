@@ -25,7 +25,14 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
-import { json, logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import { logPageProblems, stubDashboardApi } from './lib/stub-dashboard-api.mjs'
+import {
+  MDNB_VAULT_ID,
+  mdnbApiStub,
+  mdnbNoteDoc,
+  mdnbNotesList,
+  notePaneClip,
+} from './lib/mdnb-fixtures.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/mdnb-heading-accent'
 mkdirSync(OUT, { recursive: true })
@@ -36,19 +43,6 @@ const VIEW = { width: 1280, height: 900 }
 // Fixture data
 // --------------------------------------------------------------------------
 
-const VAULT_ID = 'local-notes'
-const VAULT = {
-  id: VAULT_ID,
-  name: 'My Notes',
-  repo: '',
-  branch: 'main',
-  localPath: '/Users/demo/notes',
-  readOnly: false,
-  external: true,
-  localOnly: true,
-  knowledge: false,
-  knowledgeSourceId: null,
-}
 
 const NOTE_PATH = 'heading-demo.md'
 const NOTE_TITLE = 'Release Runbook'
@@ -95,68 +89,9 @@ Run the smoke suite against the canary before promoting:
 Once the canary holds for ten minutes, promote to the remaining regions.
 `
 
-const NOTES_LIST = [
-  { path: NOTE_PATH, title: NOTE_TITLE, modifiedAt: Date.now(), syncStatus: 'synced' },
-  { path: 'meeting-notes.md', title: 'Meeting Notes', modifiedAt: Date.now() - 3.6e6, syncStatus: 'synced' },
-  { path: 'todo.md', title: 'TODO', modifiedAt: Date.now() - 7.2e6, syncStatus: 'synced' },
-]
-
-const NOTE_DOC = {
-  path: NOTE_PATH,
-  content: NOTE_CONTENT,
-  mtime: Date.now(),
-  meta: { frontmatter: {}, tags: [], links: [] },
-  backlinks: [],
-}
-
-// --------------------------------------------------------------------------
-// App API stub — the Notes backend lives under /apps/md-notebook/api/**,
-// NOT /api/**, so the dashboard stub alone is not enough.
-// --------------------------------------------------------------------------
-
-async function mdnbApi(path, route) {
-  if (!path.startsWith('/apps/md-notebook/api/')) return false
-  const appPath = path.slice('/apps/md-notebook/api'.length)
-
-  // Every feature the UI probes must be listed or a stale-backend banner
-  // covers the surface we are trying to photograph.
-  if (appPath === '/health') {
-    return json(route, {
-      ok: true,
-      features: [
-        'trash', 'move', 'createdAt', 'attach', 'changes', 'saveGuard',
-        'forget', 'pat', 'newNote', 'duplicate', 'localOnly', 'autoCommit',
-        'trashOpen', 'knowledge', 'pickFolder',
-      ],
-    }), true
-  }
-  if (appPath === '/vaults') return json(route, { vaults: [VAULT], hasPat: false, hasGhAuth: false }), true
-  if (appPath.startsWith('/notes')) return json(route, { notes: NOTES_LIST }), true
-  if (appPath.startsWith('/note') && !appPath.startsWith('/note/')) return json(route, NOTE_DOC), true
-  if (appPath.startsWith('/changes')) return json(route, { rev: 1, changed: [], watching: true }), true
-  if (appPath.startsWith('/search')) return json(route, { results: [] }), true
-  return json(route, {}), true
-}
-
-/** Clip covering the note pane, so the sidebar does not dominate the frame. */
-async function notePaneClip(page) {
-  return page.evaluate(() => {
-    const heading = document.querySelector('h1')
-    let el = heading?.parentElement
-    while (el && el !== document.body) {
-      const s = getComputedStyle(el)
-      if (s.overflowY === 'auto' || s.overflow === 'auto') break
-      el = el.parentElement
-    }
-    const r = (el && el !== document.body ? el : document.body).getBoundingClientRect()
-    return {
-      x: Math.max(0, Math.round(r.left)),
-      y: 0,
-      width: Math.round(Math.min(r.width, window.innerWidth - Math.max(0, r.left))),
-      height: Math.min(Math.round(r.height), window.innerHeight),
-    }
-  })
-}
+const NOTES_LIST = mdnbNotesList(NOTE_PATH, NOTE_TITLE)
+const NOTE_DOC = mdnbNoteDoc(NOTE_PATH, NOTE_CONTENT)
+const mdnbApi = mdnbApiStub({ notes: NOTES_LIST, doc: NOTE_DOC })
 
 /**
  * Open the fixture note on one theme and photograph it.
@@ -174,7 +109,7 @@ async function shoot(browser, base, { file, mode, palette, edit = false }) {
   await page.addInitScript(([vaultId, colorTheme]) => {
     localStorage.setItem('mdnb-active-vault', vaultId)
     if (colorTheme) localStorage.setItem('mc-color-theme', colorTheme)
-  }, [VAULT_ID, palette])
+  }, [MDNB_VAULT_ID, palette])
 
   await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
   await page.getByText(NOTE_TITLE).first().waitFor({ timeout: 15000 })

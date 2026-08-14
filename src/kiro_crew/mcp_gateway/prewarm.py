@@ -34,17 +34,14 @@ path.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-import os
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.metrics.provider import get_recorder
 
@@ -342,47 +339,23 @@ class HotKeyStore:
             # failure below so a failed write is retried.
             self._dirty = False
         try:
+            # Keep the explicit mode: atomic_write's own parent mkdir does not
+            # set one, and this directory holds identity-bearing keys.
             self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd, tmp = tempfile.mkstemp(
-                prefix=".hot-keys-", suffix=".tmp", dir=str(self._path.parent)
-            )
-            fd_owned = True  # True until os.fdopen takes ownership
-            try:
-                # fchmod_safe, not os.fchmod: that name does not exist on
-                # Windows, and the enclosing handler catches OSError only -- so
-                # the AttributeError escaped flush() entirely, after _dirty had
-                # already been cleared, meaning the re-arm below never ran and
-                # every observation was lost. The shim is a no-op off POSIX,
-                # where the DACL applied below is the real carrier.
-                platform_compat.fchmod_safe(fd, 0o600)  # identity-bearing keys
-                if not platform_compat.IS_POSIX:
-                    # POSIX mode bits are inert on Windows; the DACL is the real
-                    # carrier. Applied to the temp file BEFORE any content is
-                    # written, so the keys never exist in a readable file, and
-                    # before os.replace, which preserves an explicit
-                    # (non-inherited) descriptor across the rename.
-                    # restrict_to_owner is fail-loud: the OSError is caught by
-                    # the enclosing handler, which unlinks the temp in its
-                    # finally and re-arms _dirty so the write is retried rather
-                    # than silently dropped.
-                    platform_compat.restrict_to_owner(tmp)
-                with os.fdopen(fd, "w") as fh:
-                    fd_owned = False  # os.fdopen now owns the descriptor
-                    json.dump(payload, fh)
-                os.replace(tmp, self._path)
-            finally:
-                # Close the raw fd if os.fdopen never took ownership (e.g.
-                # restrict_to_owner raised before we reached fdopen).
-                if fd_owned:
-                    with contextlib.suppress(OSError):
-                        os.close(fd)
-                # If replace failed the temp may linger; best-effort cleanup.
-                try:
-                    os.unlink(tmp)
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    pass
+            # restrict_to_owner is passed unconditionally where this used to
+            # guard it behind `not IS_POSIX`. On POSIX it is os.chmod(0o600),
+            # which the fchmod_safe(0o600) it replaces already achieved, so the
+            # resulting mode is identical; the helper applies it to the temp
+            # file before any content reaches it, which is the ordering this
+            # site already used on Windows. It stays fail-loud, and the OSError
+            # still lands in the handler below that re-arms _dirty, so a failed
+            # write is retried rather than silently dropped.
+            #
+            # json.dumps, not json.dump into the handle: the helper owns the
+            # file object. Output is ASCII-only (ensure_ascii defaults to True)
+            # and carries no newline, so neither the switch to utf-8 nor
+            # universal-newline translation can change a byte.
+            atomic_write(self._path, json.dumps(payload), restrict_to_owner=True)
         except OSError as exc:
             logger.warning("hot-keys: could not write %s: %s", self._path, exc)
             # Re-arm so a failed write is retried on the next flush rather than

@@ -2,6 +2,73 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [Unreleased]
+
+- **A lesson from a previous embedding-model generation could no longer get
+  silently deleted or offered as a false contradiction.** `write_lesson`'s
+  semantic dedup and `find_contradiction_candidates` compared raw embeddings
+  with a cosine helper that silently truncated a dimension mismatch to the
+  shorter vector instead of rejecting it, so a row embedded at a different
+  dimensionality (e.g. left over from an old embedding model) could score a
+  plausible-looking ~0.5 similarity against an unrelated new rule — landing
+  either past the 0.85 dedup line (deleting the old lesson as a "duplicate")
+  or inside the [0.4, 0.85) contradiction band (offered as a false
+  contradiction candidate). Both paths now converge onto the same
+  dimension-checked, float64-precision scorer the ranking paths already use,
+  which also removes a per-row query re-derivation from both loops. (#3466)
+
+- **Side-panel oversize-question refusal now reports an accurate character
+  target for every script, not just emoji.** The refusal derived its
+  character count from a fixed worst-case floor (4 bytes/char, the emoji
+  case), so an ASCII user over the byte budget was told to cut to ~8,192
+  characters when trimming a single character would do (4x over-deletion),
+  and a zh-CN user (3 bytes/char) was told 8,192 when ~10,922 actually fit.
+  The target is now derived from the submitted question's own byte density,
+  so it's accurate per script — the all-emoji case is unaffected (it already
+  sat at the 4-byte floor). (#3432)
+
+- **The skill browser no longer serves a different skill than the one you asked
+  for.** Three `package/` lookups compared a bare leaf name and returned the
+  first hit, so a request for `package/<name>` could answer with a file under
+  `<root>/<Pkg>/<name>`, or with whichever of two identically named files the
+  filesystem happened to yield. Exact keys now decide first, leaf matching
+  survives only where it is unambiguous, and a real collision resolves to
+  nothing — a 404, with the competing candidates logged — because the
+  `package/<path>` key cannot express which of the two files was meant. Every
+  lookup that previously resolved correctly still resolves to the same file.
+  **Edition maintainers:** roots the core already keys itself (`~/.kiro/skills`,
+  the data home, configured extra paths) are no longer *also* enumerated under
+  `package/`, which previously presented an editable skill as a read-only
+  package one. A stored reference to one of those duplicate `package/` keys
+  stops resolving; the file itself is untouched and still reachable under its
+  canonical key, but the stored reference has to be re-pointed. (#3369)
+
+- **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
+  whose launcher exited without signalling it (a torn-down `pytest` run, for
+  example) used to stay resident forever — invisible to every sweep, ~27 MB
+  each, accumulating without bound. The daemon now watches its own listening
+  socket path and gracefully self-exits once the path is gone (three
+  consecutive checks, POSIX only), and the untracked-orphan sweep reaps any
+  gatewayd whose `--socket` path no longer exists on disk, TERM-first so
+  pooled backends drain cleanly. (#3315)
+
+- **Aggregate memory ceiling across all concurrent agent spawns.** The cgroup
+  memory limit was per-spawn only (65% of RAM each), so many concurrent
+  subagents could collectively request several times host RAM without any
+  single limit breaching. The gateway now also caps their shared parent slice
+  (`kirocrew-agents.slice`) at 80% of RAM plus an aggregate task ceiling —
+  override via `resource_limits.max_total_memory_mb` /
+  `max_total_processes` — and logs which scopes were OOM-killed when the
+  aggregate ceiling engages. (#3316)
+
+- **Slack manifest: private channels now work out of the box.** The shipped app
+  manifest adds the `groups:history` and `users:read` bot scopes and subscribes
+  to the `message.groups` event, so a tracked private channel actually delivers
+  messages and profile lookups resolve real names. **Existing installs are not
+  fixed by upgrading alone**: Slack only grants new scopes on reinstall — update
+  the app's manifest (or re-import it), then reinstall the app to the workspace
+  and copy the new bot token. (#3206)
+
 ## [0.2.0] — 2026-08-09
 
 The first feature release after launch: a real browser for the agent, four new
@@ -49,6 +116,9 @@ weeks in the open.
   says so, instead of blaming the paste — a spent approval is told apart from a
   failed delivery, so you know to start a fresh one rather than re-copy a dead
   address.
+- Clicking **Connect** now asks for the provider's approval link instead of
+  waiting for one, so the card offers it within seconds rather than only after
+  some later chat happens to reach that server.
 - Code Review Sage works against **GitHub Enterprise Server** hosts.
 - An MCP server that authenticates with OAuth now receives the scope list and
   client id in the fields kiro-cli actually reads, so those connections

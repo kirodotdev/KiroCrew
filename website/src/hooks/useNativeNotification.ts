@@ -29,15 +29,23 @@ export function useNativeNotification(botName: string, avatar: string) {
           const body =
             latestNotif?.body ||
             (delta > 1 ? `${delta} new notifications` : 'New notification')
-          new Notification(title, {
-            body,
-            icon: avatar,
-            tag:
-              latestNotif?.approval_id ||
-              latestNotif?.job_id ||
-              latestNotif?.task_id ||
-              'kirocrew-notif',
-          })
+          // Android Chrome throws "Illegal constructor" here even with
+          // permission granted (page-context Notification is desktop-only);
+          // the in-app notification center still shows the event, so the
+          // native toast is best-effort.
+          try {
+            new Notification(title, {
+              body,
+              icon: avatar,
+              tag:
+                latestNotif?.approval_id ||
+                latestNotif?.job_id ||
+                latestNotif?.task_id ||
+                'kirocrew-notif',
+            })
+          } catch {
+            /* unsupported platform */
+          }
         } else if (Notification.permission === 'default') {
           Notification.requestPermission()
         }

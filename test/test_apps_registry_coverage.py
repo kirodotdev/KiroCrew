@@ -963,7 +963,7 @@ class TestApplyTrustFields:
                     "_registry": "third-party",
                     "_index_author": "kirocrew",
                     "verified": True,
-                    "provenance": "core",
+                    "provenance": "official",
                     "featured": True,
                 }
             ]
@@ -987,7 +987,7 @@ class TestApplyTrustFields:
             ]
         )
         assert [r["verified"] for r in rows] == [True, False, False]
-        assert all(r["provenance"] == "core" for r in rows)
+        assert all(r["provenance"] == "official" for r in rows)
 
 
 class TestVersionNewer:

@@ -44,8 +44,9 @@ const OVERLAY_SELECTOR = '[role="dialog"],[role="alertdialog"],[data-native-over
  *   • **native** (this hook) — a real Chromium `WebContentsView` owned by the
  *     Electron main process, composited over the panel's rectangle. Native
  *     paint, real events, downloads, video.
- *   • **mirror** (`useBrowserFrame`) — streamed JPEG frames from a remote
- *     browser. Still required when the browser does not live in this process.
+ *   • **CLI view** (`useBrowserView`) — the Playwright CLI's own dashboard,
+ *     served over loopback HTTP and framed by the panel. Still required when the
+ *     browser does not live in this process, and interactive in its own right.
  *
  * Because the native view is NOT in the React tree, this hook carries the two
  * responsibilities the renderer cannot delegate:

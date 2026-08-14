@@ -28,6 +28,8 @@ pull_request
   |-- codex-review.yml  "GPT 5.6 Review"    line-level + PR intent, blocking
   |-- design-review.yml "Design Review"     design shape, advisory
   |-- ux-review.yml     "UX Review"         rendered experience, advisory
+  |-- first-principles-review.yml
+  |                     "First Principles Review"  why it exists, advisory
   |-- CodeQL                                GitHub default setup, not a checked-in file
   |
   '-> pr-readiness.yml  "PR Readiness"  one commit status + one readiness: label
@@ -87,11 +89,12 @@ Every job here is blocking.
 | `scrub-lint` | `scripts/scrub-lint.sh --no-history`. Fails on any internal marker in this public tree, so a sync cannot reintroduce a coupling |
 | `vendor-manifest` | `scripts/verify_vendor_manifest.py`. Hashes every file under `src/kiro_crew/_vendor` against the committed `scripts/vendor_manifest.sha256` — the tree is excluded from semgrep and the AI reviewers' diff, so this checksum is its only content review. Always-on (not behind the `changes` path filter) |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.10 and 3.12. `black --check` is commented out pending a bulk format pass |
+| `harness-parity` | `scripts/check_harness_parity.py`, self-test first. Fails on a newly added line that expresses "this is the Kiro harness" as the absence of another one — a shape that fails toward the permissive answer, so nothing else goes red. Diff-scoped; the whole-tree backlog is a non-failing report |
 | `backend-test` | 2 Python versions x 4 duration-balanced pytest-split shards (8 jobs), `-n auto` within each. Coverage only on 3.12 (3.10 passes `--no-cov` for a trace-free run) |
 | `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-macos` | macos-14, deliberately SCOPED (gateway, socketsec, platform-compat, pod and MCP-apps suites via a glob). A full macOS run needs its own exclusion burn-down first, and a job that is red on arrival trains people to ignore it |
 | `backend-test-sandbox` | The two suites the sharded matrix deselects because they need unprivileged user namespaces: `test_script_hooks.py` and `test_cron_script.py` |
-| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces backend >= 80% and frontend >= 60% on the raw line-rate (floors live in the job's `env:` block) |
+| `coverage-combine` then `coverage-gate` | Combines the 3.12 shard data, then enforces the project line-rate floors, plus a per-file floor with a shrink-only baseline (all floors live in the job's `env:` block) |
 | `frontend-lint` | `tsc -b`, `eslint --max-warnings 1116`, `jscpd`, and `npm run i18n:check` |
 | `electron-test` | The Electron shell's own node:test suite (`website/electron`) |
 | `frontend-test` | `vitest run --coverage` |
@@ -115,6 +118,23 @@ Details worth knowing:
   converts any non-success upstream result into an explicit failure, because GitHub
   treats a **skipped** required check as satisfied. It also compares the raw
   line-rate and rounds only for display, so 79.95% cannot pass an 80% floor.
+- **`coverage-gate` enforces two different shapes.** The project floors
+  (`BACKEND_MIN`, `FRONTEND_MIN`) compare one lane-wide average; the per-file floor
+  (`PER_FILE_MIN`, `scripts/check_per_file_coverage.py`) requires *every measured
+  file* to clear it. Both are needed because an average is satisfiable without
+  touching the files that carry the risk — a well-covered large file pays for a
+  bare small one. The per-file gate exempts only the files listed in
+  `.github/coverage-baselines/{backend,frontend}.txt`, and that list may only
+  shrink: an unlisted file below the floor fails, a listed file that slides further
+  fails, and a listed file that *clears* the floor by the same noise band fails
+  until it is removed. Refresh with `--update-baseline`, which **prunes only** —
+  it cannot add a path or rewrite a recorded rate, so neither a new offender nor a
+  regression can be cleared by refreshing instead of by adding tests; seeding a
+  new lane is a separate `--seed-baseline`. The floor's rationale and measured
+  cost live in the script's docstring, not here, so they cannot go stale in two
+  places. Per-file enforcement is skipped for a lane whose suite ran as a
+  coverage-free subset, because subset rates are not comparable to a baseline
+  recorded on the full suite.
 - **`eslint --max-warnings 1116` is a ratchet baseline.** Burn it down, never raise
   it.
 - **The i18n gates split into three tiers,** and only two can fail: diff-scoped
@@ -210,7 +230,7 @@ scrubbed from every long-lived process environ.
 
 ## The AI review ladder
 
-Four reviewers, each with a distinct question and a distinct trust posture. The
+Five reviewers, each with a distinct question and a distinct trust posture. The
 design axis is **what each is allowed to read** (its prompt-injection surface) and
 **whether it can block**.
 
@@ -220,6 +240,91 @@ design axis is **what each is allowed to read** (its prompt-injection surface) a
 | GPT 5.6 | `GPT 5.6 Review` | Non-agentic, **two** invocations (discovery, then authoritative falsification), `reasoning_effort: medium` | Code plus PR title and body as nonce-wrapped **UNTRUSTED** context | Line-level second perspective, plus description-versus-diff consistency (advisory) | Yes, fail-closed |
 | Design Review | `Design Review` | Agentic Fable 5, with an Opus fallback model | Code plus `gh pr view` (it must judge intent) | Should we build this, and is it the right *shape*? | Advisory; red only on a genuine `BLOCK` |
 | UX Review | `UX Review` | Agentic Fable 5, with the same fallback | Code plus committed screenshot PNGs, read directly | Does the shipped experience read correctly? | Advisory; red only on a genuine `BLOCK` |
+| First Principles | `First Principles Review` | Agentic Fable 5, same fallback, `--max-turns 120` (inventorying and counting is grep-heavy) | Code, the whole repository, and `gh pr view` | What is the author trying to do, and does each thing this ships *deserve to exist*, already exist, or only patch a symptom? | Advisory; red only on a genuine `BLOCK` |
+
+### Why a first-principles lane is not a second Design Review
+
+Design Review takes the PR's **stated problem as its frame** and judges the shape of
+the solution. Two blind spots survive that. The first is **plurality**: a change
+with one stated purpose routinely ships several observable differences — a control
+that moved, a relabelled button, a flipped default, a new knob, a retry — and only
+the one named in the description gets examined. The second is **depth**: a fix aimed
+at the symptom the author happened to trip over passes every lane, because each line
+is correct, the shape fits and the surface renders.
+
+So this lane is defined by a method rather than a topic. It states the author's
+**intent** in one sentence and whether the change is a fix or an addition, then
+**inventories** it into the **observable differences** it ships — written the way a
+person would notice them, not the way the code expresses them — and runs every
+remaining question **per item**:
+
+A new capability is only one of the kinds that count. A **move, reorder or regroup**
+is its own item, and it is the kind that goes unexamined most often precisely because
+nothing became newly possible, so nothing reads as "added". The same applies to a
+rename, a changed default, an added or removed confirmation, a change in what is
+visible by default, and a change in when something happens. If the change is a *fix*,
+every item that is not the fix is called out as **riding along**.
+
+A move also carries a **higher** bar than an addition, not a lower one: the capability
+already existed, so the only harm available is that people could not find it, and the
+review must name who was failing and how that is known. "It groups better" is analogy,
+and it does not outweigh the relearning cost every existing user pays.
+
+- **Does it deserve to exist?** The zero option (what observably breaks if this item
+  ships nothing), the delete option (could the same harm be removed by deleting code
+  or a concept instead of adding one), and provenance — is the requirement *derived*
+  from a constraint you can point at, or *inherited* from convention, symmetry, "for
+  flexibility"? Reasoning by analogy is named and rejected explicitly, because
+  analogy is how an unnecessary feature enters a codebase looking reasonable.
+- **Does it already exist?** A grep for the mechanism that already does this job. A
+  second spelling of one capability is a finding even when no code is duplicated,
+  because both spellings must then be maintained and will diverge.
+- **Does it fix the cause?** Each item is placed on a named chain — **symptom**
+  (patched where it was observed), **mechanism** (the code that produced it), or
+  **cause** (the decision or invariant gap that let it misbehave). Symptom-level
+  with a reachable in-scope cause is a finding. Generality is then decided by
+  *counting* unfixed sibling instances of the same cause, so "this is a point patch"
+  has to come with paths.
+
+Three constraints keep it honest:
+
+- **One contract, read from the base ref.** The lenses live in
+  `.github/review-prompts/first-principles.md`, and both lanes `git show` it from the
+  PR's **base** commit — the same mechanism the Opus lanes use for their two prompts.
+  That removes the second copy entirely, and it means a pull request cannot edit the
+  reviewer that judges it. A contract *absent* from the base is not an error — it is
+  what happens on the pull request that introduces or moves the contract, so the lane
+  reports a non-blocking "no contract on the base commit" and produces no verdict. It
+  never falls back to the head's copy, because a rename would then let a change hand
+  the reviewer its own rubric.
+- **Count before you claim.** Every duplication, consumer-count and unfixed-sibling
+  finding must state the count and the pattern grepped; an uncounted claim is a
+  fabrication and must be dropped. This is what stops the lane drifting into taste.
+- **Every suggestion is a subtraction.** It may propose only deletions, shrinks,
+  deferrals, or "use the thing that already exists" — it may not even ask for a doc
+  or an RFC. A reviewer allowed to propose additions becomes a source of the exact
+  surface it exists to remove.
+- **The inventory is printed, even on a PASS.** A `PASS` here is a claim about *every*
+  item, so the item list is the evidence a human needs to check that claim. This is
+  a deliberate divergence from the sibling lanes, whose clean verdict collapses to
+  one line.
+
+It runs whenever a diff touches product or CI surface — **including a plain bug
+fix**, which is where the root-cause lens earns the most. Only a change that ships
+no capability at all (docs, tests, screenshots, generated files) skips, so the
+2x-rate-card Fable 5 spend goes to diffs that can actually produce a finding.
+
+It is advisory in `pr-readiness.yml` (UX-style, not Design-style): a `BLOCK` here is
+a judgment about whether a feature should exist, and a model does not get to wedge a
+merge on that until the lane's calibration is proven. Promoting it to a readiness
+blocker later is a one-line change in the aggregator.
+
+**Where it overlaps Design Review, this lane owns the question.** Design Review's own
+rubric asks whether a change fixes a root cause and whether a simpler alternative
+exists; those questions are asked here from the premise side and per item. The split
+is deliberate — premise and cause here, shape quality there — and if the two lanes
+converge in practice, the answer is to trim the overlap out of Design Review, not to
+tune two prompts against each other.
 
 ### Why Opus 4.8 is code-only
 
@@ -365,11 +470,16 @@ commit status plus one `readiness:` label**.
 
 - **Always required:** CI, Build, Code Review.
 - **Additionally required on a same-repo PR:** CodeQL, Opus 4.8 Review, GPT 5.6
-  Review, and completion of Design Review and UX Review.
-- **Design Review and UX Review are completion-required but advisory:** once
-  complete they score as `"(advisory)"` whatever their conclusion, so neither their
-  opinion nor an infrastructure failure becomes an independent blocker. Completion is
-  still required so the verdict is not premature.
+  Review, and completion of Design Review, UX Review and First Principles Review.
+- **UX Review and First Principles Review are completion-required but advisory:**
+  once complete they score as `"(advisory)"` whatever their conclusion, so neither
+  their opinion nor an infrastructure failure becomes an independent blocker.
+  Completion is still required so the verdict is not premature.
+- **Design Review is completion-required AND blocks on a genuine `BLOCK`:** the
+  aggregator scores its `failure` conclusion as a readiness blocker. That is safe
+  because the lane fails its own check *only* on a `BLOCK` verdict — an errored,
+  throttled or verdict-less run exits 0 — so a `failure` here can only mean a
+  design judged wrong, never infrastructure noise.
 - **CodeQL is not a checked-in workflow.** It runs via GitHub default setup and is
   resolved by `path == "dynamic/github-code-scanning/codeql"`. `skipped` counts as
   passed for it.

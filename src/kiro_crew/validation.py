@@ -2100,6 +2100,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         ),
         FieldSpec("command", str, max_len=5000, pattern=re.compile(r"^[^\x00-\x1f\x7f]*$")),
         FieldSpec("timeout", int, min_val=0, max_val=3600),
+        FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
     ],
     custom_validator=_validate_cron_add_requires_message_or_script,
 )
@@ -2445,6 +2446,8 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),
+            FieldSpec("timeout", int, min_val=0, max_val=3600),
+            FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
         ],
     ),
     "cron_remove": CRON_REMOVE_SCHEMA,

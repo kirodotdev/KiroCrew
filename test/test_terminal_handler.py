@@ -76,6 +76,101 @@ def _make_session(session_id="s1", alive=True, ws=None, disconnect=None):
     return sess
 
 
+# ── _resolve_shell ──
+
+
+class TestResolveShell:
+    """Shell resolution: configured → $SHELL (POSIX) → platform default, each
+    candidate validated as an executable, and the value returned is the path
+    `which` RESOLVED — never the bare candidate, which the spawn's project cwd
+    could re-resolve differently. `which` is pinned in every test so outcomes
+    never depend on what the CI host has installed."""
+
+    @pytest.fixture(autouse=True)
+    def _posix(self, monkeypatch):
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", False)
+
+    def _pin_which(self, monkeypatch, mapping):
+        monkeypatch.setattr(terminal.shutil, "which", lambda c: mapping.get(c))
+
+    def test_configured_executable_wins(self, monkeypatch):
+        self._pin_which(monkeypatch, {"/opt/fish": "/opt/fish", "/bin/bash": "/bin/bash"})
+        assert terminal._resolve_shell({"shell": "/opt/fish"}) == ("/opt/fish", None)
+
+    def test_bare_name_pinned_to_resolved_path(self, monkeypatch):
+        # The RESOLVED path is returned, not the bare name: the spawn runs in
+        # the session's project cwd, where a relative PATH entry could resolve
+        # the same bare name to a project-planted executable.
+        self._pin_which(monkeypatch, {"fish": "/usr/local/bin/fish"})
+        assert terminal._resolve_shell({"shell": "fish"}) == ("/usr/local/bin/fish", None)
+
+    def test_relative_which_result_anchored_to_absolute(self, monkeypatch):
+        # A RELATIVE PATH entry (PATH=bin:…) makes `which` itself return a
+        # relative path, which the spawn cwd would re-resolve — the return
+        # must be anchored to the gateway cwd the validation ran in, on both
+        # the configured and the fallback branch.
+        monkeypatch.setenv("SHELL", "zsh")
+        self._pin_which(monkeypatch, {"fish": "bin/fish", "zsh": "bin/zsh"})
+        shell, rejected = terminal._resolve_shell({"shell": "fish"})
+        assert os.path.isabs(shell) and shell.endswith("/bin/fish")
+        assert rejected is None
+        shell, rejected = terminal._resolve_shell({})
+        assert os.path.isabs(shell) and shell.endswith("/bin/zsh")
+        assert rejected is None
+
+    def test_invalid_configured_falls_back_to_env_shell(self, monkeypatch):
+        monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+        self._pin_which(monkeypatch, {"/usr/bin/zsh": "/usr/bin/zsh", "/bin/bash": "/bin/bash"})
+        assert terminal._resolve_shell({"shell": "/opt/typo"}) == (
+            "/usr/bin/zsh",
+            "/opt/typo",
+        )
+
+    def test_unset_uses_env_shell_without_rejection(self, monkeypatch):
+        monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+        self._pin_which(monkeypatch, {"/usr/bin/zsh": "/usr/bin/zsh"})
+        assert terminal._resolve_shell({}) == ("/usr/bin/zsh", None)
+
+    def test_whitespace_configured_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+        self._pin_which(monkeypatch, {"/usr/bin/zsh": "/usr/bin/zsh"})
+        assert terminal._resolve_shell({"shell": "   "}) == ("/usr/bin/zsh", None)
+
+    def test_invalid_env_shell_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("SHELL", "/opt/gone")
+        self._pin_which(monkeypatch, {"/bin/bash": "/bin/bash"})
+        assert terminal._resolve_shell({}) == ("/bin/bash", None)
+
+    def test_no_env_shell_uses_default(self, monkeypatch):
+        monkeypatch.delenv("SHELL", raising=False)
+        self._pin_which(monkeypatch, {"/bin/bash": "/bin/bash"})
+        assert terminal._resolve_shell({}) == ("/bin/bash", None)
+
+    def test_nothing_resolves_returns_default_unvalidated(self, monkeypatch):
+        # A host where no candidate validates keeps the historical behavior:
+        # return the default so the spawn's own error surfaces, never a
+        # silent no-terminal state.
+        monkeypatch.delenv("SHELL", raising=False)
+        self._pin_which(monkeypatch, {})  # nothing resolves
+        assert terminal._resolve_shell({"shell": "/opt/typo"}) == (
+            "/bin/bash",
+            "/opt/typo",
+        )
+
+    def test_windows_rejects_to_powershell(self, monkeypatch):
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+        self._pin_which(
+            monkeypatch, {"powershell.exe": "C:\\WINDOWS\\System32\\powershell.exe"}
+        )
+        shell, rejected = terminal._resolve_shell({"shell": "C:\\typo.exe"})
+        # abspath is host-dependent for a Windows-style fake on a POSIX test
+        # host, so assert the wiring (absolute + right program) rather than an
+        # exact string.
+        assert os.path.isabs(shell)
+        assert shell.endswith("powershell.exe")
+        assert rejected == "C:\\typo.exe"
+
+
 # ── _get_config ──
 
 
@@ -344,7 +439,12 @@ class TestApiTerminalCreate:
         assert resp.status == 429
 
     @pytest.mark.asyncio
-    async def test_uses_configured_shell(self):
+    async def test_uses_configured_shell(self, monkeypatch):
+        # The configured shell must actually resolve to an executable to be
+        # used — pin `which` so the test does not depend on the host's zsh.
+        monkeypatch.setattr(
+            terminal.shutil, "which", lambda c: c if c == "/bin/zsh" else None
+        )
         req = _make_request()
         with patch.object(
             terminal, "_get_config", return_value={"enabled": True, "shell": "/bin/zsh"}
@@ -353,6 +453,30 @@ class TestApiTerminalCreate:
             resp = await terminal.api_terminal_create(req)
         body = json.loads(resp.body)
         assert body["shell"] == "/bin/zsh"
+        assert "shell_fallback" not in body
+
+    @pytest.mark.asyncio
+    async def test_surfaces_fallback_when_configured_shell_missing(self, monkeypatch):
+        # A configured shell that does not resolve must not fail the create —
+        # the response falls back AND says so, so a typo is visible instead of
+        # a silently different shell.
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        monkeypatch.setattr(
+            terminal.shutil, "which", lambda c: c if c == "/bin/bash" else None
+        )
+        req = _make_request()
+        with patch.object(
+            terminal, "_get_config",
+            return_value={"enabled": True, "shell": "/opt/no-such-shell"},
+        ), patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 200
+        body = json.loads(resp.body)
+        assert body["shell"] == "/bin/bash"
+        assert body["shell_fallback"] is True
+        assert body["configured_shell"] == "/opt/no-such-shell"
 
 
 class TestApiTerminalCreateWindowsFailFast:
@@ -1657,6 +1781,23 @@ class TestApiTerminalWs:
         assert resp.status == 429
 
     @pytest.mark.asyncio
+    async def test_rejects_when_reservation_placeholder_held(self):
+        # A None value under the session id is another handler's in-flight
+        # reservation (held across its awaits). A concurrent connect for the
+        # same id must get 409 — not read it as absent and double-spawn.
+        registry: dict = {"racing": None}
+        req = _make_request(registry=registry, session_id="racing")
+        with patch.object(terminal, "_sel") as mock_sel, patch.object(
+            terminal, "_get_config", return_value={"enabled": True}
+        ):
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_ws(req)
+        assert isinstance(resp, web.Response)
+        assert resp.status == 409
+        # The loser must not disturb the winner's reservation.
+        assert registry == {"racing": None}
+
+    @pytest.mark.asyncio
     async def test_cleans_dead_session_before_reconnect(self):
         dead_sess = _make_session(session_id="abc123", alive=False)
         registry = {"abc123": dead_sess}
@@ -1673,6 +1814,50 @@ class TestApiTerminalWs:
         mock_kill.assert_awaited_once_with(dead_sess)
         # Dead session killed; placeholder reserved for new spawn
         assert registry.get("abc123") is not dead_sess
+
+    @pytest.mark.asyncio
+    async def test_posix_spawn_exports_resolved_shell_env(self, monkeypatch):
+        """The POSIX PTY child env must carry SHELL=<resolved shell>.
+
+        A configured shell that differs from the login shell would otherwise
+        inherit the login shell's $SHELL, so programs that consult it (vim's
+        :sh, tmux default-shell) open the wrong one. The spawn is made to fail
+        AFTER the call is recorded so the handler's read loop never starts —
+        the assertion is on the captured env, not the failure.
+        """
+        registry: dict = {}
+        req = _make_request(registry=registry, session_id="posix-env")
+        req.query = MagicMock()
+        req.query.get = lambda *a, **k: None
+
+        ws = AsyncMock()
+        ws.closed = False
+
+        # Login shell is bash; configured shell is zsh — the child env must
+        # carry zsh, proving the inherited value was overridden.
+        monkeypatch.setenv("SHELL", "/bin/bash")
+        monkeypatch.setattr(
+            terminal.shutil, "which", lambda c: c if c == "/bin/zsh" else None
+        )
+
+        fds = os.pipe()  # real fds so the cleanup os.close() calls succeed
+        spawn = AsyncMock(side_effect=RuntimeError("stop before read loop"))
+        cfg = {"enabled": True, "shell": "/bin/zsh"}
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal.platform_compat, "IS_WINDOWS", False), \
+             patch.object(terminal._pty, "openpty", return_value=fds), \
+             patch.object(terminal.fcntl, "ioctl", lambda *a: None), \
+             patch.object(terminal.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(terminal, "_get_config", return_value=cfg), \
+             patch.object(terminal.web, "WebSocketResponse", return_value=ws), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_ws(req)
+
+        assert resp is ws
+        spawn.assert_awaited_once()
+        assert spawn.call_args.args[0] == "/bin/zsh"
+        assert spawn.call_args.kwargs["env"]["SHELL"] == "/bin/zsh"
 
     @pytest.mark.asyncio
     async def test_windows_conpty_spawn_failure_sends_error(self, monkeypatch):

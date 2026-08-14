@@ -442,6 +442,107 @@ def release_conversation_location(
     return "This conversation wasn't linked.", swept
 
 
+def _is_unrouted_slack_placeholder(link: ChannelLink) -> bool:
+    """True for a Slack link that names no thread, i.e. one nobody chose.
+
+    ``set_channel`` writes the conversation's namespaced bucket
+    (``discord:<id>``) into the legacy ``slack_channel_id`` field, and
+    :meth:`SessionMap.get_mirror_link` synthesizes a Slack ``ChannelLink`` from
+    that field whenever no explicit ``mirror`` row exists — so the first turn of
+    a new channel session reads back a Slack link it never asked for.
+
+    A threadless Slack row is not a routable mirror: an empty ``thread_ts`` is
+    Slack's own clear sentinel and never enters ``_thread_to_session``, so
+    nothing can be delivered through it. A real Slack mirror always names its
+    thread, which is why the thread — not the channel type — is what separates
+    bookkeeping from a binding.
+    """
+    return link.channel_type == SLACK_NAMESPACE and not link.thread_id
+
+
+def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> bool:
+    """Bind the conversation a session is being READ in as its own outbound mirror.
+
+    The in-channel counterpart of :func:`release_conversation_location`, shared by
+    the DM dispatchers and called from the inbound turn path. A channel
+    conversation IS its own mirror: the person reading the chat is the audience
+    for every turn of that session, including the turns they later take from the
+    dashboard. Slack has always stamped its own thread on every inbound turn and
+    ``SessionMap.get_mirror_link`` synthesizes a mirror from that binding, so a
+    dashboard turn on a Slack conversation has always reached Slack. A channel
+    that writes the binding only from its explicit link command reaches nobody:
+    ``_resolve_mirror_target`` finds no link for that channel and the chat sits
+    there looking dead while the conversation continues elsewhere.
+
+    Re-asserted on EVERY turn rather than only on a new session, because the
+    binding is what a restart-cold session, an unlink at this location by another
+    session, or a rival claim can take away — and only a self-healing bind cannot
+    leave a live conversation silently unmirrored. Those all REMOVE a binding;
+    none of them repoints one. So ANY binding already present is deliberate and is
+    left alone — whichever conversation and whichever CHANNEL it names. The
+    dashboard can point a session's mirror at any surface, so a channel
+    conversation whose owner aimed it elsewhere keeps that target; overwriting it
+    would silently redirect their replies into this chat. The one exception is the
+    unrouted Slack placeholder (:func:`_is_unrouted_slack_placeholder`) — the
+    first turn of a new channel session always reads one back, and it is
+    bookkeeping surfacing through the synthesis path rather than a choice.
+
+    Honours the persisted opt-out the in-channel unlink writes: without it, "off"
+    would last exactly until the user's next message, because an entry with no
+    binding is indistinguishable from one that was never linked. Declining is ALL
+    the opt-out does here — this never clears a binding it finds, so an explicit
+    dashboard link to a different target survives it.
+
+    *location* is the single definition of "this conversation", carrying whatever
+    thread/topic scoping the channel needs; the same value must be handed to
+    :func:`release_conversation_location`, which matches an occupied location by
+    VALUE, so a second spelling would let the release miss the binding this wrote.
+
+    Skipped entirely when *key* does not identify ONE conversation.
+    ``dm_scope="unified"`` collapses every allowed user's direct DMs into a single
+    ``unified:{agent}`` bucket — the channel and the user drop out of the key — so
+    "the origin conversation" has no single answer, and a mirror bound there would
+    deliver one user's dashboard replies into another user's chat. The test reads
+    the KEY rather than each channel's config, because the key is what the binding
+    hangs off: a config-derived check in each dispatcher could disagree with the
+    key actually in use, and one written per channel would have to be got right
+    again every time. A forum/thread route keeps its full bucket under any scope,
+    so it is unaffected, and the explicit in-channel link stays available — it
+    names the conversation the user is actually in.
+
+    Returns True iff a binding was written. Skipping is a no-op, and the steady
+    state is a READ: ``SessionMap`` rewrites the whole map per mutation on the
+    event loop, so a per-turn write would put that stall on the repeating path.
+
+    Never raises. This runs on the turn path, where an uncaught raise drops the
+    turn and answers the user nothing. ``ConversationOwnershipConflict`` is the
+    reachable one: a transport declaring
+    ``TransportCapabilities.supports_session_resume`` makes its conversations
+    inbound-committable, so an inbound-committed occupant refuses this claim. A
+    dispatcher that routes such a conversation to its occupant instead skips the
+    bind entirely — but its resolver fails CLOSED on duplicate inbound bindings
+    (ambiguous routing is denied), and that is precisely the state where the turn
+    path reaches this bind and the claim is refused. It is caught by type rather
+    than by name because ``session_map`` imports this module, so naming the
+    exception here would be an import cycle.
+    """
+    if channel_namespace_of(key) == DM_SCOPE_UNIFIED:
+        return False
+    if sessions.mirror_opt_out(key):
+        return False
+    existing = sessions.get_mirror_link(key)
+    if existing is not None and not _is_unrouted_slack_placeholder(existing):
+        return False
+    try:
+        sessions.set_mirror_link(key, location)
+    except Exception:
+        logger.debug(
+            "%s: origin mirror bind skipped for %s", location.channel_type, key, exc_info=True
+        )
+        return False
+    return True
+
+
 def seed_generation(
     sessions: Any,
     *,

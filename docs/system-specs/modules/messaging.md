@@ -128,6 +128,35 @@ Constructed with a `TransportCapabilities`. `dispatch(event)` routes each kind t
 - `on_compaction(context_usage_pct)`, `on_done(stop_reason="")` — abstract.
 - `on_steer_consumed(summary="")` — default no-op; Discord/Telegram seal the pre-steer segment and open the continuation with a native acknowledgement chip using the parsed summary, without receiving raw protocol text.
 
+### `SilentRenderer` — enforcing a dashboard channel disconnect
+
+A `Renderer` whose handlers are all no-ops, substituted for the real renderer when
+the conversation has been **disconnected** in the dashboard (see the pause markers
+in [session](session.md)). Disconnect means "stop talking to me there": the turn
+STILL RUNS and the inbound message still lands in the session, because the binding
+is retained and the dashboard is where that user is now working — only the writes
+back to the muted conversation are dropped, including the typing indicator.
+
+`dispatch.delivery_is_muted(sessions, session_key, channel_type)` is the single
+predicate; `conversation_is_muted(sessions, turn)` delegates to it for the shared
+pipeline. It resolves origin-vs-mirror from the turn itself (a channel-born
+session's key IS its conversation, so a turn arriving in that namespace is the
+origin; anything else came over a mirror/resume binding) and fails OPEN, matching
+the dashboard-side predicates — a muted conversation that stays noisy is a visible
+bug, a live conversation silently dead is worse.
+
+**Every inbound pipeline must consult it.** `drive_turn` does, but Discord and
+Telegram run their OWN copies of the turn loop, so each substitutes independently;
+a new channel that skips this ships a dashboard control with nothing behind it.
+Two contracts matter for the substitute: its `close` accepts `*args/**kwargs`
+because a channel may WIDEN that signature (Telegram passes `failure_reason`), and
+it must be the object that is **closed**, not merely the one streamed to — a
+concrete renderer's `close` posts an error placeholder when a turn produced no
+output, which a muted turn always did. It is also deliberately NOT published into a
+dispatcher's `_active_renderers`, which silences the mid-turn steer chip and keeps
+channel-local APIs (`note_steer`) off the shared class. Slack never reaches these
+pipelines — it drives its own gateway and is gated by `slack_mirror_is_paused`.
+
 ### `chunk_text(text, max_chars) -> list[str]`
 
 Pure helper Renderers use to honor `capabilities.max_message_chars`. Returns `[]` for empty input; a non-positive `max_chars` disables chunking (single chunk); otherwise splits into `max_chars`-sized pieces. Together with the `max_buttons` cap this is how a renderer *degrades* an over-cap message or choice set for a lower-capability channel.
@@ -219,8 +248,9 @@ the text stream at the exact fold point.
 
 Two preconditions gate the steer, and both matter:
 
-- `provider.supports_steer` (kiro-cli only; the dormant Claude backend seam has
-  no `_session/steer`). When false the message falls through to the queue path.
+- `provider.supports_steer` — membership in `ACP_BACKENDS_STEER`, since the
+  dormant Claude backend seam has no `_session/steer`. When false the message
+  falls through to the queue path.
 - `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
   true through post-turn bookkeeping (success record, turn persist, threshold
   notice, SEL audit, all await points), so it alone cannot distinguish a live

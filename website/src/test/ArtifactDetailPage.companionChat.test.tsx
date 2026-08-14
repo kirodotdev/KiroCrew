@@ -94,8 +94,11 @@ describe('ArtifactDetailPage companion chat', () => {
     vi.clearAllMocks()
     sessionStorage.clear()
     if (!URL.createObjectURL) {
+      // Well-formed blob: URI, not a bare 'blob:test' literal — see the note in
+      // WidgetFrame.test.tsx's beforeEach for why a malformed mock value here
+      // risks a deferred ECONNREFUSED crashing an unrelated shard.
       // @ts-expect-error stub
-      URL.createObjectURL = vi.fn().mockReturnValue('blob:test')
+      URL.createObjectURL = vi.fn().mockReturnValue('blob:http://localhost:6776/test')
       // @ts-expect-error stub
       URL.revokeObjectURL = vi.fn()
     }

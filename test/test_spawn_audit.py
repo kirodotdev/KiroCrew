@@ -33,9 +33,10 @@ groups, none of which is the finding's agent-influenced-spawn vector:
 * Internal process management (read our own ppid; enumerate/kill our own
   managed/orphaned processes) and system-metrics probes (fixed sysctl/ps/etc).
 * Trusted-side gateway/MCP-backend spawns (``mcp_gateway`` — MCP backends sit
-  on the trusted side of the sandbox boundary by design) and the Playwright
-  proxy the finding explicitly excludes (inherits the already-sandboxed
-  kiro-cli parent).
+  on the trusted side of the sandbox boundary by design) and the Playwright CLI
+  toolchain spawns in ``browser_cli`` (fixed argv, operator-triggered install;
+  the agent's own browser commands are shell tool calls gated by the approval
+  path, not spawns we make).
 * Operator-configured state sync (``sync/*`` — git/s3/rsync/litestream
   push/pull against an operator-set remote) and app-registry package install
   of an operator-installed package.
@@ -171,6 +172,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # version into versions.txt. The binary name is a module constant; a
         # resource ceiling / sandbox adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
+        # KAS auth callback token fetch (--auth=acp-callback): a single fixed
+        # argv ``[<kiro-cli>, "chat", "_", "get-kas-token"]`` with a 20s timeout,
+        # no shell and no agent-influenced arguments — the subcommand tail is a
+        # module constant and the binary is the same kiro-cli Crew already spawns
+        # as its agent runtime (``resolve_kiro_cli``). Deliberately NOT
+        # sandbox-routed: kiro-cli must reach its OWN auth/token store to mint the
+        # KAS access token (same reason ``gh`` is not routed), which a sandbox
+        # would hide and break the callback. The child is SIGKILLed on timeout or
+        # task cancellation, so it never orphans.
+        "acp/kas_auth.py::resolve_kas_access_token",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
         # "status", "--json"]`` or ``["<tailscale>", "whois", "--json",
@@ -541,22 +552,31 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # save (off the event loop) or the `kirocrew browse setup` CLI. Fixed
         # argv of trusted node-toolchain tools resolved via find_node_tool
         # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
-        # where ``engine`` is validated against the fixed BROWSER_ENGINES
-        # allowlist before it can reach argv — never free agent input. Mirrors
-        # cli.py::_ensure_node / env.py::_run below, which shell the same
-        # node/ensure-node toolchain and are benign for the same reason.
-        # ``_npx_cache_playwright_roots`` runs the fixed ``npm config get cache``.
-        # ``_chromium_needs_cups_symbol`` runs ``nm -D <binary>`` on a Playwright-
-        # managed Chromium binary to probe symbol binding — fixed argv, no agent
-        # input, read-only inspection of a local file.
-        "browser/setup.py::_chromium_needs_cups_symbol",
-        "browser/setup.py::_npx_cache_playwright_roots",
-        "browser/setup.py::_resolve_playwright_core_cli",
-        "browser/setup.py::_run",
+        # ``browser_cli`` spawns the Playwright CLI toolchain on fixed argv that
+        # the AGENT never contributes to, which is what makes them benign here:
+        #   * ``install.py::_run`` runs the three install steps
+        #     (``npm install -g @playwright/cli@latest``,
+        #     ``playwright-cli install-browser``, ``playwright-cli install
+        #     --skills agents --global``). Every token is a constant in our code
+        #     and the only trigger is the operator pressing Install in Settings.
+        #     Sandboxing it would be wrong, not merely unnecessary: the install
+        #     needs the real npm registry and writes the global prefix.
+        #   * ``view.py::_spawn`` runs ``playwright-cli show --port <n>`` where
+        #     the port comes from our own bind probe, and the host is the
+        #     hardcoded loopback constant.
+        # ``view.py::stop`` spawns nothing: it reaps its own child's process
+        # group rather than issuing a global ``show --kill``, which would take
+        # an operator's independent session down with ours.
+        # The agent's OWN browser commands are not spawned by us at all -- it
+        # runs them as ordinary shell tool calls, which the approval path gates
+        # (see chat_runner._is_browser_cli_command).
+        "browser_cli/install.py::_run",
+        "browser_cli/view.py::_spawn",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
         "cli.py::main",
+        "cli_chat.py::_run_chat",
         "cli_chat.py::_tui",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), here used only to drive the now-async
@@ -642,7 +662,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers/core.py::_unusable",
         "dashboard/handlers/core.py::api_stt_install",
         "dashboard/handlers/files.py::_run",
-        "dashboard/handlers/files.py::api_reveal_path",
         "dashboard/handlers/files.py::api_screenshot",
         "dashboard/handlers/files.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
@@ -696,7 +715,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
-        "mcp_playwright_proxy.py::run_proxy",
         # Read-only `git config` / `git ls-remote --get-url` resolving which
         # remote the update would fetch from, for the `updates.source` pin. Fixed
         # list-argv (no shell=True), no agent input: the branch lands mid-key
@@ -705,12 +723,20 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # `--`. Must NOT be sandboxed: it reads the real checkout's git metadata.
         "platform/update_governance.py::_git",
         "mcp_shared.py::_get_ppid",
+        # File-manager launchers for the dashboard's reveal action. The
+        # command is an absolute literal resolved in this module (never a bare
+        # argv name, so an agent-writable PATH entry cannot supply it), the
+        # spawn gets a PATH pinned to the trusted system directories, and the
+        # only caller-supplied element is the path being revealed — which is
+        # passed as a later argv element, never as the command.
+        "platform_compat.py::open_with_default_app",
         "platform_compat.py::_current_user_sid",
         "platform_compat.py::_posix_process_parent_map",
         "platform_compat.py::find_listening_pids",
         "platform_compat.py::find_python_interpreter",
         "platform_compat.py::kill_pid",
         "platform_compat.py::kill_process_tree",
+        "platform_compat.py::reveal_in_file_manager",
         "platform_compat.py::process_command_line",
         # Same class as process_command_line: a read-only process-attribute query
         # (``ps -o uid=`` / ``/proc/<pid>`` stat) in the platform leaf module,
@@ -742,6 +768,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "pod/runtime.py::recent_journal",
         "sandbox.py::_probe_sandbox_exec",
         "sandbox.py::_ssh_supports_accept_new",
+        # The aggregate slice-ceiling apply: `systemctl --user set-property
+        # --runtime kirocrew-agents.slice MemoryMax=<N>M MemorySwapMax=0
+        # TasksMax=<N>`. Argv is a fixed verb plus module-constant unit name;
+        # the only variable tokens are integers derived from config/sysconf
+        # (type-checked, junk falls back to defaults) — not agent-influenced.
+        # Runs once at gateway startup, not from an agent turn. Sandboxing it
+        # would be circular: it constructs the cgroup boundary agent spawns
+        # are confined by.
+        "sandbox.py::ensure_agents_slice_limits",
         # The chokepoint wrapper itself. It spawns whatever argv it is handed, so
         # it cannot route on its own behalf — its CALLERS are the ones this audit
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here

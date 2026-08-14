@@ -299,6 +299,16 @@ def _binary_version(command: str) -> str:
         return "unknown"
 
 
+def binary_fingerprint(command: str) -> str:
+    """Public alias of :func:`_binary_version`.
+
+    The shareability cache keys on the same token the pool does, so an in-place
+    binary upgrade invalidates both. One implementation, two consumers — a second
+    copy would drift and let one of them keep a stale identity.
+    """
+    return _binary_version(command)
+
+
 def _resolve_channel_id(cli_value: Optional[str]) -> Optional[str]:
     """``--channel-id`` wins; else ``KIROCREW_CHANNEL_ID`` env; else None."""
     return cli_value or os.environ.get("KIROCREW_CHANNEL_ID") or None

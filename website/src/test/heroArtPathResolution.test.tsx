@@ -1,9 +1,15 @@
 /**
  * Hero-art path resolution — repo-relative manifest art must be requested
- * through the blob proxy on every surface that renders it (Discover's
- * AppListRow here; the Library's InstalledAppCard is covered in
- * InstalledAppCardHero.test.tsx), while absolute paths pass through
- * byte-for-byte so built-ins keep working.
+ * through the blob proxy on every surface that renders it, while absolute paths
+ * pass through byte-for-byte so built-ins keep working.
+ *
+ * The surface exercised here is `FeatureCard`, one of the EDITORIAL surfaces.
+ * It used to be `AppListRow`, and the Library's card had its own copy of these
+ * assertions — neither renders hero art now: a list row shows the app's icon,
+ * because a 96x54 crop of marketing art is too small to read as art and too
+ * large to scan as an identity. Retargeting rather than deleting is the point:
+ * the resolution RULES did not change, only which component still reaches them,
+ * and a rule with no test is a rule that rots.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
@@ -13,7 +19,7 @@ vi.mock('../components/AppIcon', () => ({
   default: () => <div data-testid="app-icon" />,
 }))
 
-import AppListRow from '../components/appstore/AppListRow'
+import FeatureCard from '../components/appstore/FeatureCard'
 import { resolveArtPath } from '../components/appstore/useHeroArt'
 import type { RegistryApp } from '../components/appstore/types'
 
@@ -65,28 +71,40 @@ describe('resolveArtPath', () => {
   })
 })
 
-describe('AppListRow hero art (Discover)', () => {
+describe('FeatureCard hero art (editorial)', () => {
   const noop = () => {}
 
+  const card = (over: Partial<RegistryApp>) => render(
+    <FeatureCard
+      app={registryApp(over)}
+      onOpen={noop} onGet={noop} onEnable={noop}
+    />,
+  )
+
   it('requests a repo-relative hero through the blob proxy', () => {
+    card({ heroImageDark: 'assets/hero-dark.png' })
+    expect(document.querySelector('img')!.getAttribute('src'))
+      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Fhero-dark.png')
+  })
+
+  it('does not rewrite an absolute hero path', () => {
+    card({ heroImageDark: '/app-assets/some-app/hero-dark.svg' })
+    expect(document.querySelector('img')!.getAttribute('src'))
+      .toBe('/app-assets/some-app/hero-dark.svg')
+  })
+})
+
+describe('the list surfaces no longer reach art resolution at all', () => {
+  it('AppListRow requests no blob-proxied art for a repo-relative hero', async () => {
+    const { default: AppListRow } = await import('../components/appstore/AppListRow')
+    const noop = () => {}
     render(
       <AppListRow
         app={registryApp({ heroImageDark: 'assets/hero-dark.png' })}
         onOpen={noop} onGet={noop} onUpdate={noop} onEnable={noop}
       />,
     )
-    expect(document.querySelector('img')!.getAttribute('src'))
-      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Fhero-dark.png')
-  })
-
-  it('does not rewrite an absolute hero path', () => {
-    render(
-      <AppListRow
-        app={registryApp({ heroImageDark: '/app-assets/some-app/hero-dark.svg' })}
-        onOpen={noop} onGet={noop} onUpdate={noop} onEnable={noop}
-      />,
-    )
-    expect(document.querySelector('img')!.getAttribute('src'))
-      .toBe('/app-assets/some-app/hero-dark.svg')
+    const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src') || '')
+    expect(srcs.some(s => s.includes('/api/apps/blob'))).toBe(false)
   })
 })

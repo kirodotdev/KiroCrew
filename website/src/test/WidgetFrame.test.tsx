@@ -61,7 +61,17 @@ beforeEach(() => {
       }
     }
   } as typeof Blob
-  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-widget')
+  // Well-formed blob: URI (scheme + real origin + opaque path), not a bare
+  // 'blob:test-widget' literal. happy-dom's disableIframePageLoading refuses
+  // the iframe navigation synchronously, but its AsyncTaskManager can retry
+  // the SAME request later, off this test's call stack. A malformed value
+  // survives that retry looking like a same-origin PATH once the scheme is
+  // gone, missing the msw catch-all's blob:/data: fast path and its
+  // DOM_DRIVEN_LOAD_RE allowlist alike — landing on the 501 fallback, which
+  // surfaces as a deferred ECONNREFUSED during fork-worker teardown and can
+  // crash the whole shard (not just this test). Anchoring to the real test
+  // origin keeps the blob: scheme intact through the retry either way.
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test-widget')
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
 
   // Jest-dom inherits the real CSSOM, so spy on getComputedStyle to inject a
@@ -285,7 +295,9 @@ describe('WidgetFrame openInNewTab', () => {
       if (typeof parts[0] === 'string') wrapper = parts[0] as string
       return new realBlob(parts, opts)
     })
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    // Well-formed blob: URI — see the beforeEach mock above for why a bare
+    // 'blob:test' literal risks a deferred ECONNREFUSED crashing the shard.
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(window, 'open').mockReturnValue(null)
 
@@ -304,7 +316,9 @@ describe('WidgetFrame openInNewTab', () => {
       mimeType = opts?.type ?? ''
       return new realBlob(args[0] as BlobPart[], opts)
     })
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    // Well-formed blob: URI — see the beforeEach mock above for why a bare
+    // 'blob:test' literal risks a deferred ECONNREFUSED crashing the shard.
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(window, 'open').mockReturnValue(null)
 

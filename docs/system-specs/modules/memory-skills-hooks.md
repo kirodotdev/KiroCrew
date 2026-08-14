@@ -209,9 +209,10 @@ SQLite table `semantic_memory` — structured key-value store with:
 - **Confidence gating**: writes whose source is not `user_explicit` require confidence ≥ `_DEFAULT_CONFIDENCE_THRESHOLD` (0.8); `user_explicit` bypasses the threshold
 - **Conflict resolution**: `user_explicit` always wins, and only another `user_explicit` may overwrite an existing `user_explicit` row; otherwise higher confidence wins, and confidences within 0.1 of each other count as equal so the newer write wins. A rejected write logs a `conflict_skip` event.
 - **Injection detection**: the `_INJECTION_PATTERNS` regex set (14 patterns, `vector_memory_constants.py`) is scanned on every value write
+- **Write-time embedding**: `_write_semantic()` embeds `"<key> <value_json>"` after the upsert (outside `_db_lock`, at `PRIORITY_BULK` — nothing blocks on it and the tail is reached from consolidation/import loops; same space-generation contract as `write_lesson`) and persists the struct-packed, un-normalized vector into the row's `embedding` column. The upsert's conflict clause keeps the stored vector when the value is unchanged (a re-affirmation — the tail then skips the redundant embed) and clears it when the value changed, so a row never ranks by a vector for text it no longer holds. `lesson.*` keys are excluded (`write_lesson` owns their vector — raw rule text). `set_semantic_if_absent()` (bulk import) defers embedding to the backfill sweep, like `write_episodic(defer_embedding=True)`. Rows missed while the model was absent — plus rows cleared by `reconcile_embedding_space()` — are repaired by `_backfill_semantic_kv_embeddings()` inside `backfill_missing_embeddings()`.
 - **Audit trail**: `memory_events` table logs every create/update/delete with old+new values, bounded at `_MAX_EVENTS = 10_000`
 
-Context injection: formatted as `key: value` pairs in `[Semantic Memory]` block. The cap is passed in by the caller: `build_session_context()` supplies `caps.semantic`, which is `_SEMANTIC_MEMORY_CAP` (7.7% of the base = 12,705 chars) at the reference window and scales down with the model window. Excludes `lesson.*` keys (they have their own `[Learned corrections]` block). Uses hybrid retrieval when embeddings are available: `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score. Falls back to keyword-only scoring (word overlap on keys and values, key matches weighted 3×, with `snowballstemmer` expansion) without embeddings.
+Context injection: formatted as `key: value` pairs in `[Semantic Memory]` block. The cap is passed in by the caller: `build_session_context()` supplies `caps.semantic`, which is `_SEMANTIC_MEMORY_CAP` (7.7% of the base = 12,705 chars) at the reference window and scales down with the model window. Excludes `lesson.*` keys (they have their own `[Learned corrections]` block). Uses hybrid retrieval when a query is supplied: `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score, where vector_score reads the STORED write-time vectors via `_stored_similarity_scorer` — one blocking embed per request (the query), never per row. When the query embed succeeded, EVERY row scores on that weighted scale (a row without a stored vector contributes 0.0 on the vector term) so un-backfilled legacy rows cannot keep the unweighted keyword score and outrank embedded ones; without embeddings entirely it falls back to keyword-only scoring (word overlap on keys and values, key matches weighted 3×, with `snowballstemmer` expansion). `build_session_context()` passes the user's first message as the query, so new-session injection is relevance-ranked; an empty query keeps recency order.
 
 ### Episodic Memory
 
@@ -224,7 +225,7 @@ SQLite table `episodic_memories` — conversation fragments with optional embedd
 - **Fallback ladder**: FAISS (needs faiss + numpy) → `_sqlite_vector_search`, stdlib cosine over the stored blobs → FTS5/LIKE keyword search (OR logic on text + tags) when there is no query embedding at all. The middle rung matters: faiss is an optional accelerator, not a declared dependency, so a stock install still gets vector recall from the stored vectors.
 - **Cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries. `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap.
 
-Context injection: `_DEFAULT_EPISODIC_LIMIT` = 8 results in an `[Episodic Memory]` block, each fragment sliced to 1,500 chars, total bounded by `min(_EPISODIC_INJECT_CAP, caps.episodic)` where `_EPISODIC_INJECT_CAP` = 3,000. Injected on the first message of new sessions via `build_message()`, not at plain session start, since `build_session_context` passes no query to `memory.get_context()`, so that call's `episodic_cap` argument never fires.
+Context injection: `_DEFAULT_EPISODIC_LIMIT` = 8 results in an `[Episodic Memory]` block, each fragment sliced to 1,500 chars, total bounded by `min(_EPISODIC_INJECT_CAP, caps.episodic)` where `_EPISODIC_INJECT_CAP` = 3,000. Injected on the first message of new sessions through the single `memory.get_context()` call in `build_session_context()`, which passes the user's message as the query; episodic is query-gated inside `get_context`, so callers without a message (eval runner) inject none, and follow-up turns never re-inject (ACP native history provides in-thread context).
 
 ### Fading: three independent decay mechanisms
 
@@ -496,6 +497,8 @@ User-taught corrections ("always do X", "never do Y"). Single write path through
 
 Categories: `tool`, `preference`, `knowledge`. Injected as a `[Learned corrections]` block. The vector path ranks lessons by hybrid relevance to the incoming request and fills the caller's character budget, stating in the block how many of the stored lessons are shown and how many are omitted; the JSONL path caps at `_MAX_LESSONS_IN_CONTEXT = 50`. The JSONL store itself retains `_MAX_LESSONS_TOTAL = 200` and prunes oldest-first beyond that, so what reaches the context and what sits on disk are different numbers.
 
+Vector scoring builds one scorer per query (`_stored_similarity_scorer`) so the query vector and its norm are derived once instead of once per lesson — the same hoisting `_sqlite_vector_search` does for episodic rows. There is a numpy path and a stdlib fallback, because numpy is guarded by `_HAS_NUMPY`; both produce the same ranking. Stored lesson vectors are un-normalized (unlike episodic vectors, which are L2-normalized for FAISS inner-product scoring), so both norms are divided out per row rather than assuming unit length. A row whose vector has a different dimensionality than the query — a row written under a previous embedding model — is incomparable and scores 0.0, matching `_sqlite_vector_search` and `HybridRetriever._cosine_similarity`, rather than being truncated against the query's leading elements.
+
 ### Conflict resolution: which layer wins
 
 Priority, highest first. A lower layer never overrides a higher one:
@@ -596,9 +599,18 @@ truncated to 300 chars.
 
 Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).
 
+Frontmatter is parsed line-by-line (`_parse_frontmatter`): only a column-0 `key: value` line is a field. A value that is a bare block-scalar indicator (`>`, `|`, optionally chomped with `-`/`+`) is resolved from the indented lines that follow — folded (`>`) folds single breaks to spaces while preserving blank-line counts and more-indented line breaks, literal (`|`) preserves newlines — so a multi-line `description` still routes. Explicit indentation indicators (`>2`) are not supported. The other frontmatter readers stay reconciled with this resolution: the onboarding import gate treats a bare indicator as an activating `always` value (fail-closed), the auto-skill update path's `history._frontmatter_value` resolves block scalars the same way, so a live skill's block-scalar `description`/`triggers` survive the staged-candidate round-trip instead of collapsing to the indicator character, and the skill-provider preview endpoint (`dashboard/handlers/discover.py`) parses SKILL.md with the loader's own grammar, so the previewed name/description match what the installed skill will show.
+
 Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill name is the relative path from the skills root (e.g. `utils/tiny-url`).
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
+
+The bundled `session-summaries` skill is on-demand, guidance-only: it explains the
+chat session summary panel (see [session-summary](session-summary.md)) — what it
+shows, its token cost, and how to make a session summarize well — so the agent can
+help a user enable and interpret it. It does not enable the feature or trigger
+generation, and holds no runtime-written frontmatter, since a builtin skill is
+re-synced by `rmtree` + `copytree` on upgrade.
 
 **Loading:**
 1. **Always-on**: skills with `always: true` have full content injected every new session

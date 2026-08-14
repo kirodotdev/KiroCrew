@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Iterator, Mapping
 
 from kiro_crew import model_registry
@@ -1101,7 +1103,143 @@ def _archive_dropped_lines(
     _archive_lines(history_key, dropped, reason="compact", base=base)
 
 
+# Memoisation for :func:`_build_message_entry`. ``_save_slot_to_history``
+# re-serializes the WHOLE in-memory window on every flush (see the comment inside
+# the uncached builder), so each save re-runs redaction over every message in the
+# window -- including the overwhelming majority that have not changed since the
+# previous flush. Redaction is the expensive part: two passes over the content,
+# the same two passes again over EACH variant, plus a meta pass.
+#
+# The key is a content hash of the WHOLE message rather than an identity or a
+# field subset, which is what makes invalidation automatic and total: the slot
+# mutates messages in place (a stop event resolving, a file-change chip landing,
+# a banner completing), and any such edit changes the digest, so the next call
+# misses and recomputes instead of serving a stale entry. There is deliberately
+# no explicit invalidation hook to forget.
+#
+# Bound sizing: a save re-serializes one slot's entire window, so the live
+# working set is roughly ``active_slots x window_size`` and the failure mode past
+# the bound is a cliff rather than a slope -- each save walks its window in
+# order, so with several slots taking turns the LRU evicts each window just
+# before its next save and the hit rate collapses to zero instead of degrading.
+# The entry bound is therefore chosen to hold several concurrent slot windows.
+#
+# The flush site skips the cache for a window longer than the entry bound, which
+# closes that cliff for ONE oversized window and nothing more. Several slots
+# whose COMBINED windows exceed the bound each stay under it individually, so
+# they take the cached path and hit the same zero-hit cliff unguarded. That is
+# accepted rather than fixed: detecting it needs a live view across slots, while
+# the cost of being wrong is only the key derivation on a miss.
+#
+# The entry count alone does NOT bound memory, because an entry is as large as
+# its message: a cache full of megabyte-sized messages would retain gigabytes.
+# That retention outlives the slot, since the entry holds the SAME content string
+# object as the message rather than a copy, so a closed slot's window can be
+# freed while the cache keeps its content alive. Hence two further bounds: a
+# per-entry ceiling above which an entry is computed but never stored (so one
+# huge message cannot evict the whole cache), and a total-byte ceiling evicted
+# alongside the entry count. Worst-case retention is the lesser of
+# ``_ENTRY_CACHE_MAX x _ENTRY_MAX_CACHEABLE_BYTES`` and ``_ENTRY_CACHE_MAX_BYTES``.
+#
+# Size is measured as the length of the key payload, which the front door has
+# already built for hashing, so it costs nothing extra. It measures the input
+# rather than the built entry, but the entry is derived from it and the two track
+# each other within a small factor -- accurate enough for a memory ceiling.
+#
+# Two properties work in our favour: entries are content-keyed, so two slots
+# holding identical message content share one entry; and a cached ``None`` (a
+# transient role) is a legitimate value, so membership -- not truthiness -- is
+# what distinguishes a hit from a miss.
+_ENTRY_CACHE_MAX = 4096
+_ENTRY_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_ENTRY_MAX_CACHEABLE_BYTES = 256 * 1024
+_entry_cache_lock = threading.Lock()
+_entry_cache: OrderedDict[str, tuple[dict | None, int]] = OrderedDict()
+_entry_cache_bytes = 0
+
+
+def _approx_window_payload_bytes(window: list[dict]) -> int:
+    """Cheap LOWER BOUND on what a window would serialize to, in bytes.
+
+    Sums only string ``content`` on each message and on its variants, ignoring
+    keys, meta and JSON escaping, and never serializes anything -- serializing to
+    measure would pay the very cost the caller is deciding whether to avoid.
+
+    Being a lower bound is what makes it safe to gate on: an estimate above the
+    ceiling proves the real payload is above it too, so the bypass it triggers is
+    always justified, while an underestimate merely forgoes the bypass and pays
+    the hashing cost. Either way correctness is unaffected -- only throughput.
+    """
+    total = 0
+    for m in window:
+        content = m.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        variants = m.get("variants")
+        if isinstance(variants, list):
+            for v in variants:
+                if isinstance(v, dict):
+                    vc = v.get("content")
+                    if isinstance(vc, str):
+                        total += len(vc)
+    return total
+
+
 def _build_message_entry(m: dict) -> dict | None:
+    """Memoised front door to :func:`_build_message_entry_uncached`.
+
+    The cached value is the POST-redaction entry, never the raw input, so a hit
+    can never hand a caller unredacted bytes -- that property is the one whose
+    failure would be a security regression rather than a missed optimisation.
+
+    The returned dict is the cached object itself, not a copy: every current
+    caller treats the entry as read-only (it is serialized with ``json.dumps``
+    and read for ordering keys), and copying on every hit would give back the
+    cost the cache exists to avoid. A future caller that mutates an entry in
+    place would need to copy first.
+    """
+    global _entry_cache_bytes
+    try:
+        payload = json.dumps(m, sort_keys=True, default=str)
+    except Exception:
+        # An unserializable message must still persist; fall back to computing it.
+        return _build_message_entry_uncached(m)
+    key = hashlib.sha256(payload.encode()).hexdigest()
+    size = len(payload)
+    with _entry_cache_lock:
+        if key in _entry_cache:
+            _entry_cache.move_to_end(key)
+            return _entry_cache[key][0]
+    entry = _build_message_entry_uncached(m)
+    if size > _ENTRY_MAX_CACHEABLE_BYTES:
+        return entry
+    # Refuse to STORE a pairing whose key and entry may describe different states.
+    # The flush thread shares message dicts with the event loop, so a variant
+    # switch landing between the two reads above would file the new entry under
+    # the old state's key; because a switch restores content AND ts from the
+    # stored variant, switching back reproduces that key exactly and would serve
+    # the wrong variant. Re-reading m here costs one dump on a miss only.
+    try:
+        if json.dumps(m, sort_keys=True, default=str) != payload:
+            return entry
+    except Exception:
+        return entry
+    with _entry_cache_lock:
+        previous = _entry_cache.pop(key, None)
+        if previous is not None:
+            _entry_cache_bytes -= previous[1]
+        _entry_cache[key] = (entry, size)
+        _entry_cache_bytes += size
+        while _entry_cache and (
+            len(_entry_cache) > _ENTRY_CACHE_MAX
+            or _entry_cache_bytes > _ENTRY_CACHE_MAX_BYTES
+        ):
+            _, (_evicted_entry, evicted_size) = _entry_cache.popitem(last=False)
+            _entry_cache_bytes -= evicted_size
+    return entry
+
+
+def _build_message_entry_uncached(m: dict) -> dict | None:
     """Build one persisted JSONL message dict from an in-memory slot message.
 
     Returns None for transient roles that are never persisted. Applies the
@@ -1756,8 +1894,23 @@ def _save_slot_to_history(
             # foreign lines so a concurrent cross-process append (landed between
             # this save's pre-lock ``window`` snapshot and the lock) is preserved
             # rather than clobbered by the meta+frozen+window replace.
+            # A window longer than the entry cache cannot hit it: this save walks
+            # the window in order, so the LRU evicts each entry before the next
+            # save reaches it again. Building such a window through the cache
+            # would pay the key-hashing cost for a guaranteed 0% hit rate, so the
+            # largest windows -- where flush cost hurts most -- go uncached. A
+            # window whose payload exceeds the BYTE ceiling self-evicts the same
+            # way at a far smaller message count, so it is gated too, on a cheap
+            # lower-bound estimate rather than on a measurement that would itself
+            # cost what the bypass saves.
+            build_entry = (
+                _build_message_entry_uncached
+                if len(window) > _ENTRY_CACHE_MAX
+                or _approx_window_payload_bytes(window) > _ENTRY_CACHE_MAX_BYTES
+                else _build_message_entry
+            )
             window_entries = [
-                e for m in window if (e := _build_message_entry(m)) is not None
+                e for m in window if (e := build_entry(m)) is not None
             ]
             window_lines = [json.dumps(e) + "\n" for e in window_entries]
             frozen_prefix, foreign_lines, dedup_dropped = (

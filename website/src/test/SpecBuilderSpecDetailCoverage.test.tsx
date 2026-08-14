@@ -285,7 +285,80 @@ describe('SpecDetail phase actions', () => {
     expect(JSON.parse(sent[0].body).text).toContain('Requirements approved')
 
     release?.()
-    await waitFor(() => expect(screen.getByRole('button', { name: /Approve → Design/ })).toBeInTheDocument())
+    // It must NOT spring back to "Approve → Design". The phase is derived from
+    // the documents on disk, so it stays 'requirements' until the agent has
+    // written design.md — showing the approval button again in that window read
+    // as "nothing happened" and invited a second approval into the same turn.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Drafting design/ })).toBeDisabled())
+    expect(screen.queryByRole('button', { name: /Approve → Design/ })).not.toBeInTheDocument()
+  })
+
+  it('switches to the document being drafted and restores the button once the phase moves', async () => {
+    let detail: Record<string, unknown> = { ...BASE }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const method = init?.method || 'GET'
+      if (method !== 'GET') {
+        calls.push({ url, method, body: String(init?.body ?? '') })
+        return Promise.resolve(okRes('{"ok":true}'))
+      }
+      return Promise.resolve(okRes(JSON.stringify(detail)))
+    }))
+    renderDetail()
+
+    expect((await screen.findByTestId('doc-view')).dataset.tab).toBe('requirements')
+    fireEvent.click(await screen.findByRole('button', { name: /Approve → Design/ }))
+
+    // The approved document is done; the one being written is what to watch.
+    await waitFor(() => expect(screen.getByTestId('doc-view').dataset.tab).toBe('design'))
+    await screen.findByRole('button', { name: /Drafting design/ })
+
+    // Once design.md lands the backend reports the new phase, and the control
+    // becomes the next approval rather than staying stuck on "drafting".
+    detail = { ...BASE, phase: 'design', files: { 'requirements.md': '# r', 'design.md': '# d' } }
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: /Approve → Tasks/ })).toBeEnabled(),
+      { timeout: 4000 },
+    )
+  })
+
+  it('keeps the approval state its own when another message is sent mid-flight', async () => {
+    // The decision tray, the review tray and the approval all share ONE
+    // mutation. mutate()'s per-call callbacks live on the observer, so the
+    // second send used to REPLACE the approval's — leaving the control labelled
+    // "Sending…" while isPending went false underneath it, i.e. enabled and able
+    // to queue a duplicate approval turn.
+    let releaseApproval: (() => void) | undefined
+    let messages = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const method = init?.method || 'GET'
+      if (method !== 'GET') {
+        calls.push({ url, method, body: String(init?.body ?? '') })
+        if (url.includes('/message')) {
+          messages += 1
+          // Hold only the FIRST message (the approval); the decision answer that
+          // follows resolves immediately, which is what displaces the callbacks.
+          if (messages === 1) {
+            return new Promise((res) => { releaseApproval = () => res(okRes('{"ok":true}')) })
+          }
+        }
+        return Promise.resolve(okRes('{"ok":true}'))
+      }
+      return Promise.resolve(okRes(JSON.stringify(BASE)))
+    }))
+    renderDetail()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Approve → Design/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sending/ })).toBeDisabled())
+
+    // A decision answered while the approval is still in flight.
+    fireEvent.click(screen.getByTestId('state-send'))
+    await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(2))
+
+    releaseApproval?.()
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Drafting design/ })).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Drafting design/ })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Sending/ })).not.toBeInTheDocument()
   })
 
   it('offers the tasks approval on the design phase', async () => {

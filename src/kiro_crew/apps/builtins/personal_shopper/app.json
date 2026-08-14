@@ -2,7 +2,7 @@
   "name": "personal-shopper",
   "version": "0.1.0",
   "displayName": "Personal Shopper",
-  "description": "A personal advisor that remembers your preferences, browses real stores as you, and helps solve problems that may or may not end in a purchase. It never buys anything — you do.",
+  "description": "A personal advisor that researches real stores and helps solve problems that may or may not end in a purchase. The Preferences tab is your own reference list — paste what matters into chat. It never buys anything — you do.",
   "author": "kirocrew",
   "tags": [
     "shopping",
@@ -13,10 +13,10 @@
   ],
   "highlights": [
     "Diagnoses the problem before recommending anything — sometimes the answer is not a purchase at all",
-    "Remembers your sizes, brands, style, budget and restrictions across every session",
-    "Browses the stores you configure with your own login, so prices and availability are real",
-    "You watch the research happen in the Browser panel, and it never touches a cart or checkout",
-    "Organize what it knows about you into your own groups, without affecting how it recalls them"
+    "Paste the preferences that matter into chat — the advisor reads your messages, not the Preferences tab",
+    "Researches only the stores you name, and flags that prices come from public pages, not your signed-in account",
+    "It has no way to reach a cart or a checkout",
+    "Organize your saved preferences into groups in the Preferences tab"
   ],
   "defaultEnabled": false,
   "iconUrl": "/app-assets/personal-shopper/icon.svg",

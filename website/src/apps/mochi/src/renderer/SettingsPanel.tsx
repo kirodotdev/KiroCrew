@@ -3,7 +3,7 @@
  * All changes are staged locally. Only applied on Save.
  * Closing without saving prompts the user and reverts if discarded.
  */
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import type { AppConfig } from '../shared/config'
 import { ELECTRON_MAP, MODIFIER_GLYPHS, MODIFIER_ORDER } from '../shared/config'
 import type { CompanionStats, McpServerInfo } from '../shared/types'
@@ -119,11 +119,25 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
     return JSON.stringify(config) !== JSON.stringify(original)
   })()
 
-  // Listen for native window close (red × button)
+  // Declared before the native-close subscription: an early fire during subscribe
+  // would otherwise read handleClose while it is still in the temporal dead zone.
+  // The effect deps include handleClose so a dirty-state change replaces the
+  // listener; an empty list would keep the first (always-clean) closure forever.
+  const handleClose = useCallback(() => {
+    if (isDirty) { setShowUnsaved(true) } else { onClose() }
+  }, [isDirty, onClose])
+
   useEffect(() => {
-    const off = api?.onSettingsCloseRequested?.(() => handleClose())
+    const off = api?.onSettingsCloseRequested?.(() => {
+      // Before the config loads nothing is staged, so a native close may
+      // proceed immediately — and must not touch handleClose, whose const
+      // binding sits below the loading early-return and is still in TDZ on
+      // this render's closure.
+      if (!config || !original) { onClose(); return }
+      handleClose()
+    })
     return () => { off?.() }
-  })
+  }, [handleClose])
 
   useEffect(() => {
     api?.getConfig?.().then((c: AppConfig) => {
@@ -265,10 +279,6 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
       applyTheme(original.mochi.theme as ThemeId)
     }
     onClose()
-  }
-
-  const handleClose = () => {
-    if (isDirty) { setShowUnsaved(true) } else { onClose() }
   }
 
   return (

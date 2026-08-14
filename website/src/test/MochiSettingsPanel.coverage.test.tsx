@@ -33,6 +33,11 @@ import type { CompanionStats, McpServerInfo } from '../apps/mochi/src/shared/typ
 const mocks = vi.hoisted(() => {
   /** `onSettingsCloseRequested` subscribers, so a native close can be replayed. */
   const closeRequested = new Set<() => void>()
+  /** Default subscribe: register only. Restored after any test that replaces it. */
+  const subscribeClose = (cb: () => void) => {
+    closeRequested.add(cb)
+    return () => { closeRequested.delete(cb) }
+  }
   const api = {
     hasShell: true,
     getConfig: vi.fn<() => Promise<unknown>>(),
@@ -48,13 +53,11 @@ const mocks = vi.hoisted(() => {
     setModel: vi.fn<(m: string) => Promise<boolean>>(),
     galleryOpen: vi.fn(),
     openExternal: vi.fn(),
-    onSettingsCloseRequested: (cb: () => void) => {
-      closeRequested.add(cb)
-      return () => { closeRequested.delete(cb) }
-    },
+    onSettingsCloseRequested: subscribeClose,
   }
   return {
     api,
+    subscribeClose,
     /** Replay the native window-close request the shell sends on the red ×. */
     requestClose: () => { for (const cb of [...closeRequested]) cb() },
     clearCloseRequested: () => closeRequested.clear(),
@@ -198,6 +201,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  // Tests may replace this to fire during subscribe; put the register-only
+  // default back so the next case does not inherit an early-fire mock.
+  api.onSettingsCloseRequested = mocks.subscribeClose
 })
 
 /* ── loading gate ─────────────────────────────────────────────── */
@@ -1117,5 +1123,30 @@ describe('SettingsPanel close', () => {
     mocks.requestClose()
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('survives a native close that fires during subscribe', () => {
+    // Pins the TDZ: subscribe used to close over handleClose declared later in
+    // the component body, so an early fire threw ReferenceError.
+    api.onSettingsCloseRequested = (cb: () => void) => {
+      cb()
+      return mocks.subscribeClose(cb)
+    }
+
+    expect(() => render(<SettingsPanel onClose={onClose} />)).not.toThrow()
+  })
+
+  it('keeps the native-close handler current after re-renders', async () => {
+    // Pins the empty-deps stale-closure case: the first handleClose always saw
+    // isDirty false (config not landed yet), so a later close skipped the prompt.
+    await mount()
+    openSection('Appearance')
+    openSection('Behavior')
+    openSection('General')
+    fireEvent.change(screen.getByDisplayValue('Mochi'), { target: { value: 'Tofu' } })
+
+    mocks.requestClose()
+    expect(await screen.findByText('Unsaved Changes')).toBeTruthy()
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

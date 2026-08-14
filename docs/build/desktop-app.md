@@ -200,12 +200,12 @@ bump one, bump the other and the root `version` fields in
 `packages[""].version`, NOT the dependency entries that coincidentally share a
 version), or `npm ci` will complain about a lock mismatch.
 
-> **npm registry pin (required):** both `website/.npmrc` *and*
-> `website/electron/.npmrc` pin `registry=https://registry.npmjs.org/`. The
-> electron pin is load-bearing — without it `npm ci` in `website/electron/`
-> inherits whatever registry the machine's global `~/.npmrc` sets and can fail
-> with an auth error on a non-public registry. Any new npm subproject needs its
-> own public-registry `.npmrc`.
+> **npm registry (system-configured):** the `.npmrc` files deliberately do NOT
+> pin a registry. `npm ci` inherits whatever registry the machine's `~/.npmrc`
+> or environment configures, so mirrors and private registries work for
+> builders who cannot reach `https://registry.npmjs.org/`. If your configured
+> registry lacks a public package or its auth token expired, fix your registry
+> config rather than adding a pin back.
 
 ## Build pipeline
 

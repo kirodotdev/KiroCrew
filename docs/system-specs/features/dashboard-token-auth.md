@@ -487,9 +487,7 @@ exists (`_api_urlopen`), falling back to TCP **only** when nothing answered
 at connect time (`FileNotFoundError` / `ConnectionRefusedError` — cases that
 provably never delivered the request, so the retry cannot double-send). HTTP
 error statuses and read timeouts propagate unchanged, keeping every caller's
-error shape identical. The Playwright proxy stays on TCP: it sends no
-session-mutating claims and deliberately avoids the config import the socket
-path requires.
+error shape identical.
 
 ### 6. `gateway.py` Integration
 

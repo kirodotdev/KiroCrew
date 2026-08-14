@@ -207,3 +207,70 @@ custom-rules:
       - Genuine circular-import avoidance — add a `# circular import` comment
         explaining why.
       - Optional dependencies: `try: import foo except ImportError: foo = None`
+
+  - id: harness-parity
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/acp/**/*.py"
+      - "src/kiro_crew/providers/**/*.py"
+      - "src/kiro_crew/platform/**/*.py"
+      - "src/kiro_crew/config/loader.py"
+      - "src/kiro_crew/session.py"
+      - "src/kiro_crew/subagent.py"
+      - "src/kiro_crew/sandbox.py"
+    rule: |
+      Kiro Crew drives ONE first-class agent harness — kiro-cli
+      (ACP_BACKEND_KIRO, spelled "") — and ADAPTS the others (the dormant
+      ACP_BACKEND_CLAUDE seam, KAS, and any bring-your-own harness). An added
+      harness may only adapt itself to the seams the Kiro harness already runs
+      through. It may not move, widen, generalize, or add a branch to them. The
+      invariant ids below are defined in
+      docs/system-specs/modules/harness-parity.md; cite the id in the finding.
+
+      The mechanical shapes are already gated on added lines by
+      scripts/check_harness_parity.py, so do NOT re-report them. Report only
+      what a regex cannot see:
+
+      - H13 — additive at the seam. Registering a harness must be a v1 addition
+        at platform/interfaces.py:ProviderRegistry with no CONTRACT_VERSION
+        bump. FLAG a change that puts a new conditional, a new required
+        argument, a new awaited step, or a new failure mode on the KIRO
+        construction path in service of an adapter — including one that reads
+        as harmless refactoring (hoisting a kiro-specific step into a shared
+        helper, replacing an explicit kiro branch with a table lookup, or
+        making a kiro-only default parameter mandatory). The test is not "does
+        it still work for kiro", it is "did the kiro path change at all".
+      - H14 — the ABC is the contract. A capability the session layer reads off
+        a provider must be declared on providers/base.py:LLMProvider with a
+        safe default. FLAG a change that adds a hasattr/getattr probe on the
+        kiro path to accommodate an adapter, or that leaves a new capability
+        reachable only on AcpProvider so a missing attribute silently reads as
+        False for the adapter.
+      - H9/H10 — no lowest-common-denominator. FLAG a change that collapses a
+        per-harness literal (spawn argv construction, PROTOCOL_VERSION, client
+        capabilities, the pre-spawn agent materialization, the --model pin) into
+        one form every harness accepts. Downgrading the kiro session to make an
+        adapter fit is the defect, even when every existing test still passes.
+      - H1/H3 — Kiro is the floor. FLAG a change that makes the kiro harness
+        conditional on an edition, a feature flag, an env var, or a registry
+        lookup, or that makes an unusable persisted acp_backend raise instead of
+        degrading to kiro with a logged reason.
+      - H6/H7 — capability grants. A new capability predicate must be membership
+        in a named ACP_BACKENDS_* set in acp/types.py, and every existing
+        harness's membership must be an explicit decision in the diff. FLAG a
+        new predicate that grants a capability to a harness the PR never
+        mentions. For is_kiro_cli specifically the failure is OPEN — it makes
+        sandbox.wrap_argv SKIP Kiro Crew's own seatbelt in favour of the
+        harness's internal one — so treat a grant to any non-kiro harness as a
+        security finding.
+
+      Allowed (do NOT flag):
+      - The dormant ACP_BACKEND_CLAUDE / _is_claude seam and its existing
+        negative call sites. They predate this rule, the whole-tree backlog is a
+        non-failing report by design, and converting them is a separate change.
+      - A pre-existing negative test on a line the PR merely moved or reindented.
+      - An adapter-only module (acp/kas_*.py and equivalents) that is entirely
+        additive and reachable only when its harness is selected.
+      - Widening the acp_backend config enum to admit a preview harness: the
+        enum is the value-SURVIVAL domain and selectability is gated separately
+        (H4). Omitting it there is the bug, not including it.

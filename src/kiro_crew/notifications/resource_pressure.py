@@ -66,6 +66,7 @@ from kiro_crew.resource_status import (
     ResourceStatus,
     probe,
 )
+from kiro_crew.sandbox import check_agents_slice_pressure
 
 if TYPE_CHECKING:
     from kiro_crew.notifications.bus import NotificationBus
@@ -129,6 +130,9 @@ class ResourcePressureNotifier:
         self._critical_alerted = False
         self._tight_alerted = False
         self._last_critical_push = 0.0
+        # Slice OOM report captured by the worker thread, consumed (and
+        # cleared) on the loop side so the bus is only touched from the loop.
+        self._slice_oom_msg: str | None = None
 
     async def maybe_sample(self) -> None:
         """Probe (off-loop, bounded) and evaluate if the interval elapsed.
@@ -162,6 +166,9 @@ class ResourcePressureNotifier:
             except (asyncio.TimeoutError, TimeoutError):
                 logger.debug("resource-pressure probe timed out; sample skipped")
                 return
+            oom_msg, self._slice_oom_msg = self._slice_oom_msg, None
+            if oom_msg:
+                self._push_slice_oom(oom_msg)
             self.observe(status, now)
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
@@ -169,6 +176,18 @@ class ResourcePressureNotifier:
     def _run_probe(self) -> ResourceStatus:
         """Worker-thread wrapper: run the probe and release the in-flight slot."""
         try:
+            # Piggyback the agents-slice OOM check on the same off-loop
+            # cadence: new OOM kills inside kirocrew-agents.slice are logged
+            # with victim scopes and slice memory state (sandbox owns the
+            # format). The message is stashed for the loop side to push onto
+            # the bus — "a random subagent died" must be diagnosable from the
+            # dashboard, not just the log file. Never raises; reads a handful
+            # of cgroup files.
+            try:
+                self._slice_oom_msg = check_agents_slice_pressure()
+            except Exception:
+                self._slice_oom_msg = None
+                logger.debug("agents-slice OOM check failed", exc_info=True)
             return self._probe()
         finally:
             self._inflight = False
@@ -217,6 +236,25 @@ class ResourcePressureNotifier:
 
     def _push(self, payload: NotificationPayload) -> None:
         self._bus.push(payload)
+
+    def _push_slice_oom(self, message: str) -> None:
+        """One note per detected OOM batch inside the agents slice.
+
+        The kernel picks the victim on an aggregate breach, so without this
+        the user-visible symptom is a subagent dying with exit 137 and no
+        explanation anywhere but the log file. ``group_key`` stacks repeats
+        so a thrashing host does not flood the bell feed.
+        """
+        self._push(
+            NotificationPayload(
+                source="system",
+                channel=CHANNEL,
+                title="Agent subprocess OOM-killed by cgroup ceiling",
+                body=message,
+                group_key="agents-slice-oom",
+                meta={"kind": "agents-slice-oom"},
+            )
+        )
 
     def _push_critical(self, status: ResourceStatus, *, realert: bool = False) -> None:
         title = (

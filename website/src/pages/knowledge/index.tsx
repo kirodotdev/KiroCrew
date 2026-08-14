@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy } from 'lucide-react'
+import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy, Settings } from 'lucide-react'
 import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -11,6 +11,7 @@ import SourcesList from './SourcesList'
 import { ItemCard } from './ItemCard'
 import { SourceGroup, NO_SOURCE } from './SourceGroup'
 import { EmbeddingStatus } from './EmbeddingStatus'
+import { SettingsTab } from './SettingsTab'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
 
 /**
@@ -31,7 +32,7 @@ const STATUS_LABEL_KEY = {
 import { i18nT } from '../../i18n/t'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
-const TABS = ['list', 'graph', 'sources'] as const
+const TABS = ['list', 'graph', 'sources', 'settings'] as const
 type Tab = typeof TABS[number]
 
 // Backend list_items() hard-caps page size at 100 (dashboard/handlers/knowledge.py).
@@ -52,11 +53,13 @@ const TAB_LABEL_KEY: Record<Tab, string> = {
   // role. Sharing it would lowercase this tab and let either use-site's
   // translation break the other.
   sources: 'pages.knowledge.index.sources_tab',
+  settings: 'pages.knowledge.index.settings_tab',
 }
 const TAB_ICON: Record<Tab, React.ReactNode> = {
   list: <FileText size={14} />,
   graph: <Network size={14} />,
   sources: <FolderSync size={14} />,
+  settings: <Settings size={14} />,
 }
 
 function EntityAutocomplete({ query, onSelect }: { query: string; onSelect: (name: string) => void }) {
@@ -655,6 +658,8 @@ export default function KnowledgePage() {
               </div>
             )}
           </div>
+        ) : tab === 'settings' ? (
+          <SettingsTab />
         ) : (
           <SourcesList onIngest={handleFiles} uploadNamespace={uploadNamespace} setUploadNamespace={setUploadNamespace} namespaces={namespaces} ingestionJobs={ingestionJobs} uploadAccept={uploadAccept} acceptsNoExtension={acceptsNoExtension} />
         )}

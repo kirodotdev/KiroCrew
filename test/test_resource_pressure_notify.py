@@ -60,6 +60,41 @@ class TestChannel:
         assert SYSTEM_CHANNELS[CHANNEL] == "default"
 
 
+class TestSliceOomNote:
+    """A slice OOM report captured off-loop is pushed onto the bus from the
+    loop side — 'a random subagent died (137)' must be diagnosable from the
+    dashboard, not just the log file."""
+
+    @pytest.mark.asyncio
+    async def test_oom_report_reaches_the_bus(self, notes, monkeypatch) -> None:
+        bus = NotificationBus(sink=notes.append)
+        notifier = ResourcePressureNotifier(
+            bus, probe_fn=lambda: _status(POSTURE_AMPLE, gb=20.0)
+        )
+        monkeypatch.setattr(
+            resource_pressure,
+            "check_agents_slice_pressure",
+            lambda: "cgroup OOM kill inside kirocrew-agents.slice: 1 new kill(s); …",
+        )
+        await notifier.maybe_sample()
+        oom = [n for n in notes if n.get("group_key") == "agents-slice-oom"]
+        assert len(oom) == 1
+        assert "OOM" in oom[0]["title"]
+        assert "1 new kill(s)" in oom[0]["body"]
+
+    @pytest.mark.asyncio
+    async def test_quiet_when_no_kills(self, notes, monkeypatch) -> None:
+        bus = NotificationBus(sink=notes.append)
+        notifier = ResourcePressureNotifier(
+            bus, probe_fn=lambda: _status(POSTURE_AMPLE, gb=20.0)
+        )
+        monkeypatch.setattr(
+            resource_pressure, "check_agents_slice_pressure", lambda: None
+        )
+        await notifier.maybe_sample()
+        assert [n for n in notes if n.get("group_key") == "agents-slice-oom"] == []
+
+
 class TestCriticalEpisode:
     def test_entering_critical_pushes_one_critical_note(self, notifier, notes) -> None:
         notifier.observe(_status(POSTURE_CRITICAL, gb=1.2), now=0.0)

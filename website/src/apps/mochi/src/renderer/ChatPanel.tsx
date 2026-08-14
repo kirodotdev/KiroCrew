@@ -55,6 +55,7 @@ import { MochiCodeBlock } from '../../panel/MochiCodeBlock'
 import { reportStat } from '../../panel/panelBridge'
 import { i18nT } from '../../../../i18n/t'
 import { i18next } from '../../../../i18n'
+import { isElectron } from '../../../../lib/electron'
 import { moodLabel, stateLabel } from '../../i18nKeys'
 
 /**
@@ -214,7 +215,9 @@ const PinnedChip: React.FC<{
 
   const handleClick = () => {
     api?.markPinnedSeen?.(pin.path)
-    api?.previewFile?.(pin.path)
+    // Preview is a shell-bridge capability; in a browser tab the click can
+    // only mark the pin seen, not open the OS previewer.
+    if (isElectron) api?.previewFile?.(pin.path)
     onMarkSeen?.(pin.path)
   }
 
@@ -223,27 +226,31 @@ const PinnedChip: React.FC<{
     api?.unpinFile?.(pin.path)
   }
 
-  return (
-    <Clickable
-      onClick={handleClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      title={pin.path}
-      style={{
-        display: 'flex',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        padding: '5px 8px',
-        borderRadius: 8,
-        cursor: 'pointer',
-        background: hovered ? 'rgba(255,255,255,0.07)' : 'transparent',
-        transition: 'background 0.15s ease',
-        position: 'relative',
-        opacity: isDeleted ? 0.35 : 1,
-        flexShrink: 0,
-      }}
-    >
+  // The row is a click target only while the click has a visible payoff:
+  // opening the OS previewer (shell only), or clearing an unseen-update dot
+  // (HTTP-backed, works everywhere). Otherwise it renders inert — same
+  // treatment as the inline file chip — so a browser tab never shows a
+  // live-looking control that silently does nothing. Hover still reveals the
+  // unpin button, which is its own control and works everywhere.
+  const clickable = isElectron || (isUpdated && !isDeleted)
+
+  const chipStyle: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    padding: '5px 8px',
+    borderRadius: 8,
+    cursor: clickable ? 'pointer' : 'default',
+    background: clickable && hovered ? 'rgba(255,255,255,0.07)' : 'transparent',
+    transition: 'background 0.15s ease',
+    position: 'relative',
+    opacity: isDeleted ? 0.35 : 1,
+    flexShrink: 0,
+  }
+
+  const body = (
+    <>
       {/* Colored file icon */}
       <File size={14} color={isDeleted ? 'var(--text-muted)' : extColor} style={{ flexShrink: 0 }} />
 
@@ -302,6 +309,31 @@ const PinnedChip: React.FC<{
           <X size={12} />
         </button>
       )}
+    </>
+  )
+
+  if (!clickable) {
+    return (
+      <div
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        title={pin.path}
+        style={chipStyle}
+      >
+        {body}
+      </div>
+    )
+  }
+
+  return (
+    <Clickable
+      onClick={handleClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={pin.path}
+      style={chipStyle}
+    >
+      {body}
     </Clickable>
   )
 }
@@ -1698,29 +1730,41 @@ const FileChip: React.FC<{ path: string }> = ({ path: filePath }) => {
       fontSize: 11, lineHeight: 1.3, verticalAlign: 'middle',
     }}>
       <File size={11} color="var(--text-muted)" />
-      <span style={{ color: 'var(--text)', cursor: 'pointer', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-        title={filePath}
-        role="button"
-        tabIndex={0}
-        onClick={() => api?.previewFile?.(filePath)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); api?.previewFile?.(filePath) } }}
-      >{short}</span>
-      <button onClick={() => api?.previewFile?.(filePath)} title={i18nT('apps.mochi.chatPanel.preview')} aria-label={i18nT('apps.mochi.chatPanel.preview')} style={{
-        background: 'none', border: 'none', padding: '1px', cursor: 'pointer',
-        color: 'var(--text-muted)', display: 'flex', alignItems: 'center',
-        transition: 'color 0.15s',
-      }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
-      ><Eye size={11} /></button>
-      <button onClick={() => api?.revealFile?.(filePath)} title={i18nT('apps.mochi.chatPanel.reveal_in_finder')} aria-label={i18nT('apps.mochi.chatPanel.reveal_in_finder')} style={{
-        background: 'none', border: 'none', padding: '1px', cursor: 'pointer',
-        color: 'var(--text-muted)', display: 'flex', alignItems: 'center',
-        transition: 'color 0.15s',
-      }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
-      ><Folder size={11} /></button>
+      {/* Preview and reveal both delegate to the shell bridge (window.mochi),
+          published only by the Electron preload — in a browser tab the calls
+          are silent no-ops, so the dead controls are withheld rather than
+          rendered and the label stays plain text. */}
+      {isElectron ? (
+        <>
+          <span style={{ color: 'var(--text)', cursor: 'pointer', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={filePath}
+            role="button"
+            tabIndex={0}
+            onClick={() => api?.previewFile?.(filePath)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); api?.previewFile?.(filePath) } }}
+          >{short}</span>
+          <button onClick={() => api?.previewFile?.(filePath)} title={i18nT('apps.mochi.chatPanel.preview')} aria-label={i18nT('apps.mochi.chatPanel.preview')} style={{
+            background: 'none', border: 'none', padding: '1px', cursor: 'pointer',
+            color: 'var(--text-muted)', display: 'flex', alignItems: 'center',
+            transition: 'color 0.15s',
+          }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+          ><Eye size={11} /></button>
+          <button onClick={() => api?.revealFile?.(filePath)} title={i18nT('apps.mochi.chatPanel.reveal_in_finder')} aria-label={i18nT('apps.mochi.chatPanel.reveal_in_finder')} style={{
+            background: 'none', border: 'none', padding: '1px', cursor: 'pointer',
+            color: 'var(--text-muted)', display: 'flex', alignItems: 'center',
+            transition: 'color 0.15s',
+          }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+          ><Folder size={11} /></button>
+        </>
+      ) : (
+        <span style={{ color: 'var(--text)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={filePath}
+        >{short}</span>
+      )}
     </span>
   )
 }

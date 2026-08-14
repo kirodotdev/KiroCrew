@@ -172,6 +172,18 @@ export function PreferencesTab() {
         </Btn>
       </form>
 
+      {/* Stated at the point of interaction, not only on the App Store card:
+          the advisor cannot read this store, so a preference typed here does
+          not reach it until the user says it in the conversation. Given the
+          same weight as the form above it -- as a muted footnote it read as
+          fine print next to an affordance that looks fully functional. */}
+      <p
+        role="note"
+        className="text-sm px-3 py-2 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text)] leading-relaxed"
+      >
+        {i18nT('apps.personalShopper.preferencesTab.the_advisor_cannot_read_this_list_paste_what_ma')}
+      </p>
+
       {preferences.length === 0 && (
         <EmptyState
           icon={<Tag size={28} />}

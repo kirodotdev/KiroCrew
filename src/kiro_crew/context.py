@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import (
     audit_injection_dropped,
     contains_injection,
@@ -953,9 +955,7 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
         # the value stays persisted, and the UI itself already degraded to
         # auto-detect — but without a line here an operator cannot distinguish
         # "not configured" from "rejected" when the steer is absent.
-        logger.debug(
-            "dashboard.language %r names no shipped catalog; not steering", lang
-        )
+        logger.debug("dashboard.language %r names no shipped catalog; not steering", lang)
         return ""
     return lang
 
@@ -1395,6 +1395,61 @@ def _skills_injection_plan(agent: str | None, *, is_cc: bool) -> tuple[bool, lis
     return (is_cc if globs else not is_custom), globs
 
 
+def _emit_context_section_timings(
+    marks: list[tuple[str, float]],
+    *,
+    scope: str,
+    is_custom: bool,
+    total_chars: int = 0,
+) -> None:
+    """Log and record per-section durations for a first-turn context build.
+
+    The first-turn context block is assembled AFTER the user's message arrives
+    and the caller awaits it before dispatching the prompt, so its cost lands
+    directly on time-to-first-token. Only a per-section breakdown can attribute
+    that latency; without one, the whole assembly is a single opaque interval.
+
+    *marks* is an ordered list of ``(label, monotonic)`` checkpoints. The first
+    entry labels nothing and only stamps the start, so a section's duration is
+    the delta from its predecessor. Repeated labels accumulate.
+
+    ``custom`` is recorded as a bool rather than the agent name deliberately: a
+    populated install has dozens of agents, and one series per agent per section
+    would multiply the series count for no diagnostic gain.
+    """
+    if len(marks) < 2:
+        return
+    timings: dict[str, float] = {}
+    for (_, prev), (label, current) in zip(marks, marks[1:]):
+        timings[label] = timings.get(label, 0.0) + (current - prev) * 1000.0
+    total_ms = (marks[-1][1] - marks[0][1]) * 1000.0
+    ranked = sorted(timings.items(), key=lambda kv: kv[1], reverse=True)
+    # Sub-millisecond sections are omitted from the line to keep it readable;
+    # they are still recorded as metric points below. A build whose every
+    # section rounds to zero would log a header with no sections at all, which
+    # is noise on the hottest path.
+    reportable = [(label, ms) for label, ms in ranked if ms >= 1.0]
+    if reportable:
+        logger.info(
+            "Context timings [%s]: total=%.0fms chars=%d %s",
+            scope,
+            total_ms,
+            total_chars,
+            " ".join(f"{label}={ms:.0f}ms" for label, ms in reportable),
+        )
+    try:
+        recorder = get_recorder()
+        for label, ms in timings.items():
+            recorder.histogram(
+                "kirocrew.context.section.duration",
+                ms,
+                unit="ms",
+                attrs={"section": label, "custom": is_custom},
+            )
+    except Exception:
+        logger.debug("Context section metric emission failed", exc_info=True)
+
+
 class ContextBuilder:
     """Builds context for injection into ACP prompts.
 
@@ -1514,12 +1569,12 @@ class ContextBuilder:
                 "critical point.\n"
                 "- Supporting bullets only if the reader would be STUCK without "
                 "them. Max 3. Each bullet is one short sentence.\n"
-                "- Take a position. Name your pick. Resolve \"it depends\" "
+                '- Take a position. Name your pick. Resolve "it depends" '
                 "immediately.\n"
                 "- Do NOT add: tables, headers, numbered lists > 3 items, "
-                "\"common pitfalls\", \"also consider\", multi-section layouts, "
-                "or any content that fails the test: \"would the reader be "
-                "stuck without this line?\"\n"
+                '"common pitfalls", "also consider", multi-section layouts, '
+                'or any content that fails the test: "would the reader be '
+                'stuck without this line?"\n'
                 "- Code blocks and commands are the answer — never cut them.\n"
                 "- Never compress for brevity: security warnings, "
                 "irreversible-action confirmations, and ordered multi-step "
@@ -1739,6 +1794,15 @@ class ContextBuilder:
         else:
             logger.debug("Building session context for kirocrew agent")
 
+        # Section timings: monotonic checkpoints, one per assembled block, so the
+        # first-turn build's cost can be attributed per section instead of read as
+        # one opaque interval. Flat marks rather than nested timers keep the
+        # assembly flow unchanged.
+        _marks: list[tuple[str, float]] = [("", time.monotonic())]
+
+        def _mark(label: str) -> None:
+            _marks.append((label, time.monotonic()))
+
         # Critical rules (diff rendering, OPTIONS buttons, absolute-path file
         # links). These are dashboard/Slack UI contracts and apply to ALL
         # providers — including Claude Code. The dashboard renders clickable
@@ -1788,6 +1852,7 @@ class ContextBuilder:
         # chrome around its tool calls is in. Empty (no block) when the user
         # never picked a language explicitly.
         parts.append(_build_ui_language_section(_cfg))
+        _mark("preamble")
 
         # Name any group the parent withheld, before the sections themselves, so
         # the sub-agent reads the scope as framing rather than discovering a gap.
@@ -1797,6 +1862,7 @@ class ContextBuilder:
             profile_ctx = _build_user_profile_section(_cfg)
             if profile_ctx:
                 parts.append(profile_ctx)
+        _mark("profile")
 
         # Workspace identity — kirocrew-only (custom agents don't use workspaces)
         if not is_custom:
@@ -1817,12 +1883,14 @@ class ContextBuilder:
                 "not for one-off facts.\n"
                 "[End of workspace identity]\n\n"
             )
+        _mark("workspace")
 
         # Documentation pointer — kirocrew-only, lightweight reference
         if not is_custom and _group_included(context_groups, CONTEXT_GROUP_PROJECT):
             docs_ctx = _build_docs_section()
             if docs_ctx:
                 parts.append(docs_ctx)
+        _mark("docs")
 
         # Skills lazy-load is opt-in (default OFF), mirroring MCP prewarm. OFF:
         # the skills block is the legacy full dump under a single flat 165k
@@ -1845,6 +1913,7 @@ class ContextBuilder:
                 if lazy_skills and len(steering_ctx) > caps.steering:
                     steering_ctx = steering_ctx[: caps.steering] + "\n...[steering truncated]\n"
                 parts.append(steering_ctx)
+        _mark("steering")
 
         # Thread conversation history — highest priority context.
         # Use pre-computed LLM compression when available; fall back to truncation.
@@ -1915,6 +1984,7 @@ class ContextBuilder:
                 "skipping thread history (kiro-cli has native history)",
                 session_key,
             )
+        _mark("thread_history")
 
         # Stop event context — inject notes for recent stop events so the
         # LLM knows prior turns were cancelled by the user.
@@ -1922,6 +1992,7 @@ class ContextBuilder:
             _stop_notes = _build_stop_event_notes(self.conversation_log, session_key)
             if _stop_notes:
                 parts.append(_stop_notes)
+        _mark("stop_notes")
 
         # Memory and lessons: inject for ALL agents (including custom).
         # The user's preferences, project context, and learned corrections
@@ -1935,10 +2006,19 @@ class ContextBuilder:
                 projects_cap=caps.projects,
                 history_cap=caps.memory_history,
                 semantic_cap=caps.semantic,
-                episodic_cap=caps.episodic,
+                # Bounded by the scaled episodic cap, never above the historical
+                # 3000-char default (same bound the previous build_message-side
+                # injection applied).
+                episodic_cap=min(_EPISODIC_INJECT_CAP, caps.episodic),
+                # Rank semantic memory against the request and let episodic
+                # retrieval fire — both are query-gated inside get_context, so
+                # an empty query (eval runner, re-seeds without a message)
+                # keeps recency-ordered semantic and no episodic block.
+                query=query_text,
             )
             if memory_ctx:
                 parts.append(memory_ctx)
+        _mark("memory")
 
         # Skills. Three cases, in precedence order:
         #
@@ -1971,6 +2051,7 @@ class ContextBuilder:
                 if lazy_skills and len(skills_ctx) > caps.skills:
                     skills_ctx = skills_ctx[: caps.skills] + "\n...[skills truncated]\n"
                 parts.append(skills_ctx)
+        _mark("skills")
 
         # Lessons: global only — injected for ALL agents (skipped for temporary
         # sessions).
@@ -2027,6 +2108,14 @@ class ContextBuilder:
                     )
                     lessons_ctx = lessons_ctx[: caps.lessons] + "\n…[lessons truncated]\n"
                 parts.append(lessons_ctx)
+        # Query-DEPENDENT, but only when a query is supplied: get_lessons_context
+        # ranks against the request — and pays a synchronous query embedding to do
+        # it — solely when query_text is non-empty. An empty query_text (this
+        # method's default) keeps recency order and skips the embedding entirely,
+        # so this section is bimodal across call sites. Kept as its own section
+        # because it is the one block a speculative prebuild cannot compute ahead
+        # of the message.
+        _mark("lessons")
 
         # Provenance-tagged entries from recent sessions (skipped for temporary)
         if (
@@ -2045,6 +2134,7 @@ class ContextBuilder:
                         f"- [thread {p['source_thread']}, {p['ts'][:16]}] {p['snippet']}"
                     )
                 parts.append("## Recent Session Context\n" + "\n".join(prov_lines) + "\n\n")
+        _mark("provenance")
 
         context = "".join(parts)
         if len(context) > max_context_chars:
@@ -2064,6 +2154,13 @@ class ContextBuilder:
             agent or "kirocrew",
             is_custom,
             len(context),
+        )
+        _mark("finalize")
+        _emit_context_section_timings(
+            _marks,
+            scope="build_session_context",
+            is_custom=bool(is_custom),
+            total_chars=len(context),
         )
         return context
 
@@ -2372,36 +2469,11 @@ class ContextBuilder:
             len(parts),
         )
 
-        # Episodic memory — only on new sessions to avoid cross-thread contamination;
-        # ACP native history already provides in-thread context for follow-ups.
-        # Skipped for temporary sessions.
-        if minimal_context:
-            logger.info("🔍 Minimal context — episodic memory skipped")
-        elif blocks_reads:
-            logger.info("🔍 Temporary session — episodic memory skipped")
-        elif not _group_included(context_groups, CONTEXT_GROUP_MEMORY):
-            logger.info("🔍 Memory group withheld by parent — episodic memory skipped")
-        elif is_new_session:
-            memory = self.get_memory_for(memory_store or workspace)
-            if memory.vector_store:
-                # Scale the episodic cap to the window like every other section.
-                # This is the ONLY live episodic injection (build_session_context
-                # passes no query, so its episodic_cap path never fires), so it
-                # must scale here or episodic would be the one section that stays
-                # full-size on a small model. Bounded by the scaled episodic cap,
-                # never above the historical 3000-char default.
-                episodic_cap = min(_EPISODIC_INJECT_CAP, _resolve_caps(model_window).episodic)
-                episodic_ctx = memory.vector_store.get_episodic_context(
-                    query_text=text,
-                    cap=episodic_cap,
-                )
-                if episodic_ctx:
-                    parts.append(_neutralize_structural_markers(episodic_ctx) + "\n")
-                    logger.info("🔍 Injected episodic memory (%d chars)", len(episodic_ctx))
-            else:
-                logger.info("🔍 No vector store — episodic memory skipped")
-        else:
-            logger.info("🔍 Follow-up message — episodic memory skipped (trust ACP)")
+        # Episodic memory — injected on new sessions only, via the query-passing
+        # memory.get_context() call inside build_session_context above (episodic
+        # is query-gated there, and follow-ups skip it: ACP native history
+        # already provides in-thread context, and cross-thread contamination is
+        # avoided). A second injection here would duplicate the same fragments.
 
         # Project context — inject on every message so the LLM always knows
         # the active project, even when set/changed after session start.

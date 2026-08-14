@@ -25,6 +25,7 @@ on:
       - GPT 5.6 Review
       - Design Review
       - UX Review
+      - First Principles Review
       - CodeQL
       # Stage-2 fork AI reviewers. They run from the default branch via
       # `workflow_run` (on CI's completion), so their own completion must
@@ -34,6 +35,7 @@ on:
       - Fork GPT 5.6 Review
       - Fork Design Review
       - Fork UX Review
+      - Fork First Principles Review
     # `completed` publishes the real verdict. `requested`/`in_progress` exist so
     # a monitored workflow flipping BACK to running -- most commonly a re-run of
     # a reviewer (e.g. Opus 4.8 re-run after a human override) -- re-triggers this
@@ -401,6 +403,7 @@ jobs:
               "checkrun:GPT 5.6 Review|GPT 5.6 Review"
               "checkrun:Design Review|Design Review"
               "checkrun:UX Review|UX Review"
+              "checkrun:First Principles Review|First Principles Review"
             )
           else
             if [ "$stacked" = "true" ]; then
@@ -413,6 +416,7 @@ jobs:
               "codex-review.yml|GPT 5.6 Review"
               "design-review.yml|Design Review"
               "ux-review.yml|UX Review"
+              "first-principles-review.yml|First Principles Review"
             )
           fi
           passed=()
@@ -456,9 +460,13 @@ jobs:
                     and (.conclusion | IN("success","neutral")))] | length' <<<"$cruns")"
               if [ "$total" -eq 0 ] || [ "$incomplete" -gt 0 ]; then
                 pending+=("$label (not started)")
-              elif [ "$label" = "UX Review" ]; then
-                # UX stays advisory: once the real review posts any decisive
-                # result it never blocks; only-skipped means it has not posted yet.
+              elif [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
+                # UX and First Principles stay advisory: once the real review
+                # posts any decisive result it never blocks; only-skipped means
+                # it has not posted yet. First Principles is advisory because its
+                # BLOCK is a judgment about whether a feature should exist at
+                # all -- a model must not wedge a merge on that until the lane's
+                # calibration is proven; promoting it later is a one-line change.
                 if [ "$fail" -gt 0 ] || [ "$pass" -gt 0 ]; then
                   passed+=("$label (advisory)")
                 else
@@ -537,10 +545,13 @@ jobs:
                   success|skipped) passed+=("$label") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
-              elif [ "$label" = "UX Review" ]; then
-                # UX is advisory: its opinions and infrastructure failures do not
-                # become an independent readiness blocker, but completion is
-                # still required so the verdict is not premature.
+              elif [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
+                # Both are advisory: their opinions and infrastructure failures
+                # do not become an independent readiness blocker, but completion
+                # is still required so the verdict is not premature. First
+                # Principles is advisory because its BLOCK is a judgment about
+                # whether a feature should exist at all -- a model must not wedge
+                # a merge on that until the lane's calibration is proven.
                 passed+=("$label (advisory)")
               elif [ "$label" = "Design Review" ]; then
                 # Design Review BLOCKS on a real BLOCK verdict. design-review.yml

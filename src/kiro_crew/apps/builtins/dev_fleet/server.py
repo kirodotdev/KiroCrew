@@ -358,9 +358,14 @@ def _own_checkout_path() -> str | None:
 
 
 def _same_path(a: str, b: str) -> bool:
+    # "Cannot resolve" means "not the same path", never a crash: ValueError
+    # covers unresolvable operands (an embedded NUL byte in caller-supplied
+    # input), OSError covers ELOOP and friends, and RuntimeError covers the
+    # symlink-loop signal Path.resolve() raises on some platform/version
+    # combinations instead of ELOOP.
     try:
         return Path(a).resolve() == Path(b).resolve()
-    except OSError:
+    except (OSError, ValueError, RuntimeError):
         return False
 
 
@@ -1857,11 +1862,37 @@ async def _serving_install_reason(worktrees: "list[dict]") -> str | None:
     return reason
 
 
+async def _provision_reattach_ids() -> dict[str, str]:
+    """Provision run ids the UI can reattach to after a page reload.
+
+    A run id is exposed while the run is still executing, or when it finished
+    unsuccessfully (the failed stepper + log must survive a reload). A failed
+    id persists until a newer provision for the same checkout overwrites it,
+    the run is evicted from the bounded registry, or the gateway restarts —
+    the UI dismiss is client-side only, so a reload after dismissing re-shows
+    the failure. Successful runs are omitted: the refreshed fleet row already
+    reports the built state, so there is nothing to reattach to. Run ids
+    evicted from the bounded run registry are omitted too — the UI could not
+    fetch their output anyway.
+    """
+    inflight = dict(_PROVISION_INFLIGHT)
+    out: dict[str, str] = {}
+    async with _RUNS_LOCK:
+        for name, rid in inflight.items():
+            run = _RUNS.get(rid)
+            if not run:
+                continue
+            if run.get("status") == "running" or run.get("exit_code") not in (None, 0):
+                out[name] = rid
+    return out
+
+
 async def _build_fleet() -> dict:
     live_path = await _live_worktree_path()
     staged_path = _staged_target()
     worktrees = await _discover_worktrees()
     cfg = _load_cfg()
+    prov_rids = await _provision_reattach_ids()
     legacy_prefixes = tuple(
         f"{r.split('/')[-1].lower()}-wt-" for r in (_FALLBACK_REPOS or [])
     )
@@ -1948,6 +1979,10 @@ async def _build_fleet() -> dict:
             "legacy": bool(legacy_prefixes) and not is_main
             and name.lower().startswith(legacy_prefixes),
             "last_updated_at": g["last_updated_at"],
+            # Active or failed provision run for this checkout, so the page
+            # can reattach the stepper/log after a reload (mirrors
+            # sync_run_id below). None when there is nothing to reattach.
+            "provision_run_id": prov_rids.get(name),
         })
     return {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -1961,6 +1996,12 @@ async def _build_fleet() -> dict:
         # persistent pending-restart state from this, so the instruction outlives
         # the toast that announced it.
         "staged_target": _redact(staged_path) if staged_path else None,
+        # Whether the pointer-only cancel of that stage would be accepted (see
+        # _staged_cancel_available). Only probed while a stage exists; false
+        # otherwise so the dashboard's cancel control stays hidden.
+        "staged_cancel_available": (
+            staged_path is not None and await _staged_cancel_available()
+        ),
         "manual_restart": _manual_restart_command(),
         # WHY the gateway cannot be restarted/repointed from here, when it
         # cannot. Same lesson as pods_unavailable_reason below: the previous
@@ -2788,32 +2829,62 @@ async def _worktree_remove(
     if _POD_AVAILABLE and cfg is None:
         return {"ok": False, "error": "cannot load pod configuration to verify pod state"}
     if _POD_AVAILABLE and cfg:
+        # Pre-gate: verify the pod backend is reachable. If absent
+        # (PodBackendAbsent), pods cannot be supervised — a systemd --user
+        # unit requires a reachable session bus for its lifecycle. Even if
+        # the socket were removed under a running pod, that pod is now
+        # uncontrollable and will terminate on its next watchdog cycle.
+        # As a defense-in-depth measure, we also probe the unit file directly.
         try:
-            loop = asyncio.get_running_loop()
-            active = await loop.run_in_executor(
-                subprocess_executor(), rt.active_names, cfg
-            )
-            if name in active:
-                r = await _pod_down(name)
-                if not r.get("ok"):
-                    return {"ok": False, "error": f"pod shutdown failed: {r.get('error')}"}
-                stopped_pod = True
-                try:
-                    active2 = await loop.run_in_executor(
-                        subprocess_executor(), rt.active_names, cfg
-                    )
-                    if name in active2:
-                        return {"ok": False, "error": "pod still active after shutdown"}
-                except Exception as exc:
+            rt.require_backend()
+        except rt.PodBackendAbsent:
+            # Defense-in-depth: attempt a direct unit-state query. If this
+            # somehow succeeds (bus re-appeared between require_backend and
+            # here), we fall through to the normal active-names path.
+            try:
+                loop = asyncio.get_running_loop()
+                unit_state = await loop.run_in_executor(
+                    subprocess_executor(), rt.unit_state, cfg, name
+                )
+                if unit_state[0] == "active":
                     return {
                         "ok": False,
-                        "error": f"cannot verify pod shutdown: {_redact(str(exc))}",
+                        "error": "pod backend reported absent but unit is active — refusing",
                     }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": f"cannot verify pod state: {_redact(str(exc))}",
-            }
+            except Exception:
+                pass  # unit_state also fails → backend truly gone
+            logger.debug(
+                "dev-fleet worktree_remove: pod backend absent; "
+                "skipping pod-state check for %r",
+                name,
+            )
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+                active = await loop.run_in_executor(
+                    subprocess_executor(), rt.active_names, cfg
+                )
+                if name in active:
+                    r = await _pod_down(name)
+                    if not r.get("ok"):
+                        return {"ok": False, "error": f"pod shutdown failed: {r.get('error')}"}
+                    stopped_pod = True
+                    try:
+                        active2 = await loop.run_in_executor(
+                            subprocess_executor(), rt.active_names, cfg
+                        )
+                        if name in active2:
+                            return {"ok": False, "error": "pod still active after shutdown"}
+                    except Exception as exc:
+                        return {
+                            "ok": False,
+                            "error": f"cannot verify pod shutdown: {_redact(str(exc))}",
+                        }
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"cannot verify pod state: {_redact(str(exc))}",
+                }
 
     if progress is not None:
         progress("removing")
@@ -2828,19 +2899,24 @@ async def _worktree_remove(
         # gateway running from deleted files, so re-verify inactivity now.
         if _POD_AVAILABLE and cfg:
             try:
-                loop = asyncio.get_running_loop()
-                active3 = await loop.run_in_executor(
-                    subprocess_executor(), rt.active_names, cfg
-                )
-                if name in active3:
-                    return {"ok": False, "error": (
-                        "pod became active again before removal — refusing"
-                    )}
-            except Exception as exc:
-                return {
-                    "ok": False,
-                    "error": f"cannot re-verify pod state before removal: {_redact(str(exc))}",
-                }
+                rt.require_backend()
+            except rt.PodBackendAbsent:
+                pass  # backend provably absent — no pods can exist
+            else:
+                try:
+                    loop = asyncio.get_running_loop()
+                    active3 = await loop.run_in_executor(
+                        subprocess_executor(), rt.active_names, cfg
+                    )
+                    if name in active3:
+                        return {"ok": False, "error": (
+                            "pod became active again before removal — refusing"
+                        )}
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "error": f"cannot re-verify pod state before removal: {_redact(str(exc))}",
+                    }
         cmd = ["git", "-C", MAIN_REPO, "worktree", "remove", path]
         if force_use_git_force:
             cmd.append("--force")
@@ -4067,6 +4143,26 @@ async def _gateway_service_reason() -> str | None:
     return reason
 
 
+async def _staged_cancel_available() -> bool:
+    """Whether ``_make_live``'s pointer-only cancel of a staged cutover would
+    be accepted on this host.
+
+    Mirrors the cancel branch's own precondition (``not can_restart``). The
+    pointer-only cancel is deliberately limited to hosts whose service manager
+    this app cannot drive: on a drivable host the stage also carries a service
+    DEFINITION, so ``_make_live`` refuses the shortcut with
+    ``staged_cutover_pending``. The fleet payload reports this so the dashboard
+    only offers a cancel control the backend will accept — note it is NOT the
+    same signal as ``_gateway_service_active()``, which also goes true for the
+    foreground last resort (where ``can_restart`` stays false and the cancel
+    DOES work).
+    """
+    svc = _gateway_backend()
+    if svc is None:
+        return True
+    return (await _live_user_unit_status()) != "ok"
+
+
 async def _gateway_service_active() -> bool:
     """Cached check: is the gateway running as a service we can drive?
 
@@ -4401,7 +4497,8 @@ def _staged_notice(name: str, unit_status: str) -> str:
     return (
         f"{name} is staged as the live target. Run "
         f"`{_manual_restart_command()}` to finish the cutover — the gateway "
-        f"will come up on it. It was not automatic because "
+        f"will come up on it. To back out instead, use the live row's "
+        f"Cancel staged cutover in Dev Fleet. It was not automatic because "
         f"{_make_live_status_error(unit_status)}."
     )
 
@@ -4505,8 +4602,18 @@ def _make_live_plan(worktree: Path, kcbin: Path, *,
     return plan
 
 
-async def _make_live(path: str, dry_run: bool = False) -> dict:
+async def _make_live(path: str, dry_run: bool = False,
+                     expected_staged: str | None = None) -> dict:
     """Repoint the live gateway at *path* by staging the live-target pointer.
+
+    ``expected_staged`` binds a CANCEL to the state the operator confirmed:
+    when set, the request proceeds only while the staged target still
+    resolves to that path (checked at entry and re-checked under the
+    single-flight lock) AND *path* still resolves to the running checkout,
+    refusing with ``stage_changed`` otherwise — without both bindings, a
+    cancel confirmed against one stage/live pair could silently discard a
+    different stage, or fall through to the cutover path and restart the
+    gateway into a checkout that is no longer live.
 
     Validation order (all enforced for ``dry_run`` too): the path is a known,
     existing worktree (``unknown_path`` / ``missing_path``); NOT inside a pod,
@@ -4556,6 +4663,28 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
             "(run this from the live dashboard)"
         )}
 
+    # A request carrying expected_staged is a CANCEL of that exact stage and
+    # nothing else. Validated HERE, before any branching: if the named stage
+    # completed or was re-pointed while the confirm dialog sat open, the
+    # request must not fall through to the full-cutover path below — that
+    # would restart the gateway back into the requested checkout, turning a
+    # stale "cancel" into the destructive opposite of what the operator asked.
+    # Re-checked under the single-flight lock before the pointer write.
+    if expected_staged is not None:
+        pending_entry = _staged_target()
+        if pending_entry is None or not _same_path(expected_staged,
+                                                   pending_entry):
+            now_desc = (
+                f"{Path(pending_entry).name} is staged now"
+                if pending_entry is not None
+                else "nothing is staged now"
+            )
+            return {"ok": False, "code": "stage_changed", "error": (
+                "the staged cutover changed while you were confirming: "
+                f"{now_desc}, not {Path(expected_staged).name} — refresh "
+                "the fleet and retry"
+            )}
+
     # The live target is a POINTER the gateway resolves at startup, not an edit
     # to this host's service definition — so staging never needs the service
     # manager. Restarting still does, and that is the one thing a `kirocrew
@@ -4580,6 +4709,19 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
 
     live = await _live_worktree_path()
     same_as_running = live is not None and _same_path(str(real), live)
+    if expected_staged is not None and not same_as_running:
+        # A request carrying expected_staged is a CANCEL: it re-pins the
+        # checkout the operator saw as live. If the live checkout moved since
+        # the dialog (a cutover landed and re-staged in between), the request
+        # names a checkout that is no longer running — falling through to the
+        # cutover path below would restart the gateway into it, the
+        # destructive opposite of a cancel. Refuse instead.
+        live_name = Path(live).name if live else "an unknown checkout"
+        return {"ok": False, "code": "stage_changed", "error": (
+            "the live checkout changed while you were confirming: "
+            f"{live_name} is running now, not {real.name} — refresh the "
+            "fleet and retry"
+        )}
     if same_as_running and _staged_target() is None:
         # Nothing staged: pointing at the checkout already running is a no-op on
         # EVERY host. This guard sits before the cancel below so that a drivable
@@ -4638,9 +4780,20 @@ async def _make_live(path: str, dry_run: bool = False) -> dict:
             # been completed or re-pointed since the entry check, and cancelling
             # a stage that no longer exists would delete a pointer someone else
             # just wrote.
-            if _staged_target() is None:
+            pending_now = _staged_target()
+            if pending_now is None:
                 return {"ok": False, "code": "already_live",
                         "error": f"{real.name} is already the live gateway"}
+            if expected_staged is not None and not _same_path(expected_staged,
+                                                              pending_now):
+                # The stage moved between the entry check and the lock: this
+                # cancel was confirmed against a different target, so acting
+                # would discard a stage the operator never saw.
+                return {"ok": False, "code": "stage_changed", "error": (
+                    "the staged cutover changed while you were confirming: "
+                    f"{Path(pending_now).name} is staged now, not "
+                    f"{Path(expected_staged).name} — refresh the fleet and retry"
+                )}
             # Re-pin the RUNNING checkout rather than deleting the pointer.
             # Deleting only means "stay here" when the running image is the
             # installed build; if this checkout was itself selected by an earlier
@@ -4945,7 +5098,20 @@ async def api_dev_fleet_make_live(request: web.Request) -> web.Response:
     dry_run = body.get("dry_run")
     if dry_run is not None and not isinstance(dry_run, bool):
         return web.json_response({"error": "dry_run must be a boolean"}, status=400)
-    return web.json_response(await _make_live(path, dry_run is True))
+    expected_staged = body.get("expected_staged")
+    if expected_staged is not None and (
+        not isinstance(expected_staged, str)
+        or not expected_staged
+        or "\x00" in expected_staged
+    ):
+        return web.json_response(
+            {"code": "invalid_expected_staged",
+             "error": "expected_staged must be a non-empty string "
+                      "without NUL bytes"}, status=400
+        )
+    return web.json_response(
+        await _make_live(path, dry_run is True, expected_staged=expected_staged)
+    )
 
 
 # =============================================================================

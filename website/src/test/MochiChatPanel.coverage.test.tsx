@@ -70,6 +70,18 @@ const openExternal = vi.fn()
 /** Local image bytes, so an inline image can render without touching disk. */
 const readLocalImage = vi.fn(async (_path: string): Promise<string | null> => null)
 
+/**
+ * Whether the panel believes it runs inside the Electron shell. The reveal
+ * button delegates to the shell bridge, so the panel withholds it in a plain
+ * browser tab; most tests here exercise the shell surface, hence `true`.
+ * Read through a getter so a test can flip it without a module reset.
+ */
+let electronShell = true
+vi.mock('../lib/electron', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  get isElectron() { return electronShell },
+}))
+
 vi.mock('../apps/mochi/src/mochiApi', () => ({
   api: {
     getMochiConfig: async () => ({ petName: 'Mochi', theme: 'mocha' }),
@@ -128,6 +140,7 @@ beforeEach(() => {
   subscribers.clear()
   history = []
   backendOnline = true
+  electronShell = true
   sendMessage.mockResolvedValue(undefined)
   editResend.mockResolvedValue({ ok: true })
   respondApproval.mockResolvedValue(undefined)
@@ -253,6 +266,40 @@ describe('PinnedSidePanel', () => {
     expect(markPinnedSeen).toHaveBeenCalledWith('/home/u/src/a.ts')
     expect(previewFile).toHaveBeenCalledWith('/home/u/src/a.ts')
     expect(onMarkSeen).toHaveBeenCalledWith('/home/u/src/a.ts')
+  })
+
+  it('still marks a pin seen in a browser tab, but skips the shell-only preview', async () => {
+    electronShell = false
+    const onMarkSeen = vi.fn()
+    render(
+      <PinnedSidePanel pins={[pin('/home/u/src/a.ts')]} updatedPaths={new Set(['/home/u/src/a.ts'])}
+        deletedPaths={new Set()} visible onMarkSeen={onMarkSeen} />,
+    )
+    await userEvent.click(screen.getByText('a.ts'))
+    // Mark-seen is HTTP-backed and works everywhere; only the OS previewer
+    // needs the shell, so that call alone is withheld.
+    expect(markPinnedSeen).toHaveBeenCalledWith('/home/u/src/a.ts')
+    expect(onMarkSeen).toHaveBeenCalledWith('/home/u/src/a.ts')
+    expect(previewFile).not.toHaveBeenCalled()
+  })
+
+  it('renders a browser-tab pin with nothing to clear as inert, keeping unpin on hover', async () => {
+    electronShell = false
+    render(
+      <PinnedSidePanel pins={[pin('/home/u/src/a.ts')]} updatedPaths={new Set()}
+        deletedPaths={new Set()} visible />,
+    )
+    // No previewer and no update dot to clear: a click would have no visible
+    // payoff, so the row must not present as a control at all.
+    const label = screen.getByText('a.ts')
+    expect(label.closest('[role="button"]')).toBeNull()
+    fireEvent.click(label)
+    expect(previewFile).not.toHaveBeenCalled()
+    expect(markPinnedSeen).not.toHaveBeenCalled()
+    // The unpin affordance is its own HTTP-backed control and stays reachable.
+    await userEvent.hover(label)
+    await userEvent.click(screen.getByRole('button', { name: 'Unpin' }))
+    expect(unpinFile).toHaveBeenCalledWith('/home/u/src/a.ts')
   })
 
   it('reveals Unpin on hover and unpins on click', async () => {
@@ -795,7 +842,9 @@ describe('ChatPanel streaming footer', () => {
     await renderPanel()
     stream('Building it now <mcwidget title="Half')
     expect(await screen.findByText('Building it now')).toBeInTheDocument()
-    expect(screen.queryByText(/mcwidget/)).not.toBeInTheDocument()
+    // The stream commit is async; wait for React to flush before asserting the
+    // negative, or a slow runner still sees the pre-strip markup and fails.
+    await waitFor(() => expect(screen.queryByText(/mcwidget/)).not.toBeInTheDocument())
   })
 
   it('replaces the streamed text with the committed message', async () => {
@@ -821,6 +870,23 @@ describe('ChatPanel markdown affordances', () => {
     expect(previewFile).toHaveBeenCalledWith('src/main.py')
     await userEvent.click(screen.getByRole('button', { name: 'Show in file manager' }))
     expect(revealFile).toHaveBeenCalledWith('src/main.py')
+  })
+
+  it('renders the chip inert in a browser tab, where the shell bridge is absent', async () => {
+    electronShell = false
+    history = [
+      { role: 'assistant', content: 'Look at `src/main.py` first.', timestamp: 1700000000000 },
+    ]
+    await renderPanel()
+    // Preview and reveal both delegate to the shell bridge, so in a browser tab
+    // the chip keeps the path (with its full-path tooltip) but offers no dead
+    // controls: no buttons, and the label is plain text rather than focusable.
+    const label = await screen.findByTitle('src/main.py')
+    expect(label).not.toHaveAttribute('role')
+    expect(screen.queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show in file manager' })).not.toBeInTheDocument()
+    fireEvent.click(label)
+    expect(previewFile).not.toHaveBeenCalled()
   })
 
   it('chips an absolute path found in ordinary prose', async () => {

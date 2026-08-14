@@ -165,8 +165,19 @@ describe('RemoteArtifactDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // happy-dom has no object-URL support, which the HTML render path needs.
+    // Well-formed blob: URI, not a bare 'blob:remote-test' literal: this
+    // component renders a real <iframe src={blobUrl}>, and disableIframePageLoading's
+    // synchronous refusal doesn't end the story — happy-dom's AsyncTaskManager
+    // can retry the SAME request later, off this test's call stack. A malformed
+    // value survives that retry looking like a same-origin PATH once the scheme
+    // is gone, missing both the msw catch-all's blob:/data: fast path and its
+    // DOM_DRIVEN_LOAD_RE allowlist, landing on the 501 fallback — which surfaces
+    // as a deferred ECONNREFUSED during fork-worker teardown and can crash the
+    // whole shard. Anchoring to the real test origin keeps the blob: scheme
+    // intact through the retry either way. See WidgetFrame.test.tsx (the
+    // original report) for the full mechanism.
     // @ts-expect-error assigning a test stub onto the URL global
-    globalThis.URL.createObjectURL = vi.fn().mockReturnValue('blob:remote-test')
+    globalThis.URL.createObjectURL = vi.fn().mockReturnValue('blob:http://localhost:6776/remote-test')
     // @ts-expect-error assigning a test stub onto the URL global
     globalThis.URL.revokeObjectURL = vi.fn()
     // clearAllMocks resets call history only, so re-establish the defaults every
@@ -264,7 +275,7 @@ describe('RemoteArtifactDetailPage', () => {
       )
       renderPage()
       const frame = await screen.findByTitle(`Remote artifact: ${EXT_ID}`)
-      expect(frame).toHaveAttribute('src', 'blob:remote-test')
+      expect(frame).toHaveAttribute('src', 'blob:http://localhost:6776/remote-test')
       expect(frame).toHaveAttribute('sandbox', expect.stringContaining('allow-scripts'))
       expect(URL.createObjectURL).toHaveBeenCalled()
     })

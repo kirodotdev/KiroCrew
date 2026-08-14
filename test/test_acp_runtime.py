@@ -31,6 +31,8 @@ from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.runtime import (
+    _REQUEST_TIMEOUT,
+    _SESSION_NEW_TIMEOUT,
     _TERMINATE_TIMEOUT,
     AcpRuntime,
     AcpRuntimeDead,
@@ -3260,7 +3262,7 @@ class TestAcpRuntimeLoadSession:
 
         sent: list[tuple[str, dict]] = []
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             sent.append((method, params))
             # session/load echoes "modes"; set_mode echoes nothing meaningful.
             if method == METHOD_SESSION_LOAD:
@@ -3308,7 +3310,7 @@ class TestAcpRuntimeLoadSession:
         rt, _, _ = _make_runtime()
         rt._can_load_session = True
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             return {}  # no "modes" → load did not actually restore state
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -3327,7 +3329,7 @@ class TestAcpRuntimeLoadSession:
         rt._can_load_session = True
         captured: dict = {}
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             if method == METHOD_SESSION_LOAD:
                 captured.update(params)
                 return {"modes": {}, "models": []}
@@ -3406,7 +3408,7 @@ async def test_create_session_registers_queue_on_success(monkeypatch):
     registered so the returned handle receives its frames."""
     rt, _, _ = _make_runtime()
 
-    async def _fake_send(method, params):
+    async def _fake_send(method, params, timeout=None):
         if method == METHOD_SESSION_NEW:
             return {"sessionId": "sid-ok"}
         return {}
@@ -3813,7 +3815,7 @@ async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
     rt._process = proc
     rt._pid = 4242
 
-    async def _fake_send(method, params):
+    async def _fake_send(method, params, timeout=None):
         if method == METHOD_SESSION_NEW:
             return {"sessionId": "sid-lite"}
         return {}
@@ -3871,7 +3873,7 @@ async def test_reader_retains_mcp_registration_frames_during_init():
     task = asyncio.create_task(rt._reader_loop())
     try:
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             if method == METHOD_SESSION_NEW:
                 # Frames arrive while session/new is in flight — before the
                 # queue can be registered under the not-yet-known session id.
@@ -5207,3 +5209,78 @@ def test_parse_session_modes_shapes():
     assert ids == ["kirocrew", "ops", "code-reviewer"]
     assert current == "kirocrew"
     assert advertised is True
+
+
+# ── Session-start timeout budget (#2946) ──
+#
+# kiro-cli blocks the session/new (and session/load) response while it
+# initializes the session's MCP servers; a remote server pending OAuth holds
+# that for its full 30s authorization wait. These tests lock in the CALL SITE
+# — the timeout actually handed to _send_and_await — not just the constant,
+# because dropping the ``timeout=`` argument silently reverts to the generic
+# 30s _REQUEST_TIMEOUT, which is the exact regression.
+
+
+@pytest.mark.asyncio
+async def test_session_new_call_site_passes_budget_above_request_timeout(monkeypatch):
+    """create_session must hand _send_and_await an explicit session/new timeout
+    that exceeds _REQUEST_TIMEOUT — the generic default equals the backend's
+    30s OAuth wait, turning session start into a race the client loses."""
+    rt, _, _ = _make_runtime()
+    rt._expect_mcp_reports = False  # skip the MCP drain wait — not under test
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            seen["timeout"] = timeout
+            return {"sessionId": "sid-budget"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.create_session(cwd="/w", mcp_servers=[])
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert isinstance(seen["timeout"], float)
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_session_load_call_site_passes_budget_above_request_timeout(monkeypatch):
+    """load_session is gated by the same MCP re-initialization (kiro-cli
+    re-initializes servers on load; oauth_request frames are staged while
+    either request is in flight), so it must carry the same budget."""
+    rt, _, _ = _make_runtime()
+    rt._can_load_session = True
+    rt._expect_mcp_reports = False  # skip the MCP drain wait — not under test
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            seen["timeout"] = timeout
+            return {"modes": {"currentModeId": "kirocrew"}}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.load_session("/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", cwd="/w")
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_send_and_await_timeout_error_names_the_budget():
+    """The timeout message must carry the budget that elapsed so a 90s
+    session-start timeout is distinguishable from a generic 30s one. The
+    'timed out' substring is load-bearing (chat_runner matches on it)."""
+    rt, _, _ = _make_runtime()
+
+    with pytest.raises(AcpRuntimeError) as exc_info:
+        # stdin is mocked and nothing ever responds → wait_for times out.
+        await rt._send_and_await("probe/method", {}, timeout=0.01)
+
+    msg = str(exc_info.value)
+    assert "timed out" in msg
+    assert "0.01s" in msg
+    assert "probe/method" in msg

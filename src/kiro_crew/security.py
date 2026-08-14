@@ -4201,6 +4201,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     "workspace/md-notebook/vaults.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
+    # The optional Playwright extension token. It removes the browser-side approval
+    # click for an attach, so a process that could read it could attach to the
+    # operator's logged-in browser without them seeing a prompt. The gateway hands
+    # it to the CLI through the environment, so nothing legitimate opens the file.
+    "playwright-extension-token",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects after migration). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.
@@ -5343,6 +5348,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
     {
         ("accounts.google.com", "/o/oauth2/v2/auth"),
         ("api.notion.com", "/v1/oauth/authorize"),
+        ("app.asana.com", "/-/oauth_authorize"),
         ("auth.atlassian.com", "/authorize"),
         ("github.com", "/login/oauth/authorize"),
         ("linear.app", "/oauth/authorize"),

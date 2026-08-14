@@ -29,8 +29,8 @@ no Remotion, no Steel cloud browser**, so internal dashboards never leave the ma
 - "Show off <dashboard flow> and send it to me on Slack"
 - Any time the deliverable is a **video walkthrough** of a live web UI.
 
-Not for: static screenshots (just use `browser_take_screenshot`), or recording a native
-desktop/terminal app (this is browser-only).
+Not for: static screenshots (use the `web-verify` skill — `playwright-cli screenshot`), or
+recording a native desktop/terminal app (this is browser-only).
 
 ---
 

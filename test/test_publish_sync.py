@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from pathlib import Path
 
 import pytest
 
@@ -329,6 +331,40 @@ async def test_push_version_skips_already_synced_version(store, fake_client):
 
 
 @pytest.mark.asyncio
+async def test_push_version_re_pushes_widget_on_wrapper_revision_bump(store, fake_client, monkeypatch):
+    """A widget with stale wrapper_revision is re-pushed even if content version matches (#3373)."""
+    store.create(name="Widget", content="<p>hi</p>", kind="widget", slug="w")
+    await publish_sync.publish("w")
+    art = store.get("w")
+    assert art.publication.last_synced_kirocrew_version == 1
+    assert art.publication.wrapper_revision == publish_sync.WRAPPER_REVISION
+
+    # Simulate a wrapper bump (CSP tightened) — revision goes up by 1.
+    monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
+    fake_client.calls.clear()
+
+    # Same artifact version, but wrapper is stale → should re-push.
+    await publish_sync.push_version(store.get("w"))
+    assert len(fake_client.called("upload_version")) == 1
+    # After push, wrapper_revision is updated.
+    art = store.get("w")
+    assert art.publication.wrapper_revision == publish_sync.WRAPPER_REVISION
+
+
+@pytest.mark.asyncio
+async def test_push_version_skips_non_widget_on_wrapper_revision_bump(store, fake_client, monkeypatch):
+    """Non-widget artifacts ignore wrapper_revision — only widgets wrap with CSP (#3373)."""
+    store.create(name="Doc", content="hello", kind="text", slug="t")
+    await publish_sync.publish("t")
+    monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
+    fake_client.calls.clear()
+
+    await publish_sync.push_version(store.get("t"))
+    # Text artifact → no wrapper staleness → skip.
+    assert fake_client.called("upload_version") == []
+
+
+@pytest.mark.asyncio
 async def test_push_version_conflict_sets_last_error(store, fake_client):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     await publish_sync.publish("d")
@@ -513,9 +549,145 @@ def test_wrap_widget_html_self_contained():
     html = publish_sync.wrap_widget_html("<h1>Hi</h1>")
     assert html.startswith("<!DOCTYPE html>")
     assert "<h1>Hi</h1>" in html
-    assert '<script src="https://cdn.tailwindcss.com"></script>' in html
+    # No external script is fetched: the Tailwind runtime is inlined from the
+    # staged bundle, so the document renders with no network egress.
+    assert "<script src=" not in html
+    assert "cdn.tailwindcss.com" not in html
     # MCP auto-injects <base>; the wrapper must not add it.
     assert "<base" not in html
+
+
+def _csp_directives(csp: str) -> dict[str, set[str]]:
+    """Parse a CSP string into ``{directive: {source tokens}}``.
+
+    Asserting against parsed tokens rather than searching the raw string is
+    exact: a substring hit says nothing about WHICH directive carries a token,
+    so `'unsafe-inline'` in style-src would satisfy a naive check aimed at
+    script-src.
+    """
+    directives: dict[str, set[str]] = {}
+    for part in csp.split(";"):
+        fields = part.split()
+        if fields:
+            directives[fields[0]] = set(fields[1:])
+    return directives
+
+
+def test_published_csp_grants_no_eval():
+    csp = _csp_directives(publish_sync._CSP)
+    # The published CSP must not hand widget JS a dynamic-exec primitive. The
+    # vendored Tailwind v4 runtime needs no eval, so the token has no purpose
+    # here and its presence would undo the containment of LLM-authored inline
+    # scripts.
+    assert "'unsafe-eval'" not in csp["script-src"]
+    # Pinned exactly, not by membership: the Play CDN that required eval is gone
+    # from both directives that named it, and any future source added to either
+    # one fails here rather than widening the policy silently. What survives is
+    # inline widget bodies plus the two CDNs widget-authored Chart.js/D3 load
+    # from; Tailwind v4 emits CSS as inline <style>, so style-src needs no CDN.
+    assert csp["script-src"] == {
+        "'unsafe-inline'",
+        "https://cdn.jsdelivr.net",
+        "https://cdnjs.cloudflare.com",
+    }
+    assert csp["style-src"] == {"'unsafe-inline'"}
+    # And the containment the accepted inline risk rests on.
+    assert csp["default-src"] == {"'none'"}
+    assert csp["connect-src"] == {"'none'"}
+    assert csp["form-action"] == {"'none'"}
+    assert csp["base-uri"] == {"'none'"}
+
+
+def test_wrap_widget_html_inlines_the_staged_runtime(tmp_path, monkeypatch):
+    runtime = tmp_path / "tailwindcss-browser.js"
+    runtime.write_text("/*tw-runtime*/globalThis.__tw=1;", encoding="utf-8")
+    monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", runtime)
+
+    html = publish_sync.wrap_widget_html("<p>x</p>")
+    assert "<script>/*tw-runtime*/globalThis.__tw=1;</script>" in html
+    # Inlined, not linked — an external viewer has no dashboard origin to resolve.
+    assert "<script src=" not in html
+
+
+def test_wrap_widget_html_without_staged_runtime_does_not_fall_back_to_cdn(tmp_path, monkeypatch):
+    # An unbuilt source checkout has no staged bundle. The document must degrade
+    # to unstyled utility classes rather than reintroduce the Play CDN, which
+    # would require the 'unsafe-eval' the CSP no longer grants.
+    monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", tmp_path / "absent.js")
+
+    html = publish_sync.wrap_widget_html("<p>x</p>")
+    assert "cdn.tailwindcss.com" not in html
+    assert "<script" not in html
+    # Still a well-formed document carrying the widget and the eval-free CSP.
+    assert html.startswith("<!DOCTYPE html>")
+    assert "<p>x</p>" in html
+    assert "'unsafe-eval'" not in html
+
+
+@pytest.mark.parametrize("close_tag", ["</script>", "</SCRIPT>", "</Script >", "</sCrIpT/"])
+def test_wrap_widget_html_neutralises_script_close_in_runtime(close_tag, tmp_path, monkeypatch):
+    # Guard against a dependency bump shipping a terminator in a string literal.
+    # HTML tokenization matches `</script` in ANY ascii casing, so a
+    # lowercase-only escape would let `</SCRIPT>` close the tag early and dump
+    # the remainder of the bundle into the document body as text.
+    runtime = tmp_path / "tailwindcss-browser.js"
+    runtime.write_text(f'var s="{close_tag}";', encoding="utf-8")
+    monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", runtime)
+
+    html = publish_sync.wrap_widget_html("<p>x</p>")
+    # Neutralised, and the tag name keeps its original casing so the string the
+    # browser reconstructs is byte-identical to the bundle's.
+    assert f'"<\\/{close_tag[2:]}";' in html
+    # Exactly one script element: the runtime's own, not a truncated one plus
+    # leaked bundle text.
+    assert html.count("</script>") == 1
+
+
+@pytest.mark.parametrize("lookalike", ["</ſcript>", "</scrıpt>", "</scrİpt>"])
+def test_wrap_widget_html_leaves_non_ascii_lookalikes_untouched(lookalike, tmp_path, monkeypatch):
+    # The terminator escape folds case only over ASCII. Python's Unicode
+    # IGNORECASE maps U+017F onto `s` and U+0131/U+0130 onto `i`, but the HTML
+    # tokenizer does not — so escaping these would insert a backslash the source
+    # never had, corrupting a raw string literal for no security gain.
+    runtime = tmp_path / "tailwindcss-browser.js"
+    runtime.write_text(f'var s=String.raw`{lookalike}`;', encoding="utf-8")
+    monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", runtime)
+
+    html = publish_sync.wrap_widget_html("<p>x</p>")
+    assert lookalike in html
+    assert "<\\/" not in html
+
+
+def test_tailwind_runtime_filename_matches_the_frontend_emit_target():
+    # The runtime path has two owners in two languages: vendorPaths.ts declares
+    # the URL path vite emits to, and _TAILWIND_RUNTIME_FILE reads the emitted
+    # file off disk. They fail asymmetrically — a rename breaks the dashboard
+    # loudly (404 + frontend test) but degrades publishing to a log warning and
+    # an unstyled document. This turns that silent drift into a red test.
+    vendor_paths = Path(__file__).resolve().parents[1] / "website" / "src" / "lib" / "vendorPaths.ts"
+    declared = re.search(
+        r"TAILWIND_RUNTIME_PATH\s*=\s*'([^']+)'", vendor_paths.read_text(encoding="utf-8")
+    )
+    assert declared, "vendorPaths.ts no longer declares TAILWIND_RUNTIME_PATH"
+    assert publish_sync._TAILWIND_RUNTIME_FILE.name == declared.group(1).rsplit("/", 1)[-1]
+
+
+def test_wrap_widget_html_round_trips_with_runtime_inlined(tmp_path, monkeypatch):
+    # The inlined bundle sits between the CSP meta and the body sentinels; the
+    # sentinel scan must still recover the exact inner fragment.
+    runtime = tmp_path / "tailwindcss-browser.js"
+    runtime.write_text("/*tw*/", encoding="utf-8")
+    monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", runtime)
+
+    inner = "<div class='grid gap-2'>round trip</div>"
+    assert publish_sync.unwrap_widget_html(publish_sync.wrap_widget_html(inner)) == inner
+
+
+def test_tailwind_runtime_js_returns_empty_on_unreadable_asset(tmp_path, monkeypatch):
+    # A directory at the asset path raises OSError on read — the helper reports
+    # it and returns empty rather than propagating into the publish call.
+    monkeypatch.setattr(publish_sync, "_TAILWIND_RUNTIME_FILE", tmp_path)
+    assert publish_sync._tailwind_runtime_js() == ""
 
 
 def test_redact_untrusted_scans_every_source():
@@ -996,6 +1168,18 @@ async def test_upstream_status_reports_ahead(store, fake_client, tmp_path):
     assert status["cloud_version"] == 5
     assert status["source"] == "publication"
     assert status["live_dirty"] is False
+
+
+@pytest.mark.asyncio
+async def test_upstream_status_reports_local_ahead_on_wrapper_revision_bump(store, fake_client, tmp_path, monkeypatch):
+    """Widget with stale wrapper_revision shows local_ahead even if content hasn't changed (#3373)."""
+    art = store.create(name="W", content="<p>x</p>", kind="widget")
+    _track_publication(store, art.slug)
+    # Simulate wrapper bump.
+    monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
+    fake_client.get_response = _remote_get(tmp_path, "ignored", version=1, sha="sha-v1")
+    status = await publish_sync.upstream_status(art.slug)
+    assert status["local_ahead"] is True
 
 
 @pytest.mark.asyncio

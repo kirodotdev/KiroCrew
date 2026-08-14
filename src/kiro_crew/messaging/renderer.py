@@ -285,3 +285,72 @@ class Renderer(ABC):
             await self.on_steer_consumed(event.text)
         else:
             raise ValueError(f"unknown output event kind: {event.kind!r}")
+
+
+class SilentRenderer(Renderer):
+    """Renders nothing. The enforcement half of a dashboard channel disconnect.
+
+    Disconnecting a channel means "stop talking to me there". Slack enforces that
+    on its own dedicated streaming mirror, via the ``slack_mirror_is_paused``
+    gates in the dashboard turn loop. Every OTHER channel drives its turns
+    through the shared inbound pipeline instead, where the reply is written by
+    the channel's own :class:`Renderer` — a path the dashboard never touches. So
+    a stored pause for a non-Slack conversation had nothing to gate, and a
+    disconnected channel kept answering as if it were still connected.
+
+    ``dispatch.drive_turn`` substitutes this for the real renderer when the
+    conversation is disconnected. The turn STILL RUNS and the inbound message
+    still lands in the session: the binding is retained by design, and the
+    dashboard is where that user is now working. Only the writes back to the
+    muted conversation are dropped. ``on_turn_start`` and ``close`` inherit the
+    base no-ops, so no typing indicator is ever opened and there is nothing to
+    finalize.
+
+    ``on_prompt_choice`` is dropped like the rest, matching the Slack gate that
+    withholds the linked approval prompt from a disconnected thread: the
+    dashboard renders the same prompt, and soliciting a decision in the
+    conversation the user just left would ask where they are no longer looking.
+    """
+
+    def __init__(self, capabilities: Any = None, channel_type: str = "") -> None:
+        # Typed loosely and defaulted, unlike the base: this is a SUBSTITUTE built
+        # from whatever renderer the channel supplied, and it must not fail to
+        # substitute because that object lacks `capabilities`. Nothing here reads
+        # the value -- every handler is a no-op -- so it is only carried so the
+        # object still satisfies the base contract for anyone who inspects it.
+        super().__init__(capabilities)
+        self.channel_type = channel_type
+
+    async def close(self, *args: Any, **kwargs: Any) -> None:
+        """Tolerate a channel's WIDENED close signature.
+
+        The base declares a no-arg ``close``, but widening it is legal and
+        Telegram does exactly that (``close(failure_reason=...)``) -- and its
+        ``finally`` calls it that way unconditionally. Since this class stands in
+        for whatever renderer the channel built, a strict signature here would
+        turn a disconnected Telegram turn into a ``TypeError`` in a ``finally``.
+        There is nothing to finalize either way: nothing was ever opened.
+        """
+        return None
+
+    async def on_text_chunk(self, text: str) -> None:
+        return None
+
+    async def on_thinking(self, text: str) -> None:
+        return None
+
+    async def on_tool_call(
+        self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
+    ) -> None:
+        return None
+
+    async def on_prompt_choice(
+        self, options: list[dict[str, Any]], request_id: str | int
+    ) -> None:
+        return None
+
+    async def on_compaction(self, context_usage_pct: float) -> None:
+        return None
+
+    async def on_done(self, stop_reason: str = "") -> None:
+        return None

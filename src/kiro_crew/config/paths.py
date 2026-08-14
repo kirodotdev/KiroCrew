@@ -470,6 +470,29 @@ def _valid_override_home() -> Path | None:
     return p
 
 
+def shared_kiro_settings_writable() -> bool:
+    """False when this process must not write the user's kiro-cli settings.
+
+    ``~/.kiro/settings/mcp.json`` belongs to the kiro-cli installation, not to a
+    Kiro Crew data home, so it is resolved from the real home and a throwaway
+    instance shares it with the operator's live one. A pod is throwaway by
+    construction: its home is empty, so any decision it reaches about which MCP
+    servers should exist is a decision about a different install. Writing that
+    decision to the shared file disarms the live instance -- a pod boots with no
+    browser-mode marker, concludes browsing is off, and deletes the operator's
+    browse entry.
+
+    Keyed on ``KIROCREW_POD`` rather than on the presence of a data-home override,
+    because a custom ``KIROCREW_HOME`` is a normal single-instance install (the
+    desktop build uses one) and must keep its own registration working. Only an
+    instance that declares itself a pod is refused.
+
+    Reads stay allowed. Only the write side is refused, so a pod can still report
+    what it sees.
+    """
+    return not os.environ.get("KIROCREW_POD")
+
+
 def config_dir() -> Path:
     global _config_dir_memo
     override_raw = os.environ.get("KIROCREW_HOME")

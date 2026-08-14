@@ -294,10 +294,22 @@ class TestChannelCredentialIsolation:
     """Gateway-only channel credentials never reach agent subprocesses."""
 
     def test_denylist_covers_loader_credentials(self):
-        from kiro_crew.config.loader import _CREDENTIAL_KEYS
+        """Every gateway-owned credential key is agent-denied.
 
-        missing = set(_CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS)
+        ``KIRO_API_KEY`` is the one deliberate exception: it is the AGENT's own
+        model credential, not a gateway-owned channel token — kiro-cli reads it
+        from its own environment, so denying it would break model auth in a
+        post-scrub container. The spawn paths re-inject it explicitly
+        (``config.loader.inject_kiro_cli_api_key``) instead of letting it ride
+        the inherited environ.
+        """
+        from kiro_crew.config.loader import _CREDENTIAL_KEYS, CRED_KIRO_API_KEY
+
+        missing = set(_CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS) - {CRED_KIRO_API_KEY}
         assert not missing, f"loader credential keys not in agent denylist: {sorted(missing)}"
+        # The carve-out stays exactly one key wide and never joins the denylist:
+        # a denied KIRO_API_KEY would strip the agent's own credential.
+        assert CRED_KIRO_API_KEY not in _AGENT_DENIED_ENV_KEYS
 
     def test_scrub_env_strips_channel_secrets(self, monkeypatch):
         for key, value in _FAKE_CHANNEL_ENV.items():

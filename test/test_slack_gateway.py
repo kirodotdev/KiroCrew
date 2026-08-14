@@ -2278,10 +2278,15 @@ class TestRunGateway:
 
         cfg = KiroCrewConfig()
         with patch.object(cfg, "load_credentials", return_value={}):
-            with patch.object(
-                GatewayOrchestrator, "run", new_callable=AsyncMock
-            ) as mock_run:
-                await run_gateway(cfg, no_dashboard=True, no_crons=True)
+            # The aggregate-cgroup-ceiling apply shells out to systemctl —
+            # a host-service mutation the rootdir guard refuses; stub it.
+            with patch(
+                "kiro_crew.slack.gateway.ensure_agents_slice_limits", return_value=True
+            ):
+                with patch.object(
+                    GatewayOrchestrator, "run", new_callable=AsyncMock
+                ) as mock_run:
+                    await run_gateway(cfg, no_dashboard=True, no_crons=True)
         mock_run.assert_awaited_once()
 
 

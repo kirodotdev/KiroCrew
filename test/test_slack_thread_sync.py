@@ -198,6 +198,10 @@ class TestChannelNeutralSlotLinks:
                 "target": "…767244",
                 "direction": "origin",
                 "live": True,
+                # Present on EVERY row, origin included: the conversation a
+                # session was born in can be disconnected too, so the row needs
+                # a state to render even though nothing here has paused it.
+                "paused": False,
             }
         ]
 
@@ -220,6 +224,7 @@ class TestChannelNeutralSlotLinks:
                 "target": "…767244",
                 "direction": "out",
                 "live": True,
+                "paused": False,
             }
         ]
 

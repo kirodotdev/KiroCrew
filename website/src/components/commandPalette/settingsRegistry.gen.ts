@@ -6,30 +6,6 @@ import type { SettingEntry } from './settingsTypes'
 export const SETTINGS_REGISTRY: SettingEntry[] = 
 [
   {
-    "id": "browser.attach-to-my-running-browser",
-    "label": "Attach to my running browser",
-    "description": "Use my running Chromium browser (Chrome, Edge, Brave, Arc, Opera) with its existing logins and sessions. Recommended for macOS.",
-    "tab": "browser",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "browser.connection-token-optional",
-    "label": "Connection Token (optional)",
-    "description": "Paste PLAYWRIGHT_MCP_EXTENSION_TOKEN value from the extension popup",
-    "tab": "browser",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "browser.enable-browser-mode",
-    "label": "Enable Browser Mode",
-    "description": "Let the agent read and operate web pages: click, type, and navigate, not just read. Enabling this downloads the browser tools.",
-    "tab": "browser",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
     "id": "channels.file-sessions-in-a-folder",
     "label": "File sessions in a folder",
     "tab": "channels",
@@ -95,22 +71,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "chat.auto-add-documents",
-    "label": "Auto-Add Documents",
-    "description": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. It reads them with its own tools under your approval — Kiro Crew fetches nothing itself. Added documents appear in one “Auto-added” source you can remove in a click.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.auto-add-saved-artifacts",
-    "label": "Auto-Add Saved Artifacts",
-    "description": "Mirror documents you save as artifacts into the library, keep them in sync as you edit, and remove them when you delete the artifact.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
-  },
-  {
     "id": "chat.auto-compact-threshold",
     "label": "Auto-Compact Threshold",
     "description": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
@@ -118,21 +78,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "select",
     "occurrence": 1,
     "configKey": "session.autocompact_pct"
-  },
-  {
-    "id": "chat.auto-ingest-limit-per-scan",
-    "label": "Auto-Ingest Limit Per Scan",
-    "tab": "chat",
-    "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.auto-register-project-documents",
-    "label": "Auto-Register Project Documents",
-    "description": "Register the documents of each project you work in, so its design docs, specs and READMEs become searchable without adding the folder by hand. Documents only — never source code, agent instructions or generated files.",
-    "tab": "chat",
-    "type": "toggle",
-    "occurrence": 1
   },
   {
     "id": "chat.background-effort",
@@ -330,9 +275,25 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.session-summaries",
+    "label": "Session summaries",
+    "description": "Summarize each session by intent. Uses tokens on turns that change the session.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.show-context-percentage",
     "label": "Show Context Percentage",
     "description": "Display usage percentage next to the context progress bar",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "chat.show-context-tokens",
+    "label": "Show Context Tokens",
+    "description": "Display used and total tokens next to the context progress bar",
     "tab": "chat",
     "type": "toggle",
     "occurrence": 1
@@ -478,6 +439,23 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.run-a-local-gateway",
+    "label": "Run a local gateway",
+    "description": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
+    "id": "display.default-shell",
+    "label": "Default shell",
+    "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "dashboard.terminal.shell"
+  },
+  {
     "id": "display.display-mode",
     "label": "Display Mode",
     "description": "How the session color is applied to the row.",
@@ -496,7 +474,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   {
     "id": "display.font-family",
     "label": "Font Family",
-    "description": "UI font family for the dashboard",
+    "description": "UI font family for the dashboard. Code font follows the active theme.",
     "tab": "display",
     "type": "buttonGroup",
     "occurrence": 1

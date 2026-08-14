@@ -437,12 +437,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # ── Sweep orphaned permissions from prior turns ──
     _sweep_stale_permissions(slot)
 
-    # No per-message browse marker: Browser Mode is a capability, not a per-turn
-    # gate. When it is on the `browser_*` MCP tools are registered and present in
-    # the agent's tool list; when it is off they are not. The agent itself decides
-    # whether to operate a browser or read with web_fetch (the system prompt and
-    # the kirocrew-commands / web-browse skills tell it how), so the backend
-    # injects nothing here.
+    # No per-message browse marker: browsing is a capability, not a per-turn
+    # gate. The agent drives a browser by running `playwright-cli` shell
+    # commands, so the capability is simply whether that binary is on PATH. The
+    # agent itself decides whether to operate a browser or read with web_fetch
+    # (the system prompt and the kirocrew-commands / web-browse skills tell it
+    # how), so the backend injects nothing here.
     slot.append("user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None)
 
     # Note: untitled slots display as "New Session…" via _ChatSlot.display_title
@@ -862,8 +862,14 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot} — message history for a slot.
 
     Query params:
-      - ``limit``: max messages to return (optional; if omitted, returns ALL messages from disk)
-      - ``before``: return messages before this index (legacy pagination, still supported)
+      - ``limit``: max messages to return (optional; if omitted, returns ALL messages from disk).
+        Clamped to 1..500. A value below 1 is rejected rather than clamped up, because
+        no caller asking for 0 wanted exactly one message.
+      - ``before``: return messages before this index (legacy pagination, still supported).
+        ``before=0`` is valid and yields an empty page.
+
+    Either param being a non-integer is a 400; both used to raise out of the
+    handler and surface as a 500.
 
     By default (no limit), reads the full chained history from disk across
     gateway restarts. Pagination params are retained for backwards compatibility.
@@ -875,23 +881,46 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     limit_raw = request.query.get("limit")
-    before = request.query.get("before")
+    before_raw = request.query.get("before")
+
+    # Both params arrive as strings and were converted at their point of use, so a
+    # non-integer escaped as a ValueError and the client saw a 500 for what is
+    # plainly a bad request. The branch below still keys off the RAW values, so
+    # routing is unchanged.
+    try:
+        limit = min(int(limit_raw or "200"), 500)
+        before = int(before_raw) if before_raw is not None else None
+    except ValueError:
+        return web.json_response(
+            {"error": "limit and before must be integers", "code": "invalid_query_params"},
+            status=400,
+        )
+    # Clamped above but not below, limit=0 made `start == end`: an empty page
+    # reporting has_more true, which paginates forever.
+    if limit < 1:
+        return web.json_response(
+            {"error": "limit must be >= 1", "code": "limit_out_of_range"}, status=400
+        )
 
     # No limit → load ALL messages (chained across gateway restarts).
     # In-memory slot.messages is authoritative for the current session.
     # _disk_older_count gates whether to read disk AND provides the stable
     # slice boundary (set at restore/resume, never drifts with new messages).
-    if limit_raw is None and before is None:
+    if limit_raw is None and before_raw is None:
         mem_msgs = list(slot.messages)
         if slot._disk_older_count > 0 and state.conversation_log:
             history_key = slot_history_key(slot)
             try:
-                disk_msgs = state.conversation_log.read_messages_chained(history_key)
+                disk_msgs = await asyncio.to_thread(
+                    state.conversation_log.read_messages_chained, history_key
+                )
             except Exception:
                 logger.warning("read_messages_chained failed for %s", history_key, exc_info=True)
                 disk_msgs = []
             older = disk_msgs[: slot._disk_older_count] if disk_msgs else []
-            messages = older + mem_msgs
+            # Re-read the tail after the await: that suspension point lets a message
+            # land mid-read, and the client replaces its list with this response.
+            messages = older + list(slot.messages)
         else:
             messages = mem_msgs
         total = len(messages)
@@ -899,11 +928,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     else:
         # Legacy pagination path (retained for programmatic callers).
         # Always reads from chained disk history; no in-memory offset math.
-        limit = min(int(limit_raw or "200"), 500)
         history_key = slot_history_key(slot)
         try:
             all_msgs = (
-                state.conversation_log.read_messages_chained(history_key)
+                await asyncio.to_thread(
+                    state.conversation_log.read_messages_chained, history_key
+                )
                 if state.conversation_log
                 else []
             )
@@ -921,7 +951,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             all_msgs = list(all_msgs) + list(slot.messages[-unflushed:])
         total = len(all_msgs)
         if before is not None:
-            end = max(0, min(int(before), total))
+            end = max(0, min(before, total))
         else:
             end = total
         start = max(0, end - limit)
@@ -1383,6 +1413,17 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
     force = request.query.get("force", "").lower() == "true"
+    # The session the slot's turns actually RUN on, which is what has to be
+    # cancelled. `_history_key_for(name)` is wrong for every slot that carries a
+    # `linked_session_key`: a cron-born tab (`cron-<job_id>` → `cron:<job_id>`),
+    # a channel-born tab (`slack:<ts>`) and a workflow-born tab all run their
+    # turns under that key (`chat_runner` resolves it with
+    # `effective_session_key`), while the dashboard-prefixed spelling names a
+    # session that never existed. `SessionManager.stop_turn` then finds nothing
+    # and returns "idle", the handler settles the card as "stopped", and the
+    # turn keeps streaming — so Stop is a silent no-op that reports success,
+    # once per press.
+    session_key = effective_session_key(slot)
 
     # Escalation path: a second stop press while a cooperative cancel is
     # already pending hard-kills. We escalate on ANY second press — not only
@@ -1411,9 +1452,9 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         # Unblock chat runner if it's suspended waiting for tool approval or on
         # a pending ask_question card.
         _unblock_pending_waits(state, slot)
-        await state.sessions.stop_turn(_history_key_for(name), force=True, on_hard=_on_hard_force)
+        await state.sessions.stop_turn(session_key, force=True, on_hard=_on_hard_force)
         sel().log_tool_invocation(
-            session_key=_history_key_for(name),
+            session_key=session_key,
             agent=getattr(slot, "agent", "") or "kirocrew",
             source="dashboard",
             tool_name="dashboard_stop",
@@ -1433,7 +1474,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         else:
             _info = "stop already in progress"
         sel().log_tool_invocation(
-            session_key=_history_key_for(name),
+            session_key=session_key,
             agent=getattr(slot, "agent", "") or "kirocrew",
             source="dashboard",
             tool_name="dashboard_stop",
@@ -1496,7 +1537,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     _unblock_pending_waits(state, slot)
 
     outcome = await state.sessions.stop_turn(
-        _history_key_for(name), force=False, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
+        session_key, force=False, preserve_queue=True, on_soft=_on_soft, on_hard=_on_hard
     )
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id:
@@ -1504,7 +1545,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=_history_key_for(name),
+        session_key=session_key,
         agent=getattr(slot, "agent", "") or "kirocrew",
         source="dashboard",
         tool_name="dashboard_stop",
@@ -1850,13 +1891,17 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     if not slot.running:
         return web.json_response({"ok": True, "info": "not running"})
+    # Same reason as `api_chat_slot_stop`: cancel the session the turns RUN on,
+    # not the dashboard-prefixed spelling of the slot key, which names nothing
+    # for a slot carrying a `linked_session_key`.
+    session_key = effective_session_key(slot)
     # Idempotent guard: interrupt already in progress. State alone decides —
     # do NOT also require _stop_event_id: after the early soft_pending claim
     # below, a concurrent request can arrive before the stop card is created
     # (event id still None), and a compound condition would let it through.
     if slot._stop_state != "idle":
         sel().log_tool_invocation(
-            session_key=_history_key_for(name),
+            session_key=session_key,
             agent=getattr(slot, "agent", "") or "kirocrew",
             source="dashboard",
             tool_name="dashboard_interrupt",
@@ -1921,7 +1966,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     _unblock_pending_waits(state, slot)
 
     outcome = await state.sessions.stop_turn(
-        _history_key_for(name),
+        session_key,
         force=False,
         preserve_queue=True,
         on_soft=_on_soft,
@@ -1933,7 +1978,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
     sel().log_tool_invocation(
-        session_key=_history_key_for(name),
+        session_key=session_key,
         agent=getattr(slot, "agent", "") or "kirocrew",
         source="dashboard",
         tool_name="dashboard_interrupt",

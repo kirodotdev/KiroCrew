@@ -180,13 +180,17 @@ describe('AppsPage — hero art and provenance trust', () => {
     listRegistries.mockResolvedValue({ registries: [{ name: 'kirodotdev-labs', repo: 'https://github.com/kirodotdev-labs/registry', branch: 'main' }] })
   })
 
-  it('renders developer hero art in list rows, theme-appropriate', async () => {
+  it('renders developer hero art on the editorial surface only, theme-appropriate', async () => {
     renderPage()
     await screen.findByText('FEATURED')
-    // useTheme is stubbed to dark, so the dark asset wins in both the
-    // spotlight and the dense row for the same app.
+    // EXACTLY one, not "at least one": this app is featured, so the spotlight is
+    // the only surface that renders its art. It used to be two -- the spotlight
+    // and the dense row -- and a row rendering a 96x54 crop of marketing art is
+    // the thing that changed. Asserting the exact count is what makes a
+    // regression that puts art back into rows fail here.
     const heroes = document.querySelectorAll('img[src="/api/apps/blob?repo=Sage&path=hero-dark.png"]')
-    expect(heroes.length).toBeGreaterThanOrEqual(2)
+    expect(heroes.length).toBe(1)
+    // useTheme is stubbed to dark, so the light asset is never requested.
     expect(document.querySelector('img[src="/api/apps/blob?repo=Sage&path=hero-light.png"]')).toBeNull()
   })
 

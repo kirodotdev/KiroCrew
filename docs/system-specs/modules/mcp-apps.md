@@ -2,7 +2,7 @@
 
 Interactive MCP Apps: an MCP server declares a `ui://` resource on a tool; when that tool's result flows through gatewayd, the gateway fetches the app's HTML document, spools it to disk, and injects an opaque marker into the result text. The dashboard intercepts the marker, renders the app inline at the tool-call transcript row inside a sandboxed null-origin iframe, and relays the app's `tools/call` requests back through the gateway under a deny-by-default visibility gate.
 
-Producer side is gated by `mcp_gateway.apps_enabled` (default ON), with `KIROCREW_MCP_APPS` as an explicit override in both directions (off value wins over config; on value forces the feature). It is independent of `mcp_gateway.enabled`, which governs whether backends are SHARED: a stub is interposed on every stdio server either way, so a server with a connection-private backend renders apps normally. The dashboard consumer side is flag-independent: a marker that appears is handled.
+Producer side follows THE STUB, not a preference: a server listed in `mcp_gateway.stub_servers` gets a stub, and the stub is what carries the render and callback path, so the stub is what grants the feature. `KIROCREW_MCP_APPS` remains an absolute kill switch for an operator who wants a stubbed server without its UI. `mcp_gateway.enabled` governs only whether stubbed backends are SHARED, so a stubbed server with a connection-private backend renders apps normally. `mcp_gateway.apps_enabled` is deprecated and ignored. The dashboard consumer side is flag-independent: a marker that appears is handled.
 
 ## The four durable contracts
 

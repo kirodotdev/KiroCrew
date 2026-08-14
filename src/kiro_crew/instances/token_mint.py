@@ -25,6 +25,7 @@ import logging
 import re
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
+from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ REMOTE_BIN_CANDIDATES: tuple[str, ...] = (
 
 # ttl accepted by `kirocrew token --ttl`: a positive integer with an h/m suffix
 # (e.g. "20h", "30m"). Validated to keep it out of the remote command unchecked.
-_TTL_RE = re.compile(r"^[1-9][0-9]{0,3}[hm]$")
+_TTL_RE = re.compile(TTL_PATTERN)
 
 # Extract the JWT from a `kirocrew token` URL: http://localhost:7777?token=eyJ...
 # (also matches https://.../?token=...&foo=bar).

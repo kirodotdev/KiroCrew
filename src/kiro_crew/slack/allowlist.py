@@ -20,8 +20,7 @@ from typing import TYPE_CHECKING
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     config_path,
-    read_config_for_update,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.dashboard.origin import (
     dashboard_origin,
@@ -299,22 +298,6 @@ async def send_dashboard_link(
 # ---------------------------------------------------------------------------
 
 
-def _read_config() -> dict:
-    """Read config.json for a read-modify-write, failing CLOSED.
-
-    Always re-reads from disk so manual edits are respected. Raises
-    ``ConfigReadError`` on an unreadable (but present) config: the caller
-    rewrites the WHOLE file, so returning ``{}`` here would replace every
-    other setting with an allowlist-only config.
-    """
-    return read_config_for_update(config_path())
-
-
-def _write_config(data: dict) -> None:
-    """Write *data* back to config.json atomically, preserving its mode."""
-    write_config_atomically(config_path(), data)
-
-
 def _update_config_list(
     section_key: str,
     id_field: str,
@@ -326,28 +309,39 @@ def _update_config_list(
     """Add or remove an entry in a ``config.json → slack.<section_key>`` list.
 
     Each entry is a dict with at least *id_field*.  Idempotent — adding
-    a duplicate or removing a missing entry is a no-op.  Always re-reads
-    the file first so manual edits aren't clobbered.
+    a duplicate or removing a missing entry is a no-op (no write at all).
+    Goes through :func:`update_config_locked` so the read-modify-write holds
+    the sidecar advisory lock: a concurrent config writer (dashboard PATCH,
+    CLI, the boot-time meta refresh) cannot land inside this write's window
+    and be silently reverted, and manual edits are still respected because
+    the read happens fresh inside the lock hold.
     """
-    data = _read_config()
-    slack_cfg = data.setdefault("slack", {})
-    entries: list[dict] = slack_cfg.setdefault(section_key, [])
+    changed = ""
 
-    if remove:
-        filtered = [e for e in entries if e.get(id_field) != target_id]
-        if len(filtered) == len(entries):
-            return  # wasn't there — no-op
-        slack_cfg[section_key] = filtered
-        _write_config(data)
-        logger.info("Removed %s=%s from config slack.%s", id_field, target_id, section_key)
-    else:
+    def _apply(data: dict) -> dict | None:
+        nonlocal changed
+        slack_cfg = data.setdefault("slack", {})
+        entries: list[dict] = slack_cfg.setdefault(section_key, [])
+        if remove:
+            filtered = [e for e in entries if e.get(id_field) != target_id]
+            if len(filtered) == len(entries):
+                return None  # wasn't there — no-op, no write
+            slack_cfg[section_key] = filtered
+            changed = "Removed"
+            return data
         if any(e.get(id_field) == target_id for e in entries):
-            return  # already present — no-op
+            return None  # already present — no-op, no write
         entry: dict[str, str] = {id_field: target_id}
         if name:
             entry["name"] = name
         entries.append(entry)
-        _write_config(data)
+        changed = "Added"
+        return data
+
+    update_config_locked(config_path(), mutate=_apply)
+    if changed == "Removed":
+        logger.info("Removed %s=%s from config slack.%s", id_field, target_id, section_key)
+    elif changed == "Added":
         logger.info("Added %s=%s (%s) to config slack.%s", id_field, target_id, name, section_key)
 
 

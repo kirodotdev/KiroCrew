@@ -924,8 +924,8 @@ switched off. Two fields keep that honest:
 only POSTURE — set `mode`, entry COUNTS (`allow_count`/`deny_count`),
 capability `enabled` + inner scope names, ordinal `floor` — and NEVER the rule
 CONTENTS (the allow/deny globs, command patterns). This is deliberate: the
-dashboard is reachable by the agent's own browser tooling (Playwright extension
-mode attaches to the user's authenticated Chrome), and `security_policy.json` /
+dashboard is reachable by the agent's own browser tooling (`playwright-cli attach
+--extension` drives the user's authenticated Chrome), and `security_policy.json` /
 `profiles` are on the `is_sensitive_path` keystone precisely so the agent cannot
 read the ceiling it is fenced by — knowing the exact deny patterns is what would
 let it craft an evasion. The human operator reads the authoritative contents from
@@ -993,10 +993,10 @@ denials leave the same forensic trail.
   through the same effective-deny floor as `on_tool_call` is tracked as its own
   follow-up; do not describe computer-use governance as covering it.
 - **Raster capture has two channels and neither is governed.** Computer use has no
-  `observations` scope any more, and Playwright's already-shipped
-  `browser_take_screenshot` never had one — a fleet that means "no raster capture"
-  must deny both `@kirocrew-computer` and `@playwright/browser_take_screenshot` via
-  the `mcp` scope.
+  `observations` scope any more, and `playwright-cli screenshot` is a shell command
+  rather than a tool call, so an `mcp` deny cannot reach it at all. A fleet that
+  means "no raster capture" must deny `@kirocrew-computer` via the `mcp` scope
+  **and** the browser CLI via the `commands` scope.
 - **The `mcp`-scope deny is now the ONLY governance lever over computer use, and it
   is keyed on a renameable alias.** `mcp.deny: ["@kirocrew-computer"]` works on
   unmodified shipped code, but the server key is derived by `mcp_server_alias()` from

@@ -509,9 +509,12 @@ def test_create_server_pipe_closes_the_handle_when_the_read_mode_flip_fails(
 
     real_close = _winapi.CloseHandle
     closed: list[int] = []
+    failed_handle: int | None = None
     address = transport.resolve_address(tmp_path / "gateway.sock")
 
-    def _boom(*_args: object) -> None:
+    def _boom(handle: int, *_args: object) -> None:
+        nonlocal failed_handle
+        failed_handle = int(handle)
         raise OSError("read-mode flip failed")
 
     def _spy_close(handle: int) -> None:
@@ -524,7 +527,8 @@ def test_create_server_pipe_closes_the_handle_when_the_read_mode_flip_fails(
         with pytest.raises(OSError, match="read-mode flip"):
             transport._create_server_pipe(address, first=True)
 
-    assert len(closed) == 1, "the orphaned pipe handle was not closed"
+    assert failed_handle is not None
+    assert failed_handle in closed, "the orphaned pipe handle was not closed"
     # Proof the instance is really gone: FILE_FLAG_FIRST_PIPE_INSTANCE refuses a
     # second first-instance while any handle to the name is still open, so this
     # only succeeds if the failed attempt released it.

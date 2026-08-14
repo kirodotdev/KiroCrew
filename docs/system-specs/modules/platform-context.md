@@ -645,7 +645,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   searching those roots — a row outside them lists but 404s on tree/detail, so an
   edition satisfying both Protocols MUST keep them consistent; the core enforces
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed
-  row outside every `extra_skills()` root);
+  row outside every `extra_skills()` root. Two further constraints bind the keys
+  an edition may hand out. **A root the core already keys itself is not
+  `package/` territory:** `~/.kiro/skills`, the data home skills dir, configured
+  `skills.extra_paths`, and the active project's `.kiro/skills` are keyed
+  `kiro-user/`, `kiro-workspace/`, or unprefixed, so advertising one of them from
+  `extra_skills()` (legitimate — it makes the loader index it) does NOT also
+  expose it under `package/`; `_edition_package_roots()` computes that difference
+  once and both catalog enumeration and path resolution read it, so the two
+  cannot drift. **Resolution is exact-first and refuses ambiguity:** a
+  `package/<name>` request prefers `<root>/<name>/SKILL.md` over a nested
+  `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
+  it resolves to `None` — HTTP 404, with the competing candidates logged — rather
+  than picking one, because the key cannot express which was meant (paths that
+  merely symlink to the same file are not a tie). An edition that wants both of
+  two same-named skills reachable MUST therefore key them distinguishably);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`

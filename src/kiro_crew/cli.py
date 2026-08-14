@@ -40,7 +40,6 @@ from typing import NoReturn
 
 from kiro_crew import __version__, platform_compat
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
-from kiro_crew.browser.cli import run_browse
 from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
@@ -331,7 +330,7 @@ def _install_child_watcher() -> None:
     for tens of seconds.  PidfdChildWatcher uses a single epoll fd (no extra
     threads) and is immune to this.  On macOS (no pidfd syscall) we install
     SafeChildWatcher instead -- a single SIGCHLD handler, also free of the
-    thread-per-child storm (the _node_version_manager_bins lru_cache only
+    thread-per-child storm (the node_all_bin_dirs lru_cache only
     shrank the surface; the reaper storm itself remained on the default
     watcher).
 
@@ -1155,6 +1154,13 @@ Examples:
     cron_update.add_argument("--name", help="New job name")
     cron_update.add_argument("--message", help="New message")
     cron_update.add_argument("--every", type=int, dest="every_secs", help="New interval in seconds")
+    cron_update.add_argument(
+        "--timeout-secs",
+        type=int,
+        dest="timeout_secs",
+        default=None,
+        help="Per-wake execution budget in seconds (1..86400, default 1800)",
+    )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")
     cron_update.add_argument(
@@ -1372,6 +1378,7 @@ Examples:
     profile_show.add_argument("name", help="Profile file stem (without .json)")
 
     register_perf_parser(sub)
+    register_bench_parser(sub)
     register_desktop_parser(sub)
 
     kn_parser = sub.add_parser("knowledge", help="Knowledge Base maintenance")
@@ -1392,7 +1399,7 @@ Examples:
     )
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,status,token,url,logs,exec,provision,install}",
+        metavar="{up,down,ls,prune,status,token,url,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1431,6 +1438,35 @@ Examples:
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")
     pod_ls.add_argument("--json", action="store_true", help="Emit rows as JSON")
+    pod_prune = pod_sub.add_parser(
+        "prune", help="Reclaim orphaned pod HOMEs in bulk (the N-at-once `pod down`)"
+    )
+    pod_prune.add_argument(
+        "--older-than",
+        dest="older_than",
+        default="3d",
+        help=(
+            "Only reclaim orphans whose last activity is older than this "
+            "(e.g. 3d, 12h, 30m, 45s). Default: 3d, so a freshly-crashed HOME "
+            "an operator may still be debugging is kept. Use --all to reclaim "
+            "regardless of age."
+        ),
+    )
+    pod_prune.add_argument(
+        "--all",
+        dest="prune_all",
+        action="store_true",
+        help="Reclaim ALL orphans regardless of age (overrides --older-than)",
+    )
+    pod_prune.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Classify and print what would be reclaimed without deleting anything",
+    )
+    pod_prune.add_argument(
+        "--json", action="store_true", help="Emit per-name results as JSON"
+    )
     pod_status = pod_sub.add_parser("status", help="Up/down + health for one pod")
     pod_status.add_argument("name", help="Worktree name")
     pod_status.add_argument("--json", action="store_true", help="Emit status as JSON")
@@ -1773,30 +1809,6 @@ Examples:
     for _bname in _BUILTIN_NAMES:
         sub.add_parser(f"mcp-{_bname}", help=argparse.SUPPRESS)
 
-    # mcp-playwright-proxy (MCP proxy — compresses accessibility tree responses)
-    proxy_parser = sub.add_parser("mcp-playwright-proxy", help=argparse.SUPPRESS)
-    proxy_parser.add_argument("proxy_args", nargs=argparse.REMAINDER)
-
-    # browse — auth management for Playwright MCP browsing
-    browse_parser = sub.add_parser(
-        "browse",
-        help="Setup for Playwright MCP browsing",
-        epilog="""
-Examples:
-  kirocrew browse setup                        # Install Playwright + browsers
-  kirocrew browse auth health                  # Check auth status
-""",
-        formatter_class=_fmt,
-    )
-    browse_parser.add_argument(
-        "browse_args",
-        nargs=argparse.REMAINDER,
-        help="browse sub-command and its arguments",
-    )
-
-    # computer — computer-use (desktop automation) diagnostics. READ-ONLY: there
-    # is deliberately no CLI verb that reads a window's contents or drives an
-    # app, because those are LLM-facing capabilities and the MCP-first rule puts
     # them in the ``kirocrew-computer`` MCP server instead.
     computer_parser = sub.add_parser(
         "computer",
@@ -2049,12 +2061,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
 
-    if len(sys.argv) > 1 and sys.argv[1] == "mcp-playwright-proxy":
-        from kiro_crew.mcp_playwright_proxy import run_proxy
-
-        run_proxy(sys.argv[2:])
-        return
-
     args = parser.parse_args()
 
     # Direct agent-bearing CLI commands do not construct the long-lived
@@ -2173,7 +2179,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
-        asyncio.run(_chat(args.message, args.model, agent=getattr(args, "agent", None)))
+        _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
@@ -2257,8 +2263,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         _mod = importlib.import_module(f"kiro_crew.apps.builtins.{args.command[4:]}.mcp_server")
         _mod.run_mcp_server()
-    elif args.command == "browse":
-        run_browse(getattr(args, "browse_args", []))
     elif args.command == "computer":
         # Deferred import: ``computer_use.cli`` reaches the driver seam, and the
         # macOS driver loads native frameworks on first use. Keeping it out of
@@ -2311,6 +2315,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         rc = perf_cmd(args)
         if rc:
             raise SystemExit(rc)
+    elif args.command == "bench":
+        rc = bench_cmd(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "desktop":
         rc = desktop_cmd(args)
         if rc:
@@ -2341,7 +2349,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
-from kiro_crew.cli_chat import _chat  # noqa: E402
+from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
+from kiro_crew.cli_chat import _run_chat  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
 from kiro_crew.cli_commands import (  # noqa: E402

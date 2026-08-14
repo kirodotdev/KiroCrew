@@ -120,6 +120,17 @@ from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
 gateway is actually running under while preserving the user's own env keys.
 User customizations such as `autoApprove` are preserved.
 
+Under an enterprise MCP registry, `_refresh_dynamic_fields()` also maintains a
+`"type": "registry"` marker on these three entries — added when
+`agent.mcp_registry_mode` is declared, and REMOVED when it is not. The marker is
+maintained rather than preserved because it tracks the account the gateway is
+signed in to, not a user preference, and because the client's filter is
+symmetric: outside registry mode a marked entry is the one that gets dropped.
+`command`/`args` stay either way, since the registry path is not the only
+consumer of this spec (doctor's handshake probe and the CC sidecar sync both
+launch from it). See
+[../guides/enterprise-mcp-governance.md](../guides/enterprise-mcp-governance.md).
+
 `kirocrew-computer` carries **no `autoApprove` key and none may ever be added.**
 kiro-cli approves an auto-approved MCP tool locally and emits no permission
 request, so `hooks.on_tool_call` (the PreToolUse deny floor, sensitive-path
@@ -177,6 +188,15 @@ Probes run from `POST /api/mcp/probe`:
   `_PROBE_TIMEOUT_SECS` is the fallback if config is not loaded yet). Results
   are cached for `_PROBE_TTL_SECS` (1800s), after which status reads as
   "outdated".
+- The handshake response is kept, not just the tool names: advertised
+  `capabilities`, the `protocolVersion` the server ANSWERED with, `serverInfo`,
+  and per-tool `annotations`. These feed the shareability verdict (below); the
+  probe already paid for the round-trip, so reading them costs nothing.
+- `client_info` overrides the identity sent in the handshake. The shareability
+  pre-flight uses it to ask one server under two identities; such a run is
+  excluded from the shared per-name probe cache, because a synthetic-identity
+  handshake is a diagnostic and not the canonical observation the dashboard
+  renders.
 - A probed stdio child that ignores a closed stdin costs
   `_PROBE_TEARDOWN_WAIT_SECS` twice (graceful wait, then again after SIGKILL)
   before the process-group reap, which is why that budget is a named constant
@@ -242,6 +262,19 @@ is not in the probe cache yet, so a freshly added server transitions from
 `list_servers()` call, because the stored absolute path goes stale after an
 update: first `agent._resolve_kirocrew_bin()`, then `shutil.which("kirocrew")`
 on the augmented PATH.
+
+## Shareability verdicts
+
+`GET /api/mcp-gateway/servers` returns a `recommendation` per row: whether the
+server looks safe to stub, and separately whether its backend looks safe to
+share. The verdict is derived on this host from evidence ranked
+observation > measurement > declaration, and a server the gateway has WATCHED
+behave per-client while shared is never offered again. Nothing about which
+servers a machine runs ships with Kiro Crew and nothing leaves the host.
+
+Full contracts — the two on-disk records, the reason-code vocabulary, what the
+pre-flight can and cannot decide, and the seed-once rule — live in
+[`docs/system-specs/modules/mcp-shareability.md`](../system-specs/modules/mcp-shareability.md).
 
 ## Dashboard MCP management
 
@@ -345,7 +378,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | Server | Process | Tools |
 |--------|---------|-------|
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger` |
-| `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
+| `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
 
 CLI commands and their MCP twins:
@@ -369,7 +402,8 @@ CLI commands and their MCP twins:
 | `kirocrew computer apps` | `computer_list_apps` | `kirocrew-computer` |
 
 `kirocrew-core` tools with no CLI twin, grouped by concern (authoritative list:
-the `tools/list` payload in `mcp_core.py`):
+`kiro_crew.mcp_tools.build_tool_list()`, which is what `mcp_core._list_tools`
+answers `tools/list` from):
 
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
@@ -398,14 +432,53 @@ the `tools/list` payload in `mcp_core.py`):
   (method, path) allowlist of Ops Mission Control routes; the agent never
   sees a credential (same shape as `issue_radar_record_investigation`)
 
-External servers a user may install (a Playwright proxy under the canonical
-`playwright-mcp` alias, a Slack server, anything else) are ordinary user-added
-servers: they live in one of the scope files and are merged into the agent config
-at render time. They are not managed, so a `mcp_server_alias` normalization pass
-rewrites slash-containing keys to kiro-safe aliases and
-`browser.setup.converge_playwright_servers()` folds every Playwright-proxy entry onto the one
-canonical key, keyed by resolved launch target, so a legacy slash-free key
-re-injected from `~/.kiro/crew/mcp.json` cannot spawn a second backend.
+### A `kirocrew-core` tool has two halves
+
+Each tool is declared twice in the same per-domain module under
+`kiro_crew/mcp_tools/` (`spawn.py`, `artifacts.py`, `workflows.py`, …), and
+nothing at runtime notices when only one half lands:
+
+- Its **descriptor** — name, model-facing description, JSON Schema — is returned
+  by that module's `schemas()`. `build_tool_list()` concatenates every domain's,
+  and `mcp_core._list_tools` answers `tools/list` from it.
+- Its **handler** is an entry in that module's `HANDLERS` map, called as
+  `handler(name, args)`. `dispatch()` finds it by name and
+  `mcp_core._call_tool_inner` delegates to that.
+
+A descriptor with no handler advertises a tool that answers with the
+dispatcher's fallthrough; a handler with no descriptor is unreachable, because
+the model is never told the name. `test/test_mcp_tool_registry.py` fails when
+either half is missing, when the two halves land in different domains, or when a
+name is claimed twice.
+
+Handlers reach the server's shared plumbing — `_post`/`_get`, the identity
+resolvers, the governance vets — as **attributes of `mcp_core`**, not as direct
+imports. That is deliberate: an attribute lookup resolves at call time, so a test
+that rebinds one (`patch("kiro_crew.mcp_core._post")`, `setattr(mcp_core, "sel",
+…)`) still intercepts the handler. A direct import would bind at import time and
+silently escape every such patch. `mcp_core._HANDLER_SURFACE` names the bindings
+that exist only for this purpose, so an import cleanup cannot quietly delete one.
+
+The remaining upward dependency is known: the plumbing could move to a module the
+handlers own, which would make `mcp_tools` a leaf. That is a separate change —
+it has to retarget every patch site, which is mechanical but touches far more
+test code than moving the handlers did.
+
+Descriptors carry no per-caller state and are rebuilt per call, not cached: some
+quote a live value (the concurrent sub-agent cap), and a cache would pin the
+first reading for the life of the server process.
+
+External servers a user may install (a Slack server, anything else) are ordinary
+user-added servers: they live in one of the scope files and are merged into the
+agent config at render time. They are not managed, so a `mcp_server_alias`
+normalization pass rewrites slash-containing keys to kiro-safe aliases: kiro-cli
+splits an agent `@server` reference on `/`, so a slash-containing key is
+mis-parsed as `@server/tool` and exposes none of the server's tools.
+
+**Browsing is deliberately not an MCP server.** The agent drives a browser by
+running `playwright-cli` commands on its ordinary shell path, so no tool schemas
+are re-sent per request and the accessibility tree stays on disk instead of
+entering the model context. See [browser](../system-specs/modules/browser.md).
 
 ### The one deliberate exception
 

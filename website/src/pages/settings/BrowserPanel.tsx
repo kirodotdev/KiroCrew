@@ -1,393 +1,488 @@
-import { useState, useCallback } from 'react'
-import { ExternalLink, Check, Loader2, Info, AlertTriangle } from 'lucide-react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
-import { api } from '../../api/client'
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  Puzzle,
+  Download,
+  ExternalLink,
+  Globe,
+  HardDriveDownload,
+  KeyRound,
+  Loader2,
+} from 'lucide-react'
 
-import { i18nT } from '../../i18n/t'
+import { api, type BrowserInstallData } from '../../api/client'
+import { SettingsSection, SettingsCard } from '../../components/settings'
+import { Badge, Btn, EmptyState, FormSkeleton, Input } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { Trans } from 'react-i18next'
+import { i18nT } from '../../i18n/t'
+import { copyToClipboard } from '../../utils/clipboard'
 
-type BrowserConfig = {
-  enabled: boolean
-  engine: string
-  engines: string[]
-  extension_mode: boolean
-  token: boolean
-  installed: boolean
-}
-type InstallResult = {
-  ok: boolean
-  step: string
-  detail: string
-  engine: string
-  // Present on an attempted-and-failed browser download: a copy-pasteable manual
-  // fallback command, and a sanitized one-line cause (allowlisted error label,
-  // never raw stderr).
-  manual_command?: string
-  reason?: string
-}
-type SaveResult = {
-  ok: boolean
-  mcp_status?: string
-  enabled?: boolean
-  engine?: string
-  install?: InstallResult
-}
+const INSTALL_KEY = ['browserInstall'] as const
 
-// Microsoft's official "Playwright Extension" on the Chrome Web Store. It
-// installs into any Chromium-family browser (Chrome, Edge, Brave, Arc, Opera all
-// accept Chrome Web Store extensions); Microsoft publishes no separate Edge
-// Add-ons listing, so a single verified link covers the family. Firefox and
-// Safari are intentionally absent: Playwright ships no attach extension for them.
-const PLAYWRIGHT_EXTENSION_URL =
+/**
+ * Where the attach-mode extension is published. The id is the one `playwright-cli`
+ * itself points at, so this link and the tool agree on which extension counts.
+ */
+const EXTENSION_URL =
   'https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm'
 
-// Human labels for the launch engines. firefox/webkit are Playwright's OWN
-// browser builds (not the user's Firefox/Safari and without their logins), so
-// the copy names that honestly rather than implying it drives their install.
+/**
+ * Poll cadence while an install runs. The install downloads a browser, so it
+ * outlives any single request and progress is only observable by re-reading.
+ */
+const INSTALLING_POLL_MS = 2_000
+
+/** Poll cadence at rest, which only has to notice an install done elsewhere. */
+const IDLE_POLL_MS = 15_000
+
+/** The three steps `install()` runs, named so the wait is legible rather than blank. */
+const INSTALL_STEP_KEYS = [
+  'pages.settings.browserPanel.step_npm',
+  'pages.settings.browserPanel.step_browser',
+  'pages.settings.browserPanel.step_skills',
+] as const
+
+/** Engines the CLI can download. Mirrors `browser_cli.install.BROWSER_ENGINES`. */
+const BROWSER_ENGINES = ['chromium', 'firefox', 'webkit'] as const
+
+/** Catalog KEY per engine. Keys, not strings: this table is evaluated at module
+ *  load, so an `i18nT()` call here would freeze the boot language. Written as a
+ *  flat record of full literal keys so `check-i18n-keys.mjs` can resolve them. */
 const ENGINE_LABEL_KEY: Record<string, string> = {
   chromium: 'pages.settings.browserPanel.engine_chromium',
   firefox: 'pages.settings.browserPanel.engine_firefox',
   webkit: 'pages.settings.browserPanel.engine_webkit',
 }
 
+/**
+ * Browsing settings.
+ *
+ * Availability is not a setting: the agent browses by running `playwright-cli`,
+ * so browsing is available exactly when that binary is installed. There is no
+ * enable switch to render. This panel is therefore an install surface plus the one
+ * disclosure a switch would otherwise have carried — that having the binary at all
+ * is what grants the capability — and, once installed, the two things a user can
+ * still configure: the attach extension and its optional token.
+ */
 export function BrowserPanel() {
-  const [token, setToken] = useState('')
-  const [showExtension, setShowExtension] = useState<boolean | null>(null)
-  const [enabledOverride, setEnabledOverride] = useState<boolean | null>(null)
-  const [engineOverride, setEngineOverride] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState('')
-  const [install, setInstall] = useState<InstallResult | null>(null)
   const qc = useQueryClient()
 
-  const { data: config, isLoading, isError } = useQuery<BrowserConfig>({
-    queryKey: ['browser-config'],
-    queryFn: api.getBrowserConfig,
-    retry: false,
+  const { data, isLoading, isError } = useQuery<BrowserInstallData>({
+    queryKey: INSTALL_KEY,
+    queryFn: api.getBrowserInstall,
+    refetchInterval: (q) => (q.state.data?.installing ? INSTALLING_POLL_MS : IDLE_POLL_MS),
   })
 
-  const saveMut = useMutation({
-    mutationFn: async (body: { enabled: boolean; engine: string; extension_mode: boolean; token: string }) => {
-      const res = (await api.saveBrowserConfig(body)) as SaveResult
-      await api.restartSessions()
-      return res
-    },
-    onError: () => {
-      setError(i18nT('pages.settings.browserPanel.cannot_reach_gateway_is_it_running'))
-      setTimeout(() => setError(''), 5000)
-    },
-    onSuccess: (res: SaveResult) => {
-      // Never leave the raw extension token sitting in the input after a save:
-      // mask it once it has been persisted (it is write-only server-side and is
-      // a credential). An empty field stays empty.
-      setToken((t) => (t ? '••••••••' : t))
-      // Keep any provisioning note (deferred download, or a setup hint) to show as
-      // a MUTED advisory — never an error. Browser Mode is on regardless, so a
-      // note with `ok:true` (e.g. "downloads on first use") still shows the saved
-      // tick alongside; only a genuinely-not-usable note (`ok:false`: no Node/npm)
-      // withholds the tick, but it is still styled as guidance, not a failure.
-      setInstall(res.install && res.install.detail ? res.install : null)
-      if (!res.install || res.install.ok) {
-        setSaved(true)
-        setTimeout(() => setSaved(false), 4000)
-      }
-      qc.invalidateQueries({ queryKey: ['browser-config'] })
-    },
+  // Never seeded from the server: the status carries only whether a token exists,
+  // so there is nothing to prefill and no way for the value to leak back out.
+  const [token, setToken] = useState('')
+  // Latched, not timed out: the label is a confirmation that the paste is
+  // ready, and this panel is not somewhere the user returns to repeatedly.
+  const [installCmdCopied, setInstallCmdCopied] = useState(false)
+
+  const tokenMut = useMutation({
+    mutationFn: (value: string) => api.setBrowserToken(value),
+    onSuccess: () => { setToken(''); void qc.invalidateQueries({ queryKey: INSTALL_KEY }) },
   })
 
-  const enabled = enabledOverride ?? config?.enabled ?? false
-  const engine = engineOverride ?? config?.engine ?? 'chromium'
-  const engines = config?.engines ?? ['chromium', 'firefox', 'webkit']
-  const extensionMode = showExtension ?? config?.extension_mode ?? false
-  const displayToken = token || (config?.extension_mode && config?.token ? '••••••••' : '')
+  const installMut = useMutation({
+    mutationFn: api.installBrowserCli,
+    onSuccess: (fresh) => qc.setQueryData(INSTALL_KEY, fresh),
+  })
 
-  const persist = useCallback(
-    (next: { enabled: boolean; engine: string; extension_mode: boolean; token: string }) => {
-      setError('')
-      setInstall(null)
-      saveMut.mutate(next)
-    },
-    [saveMut],
-  )
+  // Separate from installMut so the row that was pressed can show its own
+  // spinner: both share the gateway's single install slot, so `installing`
+  // alone cannot say WHICH download is running.
+  const engineMut = useMutation({
+    mutationFn: (engine: string) => api.installBrowserEngine(engine),
+    onSuccess: (fresh) => qc.setQueryData(INSTALL_KEY, fresh),
+  })
 
-  // Enable and engine saves are orthogonal to the attach flow, so they carry the
-  // PERSISTED extension mode (config.extension_mode), never the transient display
-  // toggle, and send an empty token. The backend keeps the stored token when
-  // extension_mode stays true and no token is supplied — so these saves never
-  // silently delete a saved token (only handleConfirmHeadless turns attach off).
-  const persistedExtension = config?.extension_mode ?? false
+  if (isLoading) {
+    return (
+      <SettingsSection title={i18nT('pages.settings.browserPanel.browsing')}>
+        <SettingsCard>
+          <FormSkeleton rows={['info', 'field']} />
+        </SettingsCard>
+      </SettingsSection>
+    )
+  }
+  if (isError || !data) {
+    return (
+      <SettingsSection title={i18nT('pages.settings.browserPanel.browsing')}>
+        <ErrorNotice message={i18nT('pages.settings.browserPanel.cannot_load')} />
+      </SettingsSection>
+    )
+  }
 
-  // Flipping the main enable saves immediately: enabling downloads Playwright and
-  // the engine browser (reported via the install result), disabling tears the
-  // capability down.
-  const handleEnableToggle = useCallback(
-    (next: boolean) => {
-      setEnabledOverride(next)
-      setSaved(false)
-      persist({ enabled: next, engine, extension_mode: persistedExtension, token: '' })
-    },
-    [persist, engine, persistedExtension],
-  )
-
-  const handleEngineSelect = useCallback(
-    (next: string) => {
-      if (next === engine) return
-      setEngineOverride(next)
-      persist({ enabled, engine: next, extension_mode: persistedExtension, token: '' })
-    },
-    [persist, enabled, engine, persistedExtension],
-  )
-
-  const handleExtensionToggle = useCallback((on: boolean) => {
-    setError('')
-    setSaved(false)
-    setShowExtension(on)
-    if (on) {
-      // Persist attach mode immediately — the token is optional (it only skips
-      // the per-connection approval), so waiting for one would let the toggle
-      // silently revert on reload. Carry the existing token, if any.
-      if (config?.token) setToken('••••••••')
-      const cleanToken = token && token !== '••••••••' ? token.trim() : ''
-      persist({ enabled, engine, extension_mode: true, token: cleanToken })
-    } else {
-      // Turning attach off is a token-deleting change; confirm via the headless
-      // switch card (handleConfirmHeadless) rather than persisting eagerly here.
-      setToken('')
-    }
-  }, [persist, enabled, engine, token, config?.token])
-
-  const handleSaveExtension = useCallback(() => {
-    if (!token || token === '••••••••') return
-    let cleanToken = token.trim()
-    if (cleanToken.startsWith('PLAYWRIGHT_MCP_EXTENSION_TOKEN=')) {
-      cleanToken = cleanToken.substring(cleanToken.indexOf('=') + 1)
-    }
-    persist({ enabled, engine, extension_mode: true, token: cleanToken })
-  }, [persist, enabled, engine, token])
-
-  const handleConfirmHeadless = useCallback(() => {
-    persist({ enabled, engine, extension_mode: false, token: '' })
-  }, [persist, enabled, engine])
-
-  if (isLoading) return <p style={{ fontSize: 13, color: 'var(--muted)', padding: 16 }}>{i18nT('pages.settings.browserPanel.loading_browser_config')}</p>
-  if (isError) return <p style={{ fontSize: 13, color: 'var(--danger)', padding: 16 }}>{i18nT('pages.settings.browserPanel.cannot_load_browser_config_is_the_gateway_runnin')}</p>
+  // `engineMut.isPending` is part of this, not a detail: the gateway has ONE
+  // install slot, and `data.installing` only turns true on the next poll. Without
+  // it a second click lands in that window, gets refused (409), and the row's
+  // spinner follows `engineMut.variables` -- so the panel would show WebKit
+  // downloading while Firefox actually is.
+  const installing = data.installing || installMut.isPending || engineMut.isPending
+  // Node is the one prerequisite an install cannot supply for the operator, so a
+  // too-old runtime is reported instead of offering a button that would fail.
+  const blockedByNode = !data.node_ok
+  // Bound once so the render, the copy handler and the guard all use the same
+  // narrowed value -- otherwise the handler needs a `?? ''` fallback that the
+  // guard has already made unreachable, which is an untestable branch rather
+  // than a safety net.
+  const installCommand = data.standalone_install
 
   return (
-    <>
-      <SettingsSection title={i18nT('pages.settings.browserPanel.browser_mode')}>
-        <SettingsCard>
-          <SettingsToggle
-            label={i18nT('pages.settings.browserPanel.enable_browser_mode')}
-            description={i18nT('pages.settings.browserPanel.let_the_agent_read_and_operate_web_pages')}
-            checked={enabled}
-            onChange={handleEnableToggle}
-            disabled={saveMut.isPending}
-          />
-          {saveMut.isPending && (
-            <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Loader2 size={12} className="lucide-inline animate-spin" />
-              {i18nT('pages.settings.browserPanel.setting_up_the_browser_this_can_take_a_minute')}
-            </p>
-          )}
-          {/*
-            Provisioning is ALWAYS advisory, never an error surface: enabling
-            Browser Mode registers the proxy regardless, and the browser downloads
-            on first use. So any `install.detail` (a soft "downloads on first use"
-            note, or a calm "install Node to finish setup" hint) renders as a muted
-            info line, not a red alert — the user is never shown a raw install
-            failure. Shown whenever the server returned a detail to convey.
-          */}
-          {install && install.detail && (
-            // A not-yet-usable failure (ok:false) is visually differentiated from
-            // the benign "downloads on first use" note (ok:true): a warning icon +
-            // full-strength text, versus the muted info row — so an operator
-            // scanning the panel can tell "act" from "fine, later" without reading
-            // the whole paragraph. Still calm (no red), still never a raw stderr dump.
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8, color: install.ok ? 'var(--muted)' : 'var(--text)' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                {install.ok
-                  ? <Info size={13} className="lucide-inline" style={{ marginTop: 2, color: 'var(--muted)' }} />
-                  : <AlertTriangle size={13} className="lucide-inline" style={{ marginTop: 2, color: 'var(--danger)' }} />}
-                <span style={{ fontSize: 12 }}>{install.detail}</span>
+    <SettingsSection title={i18nT('pages.settings.browserPanel.browsing')}>
+      {data.installed ? (
+        <>
+          {/* Status: one row, so "can it browse" is answerable at a glance. */}
+          <SettingsCard>
+            <div className="flex items-start gap-3">
+              <CheckCircle2 size={18} className="text-ok shrink-0 mt-[2px]" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">
+                    {i18nT('pages.settings.browserPanel.available')}
+                  </span>
+                  {data.cli_version && <Badge variant="ok">{data.cli_version}</Badge>}
+                  {!data.browser_ok && (
+                    <Badge variant="warn">
+                      {i18nT('pages.settings.browserPanel.browser_missing')}
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-[13px] text-muted mt-1.5 mb-0">
+                  {i18nT('pages.settings.browserPanel.presence_is_consent')}
+                </p>
               </div>
-              {/*
-                Attempted-and-failed download: render the manual fallback command as
-                a selectable <code> block so the user has a concrete next step. It
-                WRAPS (break-all) rather than clipping, so the whole command is
-                visible without a hidden horizontal scroll. The command is a
-                server-provided constant (public-registry-pinned), never user input.
-              */}
-              {install.manual_command && (
-                <code
-                  style={{
-                    fontSize: 11,
-                    padding: '4px 8px',
-                    borderRadius: 4,
-                    background: 'var(--bg-hover)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text)',
-                    userSelect: 'all',
-                    wordBreak: 'break-all',
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
-                  {install.manual_command}
-                </code>
-              )}
             </div>
-          )}
+          </SettingsCard>
+
           {/*
-            Persistent "enabled but browser not on disk yet" surface, read from the
-            server's durable `installed` flag (not the one-shot mutation result),
-            so it still tells the truth after the user leaves and comes back.
-            Muted advisory, not an error. Suppressed while a save is mid-flight or
-            a fresh note is already shown above.
+            Attach mode needs a Chrome extension, and nothing here can install it:
+            a browser extension is granted inside the browser, by the person using
+            it. Its own card rather than a footnote on the status row, because for a
+            user who wants their real logged-in session this IS the next step.
           */}
-          {enabled && config?.installed === false && !saveMut.isPending && !install && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 8, color: 'var(--muted)' }}>
-              <Info size={13} className="lucide-inline" style={{ marginTop: 2 }} />
-              <span style={{ fontSize: 12 }}>{i18nT('pages.settings.browserPanel.browser_not_installed_retry')}</span>
+          <SettingsCard>
+            <div className="flex items-start gap-3">
+              <Puzzle size={18} className="text-muted shrink-0 mt-[2px]" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">
+                  {i18nT('pages.settings.browserPanel.attach_title')}
+                </div>
+                <p className="text-[13px] text-muted mt-1 mb-2">
+                  {i18nT('pages.settings.browserPanel.attach_needs_extension')}
+                </p>
+                <a
+                  href={EXTENSION_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 text-[13px] text-accent hover:underline"
+                >
+                  {i18nT('pages.settings.browserPanel.get_the_extension')}
+                  <ExternalLink size={13} />
+                </a>
+              </div>
+            </div>
+          </SettingsCard>
+
+          {/*
+            Downloads, one row per engine. The old Browser Mode panel exposed
+            this as an engine SELECTOR, which conflated two things: which browser
+            is on disk, and which one a session uses. The CLI picks the engine per
+            command (`open --browser=firefox`), so what is left to configure is
+            purely "is it downloaded" — and all three are offered, because
+            reporting one boolean made Firefox and WebKit look unavailable.
+          */}
+          <SettingsCard>
+            <div className="flex items-start gap-3">
+              <HardDriveDownload size={18} className="text-muted shrink-0 mt-[2px]" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">
+                  {i18nT('pages.settings.browserPanel.engines_title')}
+                </div>
+                <p className="text-[13px] text-muted mt-1 mb-2.5">
+                  {i18nT('pages.settings.browserPanel.engines_explains')}
+                </p>
+                <div className="flex flex-col gap-2">
+                  {BROWSER_ENGINES.map((engine) => {
+                    const present = data.browsers?.[engine]
+                    return (
+                      <div
+                        key={engine}
+                        className="flex items-center gap-2 justify-between border border-border rounded-md px-3 py-2"
+                        data-testid={`browser-engine-${engine}`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-[13px] font-medium">
+                            {i18nT(ENGINE_LABEL_KEY[engine])}
+                          </span>
+                          {engine === 'chromium' && (
+                            <Badge variant="muted">
+                              {i18nT('pages.settings.browserPanel.engine_needed_for_attach')}
+                            </Badge>
+                          )}
+                        </div>
+                        {present ? (
+                          <span className="inline-flex items-center gap-1.5 text-[13px] text-ok shrink-0">
+                            <CheckCircle2 size={14} />
+                            {i18nT('pages.settings.browserPanel.engine_downloaded')}
+                          </span>
+                        ) : (
+                          <Btn
+                            onClick={() => engineMut.mutate(engine)}
+                            disabled={installing}
+                            aria-busy={installing && engineMut.variables === engine}
+                          >
+                            {installing && engineMut.variables === engine ? (
+                              <>
+                                <Loader2 size={13} className="lucide-inline animate-spin" />
+                                {i18nT('pages.settings.browserPanel.installing')}
+                              </>
+                            ) : (
+                              <>
+                                <Download size={13} className="lucide-inline" />
+                                {i18nT('pages.settings.browserPanel.engine_download')}
+                              </>
+                            )}
+                          </Btn>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </SettingsCard>
+
+          {/*
+            The token only removes the browser's approval prompt for an attach.
+            Optional on purpose: it is a stored credential whose absence costs one
+            click, and that prompt is the one moment a human is told a program is
+            about to drive their logged-in browser.
+          */}
+          <SettingsCard>
+            <div className="flex items-start gap-3">
+              <KeyRound size={18} className="text-muted shrink-0 mt-[2px]" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label htmlFor="pw-attach-token" className="text-sm font-medium">
+                    {i18nT('pages.settings.browserPanel.token_label')}
+                  </label>
+                  {data.token && (
+                    <Badge variant="ok">{i18nT('pages.settings.browserPanel.token_stored')}</Badge>
+                  )}
+                </div>
+                <p className="text-[13px] text-muted mt-1 mb-2">
+                  {i18nT('pages.settings.browserPanel.token_explains')}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="pw-attach-token"
+                    type="password"
+                    autoComplete="off"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder={
+                      data.token
+                        ? i18nT('pages.settings.browserPanel.token_set')
+                        : i18nT('pages.settings.browserPanel.token_placeholder')
+                    }
+                    aria-label={i18nT('pages.settings.browserPanel.token_label')}
+                    className="flex-1 min-w-0"
+                  />
+                  <Btn
+                    primary
+                    onClick={() => tokenMut.mutate(token)}
+                    disabled={tokenMut.isPending || !token.trim()}
+                  >
+                    {i18nT('pages.settings.browserPanel.token_save')}
+                  </Btn>
+                  {data.token && (
+                    <Btn
+                      onClick={() => { setToken(''); tokenMut.mutate('') }}
+                      disabled={tokenMut.isPending}
+                    >
+                      {i18nT('pages.settings.browserPanel.token_clear')}
+                    </Btn>
+                  )}
+                </div>
+              </div>
+            </div>
+          </SettingsCard>
+        </>
+      ) : (
+        /*
+          Not installed is the FIRST thing most users see here, so it is a guided
+          empty state rather than a sentence and a link: what the capability is,
+          what the button will do (named steps, since it downloads a browser and
+          takes a while), and the one prerequisite this cannot supply.
+        */
+        <SettingsCard>
+          <EmptyState
+            testId="browser-not-installed"
+            icon={<Globe />}
+            title={i18nT('pages.settings.browserPanel.not_installed')}
+            subtitle={i18nT('pages.settings.browserPanel.install_explains')}
+            action={
+              blockedByNode ? (
+                /*
+                  Node is the one prerequisite an install cannot supply, so this
+                  state has to be actionable rather than a bare requirement. It
+                  also distinguishes "too old" from "absent": interpolating a
+                  found-version into the same sentence produced "found none",
+                  which reads as a bug and tells a first-time user nothing about
+                  what to do next.
+                */
+                <div className="flex flex-col items-center gap-1.5 text-[13px]">
+                  <div className="flex items-center gap-2 text-warn">
+                    <AlertTriangle size={14} className="shrink-0" />
+                    {data.node_version
+                      ? i18nT('pages.settings.browserPanel.needs_node', {
+                          version: data.node_version,
+                        })
+                      : i18nT('pages.settings.browserPanel.node_missing')}
+                  </div>
+                  <div className="text-muted text-center max-w-[340px]">
+                    {/*
+                      ONE key for the whole passage, with the link interpolated
+                      as <dl>. Two adjacent keys joined by {' '} is what the
+                      render-time i18n gate rejects ("merge, not join"), and the
+                      join also pinned every locale to English word order --
+                      several languages put the action before the instruction.
+                      Same shape as DiscordPanel's `guide_body`.
+                    */}
+                    <Trans
+                      i18nKey="pages.settings.browserPanel.node_how"
+                      components={{
+                        dl: (
+                          <a
+                            href="https://nodejs.org/en/download"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-accent hover:underline"
+                          />
+                        ),
+                      }}
+                    />
+                  </div>
+                  {/*
+                    The link above is a dead end for the operator this panel most
+                    needs to help: a locked-down machine where Node cannot be
+                    installed, or a registry that answers 401. `playwright-cli.sh`
+                    exists for exactly that -- it bootstraps its own Node into the
+                    user's home directory and classifies the enterprise failures npm
+                    reports as one undifferentiated error -- so the offer belongs
+                    HERE, at the moment the install is blocked, not only in the docs.
+
+                    The command comes from the GATEWAY, not from this file and not
+                    from the catalogs. Only the gateway knows which OS it runs on, so
+                    the operator gets the one command that applies rather than two to
+                    choose between -- this page may well be open on a different
+                    machine. It also cannot live in either place: the untranslated
+                    literal gate forbids the string here, and the catalogs' pseudo-
+                    locale accents every Latin character, which would corrupt a URL.
+                  */}
+                  {installCommand && (
+                    <div className="text-muted text-left max-w-[340px] mt-1">
+                      {i18nT('pages.settings.browserPanel.node_no_admin')}
+                      <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-surface-2 rounded px-2 py-1.5">
+                        <code>{installCommand}</code>
+                      </pre>
+                      {/*
+                        A copy button, not hand-selection. This is a ~110-character
+                        string that must be transcribed EXACTLY, wrapped over three
+                        lines by break-all, and a typo in it produces another opaque
+                        curl failure for a user who is already stuck.
+
+                        `copyToClipboard`, not navigator.clipboard directly, and
+                        awaited before the label flips: the Clipboard API is
+                        unavailable on a plain-HTTP remote gateway -- which is a
+                        plausible way to be reading this panel -- and flipping the
+                        label regardless would promise a paste that is not there.
+                        Same reasoning as AboutPanel's gateway command.
+                      */}
+                      <Btn
+                        onClick={async () => {
+                          await copyToClipboard(installCommand)
+                          setInstallCmdCopied(true)
+                        }}
+                      >
+                        <Copy size={13} className="lucide-inline" />{' '}
+                        {installCmdCopied
+                          ? i18nT('pages.settings.browserPanel.copied')
+                          : i18nT('pages.settings.browserPanel.copy_command')}
+                      </Btn>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <Btn
+                  primary
+                  onClick={() => installMut.mutate()}
+                  disabled={installing}
+                  aria-busy={installing}
+                >
+                  {installing ? (
+                    <>
+                      <Loader2 size={14} className="lucide-inline animate-spin" />
+                      {i18nT('pages.settings.browserPanel.installing')}
+                    </>
+                  ) : (
+                    <>
+                      <Download size={14} className="lucide-inline" />
+                      {i18nT('pages.settings.browserPanel.install')}
+                    </>
+                  )}
+                </Btn>
+              )
+            }
+          />
+
+          {/*
+            The steps are listed for BOTH the idle and running cases: before, they
+            say what pressing the button will do to the machine; during, they turn
+            a multi-minute blank wait into something legible.
+          */}
+          {!blockedByNode && (
+            <div className="border-t border-border pt-3 mt-1">
+              <div className="text-[13px] text-muted mb-1.5">
+                {installing
+                  ? i18nT('pages.settings.browserPanel.install_takes_a_while')
+                  : i18nT('pages.settings.browserPanel.install_steps_intro')}
+              </div>
+              <ol className="text-[13px] text-muted/80 m-0 pl-5 list-decimal flex flex-col gap-1">
+                {INSTALL_STEP_KEYS.map((key) => (
+                  <li key={key}>{i18nT(key)}</li>
+                ))}
+              </ol>
             </div>
           )}
         </SettingsCard>
-      </SettingsSection>
-
-      {enabled && !extensionMode && (
-        <SettingsSection title={i18nT('pages.settings.browserPanel.browser_engine')}>
-          <SettingsCard index={1}>
-            <p style={{ fontSize: 12, color: 'var(--muted)', margin: '0 0 10px' }}>
-              {i18nT('pages.settings.browserPanel.pick_the_browser_the_agent_launches')}
-            </p>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {engines.map((eng) => (
-                <button
-                  key={eng}
-                  type="button"
-                  onClick={() => handleEngineSelect(eng)}
-                  disabled={saveMut.isPending}
-                  aria-pressed={engine === eng}
-                  className="px-3 py-1.5 text-[13px] font-medium rounded border transition-colors disabled:opacity-50"
-                  style={{
-                    borderColor: engine === eng ? 'var(--accent)' : 'var(--border)',
-                    background: engine === eng ? 'var(--accent-subtle, var(--bg-hover))' : 'var(--card)',
-                    color: 'var(--text)',
-                  }}
-                >
-                  {i18nT(ENGINE_LABEL_KEY[eng] ?? 'pages.settings.browserPanel.engine_chromium')}
-                </button>
-              ))}
-            </div>
-            {engine !== 'chromium' && (
-              <p style={{ fontSize: 12, color: 'var(--muted)', margin: '10px 0 0' }}>
-                {i18nT('pages.settings.browserPanel.firefox_webkit_run_playwrights_own_build')}
-              </p>
-            )}
-          </SettingsCard>
-        </SettingsSection>
       )}
 
-      {enabled && (
-        <SettingsSection title={i18nT('pages.settings.browserPanel.attach_to_my_browser')}>
-          <SettingsCard index={2}>
-            <SettingsToggle
-              label={i18nT('pages.settings.browserPanel.attach_to_my_running_browser')}
-              description={i18nT('pages.settings.browserPanel.use_my_chromium_browser_with_existing_logins')}
-              checked={extensionMode}
-              onChange={handleExtensionToggle}
-              disabled={saveMut.isPending}
-            />
-            {!extensionMode && (
-              <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
-                {i18nT('pages.settings.browserPanel.headless_mode_active_browser_uses_cookie_injecti')}
-              </p>
-            )}
-          </SettingsCard>
-        </SettingsSection>
+      {/*
+        A failed step is shown verbatim rather than summarized: the useful cases
+        are a registry auth error and a blocked download, and both are only
+        actionable if the operator can read what the tool said.
+      */}
+      {data.last_error && !installing && (
+        /*
+          `askAgent` on purpose. This is the one error in the panel a user often
+          cannot act on alone: an npm EACCES on the global prefix, a registry
+          that needs auth, a blocked download. The button opens a chat with the
+          failure's context attached, which turns a dead end into a debugging
+          session. It costs an unsaved token draft if one is mid-typing (this is
+          an in-app navigation), and that trade is worth it -- the token field is
+          normally empty, and being stranded on an npm error is not recoverable
+          from this screen.
+        */
+        <ErrorNotice message={data.last_error} askAgent />
       )}
-
-      {enabled && extensionMode && (
-        <SettingsSection title={i18nT('pages.settings.browserPanel.connect_your_browser')}>
-          <SettingsCard index={3}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
-                {i18nT('pages.settings.browserPanel.attach_uses_your_real_tabs_and_logins')}
-              </p>
-              <p style={{ fontSize: 13, color: 'var(--text)', margin: 0 }}>
-                {i18nT('pages.settings.browserPanel.step1_install_the_playwright_extension')}
-              </p>
-              <a
-                href={PLAYWRIGHT_EXTENSION_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: 'var(--accent)', fontSize: 13 }}
-              >
-                {i18nT('pages.settings.browserPanel.playwright_extension_chromium_browsers')}{' '}
-                <ExternalLink size={12} className="lucide-inline" />
-              </a>
-              <p style={{ fontSize: 13, color: 'var(--text)', margin: 0 }}>
-                {i18nT('pages.settings.browserPanel.step2_pick_the_tab_when_the_agent_connects')}
-              </p>
-              <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
-                {i18nT('pages.settings.browserPanel.optional_paste_token_to_skip_approval')}
-              </p>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-                <div style={{ flex: 1 }}>
-                  <SettingsInput
-                    label={i18nT('pages.settings.browserPanel.connection_token_optional')}
-                    description={i18nT('pages.settings.browserPanel.paste_playwright_mcp_extension_token_value_from')}
-                    value={displayToken}
-                    onChange={setToken}
-                    placeholder={i18nT('pages.settings.browserPanel.paste_token_here')}
-                  />
-                </div>
-                <button
-                  onClick={handleSaveExtension}
-                  disabled={!token || token === '••••••••' || saveMut.isPending}
-                  className="px-4 py-2 text-[13px] font-medium rounded border border-border bg-card hover:bg-bg-hover disabled:opacity-50 transition-colors"
-                  style={{ color: 'var(--text)', marginBottom: 4 }}
-                >
-                  {saveMut.isPending ? i18nT('pages.settings.browserPanel.saving') : i18nT('pages.settings.browserPanel.save')}
-                </button>
-              </div>
-              {/*
-                Deliberately NOT opted in to the agent hand-off: the token being
-                saved lives in local state (`useState('')`, never persisted) and
-                came out of the browser extension, so navigating to the chat would
-                send the user back there to fetch it again.
-              */}
-              <ErrorNotice message={error} variant="inline" />
-            </div>
-          </SettingsCard>
-        </SettingsSection>
-      )}
-
-      {enabled && !extensionMode && showExtension === false && config?.extension_mode && (
-        <SettingsSection title="">
-          <SettingsCard index={4}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-              <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
-                {i18nT('pages.settings.browserPanel.switch_to_headless_mode_this_will_remove_the_sav')}
-              </p>
-              <button
-                onClick={handleConfirmHeadless}
-                disabled={saveMut.isPending}
-                className="px-4 py-2 text-[13px] font-medium rounded border border-border bg-card hover:bg-bg-hover disabled:opacity-50 transition-colors"
-                style={{ color: 'var(--text)' }}
-              >
-                {saveMut.isPending ? i18nT('pages.settings.browserPanel.saving') : i18nT('pages.settings.browserPanel.confirm')}
-              </button>
-            </div>
-          </SettingsCard>
-        </SettingsSection>
-      )}
-
-      {saved && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--ok)', padding: 16 }}>
-          <Check size={14} className="lucide-inline" />
-          <span style={{ fontSize: 12 }}>{i18nT('pages.settings.browserPanel.saved_and_applied_sessions_restarted')}</span>
-        </div>
-      )}
-    </>
+    </SettingsSection>
   )
 }

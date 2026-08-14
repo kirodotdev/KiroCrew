@@ -10,6 +10,8 @@ step, which is itself the last branch before ``allow()``.
 from __future__ import annotations
 
 import dataclasses
+import os
+import re
 
 import pytest
 
@@ -585,3 +587,412 @@ class TestReadOnlyAutoApprove:
         mgr = HookManager(cfg)
         result = mgr.on_tool_call("search logs", command="grep forbidden /var/log", is_shell=True)
         assert result.action == TOOL_DENY
+
+
+class TestSearchArgDenyTarget:
+    """A file-search builtin's scope reaches the deny tiers.
+
+    ``glob``/``grep`` carry no ``command`` and a title that need not name the tree they
+    walk, so this target is the only form in which a rule can tell a scoped search from
+    a whole-home traversal.
+    """
+
+    # Mirrors the shape of the built-in find rules: a home root, and no depth cap.
+    UNCAPPED_HOME_SEARCH = r"file-search (?!.*max_depth=).*path=/local/home/[\w.-]+(?:\s|$)"
+
+    def _mgr(self):
+        cfg = HooksConfig(
+            denied_commands_user_added=[
+                UserDeniedPattern(id="u1", pattern=self.UNCAPPED_HOME_SEARCH)
+            ]
+        )
+        return HookManager(cfg)
+
+    def test_uncapped_home_rooted_search_is_denied(self):
+        result = self._mgr().on_tool_call(
+            "Locate the tracking docs",  # title names neither the root nor the depth
+            tool_kind="read",
+            raw_params={"path": "/local/home/alice", "pattern": "**/notes/*.md"},
+        )
+        assert result.action == TOOL_DENY
+
+    def test_recursive_operation_without_a_pattern_is_denied(self):
+        # A tree walk that carries no `pattern` still has a scope to govern.
+        result = self._mgr().on_tool_call(
+            "Look up the symbol",
+            tool_kind="read",
+            raw_params={"operation": "search_symbols", "path": "/local/home/alice"},
+        )
+        assert result.action == TOOL_DENY
+
+    def test_depth_capped_home_rooted_search_is_allowed(self):
+        # The cap is the whole point: bounding the walk must lift the denial, or the
+        # rule is just a home-directory ban and operators cannot express "unbounded".
+        result = self._mgr().on_tool_call(
+            "Locate the tracking docs",
+            tool_kind="read",
+            raw_params={"path": "/local/home/alice", "pattern": "*.md", "max_depth": 2},
+        )
+        assert result.action != TOOL_DENY
+
+    def test_camelcased_depth_cap_is_honoured_at_the_gate(self):
+        # The end-to-end form of the inversion risk: a capped search must survive the
+        # uncapped-search rule even when kiro-cli spells the key camelCase.
+        result = self._mgr().on_tool_call(
+            "Locate the tracking docs",
+            tool_kind="read",
+            raw_params={"path": "/local/home/alice", "pattern": "*.md", "maxDepth": 2},
+        )
+        assert result.action != TOOL_DENY
+
+    def test_a_pattern_cannot_forge_a_depth_cap(self):
+        # The defect that makes this mechanism worth having: model-authored argument
+        # text must not be able to disarm the rule. An uncapped home walk whose PATTERN
+        # spells the cap stays denied.
+        result = self._mgr().on_tool_call(
+            "Search for the literal",
+            tool_kind="read",
+            raw_params={"path": "/local/home/alice", "pattern": "needle max_depth=1"},
+        )
+        assert result.action == TOOL_DENY
+
+    def test_a_path_cannot_forge_a_depth_cap(self):
+        # Same forgery through the one field that IS emitted. Asserted on the target
+        # rather than the verdict: encoding stops a value minting a `max_depth=` FIELD,
+        # but no encoding can make a rule anchored on `(?:\s|$)` match a path carrying a
+        # suffix — `/local/home/alice/.` evades that anchor too. See the anchoring note
+        # in the security spec.
+        from kiro_crew.hooks import _search_deny_target
+
+        target = _search_deny_target(
+            {"path": "/local/home/alice max_depth=1", "pattern": "*.md"}
+        )
+        assert "max_depth=" not in target
+
+    def test_a_tilde_root_is_denied_by_a_home_rule(self, monkeypatch, tmp_path):
+        # `path="~"` walks the home tree exactly as its literal root does. Without
+        # normalization it reaches a rule under a spelling no home rule matches, so the
+        # protection reads as present while being absent. The rule is built through the
+        # PRODUCTION normalizer so it models the emitted spelling on every OS, and
+        # `re.escape` because a real home path carries regex metacharacters (a Windows
+        # `C:\Users\…` makes `\U` a bad escape and raises rather than failing).
+        from kiro_crew.hooks import _normalize_search_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        home = re.escape(_normalize_search_path(str(tmp_path)))
+        cfg = HooksConfig(
+            denied_commands_user_added=[
+                UserDeniedPattern(id="u1", pattern=r"file-search (?!.*max_depth=).*path=" + home)
+            ]
+        )
+        result = HookManager(cfg).on_tool_call(
+            "have a look around",
+            tool_kind="read",
+            raw_params={"path": "~", "pattern": "**/*"},
+        )
+        assert result.action == TOOL_DENY
+
+    def test_scoped_search_outside_home_is_allowed(self):
+        result = self._mgr().on_tool_call(
+            "Find the config",
+            tool_kind="read",
+            raw_params={"path": "/srv/app", "pattern": "**/*.json"},
+        )
+        assert result.action != TOOL_DENY
+
+    def test_a_command_shaped_pattern_does_not_trip_command_rules(self):
+        # A read-only search FOR a dangerous string is not a dangerous command. The
+        # pattern is never emitted, so it cannot match a command-oriented built-in.
+        result = HookManager(HooksConfig()).on_tool_call(
+            "Audit the migrations",
+            tool_kind="read",
+            raw_params={"path": "/srv/app", "pattern": "DROP TABLE"},
+        )
+        assert result.action != TOOL_DENY
+
+    def test_benign_title_cannot_hide_a_searchs_arguments(self):
+        # The invariant that matters: identification reads the params, so dressing the
+        # title benignly does not let an uncapped home walk through. (The converse —
+        # a title QUOTING the rule — trips it via the title tier, which over-blocks and
+        # grants nothing; asserted below so the behavior is pinned.)
+        mgr = self._mgr()
+        assert (
+            mgr.on_tool_call(
+                "just a peek",
+                tool_kind="read",
+                raw_params={"path": "/local/home/alice", "pattern": "**/*"},
+            ).action
+            == TOOL_DENY
+        )
+        assert (
+            mgr.on_tool_call("file-search path=/local/home/alice", raw_params=None).action
+            == TOOL_DENY
+        )
+
+
+class TestSearchDenyTargetSynthesis:
+    """``_search_deny_target`` — the shape gate and the field grammar rules rely on."""
+
+    @staticmethod
+    def _path_field(raw: str) -> str:
+        """The ``path=`` field emitted for *raw* on THIS OS.
+
+        Normalization is OS-shaped (a POSIX root becomes drive-anchored on Windows), so
+        a hardcoded POSIX spelling fails the Windows lane. Canonicalization has its own
+        equivalence tests; the assertions using this helper are about field STRUCTURE.
+        """
+        from kiro_crew.hooks import _encode_search_field, _normalize_search_path
+
+        return f"path={_encode_search_field(_normalize_search_path(raw))}"
+
+    def test_only_scope_fields_are_emitted_in_declared_order(self):
+        from kiro_crew.hooks import _search_deny_target
+
+        target = _search_deny_target(
+            {"pattern": "*.py", "max_depth": 3, "path": "/srv", "include": "*.txt"}
+        )
+        assert target == f"file-search {self._path_field('/srv')} max_depth=3"
+
+    def test_pattern_and_include_are_never_emitted(self):
+        # They are model-authored free text, not scope. An emitted value can mint a field
+        # it is not, and a benign search whose pattern is a dangerous literal matches a
+        # command-oriented rule.
+        from kiro_crew.hooks import _search_deny_target
+
+        target = _search_deny_target({"path": "/srv", "pattern": "DROP TABLE", "include": "*.sql"})
+        assert target == f"file-search {self._path_field('/srv')}"
+
+    def test_absent_depth_is_omitted_not_placeholdered(self):
+        # A rule expresses "unbounded" as the ABSENCE of max_depth, so an omitted key
+        # must leave no text behind for a negative lookahead to trip over.
+        from kiro_crew.hooks import _search_deny_target
+
+        assert _search_deny_target({"path": "/srv", "pattern": "*.py"}) == (
+            f"file-search {self._path_field('/srv')}"
+        )
+
+    def test_zero_depth_cap_is_emitted(self):
+        from kiro_crew.hooks import _search_deny_target
+
+        assert "max_depth=0" in _search_deny_target(
+            {"path": "/srv", "pattern": "*.py", "max_depth": 0}
+        )
+
+    def test_camelcased_depth_is_emitted_under_the_canonical_name(self):
+        # kiro-cli echoes some rawInput keys camelCased. Missing that spelling does
+        # not merely lose a field, it INVERTS the rule: an uncapped-search rule would
+        # fire on a search that carries a cap.
+        from kiro_crew.hooks import _search_deny_target
+
+        assert _search_deny_target({"path": "/srv", "pattern": "*.py", "maxDepth": 2}) == (
+            f"file-search {self._path_field('/srv')} max_depth=2"
+        )
+
+    def test_camelcased_path_is_emitted_under_the_canonical_name(self):
+        from kiro_crew.hooks import _search_deny_target
+
+        assert _search_deny_target({"filePath": "/srv", "pattern": "*.py"}) == (
+            f"file-search {self._path_field('/srv')}"
+        )
+
+    def test_boolean_depth_is_not_emitted(self):
+        # `bool` is an `int` subclass; a boolean depth is meaningless and no rule
+        # could match it sensibly.
+        from kiro_crew.hooks import _search_deny_target
+
+        assert "max_depth" not in _search_deny_target(
+            {"path": "/srv", "pattern": "*.py", "max_depth": True}
+        )
+
+    @pytest.mark.parametrize(
+        "path,forbidden,required",
+        [
+            ("/srv/a b", " ", "%20"),  # whitespace mints a field boundary
+            ("/srv/x=1", "=1", "%3D1"),  # `=` mints a field name
+            ("/srv max_depth=1", "max_depth=", "%3D"),  # the forgery itself
+        ],
+    )
+    def test_emitted_values_cannot_forge_a_field(self, path, forbidden, required):
+        # Asserted as properties, not a literal spelling, so the Windows lane agrees.
+        from kiro_crew.hooks import _search_deny_target
+
+        target = _search_deny_target({"path": path, "pattern": "*.py"})
+        assert forbidden not in target.removeprefix("file-search ")
+        assert required in target
+
+    def test_percent_is_escaped_so_the_encoding_is_unambiguous(self):
+        from kiro_crew.hooks import _search_deny_target
+
+        assert "%25" in _search_deny_target({"path": "/srv/100%", "pattern": "*.py"})
+
+    @pytest.mark.parametrize(
+        "equivalent",
+        [
+            "/srv/app/.",  # dot segment
+            "/srv/app/../app",  # parent segment
+            "/srv//app",  # duplicate separator
+            pytest.param(
+                "//srv/app",  # POSIX-implementation-defined; on Windows this is a UNC root
+                marks=pytest.mark.skipif(
+                    os.name == "nt", reason="a leading // is a UNC root on Windows"
+                ),
+            ),
+        ],
+    )
+    def test_equivalent_path_spellings_collapse_to_one(self, equivalent):
+        # A rule sees ONE spelling of a tree, so equivalent roots cannot slip past it.
+        # Asserted as equality between two spellings rather than a literal, because
+        # normalization is OS-shaped and a POSIX literal would fail on the Windows lane.
+        from kiro_crew.hooks import _search_deny_target
+
+        canonical = _search_deny_target({"path": "/srv/app", "pattern": "*.py"})
+        assert _search_deny_target({"path": equivalent, "pattern": "*.py"}) == canonical
+
+    def test_emitted_separators_are_forward_slashes_on_every_os(self):
+        # `normpath` produces `\` on Windows, so a rule authored with `/` — the form the
+        # spec documents — would silently stop matching there, failing OPEN.
+        from kiro_crew.hooks import _search_deny_target
+
+        target = _search_deny_target({"path": "/srv/app/sub", "pattern": "*.py"})
+        assert "\\" not in target
+        assert target.endswith("path=/srv/app/sub")
+
+    def test_tilde_and_home_var_expand_to_the_real_root(self, monkeypatch, tmp_path):
+        from kiro_crew.hooks import _search_deny_target
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        expected = _search_deny_target({"path": str(tmp_path), "pattern": "*"})
+        assert _search_deny_target({"path": "~", "pattern": "*"}) == expected
+        assert _search_deny_target({"path": "$HOME", "pattern": "*"}) == expected
+
+    @pytest.mark.skipif(os.name == "nt", reason="pwd/getpwnam is POSIX-only")
+    def test_a_named_user_tilde_stays_literal(self, monkeypatch, tmp_path):
+        # `~name` resolves through `pwd.getpwnam`, a synchronous NSS lookup that can
+        # stall the gateway event loop for seconds when the account comes from LDAP —
+        # and the agent controls this string. Only a BARE `~`/`~/` is expanded;
+        # reinstating an unguarded `os.path.expanduser` turns this red on any host
+        # where the account exists (root), and the getpwnam stub below catches the
+        # regression on every host regardless.
+        import pwd
+
+        from kiro_crew.hooks import _search_deny_target
+
+        def _boom(name):  # pragma: no cover - hit only on regression
+            raise AssertionError(f"getpwnam({name!r}) reached from the deny target path")
+
+        monkeypatch.setattr(pwd, "getpwnam", _boom)
+        target = _search_deny_target({"path": "~root/etc", "pattern": "*"})
+        assert target == "file-search path=~root/etc"
+
+    @pytest.mark.skipif(os.name == "nt", reason="pwd/getpwuid is POSIX-only")
+    def test_a_bare_tilde_with_no_home_variable_stays_literal(self, monkeypatch):
+        # With HOME unset, `os.path.expanduser("~")` falls back to `pwd.getpwuid` —
+        # the same synchronous NSS lookup class as `getpwnam`, and it can stall the
+        # gateway event loop on LDAP-backed hosts. The home prefix comes from the
+        # _SEARCH_HOME_VARS environment values ONLY; with none set, `~` stays
+        # literal, mirroring the unset-$HOME contract. The getpwuid stub turns
+        # this red if an account-database fallback is ever reinstated.
+        import pwd
+
+        from kiro_crew.hooks import _search_deny_target
+
+        def _boom(uid):  # pragma: no cover - hit only on regression
+            raise AssertionError(f"getpwuid({uid!r}) reached from the deny target path")
+
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.delenv("USERPROFILE", raising=False)
+        monkeypatch.setattr(pwd, "getpwuid", _boom)
+        assert _search_deny_target({"path": "~/x", "pattern": "*"}) == "file-search path=~/x"
+        assert _search_deny_target({"path": "~", "pattern": "*"}) == "file-search path=~"
+
+    def test_a_repeated_separator_cannot_displace_the_home_prefix(
+        self, monkeypatch, tmp_path
+    ):
+        # `os.path.join(home, rest)` DISCARDS home when rest is absolute, so
+        # `~//etc` (rest `/etc`) would encode `/etc` while the search itself
+        # resolves under the real home — a home-scoped deny rule would miss.
+        # The expansion is built by concatenation with leading separators
+        # stripped, mirroring how a shell resolves `$HOME//etc`. Reverting to
+        # os.path.join turns this red.
+        from kiro_crew.hooks import _search_deny_target
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        expected = _search_deny_target(
+            {"path": str(tmp_path / "etc"), "pattern": "*"}
+        )
+        assert _search_deny_target({"path": "~//etc", "pattern": "*"}) == expected
+        assert _search_deny_target({"path": "~///etc", "pattern": "*"}) == expected
+
+    def test_a_non_home_variable_is_not_dereferenced_into_the_target(self, monkeypatch):
+        # THE REGRESSION THIS GUARDS: the synthesized target is AUDITED — a denied
+        # target becomes the security event log's `operation` field — so expanding
+        # arbitrary variables let an agent append `$AWS_SECRET_ACCESS_KEY` to a prefix
+        # it knew a rule refuses and have the deny it wanted write the secret to a
+        # readable log. Reinstating `os.path.expandvars` turns this red.
+        from kiro_crew.hooks import _search_deny_target
+
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t-sentinel-value")
+        target = _search_deny_target(
+            {"path": "/home/user/$AWS_SECRET_ACCESS_KEY", "pattern": "*"}
+        )
+
+        assert "s3cr3t-sentinel-value" not in target
+        assert target == "file-search path=/home/user/$AWS_SECRET_ACCESS_KEY"
+
+    def test_an_unset_home_variable_does_not_widen_the_scope(self, monkeypatch):
+        # Substituting an unset variable with "" would turn `$HOME/x` into `/x` — a
+        # root-scope walk the tool never performs — and a rule matching that broader
+        # scope would then deny the wrong thing. Left literal instead.
+        from kiro_crew.hooks import _search_deny_target
+
+        monkeypatch.delenv("HOME", raising=False)
+        monkeypatch.delenv("USERPROFILE", raising=False)
+
+        target = _search_deny_target({"path": "$HOME/x", "pattern": "*"})
+        assert target == "file-search path=$HOME/x"
+
+    def test_a_malformed_tilde_path_does_not_crash_the_gate(self):
+        # `expanduser` raises ValueError on a `~name` form carrying an embedded NUL.
+        # Inside the permission gate an exception is a crash, not a decision, so the
+        # raw value is returned for encoding instead.
+        from kiro_crew.hooks import _search_deny_target
+
+        target = _search_deny_target({"filePath": "~bad\x00user", "pattern": "*"})
+        assert target.startswith("file-search path=")
+        assert "max_depth=" not in target
+
+    def test_a_relative_root_is_not_absolutized(self):
+        # `abspath` would resolve against the GATEWAY cwd, which is not the cwd the
+        # tool runs in: that both bypasses a rule naming the tree actually walked and
+        # falsely denies a search when the gateway's own tree is the one named.
+        from kiro_crew.hooks import _search_deny_target
+
+        assert _search_deny_target({"path": ".", "pattern": "*"}) == "file-search path=."
+        assert _search_deny_target({"path": "../x", "pattern": "*"}) == "file-search path=../x"
+
+    def test_recursive_operation_is_search_shaped_without_a_pattern(self):
+        from kiro_crew.hooks import _search_deny_target
+
+        assert _search_deny_target({"operation": "search_symbols", "path": "/srv"}) == (
+            "file-search path=/srv"
+        )
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            None,
+            {},
+            {"path": "/srv"},  # no pattern and no recursive operation — not a search
+            {"pattern": ""},  # empty pattern
+            {"pattern": 42},  # non-string pattern
+            {"operation": "get_hover", "path": "/srv"},  # non-recursive operation
+            {"pattern": "*.py", "command": "grep -r x /"},  # shell tool
+        ],
+    )
+    def test_non_search_shapes_synthesize_nothing(self, params):
+        from kiro_crew.hooks import _search_deny_target
+
+        assert _search_deny_target(params) == ""

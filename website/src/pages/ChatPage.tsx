@@ -25,6 +25,7 @@ import {
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
   retireStatelessQuestion, capturePendingAskId,
+  requestSlotReveal,
   mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
@@ -55,7 +56,9 @@ import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment } from '../utils/fileTokens'
+import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens } from '../utils/fileTokens'
+import { classifyDrop } from '../utils/dropClassify'
+import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
@@ -95,6 +98,7 @@ import FollowUpCard from '../components/FollowUpCard'
 import FolderSuggestionCard from './chat/FolderSuggestionCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
+import SessionPulseSurveyCard from '../components/SessionPulseSurveyCard'
 import type { FollowupItem } from '../store/chatSlice'
 
 // Stable identity for the "no follow-up cards" case: returning a fresh {} from
@@ -706,6 +710,35 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
  *  equal value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
+/**
+ * Whether a shell command preview is the START of a browse.
+ *
+ * Matches the INVOCATION, not a mention: `playwright-cli` has to be the first
+ * word of a command, so `grep playwright-cli .` and `echo playwright-cli` are
+ * not browses while `cd /tmp && playwright-cli open …` is. Exported so the
+ * distinction is unit-tested rather than asserted in a comment -- a regex that
+ * merely required leading WHITESPACE matched every mention.
+ */
+export function isBrowseCommand(preview: string | undefined | null): boolean {
+  if (!preview) return false
+  // A real shell preview is the tool INPUT, which is JSON:
+  // `{"command":"playwright-cli open https://x"}`. Testing the raw string never
+  // matched, because `playwright-cli` sits behind a quote rather than at a
+  // command boundary -- so the panel never opened. Pull the command field out
+  // first, mirroring the backend's own `_extract_bash_command`, and fall back to
+  // the raw text for a preview that is already a bare command.
+  let cmd = preview
+  try {
+    const parsed: unknown = JSON.parse(preview)
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { command?: unknown }).command === 'string') {
+      cmd = (parsed as { command: string }).command
+    }
+  } catch {
+    // Not JSON: use the preview verbatim.
+  }
+  return /(^|[;&|(]\s*)playwright-cli(\s|$)/.test(cmd)
+}
+
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const moveSlotToFolder = useMoveSlotToFolder()
@@ -781,6 +814,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const messages = useAppSelector(s => s.chat.messages)
   const messagesRef = useRef(messages)
   messagesRef.current = messages
+  const kiroCrewVersion = useAppSelector(s => s.dashboard.status?.version) || ''
+  const assistantTurnCount = useMemo(
+    () =>
+      messages.filter(
+        m =>
+          m.role === 'assistant' &&
+          (m.kind ?? (m.meta?.kind as string | undefined)) !== 'compaction',
+      ).length,
+    [messages],
+  )
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
@@ -2897,7 +2940,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const files = Array.from(e.dataTransfer.files)
+    // Classify BEFORE acting (issue #743): a dropped folder inserts its path
+    // into the composer as an `@rel/` token — the same reference the @-picker
+    // stages — instead of taking the upload route, which cannot ingest a
+    // directory. Files keep uploading; a mixed drop takes both routes. In a
+    // plain browser no real path is visible, so classifyDrop leaves folders
+    // on the upload route there (today's behaviour) rather than inserting a
+    // misleading bare name.
+    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    if (dirPaths.length) {
+      // Short relative form when the folder lies inside the project root,
+      // absolute otherwise — exactly the picker's own fallback convention.
+      const rels = dirPaths.map(p => makeRelative(p, currentProjectRef.current || ''))
+      const spliced = spliceDirTokens(inputRef.current, voiceCaretRef.current?.start ?? null, rels)
+      if (spliced.changed) {
+        // Arm the caret restore the same way the dictation splice does, so the
+        // cursor lands just past the inserted tokens once the value commits.
+        // Only on a real change: an all-duplicates drop leaves the value
+        // identical, React bails out of the no-op setInput, the restore effect
+        // never fires, and the armed offset would fire stale on the next
+        // unrelated edit, yanking the user's cursor.
+        voicePendingCaretRef.current = spliced.caret
+        setInput(spliced.value)
+      }
+    }
     if (files.length) {
       uploadFiles(files)
     }
@@ -2923,6 +2989,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
     return () => cancelAnimationFrame(raf)
   }, [activeTip, scrollBottom])
+
+  // Same re-anchor need as the tip above, for the session pulse survey card:
+  // it renders after ChatFooter, outside the virtualizer's measured rows, so
+  // mounting/unmounting it changes the scroll viewport's real content height
+  // without the virtualizer knowing — otherwise a new turn arriving while the
+  // card is showing renders visually behind/under it instead of pushing it
+  // out of view.
+  const [surveyVisible, setSurveyVisible] = useState(false)
+  useEffect(() => {
+    if (!isAtBottomRef.current) return
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (isAtBottomRef.current) scrollBottom(true)
+      })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [surveyVisible, scrollBottom])
 
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
@@ -4345,30 +4428,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
     }
   }, [messages, activeSlot, dispatch])
-  // Auto-open the Browser panel when the agent starts browsing — the live
-  // Playwright mirror streams as `kirocrew-browser-frame` events. Open/focus the
-  // tab only at the START of a stream (new session_key, or after a >90s gap),
-  // NOT on every frame, so it can't steal focus from a tab the user switched to
-  // mid-browse.
-  const browseFrameOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
+  // Auto-open the Browser panel when the agent starts browsing. The signal is the
+  // agent's own shell call: browsing is `playwright-cli` commands, so a shell
+  // tool_call whose preview invokes it is the start of a browse. Open/focus the tab
+  // only at the START (new slot, or after a >90s gap), NOT on every command, so it
+  // cannot steal focus from a tab the user switched to mid-browse.
+  const browseOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
   useEffect(() => {
-    const onFrame = (e: Event) => {
-      const key = (e as CustomEvent<{ session_key?: string }>).detail?.session_key ?? null
-      const now = Date.now()
-      // Only auto-open the Browser tab when the browsing session IS the one on
-      // screen (the active slot). A background session's frames must not open —
-      // or, with the panel's own session gate, display in — another session's
-      // panel.
+    const onTool = (e: Event) => {
+      const d = (e as CustomEvent<{ slot?: string; is_shell?: boolean; input_preview?: string }>).detail
+      if (!d?.is_shell) return
+      if (!isBrowseCommand(d.input_preview)) return
+      const key = d.slot ?? null
+      // Only auto-open when the browsing session IS the one on screen. A background
+      // session's commands must not open another session's panel.
       if (!key || key !== activeSlotRef.current) return
-      const prev = browseFrameOpenedRef.current
+      const now = Date.now()
+      const prev = browseOpenedRef.current
       if (prev.key !== key || now - prev.ts > 90_000) {
         dispatch(openActivityPanel())
         tabsCtlRef.current.openView('browser')
       }
-      browseFrameOpenedRef.current = { key, ts: now }
+      browseOpenedRef.current = { key, ts: now }
     }
-    window.addEventListener('kirocrew-browser-frame', onFrame)
-    return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
+    window.addEventListener('kirocrew-tool-call', onTool)
+    return () => window.removeEventListener('kirocrew-tool-call', onTool)
   }, [dispatch])
   // Reachability: declare open chat slots to the Electron main process so the
   // agent command channel polls for them (see listPanelIds) even before the Browser
@@ -4608,6 +4692,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const projectBranch = projectGitError
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
+
+  // Auto-open the Git panel when the slot has a project dir that is a git repo.
+  // Once per slot+path (dismissed via localStorage marker if the user closes it).
+  useEffect(() => {
+    if (!activeSlot || !_slotProject || projectGitError) return
+    if (!projectGit?.repo) return
+    const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
+    if (localStorage.getItem(key)) return
+    // If the marker cannot be persisted (quota), skip the auto-open entirely:
+    // opening changes tabsCtl, which re-runs this effect, and an absent marker
+    // would make it open again forever.
+    try { localStorage.setItem(key, '1') } catch { return }
+    tabsCtl.openView('git')
+    dispatch(openActivityPanel())
+  }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch])
+
+  // Auto-open the folder tab for the project dir once per slot+path.
+  useEffect(() => {
+    if (!activeSlot || !_slotProject) return
+    const key = `mc-folder-panel-opened:${activeSlot}:${_slotProject}`
+    if (localStorage.getItem(key)) return
+    // Same quota guard as the git-panel effect above.
+    try { localStorage.setItem(key, '1') } catch { return }
+    tabsCtl.openFolder(_slotProject, activeSlot)
+  }, [activeSlot, _slotProject, tabsCtl])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
@@ -4781,8 +4890,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // selection, WITHOUT touching the main chat context (unlike handleQuote, which
   // injects into the main composer). Mirrors the /side slash command's
   // openActivityToTab('side') bridge, then hands the selection to SideChat via a
-  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab /
-  // reveal-slot — no new prop-drilling, no backend change). No transit
+  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab —
+  // no new prop-drilling, no backend change). No transit
   // animation: the popup routes the selection straight to the Side panel
   // (matches Codex's "Ask in side chat" behavior).
   const handleAsk = useCallback((text: string) => {
@@ -6105,7 +6214,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
-                  onReveal={activeSlot ? () => { sidebarAutoHidden.current = null; if (!sidebarPinned) setSidebarPinned(true); window.dispatchEvent(new CustomEvent('reveal-slot', { detail: activeSlot })) } : undefined}
+                  onReveal={activeSlot && embedMode !== 'chat' ? () => {
+                    // The request rides the store, not a window event: with the
+                    // drawer collapsed ChatSidebar is unmounted, so an event
+                    // dispatched here (before the mount that setSidebarPinned
+                    // schedules commits) had no listener and was dropped —
+                    // the store entry survives until the sidebar consumes it
+                    // (#912). Mobile drives its own drawer state. Embed-chat
+                    // never mounts a sidebar, so the item is not offered there:
+                    // a stored request would outlive the view and fire on
+                    // whichever sidebar mounts next.
+                    sidebarAutoHidden.current = null
+                    if (isMobile) setMobileSessions(true)
+                    else if (!sidebarPinned) setSidebarPinned(true)
+                    dispatch(requestSlotReveal(activeSlot))
+                  } : undefined}
                   onRename={activeSlot ? () => { setEditingTitle(true); setTitleDraft(title) } : undefined}
                   mode={effectiveMode}
                 />
@@ -6414,6 +6537,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <div ref={virt.bottomSentinelRef} aria-hidden style={{ height: 1 }} />
               {/* Footer */}
               <ChatFooter running={slotRunning} stopping={slotStopping} state={slotState} lastRole={lastRole} streamTick={streamTick} regenerating={regenerating} stopState={currentSlot?.stop_state} />
+              {activeSlot && !slotLoading && (
+                <div className="px-5 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+                  <SessionPulseSurveyCard
+                    // Remount on session switch: without this, React reuses
+                    // the same component instance across sessions, so an
+                    // in-progress rating/feedback/email from session A would
+                    // still be sitting in state when the user switches to
+                    // session B and hits Submit — attributing A's answers to
+                    // B's sessionId prop, which had already updated.
+                    //
+                    // Gated on !slotLoading: the card captures its baseline
+                    // turn count on FIRST MOUNT (see the component's own
+                    // comment), so mounting before history finishes loading
+                    // would baseline at 0 and then count every loaded
+                    // historical turn as "live" once the fetch resolves —
+                    // reintroducing the exact reopened-session bug the
+                    // baseline exists to prevent, just via a race instead of
+                    // a missing check.
+                    key={activeSlot}
+                    sessionId={activeSlot}
+                    kiroCrewVersion={kiroCrewVersion}
+                    turnCount={assistantTurnCount}
+                    onVisibleChange={setSurveyVisible}
+                  />
+                </div>
+              )}
               <div style={{height: '2vh'}} />
             </div>
             )}
@@ -6657,6 +6806,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
+              showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
               /* Composed with `interrupted`, matching the ErrorCard gate above.
                  Availability alone would put a filled primary button on the

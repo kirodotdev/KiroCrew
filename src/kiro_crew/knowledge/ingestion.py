@@ -12,6 +12,7 @@ import time as _time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TypeVar
 from uuid import uuid4
 
 from kiro_crew.security import (
@@ -115,7 +116,10 @@ def get_embed_rate_limiter() -> EmbedRateLimiter:
     return _embed_rate_limiter
 
 
-async def run_to_completion(fn: Callable[[], None]) -> None:
+_T = TypeVar("_T")
+
+
+async def run_to_completion(fn: Callable[[], _T]) -> _T:
     """Run ``fn`` on a worker thread, guaranteed to run even if cancelled.
 
     A bare ``await asyncio.to_thread(fn)`` can drop ``fn`` entirely: when
@@ -125,10 +129,15 @@ async def run_to_completion(fn: Callable[[], None]) -> None:
     skipped finalizer strands committed data (the next scan re-ingests
     alongside it -> duplicates). Shield the worker task; on cancellation,
     wait for it to finish, then re-raise.
+
+    ``fn``'s return value is forwarded, so a unit that both mutates and
+    reports a result (a duplicate skip returning its job id) travels as one
+    hop instead of splitting the mutation from the value across an await.
+    Cancellation still wins: the work is drained, but the value is dropped.
     """
     task = asyncio.ensure_future(asyncio.to_thread(fn))
     try:
-        await asyncio.shield(task)
+        return await asyncio.shield(task)
     except asyncio.CancelledError:
         # The finalizer is bounded sync DB work: drain it even under repeated
         # cancellation, then let the cancellation proceed.
@@ -241,7 +250,8 @@ class IngestionPipeline:
         self._dedup_enabled = dedup_enabled
 
     def _skip_as_duplicate(self, content_hash: str, source_id: str | None,
-                           old_item_ids: list[str] | None = None) -> str | None:
+                           old_item_ids: list[str] | None = None,
+                           on_duplicate: Callable[[], None] | None = None) -> str | None:
         """Terminal job id when this exact document is already in the Library.
 
         Returns ``None`` when the write should proceed.
@@ -277,33 +287,75 @@ class IngestionPipeline:
         """
         if not content_hash:
             return None
-        holder = self.store.find_doc_by_content_hash(
-            content_hash, exclude_source_id=source_id)
-        if not holder:
+        # Cheap unlocked probe: "not a duplicate" is the overwhelmingly common
+        # answer, and taking the write lock to learn it would serialize every
+        # ingest behind every other one.
+        if not self.store.find_doc_by_content_hash(
+                content_hash, exclude_source_id=source_id):
             return None
-        if self._outranks_holder(source_id, str(holder.get("source_type") or "")):
-            return None
+
+        # Everything below is ONE write transaction, and that is load-bearing.
+        # The gate reads a holder and then makes this source DEPEND on it, so the
+        # holder must not be destroyable in between. BEGIN IMMEDIATE takes the
+        # write lock, so a concurrent delete_source_cascade (also BEGIN IMMEDIATE,
+        # on its own thread) waits rather than cascading away the very copy being
+        # attached to. Without the lock the target is recorded as deduped while
+        # its only surviving items are deleted, and the content is unrecoverable.
+        self.store.db.execute("BEGIN IMMEDIATE")
+        try:
+            holder = self.store.find_doc_by_content_hash(
+                content_hash, exclude_source_id=source_id)
+            if not holder:
+                # Vanished between the probe and the lock: fall through to a
+                # normal ingest instead of deduping against something gone.
+                self.store.db.execute("COMMIT")
+                return None
+            if self._outranks_holder(source_id, str(holder.get("source_type") or "")):
+                self.store.db.execute("COMMIT")
+                return None
+            if old_item_ids:
+                self.store.delete_items_batch_in_txn(
+                    list(old_item_ids), owner_source_id=source_id)
+            # This source HAS a copy of the document -- it just does not need a second
+            # physical one. Under "one document, many locations" that has to be recorded,
+            # or the copy is invisible to the reference count: deleting the holder would
+            # destroy the only items while this source's file still sits on disk, and the
+            # content would vanish from the Library with nothing to bring it back.
+            # Attaching costs nothing and makes the refusal safe.
+            if source_id:
+                for row in self.store.db.execute(
+                        "SELECT id FROM items WHERE content_hash = ? AND source_id = ?",
+                        (content_hash, holder.get("source_id"))).fetchall():
+                    self.store.add_source_location_in_txn(row["id"], source_id)
+            job_id = uuid4().hex[:12]
+            now = datetime.now().isoformat()
+            self.store.db.execute(
+                "INSERT INTO ingestion_jobs (id, source_id, status, items_total, "
+                "items_processed, created_at, updated_at) "
+                f"VALUES (?, ?, '{DUPLICATE_JOB_STATUS}', 0, 0, ?, ?)",
+                (job_id, source_id, now, now))
+            # The caller's terminal state row, written INSIDE this transaction.
+            # After the COMMIT is too late: the row may not exist yet (a first-time
+            # aggregate document), and a `delete_source_cascade` landing in the gap
+            # reassigns the surviving item to this source and then has no row to
+            # adopt it into -- `_adopt_reassigned_item` matches on
+            # (source_id, hash), finds nothing, and returns silently. The row that
+            # follows records an empty group while the source owns the item, which
+            # is the strand this whole path exists to prevent. Inside the
+            # transaction the cascade waits on the write lock, so it sees either no
+            # claim at all or a claim WITH the row that names it. An exception here
+            # rolls the gate back too, which is the correct pairing: the delete,
+            # the claim and the record land together or not at all.
+            if on_duplicate is not None:
+                on_duplicate()
+            self.store.db.execute("COMMIT")
+        except Exception:
+            self.store.db.execute("ROLLBACK")
+            raise
+        # The in-txn delete swept orphaned entities the graph still holds; rebuild
+        # it once the transaction is durable.
         if old_item_ids:
-            self.store.delete_items_batch(list(old_item_ids), owner_source_id=source_id)
-        # This source HAS a copy of the document -- it just does not need a second
-        # physical one. Under "one document, many locations" that has to be recorded,
-        # or the copy is invisible to the reference count: deleting the holder would
-        # destroy the only items while this source's file still sits on disk, and the
-        # content would vanish from the Library with nothing to bring it back.
-        # Attaching costs nothing and makes the refusal safe.
-        if source_id:
-            for row in self.store.db.execute(
-                    "SELECT id FROM items WHERE content_hash = ? AND source_id = ?",
-                    (content_hash, holder.get("source_id"))).fetchall():
-                self.store.add_source_location(row["id"], source_id)
-        job_id = uuid4().hex[:12]
-        now = datetime.now().isoformat()
-        self.store.db.execute(
-            "INSERT INTO ingestion_jobs (id, source_id, status, items_total, "
-            "items_processed, created_at, updated_at) "
-            f"VALUES (?, ?, '{DUPLICATE_JOB_STATUS}', 0, 0, ?, ?)",
-            (job_id, source_id, now, now))
-        self.store.db.commit()
+            self.store.reload_graph()
         logger.info(
             "Skipping ingest: identical content already in source %r (%s)",
             holder.get("source_name"), holder.get("source_type"))
@@ -372,7 +424,7 @@ class IngestionPipeline:
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
-    async def ingest_file(self, path: str, on_progress=None, original_name: str = "", namespace: str = "default", source_id: str = "", old_item_ids: list[str] | None = None, on_committed: Callable[[list[str]], None] | None = None) -> str | None:
+    async def ingest_file(self, path: str, on_progress=None, original_name: str = "", namespace: str = "default", source_id: str = "", old_item_ids: list[str] | None = None, on_committed: Callable[[list[str]], None] | None = None, on_duplicate: Callable[[], None] | None = None) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
         If source_id is provided, ingests into that existing source instead of
@@ -390,6 +442,15 @@ class IngestionPipeline:
         and the record that makes them replaceable -- each one a cancellation
         point that strands the items unowned. Passing the write in here gives it
         the same run-to-completion guarantee as the delete it belongs with.
+
+        ``on_duplicate`` is that same bargain for the branch where the pre-ingest
+        gate REFUSES the write. It runs inside the gate's own hop, after its
+        transaction commits, and records whatever terminal state the caller keys by
+        document. Leaving it to the caller is not merely riskier here than on the
+        success branch, it is unsound: ``run_to_completion`` guarantees the gate
+        finishes and then re-raises the cancellation, so a shutdown lands with the
+        deletion and the location claim durable and the caller's write never
+        reached.
         """
         p = Path(path)
         display_name = original_name or p.name
@@ -503,7 +564,12 @@ class IngestionPipeline:
                 )
 
         # 3. Job record
-        dupe_job = self._skip_as_duplicate(content_hash, source_id, _old_item_ids)
+        # One hop for the whole gate: it deletes the superseded items, attaches
+        # the location and writes the terminal job row, and its delete rebuilds
+        # the entity graph — seconds of blocking SQLite on a large library.
+        dupe_job = await run_to_completion(
+            lambda: self._skip_as_duplicate(
+                            content_hash, source_id, _old_item_ids, on_duplicate=on_duplicate))
         if dupe_job:
             return dupe_job
         job_id = uuid4().hex[:12]
@@ -678,7 +744,8 @@ class IngestionPipeline:
 
     async def ingest_text(self, text: str, title: str, source_type: str = 'manual',
                           source_id: str | None = None,
-                          old_item_ids: list[str] | None = None) -> str | None:
+                          old_item_ids: list[str] | None = None,
+                          on_duplicate: Callable[[], None] | None = None) -> str | None:
         """Ingest raw text (dashboard drop, chat, or a shared aggregate source).
 
         Without ``source_id`` the source is found-or-created by a
@@ -718,7 +785,12 @@ class IngestionPipeline:
             _old_item_ids = [row['id'] for row in self.store.db.execute(
                 "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
 
-        dupe_job = self._skip_as_duplicate(content_hash, source_id, _old_item_ids)
+        # One hop for the whole gate: it deletes the superseded items, attaches
+        # the location and writes the terminal job row, and its delete rebuilds
+        # the entity graph — seconds of blocking SQLite on a large library.
+        dupe_job = await run_to_completion(
+            lambda: self._skip_as_duplicate(
+                            content_hash, source_id, _old_item_ids, on_duplicate=on_duplicate))
         if dupe_job:
             return dupe_job
 

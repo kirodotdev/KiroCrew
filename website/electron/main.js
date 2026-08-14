@@ -30,8 +30,16 @@ const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPo
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
+const {
+  DEFAULT_GLOBAL_HOTKEY,
+  createSummonHandler,
+  bindGlobalHotkey,
+  unregisterGlobalHotkey,
+  currentGlobalHotkey,
+  setGlobalHotkeyLogger,
+} = require("./global-hotkey");
 const { createLivenessMonitor } = require("./gateway-liveness");
-const { chooseRecoveryStrategy, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
+const { chooseRecoveryStrategy, classifyAdoptedGateway, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
@@ -79,6 +87,8 @@ const {
 
 const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = require("./host-config");
 
+const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
+
 const store = new Store({
   defaults: {
     remoteHost: "",                        // LEGACY — migrated to remoteHosts
@@ -86,11 +96,22 @@ const store = new Store({
     remoteHosts: {},                       // { [port]: { host, binPath, remotePort?, remotePath? } }
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
+    globalHotkey: null,                    // system-wide summon accelerator: null = platform default, "" = disabled, string = custom (see global-hotkey.js)
     lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
+    runLocalGateway: true,                 // false = act as a pure client; never start a gateway on this machine
   },
 });
+
+// Read ONCE at launch, because the setting takes effect on the next launch.
+// startGateway() is also the recovery path for a gateway that died mid-session,
+// so re-reading the store there would let a flip made minutes ago refuse to
+// replace a gateway this session is still using — stranding the user with no
+// backend and no way back short of a relaunch. The error dialog's
+// "turn it on and retry" action is the one thing that may change this, since
+// that IS the user asking for a gateway right now.
+let runLocalGateway = isLocalGatewayEnabled(store);
 
 // The PRE-SPAWN read home (see home-dir.js for the full contract): whichever
 // directory's config.json governs this launch under the backend's migration
@@ -196,34 +217,42 @@ if (!app.requestSingleInstanceLock()) {
 let mainWindow = null;
 let tray = null;
 let gatewayProcess = null;
-// True only when WE spawned the bundled backend on this flavor's port. False on
-// the reuse path — i.e. a gateway was already answering when we booted, which is
-// exactly the remote-tunnel setup (localhost:<port> is an SSH forward to a
-// remote gateway) and also the "dev ran `kirocrew gateway` in a terminal" case.
-// Recovery must NEVER kill or respawn a gateway we did not spawn: the port-holder
-// is someone else's process (our SSH tunnel, a manual gateway), and the correct
-// fix on a dropped tunnel is to re-probe and reconnect once it heals, not to
-// force-stop the port or spawn a (nonexistent, in remote mode) local backend.
-let weSpawnedGateway = false;
-// True only on the reuse path when the port-holder was POSITIVELY identified as
-// a local same-family Kiro Crew process (same-family /api/health + a "kirocrew"
-// or "service" LISTEN owner). Distinguishes "we adopted a local gateway" from
-// "we connected to a tunnel / external gateway" for recovery: an adopted local
-// gateway that dies will never come back on its own, so recovery must wait
-// BOUNDED and then respawn — never the indefinite tunnel-heal wait, which
-// leaves the shell dead until the user manually relaunches.
+// How the gateway on this flavor's port was obtained — ONE mutually-exclusive
+// state (previously three module-level booleans that encoded it redundantly and
+// could drift out of sync). Vocabulary + the recovery-strategy mapping live in
+// gateway-recovery.js (chooseRecoveryStrategy / classifyAdoptedGateway); assign
+// at exactly one place per outcome.
+//   "none"           — no gateway yet, or the reuse path could NOT positively
+//                      identify the port-holder as a local Kiro Crew process
+//                      (remote SSH tunnel, manual/external gateway, probe
+//                      failure). Recovery must NEVER kill or respawn it: the
+//                      port-holder is someone else's process, and the correct
+//                      fix on a dropped tunnel is to re-probe and reconnect
+//                      once it heals, not to force-stop the port or spawn a
+//                      (nonexistent, in remote mode) local backend.
+//   "spawned"        — WE spawned the bundled backend on this flavor's port;
+//                      recovery may kill + respawn it.
+//   "reused-local"   — reuse path, holder POSITIVELY identified as a local
+//                      same-family Kiro Crew process (same-family /api/health
+//                      + a "kirocrew" LISTEN owner). An adopted local gateway
+//                      that dies will never come back on its own, so recovery
+//                      must wait BOUNDED and then respawn — never the
+//                      indefinite tunnel-heal wait, which leaves the shell
+//                      dead until the user manually relaunches.
+//   "reused-service" — like "reused-local", but the holder was SERVICE-
+//                      classified (PPID = init: a real launchd/systemd unit —
+//                      or an orphan, which reparents to init and is
+//                      indistinguishable at classify time). If that gateway
+//                      later releases the port, a real service manager may be
+//                      about to respawn it, so recovery must offer a bounded
+//                      rebind grace before spawning locally — spawning
+//                      immediately races the manager for the bind and one side
+//                      dies with EADDRINUSE.
 // KNOWN RESIDUAL (Windows): classifyPortOwner cannot positively identify
-// owners there (no lsof/ps), so this flag never sets and an adopted draining
-// gateway still falls into the indefinite "reconnect" wait — deliberately
-// conservative until the Windows-native owner probe lands.
-let reusedLocalGateway = false;
-// True when the adopted holder was specifically SERVICE-classified (PPID = init:
-// a real launchd/systemd unit — or an orphan, which reparents to init and is
-// indistinguishable at classify time). If that gateway later releases the port,
-// a real service manager may be about to respawn it, so recovery must offer a
-// bounded rebind grace before spawning locally — spawning immediately races the
-// manager for the bind and one side dies with EADDRINUSE.
-let reusedServiceGateway = false;
+// owners there (no lsof/ps), so the reused-* states never set and an adopted
+// draining gateway still falls into the indefinite "reconnect" wait —
+// deliberately conservative until the Windows-native owner probe lands.
+let gatewayOwnership = "none";
 // Post-handoff backend liveness monitor (primary window only). Detects a wedged
 // gateway — alive TCP socket, frozen event loop — that the spawn 'exit' watcher
 // can't, since the process never exits. See gateway-liveness.js.
@@ -491,15 +520,13 @@ async function resolveGatewayConflict(rebindDepth = 0) {
       adoptedDraining = true;
     }
     glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
-    weSpawnedGateway = false; // reuse path — recovery must not kill/respawn a gateway we don't own
-    // A same-family gateway held by a local Kiro Crew process is OURS in spirit
+    // Reuse path — recovery must not kill/respawn a gateway we don't own. A
+    // same-family gateway held by a local Kiro Crew process is OURS in spirit
     // even though we didn't spawn it: if it dies, no tunnel will resurrect it,
     // so recovery may respawn after a bounded wait. Anything less positively
     // identified (tunnel, no visible owner, probe failure) keeps the
-    // never-respawn external classification.
-    reusedLocalGateway = decision.reason === "same-family"
-      && (localOwner === "kirocrew" || localOwner === "service");
-    reusedServiceGateway = reusedLocalGateway && localOwner === "service";
+    // never-respawn external classification ("none").
+    gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner });
     // A gateway we adopted mid-drain is not a success to celebrate: recovery
     // may immediately retract it. Keep the status neutral for that case.
     sendStatus(adoptedDraining ? "Connecting to the existing gateway…" : "Gateway already running ✓");
@@ -608,6 +635,25 @@ function startGateway() {
   glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
   sendStatus("Checking if gateway is running…");
   return new Promise((resolve) => {
+    // Both branches below funnel through here, so the client-only choice cannot
+    // be honoured on one path and ignored on the other. A takeover reaches it
+    // too: quitting the other channel's app frees the port on this machine, and
+    // that is not a request to run a gateway here.
+    //
+    // With nothing to spawn there is no exit code and no log to wait for, so the
+    // reason is reported as a fail-fast failure rather than left to time out.
+    // The error dialog's Retry re-enters this function, which is what makes
+    // "bring the connection up, then retry" work without a relaunch.
+    const spawnUnlessClientOnly = () => {
+      if (runLocalGateway) {
+        spawnGateway(resolve);
+        return;
+      }
+      glog(`no gateway on :${PORT} and local gateway is off — not starting one`);
+      sendStatus("No gateway is answering…");
+      gatewayStartFailure = { disabled: true, port: PORT };
+      resolve(false);
+    };
     checkBackend()
       .then(async () => {
         // A gateway is already listening on this port. Same-family, dev, and
@@ -621,10 +667,10 @@ function startGateway() {
           resolve(false);
           return;
         }
-        spawnGateway(resolve);
+        spawnUnlessClientOnly();
       })
       .catch(() => {
-        spawnGateway(resolve);
+        spawnUnlessClientOnly();
       });
   });
 }
@@ -776,9 +822,10 @@ function spawnGateway(resolve) {
           },
         });
         gatewayProcess = child;
-        weSpawnedGateway = true; // we own this child — recovery may kill+respawn it
-        reusedLocalGateway = false; // ownership transitioned: no longer on an adopted gateway
-        reusedServiceGateway = false; // ditto — stale service classification must not outlive the adoption
+        // We own this child — recovery may kill+respawn it. Ownership
+        // transitioned: any stale adopted/service classification must not
+        // outlive the spawn.
+        gatewayOwnership = "spawned";
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
         if (typeof childOut === "number") { try { fs.closeSync(childOut); } catch { /* ignore */ } }
 
@@ -1887,7 +1934,7 @@ function fadeLoadingScreen(wc, timeoutMs = 8000) {
  * @returns {Promise<'retry'|'force-retry'|'reveal'|'quit'>}
  */
 function showGatewayErrorDialog(parentWin, opts) {
-  const { title, message, logTail, logPath, portConflict, noRetry = false } = opts;
+  const { title, message, logTail, logPath, portConflict, noRetry = false, localGatewayOff = false } = opts;
   return new Promise((resolve) => {
     const dark = nativeTheme.shouldUseDarkColors;
     const hasParent = parentWin && !parentWin.isDestroyed();
@@ -1909,6 +1956,13 @@ function showGatewayErrorDialog(parentWin, opts) {
     // "Retry" button it would ignore contradicts the dialog's own message.
     const primaryAction = noRetry ? "quit" : (portConflict ? "force-retry" : "retry");
     const primaryLabel = noRetry ? "Quit" : (portConflict ? "Force-stop &amp; Retry" : "Retry");
+    // A client-only install whose remote is unreachable needs an in-app way to
+    // change its mind: Settings lives inside the dashboard, which a gateway has
+    // to serve, so the page holding the switch is exactly what it cannot reach.
+    // Retry stays primary because restoring the remote is the likelier fix.
+    const enableButton = (localGatewayOff && !noRetry)
+      ? `<button class="cancel" onclick="act('enable-retry')">Start Local Gateway</button>`
+      : "";
     const fg = dark ? "#e2e8f0" : "#1e293b";
     const muted = dark ? "#94a3b8" : "#64748b";
     const html = `<!DOCTYPE html><html><head><style>
@@ -1935,6 +1989,7 @@ function showGatewayErrorDialog(parentWin, opts) {
       <pre class="log">${esc(logTail || "(launch log is empty)")}</pre>
       <div class="row">
         <button class="ok" onclick="act('${primaryAction}')">${primaryLabel}</button>
+        ${enableButton}
         <button class="cancel" onclick="act('reveal')">Reveal Log</button>
         ${noRetry ? "" : `<button class="cancel" onclick="act('quit')">Quit</button>`}
       </div>
@@ -2065,7 +2120,7 @@ async function recoverWedgedGateway(win) {
   // fell through to showUnrecoverableGatewayError, which QUIT the app on any
   // button (that was the "crash on Retry"). Instead: leave the tunnel alone and
   // re-probe until it heals, then reconnect.
-  const strategy = chooseRecoveryStrategy({ weSpawnedGateway, reusedLocalGateway });
+  const strategy = chooseRecoveryStrategy({ gatewayOwnership });
   if (strategy === "reconnect") {
     glog("liveness: backend unresponsive on a gateway we did not spawn (remote tunnel / external gateway) — waiting for it to recover instead of killing the port");
     if (!win || win.isDestroyed() || isQuitting) return;
@@ -2199,7 +2254,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
     return showUnrecoverableGatewayError(win, PORT, "held");
   }
   if (!win || win.isDestroyed() || isQuitting) return;
-  if (reusedServiceGateway) {
+  if (gatewayOwnership === "reused-service") {
     // The dead gateway was SERVICE-classified: a real launchd/systemd unit is
     // (or may be) about to respawn it, and spawning immediately races that
     // rebind for the port. Orphans classify as service too but nothing rebinds
@@ -2222,8 +2277,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
       const readiness = await fetchGatewayReadiness();
       if (decision.action === "reuse" && readiness !== "shutting-down") {
         glog(`liveness: service manager re-bound :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
-        reusedLocalGateway = decision.reason === "same-family" && (owner === "kirocrew" || owner === "service");
-        reusedServiceGateway = reusedLocalGateway && owner === "service";
+        gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner: owner });
         gatewayStartFailure = null;
         return showLoadingThenConnect(win, BACKEND_URL);
       }
@@ -2397,10 +2451,25 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // recoverable case: the spawn dies with "address already in use" and a plain
     // retry can't help (the holder is still there). Detect it and offer to
     // force-stop the stuck KiroCrew process. Only meaningful for OUR own port.
-    const portConflict = failedToStart && backendUrl === BACKEND_URL && isPortInUse(logTail);
+    // Nothing was spawned in the client-only case, so it is classified before
+    // the port-conflict probe — see classifyStartFailure for why the log tail
+    // cannot be trusted to mean "a holder exists right now".
+    const failureKind = classifyStartFailure({
+      failedToStart,
+      failure: err.failure,
+      isOwnPort: backendUrl === BACKEND_URL,
+      portInUseInLog: isPortInUse(logTail),
+    });
+    const localGatewayOff = failureKind === "client-only";
+    const portConflict = failureKind === "port-conflict";
 
     let title, message;
-    if (portConflict) {
+    if (localGatewayOff) {
+      // Nothing failed here — the app was told not to start a gateway and the
+      // port is silent. "Failed to start" would send the user hunting a crash.
+      title = `Kiro Crew — no gateway on port ${PORT}`;
+      message = err.message;
+    } else if (portConflict) {
       title = `Kiro Crew — port ${PORT} already in use`;
       message = `Another Kiro Crew gateway is already using port ${PORT} (it may be wedged). `
         + `Force-stop it and retry, or quit. From a terminal you can also run: `
@@ -2417,12 +2486,20 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // Loop so "Reveal Log" can re-show the dialog after opening Finder.
     for (;;) {
       const action = await showGatewayErrorDialog(win, {
-        title, message, logTail, logPath, portConflict, port: PORT,
+        title, message, logTail, logPath, portConflict, port: PORT, localGatewayOff,
       });
       if (win.isDestroyed()) return;
       if (action === "reveal") {
         try { shell.showItemInFolder(logPath); } catch { /* best effort */ }
         continue; // re-show the dialog
+      }
+      if (action === "enable-retry") {
+        // The user is asking for a gateway now, from the one surface they can
+        // still reach. Persist it so the next launch agrees, and lift this
+        // session's snapshot so the retry below actually spawns.
+        setLocalGatewayEnabled(store, true);
+        runLocalGateway = true;
+        glog("local gateway turned back on from the error dialog");
       }
       if (action === "force-retry") {
         let freed = true;
@@ -2436,7 +2513,7 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
           return showUnrecoverableGatewayError(win, PORT);
         }
       }
-      if (action === "retry" || action === "force-retry") {
+      if (action === "retry" || action === "force-retry" || action === "enable-retry") {
         gatewayStartFailure = null; // let the retry genuinely re-probe
         // If our own spawned gateway is confirmed gone (or we just force-stopped
         // the port holder), respawn before re-waiting. For a timeout (child may
@@ -2804,6 +2881,39 @@ app.whenReady().then(async () => {
     if (item) item.visible = !!enabled;
   });
 
+  // System-wide summon hotkey: shows + focuses the dashboard from anywhere,
+  // launching a window when none exists. The handler and IPC surface are set
+  // up here; the actual registration happens after the boot path's
+  // createWindow() below, so a keypress cannot race window creation and
+  // produce two windows. Torn down on will-quit; the binding persists in the
+  // store (`globalHotkey`) so the user can rebind or disable it via the
+  // config file (Connection > Open Config File). A stored value that cannot be
+  // bound falls back to the default; a default that another app already owns
+  // degrades to no hotkey — logged, never fatal (see global-hotkey.js).
+  setGlobalHotkeyLogger(glog);
+  const summonDashboard = createSummonHandler({
+    // The focused dashboard window when there is one, else the main window,
+    // else ANY surviving dashboard window (`_mcView` marks the windows that
+    // host a dashboard — see focusedDashboardWindow above). The main window is
+    // hidden, not destroyed, on close, so createWindow() is a last resort.
+    getWindow: () =>
+      [BaseWindow.getFocusedWindow(), mainWindow, ...BaseWindow.getAllWindows()].find(
+        (w) => w && !w.isDestroyed() && w._mcView
+      ) || null,
+    createWindow: () => createWindow(),
+    // A global shortcut fires while ANOTHER app is frontmost; on macOS the
+    // window rises without keyboard focus unless the app steals activation.
+    focusApp: () => {
+      if (IS_MAC) app.focus({ steal: true });
+    },
+  });
+  // The shortcuts UI reads what is ACTUALLY bound (registration can degrade
+  // to the default or to nothing), so it never advertises a dead chord.
+  ipcMain.handle("global-hotkey:get", () => ({
+    accelerator: currentGlobalHotkey(),
+    default: DEFAULT_GLOBAL_HOTKEY,
+  }));
+
   // The renderer reports the user's resolved theme accent whenever it changes
   // (see useTheme.tsx). Persist a validated hex so the NEXT launch's boot splash
   // can paint in the user's colour. Anything not a plain hex is ignored.
@@ -2848,6 +2958,15 @@ app.whenReady().then(async () => {
   ipcMain.on("badge:set", (_event, count) => {
     app.setBadgeCount(clampBadgeCount(count));
   });
+
+  // Local-gateway switch for Settings > Developer. The choice lives in the
+  // app's own electron-store config, which page JS cannot reach, so the
+  // renderer round-trips through these handlers. Both resolve with the stored
+  // value so the toggle renders what was actually written. Reading it at launch
+  // (startGateway) rather than here is what gives the setting its next-launch
+  // semantics: flipping it never touches the gateway currently running.
+  ipcMain.handle("local-gateway:get", () => isLocalGatewayEnabled(store));
+  ipcMain.handle("local-gateway:set", (_event, enabled) => setLocalGatewayEnabled(store, enabled));
 
   // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
   // A renderer cannot touch Chromium's per-origin zoom itself, so it
@@ -3067,6 +3186,11 @@ app.whenReady().then(async () => {
 
   createTray();
   const win = createWindow();
+  // Bind the summon hotkey only now that the main window exists: registering
+  // earlier would let a keypress during boot race createWindow() and open a
+  // second window. Still within app ready — the OS-level chord works from the
+  // first frame the user can see.
+  bindGlobalHotkey(store.get("globalHotkey"), summonDashboard);
 
   // Wired BEFORE the awaited gateway boot ON PURPOSE. preload.js exposes
   // window.updateAPI unconditionally, so Settings > About renders a live Check
@@ -3202,7 +3326,7 @@ app.whenReady().then(async () => {
   // be answering before we ask it whether Mochi is on, and the pet page is
   // loaded from the gateway origin. Best-effort -- a failure here must never
   // block the dashboard, so everything is inside a catch that only logs.
-  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog, getMainWindow: () => mainWindow });
   // Same shape and the same best-effort contract: the companion's windows follow
   // the app's enabled state, and a failure here must never block the dashboard.
   try {
@@ -3223,6 +3347,12 @@ app.on("before-quit", () => {
   shutdownMochi();
   try { shutdownCrewCompanion(); } catch { /* best effort */ }
   stopGateway();
+});
+
+// Release ONLY our own summon accelerator (never unregisterAll — Mochi's
+// shortcuts are torn down by its own quit path above).
+app.on("will-quit", () => {
+  unregisterGlobalHotkey();
 });
 
 app.on("window-all-closed", () => {

@@ -20,7 +20,8 @@ import {
 } from './constants'
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
-import { FM_RE, LIST_MARKER_RE, indentPx } from './utils'
+import { FM_RE, LIST_MARKER_RE, indentPx, parseTable } from './utils'
+import type { ParsedTable, TableAlign } from './utils'
 import type { EditRange } from './types'
 import { urlTransform } from '../../utils/urlTransform'
 
@@ -98,6 +99,73 @@ export function inline(text: string, key: number | string): ReactNode[] {
 
 const HEADING_SIZES = ['1.802em', '1.602em', '1.424em', '1.266em', '1.125em', '1em']
 
+const CELL_PAD = '5px 8px'
+const CELL_BORDER = '1px solid var(--border)'
+
+/**
+ * Render a parsed table.
+ *
+ * Cells wrap rather than being held on one line: a note's tables carry prose,
+ * and inside an 800px reading column nowrap would push almost every one of them
+ * into horizontal scrolling. The wrapper still scrolls, so a genuinely wide
+ * table stays reachable instead of overflowing the column.
+ */
+function tableNode(t: ParsedTable, key: number): ReactNode {
+  const cell = (align: TableAlign, first: boolean): CSSProperties => ({
+    padding: CELL_PAD,
+    textAlign: align ?? 'left',
+    verticalAlign: 'top',
+    ...(first ? null : { borderLeft: CELL_BORDER }),
+  })
+  return (
+    <div
+      style={{
+        overflowX: 'auto',
+        border: CELL_BORDER,
+        borderRadius: '6px',
+        margin: '6px 0',
+      }}
+    >
+      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        <thead>
+          <tr>
+            {t.header.map((text, c) => (
+              <th
+                key={c}
+                style={{
+                  ...cell(t.align[c], c === 0),
+                  fontWeight: 600,
+                  background: 'var(--card)',
+                  borderBottom: CELL_BORDER,
+                }}
+              >
+                {inline(text, `${key}-h${c}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {t.rows.map((row, r) => (
+            <tr key={r}>
+              {row.map((text, c) => (
+                <td
+                  key={c}
+                  style={{
+                    ...cell(t.align[c], c === 0),
+                    ...(r === 0 ? null : { borderTop: CELL_BORDER }),
+                  }}
+                >
+                  {inline(text, `${key}-${r}-${c}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export interface PreviewProps {
   content: string
   onToggleCheckbox: (line: number) => void
@@ -126,6 +194,8 @@ export function Preview({
   let inCode = false
   let codeBuf: string[] = []
   let codeStart = 0
+  /** Last line swallowed by a multi-line block, so the loop skips past it. */
+  let skipTo = -1
 
   // Stop block-edit activation for interactive children (checkboxes, links).
   const shield = (e: React.MouseEvent) => e.stopPropagation()
@@ -208,6 +278,10 @@ export function Preview({
   }
 
   lines.forEach((line, idx) => {
+    // Lines already consumed by a multi-line block (a table's delimiter row and
+    // body) render as part of that block, not again on their own.
+    if (idx <= skipTo) return
+
     // Any line that is not a list item ends the list, so the rails stop there.
     // Checked up front because headings and code fences return early below.
     if (!LIST_MARKER_RE.test(line)) stack = []
@@ -244,6 +318,20 @@ export function Preview({
     }
     if (inCode) {
       codeBuf.push(line)
+      return
+    }
+
+    // A table is the second multi-line block: clicking it opens the whole
+    // source — header, delimiter and rows — because editing one row of pipes in
+    // isolation from the header it aligns with is not a useful gesture. Enter
+    // stays a literal newline there, so it adds a row instead of splitting the
+    // block, and the editor uses the mono face that keeps the pipes lined up.
+    const table = parseTable(lines, idx)
+    if (table) {
+      skipTo = table.end
+      out.push(
+        blk(idx, table.end, tableNode(table, idx), { fontFamily: FONT_MONO }, { split: false }),
+      )
       return
     }
 

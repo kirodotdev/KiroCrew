@@ -140,3 +140,14 @@ Deliberately absent from the floor, because nothing local reproduces them: the
 `Automated Rule Check` greps, the inclusive-language scan, and the
 conventional-commit **PR-title** check. They are named here so their absence is a
 decision on the record rather than an omission.
+
+`check_per_file_coverage.py` is a partial member of this class. Its **self-test**
+is a floor gate, because the gate's own decision logic is exactly what a local
+run can falsify. Its **enforcement** form is not, and cannot be: it reads the
+Cobertura report that `coverage-combine` produces by merging the 3.12 shards, so
+reproducing it locally means running the full backend suite under coverage and
+the whole vitest suite with `--coverage` — minutes of work to re-derive a number
+the PR's own CI run publishes for free. A per-file regression therefore surfaces
+in Phase 3's server poll rather than Phase 2's local gate. That is an accepted
+asymmetry: the failure names the offending file and its rate, so triage costs one
+read, not a bisect.

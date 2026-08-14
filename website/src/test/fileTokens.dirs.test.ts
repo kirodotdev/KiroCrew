@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseDirTokens, dirFullPath, serializeDirTokens, parseDirs, resolveDirSegment } from '../utils/fileTokens'
+import { parseDirTokens, dirFullPath, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens } from '../utils/fileTokens'
 
 describe('parseDirTokens', () => {
   it('extracts boundary-checked @rel/ tokens in appearance order', () => {
@@ -119,5 +119,61 @@ describe('resolveDirSegment', () => {
     const { display, dirMentionMap } = resolveDirSegment('no folders here', [])
     expect(display).toBe('no folders here')
     expect(dirMentionMap.size).toBe(0)
+  })
+})
+
+describe('spliceDirTokens', () => {
+  it('appends a boundary-checked @path/ token when the caret is unknown', () => {
+    const out = spliceDirTokens('', null, ['/Users/me/demo'])
+    expect(out.value).toBe('@/Users/me/demo/ ')
+    expect(out.caret).toBe(out.value.length)
+    // The inserted token round-trips through the chip parser.
+    expect(parseDirTokens(out.value).map(t => t.rel)).toEqual(['/Users/me/demo/'])
+  })
+
+  it('pads with a leading space when appending after existing text', () => {
+    const out = spliceDirTokens('look here', null, ['docs'])
+    expect(out.value).toBe('look here @docs/ ')
+  })
+
+  it('inserts at the caret with whitespace padding on both sides', () => {
+    //            0123456789
+    const out = spliceDirTokens('check then send', 5, ['src/pages'])
+    expect(out.value).toBe('check @src/pages/  then send')
+    expect(out.caret).toBe('check @src/pages/ '.length)
+    expect(parseDirTokens(out.value).map(t => t.rel)).toEqual(['src/pages/'])
+  })
+
+  it('keeps an existing trailing separator instead of doubling it', () => {
+    expect(spliceDirTokens('', null, ['docs/']).value).toBe('@docs/ ')
+    // Windows rel ending in a backslash is left as-is (selectionFor parity).
+    expect(spliceDirTokens('', null, ['src\\pages\\']).value).toBe('@src\\pages\\ ')
+  })
+
+  it('skips a rel whose token is already present in the text', () => {
+    const out = spliceDirTokens('see @docs/ now', null, ['docs'])
+    expect(out.value).toBe('see @docs/ now')
+    // changed=false lets callers skip the state write and caret arm entirely —
+    // arming a caret restore against an unchanged value would fire stale later.
+    expect(out.changed).toBe(false)
+  })
+
+  it('reports changed=true when at least one token was inserted', () => {
+    expect(spliceDirTokens('see @docs/ now', null, ['docs', 'src']).changed).toBe(true)
+  })
+
+  it('dedupes within one batch', () => {
+    const out = spliceDirTokens('', null, ['docs', 'docs/'])
+    expect(out.value).toBe('@docs/ ')
+  })
+
+  it('inserts several folders as separate tokens', () => {
+    const out = spliceDirTokens('', null, ['a', 'b'])
+    expect(parseDirTokens(out.value).map(t => t.rel)).toEqual(['a/', 'b/'])
+  })
+
+  it('clamps an out-of-range caret to the value length', () => {
+    const out = spliceDirTokens('hi', 99, ['docs'])
+    expect(out.value).toBe('hi @docs/ ')
   })
 })

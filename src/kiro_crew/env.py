@@ -20,49 +20,19 @@ from kiro_crew.config.paths import data_home
 logger = logging.getLogger(__name__)
 
 # Common directories where MCP server binaries may be installed.
-# Order matters — earlier entries take precedence.
+# Order matters — earlier entries take precedence. ``{mise_data}`` resolves via
+# :func:`mise_data_dir`, so a relocated mise data dir (``MISE_DATA_DIR`` /
+# ``XDG_DATA_HOME``) keeps its shims ahead of the per-version install bins that
+# :func:`node_all_bin_dirs` appends after this list — the shim honours the
+# project's version pin, the raw install bin does not.
 _EXTRA_PATH_DIRS = (
     "{home}/.local/bin",
     "{home}/.toolbox/bin",
     "{home}/.npm-packages/bin",
-    "{home}/.local/share/mise/shims",
+    "{mise_data}/shims",
     "{home}/.volta/bin",
     "/opt/homebrew/bin",  # Apple Silicon Homebrew node / global npm bins
 )
-
-
-@functools.lru_cache(maxsize=1)
-def _node_version_manager_bins(home: str) -> list[str]:
-    """Return node bin dirs from version managers with dynamic version paths.
-
-    nvm and fnm install each Node version under a versioned directory, so the
-    bin path cannot be a static template in ``_EXTRA_PATH_DIRS``.  Glob the
-    install roots and return every ``bin`` dir, newest version first.  A
-    non-login gateway (launchd / systemd) does not inherit these on ``$PATH``,
-    so adding them lets us find globally-installed MCP binaries such as
-    ``claude-agent-acp`` that were installed via ``npm i -g`` under nvm/fnm.
-
-    Cached for the process lifetime (``lru_cache(maxsize=1)``, ``home`` is
-    constant per process): the filesystem glob must run exactly once — repeating
-    it risks a GIL-contention wedge.  Trade-off: a node version
-    installed via nvm/fnm *while the long-lived gateway is running* is not
-    visible until the gateway restarts.  Acceptable — installing node mid-session
-    is rare, and a restart picks it up.  Call ``cache_clear()`` if that ever
-    needs to be re-discovered without a restart.
-    """
-    bins: list[str] = []
-    roots = (
-        Path(home) / ".nvm" / "versions" / "node",
-        Path(home) / ".fnm" / "node-versions",
-    )
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for ver_dir in sorted(root.glob("*"), reverse=True):
-            bin_dir = ver_dir / "bin"
-            if bin_dir.is_dir():
-                bins.append(str(bin_dir))
-    return bins
 
 
 # --- node build toolchain -----------------------------------------------------
@@ -87,6 +57,12 @@ _NODE_MANAGER_GLOBS = (
     # fnm, both layouts: XDG default and legacy ``~/.fnm``.
     "{home}/.local/share/fnm/node-versions/*/installation/bin",
     "{home}/.fnm/node-versions/*/installation/bin",
+    # The layout the retired nvm/fnm scan also globbed (``<ver>/bin`` directly
+    # under the fnm root). Real fnm never produces it, but keeping the glob
+    # makes the consolidated search a strict superset of what it replaced —
+    # entries are validated/deduped downstream, so a layout that does not
+    # exist on this host simply drops out.
+    "{home}/.fnm/node-versions/*/bin",
 )
 # Shim / single-dir managers, which have no per-version path to glob.
 # Two of these (mise shims, volta) also appear in ``_EXTRA_PATH_DIRS`` above.
@@ -124,7 +100,7 @@ _NODE_BIN_DIR_MARKER = "node-bin-dir"
 _NODE_BIN_DIR_ENV = "KIROCREW_NODE_BIN_DIR"
 
 
-def _mise_data_dir(home: str) -> str:
+def mise_data_dir(home: str) -> str:
     """mise's data dir, honouring ``MISE_DATA_DIR`` then ``XDG_DATA_HOME``."""
     explicit = os.environ.get("MISE_DATA_DIR")
     if explicit:
@@ -159,6 +135,44 @@ def _node_version_key(name: str) -> tuple[int, tuple[int, ...], str]:
     if parts and all(p.isdigit() for p in parts):
         return (1, tuple(int(p) for p in parts), name)
     return (0, (), name)
+
+
+def _manager_version_bin_dirs(home: str, mise_data: str, *, all_versions: bool) -> list[str]:
+    """Scan the per-version manager roots (:data:`_NODE_MANAGER_GLOBS`).
+
+    The two callers need DIFFERENT policies, chosen deliberately:
+
+    - ``all_versions=False`` (build PATH, :func:`node_bin_dirs`): only the BEST
+      version per root, and only dirs that actually hold an executable ``node``
+      (:func:`_has_node`) — a build subprocess wants exactly one real toolchain,
+      not every stale major on the box.
+    - ``all_versions=True`` (MCP binary discovery, :func:`node_all_bin_dirs`):
+      EVERY version's bin dir that exists. A globally-installed MCP binary
+      (``npm i -g``) can live under any installed Node version — not just the
+      newest — and the dir does not need ``node`` beside it to be worth
+      searching, so filtering to the best version (or requiring ``node``) would
+      silently stop finding binaries that were found before.
+
+    Within each root, entries are ordered best version first
+    (:func:`_node_version_key`: numeric versions outrank alias names).
+    """
+    out: list[str] = []
+    for pattern in _NODE_MANAGER_GLOBS:
+        root, _, leaf = pattern.format(home=home, mise_data=mise_data).partition("/*")
+        keep = Path.is_dir if all_versions else _has_node
+        try:
+            matches = sorted(
+                (p for p in Path(root).glob("*" + leaf) if keep(p)),
+                # The version dir is the child of `root`; with a deeper leaf
+                # (fnm's `<ver>/installation/bin`) that is not p.parent, so
+                # index it off the root instead of walking up a fixed count.
+                key=lambda p: _node_version_key(p.relative_to(root).parts[0]),
+                reverse=True,
+            )
+        except (OSError, ValueError):
+            continue
+        out.extend(str(m) for m in (matches if all_versions else matches[:1]))
+    return out
 
 
 def _validated_bin_dir(val: str) -> str | None:
@@ -221,12 +235,12 @@ def node_bin_dirs() -> tuple[str, ...]:
     the very node Kiro Crew installed for it.
 
     Cached for the process lifetime: the globs must run once, matching
-    :func:`_node_version_manager_bins`. A node installed while a long-lived
+    :func:`node_all_bin_dirs`. A node installed while a long-lived
     gateway is running is not seen until restart; call ``cache_clear()`` if it
     ever needs re-discovery without one.
     """
     home = os.path.expanduser("~")
-    mise_data = _mise_data_dir(home)
+    mise_data = mise_data_dir(home)
     ordered: list[str] = []
 
     override = _validated_bin_dir(os.environ.get(_NODE_BIN_DIR_ENV, ""))
@@ -236,21 +250,7 @@ def node_bin_dirs() -> tuple[str, ...]:
     if marker:
         ordered.append(marker)
 
-    for pattern in _NODE_MANAGER_GLOBS:
-        root, _, leaf = pattern.format(home=home, mise_data=mise_data).partition("/*")
-        try:
-            matches = sorted(
-                (p for p in Path(root).glob("*" + leaf) if _has_node(p)),
-                # The version dir is the child of `root`; with a deeper leaf
-                # (fnm's `<ver>/installation/bin`) that is not p.parent, so
-                # index it off the root instead of walking up a fixed count.
-                key=lambda p: _node_version_key(p.relative_to(root).parts[0]),
-                reverse=True,
-            )
-        except (OSError, ValueError):
-            continue
-        if matches:
-            ordered.append(str(matches[0]))
+    ordered.extend(_manager_version_bin_dirs(home, mise_data, all_versions=False))
 
     ordered.extend(d.format(home=home, mise_data=mise_data) for d in _NODE_MANAGER_DIRS)
     # Under a KIROCREW_HOME override data_home() mkdirs, so it can raise on an
@@ -284,6 +284,57 @@ def node_bin_dirs() -> tuple[str, ...]:
         except OSError:
             continue
     return tuple(out)
+
+
+@functools.lru_cache(maxsize=1)
+def _node_all_bin_dirs(home: str, mise_data: str) -> tuple[str, ...]:
+    """Cached body of :func:`node_all_bin_dirs`, keyed on its inputs.
+
+    Keyed on ``(home, mise_data)`` — matching the retired helper's ``home``
+    keying — so a caller under a different HOME (tests patching
+    ``expanduser``) gets a fresh scan instead of the previous key's dirs,
+    while the steady-state gateway still globs exactly once.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for d in _manager_version_bin_dirs(home, mise_data, all_versions=True):
+        d = os.path.normpath(d)
+        # Only absolute entries may reach a spawned subprocess's PATH: a
+        # relative one (possible via a relative MISE_DATA_DIR) would be
+        # re-resolved against the CHILD's cwd, letting a work-dir-relative
+        # ``npx`` shadow the system tool. Matches _validated_bin_dir's posture.
+        if d in seen or not os.path.isabs(d):
+            continue
+        seen.add(d)
+        out.append(d)
+    return tuple(out)
+
+
+def node_all_bin_dirs() -> tuple[str, ...]:
+    """EVERY per-version manager bin dir (mise / asdf / nvm / fnm), all versions.
+
+    The broad MCP-binary search companion to :func:`node_bin_dirs`: a
+    globally-installed MCP binary (``npm i -g``) lands in the bin dir of
+    whichever Node version was active at install time, so PATH-based discovery
+    (:func:`augmented_path`) must see every version's bin dir — narrowing to
+    the best version per root would silently stop finding binaries installed
+    under a non-best version, with no error message. Dirs are included when
+    they exist; unlike the build tier they are NOT required to hold ``node``
+    (see :func:`_manager_version_bin_dirs` for the policy split).
+
+    Ordered best version first within each manager root — numeric versions
+    outrank alias names (:func:`_node_version_key`), so ``24.16.0`` is searched
+    before an ``lts-krypton`` alias rather than after it.
+
+    Cached for the process lifetime via :func:`_node_all_bin_dirs` (keyed on
+    the live ``home``/``mise_data``), matching :func:`node_bin_dirs`: the
+    filesystem glob must run exactly once — repeating it risks a GIL-contention
+    wedge. A Node version installed while the long-lived gateway is running is
+    not visible until restart; call ``_node_all_bin_dirs.cache_clear()`` if it
+    ever needs re-discovery without one.
+    """
+    home = os.path.expanduser("~")
+    return _node_all_bin_dirs(home, mise_data_dir(home))
 
 
 def node_augmented_path(base_path: str = "") -> str:
@@ -361,6 +412,7 @@ def ensure_node(timeout: float = 180.0) -> str | None:
         logger.warning("ensure-node.sh failed: %s", type(exc).__name__)
         return None
     node_bin_dirs.cache_clear()  # the marker/bin dir may have just appeared
+    _node_all_bin_dirs.cache_clear()
     return find_node_tool("node")
 
 
@@ -439,8 +491,18 @@ def augmented_path(base_path: str = "") -> str:
     else — exactly the console-script-wrapper case.
     """
     home = os.path.expanduser("~")
-    extra = [d.format(home=home) for d in _EXTRA_PATH_DIRS]
-    extra += _node_version_manager_bins(home)
+    mise_data = mise_data_dir(home)
+    # Filter each formatted entry through the same absolute-only validation as
+    # the other PATH sources (_validated_bin_dir): a relative MISE_DATA_DIR
+    # would otherwise put a relative "{mise_data}/shims" entry on every spawned
+    # subprocess's PATH, re-resolved against the CHILD's cwd — letting a
+    # work-dir-relative executable shadow the configured command.
+    extra = [
+        e
+        for d in _EXTRA_PATH_DIRS
+        if (e := _validated_bin_dir(d.format(home=home, mise_data=mise_data)))
+    ]
+    extra += node_all_bin_dirs()
     parts = extra + ([base_path] if base_path else [])
     parts.append(str(Path(sys.executable).parent))
     return os.pathsep.join(parts)

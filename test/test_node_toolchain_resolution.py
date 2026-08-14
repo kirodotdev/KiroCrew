@@ -38,10 +38,13 @@ def _fake_node_bin(d: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    """``node_bin_dirs`` is lru_cached for the process lifetime — reset per test."""
+    """``node_bin_dirs`` / ``_node_all_bin_dirs`` are lru_cached for the process
+    lifetime — reset per test."""
     env_mod.node_bin_dirs.cache_clear()
+    env_mod._node_all_bin_dirs.cache_clear()
     yield
     env_mod.node_bin_dirs.cache_clear()
+    env_mod._node_all_bin_dirs.cache_clear()
 
 
 @pytest.fixture
@@ -192,6 +195,34 @@ def test_numeric_versions_outrank_alias_names(isolated_home):
     _fake_node_bin(root / "lts-krypton" / "bin")
     _fake_node_bin(root / "24.16.0" / "bin")
     assert env_mod.node_bin_dirs()[0] == str(root / "24.16.0" / "bin")
+
+
+def test_build_and_discovery_tiers_keep_their_own_policies(isolated_home):
+    """The two callers of the manager-root scan need DIFFERENT answers.
+
+    ``node_bin_dirs`` (build PATH) must return only the best real toolchain per
+    root; ``node_all_bin_dirs`` (MCP binary discovery) must return every
+    version's bin dir — including ones without ``node`` — because a global npm
+    binary can live under any installed version. Collapsing these into one
+    policy is exactly the regression #1605 warns against.
+    """
+    root = isolated_home / ".local/share/mise/installs/node"
+    best = _fake_node_bin(root / "24.16.0" / "bin")
+    older = _fake_node_bin(root / "18.0.0" / "bin")
+    bare = root / "16.0.0" / "bin"  # no node inside — still a search location
+    bare.mkdir(parents=True)
+
+    build = env_mod.node_bin_dirs()
+    assert str(best) in build
+    assert str(older) not in build
+    assert str(bare) not in build
+
+    discovery = env_mod.node_all_bin_dirs()
+    assert str(best) in discovery
+    assert str(older) in discovery
+    assert str(bare) in discovery
+    # Best version still leads the discovery ordering.
+    assert discovery.index(str(best)) < discovery.index(str(older))
 
 
 def test_version_key_orders_numerically_not_lexicographically():

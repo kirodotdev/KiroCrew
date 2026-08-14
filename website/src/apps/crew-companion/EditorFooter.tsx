@@ -12,7 +12,7 @@ interface Props {
   saving?: boolean
   onCancel: () => void
   onSave: () => void
-  tt: (key: any) => string
+  tt: (key: string) => string
 }
 
 const S = {

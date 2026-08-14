@@ -7,8 +7,7 @@ import SystemPage from './SystemPage'
 import TelemetryPanel from './TelemetryPanel'
 import SessionArchive from './SessionArchive'
 import LocalStorageDebug from './LocalStorageDebug'
-import { SharedMcpGatewayToggle } from './settings/SharedMcpGatewayToggle'
-import { McpPoolableServers } from './settings/McpPoolableServers'
+import { McpManagement } from './settings/McpManagement'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
 import { PreviewSurfacesCard } from './developer/PreviewSurfacesCard'
 
@@ -52,12 +51,7 @@ export default function DeveloperPage() {
         {tab === 'system' && <SystemPage embedded />}
         {tab === 'telemetry' && <TelemetryPanel />}
         {tab === 'storage' && <LocalStorageDebug />}
-        {tab === 'mcp-pool' && (
-          <>
-            <SharedMcpGatewayToggle />
-            <McpPoolableServers />
-          </>
-        )}
+        {tab === 'mcp-pool' && <McpManagement />}
         {tab === 'memory' && (
           <>
             {/* The memory GRAPH visualizer is an internals view. The

@@ -44,15 +44,18 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.dispatch import delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
     ChannelLink,
+    bind_origin_mirror,
     build_dm_session_key,
     legacy_dashboard_mirror_key,
     release_conversation_location,
     seed_generation,
 )
+from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -95,8 +98,8 @@ Commands:
 `!new` — Start a fresh conversation
 `!compact` — Compress context (when it gets long)
 `!sessions [query]` — Continue a recent or matching dashboard session here (owner only)
-`!link` — Mirror this conversation's dashboard tab here
-`!unlink` — Stop mirroring
+`!link` — Resume mirroring dashboard replies here (on by default)
+`!unlink` — Stop mirroring dashboard replies here
 `!stop` — Stop the current reply and clear the queue
 `!help` — Show this message
 
@@ -298,7 +301,30 @@ class DiscordDispatcher:
         renderer = DiscordRenderer(
             self.client, channel_id, DISCORD_CAPABILITIES, session_key=session_key
         )
-        self._active_renderers[session_key] = renderer
+        # Discord runs its OWN copy of the turn loop instead of going through
+        # ``messaging.dispatch.drive_turn``, so the disconnect gate there does not
+        # reach it — without this the dashboard control changed nothing here but
+        # its own label. The turn still runs and the inbound message still lands in
+        # the session: the binding is retained by design, and the dashboard is
+        # where that user is now working. Only the writes back are dropped.
+        muted = delivery_is_muted(self.sessions, session_key, DiscordRenderer.channel_type)
+        # Handed to the driver AND closed in the finally, rather than reassigning
+        # ``renderer``: the concrete renderer's ``close`` is not inert — it posts an
+        # error placeholder when the turn produced no output, which a muted turn by
+        # definition did, so closing the real one leaked "⚠️ Error" into the
+        # conversation the user had just disconnected.
+        out_renderer: Renderer = (
+            SilentRenderer(DISCORD_CAPABILITIES, DiscordRenderer.channel_type)
+            if muted
+            else renderer
+        )
+        if not muted:
+            # Published for mid-turn steer chips. Deliberately NOT published when
+            # muted: the steer path calls the channel-specific ``note_steer`` and
+            # already skips cleanly when there is no entry, so leaving it out both
+            # silences the chip in a disconnected conversation and keeps that
+            # channel-local API off the shared substitute.
+            self._active_renderers[session_key] = renderer
         attachment_temp_paths: list[str] = []
 
         # Everything acquire-dependent runs INSIDE the try so the finally
@@ -316,7 +342,10 @@ class DiscordDispatcher:
             # refresh task, is idempotent (the driver calls it again later), and
             # the enclosing finally always finalizes the renderer, so an early
             # return below cannot leak a typing loop.
-            await renderer.on_turn_start()
+            # Skipped when muted: a disconnected conversation must not
+            # even show a typing indicator.
+            if not muted:
+                await renderer.on_turn_start()
             # Acquire before attachment I/O. A large download yields repeatedly;
             # leaving the session idle in that window lets a later message run
             # first and persist the conversation in reverse order.
@@ -364,6 +393,18 @@ class DiscordDispatcher:
                 self.sessions.set_origin_link(
                     session_key, ChannelLink("discord", channel_id=channel_id)
                 )
+                # Bind this conversation as the session's outbound mirror so a
+                # turn the user later takes from the dashboard is delivered back
+                # here. Slack gets this from its own per-turn thread binding;
+                # Discord had it only behind an explicit `!link`, so the chat sat
+                # there looking dead while the conversation continued elsewhere.
+                # Inside the `resumed_key is None` branch with set_origin_link,
+                # for the same reason: a resumed session's own surface owns its
+                # output and `!link` refuses there too, so the automatic path must
+                # not do what the explicit one declines. (It would also decline on
+                # its own, having found the resume binding for this very channel —
+                # the placement is what keeps that from being load-bearing.)
+                self._bind_origin_mirror(session_key, channel_id)
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
@@ -398,7 +439,7 @@ class DiscordDispatcher:
 
             driver = TurnDriver(
                 provider,
-                renderer,
+                out_renderer,
                 approval_mode=self.approval_mode,
                 decider=decider,
                 auto_approve_tool=lambda title: bool(
@@ -470,7 +511,7 @@ class DiscordDispatcher:
             # otherwise leave the session permanently busy, blocking every
             # subsequent Discord message and the queue drain.
             try:
-                await renderer.close()
+                await out_renderer.close()
             except Exception:
                 logger.warning(
                     "Discord: renderer.close failed session=%s",
@@ -899,8 +940,50 @@ class DiscordDispatcher:
             dm_scope=self.cfg.messaging.dm_scope,
         )
 
+    def _origin_mirror_link(self, channel_id: str) -> ChannelLink:
+        """The mirror location for the conversation a session is being read in.
+
+        One definition shared by the automatic bind, ``!link`` and ``!unlink``: an
+        unlink matches an occupied location by VALUE, so a second spelling of
+        "this conversation" would let the release miss the binding the bind wrote.
+
+        No ``thread_id``: a Discord thread IS a channel with its own id (the
+        inbound path takes ``thread_id`` FROM ``channel_id``), so *channel_id*
+        already scopes a thread conversation, and it is also the id the transport
+        posts to.
+        """
+        return ChannelLink("discord", channel_id=channel_id)
+
+    def _bind_origin_mirror(self, session_key: str, channel_id: str) -> None:
+        """Mirror this conversation's dashboard tab back to Discord, unasked.
+
+        The rule, the re-assert and the opt-out live in
+        :func:`~kiro_crew.messaging.link.bind_origin_mirror`, shared with the
+        Telegram dispatcher; this only supplies Discord's spelling of "this
+        conversation".
+
+        Synchronous and called ON the loop, like every other session-map
+        mutation. Interleaving is ordered by ``session_map._MAP_LOCK`` (held for
+        the whole of each guarded mutation, including the ``os.replace``), not by
+        the loop; what keeps the call here is that the write is BOUNDED — one
+        whole-map rewrite whose cost the loop pays once per conversation, on its
+        first turn only. ``test_the_binding_write_stays_on_the_loop_thread``
+        ratchets that placement.
+        """
+        bind_origin_mirror(
+            self.sessions,
+            key=session_key,
+            location=self._origin_mirror_link(channel_id),
+        )
+
     async def _handle_link(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
-        """Mirror this conversation's dashboard tab back to Discord."""
+        """Re-enable mirroring of this conversation's dashboard tab back here.
+
+        Mirroring is automatic (see :meth:`_bind_origin_mirror`), so this is the
+        withdrawal of a previous ``!unlink`` rather than the only way to turn it
+        on. Clearing the opt-out is the load-bearing half: rebinding without it
+        would be undone by the next automatic bind check.
+        """
         assert self.client is not None
         # Refuse while a resumed session owns this conversation: linking would
         # rebind the same location and silently strand the resumed session.
@@ -912,23 +995,36 @@ class DiscordDispatcher:
             return
         key = self._session_key(user_id, thread_id)
         try:
-            self.sessions.set_mirror_link(key, ChannelLink("discord", channel_id=channel_id))
+            # One write for the whole sequence: each of these mutations would
+            # otherwise rewrite the entire session map, stalling the loop three
+            # times for what is one user-visible action.
+            #
+            # The claim goes FIRST inside the batch on purpose. ``batched_save``
+            # writes on the way out even when the block raises, so a refusal
+            # raised after the opt-out withdrawal would PERSIST that withdrawal
+            # for a link that never happened. ``set_mirror_link`` refuses before
+            # it mutates anything, so ordering it first leaves the batch clean
+            # and nothing is written.
+            with self.sessions.batched_save():
+                self.sessions.set_mirror_link(key, self._origin_mirror_link(channel_id))
+                self.sessions.set_mirror_opt_out(key, False)
+                # Drop any pre-unification row so a stale binding cannot outlive
+                # the rebind (reads prefer the channel key, but a leftover row
+                # would still answer a clear).
+                self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
         except ConversationOwnershipConflict:
-            # The resumed-session check above covers an inbound owner. This
-            # catches an occupant that check cannot see — an outbound-only
-            # dashboard mirror already pointing here. Same instruction either
-            # way, and reporting it beats surfacing a traceback as a generic
-            # command failure.
+            # Reachable past the resumed-session check above because that check
+            # fails CLOSED on duplicate inbound bindings: with two of them at this
+            # conversation `resumed_session` denies routing and returns None,
+            # while the claim is still refused. Same instruction either way, and
+            # reporting it beats surfacing a traceback as a generic command
+            # failure.
             logger.info("discord link refused: conversation already held")
             await self.client.send_message(
                 channel_id,
                 "⚠️ Another session is already linked here. Send `!unlink` first.",
             )
             return
-        # Drop any pre-unification row so a stale binding cannot outlive the
-        # rebind (reads prefer the channel key, but a leftover row would still
-        # answer a clear).
-        self.sessions.clear_mirror_link(legacy_dashboard_mirror_key(key))
         await self.client.send_message(
             channel_id,
             "✅ Linked. Replies from the dashboard for this conversation will "
@@ -947,12 +1043,17 @@ class DiscordDispatcher:
             )
             return
         key = self._session_key(user_id, thread_id)
-        reply, swept = release_conversation_location(
-            self.sessions,
-            key=key,
-            location=ChannelLink("discord", channel_id=channel_id),
-            channel="discord",
-        )
+        # Persist the refusal BEFORE releasing: mirroring is re-asserted on every
+        # inbound turn, so a release alone would be undone by the user's next
+        # message. Batched with the release so the pair is one whole-map write.
+        with self.sessions.batched_save():
+            self.sessions.set_mirror_opt_out(key, True)
+            reply, swept = release_conversation_location(
+                self.sessions,
+                key=key,
+                location=self._origin_mirror_link(channel_id),
+                channel="discord",
+            )
         if swept:
             # A swept binding can belong to a dashboard slot whose link chip is
             # projected at push time — nudge the dashboard like every other

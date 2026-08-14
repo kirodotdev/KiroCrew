@@ -609,6 +609,78 @@ class TestKeywordFallback:
         assert [h["text"] for h in hits] == ["A fragment about the nightly deployment pipeline"]
 
 
+class TestCosineSimDimensionGuard:
+    """Regression for #3466: `_cosine_sim` used to silently truncate a
+    dimension-mismatched pair via `zip` instead of rejecting it, so a row
+    embedded at a different dimensionality (e.g. a leftover from a previous
+    embedding-model generation) returned a plausible-looking partial-overlap
+    score instead of 0.0."""
+
+    def test_mismatched_length_scores_zero(self) -> None:
+        a = [1.0, 0.0, 0.0, 0.0]
+        b = [1.0, 0.0, 0.0]  # one dimension short
+        assert VectorMemoryStore._cosine_sim(a, b) == 0.0
+
+    def test_matching_length_is_unaffected(self) -> None:
+        a = [1.0, 0.0, 0.0, 0.0]
+        b = [1.0, 0.0, 0.0, 0.0]
+        assert VectorMemoryStore._cosine_sim(a, b) == pytest.approx(1.0)
+
+    def test_zero_vector_still_scores_zero_not_a_zerodivisionerror(self) -> None:
+        assert VectorMemoryStore._cosine_sim([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+
+class TestStoredSimilarityScorer:
+    """Regression for #3466: the scorer built by `_stored_similarity_scorer`
+    backs the two threshold callers (semantic dedup, contradiction detection)
+    as well as the two ranking callers, so it must (1) reject a mismatched
+    dimension the same way `_cosine_sim` now does, (2) return the raw
+    (possibly negative) cosine value rather than clamping at 0.0 -- a
+    threshold caller comparing against a band that may include non-positive
+    bounds needs the true value, and (3) agree with `_cosine_sim` to float64
+    precision, not the ~1e-7 the numpy path's old float32 accumulation gave.
+    """
+
+    def _row(self, vec: list) -> dict:
+        import struct
+
+        return {"embedding": struct.pack(f"{len(vec)}f", *vec)}
+
+    @pytest.mark.parametrize("has_numpy", [True, False])
+    def test_mismatched_dimension_row_scores_zero(self, monkeypatch, has_numpy) -> None:
+        monkeypatch.setattr(vm, "_HAS_NUMPY", has_numpy and vm._HAS_NUMPY)
+        query = [1.0, 0.0, 0.0]
+        scorer = VectorMemoryStore._stored_similarity_scorer(query)
+        assert scorer(self._row([1.0, 0.0])) == 0.0  # one short
+        assert scorer(self._row([1.0, 0.0, 0.0, 0.0])) == 0.0  # one long
+
+    @pytest.mark.parametrize("has_numpy", [True, False])
+    def test_negative_cosine_is_returned_uncapped(self, monkeypatch, has_numpy) -> None:
+        monkeypatch.setattr(vm, "_HAS_NUMPY", has_numpy and vm._HAS_NUMPY)
+        query = [1.0, 0.0]
+        scorer = VectorMemoryStore._stored_similarity_scorer(query)
+        # Exactly opposite direction -> cosine == -1.0, not clamped to 0.0.
+        assert scorer(self._row([-1.0, 0.0])) == pytest.approx(-1.0)
+
+    @pytest.mark.parametrize("has_numpy", [True, False])
+    def test_agrees_with_cosine_sim_on_a_normal_pair(self, monkeypatch, has_numpy) -> None:
+        monkeypatch.setattr(vm, "_HAS_NUMPY", has_numpy and vm._HAS_NUMPY)
+        query = [0.37, -1.2, 0.05, 2.1, 0.0, -0.9]
+        row = [1.1, 0.3, -0.4, 0.02, 0.6, -1.5]
+        scorer = VectorMemoryStore._stored_similarity_scorer(query)
+        got = scorer(self._row(row))
+        want = VectorMemoryStore._cosine_sim(query, row)
+        # float32-stored row (as every scorer input is) vs the float64-list
+        # _cosine_sim compares against: agreement is bounded by the storage
+        # round-trip precision, not by the scorer's own arithmetic anymore.
+        assert got == pytest.approx(want, abs=1e-6)
+
+    def test_no_query_embedding_returns_a_constant_zero_scorer(self) -> None:
+        scorer = VectorMemoryStore._stored_similarity_scorer(None)
+        assert scorer(self._row([1.0, 0.0])) == 0.0
+        assert scorer({}) == 0.0
+
+
 class TestEpisodicPromotion:
     def test_promotion_without_an_embedder_is_skipped(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

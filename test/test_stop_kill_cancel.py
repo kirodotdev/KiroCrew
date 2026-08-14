@@ -654,6 +654,7 @@ class TestConservativeShutdown:
         mgr._queue = []
         mgr._running_count = 1
         mgr._default_timeout = 300
+        mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
         mgr._record_cost = MagicMock()
         mgr._on_event = None
@@ -717,6 +718,7 @@ class TestConservativeShutdown:
         mgr._queue = []
         mgr._running_count = 2
         mgr._default_timeout = 300
+        mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
         mgr._record_cost = MagicMock()
         mgr._on_event = None

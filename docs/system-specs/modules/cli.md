@@ -522,7 +522,8 @@ Each step checks if the tool is already installed and skips if present.
 ## Client Port Resolution
 
 `kirocrew token` / `status` / `logout` / `stop` / `restart` must find the port
-the gateway is actually bound to. `cli_server.resolve_client_port()` resolves it
+the gateway is actually bound to. `port_resolution.resolve_client_port()`
+(re-exported by `cli_server`) resolves it
 in this order, first hit wins. The MCP stdio servers (`mcp_core` /
 `mcp_computer`) resolve their gateway API base through the same helper —
 lazily, on the first gateway call, and cached for the process lifetime — so a
@@ -759,7 +760,11 @@ source is most appropriate:
 1. systemd journal if the system service is installed on Linux. Tries
    unprivileged `journalctl` first; falls back to `sudo journalctl`
    only if the unprivileged probe returns no rows.
-2. launchd stdout file if a plist exists on macOS
+2. launchd stdout file if a plist exists on macOS and that file is
+   non-empty. Both conditions matter: the platform probe reports launchd
+   on any macOS host, and an install that never started the agent leaves
+   a 0-byte log behind, so either check alone would capture the command
+   and tail nothing.
 3. `~/.kiro/crew/gateway.log` for foreground gateways
 
 Uses `os.execvp` so signals (Ctrl+C) propagate naturally to the

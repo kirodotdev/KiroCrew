@@ -17,6 +17,7 @@ import logging
 import ntpath
 import os
 import posixpath
+import re
 import shutil
 import signal
 import subprocess
@@ -329,6 +330,16 @@ class _ProbeResult:
     tools: list[str]
     error: str
     probed_at: float
+    # Handshake metadata, captured because the probe already pays for the
+    # ``initialize`` round-trip and threw the answer away. Consumed by
+    # ``mcp_gateway.shareability`` to decide whether to RECOMMEND stubbing.
+    capabilities: dict[str, Any] | None = None
+    protocol_version: str = ""
+    server_info: dict[str, Any] = field(default_factory=dict)
+    # ``annotations`` per tool, in ``tools/list`` order. Only servers speaking
+    # MCP 2025-03-26 or later can send these, so an empty list is "not
+    # available", never "declared nothing".
+    tool_annotations: list[dict[str, Any]] = field(default_factory=list)
 
 
 # Module-level probe cache: server name → result
@@ -352,13 +363,169 @@ def _get_cached(name: str) -> tuple[str, list[str], str]:
     return "outdated", cached.tools, ""
 
 
+def probe_metadata(name: str) -> _ProbeResult | None:
+    """The cached handshake metadata for *name*, or None if never probed.
+
+    Deliberately separate from ``_get_cached`` so adding evidence fields never
+    changes that function's tuple shape, and stale-but-present metadata stays
+    readable: an expired probe still tells the truth about what the server
+    advertised, and the caller decides whether age matters.
+    """
+    return _probe_cache.get(name)
+
+
 def _cache_probe(server: McpServerInfo) -> None:
-    """Store probe result in cache."""
+    """Store probe result in cache.
+
+    The error is redacted HERE, with the headers that were live when the
+    probe ran: ``list_servers()`` re-attaches cached errors to server objects
+    built from the CURRENT config, so redacting only at serialization time
+    would mask a rotated credential's NEW value while the cached error still
+    carries the OLD one.
+    """
     _probe_cache[server.name] = _ProbeResult(
         status=server.status,
         tools=list(server.tools),
-        error=server.error,
+        error=redact_mcp_error(server.error, server.headers),
         probed_at=time.monotonic(),
+        capabilities=(
+            dict(server.capabilities) if isinstance(server.capabilities, dict) else None
+        ),
+        protocol_version=server.protocol_version,
+        server_info=dict(server.server_info),
+        tool_annotations=[dict(a) for a in server.tool_annotations],
+    )
+
+
+MCP_REDACTED_HEADER_VALUE = "[REDACTED: credential]"
+# Two regimes, chosen by the only property that matters: whether the value could
+# plausibly occur inside ordinary prose by chance.
+#
+# At or above this length it cannot, so the credential is masked as a BARE
+# substring — a server reflecting it glued to other characters
+# ("prefix<credential>") must still be caught.
+_MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH = 8
+# Below that, masking is restricted to a standalone token, because an unanchored
+# short value would corrupt unrelated words. One- and two-character values are
+# skipped entirely: no boundary rule separates them from prose words like "a".
+_MCP_CREDENTIAL_SUFFIX_MIN_LENGTH = 3
+_MCP_AUTH_VALUE_RE = re.compile(r"^\S+\s+(.+)$")
+
+
+def _mcp_credential_token_pattern(value: str) -> str:
+    """Match ``value`` with each character in literal or percent-encoded form.
+
+    A remote server can reflect a configured credential URL-encoded — e.g. a
+    padded Basic token whose ``=`` comes back as ``%3D`` inside an error URL —
+    and a literal-only pattern would hand that encoded copy to the client
+    unmasked. Every character therefore matches either itself or its UTF-8
+    ``%XX`` escape sequence, with the leading ``%`` itself allowed to be
+    percent-escaped any number of times (``%253D``, ``%25253D``, ...) so a
+    double-encoded reflection is caught by the same substitution pass. A space
+    additionally matches ``+`` (the form-urlencoded spelling) and its escape
+    ``%2B``.
+    """
+    parts: list[str] = []
+    for char in value:
+        alternatives = [re.escape(char)]
+        try:
+            # "%(?:25)*XX" per byte: a literal %XX, or the same escape with its
+            # percent sign re-encoded one or more times (%25XX, %2525XX, ...).
+            alternatives.append(
+                "".join(f"%(?:25)*{byte:02X}" for byte in char.encode("utf-8"))
+            )
+        except UnicodeEncodeError:
+            # A lone surrogate (JSON permits unpaired \uD800 escapes) has no
+            # UTF-8 spelling; keep the literal alternative so building the
+            # pattern never turns a listing request into a 500.
+            pass
+        if char == " ":
+            alternatives.append(re.escape("+"))
+            alternatives.append("%(?:25)*2B")
+        parts.append("(?:" + "|".join(alternatives) + ")")
+    return "".join(parts)
+
+
+def redact_mcp_headers(headers: object) -> dict[str, str]:
+    """Preserve header names while hiding every client-facing value.
+
+    Custom header names can carry credentials too, so only names are safe
+    metadata for dashboard responses.
+    """
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        name: MCP_REDACTED_HEADER_VALUE
+        for name in headers
+        if isinstance(name, str)
+    }
+
+
+def redact_mcp_error(error: object, headers: object) -> str:
+    """Scrub credential material from a probe error before it leaves the backend.
+
+    Two layers, so every consumer (``to_dict``, the probe cache, the probe
+    endpoints) satisfies one invariant — no credential-shaped text survives to
+    serialized output:
+
+    1. The site-wide scanners (``redact_credentials`` /
+       ``redact_exfiltration_urls``) catch anything credential-SHAPED that a
+       remote server reflects, whether or not it matches configured values —
+       the same pass ``_sanitize_probe_error`` applies to probe exceptions.
+    2. The configured-value scrubber below catches the exact header values and
+       Authorization suffixes, including encoded spellings the generic
+       scanners cannot know about.
+    """
+    if not isinstance(error, str) or not isinstance(headers, dict):
+        return error if isinstance(error, str) else ""
+
+    error, _ = redact_exfiltration_urls(error)
+    error, _ = redact_credentials(error)
+
+    # Values map to whether they require lexical boundaries. Full header values
+    # and long credentials are bare substring matches; only SHORT credentials
+    # need boundaries, since only they could collide with ordinary words.
+    values: dict[str, bool] = {}
+    for name, raw_value in headers.items():
+        if not isinstance(raw_value, str):
+            continue
+        value = raw_value.strip()
+        if not value:
+            continue
+        values[value] = False
+
+        if not isinstance(name, str) or name.casefold() != "authorization":
+            continue
+        match = _MCP_AUTH_VALUE_RE.fullmatch(value)
+        if match:
+            credential = match.group(1).strip()
+            if len(credential) >= _MCP_CREDENTIAL_SUFFIX_MIN_LENGTH:
+                needs_boundary = (
+                    len(credential) < _MCP_CREDENTIAL_UNANCHORED_MIN_LENGTH
+                )
+                values.setdefault(credential, needs_boundary)
+
+    if not values:
+        return error
+
+    # Check the characters outside a suffix instead of using \b: base64 padding
+    # ends in a non-word "=", so \b would fail between that padding and ordinary
+    # punctuation. Longest-first keeps a full header ahead of its own suffix.
+    pattern = "|".join(
+        (
+            rf"(?<!\w){_mcp_credential_token_pattern(value)}(?!\w)"
+            if boundary_safe
+            else _mcp_credential_token_pattern(value)
+        )
+        for value, boundary_safe in sorted(
+            values.items(), key=lambda item: len(item[0]), reverse=True
+        )
+    )
+    return re.sub(
+        pattern,
+        MCP_REDACTED_HEADER_VALUE,
+        error,
+        flags=re.IGNORECASE,
     )
 
 
@@ -397,6 +564,16 @@ class McpServerInfo:
     # ``probe_server`` itself, so setting this flag is sufficient no matter which
     # entry point does the probing.
     disabled: bool = False
+    # -- handshake metadata (probe-only; empty on unprobed rows) -----------
+    # The server's advertised ``capabilities`` object, verbatim. ``None`` means
+    # no handshake happened, which is NOT the same as an empty declaration.
+    capabilities: dict[str, Any] | None = None
+    # The ``protocolVersion`` the server answered with — not the one requested.
+    # Tool annotations only exist from MCP 2025-03-26, so this is what makes
+    # their absence interpretable.
+    protocol_version: str = ""
+    server_info: dict[str, Any] = field(default_factory=dict)
+    tool_annotations: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def is_remote(self) -> bool:
@@ -410,14 +587,14 @@ class McpServerInfo:
             "args": self.args or [],
             "status": self.status,
             "tools": self.tools,
-            "error": self.error,
+            "error": redact_mcp_error(self.error, self.headers),
             "source": self.source,
             "presence": dict(self.presence),
         }
         if self.url:
             d["url"] = self.url
             if self.headers:
-                d["headers"] = self.headers
+                d["headers"] = redact_mcp_headers(self.headers)
             # Not redacted: requested scopes and a public OAuth client id are
             # non-secret configuration the user needs to see.
             #
@@ -1136,10 +1313,20 @@ async def _read_stdio_jsonrpc_response(
             return parsed
 
 
-async def probe_server(server: McpServerInfo) -> McpServerInfo:
+async def probe_server(
+    server: McpServerInfo, *, client_info: dict[str, str] | None = None
+) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
     Updates server.status and server.tools in place and returns it.
+
+    *client_info* overrides the ``clientInfo`` sent in the handshake. The
+    shareability pre-flight uses it to ask the same server twice under two
+    identities: a server that negotiates its capabilities from ``clientInfo``
+    answers differently, and that is precisely the case a pooled backend cannot
+    serve — it caches the first stub's ``initialize`` result and replays it to
+    every later stub. Callers that just want status and tools omit it and keep
+    the probe's own identity.
 
     A consent-disabled server is refused HERE, ahead of the local/remote
     dispatch, because probing is the act that runs it: the local branch spawns
@@ -1250,7 +1437,9 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": {"name": "kirocrew-probe", "version": "1.0.0"},
+                        "clientInfo": dict(client_info)
+                        if client_info
+                        else {"name": "kirocrew-probe", "version": "1.0.0"},
                     },
                 }
             )
@@ -1282,6 +1471,21 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
                 err.get("message", "unknown error") if isinstance(err, dict) else str(err)
             )
             return server
+
+        # Keep the handshake metadata the probe already paid for. Read from the
+        # server's ANSWER, never from what we asked for: a server may negotiate
+        # down to an older protocol version, and that answer is exactly what
+        # tells us whether tool annotations could have been sent at all.
+        init_result = resp.get("result") if isinstance(resp, dict) else None
+        if isinstance(init_result, dict):
+            caps = init_result.get("capabilities")
+            # An absent capabilities object and an empty one are different
+            # claims; only a dict counts as "the server declared something".
+            server.capabilities = caps if isinstance(caps, dict) else {}
+            version = init_result.get("protocolVersion")
+            server.protocol_version = version if isinstance(version, str) else ""
+            info = init_result.get("serverInfo")
+            server.server_info = info if isinstance(info, dict) else {}
 
         # Send initialized notification
         notif = (
@@ -1319,6 +1523,15 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
             tools_data = result.get("tools", []) if isinstance(result, dict) else []
             server.tools = [
                 name for t in tools_data if isinstance(t, dict) and (name := t.get("name", ""))
+            ]
+            # ``annotations`` (MCP 2025-03-26+) is the only spec-native hint
+            # about whether a tool mutates anything. Collected as positive
+            # evidence only — a server on an older protocol version sends none,
+            # and that must never read as "this tool writes".
+            server.tool_annotations = [
+                ann
+                for t in tools_data
+                if isinstance(t, dict) and isinstance(ann := t.get("annotations"), dict)
             ]
         else:
             # initialize succeeded but tools/list yielded no response (banner
@@ -1498,7 +1711,11 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
 
-    _cache_probe(server)
+    # A probe run under a SYNTHETIC identity must not become the cached truth:
+    # the per-name cache is what ``GET /api/mcp`` renders, and a pre-flight's
+    # second-identity handshake is a diagnostic, not the canonical observation.
+    if client_info is None:
+        _cache_probe(server)
     return server
 
 
@@ -1506,7 +1723,10 @@ async def probe_server(server: McpServerInfo) -> McpServerInfo:
 # subprocess (or opens a remote connection) and resolves DNS on the event
 # loop's default executor; an unbounded fan-out across 25+ servers floods that
 # pool during a network blip and stalls the loop.
-_PROBE_MAX_CONCURRENCY = 5
+PROBE_MAX_CONCURRENCY = 5
+#: Public because the shareability pre-flight bounds its own fan-out by the same
+#: number: those spawns land in this executor too, so two independent caps would
+#: let one pass flood the pool the other is protecting.
 
 
 async def probe_all() -> list[McpServerInfo]:
@@ -1538,7 +1758,7 @@ async def probe_all() -> list[McpServerInfo]:
         return []
     # Per-call semaphore: bounds the fan-out within this discovery pass while
     # binding to the currently-running loop (avoids import-time loop capture).
-    sem = asyncio.Semaphore(_PROBE_MAX_CONCURRENCY)
+    sem = asyncio.Semaphore(PROBE_MAX_CONCURRENCY)
 
     async def _guarded(s: McpServerInfo) -> McpServerInfo:
         async with sem:

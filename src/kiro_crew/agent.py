@@ -48,7 +48,6 @@ from kiro_crew.agent_files import (
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
-from kiro_crew.browser.setup import converge_playwright_servers
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
 from kiro_crew.config.paths import (
@@ -58,6 +57,7 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
 )
 from kiro_crew.env import augmented_path
+from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
 from kiro_crew.mcp_provenance import without_marker
 from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
 from kiro_crew.platform import current_context
@@ -407,6 +407,53 @@ def _managed_mcp_env() -> dict[str, str]:
     """
     override = _valid_override_home()
     return {"KIROCREW_HOME": str(override)} if override else {}
+
+
+# Declaration discriminator kiro-cli reads for enterprise MCP governance. It is
+# NOT a transport: a `registry` entry is a POINTER into the admin's catalog,
+# carrying only env/headers/timeout overrides, and its command/url are ignored.
+_MCP_REGISTRY_TYPE = "registry"
+
+
+def _mcp_registry_mode() -> bool:
+    """True when the operator has declared this install registry-governed.
+
+    An enterprise Kiro profile with an MCP Registry URL puts the client in
+    `registry` access mode, where it resolves each `mcpServers` entry that
+    carries ``"type": "registry"`` against the admin's catalog BY THE MAP KEY
+    and silently drops every entry that does not. Without the marker the
+    managed servers are filtered out before launch and the features they carry
+    (`spawn_run`, `cron_add`, `learn_add`, ...) disappear with no local error.
+
+    The mode cannot be auto-detected: the client fetches the toggle and the
+    registry URL from GetProfile at startup and persists neither, so nothing on
+    disk distinguishes a governed account from an ungoverned one. It is an
+    explicit operator declaration, defaulting to false because the filter is
+    symmetric — outside registry mode the marked entries are the dropped ones,
+    so stamping unconditionally would break every personal install.
+
+    Read through the EFFECTIVE config rather than ``config.json`` alone, because
+    ``config.local.json`` deep-merges over it and is where ``kirocrew config set
+    --local`` writes. Reading only the base file would ignore an overlay that
+    declares the mode, emit no marker, and reproduce the silent drop this whole
+    change exists to prevent.
+    """
+    try:
+        # Function-local like the model resolver a few frames up: importing the
+        # loader at module scope closes an import cycle through the config plane.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return KiroCrewConfig.load().agent.mcp_registry_mode is True
+    except Exception:
+        # A config that cannot be loaded is not a governed declaration. Fall back
+        # to the base file so a partially broken overlay still cannot flip the
+        # marker on by accident.
+        logger.debug("effective config unavailable for registry mode", exc_info=True)
+        cfg = _load_json(_mc_config_path()) or {}
+        agent_cfg = cfg.get("agent")
+        if not isinstance(agent_cfg, dict):
+            return False
+        return agent_cfg.get("mcp_registry_mode") is True
 
 
 def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
@@ -897,13 +944,35 @@ def _sel_hook_rejected(event: str, command: str, reason: str) -> None:
         logger.debug("SEL audit for rejected hook failed", exc_info=True)
 
 
+# Kiro Crew-internal hook keys that must NOT appear in generated kiro-cli agent  # brand-ok
+# specs (kiro-cli rejects unknown keys). Excluded when deriving _VALID_HOOK_EVENTS
+# from bundled defaults below, so an internal key never round-trips as an event.
+_INTERNAL_HOOK_KEYS = frozenset(
+    {"auto_approve_tools", "auto_deny_tools", "auto_replies", "transforms"}
+)
+
+# Valid kiro-cli hook event names — the UNION of the hardcoded baseline (kiro-cli's
+# known schema) and any event key present in bundled defaults. Used as the single
+# filter on both the generation path (bundled defaults -> generated spec) and the
+# repair/validation path (on-disk repair, user-input) — a new event added to
+# defaults.json is automatically accepted on both without a matching allowlist
+# update (#3362).
 _VALID_HOOK_EVENTS = frozenset(
     {"preToolUse", "postToolUse", "userPromptSubmit", "agentSpawn", "stop"}
+) | frozenset(
+    k
+    for k in (_load_json(_BUNDLED_CFG_DIR / "defaults.json") or {}).get("hooks", {})
+    if k not in _INTERNAL_HOOK_KEYS
 )
 
 
 def _kiro_hooks_only(hooks: dict) -> dict:
-    """Return only kiro-cli valid hook keys, stripping KiroCrew-internal ones."""
+    """Return only kiro-cli valid hook keys, stripping everything else.
+
+    Used on both the generation path (trusted bundled defaults) and the
+    repair/validation path (on-disk repair, user-supplied config) — screens
+    unknown keys that kiro-cli would reject.
+    """
     return {k: v for k, v in hooks.items() if k in _VALID_HOOK_EVENTS}
 
 
@@ -1497,6 +1566,9 @@ def build_agent_config() -> dict:
     bundled_hooks = bundled.get("hooks")
     if not bundled_hooks:
         raise RuntimeError("Cannot build agent config: hooks missing from bundled defaults")
+    # Strip Kiro Crew-internal keys (auto_approve_tools etc.) that kiro-cli  # brand-ok
+    # rejects. _VALID_HOOK_EVENTS already unions in every non-internal bundled
+    # event key, so this never drops a new event added to bundled defaults (#3362).
     config["hooks"] = _kiro_hooks_only(bundled_hooks)
 
     # Strip the retired deniedCommands/autoAllowReadonly injection so a config
@@ -1510,6 +1582,7 @@ def build_agent_config() -> dict:
     # Dynamic fields — always resolved at install time
     config["prompt"] = f"file://{_prompt_path()}"
     mcp = config.setdefault("mcpServers", {})
+    registry_mode = _mcp_registry_mode()
     for name, spec in _MANAGED_MCP_SERVERS.items():
         if "invocation_fn" in spec:
             cmd, args = spec["invocation_fn"]()
@@ -1517,6 +1590,13 @@ def build_agent_config() -> dict:
             cmd = spec.get("command") or spec["command_fn"]()
             args = list(spec["args"])
         entry = {"command": cmd, "args": args}
+        # Enterprise registry mode: without this marker the client drops the
+        # entry before launch (see _mcp_registry_mode). command/args stay so the
+        # spec still describes a runnable server for every other consumer —
+        # doctor's handshake probe, the CC sidecar sync, a later un-governed
+        # refresh — none of which route through the registry.
+        if registry_mode:
+            entry["type"] = _MCP_REGISTRY_TYPE
         # Pin the data home so the shim cannot read a DIFFERENT one than the
         # gateway that spawned it (see _managed_mcp_env). Omitted entirely on a
         # default install, so the emitted spec is unchanged there.
@@ -1554,6 +1634,7 @@ def _refresh_dynamic_fields(config: dict) -> None:
     # Managed MCP servers — ensure present and up-to-date.
     # Only refresh command/args; preserve user customizations (e.g. autoApprove).
     mcp = config.setdefault("mcpServers", {})
+    registry_mode = _mcp_registry_mode()
     for name, spec in _MANAGED_MCP_SERVERS.items():
         is_new = name not in mcp
         entry = mcp.setdefault(name, {})
@@ -1568,6 +1649,16 @@ def _refresh_dynamic_fields(config: dict) -> None:
         # the downstream stdio-force in cc_agent / acp.client.)
         entry.pop("url", None)
         entry.pop("headers", None)
+        # Enterprise registry marker — refreshed like command/args rather than
+        # preserved like ``autoApprove``, because it tracks the account the
+        # gateway is actually signed in to, not a user preference. Removed (not
+        # left stale) when the declaration is off, so a host that leaves an
+        # enterprise profile stops shipping a marker that would now cause the
+        # inverse filter to drop these servers.
+        if registry_mode:
+            entry["type"] = _MCP_REGISTRY_TYPE
+        elif entry.get("type") == _MCP_REGISTRY_TYPE:
+            entry.pop("type", None)
         # Data-home pin — refreshed like command/args rather than preserved like
         # ``autoApprove``, because it is OURS, not a user customization: it must
         # track the home the gateway is actually running under. A config written
@@ -2506,15 +2597,13 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     # their stale @refs are normalized too. See mcp_server_alias.
     _normalize_mcp_server_keys(config)
 
-    # Converge every Playwright-proxy entry onto the single canonical
-    # ``playwright-mcp`` server, keyed by resolved launch target. Runs on EVERY
-    # rebuild (not just gateway boot) so a slash-free legacy proxy key —
-    # e.g. ``playwright-proxy-mcp`` re-injected from ~/.kiro/crew/mcp.json by the
-    # merges above — cannot survive to spawn a second backend. Slash-free legacy
-    # keys are invisible to _normalize_mcp_server_keys (which only rewrites
-    # slash-containing keys), so this launch-target-keyed pass closes the
-    # duplicate for them.
-    converge_playwright_servers(config)
+    # Drop any server whose argv invokes the deleted mcp-playwright-proxy
+    # subcommand.  Runs on EVERY rebuild because the entry can be
+    # re-injected from ~/.kiro/crew/mcp.json by the merges above.  The
+    # first-run marker-guarded purge (clean_stale_managed_mcp) covers the
+    # GLOBAL ~/.kiro/settings/mcp.json, which is a different file and a
+    # different ownership boundary; this covers the assembled agent config.
+    purge_deleted_proxy_from_config(config)
 
     # Sync shared (user-installed) servers to tools/allowedTools.
     # These are explicitly installed by the user via `aim mcp install` or

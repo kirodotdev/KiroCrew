@@ -131,6 +131,60 @@ class TestRoleModels:
 # ── General ──────────────────────────────────────────────────────────────
 
 
+# ── Terminal default shell (dashboard.terminal.shell) ─────────────────────
+
+
+class TestTerminalShell:
+    """Save-time gate: a value must be an executable; "" clears the setting."""
+
+    @pytest.mark.asyncio
+    async def test_empty_clears_setting(self, tmp_config) -> None:
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.shell", "")
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["terminal"]["shell"] == ""
+
+    @pytest.mark.asyncio
+    async def test_executable_accepted_and_written_nested(self, tmp_config) -> None:
+        import sys
+
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.shell", sys.executable)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["terminal"]["shell"] == sys.executable
+
+    @pytest.mark.asyncio
+    async def test_non_executable_rejected(self, tmp_config) -> None:
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(
+                client, "dashboard.terminal.shell", "/opt/definitely-not-a-shell"
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert "executable" in body["error"]
+            # Machine-readable code (AGENTS contract for new non-2xx JSON):
+            # the Settings field maps it to a catalog key instead of rendering
+            # the English sentence in a translated dashboard.
+            assert body["code"] == "shell_not_executable"
+        # The refused value must not have been persisted.
+        data = json.loads(tmp_config.read_text())
+        assert "dashboard" not in data or "shell" not in data.get("dashboard", {}).get(
+            "terminal", {}
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_string_rejected(self, tmp_config) -> None:
+        app, _ = _make_app_with_state()
+        async with TestClient(TestServer(app)) as client:
+            resp = await _patch(client, "dashboard.terminal.shell", 123)
+            assert resp.status == 400
+
+
 class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_unknown_field_returns_400(self, tmp_config) -> None:

@@ -1690,6 +1690,9 @@ class TestDurableSlackFlagsAtHttpGate:
 
         sm = SessionMap()
         sm.set_flag(self.SLACK_KEY, flag, True)
+        # A loop-side mutation defers its disk write; the fresh-instance
+        # precondition below reads the FILE, so force it current first.
+        sm.flush()
         # Preconditions: durable on disk, absent from this process's maps.
         assert SessionMap().get_flag(self.SLACK_KEY, flag) is True
         assert _h.is_thread_incognito(self.SLACK_KEY) is False

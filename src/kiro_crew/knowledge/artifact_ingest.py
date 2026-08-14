@@ -154,6 +154,41 @@ def _get_state(
     return row["content_hash"], ids
 
 
+def _record_deduped_state(
+    kstore: KnowledgeStore,
+    source_id: str,
+    slug: str,
+    content_hash: str,
+    name: str,
+    kind: str | None,
+) -> None:
+    """Terminal write for an artifact the pre-ingest gate refused.
+
+    Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the gate's
+    own ``BEGIN IMMEDIATE`` and on its worker thread, so it takes no lock and no
+    transaction of its own. The delete of the previous group, the location claim on
+    the holder's items, the terminal job row and this record are one atomic unit.
+
+    That ordering is load-bearing for a FIRST-TIME document in particular: after the
+    gate's commit this row may not exist yet, and a ``delete_source_cascade``
+    landing in that gap reassigns the surviving item here and then has no row to
+    adopt it into -- ``_adopt_reassigned_item`` matches on ``(source_id,
+    content_hash)``, finds nothing, and returns without logging. Writing inside the
+    transaction means the cascade sees either no claim at all or a claim WITH the
+    row that names it.
+
+    The group is still DERIVED rather than assumed empty, for the cascade that
+    committed before this transaction took the lock. A row that ends up owning items
+    is ``active``, not ``deduped``: ``find_document_by_hash`` only matches
+    ``active``, and a row owning content while reporting ``deduped`` would let the
+    same text in again under a second slug.
+    """
+    adopted = kstore.surviving_group_in_txn("artifact_item_state", source_id, slug)
+    _write_state_row(
+        kstore, source_id, slug, content_hash, adopted, name,
+        status="active" if adopted else "deduped", kind=kind)
+
+
 def _set_state(
     kstore: KnowledgeStore,
     source_id: str,
@@ -179,6 +214,23 @@ def _set_state(
     ``INSERT OR REPLACE``: omitting it would reset a ``deduped`` marker back to
     the column default, and the artifact would be re-ingested and re-collapsed on
     every event."""
+    _write_state_row(kstore, source_id, slug, content_hash, item_ids, name,
+                     status=status, kind=kind)
+    kstore.db.commit()
+
+
+def _write_state_row(
+    kstore: KnowledgeStore,
+    source_id: str,
+    slug: str,
+    content_hash: str,
+    item_ids: list[str],
+    name: str,
+    status: str = "active",
+    kind: str | None = None,
+) -> None:
+    """The row write alone, with no transaction control, so a caller already
+    holding one can include it."""
     now = datetime.now().isoformat()
     kstore.db.execute(
         "INSERT OR REPLACE INTO artifact_item_state "
@@ -195,7 +247,6 @@ def _set_state(
             kind,
         ),
     )
-    kstore.db.commit()
 
 
 def refresh_artifact_name(
@@ -383,6 +434,12 @@ async def ingest_artifact(
             original_name=f"{title}{ext}",
             source_id=source_id,
             old_item_ids=old_item_ids,
+            # Recorded inside the gate's own hop: by the time it reports a refusal
+            # it has already committed the delete and the location claim, and a
+            # cancellation between here and a post-hoc write would leave both
+            # durable with nothing naming them.
+            on_duplicate=lambda: _record_deduped_state(
+                kstore, source_id, slug, content_hash, title, art.kind),
         )
     finally:
         if tmp_path:
@@ -393,21 +450,8 @@ async def ingest_artifact(
 
     status = (pipeline.get_job_status(job_id) or {}).get("status") if job_id else None
     if status == DUPLICATE_JOB_STATUS:
-        # The pre-ingest gate refused the write because this text is already in
-        # the Library under another source, and deleted this artifact's previous
-        # items on the way out. Record that: leaving the prior state would point
-        # at deleted items and make every subsequent artifact event re-attempt a
-        # write the gate will refuse again.
-        _set_state(
-            kstore,
-            source_id,
-            slug,
-            content_hash,
-            [],
-            title,
-            status="deduped",
-            kind=art.kind,
-        )
+        # The gate refused the write and recorded the terminal state through the
+        # ``on_duplicate`` finalizer above, so there is nothing left to write here.
         return job_id
     if status != "completed":
         # Partial/failed ingest: ingest_file kept the old group and rolled back

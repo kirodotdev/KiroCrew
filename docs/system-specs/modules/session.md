@@ -365,8 +365,22 @@ stored and new provider names for observability.
 
 **Atomic write:** tmp file + `os.replace()` prevents corruption on crash.
 
+**Deferred flush (event loop only):** a mutation made on the event loop marks
+the map dirty and schedules a debounced flush task; the task serializes the map
+under `_MAP_LOCK` into an immutable JSON payload, then performs the tmp+rename
+in a worker thread — the loop never pays the file write inline, and `_data`
+never crosses the thread boundary. Coalescing never drops a trailing mutation
+(the task loops until it observes a clean map), and a per-snapshot ticket keeps
+a slow in-flight write from landing an older map over a newer forced one.
+`SessionMap.flush()` (sync contexts) and `SessionMap.aflush()` (awaited, for
+loop-side shutdown paths — `SessionManager.close_all()` uses it) are the
+deterministic durability points; off the loop (CLI, tests, worker threads)
+every mutation still writes inline. Losing a pending
+flush on a crash leaves a well-formed older map, never a truncated file.
+
 **Auto-prune:** `SessionMap.get()` auto-removes entries whose `.json` file
-no longer exists. `SessionMap.prune()` bulk-removes all stale entries at
+no longer exists (the entry drops from memory immediately; the file write rides
+the deferred flush). `SessionMap.prune()` bulk-removes all stale entries at
 startup.
 
 **Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session
@@ -565,6 +579,37 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   target server-side; the legacy `{conversation_id, thread_id?}` body remains
   accepted for compatibility. A successful new link posts an anchor plus the
   last five redacted messages before persisting the mirror.
+- `POST /api/chat/slots/{name}/slack-pause` | `mirror-pause` — disconnect (or
+  reconnect) a channel while **retaining** its binding, so inbound still routes
+  to the same session and a later reconnect needs no re-link. Same auth posture
+  as the link/unlink pair. Body `{paused: bool}`; `mirror-pause` also takes
+  `{origin: bool}` naming WHICH non-Slack delivery is meant, because a session
+  can hold two at once and they mute independently. Returns 409
+  `mirror_not_linked` when the named delivery does not exist. The disconnect
+  itself is never governance-gated (it only ever reduces egress); a denial
+  silences the courtesy note posted into the conversation and keeps the
+  disconnect. That note is skipped entirely for an `origin` disconnect, since the
+  mirror resolver addresses the EXPLICIT mirror — a different conversation.
+- **Three persisted pause markers, each keyed differently.** A mute must live and
+  die with the binding the user muted, so the key follows what the flag is about:
+  - `slack_paused` — the Slack thread. Cleared when the binding is REBOUND
+    (different ts or channel), NOT on an identical-coordinate write: the Slack
+    inbound path re-writes the same ts/channel every turn as its thread registry,
+    so clearing on any write let one inbound message silently un-disconnect a
+    thread.
+  - `mirror_paused` — the explicit `mirror` binding. Read/written through
+    `_mirror_key`, following the binding between the canonical row and the legacy
+    `dashboard:` spelling.
+  - `origin_paused` — the conversation the session was BORN in. Read/written on
+    the CANONICAL row, never through `_mirror_key`: that helper migrates rows
+    depending on where a MIRROR lives, which stranded the pause the moment a
+    mirror landed on the canonical row.
+  Each existence check is per flag: a born-in conversation is permanent, while an
+  explicit mirror must actually exist, so a flag with nothing behind it reads as
+  connected rather than reporting a session that delivers nowhere as merely quiet.
+  Enforcement lives at the send sites, not in storage — see
+  [messaging](messaging.md) for the `SilentRenderer` substitution that stops a
+  disconnected non-Slack conversation being written to.
 - `GET /api/chat/channel-targets` — owner-authenticated union of Slack
   destinations and every registered transport's configured targets. The
   dashboard session menu renders this list with per-channel brand icons.
@@ -663,6 +708,39 @@ parent PID explicitly avoids this.
 - **At startup**: `cleanup_orphaned_sessions()` calls it after PID-file cleanup
 - **Periodic**: `_cleanup_loop()` calls it alongside idle session expiry (~60s)
 - **At shutdown**: `cleanup_orphaned_sessions()` on signal/exit
+
+### Unreachable gatewayd reclamation
+
+`mcp_gateway.gatewayd` daemons are their own session/process-group leaders
+(`start_new_session=True`), so a launcher that dies without signalling one
+(pytest teardown is the common case) leaves it resident forever — `killpg`
+from the launcher's tree cannot reach it, and the marker-based orphan sweep
+excludes gateway entrypoints (`_GATEWAY_MARKERS`) because a cmdline alone
+cannot distinguish a live dev pod's daemon from a dead launcher's. Two layers
+close the leak, both keyed on the one reachability signal that IS observable:
+the daemon's `--socket` path. gatewayd creates that socket at bind, so once
+the path is absent from disk no stub can ever connect again — the process is
+provably unreachable regardless of who launched it.
+
+- **Self-exit (primary, in-daemon)**: `gatewayd._socket_liveness_sweeper`
+  stats its own socket path on the idle-sweep cadence, armed only after a
+  successful bind. Three CONSECUTIVE `ENOENT` observations set `stop_event`,
+  taking the same graceful drain as SIGTERM (backends drained and reaped).
+  Any other stat failure (EACCES/EIO) is inconclusive and never counts.
+  POSIX-only — a Windows named pipe has no directory entry to observe.
+- **Sweep-side reap (defense in depth)**: `_is_sweepable_orphan_gatewayd` is
+  a fourth positive-identity path in the untracked orphan sweep. It overrides
+  the `_GATEWAY_MARKERS` exclusion only for a structural
+  `-m kiro_crew.mcp_gateway.gatewayd` argv whose `--socket` path is gone
+  (NUL-separated argv only — the space-joined `ps` fallback cannot delimit
+  paths safely and fails closed, so the path is effectively Linux-only).
+  `kiro_crew.cli` / `kiro_crew.__main__` stay unconditionally excluded. The
+  kill is TERM-first (`_kill_orphan_gatewayd`) so the daemon drains its own
+  pooled backends, escalating to `killpg` SIGKILL only after the daemon's full
+  `TOTAL_SHUTDOWN_BUDGET_SECS` (shared with the supervisor's SIGTERM→SIGKILL
+  grace, so a correctly-draining daemon is never killed mid-drain), with a
+  cmdline re-verify guarding PID recycling. Same-uid + reparented-to-init
+  candidacy, the age floor, and the kill budget all still apply.
 
 ### session_pid sidecar contract (`session_pid_sig.py`)
 

@@ -350,10 +350,41 @@ function _fontPinDenied(prelude: string, block: string): boolean {
   })
 }
 
-export function scopeOverridesCss(css: string): { css: string; kept: number; dropped: number } {
+/**
+ * A human-readable identifier for one dropped rule, for the Settings notice and
+ * the console diagnostic. The selector is what a pack author greps their own
+ * overrides.css for, so it is reported verbatim (trimmed to one line and capped —
+ * this is untrusted pack text headed for the DOM as a React text node, so length
+ * is the only concern). A font pin also names the offending property, because the
+ * selector alone (`body`) does not say what was wrong with the rule.
+ */
+const _DROPPED_ID_MAX = 80
+
+function _droppedRuleId(prelude: string, block: string, fontPin: boolean): string {
+  const sel = prelude.replace(/\s+/g, ' ').trim()
+  let id = sel
+  if (fontPin) {
+    const prop = _declaredProps(block).find(
+      (p) => _FONT_PIN_PROPS.includes(p) || p === 'font' || p === 'font-family',
+    )
+    if (prop) id = `${sel} { ${prop} }`
+  }
+  return id.length > _DROPPED_ID_MAX ? `${id.slice(0, _DROPPED_ID_MAX - 1)}…` : id
+}
+
+export function scopeOverridesCss(css: string): {
+  css: string
+  kept: number
+  dropped: number
+  /** One entry per dropped rule (selector, plus the offending property for a
+   * font pin) so the drop can be REPORTED, not merely counted. Same length as
+   * `dropped`. */
+  droppedRules: string[]
+} {
   const src = css.replace(/\/\*[\s\S]*?\*\//g, '') // strip comments
   let kept = 0
   let dropped = 0
+  const droppedRules: string[] = []
 
   const walk = (input: string): string => {
     const out: string[] = []
@@ -424,14 +455,17 @@ export function scopeOverridesCss(css: string): { css: string; kept: number; dro
           // unaffected — their declarations already passed the identical check at
           // install. Closes the selector-allowlist / declaration-fail-open
           // asymmetry pending the #316 CSSOM consolidation.
-          if (_declDenied(block) || _fontPinDenied(prelude, block)) {
+          const fontPin = _fontPinDenied(prelude, block)
+          if (_declDenied(block) || fontPin) {
             dropped++
+            droppedRules.push(_droppedRuleId(prelude, block, fontPin))
           } else {
             kept++
             out.push(`${prelude}{${block}}`)
           }
         } else {
           dropped++
+          droppedRules.push(_droppedRuleId(prelude, block, false))
         }
       } else {
         buf += ch
@@ -441,7 +475,7 @@ export function scopeOverridesCss(css: string): { css: string; kept: number; dro
     return out.join('\n')
   }
 
-  return { css: walk(src), kept, dropped }
+  return { css: walk(src), kept, dropped, droppedRules }
 }
 
 // ── §4.2 pack-relative url() rewriting ──

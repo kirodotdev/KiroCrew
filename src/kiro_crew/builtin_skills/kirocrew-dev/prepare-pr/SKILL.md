@@ -47,8 +47,8 @@ The scripts are stdlib **Python 3** (run with `python3`; no third-party deps), p
 | `resolve_profile.py [root]` | 0/1 | resolve the project profile — gates / reviewers / conventions — as JSON (`.prepare-pr.toml` → KiroCrew markers → stack auto-detect → generic) | 0 resolved · 2 env/parse |
 | `diff_signals.py [base]` | 1 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config) | 0 · 2 env |
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1/3 pre-push | stale-base guard (runs only for `single_commit=true` profiles): pre-squash mode (Phase 1 step 3) fresh-fetches origin/base and verifies commit count ≤ N (default 5) and no replayed upstream commits; post-squash mode (`--require-single-on-base`, Phase 3 step 1) asserts `HEAD~1 == origin/<base>` after a fresh fetch | **0 safe · 40 refused · 2 env** |
-| `pr_status.py [pr#]` | 3 gate | PR state, aggregate readiness + check rollup, advisory unresolved-thread count | **0 clean · 10 running · 20 failing/findings · 2 env** |
-| `pr_findings.py [pr#]` | 3 | per-job failed steps + failing CI log tails (with check-run annotations when the failed-log archive is empty) + unresolved threads (path/line/author/body) | 0 · 2 env |
+| `pr_status.py [pr#]` | 3 gate | PR state, aggregate readiness + check rollup, advisory unresolved-thread count, reviewer-marker freshness (`[<NAME>-REVIEWED]` / `[BLOCK-MERGE]` vs the current head; a stale stamp or a blocking marker is exit 20, advisory FINDING counts never gate; scope names with `--reviewers` / `PREPARE_PR_REVIEWERS`), and a pull_request-run-exists-for-head assertion (catches a stale/conflicted PR whose visible checks belong to an older head) | **0 clean · 10 running · 20 failing/findings · 2 env** |
+| `pr_findings.py [pr#]` | 3 | per-job failed steps + failing CI log tails (with check-run annotations when the failed-log archive is empty) + unresolved threads (path/line/author/body) + reviewer findings on the current head, each with a stable `span=` identity (path + reviewer/kind, line-number independent, no file reads) for mechanical same-span recurrence detection | 0 · 2 env |
 | `enable_automerge.py [pr#] [method]` | 4 | (explicit ship intent only) enable GitHub auto-merge via `gh pr merge --auto` (default `squash`); GitHub then merges once the repo's own required reviews + checks are met; idempotent | 0 enabled/already-enabled · 20 could-not-enable · 2 env |
 
 `pr_status.py` drives the loop: **10** → `wait` and re-poll (don't inspect yet); **20** → drill in and fix; **0** → converge; **2** → fix env or escalate.
@@ -180,7 +180,45 @@ Every PR body MUST contain these (fill-in template: `$SKILL_DIR/assets/pr-body-t
    - Embed with **commit-SHA-pinned** same-origin URLs: `![alt](https://github.com/<owner>/<repo>/raw/<sha>/temp-screenshots/<feature>/<name>.png)`. Branch-pinned URLs break when the branch is deleted on merge; external image hosts leak content and are camo-blocked for private repos. The SHA-pinned URL keeps resolving even after periodic cleanup removes the file from `main`'s tip (the blob stays reachable via the pinned historical commit).
    - After any amend that changes the images, re-pin the URLs to the new SHA.
    - Put the two or three most telling shots inline; fold full-page context into a `<details>` block.
-7. **Issue link — a real closing keyword, not a bare reference.** If the work resolves a tracked issue, the body should carry `Fixes #<n>` / `Closes #<n>` / `Resolves #<n>` (one trailer per issue, at the bottom). This is the ONLY thing that makes the host close the issue on merge: `Related: #<n>`, `Part of #<n>`, and a bare `#<n>` all render as links and close nothing. **Read it back rather than trusting the prose you just wrote** — the host resolves the link at PR-open/edit time and exposes it as a field: `gh pr view <n> --json closingIssuesReferences`. An empty list with an issue named in the body means the keyword is missing or malformed, and `pr_status.py` prints that as a `NOTICE:` line. If the PR deliberately closes nothing (a partial fix, a refactor with no filed issue), say so in one line at the start of a line — `no issue closed: <why>` — so a reader can tell an intentional omission from a forgotten trailer. **This is advisory, not a gate**: an issue-less PR is legitimate and readiness never blocks on it. It is worth doing anyway because nothing downstream reconciles a missing trailer — the work ships, the issue stays open, and the next person to read that issue plans against a body that no longer matches the code.
+   - **No-visual-delta waiver** — when the PR has NO user-visible UI change, use
+     the `<!-- no-visual-delta -->` PR-body marker instead of screenshots. Both
+     lines are required together (a bare marker without the justification fails
+     the check):
+     ```markdown
+     <!-- no-visual-delta -->
+     **Why no screenshot:** <one-line reason>
+     ```
+     **The decision is about rendered delta, not file type.** The Screenshot
+     Evidence gate fires when the diff touches watched frontend paths (see
+     `screenshot-evidence.yml`'s path filter). The marker waives that gate
+     when the change has **no visible effect in the browser** despite touching
+     a watched path. Two cases:
+
+     **Use the marker when** the gate would fire but no pixel changes:
+     - Comment-only or type-annotation-only edits in `.tsx`/`.css` files
+     - Refactoring internals of a component with no rendered output change
+       (e.g. renaming a local variable, extracting a helper, fixing a string
+       builder that produces identical HTML)
+     - Non-rendering accessibility attributes (aria IDs, test-ids)
+     - Pure backend/CI/docs changes where the gate doesn't fire (the marker
+       is inert here — harmless to include but not required since the gate
+       won't block you)
+
+     **Do NOT use it — provide real screenshots instead — when** the change
+     has an actual rendered delta a user would see:
+     - New or modified components, panels, pages, modals, or toasts
+     - Layout, theme, spacing, or styling changes
+     - Changed i18n strings that appear in the rendered UI
+     - Any diff where a before/after screenshot would show a visible
+       difference
+
+     **When to decide:** Phase 1 step 5 (description reconciliation). Check
+     `git diff --name-only origin/<base>...HEAD` against the gate's watched
+     paths. If watched paths are touched, inspect each: does the change
+     produce a visible difference in the browser? If yes → screenshot. If
+     no → marker + justification explaining *why* no pixel changed. When in
+     doubt, screenshot — the marker is for clear-cut non-visual work.
+7. **Issue link — a real closing keyword, not a bare reference.** If the work resolves a tracked issue, the body should carry `Fixes #<n>` / `Closes #<n>` / `Resolves #<n>` (one trailer per issue, at the bottom). This is the ONLY thing that makes the host close the issue on merge: `Related: #<n>`, `Part of #<n>`, and a bare `#<n>` all render as links and close nothing. **Read it back rather than trusting the prose you just wrote** — the host resolves the link at PR-open/edit time and exposes it as a field: `gh pr view <n> --json closingIssuesReferences`. An empty list with an issue named in the body means the keyword is missing or malformed, and `pr_status.py` prints that as a `NOTICE:` line. If the PR deliberately closes nothing (a partial fix, a refactor with no filed issue), say so in one line at the start of a line — `no linked issue: <why>` — so a reader can tell an intentional omission from a forgotten trailer. (The phrasing deliberately contains no closing keyword: a keyword right before the colon, as in `… closed: #<n>`, would itself read as a close-on-merge trigger if the `<why>` opens with an issue number.) **This is advisory, not a gate**: an issue-less PR is legitimate and readiness never blocks on it. It is worth doing anyway because nothing downstream reconciles a missing trailer — the work ships, the issue stays open, and the next person to read that issue plans against a body that no longer matches the code.
 
 Omit a section only when truly not applicable, and say so.
 

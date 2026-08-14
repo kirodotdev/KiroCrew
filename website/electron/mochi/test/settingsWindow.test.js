@@ -26,9 +26,11 @@ function stubElectron() {
       this.focused = false;
       this.loadedUrl = null;
       this.events = {};
+      this.wcSent = [];
       this.webContents = {
         once: (name, fn) => { this.events[`wc:${name}`] = fn; },
         on: (name, fn) => { this.events[`wc:${name}`] = fn; },
+        send: (channel, ...args) => { this.wcSent.push({ channel, args }); },
       };
       created.push(this);
     }
@@ -40,7 +42,9 @@ function stubElectron() {
     focus() { this.focused = true; }
     isVisible() { return this.visible; }
     isDestroyed() { return this.destroyed; }
-    destroy() { this.destroyed = true; }
+    // Real Electron emits `closed` after destroy(); the module's pending-state
+    // cleanup hangs off that event, so the fake must be faithful here.
+    destroy() { this.destroyed = true; this.events["closed"]?.(); }
     emit(name, ...args) { this.events[name]?.(...args); }
   }
 
@@ -140,4 +144,168 @@ test("reveals itself on did-finish-load even if ready-to-show never fires", () =
   assert.strictEqual(win.visible, false);
   win.events["wc:did-finish-load"]();
   assert.strictEqual(win.visible, true);
+});
+
+// ── Native close guard ──────────────────────────────────────────────────────
+//
+// The Settings renderer stages every control until Save, so the native close
+// button must run the same Unsaved Changes guard as the in-panel Cancel. These
+// pin the seam: intercept-and-ask instead of destroy, one pending request at a
+// time, a sender-bound acknowledgement, and a bounded force-close fallback so
+// a wedged renderer can never leave an unclosable always-on-top window.
+
+function fakeCloseEvent() {
+  return {
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  };
+}
+
+/** Open the settings window and simulate the renderer finishing its load —
+ *  the precondition for the close guard to be armed. */
+function openLoadedWindow(mod, created) {
+  mod.openSettingsWindow("http://127.0.0.1:5476");
+  const win = created[created.length - 1];
+  win.events["wc:did-finish-load"]();
+  return win;
+}
+
+test("a close before the renderer has loaded is NOT intercepted", () => {
+  // Pre-load there is no subscriber and nothing staged; a send to a frameless
+  // renderer is dropped silently, so intercepting here would stall the close
+  // for the full ack timeout. The default (destroy) must proceed instead.
+  const { mod, created } = loadModule();
+  mod.openSettingsWindow("http://127.0.0.1:5476");
+  const win = created[0];
+
+  const event = fakeCloseEvent();
+  win.emit("close", event);
+
+  assert.strictEqual(event.prevented, false);
+  assert.strictEqual(win.wcSent.length, 0);
+});
+
+test("native close asks the renderer instead of destroying", () => {
+  const { mod, created } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  const event = fakeCloseEvent();
+  win.emit("close", event);
+
+  assert.strictEqual(event.prevented, true);
+  assert.strictEqual(win.destroyed, false);
+  assert.deepStrictEqual(
+    win.wcSent.map((s) => s.channel),
+    ["mochi-settings:close-request"],
+  );
+});
+
+test("repeated native close clicks do not queue duplicate requests", () => {
+  const { mod, created } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  win.emit("close", fakeCloseEvent());
+  const second = fakeCloseEvent();
+  win.emit("close", second);
+
+  // Still intercepted (the window must not die), but only ONE request went out.
+  assert.strictEqual(second.prevented, true);
+  assert.strictEqual(win.wcSent.length, 1);
+});
+
+test("an acknowledged request disarms the force-close fallback", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { mod, created, ipcHandlers } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  win.emit("close", fakeCloseEvent());
+  ipcHandlers["mochi-settings:close-request-ack"]({ sender: win.webContents });
+  t.mock.timers.tick(mod.CLOSE_ACK_TIMEOUT_MS + 1);
+
+  // The renderer took over (it shows the dialog or closes itself); the shell
+  // must not yank the window out from under it.
+  assert.strictEqual(win.destroyed, false);
+});
+
+test("after an acknowledgement, the next close click sends a fresh request", () => {
+  const { mod, created, ipcHandlers } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  win.emit("close", fakeCloseEvent());
+  ipcHandlers["mochi-settings:close-request-ack"]({ sender: win.webContents });
+  win.emit("close", fakeCloseEvent());
+
+  assert.strictEqual(win.wcSent.length, 2);
+});
+
+test("the acknowledgement is sender-bound: another webContents cannot clear it", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { mod, created, ipcHandlers } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  win.emit("close", fakeCloseEvent());
+  // An ack from some OTHER window's renderer must not disarm the fallback.
+  ipcHandlers["mochi-settings:close-request-ack"]({ sender: { not: "ours" } });
+  t.mock.timers.tick(mod.CLOSE_ACK_TIMEOUT_MS + 1);
+
+  assert.strictEqual(win.destroyed, true);
+});
+
+test("a silent renderer is force-closed after the timeout", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { mod, created } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  win.emit("close", fakeCloseEvent());
+  assert.strictEqual(win.destroyed, false);
+  t.mock.timers.tick(mod.CLOSE_ACK_TIMEOUT_MS + 1);
+
+  assert.strictEqual(win.destroyed, true);
+  assert.strictEqual(mod.isSettingsWindowOpen(), false);
+});
+
+test("a renderer that cannot be reached is force-closed immediately", () => {
+  const { mod, created } = loadModule();
+  const win = openLoadedWindow(mod, created);
+  win.webContents.send = () => {
+    throw new Error("webContents destroyed");
+  };
+
+  win.emit("close", fakeCloseEvent());
+
+  assert.strictEqual(win.destroyed, true);
+  assert.strictEqual(mod.isSettingsWindowOpen(), false);
+});
+
+test("the renderer's own close channel still destroys during a pending request", () => {
+  // Save/Discard resolve the guard by closing through mochi-settings:close;
+  // that path must stay an unconditional destroy, never re-enter the guard.
+  const { mod, created, ipcHandlers } = loadModule();
+  const win = openLoadedWindow(mod, created);
+
+  win.emit("close", fakeCloseEvent());
+  ipcHandlers["mochi-settings:close"]();
+
+  assert.strictEqual(win.destroyed, true);
+  assert.strictEqual(mod.isSettingsWindowOpen(), false);
+});
+
+test("a pending request from a destroyed window cannot leak into its successor", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { mod, created, ipcHandlers } = loadModule();
+  const first = openLoadedWindow(mod, created);
+
+  // Request in flight on the first window, then it is torn down explicitly.
+  first.emit("close", fakeCloseEvent());
+  ipcHandlers["mochi-settings:close"]();
+
+  // A new window's close must send its own request (pending state was cleared).
+  const second = openLoadedWindow(mod, created);
+  second.emit("close", fakeCloseEvent());
+  assert.strictEqual(second.wcSent.length, 1);
+
+  // And the FIRST window's late ack must not disarm the second's fallback.
+  ipcHandlers["mochi-settings:close-request-ack"]({ sender: first.webContents });
+  t.mock.timers.tick(mod.CLOSE_ACK_TIMEOUT_MS + 1);
+  assert.strictEqual(second.destroyed, true);
 });

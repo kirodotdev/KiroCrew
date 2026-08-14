@@ -401,9 +401,11 @@ export interface McpCustomSpec {
   args?: string[]
   env?: Record<string, string>
   url?: string
+  /** Authorable on remote (url) specs; read responses redact every stored value. */
+  headers?: Record<string, string>
 }
 
-/** GET /api/mcp/custom/{name} — full editable spec (env included). */
+/** GET /api/mcp/custom/{name} — editable spec; header values are redacted. */
 export interface McpCustomSpecResponse {
   name: string
   spec: McpCustomSpec
@@ -422,6 +424,8 @@ export interface McpScopePresence {
 export interface McpServer {
   name: string; command: string; args?: string[]
   url?: string
+  /** Header names are preserved, but read responses redact every value. */
+  headers?: Record<string, string>
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   presence?: McpScopePresence
@@ -483,13 +487,32 @@ export interface SessionLink {
   label: string
   target: string
   /**
-   * `origin` — the conversation started on that channel (read-only).
+   * `origin` — the conversation the session started on.
    * `out`    — dashboard replies are mirrored there (one-way, from `!link`).
    * `both`   — a session-RESUME binding from an in-channel `!sessions` pick:
    *            replies go there AND messages from there land in this session.
+   *
+   * Provenance only. It does NOT decide whether a row is operable — an `origin`
+   * row carries a disconnect control like any other (see `paused`). One channel
+   * can also carry TWO rows at once (born there AND mirrored there), so
+   * `channel` alone does not identify a row; pair it with origin-ness.
    */
   direction: 'origin' | 'out' | 'both'
   live: boolean
+  /**
+   * The user disconnected this channel: turn output stops flowing there, but the
+   * binding is retained so a reply in that conversation resumes the same session.
+   * Distinct from `live`, which reports whether the transport *can* send at all —
+   * a disconnected channel on a healthy transport is still `live`.
+   *
+   * Set on every row including `origin`, because the conversation a session was
+   * born in can be disconnected too. `direction` records provenance only; it does
+   * not decide whether a row has a control.
+   *
+   * Optional because a browser holding a `slots` payload cached from before this
+   * field shipped has links without it; absent reads as connected.
+   */
+  paused?: boolean
 }
 
 export interface ConfiguredChannelTarget {
@@ -510,6 +533,11 @@ export interface ChatSlot {
   webapp_metadata?: WebAppMetadata
   // Board fields
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean; orchestrating?: boolean
+  /** An unanswered question card the turn is parked on, so the row would
+   * otherwise read "Thinking…" with nothing able to advance it. Narrower than
+   * `waiting_for_input` (true of every finished turn, and therefore no signal)
+   * and separate from `pending_approval` (a tool gate). */
+  needs_input?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** In-flight `wait` tool sleep, absent when nothing is sleeping. `deadline_ts`

@@ -153,22 +153,31 @@ describe('server-computed trust fields (issue #580)', () => {
 
   it('sourceLabel prefers the server provenance field', () => {
     expect(sourceLabel({ provenance: 'builtin' })).toBe('Built-in')
-    expect(sourceLabel({ provenance: 'core', origin: 'builtin' })).toBe('Kiro Crew registry')
+    expect(sourceLabel({ provenance: 'official', origin: 'builtin' })).toBe('Kiro Crew registry')
     expect(sourceLabel({ provenance: 'external', _registry: 'labs' })).toBe('labs')
+  })
+
+  it('sourceLabel still accepts the pre-migration "core" spelling', () => {
+    // A newer client can meet an older gateway, which emits 'core' for the same
+    // claim 'official' now carries. Dropping the alias would silently fall the
+    // row through to the origin-based legacy arm.
+    expect(sourceLabel({ provenance: 'core', origin: 'builtin' })).toBe('Kiro Crew registry')
+    expect(sourceLabel({ provenance: 'core' })).toBe('Kiro Crew registry')
   })
 
   it('sourceLabel keeps the _registry name even with a smuggled provenance', () => {
     // Same older-gateway smuggling window: a tagged row is external by
-    // construction, so provenance:"core" from index content cannot relabel it.
+    // construction, so provenance:"official" from index content cannot relabel it.
+    expect(sourceLabel({ provenance: 'official', _registry: 'evil' })).toBe('evil')
     expect(sourceLabel({ provenance: 'core', _registry: 'evil' })).toBe('evil')
   })
 
   it('pickFeatured excludes provenance:"external" rows from curator flags', () => {
     const apps = [
       app({ name: 'external-shouty', featured: 1, provenance: 'external', _registry: 'evil' }),
-      app({ name: 'core-app', featured: 2, provenance: 'core' }),
+      app({ name: 'official-app', featured: 2, provenance: 'official' }),
     ]
-    expect(pickFeatured(apps)[0].name).toBe('core-app')
+    expect(pickFeatured(apps)[0].name).toBe('official-app')
   })
 
   it('pickFeatured excludes external rows signalled by EITHER field', () => {

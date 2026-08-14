@@ -9,12 +9,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import kiro_crew.env as env_mod
 from kiro_crew.env import (
-    _node_version_manager_bins,
     activate_mise,
     augmented_path,
     ensure_node,
+    node_all_bin_dirs,
     resolve_krb5_ccname,
 )
 
@@ -118,35 +120,176 @@ class TestAugmentedPath:
         assert ".local/bin" in result
 
     def test_includes_nvm_node_bins(self, tmp_path, monkeypatch) -> None:
-        # Simulate a home with two nvm-installed node versions.
+        # Simulate a home with two nvm-installed node versions. The bin dirs are
+        # deliberately EMPTY (no `node` inside): MCP-binary discovery must keep
+        # including them — a global npm binary does not need node beside it.
         nvm = tmp_path / ".nvm" / "versions" / "node"
         (nvm / "v18.0.0" / "bin").mkdir(parents=True)
         (nvm / "v22.5.0" / "bin").mkdir(parents=True)
         monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
-
-        dirs = augmented_path("/usr/bin").split(os.pathsep)
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
         nvm_marker = os.path.join(".nvm", "versions", "node")
         nvm_bins = [d for d in dirs if nvm_marker in d]
         assert len(nvm_bins) == 2
-        # Newest version first (reverse-sorted).
+        # Newest version first (numeric version ranking).
         assert "v22.5.0" in nvm_bins[0]
         assert "v18.0.0" in nvm_bins[1]
 
+    def test_mise_shims_follow_mise_data_dir(self, tmp_path, monkeypatch) -> None:
+        """The shims entry must track MISE_DATA_DIR, and must stay AHEAD of the
+        per-version install bins — the shim honours the project's version pin,
+        the raw install bin does not."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "custom-mise"))
+        shims = tmp_path / "custom-mise" / "shims"
+        install_bin = tmp_path / "custom-mise" / "installs" / "node" / "22.0.0" / "bin"
+        shims.mkdir(parents=True)
+        install_bin.mkdir(parents=True)
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert str(shims) in dirs
+        assert str(install_bin) in dirs
+        assert dirs.index(str(shims)) < dirs.index(str(install_bin))
 
-class TestNodeVersionManagerBins:
-    def test_empty_when_no_managers(self, tmp_path) -> None:
-        assert _node_version_manager_bins(str(tmp_path)) == []
+    def test_relative_mise_data_dir_yields_no_relative_path_entry(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A relative MISE_DATA_DIR must not put a relative entry (e.g.
+        'relative-mise/shims') on a spawned subprocess's PATH — the child would
+        re-resolve it against ITS cwd, shadowing the configured command."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", "relative-mise")
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        for d in dirs:
+            assert os.path.isabs(d), f"relative PATH entry leaked: {d!r}"
 
-    def test_skips_version_dir_without_bin(self, tmp_path) -> None:
+
+class TestNodeAllBinDirs:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        env_mod._node_all_bin_dirs.cache_clear()
+        yield
+        env_mod._node_all_bin_dirs.cache_clear()
+
+    @pytest.fixture
+    def fake_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p
+        )
+        monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        return tmp_path
+
+    def test_empty_when_no_managers(self, fake_home) -> None:
+        assert node_all_bin_dirs() == ()
+
+    def test_skips_version_dir_without_bin(self, fake_home) -> None:
         # A node version dir that has no bin/ subdir is ignored.
-        (tmp_path / ".nvm" / "versions" / "node" / "v20.0.0").mkdir(parents=True)
-        assert _node_version_manager_bins(str(tmp_path)) == []
+        (fake_home / ".nvm" / "versions" / "node" / "v20.0.0").mkdir(parents=True)
+        assert node_all_bin_dirs() == ()
 
-    def test_returns_existing_bin(self, tmp_path) -> None:
-        bin_dir = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+    def test_returns_existing_bin_even_without_node(self, fake_home) -> None:
+        # No-narrowing pin vs the retired _node_version_manager_bins: a bare
+        # bin dir (no executable `node`) is still a search location, because a
+        # globally-installed MCP binary can live there on its own.
+        bin_dir = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
         bin_dir.mkdir(parents=True)
-        result = _node_version_manager_bins(str(tmp_path))
-        assert result == [str(bin_dir)]
+        assert node_all_bin_dirs() == (str(bin_dir),)
+
+    def test_returns_all_versions_not_just_the_best(self, fake_home) -> None:
+        # THE regression this consolidation must not ship: narrowing to the
+        # best version per root would silently stop finding MCP binaries
+        # installed under a non-best Node version.
+        nvm = fake_home / ".nvm" / "versions" / "node"
+        old = nvm / "v18.0.0" / "bin"
+        new = nvm / "v22.5.0" / "bin"
+        old.mkdir(parents=True)
+        new.mkdir(parents=True)
+        dirs = node_all_bin_dirs()
+        assert str(old) in dirs
+        assert str(new) in dirs
+        assert dirs.index(str(new)) < dirs.index(str(old))
+
+    def test_covers_mise_asdf_and_fnm_layouts(self, fake_home) -> None:
+        # The retired implementation knew only nvm + a wrong fnm layout; the
+        # consolidated one searches every manager root the build tier knows.
+        layouts = [
+            fake_home / ".local/share/mise/installs/node/22.0.0/bin",
+            fake_home / ".asdf/installs/nodejs/20.1.0/bin",
+            fake_home / ".local/share/fnm/node-versions/v20.1.0/installation/bin",
+            fake_home / ".fnm/node-versions/v18.2.0/installation/bin",
+        ]
+        for d in layouts:
+            d.mkdir(parents=True)
+        dirs = node_all_bin_dirs()
+        for d in layouts:
+            assert str(d) in dirs
+
+    def test_numeric_versions_outrank_alias_names(self, fake_home) -> None:
+        # Ordering change vs the retired reverse-lexicographic sort, which put
+        # 'lts-krypton' above '24.16.0'.
+        root = fake_home / ".local/share/mise/installs/node"
+        alias = root / "lts-krypton" / "bin"
+        numeric = root / "24.16.0" / "bin"
+        alias.mkdir(parents=True)
+        numeric.mkdir(parents=True)
+        dirs = node_all_bin_dirs()
+        assert dirs.index(str(numeric)) < dirs.index(str(alias))
+
+    def test_is_cached(self, fake_home) -> None:
+        """Second call returns the cached result without re-globbing."""
+        nvm = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+        nvm.mkdir(parents=True)
+        result1 = node_all_bin_dirs()
+        # Remove the dir -- a non-cached implementation would return () now.
+        nvm.rmdir()
+        result2 = node_all_bin_dirs()
+        assert result1 == result2 == (str(nvm),)
+
+    def test_cache_is_keyed_on_home(self, fake_home, tmp_path_factory, monkeypatch) -> None:
+        """A different HOME is a different cache key — a caller under a patched
+        HOME must get a fresh scan, not the previous key's dirs."""
+        first = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+        first.mkdir(parents=True)
+        assert node_all_bin_dirs() == (str(first),)
+        other = tmp_path_factory.mktemp("otherhome")
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: str(other) if p == "~" else p
+        )
+        assert node_all_bin_dirs() == ()
+
+    def test_relative_mise_data_dir_is_excluded(self, fake_home, monkeypatch) -> None:
+        """A relative MISE_DATA_DIR must not put a relative entry on a spawned
+        subprocess's PATH — the child would re-resolve it against ITS cwd."""
+        monkeypatch.setenv("MISE_DATA_DIR", "relative-mise")
+        d = fake_home / "relative-mise" / "installs" / "node" / "22.0.0" / "bin"
+        d.mkdir(parents=True)
+        monkeypatch.chdir(fake_home)
+        for entry in node_all_bin_dirs():
+            assert os.path.isabs(entry), entry
+
+    def test_legacy_fnm_flat_bin_layout_still_found(self, fake_home) -> None:
+        """Strict-superset pin vs the retired scan, which globbed
+        ``~/.fnm/node-versions/<ver>/bin`` (no ``installation`` segment)."""
+        d = fake_home / ".fnm" / "node-versions" / "v20.0.0" / "bin"
+        d.mkdir(parents=True)
+        assert str(d) in node_all_bin_dirs()
+
+    def test_cache_info_exists(self) -> None:
+        """lru_cache exposes cache_info -- confirms decorator is applied."""
+        assert hasattr(env_mod._node_all_bin_dirs, "cache_info")
+        assert hasattr(env_mod._node_all_bin_dirs, "cache_clear")
 
 
 class TestEnsureNode:
@@ -439,28 +582,6 @@ class TestActivateMise:
         env = {"PATH": "/usr/bin"}
         assert activate_mise(env) == []
         assert env == {"PATH": "/usr/bin"}
-
-
-class TestNodeVersionManagerBinsCache:
-    """Verify _node_version_manager_bins is cached (lru_cache) to prevent
-    repeated filesystem I/O on the event-loop thread under GIL pressure."""
-
-    def test_is_cached(self, tmp_path) -> None:
-        """Second call with same arg returns cached result without re-globbing."""
-        _node_version_manager_bins.cache_clear()
-        nvm = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
-        nvm.mkdir(parents=True)
-        result1 = _node_version_manager_bins(str(tmp_path))
-        # Remove the dir -- a non-cached implementation would return [] now
-        nvm.rmdir()
-        result2 = _node_version_manager_bins(str(tmp_path))
-        assert result1 == result2 == [str(nvm)]
-        _node_version_manager_bins.cache_clear()
-
-    def test_cache_info_exists(self) -> None:
-        """lru_cache exposes cache_info -- confirms decorator is applied."""
-        assert hasattr(_node_version_manager_bins, "cache_info")
-        assert hasattr(_node_version_manager_bins, "cache_clear")
 
 
 class TestGitBuildInfo:

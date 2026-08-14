@@ -9,10 +9,12 @@ export type ToolStatusDetail = { kind?: string; text?: string; toolName?: string
  * instead of always showing the purpose.
  *
  * The websocket layer stores both forms on every `tool` status (see the
- * `tool_call` case in useWebSocket): `text` is the agent-written purpose
- * (already falling back to the tool title when the agent supplied none) and
- * `toolName` is the raw tool title. Non-tool phases — `thinking`, `streaming`,
- * a server-supplied `chat_status` — carry a single label and pass through
+ * `tool_call` case in useWebSocket): `text` is the agent-written purpose — EMPTY
+ * when the agent supplied none, because conflating the two upstream makes a
+ * refinement unable to tell a real purpose from a stub title — and `toolName` is
+ * the raw tool title. Falling back from an absent purpose to the title is
+ * therefore this function's job. Non-tool phases — `thinking`, `streaming`, a
+ * server-supplied `chat_status` — carry a single label and pass through
  * unchanged, so a caller can route every status through this one function.
  *
  * Returns `''` when there is nothing to show; the caller owns the fallback copy

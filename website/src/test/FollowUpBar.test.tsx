@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import FollowUpBar from '../components/FollowUpBar'
 
 // jsdom polyfill: scroll-layout uses ResizeObserver to track when the chip
@@ -246,6 +248,92 @@ describe('FollowUpBar', () => {
       expect(onSelect).toHaveBeenCalledTimes(0)
       act(() => { vi.advanceTimersByTime(250) })
       expect(onSelect).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // ─── Long labels: bounded width, clamped text, full text on hover ────────
+  // Regression: an option is a full user-voice instruction and can be
+  // hundreds of characters. Unbounded, a `shrink-0` chip in the scroll layout
+  // sized to max-content, consumed the whole strip and pushed the tail of its
+  // own text out of the visible box.
+  describe('long option labels', () => {
+    const LONG = 'Implement blockers 3 & 4 plus the safe follow-ups and push, but leave blocker 1 (team access) and blocker 2 (CI) for me to handle myself'
+
+    it('caps chip width and clamps the label in the scroll layout', () => {
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} layout="scroll" />)
+      const chip = screen.getByRole('button', { name: LONG })
+      expect(chip.className).toContain('followup-chip')
+      // The clamp must sit on an unpadded inner element, not on the padded
+      // button — otherwise a sliver of the third line shows in the padding.
+      const label = chip.querySelector('span')
+      expect(label?.className).toContain('line-clamp-2')
+      expect(label?.className).toContain('break-words')
+      expect(chip.className).not.toContain('line-clamp-2')
+    })
+
+    it('caps the split-button wrapper too, not just the button', () => {
+      // The wrapper is the flex item when a send segment is present; without the
+      // cap it sizes to the label's untruncated max-content width and leaves a
+      // wide gap before the next chip.
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} onSend={() => {}} layout="scroll" />)
+      const wrapper = screen.getByRole('button', { name: LONG }).parentElement
+      expect(wrapper?.className).toContain('followup-chip')
+    })
+
+    it('lets the wrapped button flex inside the cap so the send segment cannot overlap the next chip', () => {
+      // Regression: in the scroll layout the button carried both `shrink-0` and
+      // the width cap, so it claimed the wrapper's full width and pushed the
+      // send segment past the wrapper box — over the next chip. The button must
+      // instead flex (`flex-1 min-w-0`) and leave the cap + `shrink-0` to the
+      // wrapper alone, which stays the sole capped flex item.
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} onSend={() => {}} layout="scroll" />)
+      const btn = screen.getByRole('button', { name: LONG })
+      expect(btn.className).toContain('flex-1')
+      expect(btn.className).toContain('min-w-0')
+      expect(btn.className).not.toContain('followup-chip')
+      expect(btn.className).not.toContain('shrink-0')
+      // The wrapper remains the capped, non-shrinking flex item.
+      const wrapper = btn.parentElement
+      expect(wrapper?.className).toContain('followup-chip')
+      expect(wrapper?.className).toContain('shrink-0')
+    })
+
+    it('backs the cap class with a real max-width rule', () => {
+      // jsdom does not load index.css, so the class assertions above would pass
+      // with the rule deleted. Read the stylesheet directly.
+      const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+      expect(css).toMatch(/\.followup-chip\s*\{[^}]*max-width:\s*min\(100%,\s*26rem\)/)
+    })
+
+    it('caps chip width and clamps the label in the multiline layout', () => {
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} />)
+      const chip = screen.getByRole('button', { name: LONG })
+      expect(chip.className).toContain('followup-chip')
+      expect(chip.querySelector('span')?.className).toContain('line-clamp-2')
+    })
+
+    it('keeps the full label in the DOM so the accessible name is not truncated', () => {
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} layout="scroll" />)
+      expect(screen.getByRole('button', { name: LONG }).textContent).toBe(LONG)
+    })
+
+    it('shows the full text as the tooltip when the label is long', () => {
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      expect(screen.getByRole('button', { name: LONG }).getAttribute('title')).toBe(LONG)
+    })
+
+    it('leaves a short label tooltip as the gesture hint alone', () => {
+      render(<FollowUpBar options={['Merge it now']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      const title = screen.getByRole('button', { name: 'Merge it now' }).getAttribute('title') ?? ''
+      expect(title.startsWith('Merge it now')).toBe(false)
+      expect(title).toMatch(/double-click/i)
+    })
+
+    it('still passes the untruncated option text to onSelect', () => {
+      const onSelect = vi.fn()
+      render(<FollowUpBar options={[LONG]} picked={new Set()} onSelect={onSelect} layout="scroll" />)
+      fireEvent.click(screen.getByRole('button', { name: LONG }))
+      expect(onSelect).toHaveBeenCalledWith(LONG, expect.any(Object))
     })
   })
 

@@ -658,6 +658,7 @@ class TestWaveDigest:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -701,6 +702,69 @@ class TestWaveDigest:
         assert "/tmp/w0/result.txt" not in final  # already delivered in chunk 1
 
     @pytest.mark.asyncio
+    async def test_digest_chunks_inject_in_fifo_order_despite_delayed_dispatch_hop(self):
+        """A later digest chunk must never overtake an earlier one whose
+        dispatched injection is still inside ``bounded_chat_turn``'s off-loop
+        timeout resolution (issue #3273). The first chunk's hop is held
+        deterministically: it releases the moment a later chunk's injection
+        lands (the overtake this test forbids) or after a bounded deadline
+        (the fixed code parks the later chunk behind the live ``slot.task``
+        claim, so nothing can land while it is held). No machine-load
+        dependence: without the widened busy predicate the overtake is forced
+        every run; with it the order is FIFO every run."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._orch_tracker = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 12  # chunk size 10 -> chunk 1/2 at member 10, final 2/2 on close
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text):
+            injected.append(text)
+
+        hop_calls: list[int] = []
+
+        def _held_resolver() -> float:
+            # Runs inside asyncio.to_thread, standing in for the config read
+            # bounded_chat_turn resolves off-loop. Thread-side bounded poll
+            # (not a timing guess): exits the instant an overtaking injection
+            # is observed, and the deadline only pays out on the fixed path,
+            # where the later chunk is parked and can never land here.
+            hop_calls.append(1)
+            if len(hop_calls) == 1:
+                deadline = time.monotonic() + 2.0
+                while not injected and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            return 60.0
+
+        with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
+                patch("kiro_crew.subagent_persistence.mark_delivered"), \
+                patch(
+                    "kiro_crew.dashboard.turn_dispatch.chat_turn_timeout_secs",
+                    _held_resolver,
+                ):
+            for i in range(total):
+                mgr.batch_members_pending = MagicMock(return_value=i != total - 1)
+                await on_done(self._member(i, total))
+                await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 2)
+
+        assert len(injected) == 2
+        # FIFO: the observed order is [chunk 1/2, chunk 2/2] — the escalation
+        # guidance lives in chunk 1, so a reader must meet it first.
+        assert "Batch results 1/2" in injected[0]
+        assert "Batch results 2/2" in injected[1]
+
+    @pytest.mark.asyncio
     async def test_batch_finished_event_carries_counts(self):
         orch = _make_orchestrator()
         orch.sessions = _mock_sessions()
@@ -710,6 +774,7 @@ class TestWaveDigest:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -750,6 +815,7 @@ class TestWaveDigest:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -833,6 +899,7 @@ class TestWaveDigest:
         tracker.record_round = MagicMock(return_value=False)
         slot._orch_tracker = tracker
         slot.running = False
+        slot.task = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = self._capture_on_done(orch)
@@ -877,6 +944,7 @@ class TestWaveDigest:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -915,6 +983,7 @@ class TestWaveDigest:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
@@ -1107,6 +1176,7 @@ class TestDigestHoldDeadline:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()
@@ -1176,6 +1246,7 @@ class TestDigestHoldDeadline:
         slot = MagicMock()
         slot.mode = "chat"
         slot.running = False
+        slot.task = None
         slot._orch_tracker = None
         slot._subagent_deliveries_inflight = 0
         slot._subagents_inline_collected = set()

@@ -58,7 +58,8 @@ Frontend badges and affordances read the same three fields
 (`origin === 'builtin'`, `resources === 'app'`, `lifecycle === 'gateway'`,
 `lifecycle !== 'locked'`). Provenance LABELS and the verified badge are a
 separate question: `/api/apps/registry` rows carry server-computed
-`provenance` (`"core" | "external" | "builtin"`) and `verified` fields,
+`provenance` (`"official" | "external" | "builtin"`, with `"core"` accepted by
+clients as the pre-migration spelling of `"official"`) and `verified` fields,
 stamped by `_apply_trust_fields` in `registry.py` where the server-attached
 `_registry` tag is authoritative. The helper OVERWRITES anything an index
 publishes, and derives `verified` from the INDEX-declared author snapshotted
@@ -67,7 +68,35 @@ before the app.json merge — never from the repo-fetched manifest — because
 content for a not-yet-installed app: deriving trust from either let an added
 registry publish `origin: "builtin"`, or a third-party core repo publish
 `author: "KiroCrew"`, and self-award the first-party mark next to a button
-that runs its setup code with gateway privileges. The client
+that runs its setup code with gateway privileges. The author comparison runs
+through `_fold_author` (NFKC, drop category-`Cf`, collapse whitespace, lower)
+against `FIRST_PARTY_AUTHORS`, so both the joined historical spelling and the
+two-word org name we actually publish mint the mark, and a fullwidth or
+zero-width rendering of our name does not silently lose it. Folding WIDENS the
+match, which is safe only because the `_registry` short-circuit runs first:
+the author is consulted exclusively for rows whose index we ship or sign.
+
+`"official"` means "an app WE list". The bundled `app-registry.json` is one
+delivery of that list — the offline seed shipped inside the wheel — so it
+carries the same value a signed remote catalog will, not a second one. Two
+values for one claim would put a weaker integrity guarantee (it rides on the
+install artifact and cannot be revoked before the next release) behind a label
+the client cannot tell apart from the stronger one. Provenance names WHOSE list
+an app is on; how that list reached the client is a separate axis and belongs in
+a separate field once there is more than one answer to record.
+
+The merge that builds those rows projects the index row explicitly rather than
+copying it: `_merge_manifest` starts from `_REGISTRY_ROW_KEYS` — identity, the
+clone coordinates, the install-path flags, the spotlight flag, and the two
+server-attached tags — and takes every display field from the fetched
+`app.json`. An index is untrusted content, so a key it invents reaches no
+client, and it cannot publish display copy for an app whose manifest says
+otherwise. Install-status and trust fields are absent from that projection by
+design: `_enrich_with_install_status` and `_apply_trust_fields` run afterwards
+and stamp them server-side, so an index-supplied value for one of them can
+never be read before it is replaced.
+
+The client
 (`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
 reads the server fields, still rejects a `_registry`-tagged row first (so
 nothing smuggled through an older gateway can relabel an external row), and

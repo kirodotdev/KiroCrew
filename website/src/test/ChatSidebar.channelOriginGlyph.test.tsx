@@ -115,12 +115,15 @@ describe('ChatSidebar – channel-origin glyph', () => {
     expect(row('Plain dashboard').querySelector('img')).toBeNull()
   })
 
-  // The glyph's tooltip is the only place the dashboard states the relationship
-  // between this tab and the channel, so it is pinned here. It used to read
-  // "Copied from Slack — replies stay here", which the one-session refactor made
-  // false: the tab IS the conversation, so a reply is delivered to the channel
-  // and a message sent there arrives here. Same wording as the inbound-link chip.
-  it('describes the channel relationship as two-way, not as a copy', () => {
+  // The glyph's tooltip is the only place the dashboard states what this tab has
+  // to do with the channel, so it is pinned here. Its history is a warning: it
+  // once read "Copied from Slack — replies stay here", which the one-session
+  // refactor made false; it was then rewritten to claim the session was
+  // "two-way" with the channel and that replies "are delivered there", which the
+  // disconnect makes false in turn — the glyph keeps rendering after delivery
+  // stops, because provenance is history. So it now states ONLY where the
+  // conversation started, which no connection state can contradict.
+  it('states only where the conversation started, claiming nothing about delivery', () => {
     renderSidebar()
     // The glyph is the row's only span carrying both `title` and `aria-label`
     // (the merged badge is the other, and no fixture is merged) — asserted
@@ -132,16 +135,16 @@ describe('ChatSidebar – channel-origin glyph', () => {
       return found[0].getAttribute('title') ?? ''
     }
 
-    expect(glyphTitle('From Slack')).toBe(
-      'This session is two-way with Slack: replies are delivered there, and messages sent there arrive here.',
-    )
+    expect(glyphTitle('From Slack')).toBe('This conversation started in Slack.')
     // The DM variant is a whole sentence of its own, not the channel sentence
     // with an English article fragment interpolated into it.
-    expect(glyphTitle('From a DM')).toBe(
-      'This session is two-way with a direct message: replies are delivered there, and messages sent there arrive here.',
-    )
-    // The retired copy asserted the opposite of what the code now does.
+    expect(glyphTitle('From a DM')).toBe('This conversation started in a direct message.')
+    // Both retired versions asserted something the code does not do.
     expect(glyphTitle('From Discord')).not.toMatch(/copied from|replies stay here/i)
+    // No claim about current delivery, and none of the vocabulary this change
+    // removes: the glyph renders identically whether the channel is connected
+    // or disconnected, so any such claim would be false half the time.
+    expect(glyphTitle('From Discord')).not.toMatch(/two-way|delivered|mirror|origin/i)
     // A missing catalog key renders as the raw key rather than throwing.
     expect(glyphTitle('From Discord')).not.toMatch(/pages\.chatSidebar/)
   })

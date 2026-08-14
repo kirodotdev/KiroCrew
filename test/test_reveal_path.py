@@ -32,8 +32,8 @@ async def test_reveal_path_no_crash(mock_sel, tmp_path):
     f = tmp_path / "hello.txt"
     f.write_text("hi")
     # Mock xdg-open as available so the full code path (including SEL) executes
-    with patch("shutil.which", return_value="/usr/bin/xdg-open"), \
-         patch("subprocess.Popen"):
+    with patch("kiro_crew.dashboard.handlers.files.platform_compat."
+               "reveal_in_file_manager", return_value=True):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(
                 "/api/reveal",

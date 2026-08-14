@@ -17,7 +17,7 @@ import { memo } from 'react'
 import { Workflow, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab } from '../../store/chatSlice'
+import { openActivityToTab, switchSlot } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage } from '../../types'
 
@@ -59,11 +59,17 @@ function parseLaunchLabel(message: ChatMessage): string {
 const WorkflowRunCard = memo(function WorkflowRunCard({
   runId,
   message,
+  slot,
 }: {
   runId: string
   message: ChatMessage
+  /** Session this card belongs to. Supplied by a surface that can render a
+   *  NON-active session (a split-view pane); omitted by single chat, which only
+   *  ever draws the active one. */
+  slot?: string
 }) {
   const dispatch = useAppDispatch()
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
   const run = useAppSelector(s => s.chat.workflowRuns?.[runId])
   const status = run?.status
 
@@ -72,7 +78,13 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
   const lastLog = sanitizeLlmOutput((run?.lastLog || '').slice(0, 120))
   const errMsg = sanitizeLlmOutput((run?.error || '').slice(0, 120))
 
-  const open = () => dispatch(openActivityToTab('workflows'))
+  const open = () => {
+    // The Workflows panel is mounted for `activeSlot`, which split view never
+    // moves with pane focus — so opening from a background pane must make this
+    // card's session active first, or the panel belongs to another session.
+    if (slot && slot !== activeSlot) dispatch(switchSlot(slot))
+    dispatch(openActivityToTab('workflows'))
+  }
 
   return (
     <div className="px-5 mx-auto w-full py-0.5" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>

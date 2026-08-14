@@ -535,8 +535,14 @@ class TestBothStartupSitesStash:
 
     def test_the_route_is_registered(self) -> None:
         from kiro_crew.dashboard import handlers
+        from kiro_crew.dashboard import routes as routes_pkg
         from kiro_crew.dashboard import server as server_mod
 
         assert hasattr(handlers, "api_tailnet_status")
+        # The registration lives in the route table under ``dashboard/routes/``;
+        # scan both so this holds wherever the route sits.
         src = Path(server_mod.__file__).read_text(encoding="utf-8")
+        routes_dir = Path(routes_pkg.__file__).parent
+        for name in routes_pkg.REGISTRAR_NAMES:
+            src += (routes_dir / f"{name}.py").read_text(encoding="utf-8")
         assert '"/api/tailnet/status", handlers.api_tailnet_status' in src

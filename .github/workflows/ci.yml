@@ -186,6 +186,39 @@ jobs:
           python3 scripts/check_brand_name.py --test
           python3 scripts/check_brand_name.py
 
+  harness-parity:
+    name: Harness Parity Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check harness identity tests on the lines this change adds
+        # Kiro Crew drives one first-class harness (kiro-cli) and adapts the
+        # others. The defect class is a call site that spells "this is kiro" as
+        # the ABSENCE of another harness: correct with two backends, and then it
+        # hands the third a capability or a sandbox waiver nobody granted it.
+        # It fails toward the permissive answer, so nothing else goes red.
+        #
+        # Diff-scoped for the same reason as the brand gate above: the tree
+        # carries pre-existing negative tests in the dormant claude seam, and
+        # converting them is a separate change with its own review. Added lines
+        # are complete for regression, and the whole-tree count is still printed
+        # as a non-failing report. Invariants:
+        # docs/system-specs/modules/harness-parity.md
+        env:
+          # `base.sha` for the same reason as the brand gate: the merge ref this
+          # run checks out was computed against that exact commit.
+          HARNESS_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          HARNESS_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$HARNESS_BASE_REF" 'the harness-parity gate')" || exit 1
+          export HARNESS_BASE_REF
+          # Self-test first: it plants one probe per rule, so a regex typo that
+          # silently disables a rule fails here instead of shipping green.
+          python3 scripts/check_harness_parity.py --test
+          python3 scripts/check_harness_parity.py
+
   docs-lint:
     name: Docs Lint
     runs-on: ubuntu-latest
@@ -706,6 +739,14 @@ jobs:
     env:
       BACKEND_MIN: 80
       FRONTEND_MIN: 60
+      # The per-file floor, applied to BOTH lanes with a per-lane baseline of
+      # the files that were already below it. A project-wide average lets a
+      # well-covered large file pay for a bare small one, so it can be satisfied
+      # without touching the files that carry the risk; a per-file floor removes
+      # that subsidy. The rationale, the measured cost of this number, and the
+      # three baseline rules live in scripts/check_per_file_coverage.py's
+      # docstring -- deliberately not restated here, where it would go stale.
+      PER_FILE_MIN: 80
     # Always run so the required check emits a real verdict. Without
     # `if: always()`, a failing OR skipped dependency would SKIP this job, and
     # GitHub treats a skipped required check as SATISFIED -- silently defeating
@@ -773,6 +814,30 @@ jobs:
             exit 1
           fi
 
+      # Checked out for the per-file gate: it needs scripts/check_per_file_coverage.py
+      # and the two baselines from the tree. It sits BEFORE the artifact
+      # downloads because actions/checkout cleans the workspace by default and
+      # would otherwise delete them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The gate parses the Cobertura reports through defusedxml rather than the
+      # stdlib parser, which resolves external entities -- and on a fork PR the
+      # report is produced by contributor-controlled code. Installed here because
+      # this job otherwise needs no Python dependencies.
+      #
+      # setup-python is a PREREQUISITE, not decoration: the runner image's /usr
+      # interpreter is externally managed (PEP 668), so `uv pip install --system`
+      # against it exits 2 with "externally managed". coverage-combine provisions
+      # the same pair for the same reason.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install the per-file gate's XML parser
+        run: uv pip install --system 'defusedxml>=0.7,<1'
+
       - name: Download backend coverage
         if: needs.coverage-combine.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -818,6 +883,26 @@ jobs:
               print(f"::error::{label} coverage {rate:.2f}% below {floor:.0f}% minimum")
               sys.exit(1)
           PY
+
+      - name: Check per-file coverage, backend (floor ${{ env.PER_FILE_MIN }}%)
+        # Gated on the same condition as the project floor: on a frontend-only
+        # diff the backend suite ran as a coverage-free subset, and a subset's
+        # per-file rates are not comparable to a baseline recorded on the full
+        # suite -- enforcing them there would fail files whose tests never ran.
+        if: needs.coverage-combine.result == 'success'
+        run: |
+          python3 scripts/check_per_file_coverage.py backend-cov/coverage.xml \
+            --label Backend --floor "$PER_FILE_MIN" \
+            --baseline .github/coverage-baselines/backend.txt
+
+      - name: Check per-file coverage, frontend (floor ${{ env.PER_FILE_MIN }}%)
+        if: needs.changes.outputs.only_backend != 'true'
+        run: |
+          F=$(find frontend-cov -name 'cobertura*.xml' 2>/dev/null | head -1)
+          test -n "$F" || { echo "::error::cobertura report missing from coverage-frontend artifact"; exit 1; }
+          python3 scripts/check_per_file_coverage.py "$F" \
+            --label Frontend --floor "$PER_FILE_MIN" \
+            --baseline .github/coverage-baselines/frontend.txt
 
       - name: Coverage summary
         if: always()
@@ -1107,7 +1192,11 @@ jobs:
             # than SHARD_COUNT leaves some shards with no files, so
             # --passWithNoTests keeps an empty shard green (a legitimately empty
             # slice, not a lost suite).
-            npx vitest run --reporter=blob --passWithNoTests \
+            # blob alone prints no verdict (it only writes the artifact), so a
+            # failing shard's log would end at "exit code 1" with no FAIL line
+            # or summary; the second reporter keeps a human-readable verdict in
+            # this job's own log.
+            npx vitest run --reporter=blob --reporter=default --passWithNoTests \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT" "${TARGETS[@]}"
           else
             # --reporter=blob stores results + per-shard coverage under
@@ -1115,7 +1204,11 @@ jobs:
             # the four shards back into one report and the merged cobertura the
             # Coverage Gate reads. Coverage is emitted per shard so the merge
             # can union it -- a single shard covers only the files it ran.
-            npx vitest run --coverage --reporter=blob \
+            # blob alone prints no verdict (it only writes the artifact), so a
+            # failing shard's log would end at "exit code 1" with no FAIL line
+            # or summary; the second reporter keeps a human-readable verdict in
+            # this job's own log.
+            npx vitest run --coverage --reporter=blob --reporter=default \
               --shard=${{ matrix.shard }}/"$SHARD_COUNT"
           fi
 
@@ -1165,6 +1258,7 @@ jobs:
           merge-multiple: true
 
       - name: Merge reports and coverage
+        id: merge
         working-directory: website
         # --merge-reports stitches the per-shard blobs back into one result set
         # WITHOUT re-running tests; --coverage unions the per-shard coverage and
@@ -1173,6 +1267,23 @@ jobs:
         # already consumes. A failed shard makes this exit non-zero, surfacing
         # the failure here too.
         run: npx vitest --merge-reports --coverage
+
+      - name: Reconcile shard verdicts against blob results
+        # Runs even when the merge step failed -- that is the case it exists
+        # for. A shard (or the merge) can exit non-zero without naming a
+        # failing test anywhere: a worker killed mid-run (the worker-OOM mode
+        # documented in website/vite.config.ts) fails the job while every test
+        # in the blob reads "pass". This step decodes the downloaded blobs,
+        # prints every failing test and unhandled runner error by name, and
+        # states the contradiction explicitly when a red verdict has no failing
+        # test behind it. Diagnostic only: it always exits 0 and never changes
+        # the job's verdict.
+        if: ${{ !cancelled() }}
+        working-directory: website
+        env:
+          FRONTEND_TEST_RESULT: ${{ needs.frontend-test.result }}
+          MERGE_RESULT: ${{ steps.merge.outcome }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/frontend-blob-reconcile.mjs" .vitest-reports
 
       - name: Upload merged coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

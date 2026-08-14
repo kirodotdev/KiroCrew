@@ -21,13 +21,53 @@ import PullRequestPanel, {
   CHECK_POLL_MAX_FAILURES,
   pullRequestCheckPollDelay,
   pullRequestCiSignal,
+  pullRequestErrorDetails,
   pullRequestIsLive,
   pullRequestLifecycleState,
   pullRequestMergeBlocker,
+  shouldRetrySourceRead,
+  sourceBusyRetryDelay,
   STATUS_FOLLOWUP_MAX,
   stateLabel,
   statusPollDelay,
 } from '../components/PullRequestPanel'
+
+/** An ApiError-shaped rejection: the human message plus the raw body the client
+ *  preserves, which is where the machine-readable code lives. */
+function apiError(body: Record<string, unknown>): Error & { body: string } {
+  const raw = JSON.stringify(body)
+  return Object.assign(new Error(String(body.error || '')), { body: raw })
+}
+
+describe('source read retry policy', () => {
+  it('retries a busy gateway, bounded', () => {
+    const busy = apiError({ error: 'Too many source requests are pending.', code: 'source_busy' })
+    expect(pullRequestErrorDetails(busy).sourceBusy).toBe(true)
+    expect(shouldRetrySourceRead(0, busy)).toBe(true)
+    expect(shouldRetrySourceRead(1, busy)).toBe(true)
+    // Bounded: a permanently saturated gateway surfaces the error instead of
+    // retrying forever.
+    expect(shouldRetrySourceRead(2, busy)).toBe(false)
+  })
+
+  it('does NOT retry a provider error', () => {
+    const provider = apiError({ error: 'gh could not authenticate', code: 'provider_error' })
+    expect(pullRequestErrorDetails(provider).sourceBusy).toBe(false)
+    expect(shouldRetrySourceRead(0, provider)).toBe(false)
+  })
+
+  it('does not treat an unlabelled error as retryable', () => {
+    // Pre-fix bodies and plain-text network errors carry no code; retrying them
+    // would delay a message the user must act on.
+    expect(shouldRetrySourceRead(0, apiError({ error: 'boom' }))).toBe(false)
+    expect(shouldRetrySourceRead(0, new Error('network down'))).toBe(false)
+  })
+
+  it('backs off between attempts', () => {
+    expect(sourceBusyRetryDelay(0)).toBe(2_000)
+    expect(sourceBusyRetryDelay(1)).toBe(4_000)
+  })
+})
 
 const github: PullRequestSource = {
   provider: 'github',

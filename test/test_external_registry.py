@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -1794,6 +1795,190 @@ class TestSameRepoCredentialCarveOut:
         }
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=mock_config):
             assert _is_owner_designated_repo(entry) is False
+
+
+# ---------------------------------------------------------------------------
+# Operator-configured registry branch overrides per-app declarations (#3330)
+# ---------------------------------------------------------------------------
+
+
+class TestConfiguredBranchOverride:
+    @pytest.mark.asyncio
+    async def test_configured_branch_overrides_declared_branch(
+        self, cache_dir, monkeypatch, caplog
+    ):
+        # A same-repo entry declaring its own branch (e.g. "main", written in
+        # anticipation of an eventual merge) must NOT win over the branch the
+        # operator configured — the index was read from the configured branch,
+        # so the declared one describes a state that does not exist there yet.
+        import kiro_crew.apps.registry as reg
+
+        async def _fake_index(repo, branch):
+            return [{"name": "eager-app", "subdirectory": "apps/eager", "branch": "main"}]
+
+        monkeypatch.setattr(reg, "_fetch_external_registry_index", _fake_index)
+
+        class _Reg:
+            name = "acme"
+            repo = "https://github.com/acme/apps"
+            branch = "develop"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.registry"):
+            entries = await reg._fetch_and_cache_external_registry(_Reg())
+        assert entries[0]["branch"] == "develop"
+        # The cached copy carries the override too — install reads the cache.
+        cached = reg._read_external_registry_cache("acme", ignore_ttl=True)
+        assert cached[0]["branch"] == "develop"
+        # The divergence is logged, naming both branches and the entry.
+        divergence_logs = [
+            r for r in caplog.records if "declares branch" in r.getMessage()
+        ]
+        assert len(divergence_logs) == 1
+        msg = divergence_logs[0].getMessage()
+        assert "eager-app" in msg and "'main'" in msg and "'develop'" in msg
+
+    @pytest.mark.asyncio
+    async def test_entry_without_branch_inherits_configured_branch(
+        self, cache_dir, monkeypatch, caplog
+    ):
+        # An entry omitting a branch still inherits the configured one, and no
+        # divergence warning fires for it.
+        import kiro_crew.apps.registry as reg
+
+        async def _fake_index(repo, branch):
+            return [{"name": "plain-app", "subdirectory": "apps/plain"}]
+
+        monkeypatch.setattr(reg, "_fetch_external_registry_index", _fake_index)
+
+        class _Reg:
+            name = "acme"
+            repo = "https://github.com/acme/apps"
+            branch = "develop"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.registry"):
+            entries = await reg._fetch_and_cache_external_registry(_Reg())
+        assert entries[0]["branch"] == "develop"
+        assert not [r for r in caplog.records if "declares branch" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_matching_declared_branch_does_not_warn(
+        self, cache_dir, monkeypatch, caplog
+    ):
+        # A declaration that AGREES with the configured branch is not a
+        # divergence — the warning must fire only on a genuine mismatch.
+        import kiro_crew.apps.registry as reg
+
+        async def _fake_index(repo, branch):
+            return [{"name": "same-app", "subdirectory": "apps/same", "branch": "develop"}]
+
+        monkeypatch.setattr(reg, "_fetch_external_registry_index", _fake_index)
+
+        class _Reg:
+            name = "acme"
+            repo = "https://github.com/acme/apps"
+            branch = "develop"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.registry"):
+            entries = await reg._fetch_and_cache_external_registry(_Reg())
+        assert entries[0]["branch"] == "develop"
+        assert not [r for r in caplog.records if "declares branch" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_cross_repo_entry_keeps_declared_branch(
+        self, cache_dir, monkeypatch, caplog
+    ):
+        # A cross-repo entry's declared branch names a ref in ANOTHER
+        # repository, about which the configured registry branch carries no
+        # information. The override must not touch it (and must not warn) —
+        # forcing reg.branch there would clone a ref the app repo may not have.
+        import kiro_crew.apps.registry as reg
+
+        async def _fake_index(repo, branch):
+            return [
+                {
+                    "name": "sibling-app",
+                    "gitUrl": "https://github.com/acme/other-repo",
+                    "subdirectory": "apps/sibling",
+                    "branch": "main",
+                }
+            ]
+
+        monkeypatch.setattr(reg, "_fetch_external_registry_index", _fake_index)
+
+        class _Reg:
+            name = "acme"
+            repo = "https://github.com/acme/apps"
+            branch = "develop"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.registry"):
+            entries = await reg._fetch_and_cache_external_registry(_Reg())
+        assert entries[0]["branch"] == "main"
+        assert not [r for r in caplog.records if "declares branch" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_cross_repo_entry_without_branch_inherits(self, cache_dir, monkeypatch):
+        # A cross-repo entry with no usable declared branch (absent or an
+        # explicit JSON null) still inherits the configured branch, so None
+        # can never flow to the clone coordinates.
+        import kiro_crew.apps.registry as reg
+
+        async def _fake_index(repo, branch):
+            return [
+                {
+                    "name": "bare-app",
+                    "gitUrl": "https://github.com/acme/other-repo",
+                    "subdirectory": "apps/bare",
+                    "branch": None,
+                }
+            ]
+
+        monkeypatch.setattr(reg, "_fetch_external_registry_index", _fake_index)
+
+        class _Reg:
+            name = "acme"
+            repo = "https://github.com/acme/apps"
+            branch = "develop"
+
+        entries = await reg._fetch_and_cache_external_registry(_Reg())
+        assert entries[0]["branch"] == "develop"
+
+    def test_stale_cache_branch_repaired_on_direct_lookup(self, cache_dir, monkeypatch):
+        # A cache written before this policy existed (or before the operator
+        # changed the registry's configured branch) still carries the old
+        # per-app branch. The direct install lookup reads the cache without a
+        # listing refresh (ignore_ttl), so the repair must happen at read time.
+        from types import SimpleNamespace
+
+        import kiro_crew.apps.registry as reg
+
+        reg._write_external_registry_cache(
+            "acme",
+            [
+                {
+                    "name": "legacy-app",
+                    "gitUrl": "https://github.com/acme/apps",
+                    "repo": "https://github.com/acme/apps",
+                    "subdirectory": "apps/legacy",
+                    "branch": "main",
+                }
+            ],
+        )
+        mock_config = MagicMock()
+        mock_config.registries = [
+            SimpleNamespace(name="acme", repo="https://github.com/acme/apps", branch="develop")
+        ]
+        monkeypatch.setattr(
+            "kiro_crew.apps.registry._load_registry_file",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "kiro_crew.config.loader.KiroCrewConfig.load",
+            lambda: mock_config,
+        )
+
+        result = get_registry_app("legacy-app")
+        assert result is not None
+        assert result["branch"] == "develop"
 
 
 # ---------------------------------------------------------------------------

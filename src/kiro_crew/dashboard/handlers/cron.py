@@ -19,7 +19,7 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -741,7 +741,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                     source="dashboard", resources="unknown_session",
                 )
                 return web.json_response({"error": "unknown session"}, status=400)
-            if persisted_mode is None or persisted_mode in INCOGNITO_MEMORY_MODES:
+            if persisted_mode is None or is_incognito_transcript(persisted_mode):
                 # Archiving a tab drops the slot AND discards its
                 # ``_restricted_keys`` entry while leaving the transcript —
                 # and its ``memory_mode`` marker — on disk, so the two

@@ -10,16 +10,13 @@
   },
   "app": {
     "a_newer_version_is_available_no_changelog_entry": "Hay una versión más reciente disponible. No se añadió ninguna entrada al registro de cambios para esta versión.",
-    "across_chat_agents_mcp_and_subagents": "— en el chat, los agentes, MCP y los subagentes.",
     "apps": "Apps",
     "auto_update_on_restart": "Actualizar automáticamente al reiniciar",
     "bonus_credits": "Créditos de bonificación",
-    "breakdown": "Desglose",
     "builder_id": "Builder ID",
     "cancel_update": "Cancelar actualización",
     "changelog": "Registro de cambios",
     "check_logs_for_details": "Consulta los registros para más detalles.",
-    "checking_usage_running": "Comprobando el uso — en ejecución",
     "click_to_collapse_readouts": "clic para contraer los indicadores",
     "click_to_expand_readouts": "clic para expandir los indicadores",
     "click_to_hide": "Clic para ocultar",
@@ -28,13 +25,11 @@
     "cpu": "CPU",
     "cpu_unavailable": "CPU: no disponible",
     "credits": "créditos",
-    "credits_total": "créditos en total",
     "developer": "Desarrollador",
     "discord_community": "Comunidad de Discord",
     "disk_unavailable": "Disco: no disponible",
     "dismiss": "Descartar",
     "dsk": "DSK",
-    "est_overage_cost": "Coste estimado por exceso",
     "expand_sidebar": "Expandir la barra lateral",
     "explore": "Explorar",
     "explore_apps": "Explorar apps",
@@ -47,12 +42,8 @@
     "iam_identity_center": "IAM Identity Center",
     "installing_packages": "Instalando paquetes",
     "k_search_for_anything": "⌘K — Busca cualquier cosa…",
-    "kiro_cli_usage": "kiro-cli /usage",
     "kiro_credit_usage_checking": "Uso de créditos de Kiro — comprobando…",
     "kiro_credit_usage_checking_2": "Uso de créditos de Kiro — comprobando",
-    "kiro_credits": "Créditos de Kiro",
-    "kiro_credits_title": "Créditos de Kiro: {{used}} / {{limit}} ({{pct}}) — haz clic para ver los detalles",
-    "kiro_credits_title_with_bonus": "Créditos de Kiro: {{used}} / {{limit}} usados — plan {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — haz clic para ver los detalles",
     "kiro_discord_community": "Comunidad de Discord de Kiro",
     "main_navigation": "Navegación principal",
     "manage_account": "Gestionar cuenta",
@@ -65,7 +56,6 @@
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
-    "monthly_kiro_credit_usage_from": "Uso mensual de créditos de Kiro desde",
     "notifications": "Notificaciones",
     "notifications_failed_to_load": "No se pudieron cargar las notificaciones",
     "open_inbox": "Abrir la bandeja de entrada",
@@ -1366,9 +1356,14 @@
         "copy_path": "Copiar ruta",
         "copy_path_2": "Copiar ruta: {{path}}",
         "download": "Descargar",
+        "more_options": "Más opciones",
+        "open_in_file_explorer": "Abrir en el Explorador de archivos",
+        "open_in_finder": "Abrir en Finder",
+        "path_copied_to_clipboard_no_desktop_available": "Ruta copiada al portapapeles (no hay escritorio disponible)",
         "reload": "Recargar",
         "select_a_file_to_view": "Selecciona un archivo para verlo",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Archivo sensible — evita compartir tu pantalla mientras ves credenciales",
+        "show_in_file_manager": "Mostrar en el gestor de archivos",
         "tip_ctrl_cmd_f_to_search": "Consejo: Ctrl/Cmd+F para buscar",
         "truncated": "· truncado"
       },
@@ -3740,13 +3735,13 @@
     },
     "personalShopper": {
       "manifest": {
-        "description": "Un asesor personal que recuerda tus preferencias, navega por tiendas reales con tu sesión y ayuda a resolver problemas que puede que no terminen en una compra. Nunca compra nada: eso lo haces tú.",
+        "description": "Un asesor personal que investiga tiendas reales y ayuda a resolver problemas que puede que no terminen en una compra. La pestaña Preferencias es tu propia lista de referencia: pega en el chat lo que importe. Nunca compra nada: eso lo haces tú.",
         "display_name": "Personal Shopper",
         "highlight_1": "Diagnostica el problema antes de recomendar nada: a veces la respuesta no es una compra",
-        "highlight_2": "Recuerda tus tallas, marcas, estilo, presupuesto y restricciones en todas las sesiones",
-        "highlight_3": "Navega por las tiendas que configures con tu propia sesión, con precios y stock reales",
-        "highlight_4": "Ves la investigación en el panel del navegador, y nunca toca el carrito ni el pago",
-        "highlight_5": "Organiza lo que sabe de ti en tus propios grupos, sin afectar cómo lo recuerda",
+        "highlight_2": "Pega en el chat las preferencias que importen: el asesor lee tus mensajes, no la pestaña Preferencias",
+        "highlight_3": "Investiga solo las tiendas que le nombres, y avisa de que los precios vienen de páginas públicas, no de tu cuenta",
+        "highlight_4": "No tiene forma de llegar al carrito ni al pago",
+        "highlight_5": "Organiza tus preferencias guardadas en grupos en la pestaña Preferencias",
         "page_label": "Personal Shopper"
       },
       "historyTab": {
@@ -3795,26 +3790,24 @@
         "delete_named_group": "Eliminar el grupo «{{name}}»",
         "edit_named_preference": "Editar la preferencia «{{text}}»",
         "delete_named_preference": "Eliminar la preferencia «{{text}}»",
-        "add_your_first_preference": "Añade una arriba."
+        "add_your_first_preference": "Añade una arriba.",
+        "the_advisor_cannot_read_this_list_paste_what_ma": "El asesor no puede leer esta lista. Pega en el chat lo que importe cuando preguntes."
       },
       "sitesTab": {
         "add_shopping_site": "Añadir tienda",
         "add_site": "Añadir sitio",
-        "add_your_shopping_sites_so_the_advisor_can_brows": "Añade tus tiendas para que el asesor pueda consultarlas por ti.",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "Añade las tiendas que quieras tener a mano.",
         "cancel": "Cancelar",
-        "how_login_works": "Cómo funciona el inicio de sesión",
+        "how_login_works": "Cómo funciona la investigación",
         "loading_sites": "Cargando los sitios…",
         "no_sites_configured": "No hay sitios configurados",
         "privacy": "Privacidad",
         "remove_site": "Quitar sitio",
-        "shopping_sources_the_advisor_can_browse_login_en": "Fuentes de compra que el asesor puede consultar. Al iniciar sesión se activan los precios de socio y los resultados personalizados.",
+        "shopping_sources_the_advisor_can_browse_login_en": "El asesor no puede leer esta lista. Nombra una tienda en el chat y investigará esa: esta es tu propia lista de referencia.",
         "site_name_e_g_example_store": "Nombre del sitio (p. ej. Example Store)",
-        "the_advisor_only_visits_sites_you_ve_enabled_her": "El asesor solo visita los sitios que has activado aquí. Los sitios desactivados nunca se consultan, aunque puedan tener resultados relevantes.",
-        "the_advisor_opens_sites_in_the_browser_panel_dur": "El asesor abre los sitios en el panel Navegador durante una conversación de compra. Inicias sesión una vez cuando te lo pide — la cookie de sesión se queda en local para tus próximas búsquedas. La app nunca guarda tus credenciales.",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "Nada de esto sale de tu equipo.",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "El asesor solo lee páginas públicas de tienda. No puede iniciar sesión ni usar tu sesión, así que los precios y el stock vienen de la página pública.",
         "url_e_g_store_example_com": "URL (p. ej. store.example.com)",
-        "logged_in": "Sesión iniciada",
-        "not_logged_in": "Sin sesión iniciada",
-        "toggle_site": "Activar {{name}}",
         "remove_named_site": "Quitar {{name}}",
         "save_failed": "No se pudo guardar. Código de error: {{code}}"
       }
@@ -4018,13 +4011,17 @@
         },
         "settingsModal": {
           "cancel": "Cancelar",
+          "default_keeps_the_model_your_chat_agent_resolves": "Predeterminado mantiene el modelo que tu agente de chat ya resuelve. Una selección se aplica a las sesiones de spec que comiencen después del cambio; una spec en curso conserva su modelo actual.",
           "empty_keep_specs_with_each_project_recommended": "Vacío = mantener las specs junto a cada proyecto (recomendado)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Deja esto vacío para mantener las specs dentro de cada proyecto (una carpeta .kiro/specs junto a tu código: el estándar de Kiro). O indica una ruta de carpeta para reunir todas las specs en un solo lugar.",
+          "model_default_inherit": "Predeterminado (heredar)",
           "save": "Guardar",
           "saving": "Guardando…",
           "settings": "Ajustes",
+          "spec_generation_model": "Modelo para la generación de specs",
           "spec_storage_folder_path": "Ruta de la carpeta de almacenamiento de specs",
-          "where_should_specs_be_saved": "¿Dónde se deben guardar las specs?"
+          "where_should_specs_be_saved": "¿Dónde se deben guardar las specs?",
+          "which_model_should_run_spec_generation": "¿Qué modelo debe ejecutar la generación de specs?"
         },
         "shimmer": {
           "loading_specs": "Cargando specs…",
@@ -4039,6 +4036,8 @@
           "close_esc": "Cerrar (Esc)",
           "close_review_view": "Cerrar la vista de revisión",
           "document_file_name": "{{name}}.md",
+          "drafting_design": "Redactando el diseño…",
+          "drafting_tasks": "Redactando las tareas…",
           "drag_or_use_to_resize": "Arrastra o usa ← → para redimensionar",
           "expand_document_for_review": "Ampliar el documento para revisarlo",
           "expand_for_review_esc_to_close": "Ampliar para revisar (Esc para cerrar)",
@@ -4058,6 +4057,7 @@
           "tab_requirements": "Requisitos",
           "tab_tasks": "Tareas",
           "tells_the_agent_this_phase_is_approved_and_to_mo": "Indica al agente que esta fase está aprobada y que puede continuar, igual que si lo escribieras en el chat",
+          "the_agent_is_writing_the_next_document": "Aprobado: el agente está escribiendo el siguiente documento",
           "working": "trabajando…"
         },
         "specRail": {
@@ -4077,9 +4077,15 @@
         },
         "specStatePanel": {
           "answer_with": "¿Cómo se debe responder a «{{title}}»?",
+          "answered": "respondida",
+          "blocking": "BLOQUEO",
+          "context": "CONTEXTO",
           "decision_title": "Decisión — {{title}}",
+          "decisions": "DECISIONES",
           "options_for": "Opciones para {{title}}",
+          "pending": "pendiente",
           "recommended": "RECOMENDADO",
+          "sending": "enviando…",
           "template": "Plantilla",
           "tool_calls": "Llamadas a herramientas",
           "turns": "Turnos",
@@ -4251,6 +4257,22 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "kiroAccountModal": {
+      "account_details_unavailable": "Los detalles de la cuenta no están disponibles",
+      "checking_account": "Comprobando la cuenta…",
+      "checking_credit_usage": "Comprobando el uso de créditos",
+      "credit_usage_unavailable": "El uso de créditos no está disponible",
+      "days_until_expiration": "Días hasta el vencimiento: {{count}}",
+      "estimated_overage_cost": "Coste adicional estimado",
+      "hide_email": "Ocultar correo electrónico",
+      "kiro_account": "Cuenta de Kiro",
+      "kiro_credit_usage": "Uso de créditos de Kiro",
+      "overage_rate_value": "{{rate}} / crédito",
+      "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
+      "show_email": "Mostrar correo electrónico",
+      "usage_scope": "Uso mensual de créditos de Kiro según kiro-cli /usage en chats, agentes, MCP y subagentes.",
+      "used_credits": "Usados: {{used}} / {{total}}"
+    },
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
       "could_not_change_the_default_agent": "No se pudo cambiar el agente predeterminado",
@@ -4418,6 +4440,7 @@
         "view_details_for": "Ver detalles de {{name}}"
       },
       "featuredSpotlight": {
+        "collection": "COLECCIÓN",
         "enable": "Activar",
         "featured": "DESTACADO",
         "get": "Obtener",
@@ -4604,14 +4627,6 @@
       "move_panel_to_bottom": "Move panel to bottom",
       "more_actions": "More actions"
     },
-    "browserAuthPrompt": {
-      "auth_gate": "Barrera de autenticación: {{gateType}}",
-      "browser_needs_authentication": "El navegador necesita autenticación",
-      "dismiss_auth_prompt": "Descartar la solicitud de autenticación",
-      "retry": "Reintentar",
-      "retrying": "Reintentando…",
-      "unknown": "desconocido"
-    },
     "chatInput": {
       "add_files_options": "Añadir archivos y opciones",
       "agent": "Agente: {{name}}",
@@ -4732,6 +4747,9 @@
     "commandPalette": {
       "clear_filter": "Borrar el filtro",
       "close": "Cerrar",
+      "min_query_chars": "Escribe al menos {{min}} caracteres para buscar {{scope}}",
+      "no_matches": "Sin coincidencias",
+      "no_recent_sessions": "No hay sesiones recientes",
       "no_scope": "No hay {{scope}}",
       "pinned": "Fijados",
       "providers": {
@@ -4770,6 +4788,7 @@
         },
         "recentsProvider": {
           "approve": "Aprobar",
+          "answer": "Responder",
           "current": "Actual",
           "new_session": "Nueva sesión…",
           "older_sessions": "Sesiones anteriores",
@@ -4918,6 +4937,11 @@
     "detailPanel": {
       "close_panel": "Cerrar el panel",
       "resize_panel": "Redimensionar el panel"
+    },
+    "diagramLightbox": {
+      "close": "Cerrar",
+      "diagram_viewer": "Visor de diagramas",
+      "enlarge_diagram": "Ampliar diagrama"
     },
     "dialog": {
       "close": "Cerrar"
@@ -5123,13 +5147,7 @@
       "worktree_disabled_no_project_directory": "«Añadir a esta sesión» precarga el editor de mensajes — no se envía nada hasta que pulsas enviar. Los worktrees no están disponibles aquí: esta sesión no tiene directorio de proyecto (elige uno con el chip Proyecto del editor)."
     },
     "inboundLinkChip": {
-      "confirm_release": "¿Desvincular esta sesión de {{label}}?\n\nLos mensajes enviados allí dejarán de llegar aquí y las respuestas dejarán de entregarse allí. Puedes volver a vincularla con !sessions desde ese canal.",
-      "driven_from": "Controlada desde {{label}}",
-      "release": "Desvincular",
-      "release_aria": "Desvincular esta sesión de {{label}}",
-      "release_failed": "No se pudo desvincular la sesión: {{reason}}",
-      "released": "Desvinculada de {{label}}",
-      "tooltip": "Esta sesión tiene conexión bidireccional con {{label}}: las respuestas se entregan allí y los mensajes enviados allí llegan aquí."
+      "driven_from": "Controlada desde {{label}}"
     },
     "infoTip": {
       "more_information": "Más información"
@@ -5157,7 +5175,11 @@
       "tunnel_connected_token_valid_auto_refresh": "Túnel conectado. Token válido {{valid}}; renovación automática {{refresh}}.",
       "tunnel_connecting": "Conectando el túnel…",
       "tunnel_error": "error del túnel",
-      "tunnel_state": "Túnel {{state}}."
+      "tunnel_state": "Túnel {{state}}.",
+      "n_unread": "{{n}} sin leer",
+      "switch_crew_active": "Cambiar de crew, actualmente {{name}}",
+      "switch_crew_active_unread": "Cambiar de crew, actualmente {{name}}, {{n}} sin leer en otros",
+      "stopped": "detenido"
     },
     "instancesViewport": {
       "connecting": "Conectando…",
@@ -5350,23 +5372,13 @@
       "copy_url_of": "Copiar URL de {{name}}"
     },
     "linkedSurfacesSection": {
-      "confirm_release": "¿Desvincular esta sesión de {{label}}?\n\nLos mensajes enviados allí dejarán de llegar aquí y las respuestas dejarán de entregarse allí. Puedes volver a vincularla con !sessions desde ese canal.",
-      "confirm_stop_mirroring": "¿Dejar de copiar esta sesión en {{label}}?\n\nLas respuestas dejarán de entregarse allí. Puedes volver a vincularla más tarde desde el selector de canales configurados.",
-      "connected": "Conectado: {{label}}",
-      "link_failed": "No se pudo vincular el canal: {{reason}}",
-      "mirror": "Copia",
-      "mirror_stopped": "Se dejó de copiar en {{label}}",
-      "offline": "Sin conexión",
-      "origin": "Origen",
-      "post_reminder": "Publicar recordatorio en {{label}}",
-      "release": "Desvincular de {{label}}",
-      "released": "Se desvinculó de {{label}}",
-      "reminder_failed": "No se pudo publicar el recordatorio: {{reason}}",
-      "reminder_sent": "Recordatorio publicado en {{label}}",
-      "stop_failed": "No se pudo dejar de copiar: {{reason}}",
-      "stop_mirroring": "Dejar de copiar en {{label}}",
-      "two_way": "Bidireccional",
-      "unavailable": "Este destino no está disponible."
+      "connect_failed": "No se pudo conectar con {{label}}: {{reason}}",
+      "connect_to": "Conectar con {{label}}",
+      "disconnect_failed": "No se pudo desconectar de {{label}}: {{reason}}",
+      "disconnect_from": "Desconectar de {{label}}",
+      "held_elsewhere": "{{label}} está en uso por otra sesión.",
+      "unavailable": "Este destino no está disponible.",
+      "unknown_error": "error desconocido"
     },
     "logEntry": {
       "cancelled": "Cancelado",
@@ -5508,6 +5520,7 @@
       "edit_json": "Editar JSON — {{name}}",
       "enable_immediately": "Activar de inmediato",
       "env": "env",
+      "headers": "headers",
       "expected_a_json_object": "Se esperaba un objeto JSON",
       "failed_to_load_spec": "No se pudo cargar la especificación",
       "loading_current_spec": "Cargando la especificación actual…",
@@ -5525,6 +5538,7 @@
       "server_name_2": "Nombre del servidor",
       "server_spec_json": "JSON de la especificación del servidor",
       "servers_json": "JSON de servidores",
+      "stored_header_values_are_hidden_and_read_only": "Los valores de header almacenados están ocultos y son de solo lectura aquí. Para cambiarlos, elimina y vuelve a añadir el servidor: empieza deshabilitado y tus restricciones de herramientas no se conservan, así que vuelve a aplicarlas después.",
       "stdio_or": "(stdio) o",
       "that_looks_like_a_single_server_spec_give_it_a_n": "Eso parece la especificación de un solo servidor: ponle un nombre:",
       "url": "url",
@@ -6028,6 +6042,25 @@
       "split_right_d": "Dividir a la derecha (⌘D)",
       "terminal_pane_coming_in_phase_2": "Panel de terminal: llegará en la fase 2"
     },
+    "sessionPulseSurveyCard": {
+      "dismiss": "Descartar encuesta",
+      "email_disclosure": "Es posible que nos comuniquemos contigo sobre tus comentarios. Tu calificación y cualquier comentario se envían al equipo de Kiro Crew.",
+      "email_placeholder": "tu@ejemplo.com (opcional)",
+      "email_prompt": "Comparte tu correo electrónico para unirte a nuestro panel de investigación",
+      "feedback_question": "¿Tienes comentarios adicionales sobre esta experiencia?",
+      "optional": "Opcional",
+      "rating_excellent": "Excelente",
+      "rating_fair": "Aceptable",
+      "rating_good": "Bueno",
+      "rating_poor": "Malo",
+      "rating_question": "¿Cómo calificarías tu experiencia con Kiro Crew hoy?",
+      "rating_very_poor": "Muy malo",
+      "select_rating_hint": "Selecciona una calificación para enviar",
+      "submit": "Enviar",
+      "submit_error": "No se pudo enviar. Inténtalo de nuevo.",
+      "submitting": "Enviando...",
+      "thanks": "¡Gracias por tus comentarios!"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} msjs",
       "remove_reference": "Quitar referencia",
@@ -6041,13 +6074,16 @@
     "shortcutsModal": {
       "always_works": "siempre funciona",
       "close": "Cerrar",
+      "desktop_app": "Aplicación de escritorio",
       "enable_shortcuts": "Activar los atajos",
+      "global_hotkey_hint": "Funciona en todo el sistema, incluso con la aplicación en segundo plano. Para cambiarlo o desactivarlo, edita globalHotkey en el archivo de configuración de la aplicación de escritorio (Connection > Open Config File); el cambio surte efecto al reiniciar la aplicación.",
       "k": "K",
       "keyboard_shortcuts": "Atajos de teclado",
       "keyboard_shortcuts_2": "Atajos de teclado",
       "or": "o",
       "search": "Buscar",
       "search_everywhere": "Buscar en todo",
+      "show_or_focus_the_kiro_crew_window": "Mostrar o enfocar la ventana de Kiro Crew",
       "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Usar Ctrl (no Option) para los chats 1 a 9"
     },
@@ -6120,11 +6156,6 @@
     "skillPickerMenu": {
       "loading_skills": "Cargando skills…",
       "no_matching_skills": "No hay skills coincidentes"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Publicar recordatorio en Slack",
-      "send_to_slack": "Enviar a Slack",
-      "unlink_from_slack": "Desvincular de Slack"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambiar o gestionar el agente activo",
@@ -6393,7 +6424,12 @@
     "webPreviewPanel": {
       "back": "Atrás",
       "browser_live": "Navegador: en directo",
+      "browser_view": "Vista del navegador",
+      "browser_view_is_not_running": "La vista del navegador no está en ejecución",
+      "browser_view_unavailable": "Vista del navegador no disponible",
       "can_t_embed_an_http_page_here": "Aquí no se puede incrustar una página http://",
+      "can_t_preview_this_dashboard_here": "Aquí no se puede ver la vista previa de este panel",
+      "couldn_t_start_the_browser_view": "No se pudo iniciar la vista del navegador.",
       "dismiss": "Descartar",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Introduce arriba la URL de tu servidor de desarrollo (p. ej. un servidor Vite o estático en localhost) para\n              ver la vista previa del sitio en el que trabajas: se recarga en vivo mientras editas.",
       "exit_expanded_preview": "Contraer",
@@ -6403,6 +6439,7 @@
       "http": "http://",
       "live_browser_session": "Sesión de navegador en directo",
       "load_preview": "Cargar la vista previa",
+      "loading_the_browser_view": "Cargando la vista del navegador…",
       "localhost_5173": "localhost:5173",
       "open_in_browser": "Abrir en el navegador",
       "page_mixed_content": "(contenido mixto).",
@@ -6415,16 +6452,16 @@
       "reload_preview": "Recargar la vista previa",
       "responsive_desktop": "Adaptable (escritorio)",
       "screenshot_an_area_into_the_chat": "Capturar un área en el chat",
+      "start_browser_view": "Iniciar la vista del navegador",
+      "start_it_to_watch_and_drive_the_agent_s_browser": "Iníciala para ver y controlar la sesión de navegador del agente en este panel.",
       "stopped_responding_it_ll_reconnect_automatically": "dejó de responder.\n              Se volverá a conectar automáticamente cuando esté disponible, o recarga ahora.",
       "the_agent_started_a_local_preview_load_it_to_vie": "El agente inició una vista previa local. Cárgala para ver el sitio en este panel.",
+      "the_browser_view_isn_t_available_on_this_gateway": "La vista del navegador no está disponible en esta pasarela.",
       "the_server_at": "El servidor en",
       "this_dashboard_is_served_over_https_so_the_brows": "Este panel se sirve por HTTPS, por lo que el navegador bloquea incrustar una página",
-      "updated": "actualizado",
-      "view_only_clicks_here_don_t_reach_the_page": "Solo visualización: los clics aquí no llegan a la página",
-      "waiting_for_the_browser_to_take_a_screenshot": "Esperando a que el navegador haga una captura de pantalla…",
+      "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL es el propio servidor del panel, que no permite ser incrustado. Introduce en su lugar la URL de un servidor de desarrollo.",
       "web_preview": "Vista previa web",
-      "can_t_preview_this_dashboard_here": "Aquí no se puede ver la vista previa de este panel",
-      "this_url_is_the_dashboard_s_own_server_which_ref": "Esta URL es el propio servidor del panel, que no permite ser incrustado. Introduce en su lugar la URL de un servidor de desarrollo."
+      "more_actions": "Más acciones"
     },
     "welcomeView": {
       "agent_only_no_kirocrew_context_or_mcp": "Solo agente — sin contexto de Kiro Crew ni MCP",
@@ -6507,6 +6544,18 @@
       "verdict_tap_noop": "Ese fue un toque rápido: en el modo «{{mode}}» no pasaría nada. Mantén la tecla más tiempo.",
       "verdict_toggle": "Reconocida: en un chat real esta pulsación empezaría a grabar y la siguiente lo pararía.",
       "verdict_wrong_key": "Esa era {{got}}, no la {{want}} que elegiste arriba. Si este teclado no la tiene, elige otra en «{{field}}»."
+    },
+    "gitPanel": {
+      "changes": "Cambios",
+      "clean": "limpio",
+      "commits": "Commits",
+      "empty_state": "No hay cambios ni commits que mostrar.",
+      "just_now": "ahora mismo",
+      "loading": "cargando...",
+      "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
+      "refresh": "Actualizar",
+      "title": "Git",
+      "uncommitted": "{{count}} sin confirmar"
     }
   },
   "hooks": {
@@ -6565,7 +6614,9 @@
       "logs": "Registros",
       "side": "Lateral",
       "subagents": "Subagentes",
-      "workflows": "Flujos de trabajo"
+      "summary": "Resumen",
+      "workflows": "Flujos de trabajo",
+      "git": "Git"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos los slots están ocupados",
@@ -6646,6 +6697,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Cuenta",
+      "account_not_reported": "No informado",
+      "account_not_reported_help": "Se muestra cuando la identidad con la que has iniciado sesión puede vincularse a la cuenta a la que se facturan estos créditos. Ese vínculo no siempre está disponible, por lo que esto puede seguir sin informarse aunque se muestren los créditos.",
       "agent_templates": "Plantillas de agente",
       "auto_approved": "Aprobado automáticamente",
       "awaiting_first_prompt": "esperando el primer prompt",
@@ -6662,6 +6716,7 @@
       "est_cost": "Coste est.:",
       "failed": "Fallido",
       "filter_models": "Filtrar modelos",
+      "harness": "Harness",
       "healthy": "Correcto",
       "high": "Alto",
       "idle": "Inactivo",
@@ -6914,7 +6969,8 @@
       "update_one": "{{count}} actualización",
       "update_other": "{{count}} actualizaciones",
       "updating_progress": "Actualizando {{done}}/{{total}}…",
-      "v": "v"
+      "v": "v",
+      "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo abajo para habilitarlo."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mes",
@@ -7478,6 +7534,7 @@
         "steered": "Redirigido",
         "switch_to_raw_markdown_view": "Cambiar a la vista de Markdown sin formato",
         "switch_to_rendered_view": "Cambiar a la vista renderizada",
+        "turn_model": "modelo: {{model}}",
         "turn_took": "El turno tardó {{elapsed}}",
         "turn_took_cost": "El turno tardó {{elapsed}} ({{cost}} de coste de API)",
         "turn_took_credits": "El turno tardó {{elapsed}} y consumió {{credits}} créditos",
@@ -7611,6 +7668,7 @@
         "ask_a_side_question_2": "Haz una pregunta paralela…",
         "ask_a_side_question_main_agent_keeps_working": "Haz una pregunta paralela — el agente principal sigue trabajando",
         "context_from": "Contexto de",
+        "question_too_long": "Pregunta demasiado larga — redúcela a menos de unos {{max}} caracteres (la tuya: {{current}})",
         "queue_cancel_failed": "No se pudo cancelar esa pregunta en cola",
         "queue_edit_failed": "No se pudo actualizar esa pregunta en cola",
         "refresh_context": "Actualizar el contexto",
@@ -7624,10 +7682,10 @@
         "turn_other": "{{count}} turnos"
       },
       "sidePanel": {
-        "dock_bottom": "Anclar el panel debajo del chat",
-        "dock_right": "Anclar el panel a la derecha",
         "close_panel": "Cerrar el panel",
         "close_tab": "Cerrar la pestaña",
+        "dock_bottom": "Anclar el panel debajo del chat",
+        "dock_right": "Anclar el panel a la derecha",
         "hide_line_numbers": "Ocultar los números de línea",
         "menu_artifacts": "Artefactos",
         "menu_artifacts_desc": "Documentos y favoritos de la sesión",
@@ -7647,6 +7705,8 @@
         "menu_side_desc": "Chat paralelo, contexto compartido",
         "menu_subagents": "Subagentes",
         "menu_subagents_desc": "Actividad y transcripciones del agente en vivo",
+        "menu_summary": "Resumen",
+        "menu_summary_desc": "De qué trata esta sesión y qué requiere tu atención",
         "menu_workflows": "Flujos de trabajo",
         "menu_workflows_desc": "Ejecuciones, fases y pasos reiniciables",
         "move_to_bottom_panel": "Mover al panel inferior",
@@ -7659,7 +7719,9 @@
         "switch_to_split_view": "Cambiar a la vista dividida",
         "switch_to_unified_view": "Cambiar a la vista unificada",
         "this_app_render_is_no_longer_available": "Esta representación de la app ya no está disponible. Ejecuta la herramienta de nuevo para verla.",
-        "turn_diff": "Diff del turno"
+        "turn_diff": "Diff del turno",
+        "menu_git": "Git",
+        "menu_git_desc": "Rama, cambios y commits recientes"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "No se pudo detener, sesión restablecida",
@@ -7794,6 +7856,40 @@
         "unpin": "Desfijar",
         "open_pinned_messages": "Abrir mensajes fijados",
         "jump_to_message": "Ir al mensaje"
+      },
+      "sessionSummary": {
+        "empty_body": "El resumen se escribe cuando termina un turno. Envía un mensaje para obtener uno de esta sesión.",
+        "empty_title": "Aún no hay resumen",
+        "failed": "Inténtalo de nuevo o recarga la página si sigue fallando.",
+        "failed_title": "No se pudo cargar el resumen",
+        "from_intent": "Parte de {{intent}}",
+        "loading": "Cargando el resumen…",
+        "most_recent_first": "Lo trabajado más recientemente primero",
+        "not_generated": "Aún sin generar",
+        "nothing_outstanding": "Nada pendiente.",
+        "off_body": "Al activarlos se resumen los turnos nuevos; los anteriores no se rellenan.",
+        "off_title": "Los resúmenes de sesión están desactivados",
+        "open_items_heading": "Elementos abiertos",
+        "open_items_many": "{{count}} elementos abiertos",
+        "open_items_more": "+{{n}} más",
+        "open_items_one": "{{count}} elemento abierto",
+        "open_items_other": "{{count}} elementos abiertos",
+        "pivoted_from_turn": "Surgió de tu pregunta en el turno {{turn}}",
+        "project_notes": "Cómo funciona este proyecto",
+        "reload": "Comprobar de nuevo",
+        "retry": "Intentar de nuevo",
+        "returned_to": "Reanudado ×{{times}}",
+        "state_active": "Activo",
+        "state_done": "Hecho",
+        "state_dropped": "Abandonado",
+        "state_needs_you": "Requiere atención",
+        "suggested_next": "Siguientes pasos sugeridos",
+        "title": "Resumen",
+        "turns": "turnos {{ranges}}",
+        "updated": "Actualizado",
+        "updated_behind": "Actualizado {{when}} — por detrás de la conversación",
+        "where_it_stands": "Cómo va",
+        "you_asked_for": "Lo que pediste"
       }
     },
     "chatPage": {
@@ -7914,6 +8010,7 @@
       "collapse_hidden_folders": "Contraer las carpetas ocultas",
       "column_filter": "Filtro de columna",
       "column_name_optional": "Nombre de la columna (opcional)",
+      "connected_to": "Conectado a {{label}}",
       "create": "Crear…",
       "creating": "Creando…",
       "custom": "Personalizado",
@@ -7978,7 +8075,6 @@
       "match_mode": "Modo de coincidencia",
       "merged": "Fusionado",
       "min": "min",
-      "mirroring_to": "Copiando en {{label}}",
       "model_list": "Lista de modelos",
       "more": "Más",
       "more_create_options": "Más opciones de creación",
@@ -7991,6 +8087,7 @@
       "more_pull_request_or_issue_in_this_session_other": "{{count}} pull requests o incidencias más en esta sesión",
       "move_folder_to": "Mover la carpeta a",
       "needs_approval": "Necesita aprobación",
+      "needs_your_answer": "Necesita tu respuesta",
       "new": "Nuevo",
       "new_autopilot_chat": "Nuevo chat con piloto automático",
       "new_chat": "Nuevo chat",
@@ -8045,6 +8142,8 @@
       "sort_name_desc": "Z → A",
       "sort_newest": "Más recientes",
       "sort_oldest": "Más antiguas",
+      "started_in_channel": "Esta conversación comenzó en {{channel}}.",
+      "started_in_direct_message": "Esta conversación comenzó en un mensaje directo.",
       "streaming": "Transmitiendo",
       "switch_all_sessions": "Cambiar todas las sesiones",
       "switch_all_to_model": "Cambiar todas al modelo…",
@@ -8057,8 +8156,6 @@
       "temporary_no_memory_reads_or_writes": "Temporal — sin lecturas ni escrituras en la memoria",
       "thinking": "Pensando…",
       "today": "Hoy",
-      "two_way_with_channel": "Esta sesión tiene conexión bidireccional con {{channel}}: las respuestas se entregan allí y los mensajes enviados allí llegan aquí.",
-      "two_way_with_direct_message": "Esta sesión tiene conexión bidireccional con un mensaje directo: las respuestas se entregan allí y los mensajes enviados allí llegan aquí.",
       "unfiled": "Sin clasificar",
       "untagged": "+ sin etiquetas",
       "untagged_2": "Sin etiquetar",
@@ -8352,7 +8449,15 @@
       "worktree": "Worktree",
       "worktrees": "Worktrees",
       "worktrees_count": "Worktrees ({{count}})",
-      "worktrees_created_under_a_previous_repository_na": "Worktrees creados con un nombre de repositorio anterior. Ocultos por defecto; aun así los cubre Purgar fusionados."
+      "worktrees_created_under_a_previous_repository_na": "Worktrees creados con un nombre de repositorio anterior. Ocultos por defecto; aun así los cubre Purgar fusionados.",
+      "cancel_staged_cutover": "Cancelar el cambio preparado",
+      "keeps_name_the_live_target_and_discards_the_stag": "Mantiene {{name}} como destino activo y descarta el cambio preparado hacia {{staged}}. No se reinicia nada: el gateway sigue ejecutando el código actual.",
+      "keeps_this_checkout_the_live_target_and_discards": "Mantiene este checkout como destino activo y descarta el cambio preparado hacia {{staged}} (no se reinicia nada)",
+      "cancel_staged_cutover_2": "¿Cancelar el cambio preparado?",
+      "keep_cutover": "Mantener el cambio",
+      "cutover_staged_run_cmd_to_finish_or_cancel": "Cambio preparado: este worktree se activará la próxima vez que arranque el gateway. Ejecuta `{{cmd}}` para completarlo, o usa el menú de esta fila → Cancelar el cambio preparado para deshacerlo. Hasta entonces el gateway sigue ejecutando el checkout anterior.",
+      "keeps_the_live_checkout_the_live_target_and_disc": "Mantiene el checkout activo como destino activo y descarta el cambio preparado hacia {{staged}} (no se reinicia nada)",
+      "restarting_completes_the_pending_cutover_boots": "Reiniciar completa el cambio pendiente: el gateway volverá con \"{{staged}}\", no con el checkout actual. El panel se desconectará brevemente y se reconectará automáticamente. Para deshacerlo, usa Cancelar el cambio preparado."
     },
     "developer": {
       "previewSurfacesCard": {
@@ -8379,8 +8484,8 @@
           "label": "Registros"
         },
         "mcpPool": {
-          "description": "Gateway MCP compartido y configuración de servidores agrupables",
-          "label": "Pool de MCP"
+          "description": "Poner un stub a los servidores MCP y compartir sus backends entre sesiones",
+          "label": "Gestión de MCP"
         },
         "memory": {
           "description": "Grafo de memoria, proveedor de embeddings y detalles internos del almacén vectorial",
@@ -8630,7 +8735,8 @@
         "status_archived": "Archivadas",
         "to_search_esc_to_back_to_page": "/ para buscar, Esc para volver, ←→ para paginar",
         "try_a_different_type_status_or_namespace": "Prueba con otro tipo, estado o espacio de nombres",
-        "try_different_keywords_or_filters": "Prueba con otras palabras clave u otros filtros"
+        "try_different_keywords_or_filters": "Prueba con otras palabras clave u otros filtros",
+        "settings_tab": "Settings"
       },
       "itemCard": {
         "copied": "¡Copiado!",
@@ -8737,6 +8843,31 @@
         "watch_anyway": "Vigilar de todos modos",
         "watches_folder_recursively_supported_files_auto": "Vigila la carpeta de forma recursiva. Los archivos compatibles se ingieren automáticamente. Máx. 5.000 archivos por fuente.",
         "watching_folder": "Vigilando la carpeta"
+      },
+      "settings": {
+        "title": "Ingestion Settings",
+        "description": "Control how documents are extracted, indexed, and rate-limited. Changes take effect on the next watcher sweep unless noted otherwise.",
+        "save_failed": "Failed to save knowledge setting",
+        "chunk_limit_label": "Per-source chunk limit",
+        "chunk_limit_desc": "Maximum chunks a single source may ingest per scan cycle. Each chunk costs one LLM extraction call. 0 = no limit.",
+        "max_sources_label": "Max sources",
+        "max_sources_desc": "Maximum number of auto-discovered knowledge sources. Manually added sources are not capped. 0 = no limit.",
+        "embed_rate_label": "Embedding rate limit",
+        "embed_rate_desc": "How many embedding requests per minute when indexing documents into the vector store. Lower values reduce system load but slow down indexing. 0 = unlimited.",
+        "model_label": "Extraction model",
+        "model_desc": "LLM used for chunking & extracting document content. \"Auto\" inherits your default chat model. Set a cheaper model (e.g. claude-haiku-4.5) to control extraction cost.",
+        "model_auto": "auto (use chat model)",
+        "pool_size_label": "Extraction pool size",
+        "pool_size_desc": "Concurrent extraction workers. More workers = faster indexing, higher peak resource usage.",
+        "requires_restart": "restart required",
+        "auto_add_label": "Auto-add documents",
+        "auto_add_desc": "Let the agent add documents it reads during normal work to the Knowledge Library.",
+        "auto_project_label": "Auto-register project documents",
+        "auto_project_desc": "Register documents from each project you work in as a Knowledge source automatically.",
+        "auto_artifacts_label": "Auto-add saved artifacts",
+        "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
+        "load_failed": "Failed to load settings.",
+        "retry": "Retry"
       }
     },
     "localStorageDebug": {
@@ -8792,6 +8923,41 @@
       "shared_mcp_gateway": "Gateway MCP compartido",
       "with_shared_gateway_pooled": "Con gateway compartido (agrupado)",
       "without_gateway_per_session_copies": "Sin gateway (copias por sesión)"
+    },
+    "mcpManagement": {
+      "cancel": "Cancelar",
+      "col_server": "Servidor",
+      "col_state": "Estado",
+      "col_stub": "Stub",
+      "col_used_by": "Usado por",
+      "confirm_lede": "Cada servidor con stub se enrutará a un único proceso de backend compartido en lugar del suyo propio; ahora mismo son {{count}}.",
+      "confirm_restart": "Los chats que ya tienes abiertos conservan la configuración con la que empezaron: vuelve a abrir uno para aplicar este cambio.",
+      "confirm_reversible": "Al volver a desactivarlo, cada sesión recupera su propio backend y se conservan tus stubs elegidos.",
+      "confirm_stateful": "Un servidor que guarda estado por sesión debería quedarse solo con el stub, o asumir que tendrá compañía.",
+      "confirm_title": "¿Compartir backends entre sesiones?",
+      "confirm_turn_on": "Activar el uso compartido",
+      "learn_more": "Más información",
+      "learn_more_docs": "Más información en la documentación",
+      "lede": "Kiro Crew puede poner su propio stub delante de un servidor MCP en lugar de dejar que cada sesión lo inicie por su cuenta. El stub es lo que permite que el servidor dibuje su propia interfaz (MCP Apps) y lo único a través de lo cual se puede enrutar un backend compartido, así que se activa servidor por servidor. {{link}}",
+      "legend": "direct: la sesión inicia el servidor por su cuenta, igual que sin Kiro Crew. stub: el stub de Kiro Crew está en la ruta, así que el servidor puede dibujar su propia interfaz; el backend sigue siendo de esta sesión. shared: el stub se enruta a un backend compartido con otras sesiones. Un servidor sin tubería stdio no puede llevar stub.",
+      "no_servers": "Aún no hay servidores MCP configurados.",
+      "open_sessions_note": "Los cambios aquí se aplican a los chats nuevos. Un chat ya abierto conserva los servidores con los que empezó hasta que lo vuelvas a abrir.",
+      "servers_failed": "No se pudo cargar la lista de servidores. Eso no es lo mismo que no tener ninguno configurado.",
+      "sharing_description": "Las sesiones con una configuración de servidor idéntica se enrutan a un mismo proceso de backend. Se aplica a todos los servidores con stub de abajo: no hay un interruptor por servidor.",
+      "sharing_failed": "No se pudo aplicar el uso compartido del backend. Puede que ya esté guardado sin estar activo: el interruptor de arriba muestra ahora el estado guardado.",
+      "sharing_label": "Compartir backends entre sesiones",
+      "sharing_needs_a_stub": "Crea un stub para al menos un servidor abajo para habilitar el uso compartido.",
+      "sharing_not_live": "El uso compartido está guardado, pero aún no se puede alcanzar el backend compartido.",
+      "sharing_on_but_nothing_stubbed": "El uso compartido está activado, pero no hay ningún stub: surtirá efecto cuando crees un stub abajo.",
+      "state_direct": "directo",
+      "state_no_stub": "sin stdio",
+      "state_shared": "compartido",
+      "state_stub": "stub",
+      "stub_aria": "Poner un stub delante de {{name}}",
+      "stub_failed": "No se pudo aplicar el cambio. Puede que ya esté guardado sin estar activo: los interruptores de abajo muestran ahora el estado guardado.",
+      "stub_not_live": "Guardado, pero aún no está activo: la puerta de enlace no pudo arrancar. El interruptor muestra lo guardado, no lo que está en marcha.",
+      "stubbed_of_total": "{{stubbed}} de {{total}} con stub",
+      "unsupported_platform": "Compartir backends necesita sockets de dominio Unix, por lo que no está disponible en esta plataforma."
     },
     "migrationPage": {
       "app_migration": "Migración de la app",
@@ -9725,6 +9891,7 @@
       "truncated_showing_first_200kb": "… truncado (se muestran los primeros 200KB) …",
       "no_archives_with_compaction_hint": "No hay archivos. Los archivos se crean cuando los ficheros de sesión se rotan (>2MB) o se compactan. La compactación automática se controla mediante <settingRef/>."
     },
+    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_many": "Más de {{days}} días — {{count}} sesiones · {{size}}",
       "age_option_one": "Más de {{days}} días — {{count}} sesión · {{size}}",
@@ -9815,8 +9982,6 @@
       "session_task": "Sesión / Tarea",
       "shared": "en común",
       "turns": "Turnos",
-      "unattributed": "Sin atribuir",
-      "unattributed_hint": "Runtimes de agente activos en esta máquina que no pertenecen a esta pasarela: un runtime residual de una generación anterior de la pasarela, o un pod en ejecución (una pasarela aparte con su propio directorio de datos).",
       "uptime": "Tiempo activo"
     },
     "settings": {
@@ -9890,6 +10055,7 @@
         "update_check_error_version_unparseable": "No se pudieron comparar los números de versión.",
         "update_check_managed_by_app": "Esta versión se actualiza a través de la aplicación, no de la puerta de enlace.",
         "update_check_managed_by_image": "Este contenedor se actualiza descargando una imagen más reciente.",
+        "update_error_install_unknown": "Algo salió mal al instalar la actualización.",
         "update_error_integrity": "La descarga no pasó la comprobación de integridad y se descartó.",
         "update_error_misconfigured": "Esta compilación no puede buscar actualizaciones. Reinstálala para solucionarlo.",
         "update_error_no_release": "Todavía no se ha publicado ninguna actualización para este canal.",
@@ -9948,38 +10114,44 @@
         "session_folder_name_desc": "Se crea al guardar esta configuración, si todavía no existe."
       },
       "browserPanel": {
-        "attach_to_my_browser": "Conectar a mi navegador",
-        "attach_to_my_running_browser": "Conectar a mi navegador en ejecución",
-        "attach_uses_your_real_tabs_and_logins": "El modo Conectar controla las pestañas reales de tu navegador y sus inicios de sesión existentes, no un perfil nuevo.",
-        "browser_engine": "Motor del navegador",
-        "browser_mode": "Modo de navegador",
-        "browser_not_installed_retry": "Las herramientas del navegador aún no están instaladas. Desactiva y vuelve a activar el modo de navegador para reintentar la descarga.",
-        "cannot_load_browser_config_is_the_gateway_runnin": "No se puede cargar la configuración del navegador. ¿Está el gateway en ejecución?",
-        "cannot_reach_gateway_is_it_running": "No se puede acceder al gateway. ¿Está en ejecución?",
-        "confirm": "Confirmar",
-        "connect_your_browser": "Conecta tu navegador",
-        "connection_token_optional": "Token de conexión (opcional)",
-        "enable_browser_mode": "Activar el modo de navegador",
+        "browsing": "Navegación",
+        "cannot_load": "No se puede cargar el estado del navegador. ¿Está el gateway en marcha?",
+        "available": "El agente puede navegar por páginas web.",
+        "presence_is_consent": "La navegación está disponible porque Playwright CLI está instalado. Desinstalarlo es lo que retira esta capacidad.",
+        "not_installed": "El agente todavía no puede navegar.",
+        "install_explains": "Instalar Playwright CLI permite al agente abrir páginas, leerlas y rellenar formularios. Puedes observar y tomar el control desde el panel Browser.",
+        "install": "Instalar Playwright CLI",
+        "installing": "Instalando...",
+        "install_takes_a_while": "Esto descarga un navegador, así que puede tardar varios minutos. Puedes salir de esta página.",
+        "needs_node": "Requiere Node.js 20 o superior para instalarse (encontrado {{version}}).",
+        "attach_needs_extension": "Para navegar con tu propio Chrome ya conectado, instala la extensión de Playwright en ese navegador.",
+        "get_the_extension": "Obtener la extensión",
+        "token_label": "Token de la extensión (opcional)",
+        "token_placeholder": "Pégalo desde la extensión",
+        "token_set": "Guardado",
+        "token_save": "Guardar",
+        "token_clear": "Borrar",
+        "token_explains": "Sin token el navegador te pide aprobar cada conexión. Con token se conecta en silencio. Cópialo de la extensión de Playwright en tu navegador.",
+        "attach_title": "Usa tu propio navegador con la sesión abierta",
+        "token_stored": "guardado",
+        "browser_missing": "aún sin navegador",
+        "install_steps_intro": "La instalación ejecuta tres pasos.",
+        "step_npm": "Instala @playwright/cli de forma global con npm.",
+        "step_browser": "Descarga el navegador que controla.",
+        "step_skills": "Registra sus skills para que el agente conozca los comandos.",
+        "engines_title": "Navegadores en esta máquina",
+        "engines_explains": "Cada motor es una descarga aparte. El modo attach necesita Chromium; añade Firefox o WebKit para revisar una página en ellos.",
         "engine_chromium": "Chromium",
         "engine_firefox": "Firefox",
-        "engine_webkit": "WebKit (motor de Safari)",
-        "firefox_webkit_run_playwrights_own_build": "Firefox y WebKit usan la propia compilación de navegador de Playwright, no tu Firefox o Safari instalados, y sin tus inicios de sesión.",
-        "headless_mode_active_browser_uses_cookie_injecti": "Modo headless activo. El agente controla un navegador aparte que inicia Kiro Crew.",
-        "let_the_agent_read_and_operate_web_pages": "Permite que el agente lea y opere páginas web: hacer clic, escribir y navegar, no solo leer. Activar esto descarga las herramientas del navegador.",
-        "loading_browser_config": "Cargando la configuración del navegador...",
-        "optional_paste_token_to_skip_approval": "Opcional: pega el token de la extensión para omitir la solicitud de aprobación de cada conexión.",
-        "paste_playwright_mcp_extension_token_value_from": "Pega el valor de PLAYWRIGHT_MCP_EXTENSION_TOKEN desde la ventana de la extensión",
-        "paste_token_here": "Pega el token aquí...",
-        "pick_the_browser_the_agent_launches": "Elige el navegador que el agente inicia.",
-        "playwright_extension_chromium_browsers": "Playwright Extension (Chrome, Edge, Brave, Arc, Opera)",
-        "save": "Guardar",
-        "saved_and_applied_sessions_restarted": "Guardado y aplicado. Sesiones reiniciadas.",
-        "saving": "Guardando…",
-        "setting_up_the_browser_this_can_take_a_minute": "Configurando el navegador. Esto puede tardar un minuto la primera vez.",
-        "step1_install_the_playwright_extension": "Paso 1. Instala la Playwright Extension para tu navegador.",
-        "step2_pick_the_tab_when_the_agent_connects": "Paso 2. Cuando el agente se conecte, elige la pestaña del navegador que debe controlar.",
-        "switch_to_headless_mode_this_will_remove_the_sav": "¿Cambiar al modo headless? Esto eliminará el token de la extensión guardado.",
-        "use_my_chromium_browser_with_existing_logins": "Usa mi navegador Chromium en ejecución (Chrome, Edge, Brave, Arc, Opera) con sus inicios de sesión y sesiones existentes. Recomendado para macOS."
+        "engine_webkit": "WebKit",
+        "engine_downloaded": "Descargado",
+        "engine_download": "Descargar",
+        "engine_needed_for_attach": "necesario para attach",
+        "node_missing": "Se necesita Node.js 20 o posterior, y no se encontró Node en esta máquina.",
+        "node_how": "Instálalo y vuelve a abrir esta página. <dl>Descargar Node.js</dl>",
+        "node_no_admin": "En un equipo donde no puede instalar Node —sin permisos de administrador o con un registro que exige iniciar sesión— ejecute el comando siguiente en el equipo donde se ejecuta Kiro Crew. El script instala Node y la CLI en su directorio personal y le indica cómo solucionarlo si su red bloquea la descarga.",
+        "copy_command": "Copiar comando",
+        "copied": "Copiado"
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "Comprobando la política de canales de tu organización…",
@@ -10038,6 +10210,7 @@
         "disabled_by_instance_config_tips_enabled_false": "Desactivado por la configuración de la instancia (tips_enabled: false)",
         "display_time_on_each_message": "Mostrar la hora en cada mensaje",
         "display_usage_percentage_next_to_the_context_pro": "Mostrar el porcentaje de uso junto a la barra de progreso del contexto",
+        "display_used_and_total_tokens_next_to_the_contex": "Mostrar los tokens usados y totales junto a la barra de progreso del contexto",
         "e_g_solutions_architect_sre_founder": "p. ej. arquitecto de soluciones, SRE, fundador",
         "enter_for_newline": "Enter para nueva línea",
         "enter_sends": "Enter envía",
@@ -10056,6 +10229,7 @@
         "failed_to_save_profile": "No se pudo guardar el perfil",
         "failed_to_save_role_effort": "No se pudo guardar el esfuerzo del rol",
         "failed_to_save_role_model": "No se pudo guardar el modelo del rol",
+        "failed_to_save_session_summaries": "No se pudo guardar la configuración de resúmenes de sesión",
         "failed_to_save_soft_stop_budget": "No se pudo guardar el margen de parada suave",
         "failed_to_save_tips_preference": "No se pudo guardar la preferencia de consejos",
         "feature_tips": "Consejos de funciones",
@@ -10125,6 +10299,7 @@
         "role_model_auto_hint": "«Predeterminado» deja que el proveedor elija — no hereda tu modelo de chat. Fija un modelo para ejecutar este trabajo en él.",
         "role_subagents": "Subagentes",
         "send_shortcut": "Atajo de envío",
+        "session_summaries": "Resúmenes de sesión",
         "sessions": "Sesiones",
         "sets_how_deep_explanations_go_plain_language_vs": "Define la profundidad de las explicaciones — lenguaje sencillo frente a detalle técnico completo",
         "shift_enter_for_newline": "Shift+Enter para nueva línea",
@@ -10135,6 +10310,7 @@
         "show_occasional_feature_discovery_tips_above_the": "Mostrar consejos ocasionales de funciones encima del redactor mientras el agente trabaja",
         "show_thinking_inline": "Mostrar el razonamiento en línea",
         "show_timestamps": "Mostrar marcas de tiempo",
+        "show_token_usage": "Mostrar los tokens de contexto",
         "simplified_tool_call_names": "Nombres simplificados de las llamadas de herramientas",
         "single_line": "Una sola línea",
         "smooth": "Suave",
@@ -10144,6 +10320,7 @@
         "subagent_effort": "Esfuerzo de subagente",
         "subagent_model": "Modelo de subagente",
         "subagents": "Subagentes",
+        "summarize_each_session_by_intent_in_the_right_pa": "Resume cada sesión por intención. Consume tokens en los turnos que cambian la sesión.",
         "tail_only_fork": "Bifurcación solo de la cola",
         "tail_preserve_end_final_summary": "Final (conserva el final / el resumen final)",
         "technical_comfort": "Nivel técnico",
@@ -10194,8 +10371,11 @@
       "developerPanel": {
         "developer_mode": "Modo de desarrollador",
         "developer_tools": "Herramientas de desarrollo",
+        "gateway": "Gateway",
         "open_developer_page": "Abrir la página Desarrollador",
-        "show_developer_page_in_sidebar_with_logs_system": "Mostrar la página Desarrollador en la barra lateral con registros, métricas del sistema y detalles internos de la memoria"
+        "run_a_local_gateway": "Ejecutar un gateway local",
+        "show_developer_page_in_sidebar_with_logs_system": "Mostrar la página Desarrollador en la barra lateral con registros, métricas del sistema y detalles internos de la memoria",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "Inicia un gateway en este equipo. Desactívalo para usar Kiro Crew solo como cliente, conectándose al gateway que hayas configurado en lugar de ejecutar uno aquí. Se aplica la próxima vez que abras la aplicación."
       },
       "discordPanel": {
         "allowed_server_thread_ids": "IDs de hilos de servidor permitidos",
@@ -10251,10 +10431,17 @@
         "terminal_font_family_desc": "Fuente para el terminal integrado. Introduce una fuente monospace instalada en tu ordenador; usa una Nerd Font para representar los glifos de Powerline y de los temas de prompt.",
         "terminal_font_size": "Tamaño de fuente",
         "terminal_font_size_desc": "Tamaño del texto en el terminal integrado, medido en píxeles.",
+        "terminal_shell": "Shell predeterminado",
+        "terminal_shell_desc": "Shell que inicia el terminal integrado: una ruta absoluta o un comando en el PATH. Déjalo vacío para usar el valor predeterminado del sistema ($SHELL).",
+        "terminal_shell_not_executable": "No es un shell ejecutable: introduce una ruta absoluta o un comando en el PATH, o déjalo vacío para el valor predeterminado del sistema.",
+        "terminal_shell_save_failed": "No se pudo guardar la configuración del shell",
         "theme": "Tema",
         "theme_source": "Origen del tema",
         "theme_source_location": "Ubicación del origen del tema",
-        "ui_font_family_for_the_dashboard": "Familia tipográfica de la interfaz del panel",
+        "theme_styles_ignored_body": "Usan CSS que los temas no pueden modificar, así que Kiro Crew los omitió. Si este tema es tuyo, declara las fuentes en la lista fonts de theme.json, limita las demás reglas a las superficies permitidas y vuelve a instalarlo.",
+        "theme_styles_ignored_link": "Guía de temas",
+        "theme_styles_ignored_title": "Se ignoraron algunos estilos de este tema",
+        "ui_font_family_for_the_dashboard_code_font_follo": "Familia tipográfica de la interfaz del panel. La fuente del código sigue el tema activo.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Usa el zoom de tu navegador. El navegador lo recuerda para este sitio.",
         "view": "Vista",
         "zoom_font": "Zoom y tipografía",
@@ -10350,23 +10537,6 @@
         "update_setting_failed": "No se pudo actualizar el ajuste: {{error}}",
         "use_an_absolute_path_no": ").\n            Usa una ruta absoluta (sin",
         "enable_via_setting": "Alternativamente, configura <settingRef/> y luego ejecuta <restartCmd/>."
-      },
-      "mcpPoolableServers": {
-        "blocked": "bloqueado",
-        "could_not_load_mcp_servers": "No se pudieron cargar los servidores MCP.",
-        "could_not_update_all_try_again": "No se pudieron actualizar los servidores. No se hizo ningún cambio. Inténtalo de nuevo.",
-        "could_not_update_try_again": "No se pudo actualizar {{name}}. Inténtalo de nuevo.",
-        "loading_mcp_servers": "Cargando servidores MCP…",
-        "n_of_m_pooled": "{{on}} de {{total}} servidores agrupables agrupados",
-        "n_of_m_pooled_plus_agent": "{{on}} de {{total}} servidores agrupables agrupados, +{{extra}} mediante la configuración del agent",
-        "no_mcp_servers_configured": "No hay servidores MCP configurados.",
-        "pool": "Agrupar {{name}}",
-        "poolable_mcp_servers": "Servidores MCP agrupables",
-        "poolable_true": "poolable:true",
-        "pooling_takes_effect_when_the_shared_mcp_gateway": "La agrupación surte efecto cuando el gateway MCP compartido está activado. De todos modos, aquí puedes preconfigurar qué\n            servidores son agrupables.",
-        "shared": "· compartido",
-        "toggle_all": "Alternar todos",
-        "used_by": "usado por"
       },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "Siempre interrumpe — no se puede silenciar ni reducir",
@@ -10658,42 +10828,6 @@
           "ineffective_label": "Guardado pero sin efecto",
           "ineffective_description": "Estos nombres se guardaron como de confianza, pero Kiro Crew no los acepta, así que las aplicaciones siguen bloqueadas. Quítalos para limpiar la lista."
         }
-      },
-      "sharedMcpGatewayToggle": {
-        "active_sessions_share_pooled_mcp_backends_see_th": "Activo — las sesiones comparten backends MCP agrupados. Consulta el grupo en vivo en Desarrollador > Sistema.",
-        "cancel": "Cancelar",
-        "close": "Cerrar",
-        "continue": "Continuar",
-        "could_not_apply": "No se pudo aplicar",
-        "disable_shared_mcp_gateway": "¿Desactivar el gateway MCP compartido?",
-        "disabled_each_session_spawns_its_own_mcp_backend": "Desactivado — cada sesión lanza sus propios backends MCP.",
-        "disabling_shared_mcp_gateway": "Desactivando el gateway MCP compartido",
-        "done": "Listo",
-        "enable_shared_mcp_gateway": "¿Activar el gateway MCP compartido?",
-        "enabled_broker_not_reachable_toggle_off_and_on_t": "Activado — no se puede contactar con el broker; desactívalo y vuelve a activarlo para aplicarlo de nuevo.",
-        "enabling_shared_mcp_gateway": "Activando el gateway MCP compartido",
-        "gateway_stuck_retry": "El gateway no alcanzó el estado esperado. Inténtalo de nuevo.",
-        "gateway_stuck_roll_back": "El gateway no alcanzó el estado esperado. Revierte al estado seguro (desactivado) o inténtalo de nuevo.",
-        "mcp_apps": "Aplicaciones MCP",
-        "mcp_apps_applies_to_new": "Guardado. Se aplica a las nuevas conexiones MCP; las que ya están activas lo adoptarán al reciclarse.",
-        "mcp_apps_gateway_started": "Puerta de enlace MCP compartida iniciada. Las sesiones activas se reiniciaron con las apps MCP activadas.",
-        "mcp_apps_no_poolable_servers": "Aún no hay servidores MCP agrupables, por lo que no se mostrará nada. Activa al menos uno en Servidores MCP agrupables más abajo.",
-        "mcp_apps_saved_unsupported": "Guardado. Las apps MCP necesitan la puerta de enlace MCP compartida, que no está disponible en esta plataforma.",
-        "mcp_apps_retry_gateway": "Reintentar iniciar la puerta de enlace",
-        "mcp_apps_capability": "Mostrar en el chat las interfaces interactivas de los servidores MCP.",
-        "mcp_apps_failed": "No se pudo aplicar. La configuración no se cambió.",
-        "mcp_apps_needs_gateway": "Se aplica cuando la puerta de enlace MCP compartida de arriba está activada.",
-        "mcp_apps_will_start_gateway": "Activar esto también inicia la puerta de enlace MCP compartida, lo que reinicia las sesiones activas.",
-        "mcp_apps_starting_gateway": "Iniciando la puerta de enlace MCP compartida: las sesiones activas se reiniciarán…",
-        "mcp_apps_gateway_follow_failed": "Las apps MCP se guardaron, pero la puerta de enlace MCP compartida no se inició. Desactiva y vuelve a activar la puerta de enlace MCP compartida arriba para reintentar.",
-        "not_available_on_windows": "No disponible en Windows — la puerta de enlace compartida necesita sockets de dominio Unix. Compatible con macOS y Linux.",
-        "roll_back_disable": "Revertir (desactivar)",
-        "shared_mcp_gateway": "Gateway MCP compartido",
-        "shared_mcp_gateway_is_active": "El gateway MCP compartido está activo.",
-        "shared_mcp_gateway_is_disabled": "El gateway MCP compartido está desactivado.",
-        "starting_broker_restarting_sessions_verifying_co": "Iniciando el broker, reiniciando las sesiones, verificando la conectividad…",
-        "stopping_broker_and_restarting_sessions": "Deteniendo el broker y reiniciando las sesiones…",
-        "this_restarts_all_active_sessions_onto_the_new_m": "Esto reinicia todas las sesiones activas con el nuevo enrutamiento MCP — se interrumpirá el trabajo en curso. Tu panel seguirá con la sesión iniciada. ¿Continuar?"
       },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Asignar el cambio de pestaña de chat a Ctrl+dígito en lugar de Option+dígito",
@@ -11048,6 +11182,7 @@
         "anyone_who_messages_the_bot": "Cualquiera que escriba al bot",
         "connect_via_qr": "Conectar mediante QR",
         "connected": "Conectado",
+        "created_for_you_when_you_turn_this_on_if_it_does": "Se crea al activar esta opción, si todavía no existe.",
         "could_not_reach_the_wechat_login_service": "No se pudo contactar con el servicio de inicio de sesión de WeChat.",
         "could_not_start_the_login_flow": "No se pudo iniciar el flujo de inicio de sesión.",
         "enable_the_wechat_channel": "Activar el canal de WeChat",
@@ -11093,7 +11228,6 @@
         "delete": "Delete…",
         "deleting": "Eliminando…",
         "delete_crew": "Delete {{name}}",
-        "confirm_delete": "Confirm delete",
         "confirm_delete_of": "Confirm deleting {{name}}",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "before_you_start": "Before you start — your AWS setup",
@@ -11141,14 +11275,29 @@
         "launch_done": "Done — your new crew is ready and now appears in Your crews.",
         "runs_on_gateway": "This runs on the gateway, not in this tab — leave the page or switch crews and it keeps going. Keep Kiro Crew running until it finishes.",
         "unverified_cloud_note": "Kiro Crew cannot verify whether this machine has AWS resources",
-        "confirm_remove": "Confirm remove",
         "remove_warning": "Remove only takes it off this list. If this is a cloud crew, its EC2 instance keeps running and billing — delete it from the AWS console.",
         "checking_against": "Checked against profile {{profile}} in {{region}}.",
         "no_profile_set": "none set (AWS CLI default)",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB disk",
         "start": "Start",
         "start_crew": "Start {{name}}",
-        "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+        "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew.",
+        "more_actions": "Más acciones para {{name}}",
+        "edit_settings": "Editar configuración",
+        "edit_crew": "Editar {{name}}",
+        "save_changes": "Guardar cambios",
+        "saving": "Guardando…",
+        "failed_to_save_crew": "No se pudo guardar este crew",
+        "edit_reconnect_note": "Cambiar el host, el puerto o el método de conexión cierra el túnel actual. Vuelve a conectar cuando quieras.",
+        "remove": "Quitar…",
+        "transport_locked_note": "Kiro Crew vincula este crew con sus recursos de AWS mediante su identidad de conexión, por lo que el método y el destino no se pueden cambiar aquí.",
+        "port_must_be_in_range": "Introduce un puerto entre 1 y 65535.",
+        "ttl_must_be_hours_or_minutes": "Introduce una duración como 20h o 30m.",
+        "finish_open_edit_first": "Guarda o cancela la edición abierta antes de editar otro crew.",
+        "stopping": "Deteniendo…",
+        "starting": "Iniciando…",
+        "changed_outside_this_form": "This crew changed outside this form ({{fields}}). Check the row above — if it is not the crew you started editing, cancel.",
+        "use_my_edits_anyway": "Apply my edits to the crew as it is now"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",
@@ -11229,6 +11378,7 @@
       "per_turn_col": "Por turno",
       "phase_col": "Fase",
       "priciest_turn": "Turno más caro",
+      "prior_credits_turns": "créditos {{credits}} · turnos {{turns}}",
       "profile_scaled_per_row": "Escala logarítmica, cada perfil sobre su propio mín–máx: la barra muestra la cola de ese instrumento, no su tamaño frente a los demás",
       "range_bar_label": "mín {{min}}, p50 {{p50}}, p90 {{p90}}, máx {{max}}",
       "sample_count": "n={{count}}",
@@ -11262,6 +11412,9 @@
       "turns_measured_many": "{{n}} turnos medidos",
       "turns_measured_one": "{{n}} turno medido",
       "turns_measured_other": "{{n}} turnos medidos",
+      "turns_to_compaction_many": "{{n}} turnos",
+      "turns_to_compaction_one": "{{n}} turno",
+      "turns_to_compaction_other": "{{n}} turnos",
       "untitled_conversation_on": "Sin título · {{date}}",
       "used_tokens_col": "Usados (tokens)",
       "vs_previous_period": "frente al periodo anterior",
@@ -11532,8 +11685,7 @@
     "worldsPopout": {
       "hide_controls": "Ocultar los controles",
       "show_controls": "Mostrar los controles"
-    },
-    "sessionMemoryCard": {}
+    }
   },
   "privacyDisclosure": {
     "anonymousHeartbeatBody": "Como máximo uno al día. Identifica una copia instalada, no a una persona.",

@@ -65,6 +65,7 @@ type Slot = {
   title?: string
   running?: boolean
   pending_approval?: boolean
+  needs_input?: boolean
   messages?: number
   agent?: string
   last_activity_ts?: string
@@ -391,6 +392,27 @@ describe('SessionGridView — picker list', () => {
     expect(titles[1]).toContain('Running one')
     expect(titles[2]).toContain('Idle one')
     expect(titles[3]).toContain('Older one')
+  })
+
+  it('ranks a session waiting on your answer with the approvals, above running', async () => {
+    // Both are things the user owes the session, and this list is where a pane's
+    // session gets picked — so the ones that cannot advance come first, whatever
+    // their last activity says.
+    seedApi([
+      { key: 'run', title: 'Running one', running: true, last_activity_ts: '2026-08-02T00:00:00' },
+      { key: 'ask', title: 'Asking one', needs_input: true, last_activity_ts: '2026-07-01T00:00:00' },
+      { key: 'appr', title: 'Approval one', pending_approval: true },
+    ])
+    renderGrid(null)
+
+    await waitFor(() => expect(rowsOf(onlyPicker())).toHaveLength(3))
+    const rows = rowsOf(onlyPicker())
+    expect(rows[0].textContent).toContain('Approval one')
+    expect(rows[1].textContent).toContain('Asking one')
+    expect(rows[2].textContent).toContain('Running one')
+    // Its dot is the info one: distinct from the warn approval above it and from
+    // the ok "running" below, which is the state it would otherwise be read as.
+    expect(rows[1].querySelector('svg')?.getAttribute('class')).toContain('fill-info')
   })
 
   it('marks each row status on its dot and shows the message count', async () => {

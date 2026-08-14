@@ -487,7 +487,7 @@ interface ChatState {
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string }>
+  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
   loadingOlder: boolean
@@ -559,6 +559,19 @@ interface ChatState {
    *  treating that as a request would force-focus Files or the last requested
    *  view over the tab the user actually left the chat on. */
   activityTabRequest: number
+  /** Pending "reveal in sidebar" request from the session header menu, or
+   *  null. State, not a window event, on purpose: the sidebar is unmounted
+   *  while the drawer is collapsed (and under preview focus / on mobile), and
+   *  a one-shot CustomEvent dispatched before the listener mounts is silently
+   *  dropped — there is no replay. Held here, the request survives until the
+   *  sidebar consumes and clears it in an effect that also runs on mount
+   *  (issue #912). */
+  revealRequest: { key: string; nonce: number } | null
+  /** Never-reset counter feeding `revealRequest.nonce`, so revealing the same
+   *  session twice produces two distinct requests (a key-only request would
+   *  make the second reveal indistinguishable from the first). Monotonic
+   *  across clears. */
+  revealNonce: number
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
@@ -583,7 +596,7 @@ interface ChatState {
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
-  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; draftActive?: boolean }>
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; serverCardId?: string; draftActive?: boolean }>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -649,6 +662,8 @@ const initialState: ChatState = {
   activityOpen: false,
   activityTab: 'files' as const,
   activityTabRequest: 0,
+  revealRequest: null,
+  revealNonce: 0,
   focusToolCallId: null,
   mcpApps: {},
   slotActivity: seedSlotActivity(),
@@ -892,11 +907,26 @@ export const fetchHistory = createAsyncThunk(
   },
 )
 
+/** Raw server rows one older-history page consumes. The handler slices
+ *  all_msgs[end - limit : end] (chat_handlers.api_chat_slot_detail), so when it
+ *  reports has_more this limit IS the raw span -- unlike the returned array,
+ *  which _prepare_messages has already collapsed. */
+const OLDER_PAGE_RAW = 100
+
+/** Raw server rows a paged resume consumes: api_chat_slot_resume sends
+ *  messages[-200:] and reports has_more only when total > 200, so a paged
+ *  resume always consumed exactly this many raw rows. */
+const RESUME_PAGE_RAW = 200
+
 async function fetchSlotDetail(key: string) {
   // No limit → backend returns all chained history (across gateway restarts).
   const d = await api.chatSlotDetail(key)
   type QueueItem = string | { content: string; id: string }
-  return { key, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  // This path requests no limit, so the handler returns the whole tail and
+  // reports has_more false; the raw span is therefore the entire history. Any
+  // value would do while has_more is false, but total keeps the cursor at 0
+  // rather than at a wrong index if that ever changes.
+  return { key, rawCount: d.total || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -1196,14 +1226,28 @@ export const deleteSlot = createAsyncThunk(
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
     const deletedSurface = deletedSlot ? slotSurfaceKey(deletedSlot) : ''
-    // Navigate before removeSlotOptimistic to prevent useEffect race
+    // Navigate before removeSlotOptimistic to prevent a useEffect race: the
+    // active slot must already name a surviving peer by the time this slot
+    // leaves the list.
+    //
+    // What that ordering constrains is the STATE transitions, not the I/O.
+    // `switchSlot.pending` assigns `activeSlot` synchronously as it is
+    // dispatched, so the invariant above holds from that call — not from the
+    // moment its history fetch resolves. That fetch is unbounded (the peer's
+    // whole transcript, megabytes on a long session), so it is carried as a
+    // promise rather than awaited here: blocking on it would hold the dismissed
+    // tab on screen for the length of an unrelated conversation's load, which
+    // reads as a dead close control. The peer paints from the `slotMessages`
+    // cache when it has one, or from `slotLoading` behind the already-removed
+    // tab when it does not.
+    let navigation: Promise<unknown> | undefined
     if (root.chat.activeSlot === key) {
       const sameSurface = new Set(root.dashboard.slots.filter(s => slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const prev = root.chat.slotHistory.filter(k => k !== key && sameSurface.has(k)).pop()
         || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0]
       dispatch({ type: 'chat/setActiveSlot', payload: null })
       if (prev) {
-        await dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
+        navigation = dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
       } else {
         dispatch({ type: 'chat/clearSlotState' })
       }
@@ -1215,6 +1259,15 @@ export const deleteSlot = createAsyncThunk(
     } catch {
       dispatch(fetchSlots())
       throw new Error('save failed')
+    } finally {
+      // Settle the peer navigation before this thunk reports back, on the
+      // failure path too. Callers that await it treat resolution as "the
+      // dismissal is done" and then read the store (an app agent tearing its
+      // session down, the create-first-then-delete mode switch), so resolving
+      // mid-fetch would hand them a half-loaded peer. Rejection is already
+      // absorbed by the `.catch` above, so this cannot throw and cannot mask
+      // the error being propagated.
+      await navigation
     }
     return key
   },
@@ -1228,7 +1281,7 @@ export const resumeFromHistory = createAsyncThunk(
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
-    return { ok: d.ok, key: d.key, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    return { ok: d.ok, key: d.key, rawCount: RESUME_PAGE_RAW, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
   },
 )
 
@@ -1255,11 +1308,22 @@ export const loadOlderMessages = createAsyncThunk(
   'chat/loadOlder',
   async (_, { getState }) => {
     const state = (getState() as { chat: ChatState }).chat
-    if (!state.activeSlot || !state.slotHasMore || state.loadingOlder) return null
+    if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
     const slot = state.activeSlot
-    const d = await api.chatSlotDetail(slot, 100, state.slotOldestIndex)
-    return { slot, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    const d = await api.chatSlotDetail(slot, OLDER_PAGE_RAW, state.slotOldestIndex)
+    // rawCount is the span of RAW server rows this page consumed, which is NOT
+    // the length of what came back: the handler returns _prepare_messages(...),
+    // which collapses chunk runs and drops done. When has_more is true the
+    // handler took exactly `limit` raw rows (start = end - limit), so the
+    // requested limit IS the span.
+    return { slot, rawCount: OLDER_PAGE_RAW, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+  },
+  {
+    // Concurrency guard belongs HERE, not in the payload creator: `pending`
+    // sets loadingOlder BEFORE the creator runs, so a creator that reads the
+    // same flag always sees true and returns null -- paging never fetched.
+    condition: (_, { getState }) => !(getState() as { chat: ChatState }).chat.loadingOlder,
   },
 )
 
@@ -1589,7 +1653,7 @@ const chatSlice = createSlice({
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
     clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
-    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
+    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
       if (!state.pendingQuestions) state.pendingQuestions = {}
@@ -1621,6 +1685,13 @@ const chatSlice = createSlice({
         // payload — is what send-time captures compare against, so two
         // deliveries of an identical question are still distinguishable.
         cardId: `card-${secureRandomId()}`,
+        // The SERVER's identity for this ask, carried on the broadcast. Distinct
+        // from `cardId` above, which is minted here per delivery: only the
+        // server's own id can name the record the dismiss route retires, so a
+        // dismissal that lands after a newer card replaced this one is refused
+        // instead of clearing the new card's status. Absent for a blocking card
+        // (its `ask_id` is that identity) and for a payload that predates it.
+        serverCardId: action.payload.card_id,
         // A fresh, structurally IDENTICAL replacement keeps the mounted
         // component (PendingQuestionCard keys the component by payload, not
         // cardId), so the user's local draft survives the swap — but a plain
@@ -1679,14 +1750,30 @@ const chatSlice = createSlice({
       const card = state.pendingQuestions?.[safeKey(action.payload.slot)]
       if (card) card.draftActive = action.payload.active
     },
-    /** Clear the card only if it is the one the backend just resolved.
-     *  Guards against a stale `question_card_resolved` (from a timed-out
-     *  earlier ask) wiping a newer card the user is mid-way through. */
-    resolveQuestionCard(state, action: PayloadAction<{ ask_id: string }>) {
-      // Delete by ask_id match so a stale resolution for an already-replaced
-      // question cannot clear a different slot's live card.
+    /** Clear the card the backend just retired, matched by IDENTITY.
+     *
+     *  `ask_id` names a blocking round-trip; `card_id` names a stateless card
+     *  (compared against the server identity the card was delivered with).
+     *  Matching by identity rather than by slot is what stops a stale retirement
+     *  — for a question already replaced by a newer one — from clearing a live
+     *  card the user is part-way through.
+     *
+     *  A STATELESS card with a draft in progress survives, for the same reason
+     *  `dropStaleStatelessQuestion` spares it: the typed answer lives only in the
+     *  card's component state, so unmounting discards it — and a retirement
+     *  arrives at an unpredictable moment (a nudge frame on a monitored session
+     *  retires the record while the user is still typing). The card is already
+     *  answerable as a plain message, and dismissing it after the server dropped
+     *  the record is treated as success. A BLOCKING ask is not spared: its future
+     *  is already settled, so the card cannot be answered at all. */
+    resolveQuestionCard(state, action: PayloadAction<{ ask_id?: string; card_id?: string }>) {
+      const { ask_id: askId, card_id: cardId } = action.payload
+      if (!askId && !cardId) return
       for (const [slotKey, card] of Object.entries(state.pendingQuestions ?? {})) {
-        if (card?.ask_id === action.payload.ask_id) delete state.pendingQuestions[slotKey]
+        const hit = askId ? card?.ask_id === askId : card?.serverCardId === cardId
+        if (!hit) continue
+        if (!askId && card?.draftActive) continue
+        delete state.pendingQuestions[slotKey]
       }
     },
     setFollowupCard(state, action: PayloadAction<{ slot: string; items: FollowupItem[]; ts?: number }>) {
@@ -1942,7 +2029,12 @@ const chatSlice = createSlice({
       state.stopPressedAt[safeKey(action.payload.slotId)] = action.payload.ts
     },
     setSlotState(state, action: PayloadAction<SlotState>) { state.slotState = action.payload },
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string }>) {
+    /** Replace a slot's live status line wholesale. A `tool` phase may carry the
+     *  `toolCallId` it describes so a later refinement of the SAME call can be
+     *  merged into it (see the `tool_call` case in useWebSocket) without a
+     *  refinement of one call inheriting a sibling's purpose when tools run in
+     *  parallel. */
+    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
@@ -1978,6 +2070,11 @@ const chatSlice = createSlice({
     /** Clear after the matching pill has consumed the focus signal, so the same trigger
      *  doesn't re-fire on subsequent re-renders. */
     clearFocusToolCallId(state) { state.focusToolCallId = null },
+    /** Ask the sidebar to reveal a session row (expand collapsed ancestor
+     *  folders, scroll it into view, flash it). Consumed and cleared by
+     *  ChatSidebar once it is mounted and ready — see `revealRequest`. */
+    requestSlotReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { key: action.payload, nonce: state.revealNonce } },
+    clearSlotReveal(state) { state.revealRequest = null },
     /** Drop the previous connection's ephemeral subagent view before the gateway
      *  replays its authoritative running/done snapshot. Without this reset, an
      *  empty replay leaves agents from a restarted gateway visible indefinitely.
@@ -3068,7 +3165,7 @@ const chatSlice = createSlice({
         state._wsChunkedDuringFetch = false
       })
       .addCase(switchSlot.fulfilled, (state, action) => {
-        const { key, messages, running, hasMore, total, queue } = action.payload
+        const { key, messages, running, hasMore, total, queue, rawCount } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
         state.slotState = running ? 'streaming' : 'idle'
@@ -3144,7 +3241,7 @@ const chatSlice = createSlice({
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? total - messages.length : 0
+        state.slotOldestIndex = hasMore ? Math.max(0, total - rawCount) : 0
         // Hydrate queued messages from the backend queue field through the
         // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
@@ -3170,7 +3267,7 @@ const chatSlice = createSlice({
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, running, hasMore, total, queue } = action.payload
+        const { key, messages, running, hasMore, total, queue, rawCount } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
         // Merge permission messages: prefer state perms (have frontend resolved flags)
@@ -3213,7 +3310,7 @@ const chatSlice = createSlice({
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? total - messages.length : 0
+        state.slotOldestIndex = hasMore ? Math.max(0, total - rawCount) : 0
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -3334,7 +3431,7 @@ const chatSlice = createSlice({
           state.slotState = 'idle'
           state.pendingTurnSlot = null
           state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.total - action.payload.messages.length : 0
+          state.slotOldestIndex = action.payload.hasMore ? Math.max(0, action.payload.total - action.payload.rawCount) : 0
         }
       })
       .addCase(deleteHistorySession.fulfilled, (state, action) => {
@@ -3350,9 +3447,16 @@ const chatSlice = createSlice({
           // historical pastes re-tokenize from localStorage instead of showing
           // as fully-expanded text.
           const merged = mergePreservedPastes(state.messages, action.payload.messages)
-          state.messages = [...merged, ...state.messages]
+          // Invariant, not the fix: virtualKeyFor derives a row key from the
+          // message ts, so an overlapping page would reach React as a duplicate
+          // key. Identity is meta.mid only -- see isRedeliveredMessage on why a
+          // ts tuple cannot express this without dropping legitimate rows.
+          const fresh = merged.filter(m => !isRedeliveredMessage(state.messages, m.meta))
+          state.messages = [...fresh, ...state.messages]
           state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.total - state.messages.length : 0
+          state.slotOldestIndex = action.payload.hasMore
+            ? Math.max(0, state.slotOldestIndex - action.payload.rawCount)
+            : 0
         }
       })
       .addCase(loadOlderMessages.rejected, (state) => {
@@ -3365,7 +3469,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

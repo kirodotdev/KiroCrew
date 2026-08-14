@@ -10,7 +10,6 @@ import logging
 import math
 import os
 import re
-import tempfile
 import threading
 import time
 import traceback
@@ -132,6 +131,10 @@ NATIVE_SUBAGENT_DONE_RESULT_CAP = 8_000
 NATIVE_SUBAGENT_DONE_TRUNC_MARKER = "…(earlier output truncated)\n"
 NATIVE_SUBAGENT_TERMINAL_KEEP = 50
 NATIVE_SUBAGENT_TERMINAL_TTL_SECS = 3600.0
+
+# Slot-list broadcast coalescing window. The sub-agent slots debouncer in
+# slack/gateway.py hardcodes the same value independently; the two are not shared.
+_SLOTS_BROADCAST_INTERVAL_S: float = 0.2
 
 
 def native_subagent_output_tail(chunks: list[str], limit: int = NATIVE_SUBAGENT_OUTPUT_TAIL) -> str:
@@ -468,6 +471,13 @@ _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles pe
 #: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
 #: They get no ``meta.mid`` — see ``_ChatSlot.append``.
 _WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
+#: Roles whose LIVE append starts the slot's next turn, and so consumes the answer
+#: channel an unanswered stateless question card was waiting on. Mirrors the
+#: frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a session reports
+#: needs_input with no card on screen (client retired, server did not) or renders a
+#: card whose answer channel is already gone (server retired, client did not).
+#: Widening coverage is a data edit here.
+_QUESTION_RETIRING_ROLES = frozenset({"user", "nudge"})
 _MAX_SOURCE_LINKS_PER_SLOT = 64
 # How many source links each slot payload actually serializes (the sidebar
 # renders at most this many chips). Shared with the periodic check-status
@@ -868,6 +878,7 @@ class _ChatSlot:
         "_resumed_count",
         "_todo",
         "_on_message",
+        "_on_question_retired",
         "_has_reader",
         "_stop_state_raw",
         "_stop_generation",
@@ -945,6 +956,7 @@ class _ChatSlot:
         "_end_wait_request",
         "_wait_last_ping",
         "_wait_contested",
+        "_question_pending",
     )
 
     def __init__(
@@ -1055,6 +1067,12 @@ class _ChatSlot:
         self._todo: dict[str, Any] | None = None
         # Callback for broadcasting messages via global SSE
         self._on_message: object | None = None  # Callable[[str, dict], None] | None
+        # Announce stateless question cards this slot retires, so every client
+        # drops them: Callable[[str, list[str]], None] | None, wired by
+        # DashboardState like _on_message. A retirement that only mutates state
+        # is invisible to a second window, and to a /pending response already in
+        # flight — either would re-render a card whose answer has been sent.
+        self._on_question_retired: object | None = None
         self._has_reader: bool = False  # True when HTTP SSE stream is draining
         self._stop_state_raw: str = "idle"  # 'idle' | 'soft_pending' | 'killing'
         # Monotonic count of stop INITIATIONS (idle → active edges of
@@ -1343,6 +1361,25 @@ class _ChatSlot:
         # expired it on a timer, which let whichever sleep pinged first after
         # expiry re-publish its deadline onto the other's pill.
         self._wait_contested: bool = False
+        # Agent questions this slot has not answered yet, keyed by the ask's
+        # identity: ``{card_id: {"ts": float, "blocking": bool}}``, empty when the
+        # agent is not waiting on anything.
+        #
+        # A question card is a websocket broadcast with no transcript row, so
+        # without this record the only surface that knows the agent is waiting is
+        # the browser tab that happened to receive the card — a reload, a second
+        # window, or the sessions board sees a quiet, finished-looking session.
+        #
+        # A MAP rather than one slot-wide record because asks overlap: a single
+        # field let a second ask overwrite the first, and then whichever resolved
+        # first cleared the only record while the other was still parked. Each ask
+        # owns its own entry and retires exactly that one. ``blocking``
+        # distinguishes an ask_question HTTP round-trip (the turn is parked on the
+        # answer) from a stateless card (the turn has ended and the answer arrives
+        # as the next message) — the difference between "the agent is stuck" and
+        # "the agent is done and asked you something", and which entries a user
+        # message may retire.
+        self._question_pending: dict[str, dict] = {}
 
     @property
     def _dirty(self) -> bool:
@@ -1470,6 +1507,47 @@ class _ChatSlot:
         broadcast_user: bool = False,
         meta: dict | None = None,
     ) -> None:
+        # A LIVE turn-consuming row retires every unanswered STATELESS question:
+        # the card's own submit path sends one, and anything else that starts the
+        # slot's next turn consumes the answer channel the card was waiting on.
+        # Retiring here rather than at the composer covers every entrance —
+        # queued dispatch, an auto-nudge cycle, a channel row relayed from Slack —
+        # instead of the one send site that happens to be in front of the user.
+        #
+        # The role set mirrors the frontend's `QUESTION_RETIRING_ROLES`, which
+        # drops the card on the same frames. They must agree: a role the client
+        # retires but the server keeps leaves a session reporting needs_input with
+        # no card on screen, and a later rehydration re-renders a card whose
+        # answer channel is gone.
+        #
+        # Gated on *broadcast*, which is what separates a live append from a
+        # REPLAY: `channel_slots._rebuild_window` (transcript rotation recovery),
+        # `chat_fork` and `session_transfer` all re-append historical rows with
+        # `broadcast=False`. Replaying an old row says nothing about the question
+        # asked a moment ago, and clearing on it would retire a live card's status
+        # — and broadcast the retirement — for a message sent hours earlier.
+        #
+        # BLOCKING records are left alone either way: nothing a turn-consuming row
+        # can do resolves a parked wait, so clearing one would report the agent as
+        # working while its tool call is still stuck on the answer. Those are
+        # owned by the round-trip in request_question, which retires its own entry
+        # on every exit.
+        if role in _QUESTION_RETIRING_ROLES and broadcast and self._question_pending:
+            retired = [
+                cid for cid, rec in self._question_pending.items() if not rec.get("blocking")
+            ]
+            self._question_pending = {
+                cid: rec for cid, rec in self._question_pending.items() if rec.get("blocking")
+            }
+            # Announce it: a retirement that only mutates state is invisible to a
+            # second window and to a /pending response already in flight, either
+            # of which would then re-render a card whose answer was just sent —
+            # and submitting that card appends a duplicate turn.
+            if retired and self._on_question_retired:
+                try:
+                    self._on_question_retired(self.key, retired)  # type: ignore[operator]
+                except Exception:
+                    pass
         msg: dict[str, Any] = {
             "role": role,
             "content": content,
@@ -1989,6 +2067,25 @@ class _ChatSlot:
             and bool(self.messages)
             and last_conv_role == "assistant"
         )
+        # needs_input: an unanswered question CARD is on screen and the agent
+        # cannot move past it.
+        #
+        # Scoped to the card on purpose. It exists to correct a status that would
+        # otherwise be WRONG, not to add one: a blocking ask_question parks the
+        # turn mid-flight, so `self.running` stays true and the row would read
+        # "Thinking…" forever while nothing can advance without the user. That is
+        # why it is NOT gated on `self.running`.
+        #
+        # A turn that merely ENDED — including one ending in an [OPTIONS:] tag —
+        # is not this. Every finished turn is waiting on the user, so a status
+        # that lights on them says nothing (the same reason `waiting_for_input`
+        # cannot carry a badge), and the row already carries the last message plus
+        # the unread dot. Raising it there only displaced the message and hid the
+        # live turn status behind a constant string.
+        #
+        # Separate from `pending_approval`, whose answer is allow/deny on a tool
+        # rather than input, and which keeps its own precedence and label.
+        needs_input = bool(self._question_pending)
         # If an approval is pending, surface the tool metadata from the most
         # recent unresolved permission message so the Board can show inline
         # Approve/Trust/Reject buttons without a second API call.
@@ -2045,6 +2142,7 @@ class _ChatSlot:
             "pending_approval_info": pending_approval_info,
             "last_activity_ts": last_activity_ts,
             "waiting_for_input": waiting_for_input,
+            "needs_input": needs_input,
             "stop_state": self._stop_state,
             # In-flight `wait` sleep, or None. Carries the absolute deadline the
             # transcript counts down against and the wait_id the "End wait"
@@ -2114,6 +2212,15 @@ class DashboardState:
     _slots_push_suspend: int = 0
     _slots_push_pending: bool = False
     restoring_open_slots: bool = False
+    # push_slots_update() coalescing state, on that same read path. The lock
+    # defaults to None rather than to a shared Lock(): a None lock means "no
+    # coalescing", so a __new__-built state broadcasts straight through instead
+    # of every instance in the process contending on one class-level mutex.
+    # __init__ installs the real per-instance lock.
+    _slots_broadcast_lock: "threading.Lock | None" = None
+    _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
+    _slots_broadcast_loop: "asyncio.AbstractEventLoop | None" = None
+    _slots_broadcast_last: float = 0.0
     # Keys the last open-tab restore could not read (not keys it proved absent).
     # _persist_open_slots folds these back into the snapshot so a transient read
     # failure cannot erase the reopen seed. The class-level baseline is an
@@ -2169,7 +2276,7 @@ class DashboardState:
         # Read by the /api/mcp-gateway/* handlers off request.app['state'].
         self._mcp_gateway_manager: Any = None  # GatewayManager | None
         self._mcp_gateway_apply: Any = None  # async (enabled: bool) -> dict
-        self._mcp_gateway_apply_poolable: Any = None  # async () -> dict
+        self._mcp_gateway_apply_stub: Any = None  # async () -> dict
         # Secretary subsystem removed; kept as permanent None for apps/routes.py
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)
@@ -2254,6 +2361,9 @@ class DashboardState:
         # Depth + pending flag for suspend_slots_push(); see that method.
         self._slots_push_suspend = 0
         self._slots_push_pending = False
+        # Time-based coalescing state for push_slots_update(). Guarded by a
+        # threading.Lock because callers are not all on the event loop.
+        self._slots_broadcast_lock = threading.Lock()
         # True while the startup open-tab restore is in flight. Suppresses the
         # open_slots.json snapshot so a periodic flush cannot overwrite the file
         # being restored from with a half-populated slot set — see
@@ -2367,6 +2477,9 @@ class DashboardState:
         self._refine_error: str = ""
         self._terminal_sessions: dict[str, Any] = {}  # PTY sessions for CLI panel
         self._terminal_reaper: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._browser_snapshot_pruner: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._browser_install_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._browser_install_error: str | None = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.
@@ -3042,8 +3155,150 @@ class DashboardState:
         :meth:`_redact_questions` (may raise ``ValueError`` on a post-redaction
         collapse). Owner-only, same grounds as request_question's broadcast."""
         safe_questions = self._redact_questions(questions)
-        payload = {"slot": slot_key, "questions": safe_questions, "ts": time.time()}
+        card_id = f"card-{uuid.uuid4().hex[:16]}"
+        # Recorded BEFORE the delivery await, and even when nothing is delivered.
+        # Ordering: delivery can park on a backpressured socket, and a user row
+        # landing in that window would find no record to retire — then the mark
+        # would arrive afterwards and strand an answered session in needs_input.
+        # Zero clients means no tab is open, not that the ask went away: the agent
+        # is still waiting, and the status is what says so when the user returns.
+        self.mark_question_pending(
+            slot_key, blocking=False, card_id=card_id, questions=safe_questions
+        )
+        payload = {
+            "slot": slot_key,
+            "card_id": card_id,
+            "questions": safe_questions,
+            "ts": time.time(),
+        }
         return int(await self.deliver_ws_owners("question_card", payload))
+
+    def mark_question_pending(
+        self,
+        slot_key: str,
+        *,
+        blocking: bool,
+        card_id: str,
+        questions: list[dict] | None = None,
+    ) -> None:
+        """Record an unanswered agent question on *slot_key* and push the status.
+
+        One entry per ask, keyed by *card_id*, so a blocking ask that overlaps
+        another adds to the status rather than replacing it. A stateless card is
+        the exception and supersedes any earlier stateless card — see below.
+
+        The map needs no capacity cap, and must not have one: an entry is only
+        ever dropped by a retirement path, because dropping a blocking entry would
+        clear the status of an ask_question call still parked on its future and
+        report a stuck session as idle. Its size is bounded by construction — at
+        most ONE stateless entry per slot, and one blocking entry per in-flight
+        ask_question request, each of which holds a live HTTP request bounded by
+        ``_QUESTION_TIMEOUT_MAX``.
+
+        *questions* (already redacted) is stored for a STATELESS card so a
+        reloaded tab can re-render it: the card is a one-shot broadcast with no
+        transcript row, so without this the status would outlive the only surface
+        that could answer or dismiss it. A blocking ask needs no copy — its
+        payload lives in ``_pending_questions`` for as long as the wait does.
+
+        Unknown slot keys are ignored: a question addressed at a slot that no
+        longer exists has nobody to show a status to, and the caller's own
+        no-slot handling (a 404 from the HTTP endpoint, a dropped broadcast)
+        already covers the case.
+        """
+        slot = self._slots.get(slot_key)
+        if slot is None or not card_id:
+            return
+        if not blocking:
+            # The frontend holds ONE card per slot, so a second stateless card
+            # REPLACES the first on screen. Keeping both records would leave the
+            # replaced one unreachable — no card to answer or dismiss — and its
+            # entry would hold needs_input true until some later message swept it
+            # up. Mirror the UI's own invariant instead. Blocking records are not
+            # collapsed: each parked round-trip is separately answerable and must
+            # keep its own entry.
+            for cid, rec in list(slot._question_pending.items()):
+                if not rec.get("blocking"):
+                    slot._question_pending.pop(cid, None)
+        entry: dict = {"ts": time.time(), "blocking": blocking}
+        if questions is not None:
+            entry["questions"] = questions
+        slot._question_pending[card_id] = entry
+        self._push_slots()
+
+    def clear_question_pending(
+        self,
+        slot_key: str,
+        *,
+        blocking: bool | None = None,
+        card_id: str | None = None,
+    ) -> bool:
+        """Retire unanswered-question records on *slot_key*. True if any went.
+
+        Two independent filters, and a non-matching entry is LEFT IN PLACE rather
+        than cleared:
+
+        ``blocking`` — retire only entries with that flag, so the dismiss route
+        cannot report a session as unblocked while its tool call is still parked.
+
+        ``card_id`` — retire only THAT ask. Both halves of the identity matter: a
+        dismissal is a round-trip, so the card it was clicked on can be replaced
+        by a newer one before the request lands, and a resolving ask must not take
+        an overlapping ask's status with it.
+
+        The return value is the caller's proof that something changed, which is
+        what lets the dismiss endpoint answer 404 for a card that is already gone
+        instead of reporting a no-op as success.
+        """
+        slot = self._slots.get(slot_key)
+        if slot is None or not slot._question_pending:
+            return False
+        doomed = [
+            cid
+            for cid, rec in slot._question_pending.items()
+            if (card_id is None or cid == card_id)
+            and (blocking is None or bool(rec.get("blocking")) == blocking)
+        ]
+        if not doomed:
+            return False
+        for cid in doomed:
+            slot._question_pending.pop(cid, None)
+        # Same announcement the append path makes, for the same reason: every
+        # client must drop a retired card, including one whose /pending response
+        # was already in flight when the retirement landed.
+        self._broadcast_question_retired(slot_key, doomed)
+        self._push_slots()
+        return True
+
+    def _broadcast_question_retired(self, slot_key: str, card_ids: list[str]) -> None:
+        """Tell owner clients that *card_ids* on *slot_key* are retired.
+
+        Reuses the ``question_card_resolved`` event the blocking round-trip
+        already broadcasts, keyed by ``card_id`` instead of ``ask_id``, so the
+        frontend has one retirement path and one watermark for both kinds rather
+        than a parallel mechanism for each.
+        """
+        for cid in card_ids:
+            if not cid:
+                continue
+            try:
+                self.broadcast_ws_owners(
+                    "question_card_resolved", {"card_id": cid, "slot": slot_key}
+                )
+            except Exception:
+                self._log.warning("WS broadcast failed for card retirement", exc_info=True)
+
+    def _push_slots(self) -> None:
+        """Broadcast a slots snapshot, swallowing a failure.
+
+        A status marker is not worth propagating an exception into the question
+        round-trip it decorates: the payload is rebuilt from slot state on every
+        later push, so a dropped one self-corrects.
+        """
+        try:
+            self.push_slots_update()
+        except Exception:
+            self._log.debug("push_slots_update failed after question status change", exc_info=True)
 
     async def request_question(
         self,
@@ -3080,6 +3335,11 @@ class DashboardState:
         # Registered only now that the payload is known-good: an early raise
         # above must not leave an orphan future nothing will ever resolve.
         self._question_futures[ask_id] = fut
+        # Same record the stateless card sets, flagged blocking and identified by
+        # the ask_id: this turn is parked on the answer, so the session reads as
+        # running AND waiting. Marked before the broadcast, so no client can act
+        # on a card the status does not yet know about.
+        self.mark_question_pending(slot_key, blocking=True, card_id=ask_id)
         # Owner-only: the payload carries the model-authored question text and
         # options addressed to the dashboard owner. A plain broadcast_ws would
         # also deliver it to non-owner sessions, which would defeat the
@@ -3097,6 +3357,12 @@ class DashboardState:
         finally:
             self._pending_questions.pop(ask_id, None)
             self._question_futures.pop(ask_id, None)
+            # One retirement point for every exit — answered, dismissed, timed
+            # out, cancelled — so no path can leave the slot claiming it is
+            # still waiting on a question nothing is blocked on. Scoped to THIS
+            # ask's record (blocking, by ask_id), so a question that overlapped
+            # this one keeps its own status.
+            self.clear_question_pending(slot_key, blocking=True, card_id=ask_id)
             # Tell every owner client to drop the card — otherwise a timed-out
             # or cancelled question stays clickable and submitting it 404s.
             # Owner-scoped to match the card broadcast: a non-owner never
@@ -3148,38 +3414,55 @@ class DashboardState:
                 pass
             await asyncio.get_running_loop().run_in_executor(None, self._flush_dirty_slots)
 
+    def flush_slot_now(self, slot: _ChatSlot) -> None:
+        """Write ONE dirty slot to disk, with the flush loop's bookkeeping.
+
+        Shared with :meth:`_flush_dirty_slots` so the generation-compare contract
+        below lives in exactly one place. Callers that need a slot's pending
+        appends to be ON DISK before they read its transcript use this instead of
+        waiting up to ``_FLUSH_INTERVAL`` for the loop: the session-summary pass
+        stamps a cache signature from the transcript's mtime, so a pending write
+        landing afterwards invalidates the signature it just captured.
+
+        Clearing ``_dirty`` matters as much as the write. A caller that only
+        wrote the bytes would leave the slot dirty, the loop would re-save it
+        moments later, and the mtime would move again anyway.
+        """
+        if not self.conversation_log or not slot._dirty or not slot.messages:
+            return
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        # Clear the dirty bit only if NOTHING re-marked the slot while this save
+        # was running. This can run on an executor thread while the event loop
+        # keeps mutating the slot underneath it, so a plain post-save
+        # `_dirty = False` would overwrite a mark set DURING the save (e.g.
+        # _flush_file_changes attaching file_changes) — the stale snapshot would
+        # be the last thing written and every later pass would skip the slot, so
+        # the late mutation would never reach disk.
+        #
+        # The generation compare is used instead of consuming the bit up front
+        # because `_dirty` must stay True for the whole save: `chat_fork` reads
+        # it as "unpersisted state exists" (a False read makes it fork from
+        # stale disk), and `_save_slot_to_history`'s resumed-slot no-op guard is
+        # written assuming a dirty slot still reads dirty during the save.
+        # See the `_dirty` property for both contracts.
+        gen = slot._dirty_gen
+        try:
+            _save_slot_to_history(self, slot)
+        except Exception:
+            # Leave _dirty set so the next 5s pass retries.
+            logger.warning("Flush failed for slot %s", slot.key, exc_info=True)
+        else:
+            if slot._dirty_gen == gen:
+                slot._dirty = False
+
     def _flush_dirty_slots(self) -> None:
         """Write any slot with new messages to its JSONL file."""
         if not self.conversation_log:
             return
-        from kiro_crew.dashboard.chat import _save_slot_to_history
 
         for slot in list(self._slots.values()):
-            if not slot._dirty or not slot.messages:
-                continue
-            # Clear the dirty bit only if NOTHING re-marked the slot while this
-            # save was running. This runs on an executor thread and the event loop
-            # keeps mutating the slot underneath it, so a plain post-save
-            # `_dirty = False` would overwrite a mark set DURING the save (e.g.
-            # _flush_file_changes attaching file_changes) — the stale snapshot
-            # would be the last thing written and every later pass would skip the
-            # slot, so the late mutation would never reach disk.
-            #
-            # The generation compare is used instead of consuming the bit up front
-            # because `_dirty` must stay True for the whole save: `chat_fork` reads
-            # it as "unpersisted state exists" (a False read makes it fork from
-            # stale disk), and `_save_slot_to_history`'s resumed-slot no-op guard
-            # is written assuming a dirty slot still reads dirty during the save.
-            # See the `_dirty` property for both contracts.
-            gen = slot._dirty_gen
-            try:
-                _save_slot_to_history(self, slot)
-            except Exception:
-                # Leave _dirty set so the next 5s pass retries.
-                logger.warning("Flush failed for slot %s", slot.key, exc_info=True)
-            else:
-                if slot._dirty_gen == gen:
-                    slot._dirty = False
+            self.flush_slot_now(slot)
         # Snapshot the live tab set so a gateway restart can restore exactly
         # the tabs the user had open, regardless of last-message age. Without
         # this, restore_recent_sessions only brings back sessions whose
@@ -3803,6 +4086,7 @@ class DashboardState:
             slot.title = pretty_title
         slot._tab_id = uuid.uuid4().hex[:12]
         slot._on_message = self._broadcast_chat_message
+        slot._on_question_retired = self._broadcast_question_retired
         slot._app = app
         if memory_mode and memory_mode != "persistent":
             self._restricted_keys.add(f"dashboard:{name}")
@@ -3982,11 +4266,12 @@ class DashboardState:
         #
         # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
         #    appends the banner with a real `oauth_url`, already gated by
-        #    _oauth_url_contains_credential — a gate that deliberately exempts OAuth
-        #    params from the query-length / base64 heuristics because those
-        #    "would reject every real OAuth URL". Running _redact_meta_for_role here
-        #    would blank a genuine Google/GitHub consent URL and break the user's
-        #    ability to authorize an MCP server.
+        #    _oauth_url_contains_credential — the shared security gate, which
+        #    exempts standard high-entropy OAuth values only at exact code-owned
+        #    authorization endpoints while scanning everything else fail-closed.
+        #    Running _redact_meta_for_role here would blank a genuine
+        #    Google/GitHub consent URL and break the user's ability to authorize
+        #    an MCP server.
         # 2. chat_utils imports from this module, so importing the redactors the
         #    other way would be a cycle.
         #
@@ -4493,25 +4778,23 @@ class DashboardState:
 
         Used by persistence helpers where the caller needs to know about
         write failures (e.g. to return HTTP 500).
+
+        Delegates to :func:`atomic_write`, which re-raises after cleaning up
+        its temp file, so the no-swallowing contract above is unchanged. It
+        also carries the Windows ``os.replace`` sharing-violation retry that
+        this hand-rolled copy lacked.
+
+        Content stays ``bytes`` rather than ``str`` on purpose: text mode
+        applies universal-newline translation, which would rewrite any ``\n``
+        inside the JSON on Windows.
+
+        ``mode=0o600`` is explicit because the hand-rolled version created its
+        temp with ``tempfile.mkstemp`` and never widened it, so folders.json,
+        tags.json, tag_boards.json and cron_folders.json all publish at 0o600
+        today. The helper otherwise falls back to the umask default, normally
+        0o644, which would widen all four.
         """
-        payload = json.dumps(data).encode()
-        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        try:
-            # fdopen takes ownership of fd; file-object write() guarantees
-            # the full buffer is written or an exception is raised (a bare
-            # os.write may return a short count silently, which would let
-            # os.replace() install truncated JSON).
-            with os.fdopen(fd, "wb") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, str(path))
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_write(path, json.dumps(data).encode(), fsync=True, mode=0o600)
 
     @staticmethod
     def _atomic_write_json(path: Path, data: Any) -> None:
@@ -4625,9 +4908,19 @@ class DashboardState:
     def _slot_links(self, slot: _ChatSlot) -> tuple[list[dict[str, Any]], bool, str, str]:
         """Build the redacted channel-neutral link projection for one slot."""
         # circular import: chat imports state at module scope.
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.chat_utils import (
+            effective_session_key,
+            mirror_is_paused,
+            slack_mirror_is_paused,
+        )
 
         session_key = effective_session_key(slot)
+        # Resolved once per slot rather than per row: all three are storage reads,
+        # and a session holds at most one Slack thread, one born-in conversation
+        # and one mirror binding.
+        slack_paused = slack_mirror_is_paused(self, session_key)
+        mirror_paused = mirror_is_paused(self, session_key)
+        origin_paused = mirror_is_paused(self, session_key, origin=True)
         mirror: ChannelLink | None = None
         persisted_ts: str | None = None
         persisted_channel: str | None = None
@@ -4681,6 +4974,22 @@ class DashboardState:
                     "target": _redacted_link_target(channel_id),
                     "direction": direction,
                     "live": self._channel_link_is_live(normalized),
+                    # Real on EVERY row, origin included: the conversation a
+                    # session was born in can be disconnected too, so it stops
+                    # syndicating there and the session carries on in the
+                    # dashboard. `direction` still records the provenance the
+                    # sidebar mark needs; it no longer decides whether the row
+                    # has a control.
+                    #
+                    # Keyed to the row's SOURCE, not just its channel: a session
+                    # born in Discord that also mirrors to Telegram draws two
+                    # non-Slack rows, and while both read one value, muting
+                    # either silently muted the other.
+                    "paused": (
+                        slack_paused
+                        if channel_type == SLACK_NAMESPACE
+                        else origin_paused if direction == "origin" else mirror_paused
+                    ),
                 }
             )
 
@@ -4729,9 +5038,32 @@ class DashboardState:
                 "out",
             )
 
+        if genuine_slack and slack_origin_self_link:
+            # The conversation a session was BORN in gets a row too. Suppressing
+            # it was the last place a channel appeared with no control at all:
+            # you can stop a Slack-born session syndicating to its thread and
+            # carry on in the dashboard, and a human reply in that thread brings
+            # it back. It stays `origin` so the sidebar keeps showing where the
+            # conversation came from — provenance is history and survives a
+            # disconnect; only the delivery indicator reflects the mute.
+            append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "origin")
+
         if genuine_slack and not slack_origin_self_link:
             slack_namespace = _split_namespaced_channel_id(slack_channel)
             visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
+            # A Slack ROW accompanies `slack_linked=True` unconditionally. The
+            # dashboard's channel control is built from `links` alone — it no
+            # longer synthesizes a Slack row from this boolean, because a
+            # synthesized row cannot know `paused` and so rendered a muted thread
+            # as connected. That makes a True here with no row worse than a
+            # cosmetic gap: the session IS linked and the menu would offer to
+            # connect it. Guaranteed here rather than left to hold incidentally
+            # across the branches above.
+            if not any(
+                row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin"
+                for row in links
+            ):
+                append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "out")
             return links, True, visible_slack_channel, slack_ts or ""
         return links, False, "", ""
 
@@ -4789,16 +5121,99 @@ class DashboardState:
                 self.push_slots_update()
 
     def push_slots_update(self) -> None:
-        """Push slots, keeping provider status confined to owner websockets."""
-        from kiro_crew.dashboard.handlers.source_providers import (
-            gitlab_hosts_generation,
-        )
+        """Push slots, keeping provider status confined to owner websockets.
 
+        Coalesces on a leading plus trailing edge: the first call after an idle
+        period broadcasts immediately, further calls inside the window are
+        absorbed, and one trailing broadcast carries the final state. A single
+        chat turn fires several of these and each one re-serializes every slot,
+        so an uncoalesced burst redraws the whole sidebar once per mutation for
+        what the user sees as one change. The trailing flush re-serializes at
+        delivery time, so a coalesced frame is never a stale frame.
+        """
         if self._slots_push_suspend:
             # Inside suspend_slots_push(); remember that a push is owed and let the
             # outermost block emit a single coalesced broadcast on exit.
             self._slots_push_pending = True
             return
+
+        now = time.monotonic()
+        broadcast_now = False
+        lock = self._slots_broadcast_lock
+        if lock is None:
+            # Partially-constructed state (built via __new__): no coalescing.
+            self._do_slots_broadcast()
+            return
+
+        with lock:
+            if self._slots_broadcast_loop is None:
+                self._slots_broadcast_loop = self._running_loop()
+
+            elapsed = now - self._slots_broadcast_last
+            if elapsed >= _SLOTS_BROADCAST_INTERVAL_S:
+                self._slots_broadcast_last = now
+                if self._slots_broadcast_timer is not None:
+                    self._slots_broadcast_timer.cancel()
+                    self._slots_broadcast_timer = None
+                broadcast_now = True
+            elif self._slots_broadcast_timer is None:
+                # Scheduling onto the captured loop is preferred over broadcasting
+                # from a foreign thread; a closed loop falls back to an immediate send.
+                loop = self._slots_broadcast_loop
+                remaining = _SLOTS_BROADCAST_INTERVAL_S - elapsed
+                try:
+                    if loop is None:
+                        self._slots_broadcast_last = now
+                        broadcast_now = True
+                    elif loop is self._running_loop():
+                        self._slots_broadcast_timer = loop.call_later(
+                            remaining, self._trailing_slots_flush
+                        )
+                    else:
+                        loop.call_soon_threadsafe(self._schedule_trailing_flush, remaining)
+                except RuntimeError:
+                    self._slots_broadcast_last = now
+                    broadcast_now = True
+
+        # serialize_slots() and _broadcast() are the expensive half; running them
+        # outside the lock stops a cross-thread caller from blocking behind them.
+        if broadcast_now:
+            self._do_slots_broadcast()
+
+    @staticmethod
+    def _running_loop() -> asyncio.AbstractEventLoop | None:
+        """Return the running loop, or None when called off the event loop."""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    def _schedule_trailing_flush(self, delay: float) -> None:
+        """Arm the trailing flush. Must run ON the event loop."""
+        lock = self._slots_broadcast_lock
+        if lock is None:
+            return
+        with lock:
+            if self._slots_broadcast_timer is not None:
+                return
+            self._slots_broadcast_timer = asyncio.get_running_loop().call_later(
+                delay, self._trailing_slots_flush
+            )
+
+    def _trailing_slots_flush(self) -> None:
+        """Trailing-edge callback: broadcast whatever the state is now."""
+        lock = self._slots_broadcast_lock
+        if lock is not None:
+            with lock:
+                self._slots_broadcast_timer = None
+                self._slots_broadcast_last = time.monotonic()
+        self._do_slots_broadcast()
+
+    def _do_slots_broadcast(self) -> None:
+        """Serialize and broadcast the slot list. Bypasses coalescing."""
+        from kiro_crew.dashboard.handlers.source_providers import (
+            gitlab_hosts_generation,
+        )
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         slots_data = self.serialize_slots()
@@ -4961,6 +5376,18 @@ class DashboardState:
                             "deleted": note.get("deleted", False),
                         },
                     }
+                )
+            elif msg_type == "session_summary":
+                # Typed envelope, for the same reason as artifact_update above.
+                # Without it this event falls into the generic `notification`
+                # fallback, where two things go wrong: the client's
+                # `case 'session_summary'` never matches (so the panel is never
+                # invalidated and only a reload shows a new summary — defeating
+                # the push-on-change design that lets the panel skip polling),
+                # and the payload is dispatched as a Notification, putting one
+                # entry with no `ts` in the bell feed.
+                ws_msg = json.dumps(
+                    {"type": "session_summary", "data": {"key": note["key"]}}
                 )
             elif msg_type == "chat_message":
                 chat_data: dict[str, Any] = {

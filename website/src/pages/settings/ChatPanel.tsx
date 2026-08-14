@@ -95,11 +95,6 @@ const COMPLETION_KEEP_CHARS_MIN = 0
 const COMPLETION_KEEP_CHARS_MAX = 512000
 const COMPLETION_KEEP_CHARS_DEFAULT = 3000
 
-const CHUNK_BUDGET_MIN = 0
-// Mirrors the bound in the backend allowlist (handlers/core.py _EDITABLE_CONFIG).
-const CHUNK_BUDGET_MAX = 10000
-const CHUNK_BUDGET_DEFAULT = 150
-
 export function ChatPanel() {
   const qc = useQueryClient()
   const [chatCfg, setChatCfg] = useState<ChatConfig>(loadChatConfig)
@@ -156,6 +151,7 @@ export function ChatPanel() {
   // ── KiroCrew config (server-side) ──
   const mcQ = useQuery<{
     session?: { autocompact_pct?: number }
+    session_summary?: { enabled?: boolean }
     agent?: {
       model?: string
       role_models?: { background?: string; subagent?: string }
@@ -166,12 +162,6 @@ export function ChatPanel() {
       completion_keep_chars?: number
     }
     dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
-    knowledge?: {
-      auto_add_documents?: boolean
-      auto_register_project_docs?: boolean
-      auto_ingest_artifacts?: boolean
-      auto_ingest_chunk_budget?: number
-    }
   }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
@@ -198,6 +188,14 @@ export function ChatPanel() {
     mutationFn: (v: boolean) => api.patchConfig('dashboard.prevent_sleep', v),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_dashboard_config')),
+  })
+
+  // ── Session summaries (server-side; spends tokens per changed turn) ──
+  const summaryEnabled = mcCfg?.session_summary?.enabled ?? false
+  const summaryMut = useMutation({
+    mutationFn: (v: boolean) => api.patchConfig('session_summary.enabled', v),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
   })
 
   // "Other" reveals a free-text role. Typed locally and committed on blur /
@@ -260,30 +258,6 @@ export function ChatPanel() {
       )
     },
   })
-
-  const [localChunkBudget, setLocalChunkBudget] = useState('')
-  const chunkBudgetInitRef = useRef(false)
-  useEffect(() => {
-    if (mcQ.data && !chunkBudgetInitRef.current) {
-      chunkBudgetInitRef.current = true
-      setLocalChunkBudget(
-        String(mcQ.data.knowledge?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT)
-      )
-    }
-  }, [mcQ.data])
-
-  const knowledgeMut = useMutation({
-    mutationFn: ({ path, value }: { path: string; value: boolean | number }) =>
-      api.patchConfig(path, value),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
-    onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_knowledge_setting'))
-      setLocalChunkBudget(
-        String(mcCfg?.knowledge?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT)
-      )
-    },
-  })
-  const knowledgeDisabled = !mcQ.isSuccess || knowledgeMut.isPending
 
   const keepModeMut = useMutation({
     mutationFn: (v: CompletionKeepMode) => api.patchConfig('agent.completion_keep', v),
@@ -580,6 +554,7 @@ export function ChatPanel() {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} description={i18nT('pages.settings.chatPanel.how_terse_the_agent_s_prose_is_ultra_concise_cap')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.ultra_concise_3_sentences')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} description={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_token_usage')} description={i18nT('pages.settings.chatPanel.display_used_and_total_tokens_next_to_the_contex')} checked={chatCfg.showContextTokens} onChange={v => setChat('showContextTokens', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? i18nT('pages.settings.chatPanel.disabled_by_instance_config_tips_enabled_false') : i18nT('pages.settings.chatPanel.show_occasional_feature_discovery_tips_above_the')} checked={!!tipsQ.data && tipsQ.data.enabled_config && !tipsQ.data.opted_out} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>
@@ -596,6 +571,7 @@ export function ChatPanel() {
           {dashCfg.restore_sessions && (
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} description={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
         </SettingsCard>
       </SettingsSection>
 
@@ -614,60 +590,6 @@ export function ChatPanel() {
             }
             disabled={!mcQ.isSuccess}
             configKey="session.autocompact_pct"
-          />
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection title={i18nT('pages.settings.chatPanel.knowledge_library')}>
-        <SettingsCard index={9}>
-          <SettingsToggle
-            label={i18nT('pages.settings.chatPanel.auto_add_documents')}
-            description={i18nT('pages.settings.chatPanel.let_the_agent_add_documents_it_reads_while_workin')}
-            checked={mcCfg?.knowledge?.auto_add_documents ?? false}
-            onChange={v => knowledgeMut.mutate({ path: 'knowledge.auto_add_documents', value: v })}
-            disabled={knowledgeDisabled}
-          />
-          <SettingsToggle
-            label={i18nT('pages.settings.chatPanel.auto_register_project_documents')}
-            description={i18nT('pages.settings.chatPanel.register_the_documents_of_each_project_you_work_i')}
-            checked={mcCfg?.knowledge?.auto_register_project_docs ?? false}
-            onChange={v =>
-              knowledgeMut.mutate({ path: 'knowledge.auto_register_project_docs', value: v })
-            }
-            disabled={knowledgeDisabled}
-          />
-          <SettingsToggle
-            label={i18nT('pages.settings.chatPanel.auto_add_saved_artifacts')}
-            description={i18nT('pages.settings.chatPanel.mirror_documents_you_save_as_artifacts_into_the_l')}
-            checked={mcCfg?.knowledge?.auto_ingest_artifacts ?? false}
-            onChange={v =>
-              knowledgeMut.mutate({ path: 'knowledge.auto_ingest_artifacts', value: v })
-            }
-            disabled={knowledgeDisabled}
-          />
-          <SettingsInput
-            label={i18nT('pages.settings.chatPanel.auto_ingest_limit_per_scan')}
-            aria-label={i18nT('pages.settings.chatPanel.auto_ingest_limit_per_scan')}
-            hint={i18nT('pages.settings.chatPanel.how_much_an_automatically_registered_source_may_i', {
-              count: CHUNK_BUDGET_DEFAULT,
-            })}
-            type="number"
-            value={localChunkBudget}
-            min={CHUNK_BUDGET_MIN}
-            max={CHUNK_BUDGET_MAX}
-            step={50}
-            onChange={setLocalChunkBudget}
-            onBlur={() => {
-              const n = parseInt(localChunkBudget, 10)
-              if (isNaN(n) || n < CHUNK_BUDGET_MIN || n > CHUNK_BUDGET_MAX) {
-                setLocalChunkBudget(
-                  String(mcCfg?.knowledge?.auto_ingest_chunk_budget ?? CHUNK_BUDGET_DEFAULT)
-                )
-                return
-              }
-              knowledgeMut.mutate({ path: 'knowledge.auto_ingest_chunk_budget', value: n })
-            }}
-            disabled={knowledgeDisabled}
           />
         </SettingsCard>
       </SettingsSection>

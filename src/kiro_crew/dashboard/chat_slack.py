@@ -26,7 +26,9 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import DashboardState, _log_task_exception
+from kiro_crew.messaging.link import SLACK_NAMESPACE
 from kiro_crew.platform.context import redact_via_context
+from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.security import redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.slack.channel_resolver import _CACHE_FILENAME, ChannelNameResolver
@@ -552,6 +554,119 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
     )
     state.push_slots_update()
     return web.json_response({"ok": True, "was_linked": cleared})
+
+
+async def api_chat_slot_slack_pause(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/slack-pause — set whether turns reach the thread.
+
+    Body: ``{"paused": bool}``, defaulting to ``true``. This is the whole of the
+    dashboard's Slack connect/disconnect control for a session that already has a
+    thread, in BOTH directions — which is why it SETS a state rather than only
+    muting. Reconnecting by re-issuing ``slack-link`` cannot serve a session that
+    was BORN in its thread: there is no binding to re-establish, so the row would
+    render with no way back. One endpoint that sets either way keeps every row
+    behaving identically regardless of how its conversation started.
+
+    Disconnecting is not unlinking. The thread binding, both coordinate fields and
+    the reverse index all survive, so a reply in the thread still resolves to THIS
+    session and resumes it rather than forking a new one; only outbound turn
+    mirroring stops (see ``chat_utils.slack_mirror_is_paused`` for the exact
+    scope).
+
+    The write stays ON the event loop, matching ``slack-unlink``: the session map
+    has no cross-thread lock, so the loop is the only thing serialising its
+    writers, and a flag write moved into a worker could interleave with a
+    loop-side relink.
+
+    Idempotent, reporting the prior state as ``was_paused``. Auth posture is
+    identical to slack-link and slack-unlink — mixed-internal via the
+    ``/api/chat`` prefix, needing no new entry in either path set.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info.get("name") or request.match_info.get("slot", "")
+    slot = state.get_slot(name) or state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # Only an explicit boolean `false` connects. Everything else — a missing key,
+    # `null`, `0`, `""` — disconnects, because disconnecting only ever reduces
+    # what leaves the process, so ambiguous input should fail toward the quiet
+    # side rather than start delivering into a channel on a malformed request.
+    paused = body.get("paused", True) is not False
+
+    # The slot's OWN session key. Deriving it from the slot NAME would build
+    # "dashboard:slack:<ts>" for a channel-born slot and set the flag on a session
+    # that does not exist, leaving the real thread delivering.
+    session_key = effective_session_key(slot)
+    thread_ts, channel_id = state.sessions.get_slack_link(session_key)
+    if not (thread_ts and channel_id):
+        return web.json_response({"error": "not linked", "code": "slack_not_linked"}, status=409)
+
+    # Coerced, not passed through: this value is serialised into the response, so
+    # a SessionManager stub or an older implementation returning a non-bool would
+    # turn a working disconnect into a 500 at the JSON boundary.
+    # Called ON the loop deliberately, NOT via ``to_thread``. ``SessionMap._save``
+    # branches on whether its caller has a running loop: on the loop it marks the
+    # map dirty and schedules ONE debounced flush that does the disk write in a
+    # worker (#2405), so the loop never pays the write inline; with no running
+    # loop it writes inline on the calling thread. Offloading therefore selects
+    # the inline-write branch and does that write while holding ``_MAP_LOCK``, so
+    # any loop-side mutator then blocks the whole loop on the lock — strictly
+    # worse than calling it here. This is also why #2976 reverted the same idea.
+    was_paused = bool(state.sessions.set_slack_paused(session_key, paused))
+
+    # Posted INTO the Slack thread, not shown in the dashboard. Without it the
+    # thread simply dead-ends and anyone watching cannot tell a disconnected
+    # conversation from a stalled one. Only on the transition, so an idempotent
+    # re-disconnect stays silent. It states the fact and stops: that a reply
+    # reconnects is a given, not something to advertise.
+    #
+    # The note is EGRESS, so it is governed like any other send. The disconnect
+    # itself is NOT gated: disconnecting only ever reduces what leaves the
+    # process, and refusing it because the channel is denied would strand the user
+    # connected to a channel they are trying to leave. So a denial silences the
+    # note and keeps the disconnect.
+    if paused and not was_paused and state.slack_client:
+        note_permitted = False
+        try:
+            decision = await asyncio.to_thread(
+                vet_and_audit,
+                "channels",
+                SLACK_NAMESPACE,
+                session_key=session_key,
+                tool_name="chat.slack_disconnect_note",
+                fail_closed=True,
+            )
+            note_permitted = bool(getattr(decision, "permitted", False))
+        except Exception:
+            logger.debug("disconnect note governance check failed", exc_info=True)
+            note_permitted = False
+        if note_permitted:
+            try:
+                await state.slack_client.post_message(
+                    channel_id,
+                    "\U0001f50c _Disconnected — the conversation continues in the dashboard._",
+                    thread_ts,
+                )
+            except Exception:
+                logger.debug("disconnect note delivery failed", exc_info=True)
+
+    state.push_slots_update()
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.slack_pause" if paused else "chat.slack_resume",
+        outcome="noop" if was_paused == paused else "success",
+        source="dashboard",
+        resources=slot.key,
+    )
+    logger.info("slack-pause: %s paused=%s (was=%s)", slot.key, paused, was_paused)
+    return web.json_response({"ok": True, "was_paused": was_paused, "paused": paused})
 
 
 async def list_slack_channels(state: DashboardState) -> list[dict]:

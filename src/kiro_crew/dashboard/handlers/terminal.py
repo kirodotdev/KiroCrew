@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import struct
 import subprocess
 import time
@@ -168,6 +169,59 @@ def _resolve_cwd(cfg: dict, requested: str | None) -> str:
             return candidate
         logger.warning("terminal: ignoring invalid cwd %r", requested)
     return default
+
+
+def _resolve_shell(cfg: dict) -> tuple[str, str | None]:
+    """Resolve the shell program the terminal launches.
+
+    Resolution order is unchanged from the historical one — the configured
+    ``dashboard.terminal.shell``, else ``$SHELL`` (POSIX only), else the
+    platform default (``/bin/bash`` / ``powershell.exe``) — but each candidate
+    must now resolve to an executable (``shutil.which`` handles both absolute
+    paths and bare names on ``PATH``). A configured value that does not resolve
+    falls back rather than failing the open: a typo'd setting must never leave
+    the user without a terminal.
+
+    The value returned is the ABSOLUTE path ``shutil.which`` resolved, not the
+    candidate as written: the spawn runs with the session's cwd (the chat's
+    project directory), so a bare name would be resolved a second time there,
+    and a relative ``PATH`` entry would let a project-planted executable win a
+    race the validation here already decided. Pinning the resolved path makes
+    the program validated the program spawned.
+
+    Blocking note: ``shutil.which`` stats every ``PATH`` entry, so callers on
+    the event loop must run this via an executor (they do — see the three call
+    sites), never inline.
+
+    Returns ``(shell, rejected)`` where ``rejected`` is the configured value
+    when it was set but skipped, so callers can surface the fallback (session
+    response, log) instead of silently launching a different shell.
+
+    When no candidate resolves at all, the platform default is returned
+    unvalidated so the spawn's own error — not a silent substitution — is what
+    the user sees, matching the historical behavior on such a host.
+    """
+    configured = str(cfg.get("shell") or "").strip()
+    if configured:
+        resolved = shutil.which(configured)
+        if resolved:
+            return os.path.abspath(resolved), None
+    rejected = configured or None
+    if platform_compat.IS_WINDOWS:
+        candidates = ["powershell.exe"]
+    else:
+        env_shell = os.environ.get("SHELL", "")
+        candidates = ([env_shell] if env_shell else []) + ["/bin/bash"]
+    for cand in candidates:
+        resolved = shutil.which(cand)
+        if resolved:
+            # abspath (both branches): `which` joins the matching PATH entry
+            # verbatim, so a RELATIVE entry (PATH=bin:…) yields a relative
+            # result the spawn's project cwd would re-resolve — exactly the
+            # substitution pinning exists to prevent. Anchoring here binds the
+            # path to the gateway cwd the validation ran in.
+            return os.path.abspath(resolved), rejected
+    return candidates[-1], rejected
 
 
 def _proc_comm(pid: int) -> str | None:
@@ -464,8 +518,35 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
     registry = _get_registry(request)
     cfg = _get_config(request)
     max_sessions = cfg.get("max_sessions", _MAX_SESSIONS)
+    # Resolve the shell HERE, before the reservation region below: the
+    # resolution is a PATH scan (shutil.which stats every entry) that must run
+    # off-loop, and the spawn branches sit between the placeholder reservation
+    # and the session registration, where an added await would suspend the
+    # handler with the registry still holding the None placeholder — a window
+    # every concurrent reader of the registry would then observe. One hop per
+    # WS open; the reconnect path simply ignores the value.
+    shell, rejected_shell = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_shell, cfg,
+    )
 
-    # Check if reconnecting to existing session
+    # Check if reconnecting to existing session. A None VALUE under an
+    # existing key is another handler's reservation placeholder (set below,
+    # held across its awaits): treat it as "session already being opened" and
+    # refuse, instead of reading it as absent — two tabs racing the same
+    # unregistered session id would otherwise both pass the reservation check
+    # and spawn two PTYs, leaking one. This guards every await in this
+    # handler (the off-loop shell resolution above and ws.prepare below).
+    if session_id in registry and registry[session_id] is None:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.ws.open",
+            outcome="denied",
+            source="dashboard",
+            resources=f"session={session_id},reservation_in_flight=1",
+        )
+        return web.Response(
+            status=409, text="Terminal session is already being opened"
+        )
     existing = registry.get(session_id)
     if existing and not _sess_alive(existing):
         # Process died — clean up stale entry
@@ -528,7 +609,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # ctypes (stdlib, no extra dependency).
         from kiro_crew.conpty import WindowsPty
 
-        shell = str(cfg.get("shell") or "powershell.exe")
+        if rejected_shell:
+            logger.warning(
+                "terminal: configured shell %r not executable; falling back to %r",
+                rejected_shell, shell,
+            )
         cwd = _resolve_cwd(cfg, request.query.get("cwd"))
         if not os.path.isdir(cwd):
             cwd = os.path.expanduser("~")
@@ -559,6 +644,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             resources=f"session={session_id},pid={wp.pid},shell={shell}",
         )
     else:
+        if rejected_shell:
+            logger.warning(
+                "terminal: configured shell %r not executable; falling back to %r",
+                rejected_shell, shell,
+            )
         # Spawn new PTY
         master_fd, worker_fd = _pty.openpty()
         try:
@@ -567,12 +657,18 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 termios.TIOCSWINSZ,
                 struct.pack("HHHH", 24, 80, 0, 0),
             )
-            shell = str(cfg.get("shell") or os.environ.get("SHELL", "/bin/bash"))
             cwd = _resolve_cwd(cfg, request.query.get("cwd"))
             env = {
                 **os.environ,
                 "TERM": "xterm-256color",
                 "KIROCREW_TERMINAL": "1",
+                # Export the shell actually being spawned (already resolved to
+                # an absolute path). Without this, a configured shell that
+                # differs from the login shell leaves the inherited $SHELL
+                # pointing at the login shell, so programs that consult it
+                # (vim's :sh, tmux default-shell) open the wrong one. POSIX
+                # branch only: PowerShell does not consult $SHELL.
+                "SHELL": shell,
             }
             # Security: intentionally unsandboxed — this is the user's own
             # interactive terminal (like SSH), not agent-executed code.
@@ -800,7 +896,11 @@ async def api_terminal_create(request: web.Request) -> web.Response:
         )
 
     session_id = uuid.uuid4().hex[:12]
-    shell = cfg.get("shell") or os.environ.get("SHELL", "/bin/bash")
+    # Off-loop for the same reason as the spawn sites: the PATH scan must not
+    # stall the event loop at request rate.
+    shell, rejected_shell = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _resolve_shell, cfg,
+    )
     _sel().log_api_access(
         caller=caller,
         operation="terminal.session.create",
@@ -808,12 +908,19 @@ async def api_terminal_create(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"session={session_id}",
     )
-    return web.json_response(
-        {
-            "session_id": session_id,
-            "shell": shell,
-        }
-    )
+    body: dict = {
+        "session_id": session_id,
+        "shell": shell,
+    }
+    # Surface a rejected configured shell at the API level rather than
+    # silently substituting: an API caller can tell a typo'd setting from a
+    # deliberate default. The dashboard panel spawns via the WS handler and
+    # does not read these fields — its typo surface is the save-time Settings
+    # validation (config PATCH), with the spawn-site log as the backstop.
+    if rejected_shell:
+        body["shell_fallback"] = True
+        body["configured_shell"] = rejected_shell
+    return web.json_response(body)
 
 
 # Selection hand-off size cap. Generous for terminal selections (xterm buffers

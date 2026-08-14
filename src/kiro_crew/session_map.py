@@ -7,6 +7,7 @@ generic ChannelLink mirror map) for bidirectional sync.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -18,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
+from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -63,6 +65,14 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 # stay collectable — one leaked row per such thread would grow without bound.
 _DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG})
 
+# How long a deferred flush waits before serializing, so a burst of mutations
+# (a subagent wave calling ``set`` once per spawn) collapses into one write
+# instead of one write per mutation. Small on purpose: the window is also how
+# much recent state a crash can lose (the file stays a well-formed OLDER map —
+# see ``_write_payload``'s tmp+rename), and durability-critical points force
+# the write through :meth:`SessionMap.flush` rather than waiting it out.
+_FLUSH_DEBOUNCE_SECS = 0.05
+
 
 def _has_durable_flag(entry: dict) -> bool:
     """True iff *entry* carries a flag that must outlive its native session."""
@@ -70,6 +80,19 @@ def _has_durable_flag(entry: dict) -> bool:
     if not isinstance(flags, dict):
         return False
     return any(flags.get(name) for name in _DURABLE_FLAGS)
+
+
+def _survives_prune(entry: dict) -> bool:
+    """True iff *entry* holds state that must outlive its native session.
+
+    The ONE predicate behind every stale branch of :meth:`SessionMap.prune`, so
+    they cannot disagree about what a missing session file is allowed to take
+    with it. Two kinds of state qualify: a durable flag (a per-conversation
+    setting) and a channel binding — a Slack thread or a ``mirror`` — which is
+    the identity that routes a conversation back to its channel. Prune may clear
+    a stale ``sid`` on such an entry, but never discards the entry itself.
+    """
+    return bool(_has_durable_flag(entry) or entry.get("slack_thread_ts") or entry.get("mirror"))
 
 
 # Serializes every structural access to the map. MODULE-level, not per-instance,
@@ -183,11 +206,17 @@ class SessionMap:
        stale snapshot. A throwaway ``SessionMap()`` is therefore READ-ONLY —
        see ``session_transfer._join_layer_b`` for what a detached write costs.
 
-    Writes still happen synchronously on the caller's thread, which on the event
-    loop is a stall every task shares (~0.8 ms at today's map sizes, growing
-    linearly with entry count). Moving them off the loop is issue #2405, and the
-    lock is what makes that possible to attempt at all — before it, offloading a
-    single write made the map racy instead of non-blocking.
+    On the event loop, a mutation does not pay the disk write inline: it marks
+    the map dirty and a debounced flush task serializes UNDER the lock into an
+    immutable payload, then writes tmp+rename in a worker thread — ``_data``
+    never crosses the thread boundary, and the lock is never held across the
+    await (the ratchet in ``test_session_map_locking.py`` checks that). Off the
+    loop (CLI, tests, worker threads) writes stay inline and synchronous.
+    :meth:`flush` (sync) and :meth:`aflush` (awaited) are the deterministic
+    durability points; losing a pending flush leaves a well-formed OLDER file,
+    never a truncated one. The lock is what
+    makes the offload safe at all — before it, offloading a single write made
+    the map racy instead of non-blocking.
 
     SCOPE: the lock is in-PROCESS. Two gateways writing one map file would still
     lose updates, and nothing here changes that — the data-home singleton is what
@@ -201,6 +230,22 @@ class SessionMap:
         self._thread_to_session: dict[str, str] = {}  # slack_thread_ts → session_key
         self._batch_depth = 0
         self._batch_dirty = False
+        # Deferred-flush state (all mutated under _MAP_LOCK). ``_dirty`` records
+        # that in-memory state is ahead of the file; ``_flush_task`` is the one
+        # loop task owed for it. ``_snapshot_seq`` tickets each serialized
+        # snapshot and ``_written_seq`` (guarded by ``_io_lock``, not _MAP_LOCK)
+        # refuses a STALE payload: an in-flight thread write racing a forced
+        # inline write must not land an older map over a newer one. Keeping the
+        # worker's write off _MAP_LOCK is what keeps loop-side MUTATIONS from
+        # waiting on its disk I/O; the inline write paths (batch exit, flush,
+        # load-time migration) do queue behind it on _io_lock — they already
+        # paid an inline write before deferral existed, so that wait replaces
+        # like with like.
+        self._dirty = False
+        self._flush_task: asyncio.Task[None] | None = None
+        self._snapshot_seq = 0
+        self._written_seq = 0
+        self._io_lock = threading.Lock()
         self._load()
 
     @contextmanager
@@ -233,6 +278,11 @@ class SessionMap:
                 self._batch_depth -= 1
                 if self._batch_depth == 0 and self._batch_dirty:
                     self._batch_dirty = False
+                    # The batch's inline write below IS the flush for anything
+                    # deferred before the block started, so consume the dirty
+                    # mark too — otherwise an already-scheduled flush task would
+                    # wake and rewrite the identical state.
+                    self._dirty = False
                     self._write()
 
     def _load(self) -> None:
@@ -246,7 +296,7 @@ class SessionMap:
         ``asyncio.to_thread``) would hold the lock across it, so a loop-side
         ``set_slack_link`` would block on a worker's disk read and stall every
         gateway task with it. The two shared effects it does have —
-        ``_rebuild_thread_index`` and the migration ``_save`` — take the lock
+        ``_rebuild_thread_index`` and the migration ``_write`` — take the lock
         themselves, and both are bounded (see the class threading contract).
         """
         self._thread_to_session = {}
@@ -321,7 +371,13 @@ class SessionMap:
             self._data = new_data
             self._rebuild_thread_index()
             if migrated:
-                self._save()
+                # Inline, not deferred: this is a one-time legacy-format repair
+                # running from __init__ on an instance no task should capture,
+                # and readers of the FILE (a fresh instance, a cotenant scan)
+                # rely on the migrated shape being durable once construction
+                # returns. It costs nothing on the steady state — an already
+                # migrated map never takes this branch.
+                self._write()
         else:
             self._data = {}
 
@@ -371,25 +427,206 @@ class SessionMap:
 
     @_guarded
     def _save(self) -> None:
+        """Record that the file is owed a write, and arrange for one.
+
+        Three contexts, three behaviours:
+
+        - inside a :meth:`batched_save` block: mark the batch dirty; the block
+          exit writes once for the whole sequence (unchanged).
+        - on a thread running an event loop: mark dirty and schedule ONE
+          debounced flush task. The task serializes under the lock and does the
+          disk write in a worker thread, so the loop never pays the write
+          inline (issue #2405). A mutation landing while a flush is in flight
+          re-marks dirty, and the task loops until it observes a clean map, so
+          a trailing mutation is never dropped.
+        - no running loop (CLI, tests, worker threads): write inline on the
+          caller's thread. Worker threads may block on disk; the loop is the
+          only caller that must not.
+        """
         if self._batch_depth:
             self._batch_dirty = True
             return
-        self._write()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write()
+            return
+        self._dirty = True
+        task = self._flush_task
+        # ``done()`` covers a task that exited exceptionally without clearing
+        # itself; the loop-identity check covers a stale task bound to a loop
+        # that no longer runs (tests create a loop per test) — such a task can
+        # never wake, so it must not suppress scheduling on the live loop.
+        if task is None or task.done() or task.get_loop() is not loop:
+            self._flush_task = loop.create_task(self._flush_async())
+
+    @_guarded
+    def _take_pending_snapshot(self) -> tuple[str, int] | None:
+        """Atomically claim the pending flush: serialize now, or report clean.
+
+        Returns ``(payload, seq)`` when a write is owed, consuming the dirty
+        mark. Returns ``None`` — and retires ``_flush_task`` in the SAME
+        critical section — when the map is clean: clearing the task while still
+        holding the lock is what makes "task exists" a reliable reason for
+        :meth:`_save` to skip scheduling, with no window where a new mutation
+        sees a task that has already decided to exit. Retirement is
+        identity-checked so a superseded task (one whose loop went stale and
+        was replaced by :meth:`_save`) cannot un-register its replacement.
+        """
+        if not self._dirty:
+            if self._flush_task is asyncio.current_task():
+                self._flush_task = None
+            return None
+        self._dirty = False
+        return self._serialize()
+
+    @_guarded
+    def _serialize(self) -> tuple[str, int]:
+        """Snapshot ``_data`` as an immutable JSON string with a ticket.
+
+        The string is the ONLY thing that crosses the thread boundary —
+        ``_data`` itself never does. The ticket orders this snapshot against
+        every other snapshot so :meth:`_write_payload` can refuse to land a
+        stale one over a newer one.
+        """
+        self._snapshot_seq += 1
+        return json.dumps(self._data), self._snapshot_seq
+
+    async def _flush_async(self) -> None:
+        """Debounce, serialize under the lock, write off the loop; repeat.
+
+        Loops because coalescing must not lose the last write: a mutation that
+        lands while ``to_thread`` is writing re-marks dirty, and the next
+        iteration picks it up. Exits only via :meth:`_take_pending_snapshot`
+        observing a clean map (which retires the task under the lock).
+
+        The lock is NEVER held across an await — serialization happens inside
+        the guarded helpers, the write happens off-lock in a worker thread.
+        Cancellation re-owes any claimed-but-unwritten snapshot and does NOT
+        write (a cancellation handler that did disk I/O on the loop would hold
+        up the very teardown that cancelled it): pending state is landed by the
+        shutdown path awaiting :meth:`aflush`, or rescheduled by the next
+        mutation. A task cancelled before its first step never runs this body
+        at all — the same two nets cover it, because nothing here consumed the
+        dirty mark. A write failure restores the mark and retires the task so
+        a later mutation retries.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_FLUSH_DEBOUNCE_SECS)
+                snapshot = self._take_pending_snapshot()
+                if snapshot is None:
+                    return
+                payload, seq = snapshot
+                await asyncio.to_thread(self._write_payload, payload, seq)
+        except asyncio.CancelledError:
+            self._restore_dirty()
+            raise
+        except Exception:
+            logger.exception("Deferred session-map flush failed; will retry on next mutation")
+            self._restore_dirty()
+
+    @_guarded
+    def _restore_dirty(self) -> None:
+        """A claimed snapshot never landed: re-owe the flush, retire the task."""
+        self._dirty = True
+        if self._flush_task is asyncio.current_task():
+            self._flush_task = None
+
+    @_guarded
+    def _claim_for_flush(self) -> tuple[str, int] | None:
+        """Claim pending state for a durability write, or report nothing owed.
+
+        The shared predicate behind :meth:`flush` and :meth:`aflush`. Progress-
+        based, not just the dirty mark: a flush task that has already CLAIMED a
+        snapshot (consuming the mark) but whose worker-thread write has not
+        landed leaves ``_snapshot_seq`` ahead of ``_written_seq``, and treating
+        that as clean would hand the caller a stale file. A stale read of
+        ``_written_seq`` (it advances under ``_io_lock``, not this lock) only
+        errs toward one redundant write, never toward skipping a needed one.
+        """
+        if self._batch_depth:
+            return None
+        if not self._dirty and self._snapshot_seq <= self._written_seq:
+            return None
+        self._dirty = False
+        return self._serialize()
+
+    @_guarded
+    def flush(self) -> None:
+        """Force any pending deferred write to disk, synchronously.
+
+        The deterministic durability point for SYNC contexts (no running loop,
+        worker threads, tests): after this returns, the file reflects every
+        mutation made so far (a no-op inside a :meth:`batched_save` block,
+        whose exit already writes). The write queues behind any in-flight
+        worker write on ``_io_lock`` and lands with a newer ticket, so an
+        in-flight payload can never regress it. On the event loop prefer
+        :meth:`aflush`: this method blocks its calling thread on disk I/O.
+        """
+        snapshot = self._claim_for_flush()
+        if snapshot is None:
+            return
+        payload, seq = snapshot
+        self._write_payload(payload, seq)
+
+    async def aflush(self) -> None:
+        """Awaitable durability point: land pending state without blocking the loop.
+
+        Same progress-based contract as :meth:`flush`, but the disk write runs
+        in a worker thread, so a shutdown path awaiting this stays cancellable
+        and a wedged filesystem cannot hold the loop. Cancellation mid-write
+        re-owes the state (erring toward one redundant write — the orphaned
+        thread write may still land, ordered by its ticket) and re-raises so
+        the caller's deadline stays honest.
+        """
+        snapshot = self._claim_for_flush()
+        if snapshot is None:
+            return
+        payload, seq = snapshot
+        try:
+            await asyncio.to_thread(self._write_payload, payload, seq)
+        except asyncio.CancelledError:
+            self._restore_dirty()
+            raise
 
     @_guarded
     def _write(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                json.dump(self._data, f)
-            os.replace(tmp_path, str(self._path))
-        except Exception:
+        payload, seq = self._serialize()
+        self._write_payload(payload, seq)
+
+    def _write_payload(self, payload: str, seq: int) -> None:
+        """Land one serialized snapshot atomically; refuse to regress.
+
+        Runs on whatever thread the caller chose — the loop-side inline path
+        under ``_MAP_LOCK``, or a worker thread WITHOUT it (holding the map
+        lock across disk I/O in a thread would make a loop-side mutation wait
+        on the disk, the very stall the deferral removes). ``_io_lock`` orders
+        concurrent writers, and the ticket check drops a payload older than one
+        already on disk, so a slow in-flight flush cannot overwrite a newer
+        forced write. Both are PER-INSTANCE: they order this instance's own
+        writers against each other, not two instances sharing the file — that
+        remains covered by the class contract's rule 3 (a throwaway
+        ``SessionMap()`` is read-only, only the live map writes). tmp+rename
+        keeps a crash from ever leaving a truncated file: the worst case is a
+        well-formed OLDER map.
+        """
+        with self._io_lock:
+            if seq <= self._written_seq:
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, str(self._path))
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            self._written_seq = seq
 
     def _resolve_alias(self, key: str) -> "tuple[str, dict | None]":
         """Resolve *key* through the map's alias folds; return (matched_key, entry).
@@ -431,7 +668,11 @@ class SessionMap:
         if not entry:
             return None
         sid = entry["sid"]
-        if entry.get("provider") == "claude_code":
+        # Only kiro-cli keeps transcripts at a flat path this process can stat.
+        # For every other backend the sid's validity is decided by session/load
+        # itself, so skip the file check rather than pruning a live session.
+        # An absent label means kiro-cli, so normalize before comparing.
+        if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
             return sid
         sessions_dir = _kiro_sessions_dir()
         if sid and (sessions_dir / f"{sid}.json").exists():
@@ -538,14 +779,20 @@ class SessionMap:
     def prune(self) -> int:
         """Remove entries whose session files no longer exist.
 
-        An entry carrying a DURABLE flag is never deleted, and when its ``sid``
-        has gone stale the ``sid`` is cleared instead. A durable flag is a
+        An entry carrying a DURABLE flag or a channel binding is never deleted,
+        and when its ``sid`` has gone stale the ``sid`` is cleared instead —
+        :func:`_survives_prune` is the single predicate both stale branches ask,
+        so neither can start discarding what the other keeps. A durable flag is a
         per-conversation SETTING, not session state: it can be written before the
         conversation has ever run a turn (``/unlink`` as the very first message
         leaves no ``sid``, no thread and no mirror), and it must outlive the
-        native session the conversation happened to be using. Deleting the entry
-        either way would silently revert the setting at the next restart, and the
-        user's next message would land on the default they had just turned off.
+        native session the conversation happened to be using. A channel binding
+        (``slack_thread_ts``, ``mirror``) is the conversation's identity: it is
+        what routes an inbound channel message back to this session. Deleting the
+        entry either way would silently revert user state at the next restart —
+        the setting returns to the default they had just turned off, or the next
+        message from the channel opens a fresh session instead of resuming the
+        one it is bound to.
 
         Session-SCOPED flags (a temporary or incognito thread) are deliberately
         NOT durable: they describe one session, so keeping their entries alive
@@ -559,22 +806,19 @@ class SessionMap:
         stale: list[str] = []
         repaired = False
         for key, entry in self._data.items():
-            if entry.get("provider") == "claude_code":
+            # Only kiro-cli's transcripts are stat-able here; other backends
+            # own their own storage. An absent label means kiro-cli.
+            if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
                 continue
             sid = entry.get("sid")
-            durable = _has_durable_flag(entry)
+            survives = _survives_prune(entry)
             if sid and not (sessions_dir / f"{sid}.json").exists():
-                if durable:
+                if survives:
                     entry["sid"] = ""
                     repaired = True
                 else:
                     stale.append(key)
-            elif (
-                not sid
-                and not entry.get("slack_thread_ts")
-                and not entry.get("mirror")
-                and not durable
-            ):
+            elif not sid and not survives:
                 stale.append(key)
         for k in stale:
             del self._data[k]
@@ -655,6 +899,19 @@ class SessionMap:
         never evicts — the load-time tie-break resolves that contest instead.
         An empty *thread_ts* is the clear sentinel and neither evicts anyone
         nor enters the reverse index.
+
+        Establishing a link also drops any ``slack_paused`` marker, so a mute
+        never outlives the binding it was set on — otherwise it would re-mute
+        the next link, which the user never paused. That drop is scoped to a
+        REBIND (different ts or channel). Identical coordinates are the SAME
+        binding and keep the mute, because this method is not only called by an
+        explicit connect: the Slack inbound path re-writes the same ts/channel on
+        every turn as its thread registry (``slack/handler.py``,
+        ``slack/transport_dispatch.py``), so clearing here unconditionally let a
+        single inbound message — or a cold start's ``set_channel`` — silently
+        un-disconnect a thread the user had muted, and later dashboard turns
+        resumed delivering to it. Connecting does not rely on this: the dashboard
+        row lifts a mute through :meth:`set_slack_paused`, not by re-linking.
         """
         key = canonical_key(key)
         entry = self._data.get(key)
@@ -669,9 +926,14 @@ class SessionMap:
                         self._thread_to_session[thread_ts] = key
                     else:
                         self._thread_to_session.setdefault(thread_ts, key)
+                # Only the eviction is a mutation on this branch now. The pause
+                # is deliberately NOT touched here — see the docstring.
                 if evicted:
                     self._save()
                 return
+            # REBIND: the mute belonged to the binding being replaced, so it goes
+            # with it rather than carrying onto a thread the user never muted.
+            entry.pop("slack_paused", None)
             old_ts = entry.get("slack_thread_ts")
             if old_ts and old_ts != thread_ts:
                 self._thread_to_session.pop(old_ts, None)
@@ -721,9 +983,54 @@ class SessionMap:
             del self._thread_to_session[old_ts]
         entry.pop("slack_thread_ts", None)
         entry.pop("slack_channel_id", None)
-        if had_link:
+        # The mute dies with the binding it muted. A marker left behind would
+        # silently re-mute whatever link the user establishes next.
+        was_paused = entry.pop("slack_paused", None) is not None
+        if had_link or was_paused:
             self._save()
         return had_link
+
+    @_guarded
+    def set_slack_paused(self, key: str, paused: bool) -> bool:
+        """Mute (or unmute) a linked Slack thread; return the PREVIOUS state.
+
+        A mute is not an unlink. The thread binding, both coordinate fields and
+        the ``_thread_to_session`` reverse index all survive, so a reply in the
+        muted thread still resolves to THIS session rather than forking a new
+        one; only outbound turn mirroring stops.
+
+        Stored as a presence flag (``True`` or absent, never ``False``) on the
+        same entry and under the same key resolution the link accessors use, so
+        the flag cannot land on a spelling they do not read. That is what makes
+        "a pause never outlives its binding" hold by construction instead of by
+        bookkeeping in every caller.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry:
+            return False
+        was_paused = entry.get("slack_paused") is True
+        if paused and not was_paused:
+            entry["slack_paused"] = True
+            self._save()
+        elif not paused and was_paused:
+            del entry["slack_paused"]
+            self._save()
+        return was_paused
+
+    @_guarded
+    def is_slack_paused(self, key: str) -> bool:
+        """True iff this session's Slack link is muted AND still linked.
+
+        The flag is only meaningful next to a live binding: a marker with no
+        link is stale by definition, and reporting it would make an unlinked
+        session render as a muted one.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry:
+            return False
+        if not (entry.get("slack_thread_ts") or entry.get("slack_channel_id")):
+            return False
+        return entry.get("slack_paused") is True
 
     def get_session_for_thread(self, thread_ts: str) -> str | None:
         """Return the session key linked to a Slack thread_ts, or None."""
@@ -780,6 +1087,9 @@ class SessionMap:
             entry["mirror_accepts_inbound"] = True
         else:
             entry.pop("mirror_accepts_inbound", None)
+        # Binding is how the user reconnects, so it lifts any mute. Same reason
+        # as the Slack path: a marker outliving its binding re-mutes the next one.
+        entry.pop("mirror_paused", None)
         self._save()
 
     @_guarded
@@ -960,6 +1270,7 @@ class SessionMap:
                 continue
             entry.pop("mirror", None)
             entry.pop("mirror_accepts_inbound", None)
+            entry.pop("mirror_paused", None)
             cleared.append(key)
         if cleared:
             self._save()
@@ -982,11 +1293,80 @@ class SessionMap:
         if entry.get("mirror") is not None:
             entry.pop("mirror", None)
             entry.pop("mirror_accepts_inbound", None)
+            entry.pop("mirror_paused", None)
             self._save()
             return True
         if entry.get("slack_thread_ts") or entry.get("slack_channel_id"):
             return self.clear_slack_link(mkey)
         return False
+
+    @_guarded
+    def set_mirror_paused(self, key: str, paused: bool, *, origin: bool = False) -> bool:
+        """Mute (or unmute) a non-Slack delivery for *key*; return the PREVIOUS state.
+
+        Two DISTINCT non-Slack deliveries can exist on one session, so they get
+        two distinct flags rather than sharing one:
+
+        * ``mirror_paused`` — the explicit ``mirror`` binding (``origin=False``).
+        * ``origin_paused`` — the conversation the session was BORN in
+          (``origin=True``), which reaches the dashboard as a separate row
+          derived from the legacy namespaced ``slack_channel_id``.
+
+        A session born in Discord that also mirrors to Telegram renders both
+        rows, and a single scalar made disconnecting one silently disconnect the
+        other. Keying the flag to the row's source is what makes the two
+        independent; the caller says which row it is acting on, because only the
+        caller knows.
+        """
+        field = "origin_paused" if origin else "mirror_paused"
+        # The ORIGIN flag belongs to the SESSION and is keyed canonically;
+        # ``_mirror_key`` is reserved for the MIRROR flag, which belongs to the
+        # binding. That distinction is load-bearing, not stylistic: _mirror_key
+        # migrates between the canonical row and the legacy ``dashboard:``
+        # spelling depending on where a mirror binding currently lives, so writing
+        # the origin flag through it strands the pause the moment a canonical
+        # mirror is added -- the lookup moves rows, the flag does not, and the
+        # conversation the user muted silently resumes delivering.
+        entry = self._data.get(canonical_key(key) if origin else self._mirror_key(key))
+        if not entry:
+            return False
+        was_paused = entry.get(field) is True
+        if paused and not was_paused:
+            entry[field] = True
+            self._save()
+        elif not paused and was_paused:
+            del entry[field]
+            self._save()
+        return was_paused
+
+    @_guarded
+    def is_mirror_paused(self, key: str, *, origin: bool = False) -> bool:
+        """True iff the named non-Slack delivery for *key* is muted.
+
+        A mute is only meaningful next to something that can actually deliver, so
+        a flag with nothing behind it reads as not-paused rather than reporting a
+        session that mirrors nowhere as merely quiet. What counts as "something"
+        differs per flag, which is why the existence check is not shared:
+
+        * ``origin=True`` requires the session to be channel-BORN, and is read
+          from the CANONICAL row -- the session's own -- never through
+          ``_mirror_key``. That conversation is permanent, so the flag cannot be
+          orphaned by its target disappearing; it CAN be orphaned by the lookup
+          moving, which is what keying it to the mirror binding used to do.
+        * ``origin=False`` requires an explicit ``mirror`` dict, and follows the
+          binding through ``_mirror_key``.
+        """
+        canon = canonical_key(key)
+        entry = self._data.get(canon if origin else self._mirror_key(key))
+        if not entry:
+            return False
+        if origin:
+            if not is_channel_session_key(canon):
+                return False
+            return entry.get("origin_paused") is True
+        if not isinstance(entry.get("mirror"), dict):
+            return False
+        return entry.get("mirror_paused") is True
 
     @_guarded
     def max_generation(self, bucket: str) -> int:

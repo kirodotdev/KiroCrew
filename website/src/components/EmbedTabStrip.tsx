@@ -317,11 +317,14 @@ export default function EmbedTabStrip() {
   // Status dot color per tab
   const unreadSlots = useAppSelector(s => s.dashboard.unreadSlots)
 
-  const getStatus = (slug: string): 'idle' | 'running' | 'unread' | 'permission' => {
+  const getStatus = (slug: string): 'idle' | 'running' | 'unread' | 'permission' | 'question' => {
     if (!slug) return 'idle'
     const slot = slots.find(s => s.key === slug)
     if (!slot) return 'idle'
     if (slot.pending_approval) return 'permission'
+    // Above running: a blocking question card leaves the turn parked, so the tab
+    // would otherwise pulse "working" while it waits on the user.
+    if (slot.needs_input) return 'question'
     if (slot.running) return 'running'
     if (unreadSlots.includes(slug)) return 'unread'
     return 'idle'
@@ -373,7 +376,7 @@ export default function EmbedTabStrip() {
             >
               {tab.slug && (() => {
                 const status = getStatus(tab.slug)
-                const colors = { idle: 'var(--muted)', running: 'var(--accent)', unread: 'var(--ok)', permission: 'var(--warn)' }
+                const colors = { idle: 'var(--muted)', running: 'var(--accent)', unread: 'var(--ok)', permission: 'var(--warn)', question: 'var(--info)' }
                 return (
                   <span
                     className={`shrink-0 w-1.5 h-1.5 rounded-full self-center mr-0.5 ${status === 'running' || status === 'permission' ? 'animate-pulse' : ''}`}

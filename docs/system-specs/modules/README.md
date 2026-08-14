@@ -14,6 +14,7 @@ agent loads only the one it needs.
 |---|---|
 | [acp-client.md](acp-client.md) | The ACP JSON-RPC client that drives `kiro-cli`: transport, framing, timeouts, and the backend seam. |
 | [providers.md](providers.md) | The `LLMProvider` interface and the KiroACP-only provider surface. |
+| [harness-parity.md](harness-parity.md) | The invariants keeping the Kiro harness first-class while other harnesses are adapted, and the test pinning each. |
 | [session.md](session.md) | Sessions, slots, session keys, the warm pool, and PID tracking. |
 | [history.md](history.md) | Conversation persistence, JSONL rotation, and transcript search. |
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |
@@ -69,11 +70,12 @@ agent loads only the one it needs.
 |---|---|
 | [app-kit-platform.md](app-kit-platform.md) | App contracts: MCP scoping, agent JSON composition, permissions, and dependencies. |
 | [mcp-apps.md](mcp-apps.md) | Apps that surface as MCP servers. |
+| [mcp-shareability.md](mcp-shareability.md) | Predicting which MCP servers can share one backend, from local evidence. |
 | [artifacts.md](artifacts.md) | Artifact identity, versioning, and the companion chat panel. |
 | [themes.md](themes.md) | The theme tier model and the CSS variable contract. |
 | [md-notebook.md](md-notebook.md) | The inline markdown viewer and editor. |
 | [side.md](side.md) | The chat side panel. |
-| [browser.md](browser.md) | Website browsing through Playwright MCP. |
+| [browser.md](browser.md) | Website browsing through the `playwright-cli` shell commands. |
 
 ## Built-in apps
 

@@ -14,6 +14,9 @@ type Slot = {
   title?: string
   running?: boolean
   pending_approval?: boolean
+  /** The agent asked something and is waiting on the answer: sorted and marked
+   *  with the owed decisions rather than with idle sessions. */
+  needs_input?: boolean
   messages?: number
   agent?: string
   last_activity_ts?: string
@@ -221,6 +224,10 @@ function PlaceholderPane({
     )
     .sort((a, b) => {
       if (!!a.pending_approval !== !!b.pending_approval) return a.pending_approval ? -1 : 1
+      // An unanswered agent question ranks with the other owed decisions, above
+      // running sessions: this list is what a user picks a pane's session from,
+      // and the ones waiting on them are the ones worth opening first.
+      if (!!a.needs_input !== !!b.needs_input) return a.needs_input ? -1 : 1
       if (!!a.running !== !!b.running) return a.running ? -1 : 1
       return (b.last_activity_ts || '').localeCompare(a.last_activity_ts || '')
     })
@@ -288,7 +295,7 @@ function PlaceholderPane({
             >
               <Circle
                 size={10}
-                className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
+                className={`shrink-0 ${s.pending_approval ? 'fill-warn text-warn' : s.needs_input ? 'fill-info text-info' : s.running ? 'fill-ok text-ok' : 'fill-muted text-muted'}`}
               />
               <span className="truncate flex-1">{s.title || s.key}</span>
               <span className="text-[11px] text-muted shrink-0">{s.messages ?? 0} {i18nT('components.sessionGridView.msgs')}</span>

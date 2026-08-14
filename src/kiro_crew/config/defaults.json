@@ -43,8 +43,6 @@
   "includeMcpJson": false,
   "hooks": {
     "auto_approve_tools": [
-      "kirocrew browse *",
-      "*kirocrew browse *"
     ],
     "postToolUse": [
       {

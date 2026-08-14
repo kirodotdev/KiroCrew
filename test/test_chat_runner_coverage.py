@@ -481,8 +481,9 @@ class TestOauthUrlCredentialGate:
         )
 
     def test_unparseable_url_is_refused(self):
-        with patch.object(chat_runner, "urlparse", side_effect=ValueError("bad")):
-            assert chat_runner._oauth_url_contains_credential("https://example.test/x") is True
+        # An invalid IPv6 authority makes urlparse raise ValueError inside the
+        # shared security gate, which fails closed.
+        assert chat_runner._oauth_url_contains_credential("https://[bad-ipv6/x") is True
 
     def test_credential_signature_inside_an_oauth_param_is_refused(self):
         url = "https://example.test/authorize?state=AKIAIOSFODNN7EXAMPLE1"
@@ -1641,6 +1642,46 @@ class TestCommandParsing:
 
     def test_redirect_forms_are_not_treated_as_separators(self):
         assert chat_runner._matches_trusted_pattern("Running: ls 2>&1", {"ls*"}) is not None
+
+    def test_an_escaped_quote_does_not_hide_a_real_separator(self):
+        """A closing quote followed by `\\'` leaves quoted context, so the `;`
+        after it is a separator the shell acts on.
+
+        Reading that `\\'` as an OPENING quote makes the remainder look quoted, the
+        separator gets masked, the line collapses to one segment, and an appended
+        command inherits whatever the first segment was allowed to do. Verified
+        against a real shell: `echo 'foo'\\'; cmd` runs `cmd`.
+        """
+        command = "Running: echo 'foo'\\'; whoami"
+        _, segments = chat_runner._split_command_segments(command) or ("", [])
+
+        assert len(segments) == 2, segments
+        assert chat_runner._matches_trusted_pattern(command, {"echo*"}) is None
+
+    def test_an_escaped_double_quote_keeps_the_quote_open(self):
+        """Inside double quotes `\\"` is an escaped literal, so the quote stays
+        OPEN and the `;` after it really is quoted. One segment is the correct
+        reading: the line is an unterminated quote, which a shell refuses to run
+        at all rather than executing a second command, so there is nothing here
+        for segmentation to protect against."""
+        command = 'Running: echo "foo\\"; whoami'
+        _, segments = chat_runner._split_command_segments(command) or ("", [])
+
+        assert len(segments) == 1, segments
+
+    def test_an_escaped_separator_outside_quotes_still_segments(self):
+        """`\\;` is an escaped literal to the shell, not a separator -- but the
+        allowlist must not approve the tail either way, so segmentation stays
+        fail-closed rather than trying to model every escape."""
+        assert chat_runner._matches_trusted_pattern("Running: ls \\; whoami", {"ls*"}) is None
+
+    def test_a_backslash_inside_single_quotes_stays_literal(self):
+        """The shell does not honor escapes inside single quotes, so a trailing
+        backslash there must not swallow the closing quote."""
+        masked, restore = chat_runner._mask_quoted_separators("echo 'a|b\\' && wc -l")
+
+        assert list(restore.values()) == ["|"]
+        assert masked.endswith("&& wc -l")
 
     def test_base_command_extraction_dedups_across_segments(self):
         assert chat_runner._extract_base_command("Running: cat a | wc -l | cat b") == "cat,wc"

@@ -17,7 +17,7 @@ them.
 | shared components, a11y, URL sanitization, data fetching | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |
-| tests (vitest, MSW, Playwright, Electron) | [testing](docs/testing.md) |
+| tests (vitest, MSW, Playwright, Electron), or a test that fails only in CI | [testing](docs/testing.md) |
 | the Electron desktop shell | [electron/README.md](electron/README.md) |
 | anything backend, or a whole-system question | [`../AGENTS.md`](../AGENTS.md) |
 
@@ -46,7 +46,9 @@ copy-paste before a single test executes. Commands and layers:
 ## This is a public OSS fork: don't reintroduce internal couplings
 
 - **Build/infra:** no `npm-pretty-much`, Brazil, AIM, or CodeArtifact registries.
-  The public build is plain npm + Vite; `.npmrc` pins the public registry.
+  The public build is plain npm + Vite; `.npmrc` deliberately does not pin a
+  registry -- the system-configured registry applies (see
+  `docs/build/desktop-app.md`).
 - **Identity/telemetry:** no live Cognito pools or RUM app ids (`src/rum.ts` is an
   inert no-op stub, keep it inert), no `aws-rum-web`.
 - **Removed product surfaces:** internal feature-app pages, tabs, API-client

@@ -71,8 +71,20 @@ _PROVIDER_CONCURRENCY = 4
 # reservation until their underlying task actually completes.
 _DIRECT_FETCH_PENDING_MAX = 16
 _DIRECT_FETCH_MAX_RESERVED_BYTES = 128 * 1024 * 1024
+# Measured worst case for one full fetch -- every command in the fanout at its
+# declared output ceiling -- is a ~32MB allocation peak, and ~43MB projected if
+# every ceiling is filled exactly (decode amplifies wire bytes by ~4.3x). 64MB
+# is therefore a ~1.5x cover for raw bytes, decoded JSON, the normalized copy,
+# and object overhead while a complete fetch remains alive. Two of these
+# saturate the pool by design; a third caller WAITS for room rather than being
+# refused (see _wait_for_direct_fetch_capacity), so the ceiling bounds memory
+# without turning ordinary concurrent panel use into an error.
 _FULL_FETCH_RESERVATION_BYTES = 64 * 1024 * 1024
 _CHECKS_FETCH_RESERVATION_BYTES = 8 * 1024 * 1024
+# How long a caller waits for admission room before giving up. Sized under the
+# per-command timeout (_COMMAND_TIMEOUT_SECS) so a queued read cannot outlive the
+# fetch it is queued behind by more than one command's worth of work.
+_DIRECT_FETCH_WAIT_SECS = 20.0
 # An issue payload is metadata plus comments -- no diffs, no check rollup -- so
 # both its aggregate cache and its retained-memory lease sit well below the
 # pull-request figures. TTL and entry count are shared with the PR cache.
@@ -146,6 +158,10 @@ _ISSUE_CACHE_LOCK = asyncio.Lock()
 _ISSUE_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _ISSUE_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _DIRECT_FETCH_RESERVATIONS: dict[asyncio.Task[Any], int] = {}
+# Futures held by callers waiting for admission room. Woken when any reservation
+# is released, so a request that arrives at a full pool queues instead of
+# failing (see _wait_for_direct_fetch_capacity).
+_DIRECT_FETCH_WAITERS: list[asyncio.Future[None]] = []
 _provider_semaphore = asyncio.Semaphore(_PROVIDER_CONCURRENCY)
 _SAFE_ERROR_RE = re.compile(r"\s+")
 _PROVIDER_TOOL_NAME = "source_provider_cli"
@@ -154,6 +170,15 @@ logger = logging.getLogger(__name__)
 
 class SourceProviderError(RuntimeError):
     """A provider CLI could not return the requested source data."""
+
+
+class SourceCapacityError(SourceProviderError):
+    """Admission room did not free up within the wait budget.
+
+    Distinct from its parent so the HTTP layer can mark it retryable: nothing is
+    wrong with the request or the provider, the gateway was simply holding its
+    concurrent-fetch memory ceiling for longer than the caller agreed to wait.
+    """
 
 
 def _sel():
@@ -2190,20 +2215,62 @@ def _direct_fetch_tasks() -> set[asyncio.Task[Any]]:
     return tasks
 
 
-def _ensure_direct_fetch_capacity(reservation_bytes: int) -> None:
+def _direct_fetch_capacity_free(reservation_bytes: int) -> bool:
+    """Whether a lease of ``reservation_bytes`` fits under both ceilings now."""
     tasks = _direct_fetch_tasks()
     reserved = sum(
         amount
         for task, amount in _DIRECT_FETCH_RESERVATIONS.items()
         if task in tasks and not task.done()
     )
-    if (
-        len(tasks) >= _DIRECT_FETCH_PENDING_MAX
-        or reservation_bytes > _DIRECT_FETCH_MAX_RESERVED_BYTES - reserved
-    ):
-        raise SourceProviderError(
-            "Too many source requests are pending; retry shortly."
-        )
+    return (
+        len(tasks) < _DIRECT_FETCH_PENDING_MAX
+        and reservation_bytes <= _DIRECT_FETCH_MAX_RESERVED_BYTES - reserved
+    )
+
+
+async def _wait_for_direct_fetch_capacity(deadline: float) -> bool:
+    """Sleep until a reservation is released or ``deadline`` passes.
+
+    Returns True if a release was observed and the caller should re-check
+    capacity, False if the wait budget is spent.
+
+    MUST NOT be awaited while holding ``_CACHE_LOCK`` or ``_ISSUE_CACHE_LOCK``:
+    an in-flight fetch takes the same lock to write its result, so waiting for it
+    to finish while holding that lock would deadlock. Callers therefore release
+    the lock, wait here, then re-acquire and re-check.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
+    waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    _DIRECT_FETCH_WAITERS.append(waiter)
+    try:
+        await asyncio.wait_for(waiter, timeout=remaining)
+        return True
+    except asyncio.TimeoutError:
+        return False
+    finally:
+        if waiter in _DIRECT_FETCH_WAITERS:
+            _DIRECT_FETCH_WAITERS.remove(waiter)
+
+
+def _wake_direct_fetch_waiters() -> None:
+    """Wake every waiter after a release; each re-checks its own ceiling.
+
+    All waiters are woken rather than just the first: leases differ in size, so
+    the head of the queue is not necessarily the one that now fits, and a
+    freed lease that only satisfies a later waiter must not stall behind it.
+    """
+    waiters = list(_DIRECT_FETCH_WAITERS)
+    _DIRECT_FETCH_WAITERS.clear()
+    for waiter in waiters:
+        if not waiter.done():
+            waiter.set_result(None)
+
+
+def _capacity_exhausted_error() -> SourceCapacityError:
+    return SourceCapacityError("Too many source requests are pending; retry shortly.")
 
 
 def _reserve_direct_fetch(task: asyncio.Task[Any], reservation_bytes: int) -> None:
@@ -2212,6 +2279,11 @@ def _reserve_direct_fetch(task: asyncio.Task[Any], reservation_bytes: int) -> No
 
     def release(done: asyncio.Task[Any]) -> None:
         _DIRECT_FETCH_RESERVATIONS.pop(done, None)
+        # The lease is gone, so a queued caller may now fit. Scheduled on the loop
+        # rather than woken inline: this runs during task teardown, and deferring
+        # by one loop iteration means the waiter re-checks capacity after the task
+        # is fully settled rather than mid-completion.
+        asyncio.get_running_loop().call_soon(_wake_direct_fetch_waiters)
 
     task.add_done_callback(release)
 
@@ -2222,17 +2294,23 @@ async def fetch_pull_request_checks(raw_url: str) -> list[dict[str, Any]]:
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
-    task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
-    if task is None:
-        _ensure_direct_fetch_capacity(_CHECKS_FETCH_RESERVATION_BYTES)
-        task = asyncio.create_task(_fetch_pull_request_checks_uncached(ref))
-        _CHECKS_FETCH_INFLIGHT[ref.url] = task
-        _reserve_direct_fetch(task, _CHECKS_FETCH_RESERVATION_BYTES)
+    deadline = time.monotonic() + _DIRECT_FETCH_WAIT_SECS
+    while True:
+        task = _CHECKS_FETCH_INFLIGHT.get(ref.url)
+        if task is not None:
+            break
+        if _direct_fetch_capacity_free(_CHECKS_FETCH_RESERVATION_BYTES):
+            task = asyncio.create_task(_fetch_pull_request_checks_uncached(ref))
+            _CHECKS_FETCH_INFLIGHT[ref.url] = task
+            _reserve_direct_fetch(task, _CHECKS_FETCH_RESERVATION_BYTES)
 
-        def finish_checks(done: asyncio.Task[list[dict[str, Any]]]) -> None:
-            _finish_inflight(_CHECKS_FETCH_INFLIGHT, ref.url, done)
+            def finish_checks(done: asyncio.Task[list[dict[str, Any]]]) -> None:
+                _finish_inflight(_CHECKS_FETCH_INFLIGHT, ref.url, done)
 
-        task.add_done_callback(finish_checks)
+            task.add_done_callback(finish_checks)
+            break
+        if not await _wait_for_direct_fetch_capacity(deadline):
+            raise _capacity_exhausted_error()
     return await asyncio.shield(task)
 
 
@@ -2285,30 +2363,40 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
     now = time.monotonic()
-    async with _CACHE_LOCK:
-        cached = _CACHE.get(ref.url)
-        if not refresh and cached and now - cached[0] < _CACHE_TTL_SECS:
-            return cached[2]
-        task = _FULL_FETCH_INFLIGHT.get(ref.url)
-        if task is None:
-            _ensure_direct_fetch_capacity(_FULL_FETCH_RESERVATION_BYTES)
-            generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
-            task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation))
-            _FULL_FETCH_INFLIGHT[ref.url] = task
-            _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
-            _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
+    deadline = now + _DIRECT_FETCH_WAIT_SECS
+    while True:
+        async with _CACHE_LOCK:
+            cached = _CACHE.get(ref.url)
+            if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
+                return cached[2]
+            task = _FULL_FETCH_INFLIGHT.get(ref.url)
+            if task is not None:
+                break
+            if _direct_fetch_capacity_free(_FULL_FETCH_RESERVATION_BYTES):
+                generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
+                task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation))
+                _FULL_FETCH_INFLIGHT[ref.url] = task
+                _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
+                _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
 
-            def finish_full_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
-                _finish_inflight(_FULL_FETCH_INFLIGHT, ref.url, done)
-                active = _FULL_FETCH_TASKS.get(ref.url)
-                if active is None:
-                    return
-                active.discard(done)
-                if not active:
-                    _FULL_FETCH_TASKS.pop(ref.url, None)
-                    _FULL_FETCH_GENERATIONS.pop(ref.url, None)
+                def finish_full_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
+                    _finish_inflight(_FULL_FETCH_INFLIGHT, ref.url, done)
+                    active = _FULL_FETCH_TASKS.get(ref.url)
+                    if active is None:
+                        return
+                    active.discard(done)
+                    if not active:
+                        _FULL_FETCH_TASKS.pop(ref.url, None)
+                        _FULL_FETCH_GENERATIONS.pop(ref.url, None)
 
-            task.add_done_callback(finish_full_fetch)
+                task.add_done_callback(finish_full_fetch)
+                break
+        # Outside the lock on purpose: the fetches being waited on take
+        # _CACHE_LOCK themselves to write their result, so waiting under it would
+        # deadlock. Re-checks the cache and the inflight map on wake, since
+        # either may have been satisfied by whoever just finished.
+        if not await _wait_for_direct_fetch_capacity(deadline):
+            raise _capacity_exhausted_error()
     # Shield the shared fetch so one disconnected browser cannot cancel work
     # still awaited by another request for the same URL.
     return await asyncio.shield(task)
@@ -2362,31 +2450,63 @@ async def fetch_issue(raw_url: str, *, refresh: bool = False) -> dict[str, Any]:
     if ref.provider == "jira":
         raise ValueError("Jira issues open in the browser; there is no local fetch for them.")
     now = time.monotonic()
-    async with _ISSUE_CACHE_LOCK:
-        cached = _ISSUE_CACHE.get(ref.url)
-        if not refresh and cached and now - cached[0] < _CACHE_TTL_SECS:
-            return cached[2]
-        task = _ISSUE_FETCH_INFLIGHT.get(ref.url)
-        if task is None:
-            _ensure_direct_fetch_capacity(_ISSUE_FETCH_RESERVATION_BYTES)
-            task = asyncio.create_task(_fetch_issue_uncached(ref))
-            _ISSUE_FETCH_INFLIGHT[ref.url] = task
-            _ISSUE_FETCH_TASKS.setdefault(ref.url, set()).add(task)
-            _reserve_direct_fetch(task, _ISSUE_FETCH_RESERVATION_BYTES)
+    deadline = now + _DIRECT_FETCH_WAIT_SECS
+    while True:
+        async with _ISSUE_CACHE_LOCK:
+            cached = _ISSUE_CACHE.get(ref.url)
+            if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
+                return cached[2]
+            task = _ISSUE_FETCH_INFLIGHT.get(ref.url)
+            if task is not None:
+                break
+            if _direct_fetch_capacity_free(_ISSUE_FETCH_RESERVATION_BYTES):
+                task = asyncio.create_task(_fetch_issue_uncached(ref))
+                _ISSUE_FETCH_INFLIGHT[ref.url] = task
+                _ISSUE_FETCH_TASKS.setdefault(ref.url, set()).add(task)
+                _reserve_direct_fetch(task, _ISSUE_FETCH_RESERVATION_BYTES)
 
-            def finish_issue_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
-                _finish_inflight(_ISSUE_FETCH_INFLIGHT, ref.url, done)
-                active = _ISSUE_FETCH_TASKS.get(ref.url)
-                if active is None:
-                    return
-                active.discard(done)
-                if not active:
-                    _ISSUE_FETCH_TASKS.pop(ref.url, None)
+                def finish_issue_fetch(done: asyncio.Task[dict[str, Any]]) -> None:
+                    _finish_inflight(_ISSUE_FETCH_INFLIGHT, ref.url, done)
+                    active = _ISSUE_FETCH_TASKS.get(ref.url)
+                    if active is None:
+                        return
+                    active.discard(done)
+                    if not active:
+                        _ISSUE_FETCH_TASKS.pop(ref.url, None)
 
-            task.add_done_callback(finish_issue_fetch)
+                task.add_done_callback(finish_issue_fetch)
+                break
+        # Outside the lock: see the matching note in fetch_pull_request.
+        if not await _wait_for_direct_fetch_capacity(deadline):
+            raise _capacity_exhausted_error()
     # Shield the shared fetch so one disconnected browser cannot cancel work
     # still awaited by another request for the same URL.
     return await asyncio.shield(task)
+
+
+def _provider_error_response(
+    request: web.Request, operation: str, exc: SourceProviderError
+) -> web.Response:
+    """Audit and answer a failed provider read.
+
+    Capacity pressure is reported under its own code and audit reason rather than
+    as a generic provider error: nothing failed, the gateway was holding its
+    concurrent-fetch memory ceiling. The code is what lets the client retry this
+    one case instead of presenting it as a dead end, while a real provider error
+    (auth, missing PR, malformed payload) still fails immediately.
+
+    The audit event is emitted here rather than at the call sites so the reason
+    cannot drift from the code the caller receives -- the two are one decision.
+    Owning the ``json_response`` here also keeps the error-code contract scan
+    honest: a helper that returned only the body would leave every call site
+    passing an opaque variable (see test/test_error_code_contract.py).
+    """
+    if isinstance(exc, SourceCapacityError):
+        code, reason = "source_busy", "capacity_exhausted"
+    else:
+        code, reason = "provider_error", "provider_error"
+    _audit_source_api(request, operation, "failed", reason)
+    return web.json_response({"error": str(exc), "code": code}, status=503)
 
 
 async def api_pull_request_source(request: web.Request) -> web.Response:
@@ -2416,8 +2536,7 @@ async def api_pull_request_source(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.pull_request.read", "failed", "invalid_request")
         return web.json_response({"error": str(exc)}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.pull_request.read", "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, "source.pull_request.read", exc)
     _audit_source_api(request, "source.pull_request.read", "completed")
     return web.json_response(data)
 
@@ -2450,8 +2569,7 @@ async def api_issue_source(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.issue.read", "failed", "invalid_request")
         return web.json_response({"error": str(exc)}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.issue.read", "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, "source.issue.read", exc)
     _audit_source_api(request, "source.issue.read", "completed")
     return web.json_response(data)
 
@@ -2481,8 +2599,7 @@ async def api_pull_request_checks(request: web.Request) -> web.Response:
         _audit_source_api(request, "source.pull_request.checks", "failed", "invalid_request")
         return web.json_response({"error": str(exc)}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, "source.pull_request.checks", "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, "source.pull_request.checks", exc)
     _audit_source_api(request, "source.pull_request.checks", "completed")
     return web.json_response({"checks": checks})
 
@@ -3712,8 +3829,7 @@ async def _owner_mutation_response(
             rejection["confirmationRequired"] = True
         return web.json_response(rejection, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, operation, "failed", "provider_error")
-        return web.json_response({"error": str(exc)}, status=503)
+        return _provider_error_response(request, operation, exc)
     except Exception:
         _audit_source_api(request, operation, "failed", "internal_error")
         raise
@@ -3790,8 +3906,7 @@ async def api_pull_request_pending_review(request: web.Request) -> web.Response:
         _audit_source_api(request, operation, "failed", "invalid_request")
         return web.json_response({"error": str(exc), "code": "invalid_request"}, status=400)
     except SourceProviderError as exc:
-        _audit_source_api(request, operation, "failed", "provider_error")
-        return web.json_response({"error": str(exc), "code": "provider_error"}, status=503)
+        return _provider_error_response(request, operation, exc)
     _audit_source_api(request, operation, "completed")
     return web.json_response(data)
 

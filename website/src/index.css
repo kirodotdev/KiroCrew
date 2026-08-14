@@ -1285,8 +1285,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Streaming highlight (shimmer sweep on trailing words) ── */
 .streaming-glow{background:linear-gradient(90deg,transparent 0%,var(--accent-glow) 40%,var(--accent-glow) 100%);border-radius:2px;padding:0 8px 0 2px;margin:0 -2px;position:relative;overflow:hidden}
-.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);background-size:250% 100%;animation:stream-sweep 2.5s ease-in-out infinite;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
-@keyframes stream-sweep{0%{background-position:150% 0}100%{background-position:-50% 0}}
+/* Animates transform (compositable) rather than background-position, which repaints every
+   frame. The layer stays the size of the box: the gradient is transparent across its outer
+   quarters, so a 25% translate never carries anything visible past the box edge and no
+   clipping is needed -- which matters because this is an inline span that can wrap.
+   `alternate` reverses each cycle so the loop has no restart jump. */
+.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);will-change:transform;animation:stream-sweep 2.5s ease-in-out infinite alternate;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
+@keyframes stream-sweep{0%{transform:translateX(-25%)}100%{transform:translateX(25%)}}
 
 /* ── Streaming caret ──
    Blinking cursor appended after a streaming assistant message. Rendered
@@ -1608,6 +1613,14 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
 
+/* ── Follow-up option chip width cap ──
+   An option label is a full user-voice instruction and can run to hundreds of
+   characters. Capped at roughly half the default composer width so at least
+   two options stay side by side and no single chip owns the whole strip; the
+   label itself clamps to two lines. Lives here because the same value is
+   applied to both the chip button and its split-button wrapper. */
+.followup-chip{max-width:min(100%,26rem)}
+
 /* ── Skeleton shimmer placeholder ── */
 .skeleton{
   background:linear-gradient(90deg,var(--bg-elevated) 25%,var(--bg-hover) 50%,var(--bg-elevated) 75%);
@@ -1648,6 +1661,19 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
 .session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted)}
+/* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
+   briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
+   background, because the revealed row is usually the active one and already
+   carries the accent-subtle background. No transition declared here on
+   purpose: the row's own Tailwind transition-all animates outline-color, and
+   declaring any transition longhand/shorthand at this higher specificity
+   would strip transition-all while the flash is up, making hover styles snap
+   on exactly the row the reveal highlighted. The fade is a color transition
+   (not an animation), so the global reduced-motion animation kill-switch
+   above leaves the confirmation visible. JS removes the classes after the
+   fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
+.session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
+.session-row.session-reveal-flash-fade{outline-color:transparent}
 .session-row.session-colored{position:relative}
 .session-row.session-colored::before{
   content:"";

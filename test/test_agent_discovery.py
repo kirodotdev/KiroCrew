@@ -29,6 +29,12 @@ from kiro_crew.agent_discovery import (
     project_agent_names,
 )
 
+# caplog collects records from EVERY logger, not just the one at_level() names, so
+# a negative "logged no warning" assertion must filter by logger: an unrelated
+# neighbour's asyncio "Task was destroyed" record otherwise lands in the window
+# and fails the assertion depending on how the suite is sharded.
+_DISCOVERY_LOGGER = "kiro_crew.agent_discovery"
+
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
@@ -709,7 +715,9 @@ class TestListAgentsDedup:
         # untouched — assert only that exactly one twin survives.
         assert dupes[0].filename in ("MyPkg-myagent.json", "local-MyPkg-myagent.json")
         assert not [
-            r for r in caplog.records if r.levelno >= logging.WARNING
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and r.name == _DISCOVERY_LOGGER
         ], "same-package local twin must not produce a WARNING"
         # The twin is still visible at debug for diagnosis.
         assert any("same-package twin" in r.getMessage() for r in caplog.records)

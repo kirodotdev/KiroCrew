@@ -93,6 +93,14 @@ def main() -> int:
                     "inputSchema": {"type": "object", "properties": {}},
                     "_meta": {"ui": {"visibility": ["app"]}},
                 },
+                {
+                    # Declares NO visibility, which is what the majority of real
+                    # servers do — SEP-1865 defaults it to ["model", "app"], so
+                    # it must be BOTH listed to the agent and callable by an app.
+                    "name": "refresh",
+                    "description": "Undeclared-visibility tool (spec default).",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
             ]})
         elif method == "tools/call":
             params = msg.get("params") or {}
@@ -111,6 +119,10 @@ def main() -> int:
             elif tool == "save_state":
                 _reply(msg_id, result={
                     "content": [{"type": "text", "text": "state saved"}],
+                })
+            elif tool == "refresh":
+                _reply(msg_id, result={
+                    "content": [{"type": "text", "text": "refreshed"}],
                 })
             else:
                 _reply(msg_id, error={"code": -32602, "message": f"unknown tool {tool!r}"})

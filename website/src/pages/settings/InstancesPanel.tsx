@@ -26,7 +26,6 @@ import {
 } from 'lucide-react'
 import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../../api/client'
 import { Card, Btn } from '../../components/ui'
-import SimpleSelect from '../../components/SimpleSelect'
 import { useAppDispatch } from '../../store'
 import { removeWarm } from '../../store/instancesSlice'
 
@@ -36,6 +35,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Trans } from 'react-i18next'
 
 import { SettingRef } from '../../components/settingRef/SettingRef'
+import {
+  InstanceFormFields,
+  useInstanceFormState,
+  EMPTY_INSTANCE_FORM,
+} from './InstanceFormFields'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
   connected: 'bg-success',
   connecting: 'bg-warning',
@@ -66,49 +70,12 @@ export function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
 }
 
 export function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPorts: number[] }) {
-  const [name, setName] = useState('')
-  const [method, setMethod] = useState<'ssh' | 'ssm'>('ssh')
-  const [sshHost, setSshHost] = useState('')
-  const [ssmTarget, setSsmTarget] = useState('')
-  const [awsProfile, setAwsProfile] = useState('')
-  const [awsRegion, setAwsRegion] = useState('')
-  const [ssmRunAs, setSsmRunAs] = useState('')
-  const [remotePort, setRemotePort] = useState('7777')
-  const [ttl, setTtl] = useState('20h')
-  const [remoteBin, setRemoteBin] = useState('')
-
-  const portNum = Number(remotePort) || 0
-  const dupPort = portNum > 0 && usedPorts.includes(portNum)
-  const isSsm = method === 'ssm'
-  // The transport-specific required field: ssh_host for SSH, ssm_target for SSM.
-  const targetFilled = isSsm ? !!ssmTarget.trim() : !!sshHost.trim()
+  const form = useInstanceFormState(EMPTY_INSTANCE_FORM, usedPorts)
 
   const addMutation = useMutation({
-    mutationFn: () =>
-      api.addInstance({
-        name: name.trim(),
-        connection_method: method,
-        ...(isSsm
-          ? {
-              ssm_target: ssmTarget.trim(),
-              aws_profile: awsProfile.trim() || undefined,
-              aws_region: awsRegion.trim() || undefined,
-              ssm_run_as: ssmRunAs.trim() || undefined,
-            }
-          : { ssh_host: sshHost.trim() }),
-        remote_port: Number(remotePort) || 7777,
-        ttl: ttl.trim() || '20h',
-        remote_bin: remoteBin.trim() || undefined,
-      }),
+    mutationFn: () => api.addInstance(form.body()),
     onSuccess: () => {
-      setName('')
-      setSshHost('')
-      setSsmTarget('')
-      setAwsProfile('')
-      setAwsRegion('')
-      setRemotePort('7777')
-      setTtl('20h')
-      setRemoteBin('')
+      form.reset(EMPTY_INSTANCE_FORM)
       onAdded()
     },
   })
@@ -118,107 +85,15 @@ export function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; u
       : i18nT('pages.settings.instancesPanel.failed_to_add_remote_crew')
     : ''
 
-  const inputCls =
-    'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-none focus-ring'
-
   return (
     <Card>
       <div className="flex items-center gap-2 mb-3 text-text font-medium">
         <Plus className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.add_instance')}
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <label htmlFor="add-instance-name" className="flex flex-col gap-1 text-[13px] text-muted">
-          {i18nT('pages.settings.instancesPanel.name')}
-          <input id="add-instance-name" aria-label={i18nT('pages.settings.instancesPanel.name')} className={inputCls} value={name} onChange={e => setName(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.remote_host_1')} />
-        </label>
-        {/* Not a <label>: SimpleSelect renders a button, so `htmlFor` would point
-            at no form control. The caption text stays put and the accessible name
-            moves to the trigger's aria-label (same key). */}
-        <div className="flex flex-col gap-1 text-[13px] text-muted">
-          {i18nT('pages.settings.instancesPanel.connection_method')}
-          <SimpleSelect
-            options={['ssh', 'ssm']}
-            optionLabels={[i18nT('pages.settings.instancesPanel.ssh_tunnel'), i18nT('pages.settings.instancesPanel.aws_ssm_session_manager')]}
-            value={method}
-            onChange={v => setMethod(v as 'ssh' | 'ssm')}
-            aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
-          />
-          <span className="text-[12px] text-muted leading-snug">
-            {isSsm
-              ? i18nT('pages.settings.instancesPanel.tunnels_via_aws_ssm_start_session_no_inbound_ssh')
-              : i18nT('pages.settings.instancesPanel.opens_ssh_n_l_to_the_host_requires_non_interacti')}
-          </span>
-        </div>
-        {isSsm ? (
-          <>
-            <label htmlFor="add-instance-ssm-target" className="flex flex-col gap-1 text-[13px] text-muted">
-              {i18nT('pages.settings.instancesPanel.ssm_target_instance_id')}
-              <input id="add-instance-ssm-target" aria-label={i18nT('pages.settings.instancesPanel.ssm_target_instance_id')} className={inputCls} value={ssmTarget} onChange={e => setSsmTarget(e.target.value)} placeholder="i-0123456789abcdef0" />
-              <span className="text-[12px] text-muted leading-snug">
-                {i18nT('pages.settings.instancesPanel.ec2_instance_id_i_or_ssm_managed_instance_id_mi')}
-              </span>
-            </label>
-            <label htmlFor="add-instance-aws-profile" className="flex flex-col gap-1 text-[13px] text-muted">
-              {i18nT('pages.settings.instancesPanel.aws_profile')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-              <input id="add-instance-aws-profile" aria-label={i18nT('pages.settings.instancesPanel.aws_profile')} className={inputCls} value={awsProfile} onChange={e => setAwsProfile(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.default_credential_chain')} />
-            </label>
-            <label htmlFor="add-instance-aws-region" className="flex flex-col gap-1 text-[13px] text-muted">
-              {i18nT('pages.settings.instancesPanel.aws_region')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-              <input id="add-instance-aws-region" aria-label={i18nT('pages.settings.instancesPanel.aws_region')} className={inputCls} value={awsRegion} onChange={e => setAwsRegion(e.target.value)} placeholder="us-east-1" />
-            </label>
-            <label htmlFor="add-instance-ssm-run-as" className="flex flex-col gap-1 text-[13px] text-muted">
-              {i18nT('pages.settings.instancesPanel.remote_user')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-              <input id="add-instance-ssm-run-as" aria-label={i18nT('pages.settings.instancesPanel.remote_user')} className={inputCls} value={ssmRunAs} onChange={e => setSsmRunAs(e.target.value)} placeholder="ec2-user" />
-              <span className="text-[12px] text-muted leading-snug">
-                {i18nT('pages.settings.instancesPanel.the_user_the_remote_gateway_runs_as_sudo_u_for_s')}
-              </span>
-            </label>
-          </>
-        ) : (
-          <label htmlFor="add-instance-ssh-host" className="flex flex-col gap-1 text-[13px] text-muted">
-            {i18nT('pages.settings.instancesPanel.ssh_host_alias')}
-            <input id="add-instance-ssh-host" aria-label={i18nT('pages.settings.instancesPanel.ssh_host_alias')} className={inputCls} value={sshHost} onChange={e => setSshHost(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.host_1_alias')} />
-          </label>
-        )}
-        <label htmlFor="add-instance-remote-port" className="flex flex-col gap-1 text-[13px] text-muted">
-          {i18nT('pages.settings.instancesPanel.remote_port')}
-          <input id="add-instance-remote-port" aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={remotePort} onChange={e => setRemotePort(e.target.value)} placeholder="7777" inputMode="numeric" />
-          <span className="text-[12px] text-muted leading-snug">
-            {i18nT('pages.settings.instancesPanel.must_match_the_port_the_remote_gateway_serves_on')}
-          </span>
-          {dupPort ? (
-            <span className="text-[12px] text-danger leading-snug">
-              {i18nT('pages.settings.instancesPanel.port')} {portNum} {i18nT('pages.settings.instancesPanel.is_already_used_by_another_instance_choose_a_dif')}
-            </span>
-          ) : null}
-        </label>
-        <label htmlFor="add-instance-ttl" className="flex flex-col gap-1 text-[13px] text-muted">
-          {i18nT('pages.settings.instancesPanel.token_ttl')}
-          <input id="add-instance-ttl" aria-label={i18nT('pages.settings.instancesPanel.token_ttl')} className={inputCls} value={ttl} onChange={e => setTtl(e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.20h')} />
-        </label>
-        <label htmlFor="add-instance-remote-bin" className="flex flex-col gap-1 text-[13px] text-muted sm:col-span-2">
-          {i18nT('pages.settings.instancesPanel.remote_kirocrew_path')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-          <input
-            id="add-instance-remote-bin"
-            aria-label={i18nT('pages.settings.instancesPanel.remote_kirocrew_path')}
-            className={inputCls}
-            value={remoteBin}
-            onChange={e => setRemoteBin(e.target.value)}
-            placeholder={i18nT('pages.settings.instancesPanel.home_you_local_bin_kirocrew_leave_blank_for_stan')}
-          />
-          <span className="text-[12px] text-muted leading-snug">
-            {i18nT('pages.settings.instancesPanel.only_needed_if')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew')}</code> {i18nT('pages.settings.instancesPanel.is_installed_somewhere_non_standard_on_the_remot')} <code className="text-text">{i18nT('pages.settings.instancesPanel.command_v_kirocrew')}</code>{' '}
-            {i18nT('pages.settings.instancesPanel.commonly')} <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>{i18nT('pages.settings.instancesPanel.use_an_absolute_path_no')} <code className="text-text">~</code>).
-          </span>
-        </label>
-      </div>
+      <InstanceFormFields idPrefix="add-instance" form={form} />
       <ErrorNotice message={err} className="mt-3" />
       <div className="mt-3">
-        <Btn
-          primary
-          onClick={() => addMutation.mutate()}
-          disabled={addMutation.isPending || !name.trim() || !targetFilled || dupPort}
-        >
+        <Btn primary onClick={() => addMutation.mutate()} disabled={addMutation.isPending || !form.valid}>
           {addMutation.isPending ? i18nT('pages.settings.instancesPanel.adding') : i18nT('pages.settings.instancesPanel.add_remote_crew')}
         </Btn>
       </div>

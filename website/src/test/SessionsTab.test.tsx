@@ -76,7 +76,6 @@ function defaultPayload() {
       },
     ],
     totals: { rss_mb: 704, runtimes: 2, host_mb: 16384, host_pct: 4.3, rss_is_upper_bound: false },
-    unattributed: { procs: 33, rss_mb: 13824, oldest_uptime_s: 14400 },
     history: [{ t: 1, mb: 600 }, { t: 2, mb: 700 }],
   }
 }
@@ -170,63 +169,17 @@ describe('SessionsTab render', () => {
     expect(btn).toBeNull()
   })
 
-  it('shows an empty state when there are no sessions and no unattributed', async () => {
+  it('shows an empty state when there are no sessions', async () => {
     mockSessionsMemory.mockResolvedValue({
       sessions: [],
       tasks: [],
       totals: { rss_mb: 0, runtimes: 0, host_mb: 16384, host_pct: 0, rss_is_upper_bound: false },
-      unattributed: null,
       history: [],
     })
     renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
     await waitFor(() => {
       expect(screen.getByTestId('empty-state')).toBeInTheDocument()
     })
-  })
-})
-
-// ── Unattributed row ──
-
-describe('Unattributed row', () => {
-  it('renders above session rows when procs > 0', async () => {
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByText('Debugging session')).toBeInTheDocument()
-    })
-    expect(screen.getByTestId('unattributed-row')).toBeInTheDocument()
-  })
-
-  it('is hidden when procs is 0', async () => {
-    const payload = defaultPayload()
-    payload.unattributed = { procs: 0, rss_mb: 0, oldest_uptime_s: null }
-    mockSessionsMemory.mockResolvedValue(payload)
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByText('Debugging session')).toBeInTheDocument()
-    })
-    expect(screen.queryByTestId('unattributed-row')).not.toBeInTheDocument()
-  })
-
-  it('is hidden when unattributed is null (platform cannot enumerate)', async () => {
-    const payload = defaultPayload()
-    payload.unattributed = null as never
-    mockSessionsMemory.mockResolvedValue(payload)
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByText('Debugging session')).toBeInTheDocument()
-    })
-    expect(screen.queryByTestId('unattributed-row')).not.toBeInTheDocument()
-  })
-
-  // Finding 6: unattributed uses warn, not danger
-  it('uses text-warn class (not text-danger) for the unattributed row', async () => {
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByTestId('unattributed-row')).toBeInTheDocument()
-    })
-    const row = screen.getByTestId('unattributed-row')
-    expect(row.className).toContain('text-warn')
-    expect(row.className).not.toContain('text-danger')
   })
 })
 
@@ -481,7 +434,6 @@ describe('Empty state description (finding 7b)', () => {
       sessions: [],
       tasks: [],
       totals: { rss_mb: 0, runtimes: 0, host_mb: 16384, host_pct: 0, rss_is_upper_bound: false },
-      unattributed: null,
       history: [],
     })
     renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)

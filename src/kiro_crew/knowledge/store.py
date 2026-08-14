@@ -146,6 +146,18 @@ _DOC_STATE_TABLES: tuple[tuple[str, str], ...] = (
     ("agent_item_state", "active"),
 )
 
+# Which column identifies ONE document within a doc-state table. Ownership has to
+# be derived per document, and the hash cannot do it: two documents in one source
+# may legitimately hold identical text, so a hash-scoped read names one physical
+# item into two groups and the first delete of either destroys it. An allowlist
+# rather than a caller-supplied column name, because these identifiers are
+# interpolated into SQL.
+_DOC_STATE_KEY_COL: dict[str, str] = {
+    "folder_file_state": "file_path",
+    "artifact_item_state": "slug",
+    "agent_item_state": "slug",
+}
+
 # Which column on each state table holds a hash in the SAME DOMAIN as
 # ``items.content_hash``, for lookups that have to relate a state row to items.
 #
@@ -860,28 +872,49 @@ class KnowledgeStore:
             return
         self.db.execute("BEGIN")
         try:
-            for item_id in item_ids:
-                if owner_source_id:
-                    others = self.sources_holding_item(
-                        item_id, exclude_source_id=owner_source_id)
-                    if others:
-                        self.reassign_item_source(item_id, others[0])
-                        self._adopt_reassigned_item(item_id, others[0])
-                        self.db.execute(
-                            "DELETE FROM source_locations "
-                            "WHERE item_id = ? AND source_id = ?",
-                            (item_id, owner_source_id))
-                        continue
-                self._delete_item_cascade(item_id)
-            self.db.execute("""
-                DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
-                AND id NOT IN (SELECT source_id FROM entity_relations)
-                AND id NOT IN (SELECT target_id FROM entity_relations)
-            """)
+            self.delete_items_batch_in_txn(item_ids, owner_source_id)
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+        self._load_graph()
+
+    def delete_items_batch_in_txn(self, item_ids: list[str],
+                                  owner_source_id: str | None = None):
+        """The body of :meth:`delete_items_batch`, for a caller already in a write txn.
+
+        Same semantics, minus the transaction and the graph reload, so a caller
+        that must delete and then record something ATOMICALLY can put both inside
+        one ``BEGIN IMMEDIATE`` -- otherwise the delete commits on its own and a
+        concurrent writer can act on the gap. Such a caller owns two duties:
+        commit the transaction, and call :meth:`reload_graph` afterwards, because
+        the orphan sweep below drops entities the in-memory graph still holds.
+        """
+        for item_id in item_ids:
+            if owner_source_id:
+                others = self.sources_holding_item(
+                    item_id, exclude_source_id=owner_source_id)
+                if others:
+                    self.reassign_item_source(item_id, others[0])
+                    self._adopt_reassigned_item(item_id, others[0])
+                    self.db.execute(
+                        "DELETE FROM source_locations "
+                        "WHERE item_id = ? AND source_id = ?",
+                        (item_id, owner_source_id))
+                    continue
+            self._delete_item_cascade(item_id)
+        self.db.execute("""
+            DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
+            AND id NOT IN (SELECT source_id FROM entity_relations)
+            AND id NOT IN (SELECT target_id FROM entity_relations)
+        """)
+
+    def reload_graph(self) -> None:
+        """Rebuild the in-memory entity graph from the tables.
+
+        For a caller that ran :meth:`delete_items_batch_in_txn` and therefore owes
+        the reload that :meth:`delete_items_batch` would have done for it.
+        """
         self._load_graph()
 
     def dismiss_auto_source(self, uri: str) -> None:
@@ -965,6 +998,63 @@ class KnowledgeStore:
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+
+    def surviving_group_in_txn(self, table: str, source_id: str, key: str) -> list[str]:
+        """Items a doc-state row already names and this source still owns.
+
+        The caller must already hold a write transaction, and must not be on the
+        event loop: this issues sync sqlite reads whose result is only meaningful
+        under that lock.
+
+        Exists because the terminal write for a document the pre-ingest gate
+        REFUSED cannot predict its own group. The gate commits before returning,
+        so a concurrent ``delete_source_cascade`` on the holder can land in
+        between: it reassigns the surviving item to this source and
+        :meth:`_adopt_reassigned_item` names it in this very row. Writing an empty
+        group afterwards -- which "the gate refused, so this document owns
+        nothing" predicts -- erases that, leaving the last copy owned by the
+        source but named by no row: unreachable by the delete path, and
+        undeletable.
+
+        Row-scoped, never by content hash. Two documents in one source may
+        legitimately hold identical text, so a hash-scoped read hands this row the
+        OTHER document's items; both rows then name one physical item and deleting
+        either destroys it. ``_adopt_reassigned_item`` refuses an ambiguous hash
+        for that reason and this must not reintroduce it.
+
+        Filtered to ids that still exist under this source, because the row is
+        still carrying the group the gate just deleted. What survives is an
+        adoption that landed here.
+
+        An unreadable ``item_ids`` RAISES rather than reporting an empty group: the
+        caller writes whatever comes back as the row's terminal state, so mapping
+        corruption to "owns nothing" would overwrite a recoverable value and
+        orphan every item it named.
+        """
+        key_col = _DOC_STATE_KEY_COL[table]
+        row = self.db.execute(
+            f"SELECT item_ids FROM {table} "  # noqa: S608
+            f"WHERE source_id = ? AND {key_col} = ?",
+            (source_id, key)).fetchone()
+        if not row:
+            return []
+        raw = row["item_ids"]
+        if raw in (None, ""):
+            return []
+        try:
+            ids = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{table} item_ids unreadable for {key!r} in source {source_id} "
+                f"({exc})") from exc
+        if not isinstance(ids, list) or not ids:
+            return []
+        # Bounded by chunker.MAX_CHUNKS_PER_FILE, so the bind count cannot reach
+        # SQLITE_MAX_VARIABLE_NUMBER.
+        placeholders = ",".join("?" for _ in ids)
+        return [r["id"] for r in self.db.execute(
+            f"SELECT id FROM items WHERE id IN ({placeholders}) AND source_id = ?",  # noqa: S608,E501
+            (*ids, source_id)).fetchall()]
 
     def delete_source_cascade(self, source_id, dismiss_uri: str | None = None):
         """Delete a source and all its items in a single transaction (batch SQL).
@@ -1217,6 +1307,22 @@ class KnowledgeStore:
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (lid, item_id, source_id, chunk_range, section_title, anchor, now))
         self.db.commit()
+
+    def add_source_location_in_txn(self, item_id, source_id, chunk_range=None,
+                                   section_title=None, anchor=None):
+        """:meth:`add_source_location` without the commit, for a caller in a write txn.
+
+        The connection runs in autocommit mode, so ``db.commit()`` inside an
+        explicit ``BEGIN IMMEDIATE`` would END that transaction early and hand a
+        concurrent writer the very gap the caller took the lock to close.
+        """
+        lid = str(uuid4())
+        now = datetime.now().isoformat()
+        self.db.execute(
+            "INSERT OR IGNORE INTO source_locations "
+            "(id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (lid, item_id, source_id, chunk_range, section_title, anchor, now))
 
     def sources_holding_item(self, item_id: str, exclude_source_id: str | None = None) -> list[str]:
         """Ids of EXISTING sources that hold *item_id*, optionally excluding one.

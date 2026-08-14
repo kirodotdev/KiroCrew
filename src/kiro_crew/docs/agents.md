@@ -11,7 +11,7 @@ The kirocrew agent config lives at `~/.kiro/agents/kirocrew.json`. It defines:
 - Available tools (bash, file read/write, grep, MCP tools)
 - Auto-approved tools (safe tools that skip approval)
 - Denied commands (destructive operations blocked by default)
-- MCP servers (kirocrew-cron, kirocrew-core)
+- MCP servers (kirocrew-cron, kirocrew-core, kirocrew-computer)
 
 ## Switching Agents
 

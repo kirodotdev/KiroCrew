@@ -1451,6 +1451,26 @@ class TestKiroHooksFiltering:
         result = _kiro_hooks_only(hooks)
         assert set(result.keys()) == _VALID_HOOK_EVENTS
 
+    def test_bundled_defaults_hook_keys_are_classified(self):
+        """Pins the exact set of hook keys in bundled defaults.json.
+
+        _VALID_HOOK_EVENTS derives from bundled keys minus _INTERNAL_HOOK_KEYS, so
+        a new key is auto-accepted as an event by construction -- silent if it was
+        actually meant to be internal (kiro-cli would then reject the whole spec at
+        runtime). This ratchet forces an explicit choice: adding a bundled hook key
+        means updating either this set (a real event) or _INTERNAL_HOOK_KEYS
+        (Kiro-Crew-internal), never neither (#3362 fail-loud guard)."""
+        from kiro_crew.agent import _BUNDLED_CFG_DIR, _load_json
+
+        bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
+        bundled_hook_keys = set((bundled or {}).get("hooks", {}).keys())
+        assert bundled_hook_keys == {"auto_approve_tools", "postToolUse"}, (
+            f"bundled defaults.json hooks keys changed to {bundled_hook_keys} -- "
+            "classify any new key as a real kiro-cli event (covered automatically "
+            "via _VALID_HOOK_EVENTS) or Kiro-Crew-internal (add to "
+            "_INTERNAL_HOOK_KEYS), then update this pinned set."
+        )
+
     def test_sanitize_agent_hooks_repairs_existing_file(self, tmp_path: Path):
         """_sanitize_agent_hooks removes invalid hook keys from existing configs."""
         from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks

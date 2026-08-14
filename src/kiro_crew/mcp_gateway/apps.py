@@ -236,6 +236,115 @@ class WithheldTools(NamedTuple):
         return bool(self.declared or self.unreadable)
 
 
+#: The audiences SEP-1865 defines for ``_meta.ui.visibility``.
+AUDIENCE_MODEL = "model"
+AUDIENCE_APP = "app"
+
+
+class VisibilityVerdict(NamedTuple):
+    """How :func:`visibility_allows` read a tool's ``_meta.ui.visibility``."""
+
+    #: True when this audience may see/call the tool.
+    allowed: bool
+    #: True when the server DID set ``visibility`` but this host could not parse
+    #: it. Distinguishes "the server said no" from "we could not tell", which
+    #: the caller logs differently.
+    unreadable: bool
+
+
+def visibility_allows(tool: Any, audience: str) -> VisibilityVerdict:
+    """Decide whether ``audience`` may reach ``tool`` per its declared visibility.
+
+    ONE parser for BOTH directions — the agent's ``tools/list`` (audience
+    ``"model"``) and an app's ``tools/call`` (audience ``"app"``). They were
+    separate implementations with *opposite* defaults, and the app-side one
+    denied on absence while claiming the spec required it. The spec says the
+    opposite, so the two are now the same function and cannot drift again.
+
+    How each shape of ``visibility`` is read:
+
+    ==========================  ==============================================
+    ``visibility``              Verdict
+    ==========================  ==============================================
+    absent                      ALLOW — spec default is ``["model", "app"]``
+    ``["model", "app"]``        ALLOW for both
+    ``["app"]``                 ALLOW app, DENY model
+    ``["model"]``               ALLOW model, DENY app
+    ``[]``                      DENY both — an explicit empty audience list
+    ``"app"`` (bare string)     read as ``["app"]``
+    present, uninterpretable    DENY both, flagged ``unreadable``
+    ``_meta``/``ui`` = ``null``  ALLOW — a null container is an unset optional
+    ``_meta``/``ui`` not a dict  DENY both, flagged ``unreadable``
+    ==========================  ==============================================
+
+    Only ABSENCE gets the permissive default, and absence is distinguished from
+    malformation at EVERY level, not just the leaf:
+
+    * ``_meta`` missing, or present-and-a-dict with no ``ui`` key, or ``ui``
+      present-and-a-dict with no ``visibility`` key → genuine absence → allow.
+    * ``_meta`` or ``ui`` explicitly ``null`` → also absence. A JSON ``null`` is
+      how serializers spell an unset optional object, and it cannot conceal a
+      declaration, so the reason non-dict containers deny does not apply.
+    * ``_meta`` or ``ui`` present as some OTHER non-dict → the container that
+      would hold the declaration is unreadable, so a visibility may well be in
+      there and we cannot see it → deny, flagged ``unreadable``.
+    * ``visibility`` present but unparseable → deny, flagged ``unreadable``.
+
+    Absence is tested by key presence rather than by value, so an explicit
+    ``"visibility": null`` is a declaration this host cannot read rather than an
+    omission — ``.get()`` cannot tell those apart.
+
+    KNOWN DIVERGENCE, pre-existing and deliberately unchanged here: the C#
+    reference SDK documents ``null`` and ``[]`` on ``visibility`` ITSELF as
+    "visible to both the model and the app by default". This host denies both
+    for those two shapes, as it did before this function existed. The SEP text
+    grants the default to an OMITTED field, and an explicitly empty audience
+    list reads as a deliberate exclusion, so the conservative reading is kept
+    rather than widened as a side effect of an unrelated fix. Worth settling
+    separately — it is a conformance question, not an oversight.
+
+    Bare strings are coerced rather than lumped in with the unreadable values,
+    because the realistic typo for this field is a scalar instead of a
+    one-element list; blanket-denying every malformed value would hide a tool
+    whose author wrote ``"model"`` meaning to expose it.
+
+    Anything present-but-unreadable denies both audiences: it is an attempt to
+    restrict the tool that this host cannot honor, and the errors are not
+    symmetric. Over-denying is loud (the name is logged, the tool is simply
+    absent) while under-denying silently lets a tool run without readable
+    authorization metadata.
+    """
+    if not isinstance(tool, dict):
+        return VisibilityVerdict(False, False)
+    if "_meta" not in tool:
+        # SEP-1865: ``visibility`` defaults to ``["model", "app"]`` when omitted.
+        return VisibilityVerdict(True, False)
+    meta = tool["_meta"]
+    # An explicit ``null`` CONTAINER is absence, not malformation. JSON
+    # serializers routinely emit ``"_meta": null`` for an unset optional
+    # object, and the reason non-dict containers deny — a declaration could be
+    # hiding in there — does not apply to ``null``, which cannot hold one.
+    # Denying it would drop every tool from such a server.
+    if meta is None:
+        return VisibilityVerdict(True, False)
+    if not isinstance(meta, dict):
+        return VisibilityVerdict(False, True)
+    if "ui" not in meta:
+        return VisibilityVerdict(True, False)
+    ui = meta["ui"]
+    if ui is None:
+        return VisibilityVerdict(True, False)
+    if not isinstance(ui, dict):
+        return VisibilityVerdict(False, True)
+    if "visibility" not in ui:
+        return VisibilityVerdict(True, False)
+    raw = ui["visibility"]
+    vis = [raw] if isinstance(raw, str) else raw
+    if not isinstance(vis, list):
+        return VisibilityVerdict(False, True)
+    return VisibilityVerdict(audience in vis, False)
+
+
 def strip_model_hidden_tools(result: dict) -> WithheldTools:
     """Remove tools the agent may not see from a ``tools/list`` result IN PLACE.
 
@@ -244,33 +353,8 @@ def strip_model_hidden_tools(result: dict) -> WithheldTools:
     names split by cause, so the caller can log an unreadable declaration more
     loudly than a well-formed one.
 
-    How each shape of ``visibility`` is read:
-
-    ==========================  ==========================================
-    ``visibility``              Verdict
-    ==========================  ==========================================
-    absent                      KEEP — spec default is ``["model", "app"]``
-    ``["model", ...]``          KEEP
-    ``["app"]`` / ``[]``        DROP — explicit list without "model"
-    ``"model"`` (bare string)   KEEP — read as ``["model"]``
-    ``"app"`` (bare string)     DROP — read as ``["app"]``
-    present, uninterpretable    DROP
-    ==========================  ==========================================
-
-    Only ABSENCE gets the permissive default. A present-but-unreadable value is
-    an attempt to restrict the tool that this host cannot parse, and the two
-    errors are not symmetric: an over-drop is loud (the name is logged and the
-    tool simply does not appear) while a leak silently hands the model a tool
-    the server withheld, which it may then execute.
-
-    Bare strings are coerced rather than lumped in with the unreadable values,
-    because the realistic typo for this field is a scalar instead of a
-    one-element list — and blanket-dropping every malformed value would discard
-    a tool whose author wrote ``"model"`` meaning to expose it.
-
-    Note this is the OPPOSITE default from the app-call direction in
-    :mod:`kiro_crew.mcp_gateway.app_call`, which denies unless ``"app"`` is
-    explicitly present.
+    Every shape of ``visibility`` is read by :func:`visibility_allows`, which
+    the app-call direction shares — see that docstring for the full table.
     """
     tools = result.get("tools")
     if not isinstance(tools, list):
@@ -282,25 +366,13 @@ def strip_model_hidden_tools(result: dict) -> WithheldTools:
         if not isinstance(tool, dict):
             kept.append(tool)
             continue
-        meta = tool.get("_meta")
-        ui = meta.get("ui") if isinstance(meta, dict) else None
-        # Absence is the ONLY permissive case, so it is tested by key presence
-        # rather than by value — an explicit ``"visibility": null`` is a
-        # declaration this host cannot read, not an omission.
-        if not isinstance(ui, dict) or "visibility" not in ui:
+        verdict = visibility_allows(tool, AUDIENCE_MODEL)
+        if verdict.allowed:
             kept.append(tool)
             continue
-        raw = ui["visibility"]
-        vis = [raw] if isinstance(raw, str) else raw
-        if isinstance(vis, list):
-            if "model" in vis:
-                kept.append(tool)
-                continue
-            bucket = declared
-        else:
-            bucket = unreadable
         name = tool.get("name")
-        bucket.append(name if isinstance(name, str) else "<unnamed>")
+        label = name if isinstance(name, str) else "<unnamed>"
+        (unreadable if verdict.unreadable else declared).append(label)
     withheld = WithheldTools(declared, unreadable)
     if withheld:
         result["tools"] = kept

@@ -6,8 +6,17 @@ filesystem remains untouched — the broker stubs in these specs are injected
 into each kiro-cli session over ACP ``session/new``, which outranks the
 same-named entry in the agent spec (see ``session_servers.py``).
 
-Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped because they bind
-to ``KIROCREW_SESSION_KEY`` and cannot be safely shared across sessions.
+Servers in :data:`UNPOOLABLE_SERVERS` are left unwrapped. The set is empty, so
+nothing is excluded through it; the first-party servers that bind
+``KIROCREW_SESSION_KEY`` stay unwrapped only because nothing lists them in the
+stub allowlist.
+
+The rewrite is fingerprint-cached: a content-signature snapshot of every input is
+kept at ``<overlay_dir>/.rewrite-fingerprint``, and a boot whose inputs all
+match serves the previous run's overlays (and its cached ``target_env``)
+instead of re-parsing, re-resolving and re-writing everything. The prune
+pass runs on both paths. Any doubt — torn file, missing output, unresolved
+command — falls through to the full rewrite.
 """
 
 from __future__ import annotations
@@ -21,10 +30,11 @@ import shlex
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat
+from kiro_crew import __version__, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
@@ -32,13 +42,61 @@ from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger(__name__)
 
-# Reserved for MCP servers that explicitly opt out of broker routing even
+# Fingerprint of the last completed rewrite, stored inside the overlay dir so
+# an unchanged boot can skip re-parsing every agent spec, re-resolving every
+# command through ``shutil.which`` and re-writing every overlay file. The name
+# deliberately has NO ``.json`` suffix: ``pathlib``'s ``glob("*.json")``
+# matches dotfiles, so a ``.json``-suffixed name would be deleted by the
+# stale-overlay prune pass and would make ``overlay_ready()`` report an empty
+# overlay dir as ready.
+_FINGERPRINT_NAME = ".rewrite-fingerprint"
+
+# Bump when the rewrite's OUTPUT shape changes for identical inputs (new stub
+# flags, changed overlay layout, ...) so upgraded installs regenerate instead
+# of serving overlays produced by older logic. The package version is also in
+# the fingerprint, so a release bump invalidates regardless; this constant is
+# the explicit knob for in-development changes.
+_FINGERPRINT_SCHEMA = 2
+
+
+@dataclass
+class _RewritePassNotes:
+    """Observations from one full rewrite pass that decide cacheability.
+
+    ``which_results`` records every ``shutil.which`` probe as
+    ``(bare_command, search_path) -> resolved-or-""``. The resolved path is an
+    OUTPUT of filesystem state the stat-based fingerprint cannot see (a binary
+    removed from, added to, or shadowed within an unchanged PATH), so the
+    cache-hit path re-runs exactly these probes and compares — a disagreement
+    in either direction forces the full rewrite.
+
+    ``sidecar_write_failed`` and ``source_read_failed`` mark transient I/O
+    faults: the produced output set is incomplete for reasons that can clear
+    without any fingerprinted input changing, so the run must not be cached
+    (and a previous run's fingerprint must be removed, or it could still match
+    and freeze the degraded state).
+    """
+
+    which_results: dict[str, str] = field(default_factory=dict)
+    sidecar_write_failed: bool = False
+    source_read_failed: bool = False
+
+
+# Separator inside a stored which-probe key (bare command NUL search-path).
+# NUL is legal in JSON strings and cannot appear in either component.
+_WHICH_KEY_SEP = "\0"
+
+# Reserved for MCP servers that explicitly opt out of the broker even
 # when they could support it (e.g. dev/diagnostic servers that want the
-# operator to see one process per session). The preferred signalling path is
-# a backend NOT advertising ``kirocrew.caller-identity`` in its initialize
-# response — gatewayd then refuses to pool it. This hardcoded set exists
-# only for servers that cannot be changed in lockstep (e.g. third-party MCPs
-# shipped by teams that haven't adopted the caller-identity extension yet).
+# operator to see one process per session).
+#
+# Empty, and nothing is excluded through it today. The intended signalling path
+# — a backend that does not advertise ``kirocrew.caller-identity`` in its
+# initialize response being refused for pooling — is NOT implemented: gatewayd
+# parses that capability only to decide whether to inject caller identity, and
+# no code path declines to pool a backend for lacking it. So this set is the
+# only mechanism of its kind that exists, and it is the one to reach for while
+# that is true, not a fallback for servers that cannot adopt the extension.
 UNPOOLABLE_SERVERS: frozenset[str] = frozenset()
 
 # Marker field set on rewritten MCP entries so repeat runs are idempotent.
@@ -75,6 +133,7 @@ def _build_stub_entry(
     approval_mode: str,
     sidecars_written: set[str] | None = None,
     poolable: bool = False,
+    notes: _RewritePassNotes | None = None,
 ) -> dict[str, Any]:
     """Return the rewritten ``mcpServers[name]`` entry.
 
@@ -113,6 +172,17 @@ def _build_stub_entry(
             filter(None, [env_path, os.environ.get("PATH", "")])
         )
         resolved = shutil.which(target_command, path=search_path)
+        # Record the probe RESULT, not just the attempt: which() reads
+        # filesystem state (directory contents, PATHEXT matches, shadowing
+        # order) that a stat-based fingerprint cannot see. The cache-hit path
+        # re-runs exactly these probes and compares, so a binary that was
+        # removed, reinstalled at another PATH prefix, or newly shadowed
+        # invalidates the cache — in BOTH directions (failed→resolves and
+        # resolved→different/none).
+        if notes is not None:
+            notes.which_results[
+                f"{target_command}{_WHICH_KEY_SEP}{search_path}"
+            ] = resolved or ""
         if resolved:
             target_command = resolved
         else:
@@ -250,6 +320,12 @@ def _build_stub_entry(
         if wrote_sidecar:
             stub_args.extend(["--env-file", str(env_file)])
         else:
+            # Transient fault: the overlay written this pass omits --env-file,
+            # and an old sidecar may still exist at this name — so an
+            # existence check cannot detect the degradation. Mark the pass
+            # uncacheable so the next boot retries the write.
+            if notes is not None:
+                notes.sidecar_write_failed = True
             # No protected sidecar, so nothing to point the stub at. In the
             # pooled path this only changes the PoolKey hash (the declared env
             # is never applied to a shared backend anyway -- see the warning
@@ -320,11 +396,12 @@ def _rewrite_single_spec(
     work_dir: Path,
     sandbox_mode: str,
     approval_mode: str,
-    poolable_servers: frozenset[str],
+    stub_servers: frozenset[str],
     pooling_enabled: bool = True,
     inject_servers: dict[str, Any] | None = None,
     target_env: dict[str, str] | None = None,
     sidecars_written: set[str] | None = None,
+    notes: _RewritePassNotes | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Return ``(new_spec, wrapped_count)``. Idempotent.
 
@@ -386,9 +463,23 @@ def _rewrite_single_spec(
             # in _injectable_settings_servers.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        is_poolable = pooling_enabled and (
-            entry.get("poolable") is True or name in poolable_servers
-        )
+        # The stub is opt-in per server, and ``mcp_gateway.stub_servers`` is the
+        # ONLY thing that opts one in. An unstubbed server passes through
+        # untouched, so the session launches it directly — the same process
+        # topology as running with no broker at all, and no stub process to pay
+        # for. Strip only the internal ``poolable`` hint, which is ours and not
+        # kiro-cli's.
+        #
+        # A spec-level ``poolable: true`` deliberately does NOT opt a server in
+        # any more. It cannot: the broker and the session's overlay are both
+        # gated on the config list, and teaching those gates to read agent specs
+        # would put filesystem IO behind every ``KiroCrewConfig.load()`` (244
+        # call sites, uncached). Honouring it only in this function produced a
+        # stub nothing pointed at, and a dashboard row that read "stub" for a
+        # server that had none. One source of truth instead.
+        if name not in stub_servers:
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
         new_servers[name] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=name,
@@ -399,7 +490,10 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
-            poolable=is_poolable,
+            # Sharing is global over the stub set: being stubbed is the only
+            # per-server decision, so there is nothing further to consult here.
+            poolable=pooling_enabled,
+            notes=notes,
         )
         wrapped += 1
 
@@ -426,6 +520,12 @@ def _rewrite_single_spec(
         if name in new_servers or alias in new_servers:
             continue
         if not isinstance(entry, dict) or "command" not in entry:
+            continue
+        # The stub is opt-in here too, from the same single source. A settings
+        # level server nobody listed is left for the session to launch itself, so
+        # this path cannot reintroduce the stub-per-server default through the
+        # back door — and a spec-level ``poolable: true`` cannot either.
+        if not (name in stub_servers or alias in stub_servers):
             continue
         inject_sig = (entry["command"], _hashable_args(entry.get("args")))
         if inject_sig in seen_targets:
@@ -469,11 +569,8 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
-            poolable=pooling_enabled and (
-                entry.get("poolable") is True
-                or name in poolable_servers
-                or alias in poolable_servers
-            ),
+            poolable=pooling_enabled,
+            notes=notes,
         )
         wrapped += 1
         seen_targets.add(inject_sig)
@@ -485,10 +582,18 @@ def _rewrite_single_spec(
 
 def _injectable_settings_servers(
     settings_spec: dict[str, Any],
+    stub_servers: frozenset[str],
 ) -> dict[str, Any]:
-    """Return ``{name: raw_entry}`` of stdio servers in the global
-    ``settings/mcp.json`` that must be injected per-agent instead of left in
-    the settings overlay.
+    """Return ``{raw_name: raw_entry}`` of stdio servers in the global
+    ``settings/mcp.json`` that must be RELOCATED out of the settings overlay
+    into a per-agent one.
+
+    The returned set does double duty: every name in it is injected per-agent
+    AND dropped from the settings overlay. Those two must be the SAME set — a
+    server dropped from settings but not injected anywhere simply disappears,
+    taking its MCP tools with it, which is strictly worse than either stubbing
+    it or leaving it alone. So the stub opt-in is applied HERE, once, rather
+    than at the injection loop, where filtering would silently desync the two.
 
     These are exactly the servers that, if wrapped in BOTH the settings
     overlay and a per-agent overlay, collide on name inside kiro-cli (two
@@ -498,6 +603,10 @@ def _injectable_settings_servers(
     the settings overlay, the duplicate disappears. HTTP/SSE settings servers
     are NOT returned — they need no stub and stay raw in the settings overlay,
     merging globally.
+
+    Keys are the RAW settings names, because the caller filters ``src_servers``
+    (raw-keyed) with this set. Stub membership is tested under both the raw name
+    and the slash-free alias, since the config may carry either spelling.
     """
     servers = settings_spec.get("mcpServers") or {}
     out: dict[str, Any] = {}
@@ -519,8 +628,353 @@ def _injectable_settings_servers(
         if "command" not in entry:
             # HTTP/SSE — shareable, no stub needed; leave in settings overlay.
             continue
+        if not (name in stub_servers or mcp_server_alias(name) in stub_servers):
+            # Not stubbed: leave it RAW in the settings overlay so the session
+            # launches it directly. Relocating it here would delete it from the
+            # only overlay that still lists it.
+            continue
         out[name] = entry
     return out
+
+
+def _stat_sig(path: Path) -> list[Any] | None:
+    """Return ``[size, mtime_ns, sha256]`` for *path*, or ``None`` if it
+    cannot be read. Size and nanosecond mtime are cheap discriminators, but
+    neither is sufficient alone or together: a same-size write can land inside
+    one filesystem timestamp tick (coarse on some filesystems), and a
+    ``chmod`` changes neither — so the content digest is what makes a
+    signature collision impossible for changed bytes. The files signed here
+    are small JSON documents, so hashing them is microseconds against the
+    parse+resolve+write pass the fingerprint exists to skip."""
+    try:
+        st = path.stat()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return [st.st_size, st.st_mtime_ns, digest]
+
+
+def _rewrite_inputs_fingerprint(
+    *,
+    source_dir: Path,
+    settings_path: Path,
+    overlay_dir: Path,
+    socket_path: Path,
+    work_dir: Path,
+    sandbox_mode: str,
+    approval_mode: str,
+    stub_set: frozenset[str],
+    pooling_enabled: bool,
+) -> dict[str, Any]:
+    """Return a JSON-serializable snapshot of every input that can change
+    :func:`rewrite_agents`'s output.
+
+    Enumerated against the code, not guessed:
+
+    * ``sources`` / ``settings`` — the parsed spec files (size+mtime+digest).
+    * ``socket_path`` / ``work_dir`` — baked into stub argv and the PoolKey.
+    * ``sandbox_mode`` / ``approval_mode`` / ``stub_servers`` /
+      ``pooling_enabled`` — decide stub flags and which entries are shareable.
+    * ``python`` — ``sys.executable`` is baked into every overlay ``command``,
+      so a moved/upgraded interpreter must regenerate the overlays.
+    * ``path_env`` / ``pathext`` — feed the ``shutil.which`` resolution of bare
+      command names. The other half of which()'s input — the CONTENTS of the
+      searched directories — is not stat-able here; it is covered by the
+      stored per-probe results, which the cache-hit path re-runs and compares
+      (see :class:`_RewritePassNotes`).
+    * ``schema`` / ``package`` — invalidate on rewriter logic changes.
+
+    ``mcp_gateway.forward_declared_env`` is deliberately NOT here: it selects
+    warning text only; the written overlays and sidecars are identical either
+    way (gatewayd reads that flag at spawn time, not from the overlay).
+    """
+    sources: dict[str, list[Any] | None] = {
+        p.name: _stat_sig(p) for p in sorted(source_dir.glob("*.json"))
+    }
+    return {
+        "schema": _FINGERPRINT_SCHEMA,
+        "package": __version__,
+        "python": sys.executable,
+        "path_env": os.environ.get("PATH", ""),
+        "pathext": os.environ.get("PATHEXT", ""),
+        "source_dir": str(source_dir),
+        "overlay_dir": str(overlay_dir),
+        "socket_path": str(socket_path),
+        "work_dir": str(work_dir),
+        "sandbox_mode": sandbox_mode,
+        "approval_mode": approval_mode,
+        "stub_servers": sorted(stub_set),
+        "pooling_enabled": bool(pooling_enabled),
+        "sources": sources,
+        "settings": _stat_sig(settings_path),
+    }
+
+
+def _load_fingerprint(path: Path) -> dict[str, Any] | None:
+    """Load and validate a stored fingerprint. NEVER raises: a missing,
+    unreadable, torn, or malformed file returns ``None``, which callers treat
+    as "do the full rewrite" — unreadable must never mean "match"."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    inputs = data.get("inputs")
+    outputs = data.get("outputs")
+    which = data.get("which")
+    if not (
+        isinstance(inputs, dict)
+        and isinstance(outputs, dict)
+        and isinstance(which, dict)
+    ):
+        return None
+    overlays = outputs.get("overlays")
+    sidecars = outputs.get("sidecars")
+    if not (isinstance(overlays, dict) and isinstance(sidecars, dict)):
+        return None
+
+    def _valid_sig(sig: Any) -> bool:
+        return (
+            isinstance(sig, list)
+            and len(sig) == 3
+            and isinstance(sig[0], int)
+            and isinstance(sig[1], int)
+            and isinstance(sig[2], str)
+        )
+
+    for name, sig in (*overlays.items(), *sidecars.items()):
+        # Names are joined onto the overlay/sidecar dirs below; refuse
+        # anything that could escape them, so a corrupted or tampered file
+        # degrades to a full rewrite instead of probing arbitrary paths.
+        if not isinstance(name, str) or "/" in name or "\\" in name or name in (".", ".."):
+            return None
+        if not _valid_sig(sig):
+            return None
+    settings_sig = outputs.get("settings_overlay")
+    if settings_sig is not None and not _valid_sig(settings_sig):
+        return None
+    if not all(
+        isinstance(k, str) and _WHICH_KEY_SEP in k and isinstance(v, str)
+        for k, v in which.items()
+    ):
+        return None
+    return data
+
+
+def _cached_rewrite_result(
+    stored: dict[str, Any],
+    *,
+    overlay_dir: Path,
+    stubs_dir: Path,
+) -> tuple[dict[str, int], dict[str, str]] | None:
+    """Serve the previous rewrite's result without redoing the work.
+
+    Returns ``None`` (caller falls through to the full rewrite) unless every
+    output the previous run produced still exists WITH the size+mtime+digest it
+    was recorded with — a deleted or edited overlay/sidecar must be
+    regenerated, not skipped over (an edited overlay would diverge from the
+    cached ``target_env``: the stub's PoolKey would hash the edited command
+    while gatewayd spawns the recorded one). The previous run's
+    ``shutil.which`` probes are also re-run and compared: directory contents
+    are which() input the stat fingerprint cannot see, so a target binary
+    removed, moved between PATH prefixes, or newly shadowed forces the full
+    rewrite instead of serving a dead absolute path forever.
+
+    On success the prune passes still run (stat-only), so a stray file in the
+    overlay tree is removed exactly as on the full path — including a
+    leftover settings overlay whose source is gone.
+    """
+    outputs = stored["outputs"]
+    overlay_sigs: dict[str, Any] = outputs["overlays"]
+    sidecar_sigs: dict[str, Any] = outputs["sidecars"]
+    env_dir = env_sidecar_dir_for_stubs(stubs_dir)
+    settings_overlay_file = overlay_dir.parent / "settings" / "mcp.json"
+    try:
+        for name, sig in overlay_sigs.items():
+            if _stat_sig(overlay_dir / name) != sig:
+                return None
+        for name, sig in sidecar_sigs.items():
+            if _stat_sig(env_dir / name) != sig:
+                return None
+        settings_sig = outputs.get("settings_overlay")
+        if settings_sig is not None:
+            if _stat_sig(settings_overlay_file) != settings_sig:
+                return None
+        elif settings_overlay_file.is_file():
+            # The previous run produced no settings overlay, yet one exists —
+            # e.g. its deletion failed transiently on the full path (Windows
+            # sharing violation). Removed global MCP servers must not stay
+            # active: retry the deletion, and refuse the cache if it survives.
+            try:
+                settings_overlay_file.unlink()
+            except OSError:
+                return None
+    except OSError:
+        return None
+
+    # Re-run the recorded which() probes: a few directory stats per bare
+    # command, no spec parsing. Closes the staleness gap in both directions
+    # (resolved -> gone/different AND unresolved -> now-resolves).
+    for key, recorded in stored["which"].items():
+        bare, _, search_path = key.partition(_WHICH_KEY_SEP)
+        try:
+            current = shutil.which(bare, path=search_path) or ""
+        except OSError:
+            return None
+        if current != recorded:
+            return None
+
+    # Re-assert owner-only protection on EVERY artifact the cached result
+    # serves — a chmod / DACL edit changes no stat-or-digest signature, and
+    # on Windows the file DACL (not the containing directory) is what carries
+    # access. The invariant is FAIL-LOUD end to end: every call in this block
+    # raises on failure, and any failure falls through to the full rewrite —
+    # a lockdown that cannot be re-asserted must never be served from cache.
+    # That is why ``restrict_to_owner`` (raises on both platforms) is used for
+    # files rather than ``chmod_safe`` (logs-and-continues on POSIX), and why
+    # the POSIX directory modes are re-applied with a raw ``os.chmod`` after
+    # ``make_owner_only_dir`` (which warns-and-continues). Windows directory
+    # DACLs stay best-effort inside ``make_owner_only_dir``: there the file
+    # DACL is the carrier of access, and every file is fail-loud below.
+    try:
+        if env_dir.is_dir():
+            platform_compat.make_owner_only_dir(env_dir)
+            if platform_compat.IS_POSIX:
+                # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- 0o700 is OWNER-ONLY, the tightest traversable mode for this credential-sidecar directory; the rule's suggested 0o644 would grant world-read and drop the execute bit a directory needs. Raw os.chmod (not make_owner_only_dir alone) because this path must FAIL LOUD into the full rewrite.  # noqa: E501
+                os.chmod(env_dir, 0o700)
+        protected: list[Path] = [
+            *(overlay_dir / n for n in overlay_sigs),
+            *(env_dir / n for n in sidecar_sigs),
+            overlay_dir / _FINGERPRINT_NAME,
+        ]
+        if settings_sig is not None:
+            platform_compat.make_owner_only_dir(settings_overlay_file.parent)
+            if platform_compat.IS_POSIX:
+                # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- same as the env_dir site above: 0o700 is owner-only and fail-loud is required.  # noqa: E501
+                os.chmod(settings_overlay_file.parent, 0o700)
+            protected.append(settings_overlay_file)
+        for artifact in protected:
+            platform_compat.restrict_to_owner(artifact)
+    except OSError:
+        # The full rewrite re-creates each artifact through its own
+        # protect-before-content writers, whose failure handling marks the
+        # pass uncacheable.
+        return None
+
+    # The prune pass runs even when the rewrite is skipped: a deleted agent
+    # spec changes the fingerprint (its file leaves the stat set) and takes the
+    # full path, but a foreign file in the overlay tree does not, and must
+    # still be swept.
+    for stale in overlay_dir.glob("*.json"):
+        if stale.name not in overlay_sigs:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    if env_dir.is_dir():
+        for stale in env_dir.glob("*.json"):
+            if stale.name not in sidecar_sigs:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
+    # Reconstruct the result from the just-validated OVERLAYS rather than
+    # trusting a payload stored in the fingerprint. The overlays are the
+    # executable authority either way — kiro-cli sessions receive their stub
+    # argv directly — so rebuilding ``target_env`` from them means the
+    # fingerprint carries no command material at all: tampering with it can
+    # at worst skip a rewrite, never inject a command that is not already in
+    # the overlay files. Iteration is sorted by name to match the full path's
+    # sorted source glob, so ``setdefault`` first-wins resolution is
+    # byte-identical to a fresh rewrite.
+    results: dict[str, int] = {}
+    target_env: dict[str, str] = {}
+    try:
+        for name in sorted(overlay_sigs):
+            spec = json.loads((overlay_dir / name).read_text())
+            servers = spec.get("mcpServers", {}) if isinstance(spec, dict) else {}
+            if not isinstance(servers, dict):
+                servers = {}
+            wrapped = sum(
+                1
+                for entry in servers.values()
+                if isinstance(entry, dict)
+                and (
+                    entry.get(_WRAPPER_MARKER) is True
+                    or entry.get(_WRAPPER_MARKER_LEGACY) is True
+                )
+            )
+            if wrapped:
+                results[name] = wrapped
+            _collect_target_env(servers, target_env)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    logger.info(
+        "mcp-gateway rewriter: inputs unchanged since last rewrite — "
+        "serving cached overlays (%d agent file(s), %d target env var(s), overlay=%s)",
+        len(overlay_sigs),
+        len(target_env),
+        overlay_dir,
+    )
+    return results, target_env
+
+
+def _store_fingerprint(
+    path: Path,
+    *,
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    which: dict[str, str],
+) -> None:
+    """Persist the rewrite fingerprint atomically, protection BEFORE content.
+
+    The payload holds only input/output signatures and which-probe results —
+    never the ``target_env`` command material, which the cache-hit path
+    reconstructs from the validated overlays — but it follows the env-sidecar
+    protect-before-content pattern rather than plain ``atomic_write`` anyway
+    (``atomic_write``'s ``mode=`` is applied pre-write on POSIX but is inert
+    on Windows, where the DACL is the only carrier of access). A torn or
+    failed write must be unreadable-as-JSON (→ full rewrite), never readable
+    as a match; any failure is logged and swallowed — the only consequence is
+    a full rewrite on the next boot.
+    """
+    payload = {
+        "inputs": inputs,
+        "outputs": outputs,
+        "which": which,
+    }
+    wrote = False
+    try:
+        fd, tmp = tempfile.mkstemp(
+            prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent)
+        )
+        fd_owned = True
+        try:
+            platform_compat.fchmod_safe(fd, 0o600)
+            if not platform_compat.IS_POSIX:
+                platform_compat.restrict_to_owner(tmp)
+            with os.fdopen(fd, "w") as fh:
+                fd_owned = False  # fdopen owns the descriptor now
+                fh.write(json.dumps(payload, sort_keys=True))
+            os.replace(tmp, path)
+            wrote = True
+        finally:
+            if fd_owned:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if not wrote:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+    except OSError:
+        logger.debug(
+            "rewriter: could not persist rewrite fingerprint at %s "
+            "(next boot does a full rewrite)",
+            path,
+            exc_info=True,
+        )
 
 
 def rewrite_agents(
@@ -531,13 +985,16 @@ def rewrite_agents(
     work_dir: Path,
     sandbox_mode: str = "auto",
     approval_mode: str = "interactive",
-    poolable_servers: frozenset[str] | None = None,
+    stub_servers: frozenset[str] | None = None,
     pooling_enabled: bool = True,
 ) -> tuple[dict[str, int], dict[str, str]]:
     """Populate ``overlay_dir`` with rewritten copies of ``source_dir/*.json``.
 
     Never modifies ``source_dir``. Idempotent — safe to call on every
-    KiroCrew startup.
+    Kiro Crew startup. When no input changed since the last completed run
+    (see :func:`_rewrite_inputs_fingerprint`) the rewrite loop is skipped and
+    the cached ``(results, target_env)`` is returned; the stale-file prune
+    still runs on that path.
 
     Args:
         source_dir: Usually ``~/.kiro/agents/``.
@@ -550,16 +1007,21 @@ def rewrite_agents(
         sandbox_mode: Value from ``config.agent.sandbox`` — fed through
             so the stub's PoolKey matches KiroCrew's sandbox policy.
         approval_mode: Value from ``config.agent.approval_mode`` — same.
-        poolable_servers: Server names from ``config.mcp_gateway.poolable_servers``.
-            A stdio server's backend is SHARED across connections when its name
-            is in this set OR its entry sets ``poolable: true``. Every stdio
-            server gets a stub either way — the stub is the addressing layer, and
-            this set only decides whether the backend behind it is shared.
-            ``None`` is treated as an empty set.
-        pooling_enabled: ``config.mcp_gateway.enabled``. When ``False`` no stub
-            is marked shareable, so every connection gets its own backend while
-            stubs stay in place — the state that lets MCP Apps work with pooling
-            entirely off.
+        stub_servers: Server names from ``config.mcp_gateway.stub_servers``.
+            A stdio server gets a stub when its name is in this set — that list is
+            the ONLY trigger. A per-agent-spec ``poolable: true`` is retired and
+            deliberately ignored here: both real gates (the broker start gate and
+            the session overlay) read the config list, so honouring the spec key
+            produced a stub nothing pointed at. It is still stripped before the
+            entry reaches kiro-cli, and still reported as ``entry_poolable`` for
+            information only. An unstubbed server is left untouched for the
+            session to launch itself, which is what keeps the default free of both
+            a daemon and a stub process. ``None`` is treated as an empty set,
+            meaning nothing is rewritten at all.
+        pooling_enabled: ``config.mcp_gateway.enabled``. Sharing is global over
+            the stub set: when ``False`` no stub is marked shareable, so each
+            connection gets its own backend while the stubs stay in place — the
+            state that lets a stubbed server render UI without co-tenancy.
 
     Returns:
         A ``(results, target_env)`` tuple:
@@ -571,7 +1033,7 @@ def rewrite_agents(
           these when a stub registers, to find the real backend command
           to spawn for a new pool key.
     """
-    pool_set = poolable_servers or frozenset()
+    stub_set = stub_servers or frozenset()
     if not source_dir.is_dir():
         logger.warning("agent source dir missing: %s", source_dir)
         return {}, {}
@@ -589,10 +1051,40 @@ def rewrite_agents(
     # instead.
     stubs_dir = overlay_dir.parent / "stubs"
     platform_compat.make_owner_only_dir(stubs_dir)
+
+    # Skip the whole rewrite when nothing that feeds it changed since the last
+    # completed run. The fingerprint stats and digests only the small JSON
+    # inputs (no JSON parsing, no per-server ``shutil.which``, no writes), so
+    # an unchanged warm boot pays a few reads instead of the full
+    # parse+resolve+write pass. Any read/validation failure
+    # falls through to the full rewrite — unreadable never means "match".
+    kiro_settings_json = source_dir.parent / "settings" / "mcp.json"
+    fingerprint_path = overlay_dir / _FINGERPRINT_NAME
+    current_inputs = _rewrite_inputs_fingerprint(
+        source_dir=source_dir,
+        settings_path=kiro_settings_json,
+        overlay_dir=overlay_dir,
+        socket_path=socket_path,
+        work_dir=work_dir,
+        sandbox_mode=sandbox_mode,
+        approval_mode=approval_mode,
+        stub_set=stub_set,
+        pooling_enabled=pooling_enabled,
+    )
+    stored = _load_fingerprint(fingerprint_path)
+    if stored is not None and stored.get("inputs") == current_inputs:
+        cached = _cached_rewrite_result(
+            stored, overlay_dir=overlay_dir, stubs_dir=stubs_dir
+        )
+        if cached is not None:
+            return cached
+
     written: set[str] = set()
     written_sidecars: set[str] = set()
     results: dict[str, int] = {}
     target_env: dict[str, str] = {}
+    notes = _RewritePassNotes()
+    overlay_write_failed = False
 
     # Read the GLOBAL ~/.kiro/settings/mcp.json FIRST. kiro-cli merges this
     # file into every agent at runtime — any bare-name server declared here
@@ -609,7 +1101,6 @@ def rewrite_agents(
     # from the settings overlay. Empty-mcpServers agents then get pooled
     # coverage with the right identity, and no name ever appears wrapped in
     # both overlays. Non-poolable / HTTP settings servers stay raw in settings.
-    kiro_settings_json = source_dir.parent / "settings" / "mcp.json"
     settings_src_spec: dict[str, Any] | None = None
     settings_poolable: dict[str, Any] = {}
     if kiro_settings_json.is_file():
@@ -617,14 +1108,32 @@ def rewrite_agents(
             loaded = json.loads(kiro_settings_json.read_text())
             if isinstance(loaded, dict):
                 settings_src_spec = loaded
-                settings_poolable = _injectable_settings_servers(loaded)
-        except (OSError, json.JSONDecodeError) as exc:
+                settings_poolable = _injectable_settings_servers(loaded, stub_set)
+        except OSError as exc:
+            # Transient read failure: same reasoning as the per-agent site —
+            # do not cache a pass that treated an existing settings file as
+            # absent (it would also have pruned the settings overlay).
+            notes.source_read_failed = True
+            logger.warning("failed to read global mcp.json: %s", exc)
+        except json.JSONDecodeError as exc:
+            # Content problem — cacheable; a fix changes the stat signature.
             logger.warning("failed to read global mcp.json: %s", exc)
 
     for path in sorted(source_dir.glob("*.json")):
         try:
             spec = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
+        except OSError as exc:
+            # Transient: the file stat'ed fine for the fingerprint but could
+            # not be read. Readability can return without size/mtime changing,
+            # so caching this incomplete pass would serve overlays missing
+            # this agent forever. Mark the pass uncacheable.
+            notes.source_read_failed = True
+            logger.warning("skipping agent %s: %s", path.name, exc)
+            continue
+        except json.JSONDecodeError as exc:
+            # Deterministic: the CONTENT is bad, and fixing it changes the
+            # file's stat signature, which invalidates the fingerprint — so
+            # this skip is safe to cache.
             logger.warning("skipping agent %s: %s", path.name, exc)
             continue
         if not isinstance(spec, dict):
@@ -646,11 +1155,12 @@ def rewrite_agents(
             work_dir=work_dir,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
-            poolable_servers=pool_set,
+            stub_servers=stub_set,
             pooling_enabled=pooling_enabled,
             inject_servers=settings_poolable,
             target_env=target_env,
             sidecars_written=written_sidecars,
+            notes=notes,
         )
         _collect_target_env(new_spec.get("mcpServers", {}), target_env)
         target = overlay_dir / path.name
@@ -666,6 +1176,7 @@ def rewrite_agents(
                 platform_compat.restrict_to_owner(target)
         except OSError as exc:
             logger.warning("failed to write overlay %s: %s", target, exc)
+            overlay_write_failed = True
             continue
         written.add(path.name)
         if wrapped:
@@ -747,6 +1258,7 @@ def rewrite_agents(
         except OSError as exc:
             logger.warning("failed to write global mcp.json overlay: %s", exc)
             settings_overlay_path = None
+            overlay_write_failed = True
     else:
         # Source settings/mcp.json absent (deleted between runs): prune any
         # previously-written settings overlay, mirroring the per-agent
@@ -765,6 +1277,58 @@ def rewrite_agents(
         len(target_env),
         overlay_dir,
     )
+    # Persist the fingerprint so the next unchanged boot skips this pass.
+    # ``current_inputs`` was stat'ed BEFORE the files were read: if a file
+    # changed in between, the stored stats are older than the content the
+    # overlays reflect, the next boot's stat mismatches, and the rewrite runs
+    # again — an extra rewrite, never a stale overlay. Not cached when any
+    # transient fault left the output set incomplete (a later boot must retry
+    # even though no fingerprinted input changed).
+    uncacheable = ""
+    if notes.source_read_failed:
+        uncacheable = "transient source read failure(s)"
+    elif notes.sidecar_write_failed:
+        uncacheable = "env sidecar write failure(s)"
+    elif overlay_write_failed:
+        uncacheable = "overlay write failure(s)"
+    if uncacheable:
+        logger.debug("rewriter: %s; not caching this rewrite", uncacheable)
+        # Remove any fingerprint from an earlier successful run: it could
+        # still match the current inputs (this rewrite may have been forced by
+        # a missing output, not an input change) and would freeze the
+        # degraded state instead of retrying.
+        with contextlib.suppress(OSError):
+            fingerprint_path.unlink(missing_ok=True)
+    else:
+        output_sigs: dict[str, Any] = {
+            "overlays": {n: _stat_sig(overlay_dir / n) for n in sorted(written)},
+            "sidecars": {
+                n: _stat_sig(env_dir / n) for n in sorted(written_sidecars)
+            },
+            "settings_overlay": (
+                _stat_sig(settings_overlay_path)
+                if settings_overlay_path is not None
+                else None
+            ),
+        }
+        # A None signature means an output vanished between write and stat —
+        # storing it would produce a fingerprint the loader rejects anyway;
+        # skip storing so the next boot simply rewrites.
+        if (
+            all(output_sigs["overlays"].values())
+            and all(output_sigs["sidecars"].values())
+            and (
+                settings_overlay_path is None
+                or output_sigs["settings_overlay"] is not None
+            )
+        ):
+            _store_fingerprint(
+                fingerprint_path,
+                inputs=current_inputs,
+                outputs=output_sigs,
+                which=notes.which_results,
+            )
+
     # NOTE: the settings overlay path (when present) is bind-mounted by
     # ``sandbox.py`` via a fixed location derived from the overlay dir —
     # callers do not need to thread it back through ``results``. Keeping
@@ -945,8 +1509,44 @@ def forward_declared_env_enabled() -> bool:
         return False
 
 
-def default_socket_path() -> Path:
-    """Return the default gateway unix socket path."""
+def runtime_dir() -> Path:
+    """Directory holding the gateway's per-host runtime records.
+
+    Derived from the data home, NOT from ``mcp_gateway.socket_path``. That field
+    is empty until the broker has been configured, and the shareability records
+    have to exist BEFORE that: their whole purpose is to tell an operator who has
+    not enabled stubbing yet whether it is safe to. Keying off the socket made
+    the feature inert for exactly the audience it serves.
+
+    Same directory the socket itself defaults into, so when a broker does run its
+    files sit alongside these.
+    """
     home = os.environ.get("KIROCREW_HOME")
     base = Path(home) if home else config_dir()
-    return base / "mcp-gateway" / "gateway.sock"
+    return base / "mcp-gateway"
+
+
+def default_socket_path() -> Path:
+    """Return the default gateway unix socket path."""
+    return runtime_dir() / "gateway.sock"
+
+
+def records_dir(socket_path: str | Path = "") -> Path:
+    """Where per-host gateway records live, for BOTH the writer and the reader.
+
+    gatewayd writes next to its actual socket; the dashboard has to read the same
+    place, and it may run when no socket is configured at all. One resolver keeps
+    those two from diverging — a custom ``socket_path`` would otherwise have the
+    daemon writing the hazard ledger somewhere the page never looks.
+
+    Emptiness is tested on the STRING form, and a bare ``"."`` counts as unset:
+    ``Path("")`` constructs to ``PosixPath(".")``, so an empty Path is
+    indistinguishable from an explicit one and branching on truthiness alone
+    would resolve an unconfigured socket to the current working directory.
+    A real relative socket (``./gateway.sock``) is unaffected — its string form
+    is the filename, not ``"."``.
+    """
+    as_str = str(socket_path or "")
+    if not as_str or as_str == ".":
+        return runtime_dir()
+    return Path(as_str).parent

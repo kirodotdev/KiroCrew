@@ -52,6 +52,12 @@ _ALBUM_MAX_GROUPS = 64
 # Safe chunk boundary (leave room for markdown overhead).
 TELEGRAM_CHUNK_LIMIT = 4000
 
+#: sendRichMessage markdown payload limit (Bot API 10.1 Rich Messages). Far
+#: larger than sendMessage's 4096. The rich path carries the segment's raw
+#: markdown with no HTML render step, so source length IS payload length and
+#: table-bearing segments are budgeted against this cap, not the render cap.
+TELEGRAM_RICH_MAX_CHARS = 32768
+
 # Bot API base URL.
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 

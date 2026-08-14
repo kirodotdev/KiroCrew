@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -973,6 +974,175 @@ class TestSlotDetailPagination:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/nonexistent")
             assert resp.status == 404
+
+    async def _slot_with_history(self, tmp_path, monkeypatch, name, count=10):
+        """A slot with *count* messages on disk and in memory."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot(name)
+        for i in range(count):
+            state.conversation_log.append(f"dashboard:{name}", "user", f"msg {i}")
+            slot.append("user", f"msg {i}")
+        slot.drain()
+        return state
+
+    @pytest.mark.asyncio
+    async def test_non_integer_limit_is_a_bad_request(self, tmp_path, monkeypatch):
+        """A junk limit is the client's mistake, so it must not surface as a 500."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "badlimit")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/badlimit?limit=abc")
+            assert resp.status == 400
+            body = await resp.json()
+            assert "limit" in body["error"]
+            assert body["code"] == "invalid_query_params"
+
+    @pytest.mark.asyncio
+    async def test_non_integer_before_is_a_bad_request(self, tmp_path, monkeypatch):
+        state = await self._slot_with_history(tmp_path, monkeypatch, "badbefore")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/badbefore?before=xyz")
+            assert resp.status == 400
+            body = await resp.json()
+            assert "before" in body["error"]
+            assert body["code"] == "invalid_query_params"
+
+    @pytest.mark.asyncio
+    async def test_limit_below_one_is_rejected_not_clamped_up(self, tmp_path, monkeypatch):
+        """limit=0 used to return an empty page reporting has_more true — forever."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "zerolimit")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            for bad in ("0", "-1", "-5"):
+                resp = await client.get(f"/api/chat/slots/zerolimit?limit={bad}")
+                assert resp.status == 400, f"limit={bad} should be rejected"
+                body = await resp.json()
+                assert "messages" not in body
+                assert body["code"] == "limit_out_of_range"
+
+    @pytest.mark.asyncio
+    async def test_before_zero_remains_valid(self, tmp_path, monkeypatch):
+        """A real caller sends before=0 on first page, so it must not be rejected."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "beforezero")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/beforezero?limit=5&before=0")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["messages"] == []
+            assert data["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_bounded_request_still_returns_the_same_page(self, tmp_path, monkeypatch):
+        """Regression guard: threading the disk read must not alter the result."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "bounded", count=30)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/bounded?limit=10")
+            data = await resp.json()
+            assert data["total"] == 30
+            assert len(data["messages"]) == 10
+            assert data["messages"][0]["content"] == "msg 20"
+            assert data["messages"][-1]["content"] == "msg 29"
+            assert data["has_more"] is True
+
+    @pytest.mark.asyncio
+    async def test_cursor_branch_reads_disk_off_the_loop_thread(self, tmp_path, monkeypatch):
+        """The read must not run on the loop thread that serves every other request.
+
+        Asserts only that the call executed on a different thread. It does not
+        measure loop latency, so it cannot prove the loop was never blocked for
+        some other reason — but it does fail if the ``to_thread`` hop is removed.
+        """
+        state = await self._slot_with_history(tmp_path, monkeypatch, "offloop")
+        log = state.conversation_log
+        real = log.read_messages_chained
+        seen: list[int] = []
+
+        def recording(key):
+            seen.append(threading.get_ident())
+            return real(key)
+
+        monkeypatch.setattr(log, "read_messages_chained", recording)
+        loop_thread = threading.get_ident()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/offloop?limit=5")
+            assert resp.status == 200
+        assert seen, "read_messages_chained was never called"
+        assert loop_thread not in seen
+
+    @pytest.mark.asyncio
+    async def test_unlimited_branch_returns_whole_history_off_the_loop_thread(
+        self, tmp_path, monkeypatch
+    ):
+        """The no-limit branch reassembles disk+memory and still claims has_more false."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("whole")
+        log = state.conversation_log
+        for i in range(10):
+            log.append("dashboard:whole", "user", f"msg {i}")
+        for i in range(6, 10):
+            slot.append("user", f"msg {i}")
+        slot.drain()
+        slot._disk_older_count = 6
+
+        real = log.read_messages_chained
+        seen: list[int] = []
+
+        def recording(key):
+            seen.append(threading.get_ident())
+            return real(key)
+
+        monkeypatch.setattr(log, "read_messages_chained", recording)
+        loop_thread = threading.get_ident()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/whole")
+            assert resp.status == 200
+            data = await resp.json()
+        assert [m["content"] for m in data["messages"]] == [f"msg {i}" for i in range(10)]
+        assert data["total"] == 10
+        assert data["has_more"] is False
+        assert seen, "read_messages_chained was never called"
+        assert loop_thread not in seen
+
+    @pytest.mark.asyncio
+    async def test_message_arriving_during_the_disk_read_is_not_dropped(
+        self, tmp_path, monkeypatch
+    ):
+        """The awaited read is a suspension point, so the tail is re-read after it.
+
+        The client replaces its message list with this response, so a message that
+        lands mid-read must not be silently absent. Appending from inside the
+        patched read reproduces exactly that window deterministically.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("midread")
+        log = state.conversation_log
+        for i in range(10):
+            log.append("dashboard:midread", "user", f"msg {i}")
+        for i in range(6, 10):
+            slot.append("user", f"msg {i}")
+        slot.drain()
+        slot._disk_older_count = 6
+
+        real = log.read_messages_chained
+
+        def appends_while_reading(key):
+            result = real(key)
+            slot.append("assistant", "arrived mid-read")
+            slot.drain()
+            return result
+
+        monkeypatch.setattr(log, "read_messages_chained", appends_while_reading)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/midread")
+            assert resp.status == 200
+            data = await resp.json()
+        contents = [m["content"] for m in data["messages"]]
+        assert "arrived mid-read" in contents, "message that landed during the await was dropped"
+        assert contents == [f"msg {i}" for i in range(10)] + ["arrived mid-read"]
 
 
 # ── History persistence and disk fallback ──
@@ -5078,6 +5248,135 @@ class TestRunChatToolCallUpdate:
         assert tool_msgs[0]["meta"]["tool_call_id"] == "tc-1"
         # The refined input is patched into meta.
         assert "ls /tmp" in tool_msgs[0]["meta"]["input"]
+
+    @pytest.mark.asyncio
+    async def test_refinement_carries_purpose_when_it_has_one(self, tmp_path, monkeypatch):
+        """The update frame must carry the purpose so the live status line keeps
+        showing the agent's own reason for the call."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Terminal",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_call_id="tc-p1",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="ls /tmp",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_input='{"command":"ls /tmp"}',
+                tool_call_id="tc-p1",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        (update,) = [p for k, p in ws_calls if k == "tool_call" and p.get("is_update")]
+        assert update["purpose"] == "List the temp dir"
+
+    @pytest.mark.asyncio
+    async def test_purposeless_refinement_omits_the_key(self, tmp_path, monkeypatch):
+        """A refinement with no purpose omits the key entirely rather than
+        sending an empty string: consumers merge field-by-field and read an
+        absent ``purpose`` as "keep what the initial tool_call supplied", so an
+        empty value would replace a good purpose with the raw command."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        events = [
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="Terminal",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_call_id="tc-p2",
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="ls /tmp",
+                tool_kind="execute",
+                tool_input='{"command":"ls /tmp"}',
+                tool_call_id="tc-p2",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        (update,) = [p for k, p in ws_calls if k == "tool_call" and p.get("is_update")]
+        assert "purpose" not in update
+
+    @pytest.mark.asyncio
+    async def test_refinement_persists_a_recovered_purpose(self, tmp_path, monkeypatch):
+        """A refinement's purpose must reach the PERSISTED meta, not just the live
+        status: when the initial tool_call streamed an empty rawInput, _tool_meta
+        wrote an empty purpose, and the reloaded transcript reads meta.purpose —
+        so a live-only patch loses it on the next reload."""
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_UPDATE,
+            LLMEvent,
+        )
+
+        events = [
+            # Streaming backend: no purpose and no input on the initial frame.
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, title="Terminal", tool_kind="execute", tool_call_id="tc-p3"
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL_UPDATE,
+                title="ls /tmp",
+                tool_kind="execute",
+                tool_purpose="List the temp dir",
+                tool_input='{"command":"ls /tmp"}',
+                tool_call_id="tc-p3",
+            ),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        (tool_msg,) = [m for m in slot.messages if m.get("role") == "tool"]
+        assert tool_msg["meta"]["purpose"] == "List the temp dir"
+        # And the same patch goes out live so an open tab does not wait for a reload.
+        ws_calls = [(c.args[0], c.args[1]) for c in state.broadcast_ws.call_args_list]
+        (msg_update,) = [p for k, p in ws_calls if k == "chat_message_update"]
+        assert msg_update["meta"]["purpose"] == "List the temp dir"
 
     @pytest.mark.asyncio
     async def test_refinement_broadcasts_chat_message_update(self, tmp_path, monkeypatch):
@@ -9731,6 +10030,9 @@ class TestForkSlot:
         monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
         session_map = SessionMap()
         session_map.set("dashboard:src", "parent-kiro-sid-abc123")
+        # A loop-side mutation defers its disk write; the fresh-instance
+        # readback below needs the file current NOW.
+        session_map.flush()
 
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")

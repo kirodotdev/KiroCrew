@@ -16,10 +16,14 @@ import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover'
 import RegistryManager from '../RegistryManager'
 
 import { i18nT } from '../../i18n/t'
-export default function SourcesPopover({ open, onOpenChange, onError }: {
+export default function SourcesPopover({ open, onOpenChange, onError, onInstalled }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onError: (message: string) => void
+  // Fired after a successful Install-from-Path. The page uses it to confirm the
+  // install and steer the user to the Library tab — without it the popover just
+  // closes and a freshly-installed (disabled) app is invisible in the sidebar.
+  onInstalled?: (name: string) => void
 }) {
   const queryClient = useQueryClient()
   const [installPath, setInstallPath] = useState('')
@@ -30,10 +34,12 @@ export default function SourcesPopover({ open, onOpenChange, onError }: {
     setInstalling(true)
     try {
       const result = await api.installApp(installPath.trim())
-      recordEvent('app_install', { app: result.name || installPath.trim(), source: 'local' })
+      const installedName = result.name || installPath.trim()
+      recordEvent('app_install', { app: installedName, source: 'local' })
       setInstallPath('')
       queryClient.invalidateQueries({ queryKey: ['apps'] })
       window.dispatchEvent(new Event('mc:apps-changed'))
+      onInstalled?.(installedName)
       onOpenChange(false)
     } catch (e) {
       onError((e as Error)?.message || i18nT('components.appstore.sourcesPopover.install_failed'))

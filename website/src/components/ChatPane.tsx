@@ -6,8 +6,7 @@ import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
-import ToolCallLine from '../pages/chat/ToolCallLine'
-import type { ChatMessage } from '../types'
+import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
@@ -26,6 +25,8 @@ import { retireStatelessQuestion, captureStatelessCard, capturePendingAskId, sel
 import { triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
+import { classifyDrop } from '../utils/dropClassify'
+import { serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -210,6 +211,21 @@ export default function ChatPane({
     uploadMutation.mutate(files)
   }, [uploadMutation])
 
+  // Classify BEFORE acting (issue #743): a dropped folder inserts its path
+  // into the composer as an `@path/` token instead of taking the upload
+  // route, which cannot ingest a directory. Files keep uploading; a mixed
+  // drop takes both routes. The pane has no project context, so the token
+  // keeps the absolute path (the picker's own out-of-root fallback form),
+  // appended — the pane does not track a live composer caret. In a plain
+  // browser no real path is visible, so classifyDrop leaves folders on the
+  // upload route there (today's behaviour).
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false)
+    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    if (dirPaths.length) setInput((prev) => spliceDirTokens(prev, null, dirPaths).value)
+    if (files.length) uploadFiles(files)
+  }, [uploadFiles])
+
   const doSend = useCallback(() => {
     const text = input.trim()
     if (!text && !pendingFiles.length) return
@@ -226,17 +242,33 @@ export default function ChatPane({
     setInput('')
     const files = pendingFiles
     setPendingFiles([])
+    // Folder tokens take the same wire/bubble split ChatPage uses: the wire
+    // text carries `[attached_dir N] path` markers the agent can resolve, the
+    // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
+    // marker N to dirPaths[N-1] for lossless history replay. The pane has no
+    // project context, so tokens are absolute and serialize as-is.
+    const { llm, dirPaths } = serializeDirTokens(text, '')
+    // sendId correlation (same contract as ChatPage): the wire text differs
+    // from the bubble text whenever a folder token serialized, so the store's
+    // content-equality fallback can never reconcile the server echo against
+    // the optimistic bubble — without this id the echo appends a SECOND user
+    // bubble carrying the raw marker.
+    const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // Optimistic user bubble: show immediately in the right position (mirrors the
     // single-chat send). Skipped while busy (main turn streaming OR sub-agents
     // running) — the backend returns a "queued" message instead, avoiding a duplicate.
+    const meta = {
+      ...(files.length ? { files } : {}),
+      ...(dirPaths.length ? { dirs: dirPaths } : {}),
+      sendId,
+    }
     if (!busy && (text || files.length)) {
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(files.length ? { meta: { files } } : {}) },
+        message: { role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
       }))
     }
-    const meta = files.length ? { files } : undefined
-    api.sendChat(text, slotKey, undefined, undefined, meta)
+    api.sendChat(llm, slotKey, undefined, undefined, meta)
       .then(async (r) => {
         if (!cardAtSend && !askAtSend) return
         const body = await r.json().catch(() => ({}))
@@ -281,12 +313,30 @@ export default function ChatPane({
     // response was lost, leaving this client in conflict with execution order.
     api.reorderQueuedMessages(slotKey, next).catch(() => undefined)
   }, [slotKey, allMessages, queuedMessages])
-  // Split-view panes render tool calls with the full ToolCallLine (purpose / input /
-  // output / live status) instead of the SDK's bare pill. ToolCallLine's slot-aware
-  // selectors read THIS slot's per-slot tool log, so a background pane shows the same
-  // live tool detail as the main chat view. Injected as a render prop so
-  // app-sdk/ChatMessageList stays Redux-free for the embed SDK.
-  const renderTool = useCallback((m: ChatMessage) => <ToolCallLine message={m} running={running} slot={slotKey} />, [slotKey, running])
+  // Split-view panes draw the SAME transcript rows as the single-chat surface,
+  // through the SDK's row registry: the live ToolCallLine (purpose / input /
+  // output / live status), the workflow and sub-agent launch cards, thinking
+  // traces, sent files, auto-nudge turns, recovery injects, workflow
+  // completions. The SDK's built-in registry is store-free by design and so
+  // draws weaker rows — or nothing at all — for most of these; the
+  // store-connected set is supplied here as host entries instead, which is the
+  // registry's intended extension path and keeps app-sdk/ChatMessageList
+  // Redux-free for the embed SDK.
+  //
+  // The tool rows' expanded state is held ABOVE the rows: a row remounts
+  // whenever the message list updates, and would otherwise forget it.
+  const [toolDisclosure, setToolDisclosure] = useState<Record<string, boolean>>({})
+  const setToolDisclosureFor = useCallback((key: string, expanded: boolean) => {
+    setToolDisclosure((prev) => ({ ...prev, [key]: expanded }))
+  }, [])
+  const renderers = useMemo(
+    () => createTranscriptRenderers({
+      slot: slotKey,
+      toolDisclosure,
+      onToolDisclosureChange: setToolDisclosureFor,
+    }),
+    [slotKey, toolDisclosure, setToolDisclosureFor],
+  )
 
   const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus:border-accent'
 
@@ -338,7 +388,7 @@ export default function ChatPane({
           {messages.length === 0 && !running && (
             <div className="text-center text-muted text-[13px] py-8">{i18nT('components.chatPane.session_ready_type_a_message_to_start')}</div>
           )}
-          <ChatMessageList messages={messages} running={running} renderTool={renderTool} hideCardOwnedOAuth={connectionsUiOn} />
+          <ChatMessageList messages={messages} running={running} renderers={renderers} hideCardOwnedOAuth={connectionsUiOn} />
           <div ref={endRef} />
         </div>
 
@@ -393,7 +443,7 @@ export default function ChatPane({
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}
-          onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = Array.from(e.dataTransfer.files); if (f.length) uploadFiles(f) }}
+          onDrop={handleDrop}
           dragOver={dragOver}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
           onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false) }}

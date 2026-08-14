@@ -10,6 +10,8 @@ on edit, and SEL audit logging.  No network, no real home directory.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -167,6 +169,47 @@ class TestCustomAdd:
         finally:
             await client.close()
 
+    async def test_remote_spec_keeps_headers(self, sandbox, fake_sel):
+        """The remote shape accepts headers so an authenticated server is
+        authorable in one step, matching what the runtime and probe honor."""
+        spec = {
+            "url": "https://mcp.example.com/sse",
+            "headers": {"Authorization": "Bearer fresh-secret", "X-Api-Key": "k"},
+        }
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            entry = _written(sandbox)["remote"]
+            assert entry["headers"] == spec["headers"]
+        finally:
+            await client.close()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+    async def test_store_is_owner_only_after_credential_write(self, sandbox, fake_sel):
+        """A fresh store created by a headers add must not be world-readable —
+        header values are credentials another local user could otherwise read."""
+        spec = {"url": "https://mcp.example.com/sse", "headers": {"Authorization": "Bearer s"}}
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            mode = stat.S_IMODE(sandbox.kirocrew_json.stat().st_mode)
+            assert mode == 0o600, f"store mode {oct(mode)} leaks credentials"
+        finally:
+            await client.close()
+
+    async def test_remote_spec_drops_empty_headers(self, sandbox, fake_sel):
+        """An empty headers object is an omission, like empty args/env."""
+        spec = {"url": "https://mcp.example.com/sse", "headers": {}}
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"remote": spec}})
+            assert resp.status == 200
+            assert "headers" not in _written(sandbox)["remote"]
+        finally:
+            await client.close()
+
     async def test_multi_add_writes_all(self, sandbox, fake_sel):
         client = await _client()
         try:
@@ -239,6 +282,23 @@ class TestCustomAdd:
             ({"url": "https://x.example", "clientId": 42}, "'clientId' must be a non-empty"),
             ({"command": "npx", "scopes": ["read"]}, "not valid on a stdio"),
             ({"command": "npx", "clientId": "public-id"}, "not valid on a stdio"),
+            ({"command": "npx", "headers": {"A": "b"}}, "not valid on a stdio"),
+            ({"url": "https://x.example", "headers": "Bearer x"}, "object of string values"),
+            ({"url": "https://x.example", "headers": {"A": 7}}, "object of string values"),
+            ({"url": "https://x.example", "headers": {"": "v"}}, "object of string values"),
+            ({"url": "https://x.example", "headers": {" ": "v"}}, "object of string values"),
+            (
+                {"url": "https://x.example", "headers": {"A": "[REDACTED: credential]"}},
+                "redacted",
+            ),
+            (
+                {"url": "https://x.example", "headers": {"A": "v\r\nX-Evil: y"}},
+                "control characters",
+            ),
+            (
+                {"url": "https://x.example", "headers": {"A\n": "v"}},
+                "control characters",
+            ),
             ("npx -y thing", "must be an object"),
         ],
     )
@@ -379,6 +439,72 @@ class TestCustomUpdate:
         finally:
             await client.close()
 
+    async def test_put_can_author_headers_when_none_stored(self, sandbox, fake_sel):
+        """An entry without stored headers accepts them like a fresh add —
+        there is no prior credential a redacted round-trip could clobber."""
+        entry = {"url": "https://mcp.example.com/sse", "disabled": True}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            spec = {"url": entry["url"], "headers": {"Authorization": "Bearer fresh"}}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 200
+            written = _written(sandbox)["remote"]
+            assert written["headers"] == {"Authorization": "Bearer fresh"}
+            assert written["disabled"] is True, "editing is not consent to run"
+        finally:
+            await client.close()
+
+    async def test_put_can_author_headers_over_an_empty_stored_map(self, sandbox, fake_sel):
+        """An empty stored headers map carries no credential — presence alone
+        must not make the entry permanently header-unauthorable."""
+        entry = {"url": "https://mcp.example.com/sse", "headers": {}}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            spec = {"url": entry["url"], "headers": {"Authorization": "Bearer fresh"}}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 200
+            assert _written(sandbox)["remote"]["headers"] == {"Authorization": "Bearer fresh"}
+        finally:
+            await client.close()
+
+    async def test_put_modifying_stored_headers_is_refused(self, sandbox, fake_sel):
+        """Stored values are shown redacted, so an edited value cannot be
+        distinguished from a mangled marker — refuse rather than guess."""
+        raw_headers = {"Authorization": "Bearer old-secret"}
+        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            spec = (await resp.json())["spec"]
+            spec["headers"]["Authorization"] = "Bearer new-secret"
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["code"] == "stored_headers_not_editable"
+            assert _written(sandbox)["remote"]["headers"] == raw_headers
+        finally:
+            await client.close()
+
+    async def test_put_rejects_redaction_marker_as_fresh_header_value(self, sandbox, fake_sel):
+        """A spec pasted from another server's read payload carries the marker;
+        writing it would store a nonsense credential that fails auth silently."""
+        from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE
+
+        entry = {"url": "https://mcp.example.com/sse"}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            spec = {"url": entry["url"], "headers": {"Authorization": MCP_REDACTED_HEADER_VALUE}}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            assert "redacted" in (await resp.json())["error"]
+            assert "headers" not in _written(sandbox)["remote"]
+        finally:
+            await client.close()
+
 
 # ---------------------------------------------------------------------------
 # GET /api/mcp/custom/{name} — raw spec for the edit modal
@@ -427,6 +553,61 @@ class TestCustomGet:
             assert written["scopes"] == ["read:user"]
             assert written["clientId"] == "public-client-id"
             assert written["headers"] == {"Authorization": "Bearer custom-secret"}
+        finally:
+            await client.close()
+
+    async def test_redacted_headers_round_trip_without_overwriting_values(
+        self, sandbox, fake_sel
+    ):
+        raw_headers = {
+            "Authorization": "Bearer custom-secret",
+            "X-Api-Key": "custom-api-key",
+        }
+        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            assert resp.status == 200
+            body = await resp.json()
+            assert set(body["spec"]["headers"]) == set(raw_headers)
+            assert set(body["spec"]["headers"].values()) == {"[REDACTED: credential]"}
+            assert "custom-secret" not in json.dumps(body)
+            assert "custom-api-key" not in json.dumps(body)
+
+            resp = await client.put(
+                "/api/mcp/custom/remote", json={"spec": body["spec"]}
+            )
+            assert resp.status == 200
+            assert _written(sandbox)["remote"]["headers"] == raw_headers
+        finally:
+            await client.close()
+
+    async def test_url_change_with_stored_headers_is_refused(self, sandbox, fake_sel):
+        """A credential is scoped to the host it was typed for.
+
+        The PUT restore path puts the on-disk header values back verbatim, so
+        accepting a url-only edit would silently point the stored secret at a
+        different origin and the next probe would send it there.
+        """
+        raw_headers = {"Authorization": "Bearer custom-secret"}
+        entry = {"url": "https://old.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            assert resp.status == 200
+            spec = (await resp.json())["spec"]
+
+            spec["url"] = "https://new.example.net/sse"
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["code"] == "url_change_with_stored_headers"
+            # Nothing was written: the secret still sits beside its own host.
+            written = _written(sandbox)["remote"]
+            assert written["url"] == "https://old.example.com/sse"
+            assert written["headers"] == raw_headers
         finally:
             await client.close()
 

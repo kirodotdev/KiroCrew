@@ -878,7 +878,7 @@ def _cron(args: argparse.Namespace) -> None:
 
     elif action == "update":
         kwargs: dict = {}
-        for field in ("name", "message", "every_secs", "cron_expr", "channel"):
+        for field in ("name", "message", "every_secs", "cron_expr", "channel", "timeout_secs"):
             val = getattr(args, field, None)
             if val is not None:
                 if field == "channel":
@@ -909,7 +909,11 @@ def _cron(args: argparse.Namespace) -> None:
         if "every_secs" in kwargs and "cron_expr" in kwargs:
             print("Provide --every or --cron, not both")
             return
-        updated = svc.update_job(args.job_id, **kwargs)
+        try:
+            updated = svc.update_job(args.job_id, **kwargs)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
         if updated:
 
             audit_resources = f"job_id={args.job_id} fields={','.join(sorted(kwargs))}"

@@ -87,4 +87,19 @@ describe('widgetSrcdoc', () => {
     expect(THEME_VAR_NAMES).toContain('--accent')
     expect(THEME_VAR_NAMES).toContain('--danger')
   })
+
+  it('does not convert a model-authored placeholder meta into a script tag', () => {
+    // Security: a model could try to inject a <meta name="x-script-placeholder">
+    // hoping the post-serialization replace turns it into a <script src>.
+    // The non-global replace only hits the first (head) occurrence, and DOM
+    // attribute serialization HTML-escapes the name value, but this test pins
+    // the invariant explicitly.
+    const malicious = '<meta name="x-script-placeholder" data-src="https://evil.example/pwn.js">'
+    const out = buildSrcdoc({ html: malicious, themeVars: {}, mode: 'dark' })
+    // The trusted Tailwind script SHOULD exist (from the head placeholder)
+    expect(out).toContain('<script src="http://localhost:6776/vendor/tailwindcss-browser.js"></script>')
+    // The model's attempted injection must NOT become a <script> tag —
+    // it remains as an inert <meta> in the body (no executable consequence).
+    expect(out).not.toContain('<script src="https://evil.example/pwn.js">')
+  })
 })

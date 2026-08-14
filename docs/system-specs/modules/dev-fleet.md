@@ -292,16 +292,19 @@ auto-expanded, and both persist until the user clicks the dismiss `×`
 `✓ Provisioned` briefly, then clears (the fleet refetch flips the row to its
 built state).
 
-**Known limitation — no reattach after a page reload.** Provision run state
-(including the persisted failed run and its log) lives only in component memory.
-A browser reload during or after a provision loses it, because the `/fleet`
-payload exposes no provision run ids to reattach to on mount (unlike sync, which
-reattaches via `sync_run_id`). The single-flight reattach above only covers a
-Provision **button-click** while a run is in flight, not a fresh page load.
-Server-backed reattach (exposing active/failed provision run ids in `/fleet` so
-the page can reattach on mount, mirroring `sync_run_id`) is tracked as follow-up
-work ([issue #321](https://github.com/kirodotdev/KiroCrew/issues/321); see also
-[issue #231](https://github.com/kirodotdev/KiroCrew/issues/231), PR #320).
+**Reattach after a page reload (server-backed).** Each `/fleet` worktree entry
+carries a `provision_run_id` while that checkout's provision run is still
+executing or after it finished unsuccessfully (mirroring `sync_run_id`).
+Successful and registry-evicted runs are omitted — there is nothing to
+reattach to. On mount the page fetches `/run?id=<rid>` for each exposed id: a
+running run resumes polling into the stepper (accumulating the log window as
+usual), and a failed run restores the persisted red failure state with its log
+auto-expanded. Reattached and locally-started runs are deduped by run id, so a
+fleet refetch never starts a second poll loop for a run already being tracked.
+The dismiss `×` is client-side only: a failed run's id keeps being exposed
+until a newer provision for that checkout replaces it, the run is evicted from
+the bounded registry, or the gateway restarts — so a reload after dismissing
+re-shows the failure. Server-side dismissal is deliberately out of scope here.
 
 ## Action narration (restart + sync feedback)
 

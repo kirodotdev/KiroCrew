@@ -16,7 +16,7 @@ import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
-import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession } from '../store/chatSlice'
+import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal } from '../store/chatSlice'
 import { sseSlotTitle } from '../store/dashboardSlice'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { computeReorderedFolders } from '../utils/reorderFolders'
@@ -375,6 +375,9 @@ interface Slot {
   // `pending_approval` rides on every ChatSlot payload; the sidebar reads it to
   // suppress the "your turn" dot and show the yellow "Needs approval" subtitle.
   pending_approval?: boolean
+  // An unanswered question card the turn is parked on. Its own subtitle, and it
+  // suppresses the "your turn" dot for the same reason an approval does.
+  needs_input?: boolean
   mode?: string
   agent?: string
   model?: string  // '' / absent = provider-default ("auto")
@@ -568,27 +571,69 @@ const SESSION_FILTERS: SessionFilterDef[] = [
  * response arrives (or whenever the query drops below `SEARCH_MIN_CHARS`),
  * and keeps the previous result visible while a new query is in flight so
  * the list doesn't blank out between keystrokes.
+ *
+ * `revalidateSignal` re-runs the search for the SAME query whenever it changes.
+ * Callers feed a digest of the session set + titles, so a rename — which mutates
+ * a title but not the query — refreshes the backend result set. Keep the digest
+ * scoped to key/title and NOT status, or idle status ticks spam `sessionsSearch`.
  */
 function useDebouncedSessionSearch<T>(
   query: string,
   transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; folder_id?: string }[]) => T,
+  revalidateSignal?: string,
 ): T | null {
   const [result, setResult] = useState<T | null>(null)
   const token = useRef(0)
+  const queryRef = useRef(query)
+  queryRef.current = query
+  const debounceActive = useRef(false)
+
+  // Debounced: fires 250ms after the last query keystroke.
   useEffect(() => {
     const q = query.trim()
     const myToken = ++token.current
-    if (q.length < SEARCH_MIN_CHARS) { setResult(null); return }
+    if (q.length < SEARCH_MIN_CHARS) { setResult(null); debounceActive.current = false; return }
+    debounceActive.current = true
+    let cancelled = false
     const t = setTimeout(async () => {
       try {
         const d = await api.sessionsSearch(q)
-        if (myToken !== token.current) return
+        if (cancelled || myToken !== token.current) return
         setResult(transform(d.sessions || []))
       } catch { /* keep previous result on error */ }
+      // Cleared AFTER the await: clearing first leaves a window where the debounce
+      // has "finished" but the fetch is outstanding, so the effect below duplicates it.
+      finally { debounceActive.current = false }
     }, 250)
-    return () => clearTimeout(t)
+    return () => { cancelled = true; clearTimeout(t); debounceActive.current = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query])
+
+  // Trailing-throttled re-run on signal change. Compares values rather than
+  // flipping a flag so it survives StrictMode's double-mount.
+  const prevSignal = useRef(revalidateSignal)
+  useEffect(() => {
+    if (prevSignal.current === revalidateSignal) return
+    prevSignal.current = revalidateSignal
+    let cancelled = false
+    const t = setTimeout(async () => {
+      // Preconditions are re-read here, not at effect time: only a signal change or
+      // unmount clears this timer, so a keystroke would otherwise scan a stale query.
+      const q = queryRef.current.trim()
+      if (q.length < SEARCH_MIN_CHARS) return
+      // A pending debounce or in-flight fetch serves this same query already.
+      if (debounceActive.current) return
+      const myToken = ++token.current
+      try {
+        const d = await api.sessionsSearch(q)
+        if (cancelled || myToken !== token.current) return
+        setResult(transform(d.sessions || []))
+      } catch { /* keep previous result on error */ }
+    }, 100)
+    return () => { cancelled = true; clearTimeout(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revalidateSignal])
+
   return result
 }
 
@@ -696,6 +741,19 @@ const FLAT_VIEW_LS_KEY = 'mc-sidebar-flat-view'
 export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 1400
 const SIDEBAR_LS_KEY = 'mc-sidebar-width'
+/** Reveal-in-sidebar retry budget: ancestor expansion and filter resets land
+ *  through mutations and re-renders, so the target row can enter the DOM
+ *  several frames after the request is consumed. 20 × 100 ms ≈ 2 s, then the
+ *  reveal gives up (the row genuinely isn't renderable, e.g. board lane with
+ *  no matching column). */
+const REVEAL_RETRY_MS = 100
+const REVEAL_MAX_ATTEMPTS = 20
+/** How long the reveal confirmation outline holds before fading out. */
+const REVEAL_FLASH_HOLD_MS = 1600
+/** Must cover the CSS fade on .session-reveal-flash-fade in index.css (.4s):
+ *  the classes are removed at HOLD + FADE + slack, so shortening this below
+ *  the CSS duration snaps the outline off mid-fade. */
+const REVEAL_FLASH_FADE_MS = 500
 
 function ChatSidebar({
   slots, activeSlot, unreadSlots, history, historyHasMore,
@@ -717,7 +775,15 @@ function ChatSidebar({
   // Sidebar-only state
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
-  const historySearchResults = useDebouncedSessionSearch(historyFilter, s => s)
+  // Digest of session keys + titles (NOT status), fed to both searches as their
+  // revalidate signal. Sorted+joined so reordering `slots` alone cannot refetch.
+  const slotTitleDigest = useMemo(
+    () => slots.map(s => s.key + '\u0000' + (s.title || '')).sort().join('\u0001'),
+    [slots],
+  )
+  // The Older Sessions pane renders `history`, so this slots-derived signal is a
+  // proxy: it moves for every rename reachable today, all of which start on a live row.
+  const historySearchResults = useDebouncedSessionSearch(historyFilter, s => s, slotTitleDigest)
   // Which folder groups are collapsed in the grouped search-results view.
   // Ephemeral: reset on every query change so a fresh search shows all groups.
   const [collapsedHistoryGroups, setCollapsedHistoryGroups] = useState<Set<string>>(() => new Set())
@@ -738,6 +804,7 @@ function ChatSidebar({
       })
       return ranks
     },
+    slotTitleDigest,
   )
   const [renamingSlot, setRenamingSlot] = useState<string | null>(null)
   // In board view a multi-tag chat renders once per matching column, so
@@ -1523,7 +1590,10 @@ function ChatSidebar({
       .filter(slot => {
         if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => slot[filterDef.key])) return false
         if (!slotFilter) return true
-        if (searchRanked) return searchRanked.has(slot.key)
+        // Scoped to title: that is the field a rename mutates, and widening it to
+        // key/agent appends rows the backend's content search deliberately excluded.
+        const titleMatch = (slot.title || '').toLowerCase().includes(slotFilter.toLowerCase())
+        if (searchRanked) return searchRanked.has(slot.key) || titleMatch
         return ((slot.title || '') + slot.key + (slot.agent || '')).toLowerCase().includes(slotFilter.toLowerCase())
       })
       .sort((a, b) => searchRanked
@@ -1773,29 +1843,128 @@ function ChatSidebar({
     return m
   }, [folders])
 
-  // Reveal-in-sidebar: expand parent folder(s) then scroll to the slot
+  // Reveal-in-sidebar: consume the pending request held in the store (set by
+  // the session header menu). Store state rather than a window event on
+  // purpose: this component is unmounted while the drawer is collapsed, so an
+  // event dispatched before the mount commits had no listener and was silently
+  // dropped — the request waiting here is picked up by this effect on mount as
+  // well as on change (#912 D1). The nonce makes repeat reveals of the same
+  // row distinct requests, so the effect re-fires even when the key repeats.
+  const revealRequest = useAppSelector(s => s.chat.revealRequest)
+  // Serial + pending timer for the in-flight reveal: a newer reveal cancels
+  // the older retry loop, and unmount stops the pending timer outright.
+  const revealRunRef = useRef<{ seq: number; timer: number | null }>({ seq: 0, timer: null })
+  // Row currently flashing as reveal confirmation, keyed by slot. Rendered
+  // into the row's className (not imperative classList mutation) so the
+  // highlight survives row remounts — list reorders and re-keyed renders
+  // would silently drop a manually-added DOM class.
+  const [revealFlash, setRevealFlash] = useState<{ key: string; fading: boolean } | null>(null)
+  const revealFlashTimersRef = useRef<number[]>([])
+  useEffect(() => () => {
+    const run = revealRunRef.current
+    if (run.timer != null) clearTimeout(run.timer)
+    revealFlashTimersRef.current.forEach(clearTimeout)
+  }, [])
+  const sidebarRootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const handler = (e: Event) => {
-      const key = (e as CustomEvent).detail as string
-      if (!key) return
-      const slot = slots.find(s => s.key === key)
-      if (slot?.folder_id) {
-        // Expand all ancestor folders
-        const expand = (fid: string) => {
-          const f = folders.find(x => x.id === fid)
-          if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
-          if (f?.parent_id) expand(f.parent_id)
-        }
-        expand(slot.folder_id)
-      }
-      setTimeout(() => {
-        const el = document.querySelector(`[data-slot-key="${key}"]`)
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }, 150)
+    if (!revealRequest) return
+    const { key } = revealRequest
+    // Consume immediately: the request must not survive to a later remount.
+    dispatch(clearSlotReveal())
+    const slot = slots.find(s => s.key === key)
+    if (!slot) {
+      // Stale key or a session outside this surface's slot list. Not user-visible
+      // (there is nothing to highlight), so leave a trace for bug reports.
+      console.debug('reveal-in-sidebar: no session for key', key)
+      return
     }
-    window.addEventListener('reveal-slot', handler)
-    return () => window.removeEventListener('reveal-slot', handler)
-  }, [slots, folders, updateFolderMutation])
+    // A live sidebar search or status filter can exclude the target row from
+    // the list entirely (#912 D5) — reveal is an explicit "show me this row",
+    // so drop the filters that hide it rather than scrolling to nothing.
+    if (!filteredSlots.some(s => s.key === key)) {
+      if (slotFilter) setSlotFilter('')
+      if (activeFilters.size > 0) {
+        // Persisted like toggleFilter: state alone is not enough — the sidebar
+        // unmounts whenever the drawer collapses, and remount re-reads the
+        // stored '1', silently restoring the filter that hides this row.
+        for (const filterDef of SESSION_FILTERS) {
+          if (activeFilters.has(filterDef.key)) safeSetItem(filterDef.storageKey, '0')
+        }
+        setActiveFilters(new Set())
+      }
+    }
+    if (slot.folder_id) {
+      // The folder filter hides whole subtrees in the flat and tree lanes —
+      // un-hide the target's ancestor chain (persisted, mirroring
+      // toggleFolderFilter). Cycle-guarded like filterHiddenSubtree.
+      if (filterHiddenSubtree.has(slot.folder_id)) {
+        setFilterHiddenFolders(prev => {
+          const next = new Set(prev)
+          const visited = new Set<string>()
+          let curId: string | undefined = slot.folder_id
+          while (curId && !visited.has(curId)) {
+            visited.add(curId)
+            next.delete(curId)
+            const cid = curId
+            curId = folders.find(f => f.id === cid)?.parent_id
+          }
+          safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
+          return next
+        })
+      }
+      // Expand all collapsed ancestor folders. Cycle-guarded: a hand-edited
+      // folders.json can contain a parent_id loop and must not hang the tab.
+      const visited = new Set<string>()
+      const expand = (fid: string) => {
+        if (visited.has(fid)) return
+        visited.add(fid)
+        const f = folders.find(x => x.id === fid)
+        if (f?.collapsed) updateFolderMutation.mutate({ id: fid, body: { collapsed: false } })
+        if (f?.parent_id) expand(f.parent_id)
+      }
+      expand(slot.folder_id)
+    }
+    // The row may not be in the DOM yet: ancestor expansion and the filter
+    // resets above land through mutations and re-renders. Retry until the row
+    // exists (bounded), instead of one fixed-delay attempt that silently gives
+    // up whenever the re-render loses the race (#912 D3).
+    const run = revealRunRef.current
+    run.seq += 1
+    const seq = run.seq
+    if (run.timer != null) { clearTimeout(run.timer); run.timer = null }
+    let attempt = 0
+    const tryScroll = () => {
+      if (revealRunRef.current.seq !== seq) return
+      // Scoped to this sidebar, not `document`: other surfaces (and board-view
+      // duplicate renders) can carry the same data-slot-key (#912 D5).
+      const el = sidebarRootRef.current?.querySelector<HTMLElement>(`[data-slot-key="${window.CSS.escape(key)}"]`)
+      if (!el) {
+        attempt += 1
+        if (attempt <= REVEAL_MAX_ATTEMPTS) run.timer = window.setTimeout(tryScroll, REVEAL_RETRY_MS)
+        // Row never appeared (e.g. board lane with no matching column). Not
+        // user-visible, so leave a trace for bug reports instead of vanishing.
+        else console.debug('reveal-in-sidebar: row never rendered for', key)
+        return
+      }
+      const reduce = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' })
+      // Visible confirmation even when the row never moved (#912 D4): an
+      // accent outline that fades out (classes in index.css, rendered via
+      // revealFlash state). Outline, not background — the target is usually
+      // the ACTIVE row, which already carries the accent-subtle background —
+      // and not box-shadow, which the recency tint drives inline. The fade is
+      // a non-spatial color transition, so it needs no reduced-motion branch
+      // (same treatment as MarkdownPanel's flashCommentRow); the scroll above
+      // handles the spatial half. A newer flash replaces the older one
+      // immediately, so two rows are never highlighted at once.
+      revealFlashTimersRef.current.forEach(clearTimeout)
+      setRevealFlash({ key, fading: false })
+      const t1 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? { key, fading: true } : f)), REVEAL_FLASH_HOLD_MS)
+      const t2 = window.setTimeout(() => setRevealFlash(f => (f && f.key === key ? null : f)), REVEAL_FLASH_HOLD_MS + REVEAL_FLASH_FADE_MS)
+      revealFlashTimersRef.current = [t1, t2]
+    }
+    tryScroll()
+  }, [revealRequest, dispatch, slots, folders, filteredSlots, filterHiddenSubtree, slotFilter, activeFilters, updateFolderMutation])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -2172,6 +2341,10 @@ function ChatSidebar({
       ? '1 sub-agent needs approval'
       : `${subagentAwaiting} sub-agents need approval`
     const wfActive = workflowActive[s.key]
+    // The agent's own ask: a question card the user has not answered yet. The
+    // turn is parked on it, so this replaces a "Thinking…" that would otherwise
+    // never change rather than annotating a finished turn.
+    const needsInputLabel = i18nT('pages.chatSidebar.needs_your_answer')
     // Goal loop (auto-nudge). A loop is a MODE, not a turn state, so it is not
     // gated on `s.running` — a looping session spends most of its life mid-turn,
     // and hiding the indicator then would hide it almost always.
@@ -2236,7 +2409,7 @@ function ChatSidebar({
           <ContextMenuTrigger asChild>
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
-          className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''}`}
+          className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -2304,7 +2477,7 @@ function ChatSidebar({
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}>
-          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && !goalLoop && (
+          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && !goalLoop && !s.needs_input && (
             // Blue dot = "your turn": the agent finished its turn (not running)
             // and you haven't opened the session since (unread). Redefined from
             // the old "any unseen output" trigger so it no longer lights
@@ -2315,6 +2488,9 @@ function ChatSidebar({
             // A goal loop suppresses it too: the loop appends a turn every cycle,
             // so the dot would light permanently and stop meaning "your turn".
             // The "Loop N/M" subtitle carries the state instead.
+            // An unanswered question card suppresses it on the same grounds —
+            // its own info-coloured subtitle says more than a bare dot, and two
+            // markers for one state read as two separate things to do.
             <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
           )}
           <div className="flex-1 min-w-0 overflow-hidden">
@@ -2325,20 +2501,21 @@ function ChatSidebar({
               </AnimatePresence>
               {isOut && <span className="text-accent" title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
               {slotChannelNamespace(s.key) && (() => {
-                // Where this conversation started — and, since the session IS the
-                // conversation rather than a copy of it, still where it is two-way
-                // with: what you type here is delivered to that channel, and what
-                // is sent there arrives here. Same wording as the inbound-link
-                // chip (`components.inboundLinkChip.tooltip`), which states the
-                // same relationship for a session driven from a channel.
+                // PROVENANCE ONLY: where this conversation started. That is
+                // history, so it stays true after the channel is disconnected —
+                // which is exactly why this glyph must not describe delivery.
+                // It previously said the session was "two-way" with the channel
+                // and that replies "are delivered there", a claim the disconnect
+                // makes false while this glyph still renders. Current delivery is
+                // the separate set of glyphs below, which filter on `paused`.
                 //
                 // `unified` gets its own key rather than an interpolated label:
                 // it has no proper noun, and an English article fragment inside
                 // a translated sentence is not something a locale can repair.
                 const ns = slotChannelNamespace(s.key)
                 const label = ns === 'unified'
-                  ? i18nT('pages.chatSidebar.two_way_with_direct_message')
-                  : i18nT('pages.chatSidebar.two_way_with_channel', { channel: slotChannelLabel(s.key) })
+                  ? i18nT('pages.chatSidebar.started_in_direct_message')
+                  : i18nT('pages.chatSidebar.started_in_channel', { channel: slotChannelLabel(s.key) })
                 // Brand mark rather than a generic bubble: the row already tells
                 // you a chat happened, so the only new information this glyph can
                 // carry is WHICH app it came from. Namespaces with no mark of
@@ -2353,17 +2530,26 @@ function ChatSidebar({
               })()}
               {/* Live mirroring, per channel. The origin glyph above is derived
                *  from the slot KEY (channelOrigin.ts) and already says where the
-               *  conversation STARTED, so this renders only `out` links — a real
-               *  mirror target — and never double-badges an origin. It replaces a
+               *  conversation STARTED, so this renders only channels currently
+               *  DELIVERING and never double-badges an origin. It replaces a
                *  `linked_to_slack` Link glyph that fired for ANY channel, because
-               *  every non-Slack transport writes its id into slack_channel_id. */}
+               *  every non-Slack transport writes its id into slack_channel_id.
+               *
+               *  `both` counts as delivering: a two-way binding is strictly MORE
+               *  connected than a one-way mirror, and filtering on `out` alone left
+               *  a session with messages flowing both ways looking unlinked. A
+               *  disconnected channel is excluded — it keeps its direction, so
+               *  without the `paused` check the sidebar promised delivery for a
+               *  session whose own menu one row away reads "Connect to X". */}
               {(s.links ?? [])
-                .filter(link => link.direction === 'out')
+                .filter(link => link.direction !== 'origin' && !link.paused)
                 .map((link, index) => (
                   <span
                     key={`${link.channel}:${link.direction}:${index}`}
                     className="inline-flex text-[10px]"
-                    title={i18nT('pages.chatSidebar.mirroring_to', { label: link.label })}
+                    role="img"
+                    aria-label={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
+                    title={i18nT('pages.chatSidebar.connected_to', { label: link.label })}
                   >
                     <ChannelBrandIcon channel={link.channel} size={10} />
                   </span>
@@ -2421,6 +2607,24 @@ function ChatSidebar({
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={subagentApprovalLabel}>
                 <Bot size={11} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
                 <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
+              </div>
+            ) : s.needs_input ? (
+              // An unanswered question card. Ranked above every "working" signal
+              // for the same reason the approval branches are: an owed reply must
+              // not read as work in progress — and a blocking card keeps
+              // `s.running` true, so without this the row would show "Thinking…"
+              // while nothing can advance until the user answers. Info-coloured
+              // and static-glyphed to stay distinct from the warn-coloured
+              // approval rows above.
+              //
+              // A card is a websocket broadcast with no transcript row, so
+              // `last_message` is whatever the agent last said BEFORE the ask —
+              // not the question. Trailing it after "Needs your answer ·" reads
+              // as the question itself, so the label stands alone and the
+              // transcript carries the card.
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={needsInputLabel}>
+                <MessageSquare size={11} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
+                <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
               </div>
             ) : goalLoop ? (
               // An active goal loop outranks every "working" signal below it but
@@ -2892,7 +3096,7 @@ function ChatSidebar({
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
+    <div ref={sidebarRootRef} className="sidebar sidebar-inner bg-bg-elevated border border-border rounded-xl shadow-sm flex flex-col shrink-0 relative h-full" style={{ width: sidebarWidth }}>
       {/* Drag handle — Pointer-Events column resize (mouse + touch + pen).
           role="separator" gives it correct ARIA; touch-action:none so a touch
           drag resizes the panel instead of scrolling the page. Pointer capture
@@ -3818,14 +4022,19 @@ function ChatSidebar({
              *  scrollability cue, so the bar itself is redundant here. */}
             <div className="overflow-y-auto scrollbar-none p-2 scroll-shadow" style={{ height: `${historyHeight}px`, scrollbarWidth: 'none' }}>
               {(() => {
-                const filteredHistory = (historySearchResults ?? history).filter(s => {
-                  if (!historyFilter) return true
-                  if (historyFilter.trim().length >= SEARCH_MIN_CHARS) {
-                    if (historySearchResults) return true
-                    return ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
+                const historyLocalMatch = (s: { title?: string; key: string }) =>
+                  ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
+                // Additive rather than a boolean OR: here the backend result IS the
+                // source list, so filtering `history` instead would drop backend-only hits.
+                const filteredHistory = (() => {
+                  if (!historyFilter) return history
+                  if (historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults) {
+                    const seen = new Set(historySearchResults.map(s => s.key))
+                    return [...historySearchResults,
+                            ...history.filter(s => !seen.has(s.key) && historyLocalMatch(s))]
                   }
-                  return ((s.title || '') + s.key).toLowerCase().includes(historyFilter.toLowerCase())
-                })
+                  return (historySearchResults ?? history).filter(historyLocalMatch)
+                })()
                 // One definition of "search active" for every site below: results
                 // are present AND the query is still at/above the search threshold.
                 // The compound check matters on the clear-X frame: historyFilter

@@ -322,6 +322,45 @@ export function dirFullPath(rel: string, project: string): string {
   return project.replace(/[/\\]+$/, '') + sep + trimmed
 }
 
+/** Splice `@rel/` folder tokens into composer text — the drop-a-folder
+ *  counterpart of the picker's applyPickedToken insertion, sharing the exact
+ *  token grammar chips and serialization already parse. Each rel gets the
+ *  trailing slash the picker's selectionFor guarantees, rels whose token is
+ *  already present in `value` are skipped (parseDirTokens dedupes chips, but
+ *  a duplicate token in the TEXT would still read twice), and the tokens are
+ *  inserted at `caret` — or appended when the caret is unknown (`null`), the
+ *  same append fallback the dictation splice uses for a never-touched
+ *  composer. Whitespace-padded on both sides so the token stays
+ *  boundary-checked per DIR_TOKEN_RE. Returns the new value, the caret
+ *  offset just past the inserted run, and `changed` — false when every rel
+ *  was a duplicate, so callers can skip state/caret updates entirely (arming
+ *  a caret restore against an unchanged value would leave it stale until an
+ *  unrelated edit fires it). */
+export function spliceDirTokens(
+  value: string,
+  caret: number | null,
+  rels: string[],
+): { value: string; caret: number; changed: boolean } {
+  const existing = new Set(parseDirTokens(value).map(t => t.rel))
+  const fresh: string[] = []
+  for (const raw of rels) {
+    // Match selectionFor in FilePickerMenu: append `/` unless the rel already
+    // ends in either separator, so a Windows path is not given a second one.
+    const rel = /[/\\]$/.test(raw) ? raw : raw + '/'
+    if (existing.has(rel) || fresh.includes(rel)) continue
+    fresh.push(rel)
+  }
+  const at = caret == null ? value.length : Math.max(0, Math.min(caret, value.length))
+  if (!fresh.length) return { value, caret: at, changed: false }
+  const before = value.slice(0, at)
+  const after = value.slice(at)
+  // Pad so the token sits on whitespace boundaries: a leading space when text
+  // precedes it, a trailing space always (the picker inserts `@rel/ ` too).
+  const lead = before && !/\s$/.test(before) ? ' ' : ''
+  const run = lead + fresh.map(r => `@${r}`).join(' ') + ' '
+  return { value: before + run + after, caret: before.length + run.length, changed: true }
+}
+
 /** Serialize folder tokens for the LLM: each `@rel/` becomes
  *  `[attached_dir N] /abs/path` (N = 1-based appearance order; a repeated
  *  token gets the same N). Display text keeps the `@rel/` tokens — the same

@@ -60,6 +60,16 @@ on:
         description: "Name of the uploaded artifact containing the AppImage"
         required: true
         type: string
+      promote:
+        description: "Publish verified prerelease bytes to stable without rebuilding"
+        required: false
+        type: boolean
+        default: false
+      promotion_base_version:
+        description: "Bare stable version whose candidate manifest must match"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -85,10 +95,13 @@ jobs:
     environment: prod
     env:
       HAS_SIGNING_SECRETS: ${{ secrets.AWS_SIGNING_ROLE_ARN != '' && 'true' || '' }}
+      GH_TOKEN: ${{ github.token }}
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
       ARCH: ${{ inputs.arch }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       # Resolve every arch-dependent name in ONE fail-closed place: the
       # published basename, the electron-updater channel file, and the ELF
       # machine string the artifact must actually be.
@@ -136,16 +149,37 @@ jobs:
           name: ${{ inputs.appimage_artifact }}
           path: artifacts
 
+      - name: Verify immutable promotion bundle
+        if: env.HAS_SIGNING_SECRETS && inputs.promote
+        env:
+          PROMOTION_BASE_VERSION: ${{ inputs.promotion_base_version }}
+        run: |
+          python3 scripts/release_promotion.py verify \
+            --bundle-dir artifacts \
+            --expected-source-sha "${GITHUB_SHA}" \
+            --expected-base-version "${PROMOTION_BASE_VERSION}"
+
       - name: Locate AppImage
         if: env.HAS_SIGNING_SECRETS
+        env:
+          PROMOTE: ${{ inputs.promote }}
         run: |
           set -euo pipefail
-          mapfile -t APPIMAGES < <(find artifacts -type f -name '*.AppImage')
+          # Promotion bundles carry BOTH arches under canonical names, so the
+          # match must be arch-pinned there. Fresh builds carry one AppImage
+          # with electron-builder's versioned filename, which never equals the
+          # canonical basename -- match any AppImage in that mode.
+          if [ "${PROMOTE}" = "true" ]; then
+            PATTERN="${LINUX_BASENAME}.AppImage"
+          else
+            PATTERN="*.AppImage"
+          fi
+          mapfile -t APPIMAGES < <(find artifacts -type f -name "$PATTERN")
           if [ "${#APPIMAGES[@]}" -eq 0 ]; then
-            echo "No AppImage found in build artifacts"; exit 1
+            echo "No AppImage found matching ${PATTERN} in build artifacts"; exit 1
           fi
           if [ "${#APPIMAGES[@]}" -gt 1 ]; then
-            echo "Expected exactly one AppImage, found ${#APPIMAGES[@]}:"; printf '%s\n' "${APPIMAGES[@]}"; exit 1
+            echo "Expected exactly one AppImage matching ${PATTERN}, found ${#APPIMAGES[@]}:"; printf '%s\n' "${APPIMAGES[@]}"; exit 1
           fi
           echo "APPIMAGE_PATH=${APPIMAGES[0]}" >> "$GITHUB_ENV"
           ls -la "${APPIMAGES[0]}"
@@ -178,10 +212,17 @@ jobs:
       # write so un-attested bytes never go live; if attestation fails,
       # the job fails and nothing is published.
       - name: Attest AppImage provenance
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_SIGNING_SECRETS && !inputs.promote
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: ${{ env.APPIMAGE_PATH }}
+
+      - name: Verify promoted AppImage provenance
+        if: env.HAS_SIGNING_SECRETS && inputs.promote
+        run: |
+          gh attestation verify "${APPIMAGE_PATH}" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/publish-linux.yml"
 
       # Same never-republish discipline as the mac zip/DMG and the cli/*
       # wheels: the versioned key is immutable-cached by CloudFront and must

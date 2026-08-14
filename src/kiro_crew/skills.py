@@ -19,6 +19,7 @@ from typing import Callable
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import safe_read_file, validate_file_path
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.security import (
@@ -3268,23 +3269,29 @@ class SkillsLoader:
         honoring it here meant the opt-in could never take effect. Ignoring
         indented lines also drops the junk keys a prose line like
         ``  Steps: do x`` used to invent.
+
+        A value that is a YAML block-scalar indicator (``>``, ``|``, with an
+        optional chomping ``-``/``+``) is resolved from the indented lines that
+        follow it: folded (``>``) folds single breaks to spaces while keeping
+        blank-line and more-indented structure, literal (``|``) preserves
+        newlines. Without this, the stored value would be the indicator
+        character itself and the real content — a multi-line ``description``
+        used for routing — would be dropped, leaving the skill unroutable.
+        That grammar is pinned as ``frontmatter.SKILL_LOADER``.
         """
         content = path.read_text(encoding="utf-8")
-        if not content.startswith("---"):
-            return {}
-        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-        if not match:
-            return {}
-        meta: dict[str, str] = {}
-        for line in match.group(1).split("\n"):
-            if ":" in line and not line[:1].isspace():
-                key, value = line.split(":", 1)
-                meta[key.strip()] = value.strip().strip("\"'")
-        return meta
+        return parse_frontmatter(content, SKILL_LOADER)
 
     @staticmethod
     def strip_frontmatter(content: str) -> str:
-        """Remove YAML frontmatter from markdown."""
+        """Remove YAML frontmatter from markdown.
+
+        A fence LOCATOR, not a field parser — deliberately outside
+        ``kiro_crew.frontmatter``. Its closer grammar is stricter than
+        ``_parse_frontmatter``'s (``---`` must be followed by a newline), so
+        a ``---junk`` closer parses fields yet strips nothing; editing either
+        grammar means revisiting the other.
+        """
         if content.startswith("---"):
             match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
             if match:

@@ -486,6 +486,39 @@ class TestHeartbeatSweeper:
         assert task.done() and not task.cancelled()
 
     @pytest.mark.asyncio
+    async def test_cancellation_flushes_the_hazard_ledger(self, tmp_path):
+        """A hazard observed after the last tick must survive a clean shutdown.
+
+        The periodic flush only persists what was seen before the previous
+        interval, and shutdown cancels this task — so without a flush on exit an
+        observation made in the final interval is lost, and a server that
+        misbehaved keeps its recommendation until it misbehaves again. Shutdown is
+        the ordinary path, not the exceptional one.
+        """
+        from kiro_crew.mcp_gateway import hazards
+
+        ledger = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        gw.hazards._sink = ledger  # type: ignore[attr-defined]
+        try:
+            ledger.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST)
+            assert not hazards.ledger_path(tmp_path).exists(), "nothing persisted yet"
+
+            pool = _SweeperPool([])
+            stop = asyncio.Event()
+            task = asyncio.create_task(
+                gw._heartbeat_sweeper(cast(Any, pool), 30.0, stop, None)
+            )
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.wait_for(task, timeout=5)
+
+            assert hazards.load_ledger(tmp_path).codes_for("srv") == (
+                hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+            )
+        finally:
+            gw.hazards._sink = None  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
     async def test_drained_backend_is_reaped_once_its_refcount_hits_zero(self):
         """Blue-green cutover: draining backends finish in-flight work, then go."""
         drained = _fake_backend(_pool_key(server="drained-mcp"), pid=7070)

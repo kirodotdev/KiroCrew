@@ -224,28 +224,25 @@ open review threads still exits `0`. Before you declare review-ready and call
    in-place-updated body on the next review, but one you **rebutted** or
    **accepted-and-deferred** keeps being re-raised, so a zero-findings test
    deadlocks the loop against your own correct answer. The test is *unanswered*,
-   which is also what the `autonudge_stop` prohibition below is keyed on. Where the
-   conclusion cannot be trusted (see below), read the findings from the comment
-   body rather than the check:
-   ```bash
-   HEAD_SHA=$(gh pr view <N> --json headRefOid --jq .headRefOid)   # not git rev-parse:
-                                                                  # the PR need not be checked out
-   gh api --paginate "repos/<o>/<r>/issues/<N>/comments" \
-     --jq ".[] | select(.user.type == \"Bot\")
-               | select(.body | test(\"$HEAD_SHA\"))
-               | {who: .user.login,
-                  findings: [.body | scan(\"(?:FINDING|BLOCKING)[^\\n]{0,120}\")]}"
-   ```
-   Then subtract the ones your own `ai-review-disposition` comments already answer;
-   what remains is the number that must be zero. Three details earn their keep:
-   `--paginate`, because a long-running PR outgrows one page and a missing page reads
-   as "no verdict"; `.user.type == "Bot"`, because your own disposition comments
-   quote the words `FINDING` and `BLOCKING` and would otherwise count as findings
-   forever (the field is more robust than a `[bot]` name suffix); and matching
-   whatever per-SHA stamp your reviewers emit, since the marker names are
-   repo-specific — read one comment first to learn them. A reviewer whose stamp names
-   an older SHA has not reviewed this head yet. This is the one condition
-   `pr_status.py` does not cover today (#2550).
+   which is also what the `autonudge_stop` prohibition below is keyed on. The
+   mechanical half of this condition is the script's, not yours: `pr_status.py`
+   reads the bot comments itself, holds every `[<NAME>-REVIEWED]` stamp to the
+   current head SHA, and folds a stale stamp or a `[BLOCK-MERGE]` marker for
+   the current head into exit `20` — so exit `0` already proves reviewer
+   freshness and the absence of a blocking finding. On a repo with a known
+   reviewer fleet, PIN it (`--reviewers NAME1,NAME2` /
+   `PREPARE_PR_REVIEWERS`): a pinned reviewer must have a fresh stamp, so a
+   bot that fails to post — or an emitter drift that stops stamps appearing at
+   all — blocks instead of silently un-gating; unpinned discovery mode holds
+   whatever stamps it finds to freshness but does not require presence. One reading note: a stale stamp maps onto exit `20`, and
+   on a repo whose reviewer bots are comment- or cron-triggered (not in the
+   check rollup) that `20` can mean "the bot has not posted for this head yet"
+   rather than "author action needed" -- the reason string names the stale
+   reviewer, so read it before treating the exit code as a fix signal. What stays yours is the judgment half: the script prints
+   each fresh reviewer's advisory `FINDING` count but deliberately never gates
+   on it, so read those from `pr_findings.py` (which lists each one with a
+   stable `span=` identity), subtract the ones your own `ai-review-disposition`
+   comments already answer, and disposition what remains.
 
 **Never call `autonudge_stop` while an un-dispositioned finding exists for the
 current head SHA.** If you must stop for another reason, post the open-finding
@@ -274,13 +271,15 @@ status-only loop unsound:
   before counting anything.
 
 > **Establish this per repo before trusting a conclusion, and write down what you
-> found.** If any of the five holds, resolve reviewer state from the **job log plus
-> the comment body for the current head SHA** instead, and treat "stamp matches head
-> AND zero open findings" as the only reviewer-side green. Which repos are affected,
-> and the evidence for each, belongs in that repo's issue tracker — not in this
-> skill, which ships to every install and cannot be corrected in copies already
-> distributed. For kirodotdev/KiroCrew that record is #2548, and #2550 moves the
-> check itself behind the profile/script seam so the conditional becomes data.
+> found.** If any of the five holds, resolve reviewer state from the **comment
+> body for the current head SHA** instead — which is exactly what `pr_status.py`
+> does mechanically: it never reads the review workflow's conclusion, only the
+> per-SHA stamps and blocking markers in the bodies, so "stamp matches head AND
+> no blocking marker" is already folded into its exit code. Which repos are
+> affected, and the evidence for each, belongs in that repo's issue tracker — not
+> in this skill, which ships to every install and cannot be corrected in copies
+> already distributed. For kirodotdev/KiroCrew that record is #2548; #2550 moved
+> the check itself into the script so the conditional is data, not prose.
 
 Where a reviewer's conclusion *is* trustworthy, none of the above applies and reading
 job logs every cycle is wasted work: check first, then decide.

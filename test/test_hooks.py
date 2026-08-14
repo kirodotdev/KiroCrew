@@ -672,8 +672,6 @@ class TestShellCommandUseAws:
 class TestHooksConfigFromDict:
     def test_empty(self):
         cfg = HooksConfig.from_dict({})
-        assert "kirocrew browse *" in cfg.auto_approve_tools
-        assert "*kirocrew browse *" in cfg.auto_approve_tools
         assert cfg.auto_approve_subagent_spawn is False
         assert cfg.auto_approve_subagent_tools is False
         assert cfg.auto_replies == []
@@ -690,7 +688,6 @@ class TestHooksConfigFromDict:
             }
         )
         assert "ReadFile" in cfg.auto_approve_tools
-        assert "kirocrew browse *" in cfg.auto_approve_tools
         assert len(cfg.auto_replies) == 1
         assert cfg.auto_replies[0].exact is True
         assert len(cfg.context_rules) == 1

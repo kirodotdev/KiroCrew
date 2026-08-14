@@ -466,51 +466,6 @@ describe('ChatPanel — Context', () => {
   })
 })
 
-describe('ChatPanel — Knowledge Library', () => {
-  it('PATCHes the auto-ingest budget on blur with an in-range integer', async () => {
-    wrap()
-    const input = await settledInput('Auto-Ingest Limit Per Scan')
-    await waitFor(() => expect(input.value).toBe('200'))
-    fireEvent.change(input, { target: { value: '500' } })
-    fireEvent.blur(input)
-    await waitFor(() =>
-      expect(patchConfigMock).toHaveBeenCalledWith('knowledge.auto_ingest_chunk_budget', 500)
-    )
-  })
-
-  it.each([
-    ['above the ceiling', '99999'],
-    ['negative', '-5'],
-    ['not a number', 'nope'],
-  ])('reverts the auto-ingest budget and writes nothing when %s', async (_case, typed) => {
-    wrap()
-    const input = await settledInput('Auto-Ingest Limit Per Scan')
-    await waitFor(() => expect(input.value).toBe('200'))
-    fireEvent.change(input, { target: { value: typed } })
-    fireEvent.blur(input)
-    expect(patchConfigMock).not.toHaveBeenCalled()
-    expect(input.value).toBe('200')
-  })
-
-  it('reverts the auto-ingest budget to the server value when the write fails', async () => {
-    rejectOnce(patchConfigMock)
-    wrap()
-    const input = await settledInput('Auto-Ingest Limit Per Scan')
-    await waitFor(() => expect(input.value).toBe('200'))
-    fireEvent.change(input, { target: { value: '900' } })
-    fireEvent.blur(input)
-    expect(await screen.findByText(/Failed to save knowledge setting/)).toBeInTheDocument()
-    await waitFor(() => expect(input.value).toBe('200'))
-  })
-
-  it('surfaces a failed knowledge toggle write', async () => {
-    rejectOnce(patchConfigMock)
-    wrap()
-    fireEvent.click(await settledSwitch('Auto-Add Documents'))
-    expect(await screen.findByText(/Failed to save knowledge setting/)).toBeInTheDocument()
-  })
-})
-
 describe('ChatPanel — Subagents', () => {
   it('PATCHes the completion-keep mode on selection', async () => {
     wrap()

@@ -1121,6 +1121,104 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
     assert payload["code"] == "transfer_unreachable"
 
 
+def _peer_answering(status: int, *, body: object = None):
+    """A fake ``aiohttp.ClientSession`` factory + the POST counter it records.
+
+    ``body=None`` models a peer whose body is not JSON — what aiohttp's own
+    default error responses (text/plain) look like from the client side.
+    """
+    posts = {"n": 0}
+
+    class _Resp:
+        def __init__(self) -> None:
+            self.status = status
+
+        async def json(self):
+            if body is None:
+                raise ValueError("not json")
+            return body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, _url, json=None, headers=None):
+            posts["n"] += 1
+            return _Resp()
+
+    return _Session, posts
+
+
+@pytest.mark.parametrize("status", [404, 405])
+@pytest.mark.asyncio
+async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(status):
+    """A peer with no importer route gets named as too old, not as a status code.
+
+    405 is the shape a real pre-importer peer produces: the path falls through
+    to ``/api/chat/slots/{slot}``, which is registered GET/DELETE only.
+    """
+    from kiro_crew.instances.ssh_tunnel_manager import (
+        SshTunnelManager,
+        TunnelState,
+        TunnelStatus,
+    )
+
+    mgr = SshTunnelManager.__new__(SshTunnelManager)
+    mgr._tokens = {"peer": "tok"}
+    mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
+        instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
+    )
+
+    async def _no_remint(_id):
+        raise AssertionError("a missing route is not a credential problem")
+
+    mgr.refresh_token = _no_remint  # type: ignore[method-assign]
+    session_cls, posts = _peer_answering(status)
+
+    import kiro_crew.instances.ssh_tunnel_manager as mod
+
+    original = mod.aiohttp.ClientSession
+    mod.aiohttp.ClientSession = lambda *a, **k: session_cls()  # type: ignore[assignment]
+    try:
+        ok, payload = await mgr.send_session_bundle("peer", {"bundle_version": 2})
+    finally:
+        mod.aiohttp.ClientSession = original  # type: ignore[assignment]
+
+    assert ok is False
+    assert payload["code"] == "transfer_peer_too_old"
+    # The message must say what to DO; a bare status code is what this replaces.
+    assert "older Kiro Crew" in payload["error"]
+    assert "update it" in payload["error"]
+    assert str(status) not in payload["error"]
+    assert posts["n"] == 1, "a missing route is final — no downgrade retry"
+
+
+def test_importer_never_answers_404_or_405():
+    """Pins the premise of the mapping above.
+
+    ``send_session_bundle`` reads 404/405 as "this peer has no importer". That
+    is only sound while the importer's own refusals stay off those two codes;
+    if one starts using them, a real refusal would be misreported as a stale
+    build.
+    """
+    from pathlib import Path
+
+    import kiro_crew.dashboard.session_transfer as st
+
+    source = Path(st.__file__).read_text(encoding="utf-8")
+    assert "status=404" not in source
+    assert "status=405" not in source
+
+
 # ── import endpoint ──────────────────────────────────────────────────────
 
 

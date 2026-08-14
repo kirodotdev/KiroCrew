@@ -12,6 +12,7 @@ import pytest
 
 from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session import (
     _BG_BLIND_RECYCLE_PROMPTS,
     BACKGROUND_KEY,
@@ -146,6 +147,57 @@ class TestSessionManager:
             replacement.needs_context_reinjection is False
         ), "a recycle must not flag the fresh replacement session"
         assert mgr.consume_needs_reinjection("thread1") is False
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_overflow_recycle_preserves_channel_binding(self, cfg):
+        """A context-overflow recycle is housekeeping, so it must not unlink.
+
+        Dropping the whole session-map entry takes the mirror binding with it: a
+        Discord conversation resumed into that session loses its binding, and
+        later inbound messages from that channel fork into a new conversation.
+        Only the resume sid may go — the overflowed native conversation must not
+        be resumed.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("dashboard:chat-1")
+        key = mgr._fold_key("dashboard:chat-1")
+        session = mgr._sessions[key]
+        mgr._session_map.set(key, "sid-overflowed")
+        mgr.set_mirror_link(
+            key,
+            ChannelLink(channel_type="discord", channel_id="C1"),
+            accepts_inbound=True,
+        )
+
+        await mgr._recycle_held(key, session, 95.0)
+
+        link = mgr.get_mirror_link(key)
+        assert link is not None
+        assert (link.channel_type, link.channel_id) == ("discord", "C1")
+        assert mgr.mirror_accepts_inbound(key) is True
+        # The overflowed conversation stays unresumable...
+        assert not mgr._session_map.get(key)
+        # ...and the entry was repaired, not deleted, so the dropped sid is
+        # still diagnosable.
+        assert mgr._session_map.get_discarded_sid(key) == "sid-overflowed"
+        assert not mgr.has_session(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_overflow_recycle_clears_sid_instead_of_deleting_entry(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("thread1")
+        key = mgr._fold_key("thread1")
+        session = mgr._sessions[key]
+        with (
+            patch.object(mgr._session_map, "clear_sid") as mock_clear,
+            patch.object(mgr._session_map, "delete") as mock_delete,
+        ):
+            await mgr._recycle_held(key, session, 95.0)
+        provider.shutdown.assert_awaited_once()
+        mock_clear.assert_called_once_with(key)
+        mock_delete.assert_not_called()
         await mgr.close_all()
 
     @pytest.mark.asyncio

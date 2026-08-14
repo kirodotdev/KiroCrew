@@ -74,11 +74,7 @@ from kiro_crew.config.loader import (
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import (
-    CHAT_TURN_TIMEOUT,
-    DATA_WARNING,
-    SUBAGENT_COMPLETION_META_KEY,
-)
+from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import CronJob, CronService, CronStoreBusy, build_cron_session_context
@@ -118,7 +114,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
 from kiro_crew.embeddings import (
     embedding_model_is_custom,
     get_shared_embedder,
@@ -147,9 +143,11 @@ from kiro_crew.learn import LessonStore
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
+    acp_error_is_transient,
     provider_last_turn_usage,
     save_conversation_turn_off_loop,
     stream_and_collect,
+    transient_retry_delay,
 )
 from kiro_crew.mcp_cron import vet_job_at_fire_time
 from kiro_crew.mcp_gateway import is_gateway_supported
@@ -190,7 +188,7 @@ from kiro_crew.platform.governance_profiles import (
 )
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import safety_override
-from kiro_crew.sandbox import warm_backend
+from kiro_crew.sandbox import ensure_agents_slice_limits, warm_backend
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.service.common import restart_command_hint
@@ -211,6 +209,7 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
+from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
 from kiro_crew.subagent import (
     DIGEST_HOLD_SECS,
     INJECTION_TIMEOUT,
@@ -311,6 +310,30 @@ def _digest_chunk_size() -> int:
 
 
 SUBAGENT_DIGEST_CHUNK_SIZE = _digest_chunk_size()
+
+
+def _injection_slot_busy(slot: Any) -> bool:
+    """True when *slot* already owns a turn a new injection must wait behind.
+
+    ``slot.running`` alone is not enough. A just-dispatched injection parks in
+    ``bounded_chat_turn``'s off-loop timeout resolution before ``_run_chat``
+    starts, and only the live ``slot.task`` — assigned synchronously at
+    dispatch — records that claim. A slot whose ``running`` is not derived
+    from ``task`` (test doubles, duck-typed slots) reads such a window as
+    idle, so a later digest chunk takes the idle branch: it appends in
+    whichever order the dispatch hops resolve (not FIFO under CPU load) and
+    assigns ``slot.task`` over the earlier chunk's still-pending task instead
+    of awaiting it. Consulting the claim directly keeps chunk delivery FIFO
+    regardless of how ``running`` is implemented or when the hop resolves.
+    """
+    task = slot.task
+    return bool(slot.running) or (task is not None and not task.done())
+
+
+# Whole-callback transient retries for the cron LLM path (session acquire /
+# client creation / context assembly), mirroring the subagent path's budget.
+# In-stream transient errors are retried separately by stream_and_collect.
+_CRON_TRANSIENT_RETRIES = 2
 
 logger = logging.getLogger(__name__)
 
@@ -2222,6 +2245,12 @@ class GatewayOrchestrator:
                     )
 
         async def _cron_callback(job: CronJob) -> str | None:
+            # True once ANY prompt has been handed to the provider this
+            # invocation. The whole-callback transient retry below is only
+            # safe BEFORE dispatch: after it, tools may have run, so a
+            # resubmit risks duplicate side effects (in-stream transient
+            # errors are stream_and_collect's own retry's job).
+            _prompt_dispatched = False
             # helper picks stable vs ephemeral session key and
             # decides whether to prepend last_result, based on job.persistent_session.
             session_key, msg = build_cron_session_context(job)
@@ -2709,6 +2738,7 @@ class GatewayOrchestrator:
                         # Brackets only the model turn — session acquisition and
                         # the episodic-query embed above are setup, not the turn.
                         _turn_t0 = time.monotonic()
+                        _prompt_dispatched = True
                         result_text = await stream_and_collect(
                             client,
                             full_message,
@@ -2836,6 +2866,7 @@ class GatewayOrchestrator:
                 # above. acp reports no duration, so this is the row's fallback.
                 _turn_t0 = time.monotonic()
                 _gate = _GateTally()
+                _prompt_dispatched = True
                 result_text = await stream_and_collect(
                     client,
                     full_message,
@@ -3103,6 +3134,63 @@ class GatewayOrchestrator:
                         pass  # retry failed — fall through to dedup + alert
                     finally:
                         job._acp_retried = False  # type: ignore[attr-defined]
+                # ── Transient backend errors: retry the whole callback with ──
+                # backoff instead of counting a failure. stream_and_collect's
+                # in-stream retry only covers errors raised INSIDE the prompt
+                # stream; a throttle/5xx during session acquire, client
+                # creation, or context assembly propagates here and — before
+                # this branch existed — went straight to record_failure(),
+                # marching consecutive_failures toward auto-pause (threshold
+                # 5) on pure infrastructure weather. The subagent path has
+                # retried these 3x with backoff since it existed; this brings
+                # the cron path to the same semantics (Phase 0, Finding 1:
+                # five throttled wakes would silently auto-pause a healthy
+                # perpetual agent).
+                #
+                # Guarded by the same recursion marker pattern as the ACP
+                # retry: the attempt counter lives on the job for the duration
+                # of the outermost invocation only, and the recursive call
+                # re-enters the full callback so a retry that succeeds runs
+                # the complete delivery path.
+                if acp_error_is_transient(exc) and not _prompt_dispatched:
+                    _t_attempt = getattr(job, "_transient_attempts", 0)
+                    if _t_attempt < _CRON_TRANSIENT_RETRIES:
+                        job._transient_attempts = _t_attempt + 1  # type: ignore[attr-defined]
+                        _delay = transient_retry_delay(_t_attempt + 1)
+                        logger.warning(
+                            "Cron '%s': transient backend error (attempt %d/%d), "
+                            "retrying in %.1fs: %s",
+                            job.name,
+                            _t_attempt + 1,
+                            _CRON_TRANSIENT_RETRIES,
+                            _delay,
+                            exc,
+                        )
+                        # The backoff sleep AND the recursive call live inside
+                        # the counter-owning try/finally: a wake-budget
+                        # cancellation (asyncio.wait_for) landing in the sleep
+                        # would otherwise strand the just-consumed attempt on
+                        # the in-memory job, and later wakes would start with
+                        # fewer (or zero) retries.
+                        try:
+                            try:
+                                if _acquired and self.sessions is not None:
+                                    self.sessions.release(session_key)
+                                    _acquired = False
+                            except Exception:
+                                logger.debug(
+                                    "release before transient retry failed", exc_info=True
+                                )
+                            await asyncio.sleep(_delay)
+                            return await _cron_callback(job)
+                        finally:
+                            # Outermost frame owns the counter: clear it once
+                            # the retry chain unwinds — success, failure, or
+                            # cancellation.
+                            if _t_attempt == 0:
+                                job._transient_attempts = 0  # type: ignore[attr-defined]
+                    # Retries exhausted — fall through to dedup + alert +
+                    # record_failure: a persistent outage should still count.
                 logger.exception("Cron job '%s' failed", job.name)
                 # During an in-flight ACP retry (inner recursive _cron_callback
                 # call), suppress all notify/slack/dedup work — the outer
@@ -4352,10 +4440,7 @@ class GatewayOrchestrator:
                     _retrigger_recovery(slot, parent_key)
 
             _task = asyncio.create_task(
-                asyncio.wait_for(
-                    _run_chat(self.dashboard_state, slot, msg),
-                    timeout=CHAT_TURN_TIMEOUT,
-                ),
+                bounded_chat_turn(_run_chat(self.dashboard_state, slot, msg)),
             )
             slot.task = _task
             self._background_tasks.add(_task)
@@ -4992,8 +5077,9 @@ class GatewayOrchestrator:
                     # is delivered. try/finally so a CancelledError can't leak it.
                     _injection_slot._subagent_deliveries_inflight += 1
                     try:
-                        if _injection_slot.running:
-                            # Slot is busy — wait for current turn to finish,
+                        if _injection_slot_busy(_injection_slot):
+                            # Slot is busy (or an injection is dispatched but
+                            # not yet started) — wait for that task to finish,
                             # then inject. No visible queue card.
                             _current = _injection_slot.task
                             if _current is not None:
@@ -5011,7 +5097,7 @@ class GatewayOrchestrator:
 
                             # Re-check: another injection may have claimed the slot
                             # during the await above.
-                            if _injection_slot.running:
+                            if _injection_slot_busy(_injection_slot):
                                 # Check inline-collected before queuing — if the
                                 # blocking tool already handled this result, don't
                                 # queue it for a later redundant turn.
@@ -5030,8 +5116,10 @@ class GatewayOrchestrator:
                                     info.id,
                                     _slot_name,
                                 )
-                                # Bounded by CHAT_TURN_TIMEOUT (~7200s): _run_chat's
-                                # finally block drains slot._queue on any exit path.
+                                # Bounded by the configured turn ceiling
+                                # (chat_turn_timeout_secs, 7200s default):
+                                # _run_chat's finally block drains slot._queue
+                                # on any exit path.
                                 # Carry the structured completion facts so the
                                 # drained row is a card without re-parsing the
                                 # prose (#1792); _start_next_queued_turn reads them.
@@ -5058,9 +5146,8 @@ class GatewayOrchestrator:
 
                         # Slot is idle — start _run_chat.
                         _task = asyncio.create_task(
-                            asyncio.wait_for(
-                                _run_chat(self.dashboard_state, _injection_slot, announce),
-                                timeout=CHAT_TURN_TIMEOUT,
+                            bounded_chat_turn(
+                                _run_chat(self.dashboard_state, _injection_slot, announce)
                             )
                         )
                         _injection_slot.task = _task
@@ -6034,15 +6121,18 @@ class GatewayOrchestrator:
     async def _init_mcp_gateway(self) -> None:
         """Start the MCP gateway sidecar and populate the agent-JSON overlay.
 
-        Runs when ``mcp_gateway.enabled`` OR ``mcp_gateway.apps_enabled`` is set:
-        the stub is the addressing layer MCP Apps routes its callbacks through,
-        so it is needed even with pooling off, where every connection simply gets
-        its own backend. Any failure downgrades to today's per-session MCP path —
-        the stub's graceful fallback keeps kiro-cli sessions working even when
-        the broker is unreachable.
+        Runs iff at least one server gets a stub
+        (``mcp_gateway.stub_servers``). Routing is what interposes a stub, and
+        the stub is what carries both the render/callback path and any sharing —
+        so nothing stubbed means there is nothing for a broker to serve. Sharing
+        (``mcp_gateway.enabled``) is deliberately NOT part of this condition: it
+        decides how a stubbed server's backend is acquired, and on its own routes
+        nothing. Any failure downgrades to today's per-session MCP path — the
+        stub's graceful fallback keeps kiro-cli sessions working even when the
+        broker is unreachable.
         """
         cfg_gw = self._cfg.mcp_gateway
-        if not (cfg_gw.enabled or cfg_gw.apps_enabled):
+        if not cfg_gw.stub_servers:
             return
         # Runs on every platform the transport layer covers -- an AF_UNIX socket
         # on POSIX, a named pipe on Windows. Stub delivery is ACP session/new
@@ -6070,7 +6160,7 @@ class GatewayOrchestrator:
                     work_dir=workspace_default,
                     sandbox_mode=self._cfg.agent.sandbox,
                     approval_mode=self._cfg.agent.approval_mode,
-                    poolable_servers=frozenset(cfg_gw.poolable_servers),
+                    stub_servers=frozenset(cfg_gw.stub_servers),
                     pooling_enabled=cfg_gw.enabled,
                 ),
             )
@@ -6089,18 +6179,17 @@ class GatewayOrchestrator:
         )
         if await manager.start():
             self._mcp_gateway_manager = manager
-            # Name the switch that started it. Two independent flags can, and
-            # "Share MCP Backends: off" beside a live daemon is otherwise a
-            # contradiction an operator has to read a design note to resolve.
-            reasons = []
-            if cfg_gw.enabled:
-                reasons.append("backend sharing")
-            if cfg_gw.apps_enabled:
-                reasons.append("mcp-apps")
+            # Report the stub set and the sharing decision. There is one
+            # trigger now (something is stubbed), so the useful line is WHAT it
+            # serves: "N routed" beside a live daemon explains itself, and the
+            # sharing suffix stops "sharing: off" next to a running broker from
+            # reading as a contradiction.
             logger.info(
-                "mcp-gateway: broker ready (socket=%s) for %s",
+                "mcp-gateway: broker ready (socket=%s) for %d stubbed server(s), "
+                "backend sharing %s",
                 socket_path,
-                " + ".join(reasons) or "no switch (unexpected)",
+                len(cfg_gw.stub_servers),
+                "on" if cfg_gw.enabled else "off",
             )
 
     async def _stop_mcp_broker(self) -> None:
@@ -6120,14 +6209,14 @@ class GatewayOrchestrator:
         Reloads config so it acts on the value the handler just wrote.
         Returns ``{enabled, running, ping_ok}``.
 
-        The flag governs backend SHARING, not the broker's existence: MCP Apps
-        needs the stub either way. So turning sharing off restarts the broker
-        rather than stopping it whenever Apps is still on — a plain stop would
-        leave ``_mcp_apps_enabled()`` reporting a feature whose render and
-        callback paths just went away. The restart is required, not incidental:
-        the rewriter reads the sharing flag when the broker starts, so re-running
-        it is what re-emits every stub WITHOUT ``--poolable`` and actually stops
-        the sharing the operator just turned off.
+        The flag governs backend SHARING, not the broker's existence: a routed
+        server needs its stub either way. So turning sharing off restarts the
+        broker rather than stopping it whenever something is still routed — a
+        plain stop would take away the render and callback paths of servers the
+        operator never unstubbed. The restart is required, not incidental: the
+        rewriter reads the sharing flag when the broker starts, so re-running it
+        is what re-emits every stub WITHOUT ``--poolable`` and actually stops the
+        sharing the operator just turned off.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -6135,7 +6224,7 @@ class GatewayOrchestrator:
         cfg_gw = self._cfg.mcp_gateway
         if self._mcp_gateway_manager is not None:
             await self._stop_mcp_broker()
-        if cfg_gw.enabled or cfg_gw.apps_enabled:
+        if cfg_gw.stub_servers:
             await self._init_mcp_gateway()
         mgr = self._mcp_gateway_manager
         if self.dashboard_state is not None:
@@ -6154,23 +6243,39 @@ class GatewayOrchestrator:
         ping_ok = bool(running and await mgr.ping())
         return {"enabled": enabled, "running": running, "ping_ok": ping_ok}
 
-    async def _apply_mcp_poolable(self) -> dict:
-        """Dashboard callback: re-apply a poolable-server change in-process.
+    async def _apply_mcp_stub(self) -> dict:
+        """Dashboard callback: re-apply a stub change in-process.
 
-        Restarts the broker so the rewriter re-runs with the new allowlist
-        and the daemon re-spawns with the updated ``MC_MCP_TARGET_*`` env.
+        Three transitions, and the broker's existence follows the stub set:
+
+        * nothing stubbed -> something stubbed: START. There is no manager yet, so
+          a restart-only path would leave the operator's first stubbed server
+          inert until they happened to touch another switch.
+        * stubbed -> stubbed: RESTART, so the rewriter re-runs with the new set and
+          the daemon re-spawns with updated ``MC_MCP_TARGET_*`` env.
+        * something stubbed -> nothing stubbed: STOP, because an empty stub set
+          means there is nothing for a broker to serve.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
         self._cfg = KiroCrewConfig.load()
+        want_broker = bool(self._cfg.mcp_gateway.stub_servers)
         if self._mcp_gateway_manager is not None:
             await self._stop_mcp_broker()
+        if want_broker:
             await self._init_mcp_gateway()
-            if self.dashboard_state is not None:
-                self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
+        if self.dashboard_state is not None:
+            self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
+        # The overlay and socket paths are resolved during config load and then
+        # CAPTURED by the provider factory and the warm pool, so without this the
+        # next session would still be launched with the routing from boot — the
+        # operator's first stub would look like it did nothing. The sharing switch
+        # already refreshes for the same reason.
+        if self.sessions is not None:
+            await self.sessions.refresh_defaults()
         return {
-            "applied": self._mcp_gateway_manager is not None,
-            "poolable_servers": sorted(self._cfg.mcp_gateway.poolable_servers),
+            "applied": (self._mcp_gateway_manager is not None) == want_broker,
+            "stub_servers": sorted(self._cfg.mcp_gateway.stub_servers),
         }
 
     def _wire_mcp_gateway_dashboard(self) -> None:
@@ -6185,7 +6290,7 @@ class GatewayOrchestrator:
             return
         self.dashboard_state._mcp_gateway_manager = self._mcp_gateway_manager
         self.dashboard_state._mcp_gateway_apply = self._apply_mcp_gateway_enabled
-        self.dashboard_state._mcp_gateway_apply_poolable = self._apply_mcp_poolable
+        self.dashboard_state._mcp_gateway_apply_stub = self._apply_mcp_stub
 
     # ------------------------------------------------------------------
     # Shutdown
@@ -7031,6 +7136,22 @@ class GatewayOrchestrator:
             self.dashboard_state.slack_socket_connected = connected
             self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
 
+        # Deferred tracked-channel capability probe (fire-and-forget, never
+        # awaited — boot latency is unaffected). A Slack install created before
+        # the manifest gained groups:history keeps its old grant, so a tracked
+        # private channel delivers no events and nothing logs; the probe turns
+        # that silent-dead state into a warning + dashboard notification.
+        if connected and self.slack is not None and self._tracking_channels:
+            _scope_task = asyncio.create_task(
+                warn_unreadable_tracked_channels(
+                    self.slack,
+                    set(self._tracking_channels),
+                    notify=self.dashboard_state.notify if self.dashboard_state else None,
+                )
+            )
+            self._background_tasks.add(_scope_task)
+            _scope_task.add_done_callback(self._background_tasks.discard)
+
         # Block until shutdown
         await shutdown_event.wait()
         print("👻 Shutting down…")
@@ -7119,6 +7240,12 @@ class GatewayOrchestrator:
         self._channel_handles = await registry.start_channels(self, descriptors, permitted)
 
 
+# Strong reference to the background slice-limit apply task: the event loop
+# holds tasks weakly, so a fire-and-forget create_task with no reference can
+# be garbage-collected mid-flight.
+_SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
+
+
 async def run_gateway(
     cfg: KiroCrewConfig,
     *,
@@ -7142,6 +7269,31 @@ async def run_gateway(
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
     boot_platform(cfg)
+
+    # ── Aggregate cgroup ceiling for all agent scopes ──
+    # The per-spawn scope wrapper (sandbox.cgroup_scope_argv) bounds ONE spawn
+    # tree; this bounds ALL of them together by putting MemoryMax/TasksMax on
+    # their shared parent slice. Scheduled as a contained background task —
+    # never awaited on the boot path, so a slow user manager (the systemctl
+    # call carries a 15s timeout) cannot delay dashboard binding. The module
+    # global keeps a strong reference (the loop holds tasks weakly). Skipped
+    # in test_mode: the offline E2E gate must not mutate the developer's real
+    # user manager. Failure is non-fatal — the function logs and the
+    # per-scope ceilings still apply.
+    global _SLICE_LIMITS_TASK
+    if not test_mode:
+
+        async def _apply_slice_limits() -> None:
+            try:
+                await asyncio.to_thread(ensure_agents_slice_limits)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "aggregate cgroup ceiling apply failed", exc_info=True
+                )
+
+        _SLICE_LIMITS_TASK = asyncio.create_task(
+            _apply_slice_limits(), name="agents-slice-limits"
+        )
 
     # ── Anonymous usage beacon (at most one HTTP GET per day) ──
     # Detached daemon thread, NOT awaited: ``beacon.send`` is blocking urllib

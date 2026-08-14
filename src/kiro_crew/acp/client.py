@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import functools
 import glob
 import json
 import logging
@@ -45,6 +46,8 @@ from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOra
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
@@ -104,7 +107,7 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
-from kiro_crew.env import augmented_path, resolve_krb5_ccname
+from kiro_crew.env import augmented_path, mise_data_dir, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
@@ -322,16 +325,25 @@ def _mise_which(tool: str) -> str | None:
 
 
 def _mise_node_installs_dir() -> Path:
-    """Canonical path to mise's Node installs directory."""
-    return Path.home() / ".local" / "share" / "mise" / "installs" / "node"
+    """Canonical path to mise's Node installs directory.
+
+    The data root comes from :func:`kiro_crew.env.mise_data_dir` so that
+    ``MISE_DATA_DIR`` and ``XDG_DATA_HOME`` are honoured — the previous
+    hardcoded ``~/.local/share/mise`` silently missed installs on any host
+    with a relocated mise data dir, while the env helper already resolved the
+    same root correctly for the build toolchain.
+    """
+    return Path(mise_data_dir(str(Path.home()))) / "installs" / "node"
 
 
 def _resolve_node_for_script(script_path: str) -> str | None:
     """Derive the correct node binary for a script installed under mise.
 
-    If *script_path* lives under ``~/.local/share/mise/installs/node/<ver>/``,
-    return the co-located ``bin/node``.  This avoids reliance on shim
-    resolution which requires mise global config and a cooperative cwd.
+    If *script_path* lives under mise's Node installs dir (see
+    :func:`_mise_node_installs_dir` — honours ``MISE_DATA_DIR`` /
+    ``XDG_DATA_HOME``), return the co-located ``bin/node``.  This avoids
+    reliance on shim resolution which requires mise global config and a
+    cooperative cwd.
 
     Resolves both $HOME and the script path to real paths to handle
     symlinked home directories (e.g. /home/user -> /local/home/user).
@@ -546,7 +558,7 @@ def _resolve_ssh_auth_sock(env: dict[str, str]) -> None:
             return
 
 
-def _resolve_spawn_env(env: dict[str, str]) -> dict[str, str]:
+def _resolve_spawn_env(env: dict[str, str], *, kiro_api_key: bool = False) -> dict[str, str]:
     """Repair stale credential pointers in *env* before an agent spawn.
 
     Bundles :func:`_resolve_ssh_auth_sock` (glob + stat over ``/tmp``) and
@@ -556,9 +568,27 @@ def _resolve_spawn_env(env: dict[str, str]) -> dict[str, str]:
     they must never run on the event loop — call this via
     ``asyncio.to_thread``. Mutates *env* in place and returns it for
     convenience.
+
+    With ``kiro_api_key=True`` (the kiro-cli backend), also re-injects the
+    CLI's own model credential from the data home's ``.env`` when the Docker
+    entrypoint scrubbed it out of the parent environ — the child authenticates
+    from its environment, so without this an API-key container loses model
+    auth. With ``kiro_api_key=False`` (a foreign backend) the credential is
+    actively STRIPPED instead: it is kiro-cli's alone, and the deny scrub
+    deliberately exempts it, so an inherited copy would otherwise ride into a
+    foreign agent process. The file read is IO, which is why both branches
+    ride this same off-loop hop.
     """
     _resolve_ssh_auth_sock(env)
     resolve_krb5_ccname(env)
+    # Deferred import: this module keeps config.loader off its import graph
+    # (in-file convention; see the _prompt_timeout lazy-import note).
+    from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
+
+    if kiro_api_key:
+        inject_kiro_cli_api_key(env)
+    else:
+        strip_kiro_cli_api_key(env)
     return env
 
 
@@ -696,6 +726,78 @@ _DRAIN_DURATION = 1.0  # hard cap on draining MCP server init notifications
 # fires first and the idle path becomes dead code.
 _DRAIN_IDLE_EXIT = 0.5
 _DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours — allow very long tool execution
+# Slack the transport leaves ABOVE the configured turn ceiling. The dashboard's
+# own deadline (turn_dispatch._bounded_turn) must always fire first so the user
+# sees the "turn hit the N-hour limit" card; a transport cut at the same instant
+# would race it and report a raw timeout instead.
+_PROMPT_TIMEOUT_MARGIN_SECS = 60.0
+
+
+def prompt_timeout_for_ceiling(configured: float) -> float:
+    """Pure transport-timeout math for an already-known turn ceiling.
+
+    Extracted from :func:`resolve_prompt_timeout` so callers that ALREADY hold
+    a loaded config (e.g. ``session_handle._load_watchdog_settings``) can bound
+    against the ceiling without a second synchronous ``KiroCrewConfig.load()``.
+    """
+    if configured <= 0:
+        return _DEFAULT_PROMPT_TIMEOUT
+    if configured <= _DEFAULT_PROMPT_TIMEOUT:
+        # At or below the default the transport keeps its historical wait —
+        # byte-identical behaviour for every existing install. The margin is
+        # only added ABOVE the default, where the transport must outlive the
+        # raised dashboard ceiling.
+        return _DEFAULT_PROMPT_TIMEOUT
+    return configured + _PROMPT_TIMEOUT_MARGIN_SECS
+
+
+def resolve_prompt_timeout() -> float:
+    """Per-prompt transport timeout, honouring the configured turn ceiling.
+
+    ``agent.chat_turn_timeout_secs`` may be raised above
+    :data:`_DEFAULT_PROMPT_TIMEOUT` (up to the loader's ``CHAT_TURN_TIMEOUT_MAX``)
+    for long unattended turns. The transport wait must then outlive the
+    dashboard's ceiling — otherwise the transport cuts the turn first and the
+    larger configured value is a limit the system does not honour (the exact
+    dishonesty ``turn_dispatch.chat_turn_timeout_secs`` clamps against).
+
+    Never returns less than :data:`_DEFAULT_PROMPT_TIMEOUT`: a LOWERED turn
+    ceiling is enforced by the dashboard's own deadline, and shrinking the
+    transport wait with it would also shrink the budget of non-dashboard
+    callers (subagents, review runs) that share this default.
+
+    Config is imported lazily: ``config.loader`` reaches this module through
+    ``acp.session_handle``, so a module-level import would be a cycle.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        configured = float(KiroCrewConfig.load().agent.chat_turn_timeout_secs)
+    except Exception:
+        logger.debug("turn-ceiling config unavailable; transport keeps default", exc_info=True)
+        return _DEFAULT_PROMPT_TIMEOUT
+    return prompt_timeout_for_ceiling(configured)
+
+
+def _effective_prompt_timeout(timeout: float | None) -> float:
+    """An explicit caller timeout wins; ``None`` resolves from config."""
+    return float(timeout) if timeout is not None else resolve_prompt_timeout()
+
+
+async def _effective_prompt_timeout_async(timeout: float | None) -> float:
+    """Async twin of :func:`_effective_prompt_timeout` for prompt dispatch.
+
+    The ``None`` path reads config from disk (:func:`resolve_prompt_timeout`
+    → ``KiroCrewConfig.load()``: stat, read, validate), so resolving it inline
+    in an ``async def`` would block the event loop for every session sharing
+    it. Offload to a thread, matching this module's convention for filesystem
+    work (see ``_resolve_kiro_bin_async``).
+    """
+    if timeout is not None:
+        return float(timeout)
+    return await asyncio.to_thread(resolve_prompt_timeout)
+
+
 _READ_TIMEOUT = 20.0
 # After a compaction `completed` status, kiro-cli emits a fresh
 # `_kiro.dev/metadata` with the real post-compaction contextUsagePercentage
@@ -2437,11 +2539,16 @@ class AcpClient:
         # OS-level sandbox: wrap the command to hide sensitive paths.
         # strip_python_env keeps the host PYTHONPATH/PYTHONHOME out of kiro-cli's
         # foreign MCP subprocesses (which bundle their own interpreter + deps).
+        # is_kiro_cli is membership in ACP_BACKENDS_INTERNAL_SANDBOX
+        # (harness-parity H7), not "not claude": the flag makes wrap_argv SKIP
+        # Crew's seatbelt on macOS in favour of the harness's own internal
+        # sandbox, so a harness without one must never be granted it by the
+        # absence of another harness.
         argv, self._sandbox_cleanup = wrap_argv(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            is_kiro_cli=not self._is_claude,
+            is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -2496,11 +2603,16 @@ class AcpClient:
         # kernel keyring, the default on some Linux distros, is invisible to
         # this child, so Kerberos-gated MCP servers fail without it). Covers
         # the session agent and all ACP-provider subagents, which spawn through
-        # this same path. Both resolvers glob/stat under /tmp, whose entry
-        # count is unbounded, so they run off-loop in ONE thread hop. Guarded:
-        # the sandbox temp file is live, so a cancellation here must not
-        # orphan it.
-        env = await self._to_thread_guarding_sandbox(_resolve_spawn_env, env)
+        # this same path. The same hop settles the CLI's own KIRO_API_KEY:
+        # re-injected from .env for the kiro-cli backend (post-scrub Docker),
+        # actively stripped for a foreign backend, which must never receive it
+        # (see config.loader.inject/strip_kiro_cli_api_key). All of this
+        # glob/stat/reads under /tmp and the data home, so it runs off-loop in
+        # ONE thread hop. Guarded: the sandbox temp file is live, so a
+        # cancellation here must not orphan it.
+        env = await self._to_thread_guarding_sandbox(
+            functools.partial(_resolve_spawn_env, kiro_api_key=not self._is_claude), env
+        )
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
@@ -2559,10 +2671,17 @@ class AcpClient:
             _track_session_pid,
         )
 
-        _track_pid(self._pid)
-        _track_session_pid(self._pid)  # separate file for startup cleanup
-        await asyncio.sleep(0.3)
+        # The PID-file trackers each take an exclusive file lock and do a
+        # read-modify-append under it — blocking syscalls that must not run
+        # on the event loop: ensure_ready() awaits _spawn() from the loop on
+        # every cold start, so a contended or wedged lock holder here would
+        # stall every task including the liveness heartbeat. Ride the same
+        # executor as the descendant scans below.
         _loop = asyncio.get_running_loop()
+        await _loop.run_in_executor(subprocess_executor(), _track_pid, self._pid)
+        # Separate file for startup cleanup.
+        await _loop.run_in_executor(subprocess_executor(), _track_session_pid, self._pid)
+        await asyncio.sleep(0.3)
         early_descendants = await _loop.run_in_executor(
             subprocess_executor(), _get_child_pids, self._pid
         )
@@ -2570,7 +2689,9 @@ class AcpClient:
             self._child_pids = await _loop.run_in_executor(
                 subprocess_executor(), _capture_child_records, early_descendants
             )
-            _track_child_pids(self._child_pids, parent_pid=self._pid or 0)
+            await _loop.run_in_executor(
+                subprocess_executor(), _track_child_pids, self._child_pids, self._pid or 0
+            )
             logger.info("Early tracking %d descendants of PID %d", len(self._child_pids), self._pid)
 
         if self._process.stderr:
@@ -3818,8 +3939,9 @@ class AcpClient:
 
     # ── Public API ──
 
-    async def send_message(self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT) -> str:
+    async def send_message(self, message: str, timeout: float | None = None) -> str:
         """Send a prompt and return the full response text."""
+        timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         self._turn_done.clear()
         await self.ensure_ready()
@@ -3828,9 +3950,10 @@ class AcpClient:
         return await self._read_prompt_response(req_id, timeout)
 
     async def send_message_stream(
-        self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, message: str, timeout: float | None = None
     ) -> AsyncIterator[str]:
         """Send a prompt and yield text chunks as they arrive."""
+        timeout = await _effective_prompt_timeout_async(timeout)
         # NOTE: PreToolUse/PostToolUse hooks are intentionally NOT fired on this
         # streaming path today. No audit_source (worker-pool) consumer uses
         # send_message_stream — hook instrumentation lives on the _read_prompt_response
@@ -3895,9 +4018,10 @@ class AcpClient:
     async def stream_events(
         self,
         message: str,
-        timeout: float = _DEFAULT_PROMPT_TIMEOUT,
+        timeout: float | None = None,
     ) -> AsyncIterator[AcpEvent]:
         """Send a prompt and yield AcpEvent objects (text, tool_call, permission, complete)."""
+        timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         self._turn_done.clear()
         await self.ensure_ready()
@@ -4302,7 +4426,7 @@ class AcpClient:
             return ""
 
     async def stream_command(
-        self, command: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, command: str, timeout: float | None = None
     ) -> AsyncIterator[AcpEvent]:
         """Execute a slash command and yield streaming AcpEvents.
 
@@ -4310,6 +4434,7 @@ class AcpClient:
         format (``{command, args}``) so kiro-cli executes the command
         natively and streams full output via ``session/update``.
         """
+        timeout = await _effective_prompt_timeout_async(timeout)
         self._cancelled = False
         await self.ensure_ready()
 
@@ -4416,9 +4541,12 @@ class AcpClient:
 
     @property
     def supports_steer(self) -> bool:
-        """True when the backend supports mid-turn steer (kiro-cli only;
-        claude-agent-acp has no ``_session/steer``)."""
-        return not self._is_claude
+        """True when the backend implements ``_session/steer`` (mid-turn steer).
+
+        Membership in ``ACP_BACKENDS_STEER`` (harness-parity H6), so a harness
+        added later does not inherit the extension from ``not _is_claude``.
+        """
+        return self.backend in ACP_BACKENDS_STEER
 
     async def wait_turn_done(self, timeout: float) -> str:
         """Wait for the current prompt to finish. Returns stop_reason or raises TimeoutError."""
@@ -5137,6 +5265,16 @@ class AcpClient:
         if isinstance(kind, str) and kind:
             kind_str, _ = redact_exfiltration_urls(kind)
             kind_str, _ = redact_credentials(kind_str)
+        # The refinement's rawInput is the COMPLETE params object, so it carries
+        # the reserved purpose argument too. Read it here or the purpose is lost
+        # whenever the initial tool_call streamed an empty rawInput — and
+        # consumers that treat an empty purpose as "fall back to the raw title"
+        # (the session list's running-status line) would replace a good purpose
+        # with a command. Mirrors `_dispatch._build_tool_refinement_event`.
+        purpose = extract_tool_purpose(raw_input)
+        if purpose:
+            purpose, _ = redact_exfiltration_urls(purpose)
+            purpose, _ = redact_credentials(purpose)
         # Refresh the cached shell signal only when this refinement carries a
         # kind. A refinement that omits kind must NOT clobber a True cached by
         # the initial tool_call notification (kind is optional on updates).
@@ -5148,6 +5286,7 @@ class AcpClient:
             kind=EVENT_TOOL_CALL_UPDATE,
             title=title_str,
             tool_kind=kind_str,
+            tool_purpose=purpose,
             tool_input=input_str,
             tool_call_id=tool_use_id,
             raw_tool_params=raw_input if isinstance(raw_input, dict) else None,

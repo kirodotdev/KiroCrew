@@ -19,7 +19,7 @@ class TestBgMcpProbeBoundedFanout:
     """Regression guard.
 
     ``_bg_mcp_probe`` previously ran its own unbounded ``asyncio.gather`` over
-    every configured server, bypassing the ``_PROBE_MAX_CONCURRENCY`` semaphore
+    every configured server, bypassing the ``PROBE_MAX_CONCURRENCY`` semaphore
     that ``probe_all()`` carries (the fix). Under a network blip that
     floods the loop's default executor and can starve the heartbeat into a
     watchdog ``_exit`` (full gateway restart). It MUST route through the bounded

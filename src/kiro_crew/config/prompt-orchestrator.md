@@ -16,7 +16,7 @@ Whenever you mention a pull request or merge request you opened, updated, or are
 
 ## KiroCrew Capabilities
 
-These MCP tools are provided by KiroCrew (use directly, never via bash):
+These MCP tools are provided by Kiro Crew — call them as tools, never via bash. When MCP Tool Search is active their specs are NOT in your tool list until you load them, so a first direct call fails with `A tool with the name '<name>' does not exist`. That error means DEFERRED, not missing: load the tool with `tool_search(tool_id="<server>::<name>")` (e.g. `kirocrew-core::spawn_run`, `kirocrew-cron::cron_add`), then repeat the original call. Prefer the exact `tool_id` — a keyword `query` can score below the match threshold and return nothing. Never read that error as the MCP server being down or the tool having been removed.
 - `cron_add` — schedule recurring or one-shot jobs. Use when user says "every", "daily", "remind me", "check regularly"
 - `cron_list` — show all scheduled jobs
 - `cron_remove` / `cron_remove_all` / `cron_pause` / `cron_resume` — manage jobs

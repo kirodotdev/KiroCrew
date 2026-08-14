@@ -1,38 +1,53 @@
 /**
  * InstanceTabBar — a thin, full-width strip at the very top of the dashboard
- * that switches between the local dashboard and connected remote instances.
+ * that switches between the local dashboard and connected remote crews.
  *
- * Modeled on the Electron desktop app's native tab bar: it appears ONLY when
- * at least one remote instance is connected, so the common single-instance
- * experience is pixel-identical to before. Everything *below* this bar is the
- * switchable "window" — the Local dashboard, or a remote instance's embedded
- * dashboard (see InstancesViewport). The bar intentionally carries no product
- * brand of its own; each pane shows its own brand, so switching never doubles
- * the icon/title.
+ * The switcher is a single dropdown, not a row of chips: the number of crews a
+ * user configures is unbounded, and a horizontal strip forced them to shrink
+ * the window or scroll sideways to reach the last one. The trigger shows the
+ * crew currently on screen; the menu lists Local plus every crew, so the strip
+ * costs constant width no matter how many crews exist.
  *
- * Tabs: [Local] + one chip per connected instance, horizontally scrollable
- * when they overflow a narrow window. A right-aligned cluster reflects the
- * ACTIVE remote pane's tunnel connection state + token auto-refresh countdown
- * (host SSH expiry lives in the title bar, not duplicated here).
+ * Unread counts survive that collapse in two places, because a count hidden
+ * behind a closed menu would be invisible: the trigger carries an AGGREGATE
+ * badge for every crew that is not on screen, and each menu row carries its
+ * own. The bar appears ONLY when at least one remote crew is connected or
+ * remembered, so the common single-crew experience is unchanged. Everything
+ * *below* the bar is the switchable "window" — the Local dashboard, or a remote
+ * crew's embedded dashboard (see InstancesViewport). The bar intentionally
+ * carries no product brand of its own; each pane shows its own brand, so
+ * switching never doubles the icon/title.
+ *
+ * A right-aligned cluster reflects the ACTIVE remote pane's tunnel connection
+ * state + token auto-refresh countdown (host SSH expiry lives in the title bar,
+ * not duplicated here).
  */
-import { useCallback, useMemo, type CSSProperties } from 'react'
+import { useCallback, useMemo, useState, Fragment, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Server, Loader2 } from 'lucide-react'
+import { Home, Server, Loader2, ChevronDown } from 'lucide-react'
 import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+} from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
-import { fmtDuration as fmtDurationParts, fmtUnit } from '../i18n/format'
+import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
- * Instances that get a tab: sticky connect intent (`was_connected`, cleared
- * only on explicit disconnect) OR currently connected OR warm. Exported as the
- * single source of truth so App.tsx can decide whether the bar is visible
- * WITHOUT duplicating the rule — the bar's visibility drives the macOS
- * traffic-light clearance (when shown, the bar is the topmost strip the native
- * lights sit over, so the clearance moves off the header onto the bar).
+ * Crews that get a switcher entry: sticky connect intent (`was_connected`,
+ * cleared only on an explicit disconnect) OR currently connected OR warm.
+ * Exported as the single source of truth so App.tsx can decide whether the bar
+ * is visible WITHOUT duplicating the rule — the bar's visibility drives the
+ * macOS traffic-light clearance (when shown, the bar is the topmost strip the
+ * native lights sit over, so the clearance moves off the header onto the bar).
  */
 export function visibleInstanceTabs(
   instances: InstanceView[],
@@ -47,6 +62,14 @@ export function visibleInstanceTabs(
 // (must match InstancesViewport.REFRESH_AT_ELAPSED_FRAC). Drives the countdown
 // to the next auto-refresh shown in the tunnel-status cluster.
 const REFRESH_AT_ELAPSED_FRAC = 0.8
+
+// Badges stop counting up at this point and render as "99+", so a runaway
+// unread count cannot widen the trigger and push the header around.
+const BADGE_MAX = 99
+
+// The radio group needs a non-empty value for the Local destination, whose id is
+// null; no crew id can collide with it (ids match ^[a-z0-9][a-z0-9-]{0,62}$).
+const LOCAL_VALUE = '__local__'
 
 /** Parse a `<int>[hm]` TTL (e.g. "20h", "30m") to seconds; 0 if unparseable. */
 function ttlToSeconds(ttl: string): number {
@@ -67,19 +90,22 @@ function fmtDuration(secs: number): string {
   return fmtDurationParts([[h, 'hour'], [m, 'minute']], { dropZero: true })
 }
 
-// Shared tab pill styling. Selected state uses a tinted background ONLY — no
-// highlighted border — with a transparent border kept on every tab so
-// the 24px height never shifts when selection changes.
-function tabCls(active: boolean): string {
-  return (
-    'flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] whitespace-nowrap transition-colors border shrink-0 ' +
-    (active
-      ? 'bg-accent-subtle text-accent border-transparent font-bold'
-      : 'bg-transparent text-muted border-transparent font-medium hover:text-text hover:bg-bg-hover')
-  )
+/**
+ * Localized name for a live tunnel state. The raw values are backend enum
+ * words, so they are mapped rather than interpolated: they reach the user in a
+ * row's accessible name and its tooltip.
+ */
+function stateLabel(state?: string): string {
+  if (state === 'connected') return i18nT('components.instanceTabBar.connected')
+  if (state === 'connecting') return i18nT('components.instanceTabBar.connecting')
+  if (state === 'error') return i18nT('components.instanceTabBar.tunnel_error')
+  // A stopped tunnel is not the same as one that was never opened: the crew's
+  // own machine may be running while the forward is down.
+  if (state === 'stopped') return i18nT('components.instanceTabBar.stopped')
+  return i18nT('components.instanceTabBar.disconnected')
 }
 
-/** Map a live tunnel state to its per-tab status-dot color. */
+/** Map a live tunnel state to its status-dot color. */
 function stateDotCls(state?: string): string {
   return state === 'connected'
     ? 'bg-[var(--ok)]'
@@ -90,107 +116,248 @@ function stateDotCls(state?: string): string {
         : 'bg-[var(--muted)]'
 }
 
-/** The "Local" tab — native dashboard. Shared by the local and embedded bars. */
-function LocalTab({ active, onClick }: { active: boolean; onClick: () => void }) {
+/**
+ * Text colour for the visible state word, mirroring :func:`stateDotCls`. The word
+ * carries the state on its own — the colour is reinforcement, which is the point:
+ * remove the colour and the row still says what it is.
+ */
+function stateTextCls(state?: string): string {
+  return state === 'connected'
+    ? 'text-[var(--ok)]'
+    : state === 'error'
+      ? 'text-[var(--danger)]'
+      : state === 'connecting'
+        ? 'text-[var(--warn)]'
+        : 'text-muted'
+}
+
+/** Clamped badge text, so an unbounded count cannot stretch the trigger. */
+function badgeText(count: number): string {
+  return count > BADGE_MAX ? `${fmtNumber(BADGE_MAX)}+` : fmtNumber(count)
+}
+
+/** Shared unread pill. `aria-hidden` when an ancestor already names the count. */
+function UnreadBadge({
+  count,
+  label,
+  aggregate = false,
+}: {
+  count: number
+  label?: string
+  /** The trigger's roll-up of OTHER crews, styled apart from a per-row count so
+   *  it does not read as the pane named beside it. */
+  aggregate?: boolean
+}) {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      className={tabCls(active)}
-      onClick={onClick}
-      title={i18nT('components.instanceTabBar.local_dashboard')}
+    <span
+      className={
+        'ml-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 text-center font-bold shrink-0 ' +
+        (aggregate
+          ? 'border border-accent text-accent bg-transparent'
+          : 'bg-accent text-accent-fg')
+      }
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
     >
-      <Home size={13} /> {i18nT('components.instanceTabBar.local')}
-    </button>
+      {badgeText(count)}
+    </span>
   )
 }
 
-/** One remote-instance tab. Shared by the local and embedded bars. */
-function InstanceTab({
-  name,
-  title,
-  state,
-  connecting,
-  unread,
-  active,
-  onClick,
-}: {
+/**
+ * One row of the switcher menu. `entry.id === null` is the Local dashboard,
+ * which has no tunnel state and no unread count of its own.
+ */
+export interface SwitcherEntry {
+  id: string | null
   name: string
+  /** Secondary line: the SSH host the crew is reached through. */
+  detail: string
+  /** Hover text naming the crew, its host, and its live tunnel state. */
   title: string
   state?: string
   connecting?: boolean
-  unread?: number
-  active: boolean
-  onClick: () => void
-}) {
-  const badge = unread || 0
+  unread: number
+}
+
+function SwitcherRow({ entry, onSelect }: { entry: SwitcherEntry; onSelect: () => void }) {
+  const isLocal = entry.id === null
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      className={tabCls(active)}
-      onClick={onClick}
-      title={title}
+    <DropdownMenuRadioItem
+      value={entry.id ?? LOCAL_VALUE}
+      className="gap-2 text-[13px]"
+      onSelect={onSelect}
+      title={entry.title}
     >
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(state)}`} aria-hidden />
-      {connecting ? <Loader2 size={13} className="animate-spin" /> : <Server size={13} />}
-      <span className="max-w-[160px] truncate">{name}</span>
-      {badge > 0 && (
+      {isLocal ? (
+        <Home className="lucide-inline shrink-0" />
+      ) : entry.connecting ? (
+        <Loader2 className="lucide-inline shrink-0 animate-spin" />
+      ) : (
         <span
-          aria-label={`${badge} unread`}
-          className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-accent text-accent-fg text-[10px] leading-4 text-center"
-        >
-          {badge}
-        </span>
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
+          aria-hidden
+        />
       )}
-    </button>
+      <span className="flex flex-col min-w-0 flex-1">
+        <span className="truncate">{entry.name}</span>
+        {/* A crew whose ssh alias IS its name would otherwise render the same
+            word twice, which reads as a bug rather than as extra detail. */}
+        {entry.detail && entry.detail !== entry.name ? (
+          <span className="truncate text-[12px] text-muted">{entry.detail}</span>
+        ) : null}
+      </span>
+      {entry.unread > 0 ? (
+        <UnreadBadge
+          count={entry.unread}
+          label={i18nT('components.instanceTabBar.n_unread', { n: entry.unread })}
+        />
+      ) : null}
+      {/* Visible, not sr-only. The dot is the only other carrier of state, and
+          colour alone cannot distinguish a connected crew from a failed one for
+          a colourblind user — who would otherwise have to hover every row to
+          find the one that errored. One label serves both audiences, so the
+          word a screen reader announces is the word on screen. */}
+      {entry.state ? (
+        <span className={`shrink-0 text-[11px] ${stateTextCls(entry.state)}`}>
+          {stateLabel(entry.state)}
+        </span>
+      ) : null}
+    </DropdownMenuRadioItem>
   )
 }
 
-// Outer container classes per variant. Inline is h-full so its 24px pills sit
+// Outer container classes per variant. Inline is h-full so its 24px trigger sits
 // vertically centered in the 42px header.
 function barCls(variant: 'strip' | 'inline'): string {
   return variant === 'inline'
-    ? 'instance-tab-bar-inline flex items-center h-full gap-1 min-w-0 overflow-x-auto no-scrollbar'
+    ? 'instance-tab-bar-inline flex items-center h-full gap-1 min-w-0'
     : 'topbar-glass instance-tab-bar flex items-center gap-2 h-8 px-2 border-b border-border shrink-0 z-[46]'
 }
 
 /**
- * Embedded (remote pane) switcher: renders the SAME inline tab bar as the local
- * tab, driven by the model the parent relays into `instances.host`,
- * and posts switch requests back up so the parent flips `activeId`. This is what
- * collapses the remote pane's two stacked bars into one consolidated header.
+ * The switcher itself: a trigger naming the pane on screen, plus a menu of
+ * every destination. Presentational — both the local and the embedded bar feed
+ * it the same entry model, so the two paths cannot drift apart.
+ */
+function SwitcherMenu({
+  entries,
+  activeId,
+  onSelect,
+}: {
+  entries: SwitcherEntry[]
+  activeId: string | null
+  onSelect: (id: string | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const active = entries.find(e => e.id === activeId) ?? entries[0]
+  // Unread that the user cannot see right now. The active pane's own count is
+  // already zeroed on selection, but excluding it explicitly keeps the badge
+  // honest if a background message lands on the pane being viewed.
+  const elsewhere = entries.reduce(
+    (sum, e) => (e.id === activeId ? sum : sum + e.unread),
+    0,
+  )
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          // The same sentence the accessible name carries, so a sighted user is
+          // not left reading a count of OTHER crews as this pane's own.
+          title={
+            elsewhere > 0
+              ? i18nT('components.instanceTabBar.switch_crew_active_unread', {
+                  name: active?.name ?? i18nT('components.instanceTabBar.local'),
+                  n: elsewhere,
+                })
+              : undefined
+          }
+          aria-label={
+            elsewhere > 0
+              ? i18nT('components.instanceTabBar.switch_crew_active_unread', {
+                  name: active?.name ?? i18nT('components.instanceTabBar.local'),
+                  n: elsewhere,
+                })
+              : i18nT('components.instanceTabBar.switch_crew_active', {
+                  name: active?.name ?? i18nT('components.instanceTabBar.local'),
+                })
+          }
+          className="flex items-center gap-1.5 h-6 px-2.5 rounded-md text-[12px] whitespace-nowrap transition-colors border border-transparent shrink-0 max-w-[260px] bg-accent-subtle text-accent font-bold hover:bg-bg-hover focus-ring"
+        >
+          {active?.id === null ? (
+            <Home className="lucide-inline shrink-0" />
+          ) : active?.connecting ? (
+            <Loader2 className="lucide-inline shrink-0 animate-spin" />
+          ) : (
+            <Server className="lucide-inline shrink-0" />
+          )}
+          <span className="truncate">{active?.name ?? i18nT('components.instanceTabBar.local')}</span>
+          {elsewhere > 0 ? <UnreadBadge count={elsewhere} aggregate /> : null}
+          <ChevronDown className="lucide-inline shrink-0 opacity-70" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        aria-label={i18nT('components.instanceTabBar.instances')}
+        className="min-w-[240px] max-w-[340px] max-h-[60vh] overflow-y-auto"
+      >
+        <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
+          {entries.map((entry, i) => (
+            <Fragment key={entry.id ?? LOCAL_VALUE}>
+              {/* Local is the user's own machine, not a crew: a rule separates it
+                  from the remote list so the two never read as one flat set. */}
+              {i === 1 ? <DropdownMenuSeparator /> : null}
+              <SwitcherRow entry={entry} onSelect={() => onSelect(entry.id)} />
+            </Fragment>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/**
+ * Embedded (remote pane) switcher: renders the SAME dropdown as the local tab,
+ * driven by the model the parent relays into `instances.host`, and posts switch
+ * requests back up so the parent flips `activeId`. This is what collapses the
+ * remote pane's two stacked bars into one consolidated header.
  */
 function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
   const host = useAppSelector(s => s.instances.host)
-  const onLocal = useCallback(() => {
-    // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
-    window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id: null }, '*')
-  }, [])
-  const onSelect = useCallback((id: string) => {
+  const onSelect = useCallback((id: string | null) => {
     // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
     window.parent?.postMessage({ type: 'mc-switch-instance', v: 1, id }, '*')
   }, [])
+  const entries = useMemo<SwitcherEntry[]>(() => {
+    if (!host) return []
+    return [
+      {
+        id: null,
+        name: i18nT('components.instanceTabBar.local'),
+        detail: i18nT('components.instanceTabBar.local_dashboard'),
+        title: i18nT('components.instanceTabBar.local_dashboard'),
+        unread: 0,
+      },
+      ...host.tabs.map(t => ({
+        id: t.id,
+        name: t.name,
+        detail: t.sshHost,
+        title: `${t.name} (${t.sshHost}) — ${stateLabel(t.state)}`,
+        state: t.state,
+        connecting: t.state === 'connecting',
+        unread: t.unread,
+      })),
+    ]
+  }, [host])
   if (!host || host.tabs.length === 0) return null
   return (
-    <div className={barCls(variant)} role="tablist" aria-label={i18nT('components.instanceTabBar.instances')}>
-      <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <LocalTab active={host.activeId === null} onClick={onLocal} />
-        {host.tabs.map(t => (
-          <InstanceTab
-            key={t.id}
-            name={t.name}
-            title={`${t.name} (${t.sshHost})`}
-            state={t.state}
-            connecting={t.state === 'connecting'}
-            unread={t.unread}
-            active={host.activeId === t.id}
-            onClick={() => onSelect(t.id)}
-          />
-        ))}
-      </div>
+    <div
+      className={barCls(variant)}
+      role="group"
+      aria-label={i18nT('components.instanceTabBar.instances')}
+    >
+      <SwitcherMenu entries={entries} activeId={host.activeId} onSelect={onSelect} />
     </div>
   )
 }
@@ -213,31 +380,59 @@ export default function InstanceTabBar({
   // Memoize so the `[] ` fallback doesn't produce a fresh array identity on every
   // render, which would otherwise churn the `onSelectInstance` useCallback deps.
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data?.instances])
-  // A tab exists for every instance the user *intends* to be connected — i.e.
+  // An entry exists for every crew the user *intends* to be connected — i.e.
   // `was_connected` (sticky intent, cleared only on an explicit disconnect) or
   // one that is currently warm/live. Live `status.state` only drives the
-  // per-tab visual state, NOT whether the tab exists, so a tab survives a
+  // per-entry visual state, NOT whether the entry exists, so a crew survives a
   // gateway restart or a failed auto-reconnect (rendered with an error dot)
-  // instead of vanishing and forcing the user back to Settings → Instances.
-  const tabInstances = visibleInstanceTabs(instances, warm)
+  // instead of vanishing and forcing the user back to Settings → Remote Crew.
+  const tabInstances = useMemo(() => visibleInstanceTabs(instances, warm), [instances, warm])
 
   // Select-and-maybe-reconnect semantics live in the shared useSelectInstance
   // hook — the SAME unit the ⌘/Ctrl+digit chord uses (useInstanceShortcuts) —
   // so the click path and the keyboard path cannot drift apart.
   const { selectInstance, connectMutation } = useSelectInstance(instances)
 
-  const onSelectInstance = useCallback(
-    (id: string) => selectInstance(id),
-    [selectInstance],
+  const onSelect = useCallback((id: string | null) => selectInstance(id), [selectInstance])
+
+  const entries = useMemo<SwitcherEntry[]>(
+    () => [
+      {
+        id: null,
+        name: i18nT('components.instanceTabBar.local'),
+        detail: i18nT('components.instanceTabBar.local_dashboard'),
+        title: i18nT('components.instanceTabBar.local_dashboard'),
+        unread: 0,
+      },
+      ...tabInstances.map(inst => {
+        const st = inst.status?.state
+        // An SSM crew has no ssh_host: it is reached through its managed-instance
+        // target, so that is what names the machine on its row.
+        const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
+        return {
+          id: inst.id,
+          name: inst.name,
+          detail: target,
+          title: `${inst.name} (${target}) — ${stateLabel(st)}`,
+          state: st,
+          connecting:
+            (connectMutation.isPending && connectMutation.variables === inst.id) ||
+            st === 'connecting',
+          unread: unread[inst.id] || 0,
+        }
+      }),
+    ],
+    // `tabInstances` is derived per render; depending on it directly is what
+    // keeps the menu in step with a status poll.
+    [tabInstances, unread, connectMutation.isPending, connectMutation.variables],
   )
-  const onLocal = useCallback(() => selectInstance(null), [selectInstance])
 
   // Embedded panes render the parent-relayed switcher. Hooks above
   // still run unconditionally (rules-of-hooks); the instances poll is disabled
   // when embedded, so this is cheap.
   if (embedded) return <EmbeddedInstanceTabBar variant={variant} />
 
-  // Single-instance experience is unchanged: no bar until a remote instance is
+  // Single-crew experience is unchanged: no bar until a remote crew is
   // connected or remembered.
   if (disabled || tabInstances.length === 0) return null
 
@@ -279,27 +474,14 @@ export default function InstanceTabBar({
   }
 
   return (
-    <div className={barCls(variant)} style={style} role="tablist" aria-label={i18nT('components.instanceTabBar.instances')}>
-      <div className={`flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <LocalTab active={activeId === null} onClick={onLocal} />
-        {tabInstances.map(inst => {
-          const st = inst.status?.state
-          const isConnecting =
-            (connectMutation.isPending && connectMutation.variables === inst.id) ||
-            st === 'connecting'
-          return (
-            <InstanceTab
-              key={inst.id}
-              name={inst.name}
-              title={`${inst.name} (${inst.ssh_host}) — ${st || 'disconnected'}`}
-              state={st}
-              connecting={isConnecting}
-              unread={unread[inst.id] || 0}
-              active={activeId === inst.id}
-              onClick={() => onSelectInstance(inst.id)}
-            />
-          )
-        })}
+    <div
+      className={barCls(variant)}
+      style={style}
+      role="group"
+      aria-label={i18nT('components.instanceTabBar.instances')}
+    >
+      <div className={`flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
+        <SwitcherMenu entries={entries} activeId={activeId} onSelect={onSelect} />
       </div>
       {variant === 'strip' && activeInst && (
         <div className="flex items-center gap-1.5 shrink-0 pl-2 pr-1" title={tunnelTitle}>

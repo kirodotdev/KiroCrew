@@ -18,6 +18,12 @@ Matrix pinned here:
   config, not bypass);
 * governance ``sandbox.min_level`` floor + flag -> raises (the carve-out must
   not duck the floor);
+* governance floor + flag + NON-first-party spawn -> raises, and the refusal
+  names the policy rather than the flag the operator already set: the floor
+  outranks ``sandbox_allow_unsandboxed_exec`` because ``config.json`` is not
+  policy (issue #3162);
+* no floor + flag                               -> unchanged passthrough (the
+  population that relies on the opt-in keeps working byte-for-byte);
 * ``sandbox_allow_unsandboxed_exec=true``       -> identical with or without
   the flag (the opt-in remains a strict superset);
 * backend available + flag       -> normal sandbox wrap (flag is inert).
@@ -197,6 +203,126 @@ class TestCarveOutStillRaises:
         with patch("kiro_crew.sel.sel", return_value=MagicMock()):
             with pytest.raises(SandboxUnavailableError):
                 wrap_argv(_ARGV, mode="standard", first_party_fixed_argv=True)
+
+
+class TestGovernanceFloorOverridesTheOptIn:
+    """A ``sandbox.min_level`` floor outranks ``sandbox_allow_unsandboxed_exec``.
+
+    The floor already refused the *audited* first-party carve-out
+    (``TestCarveOutStillRaises.test_governance_floor_raises_despite_flag``) while
+    having no effect at all on the broad config opt-in, so pinning a floor
+    weakened the constrained path and left the unconstrained one alone. These
+    pin the corrected direction: on a governed host the config flag grants
+    nothing, because ``config.json`` is not policy (issue #3162).
+    """
+
+    @pytest.fixture
+    def governed(self, monkeypatch):
+        """A host whose policy pins the floor, with the opt-in ALSO set.
+
+        Patched at the SOURCE so both consumers of the shared read — the mode
+        clamp and the floor gate — agree about this host, matching
+        ``test_governance_floor_raises_despite_flag``.
+        """
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: True)
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_floor_ordinal",
+            lambda scope, **kwargs: "strict",
+        )
+
+    def test_governed_host_raises_even_though_the_opt_in_is_set(self, governed):
+        """THE FIX. Before this, these exact conditions returned bare argv."""
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as exc_info:
+                wrap_argv(_ARGV, mode="strict")
+        assert exc_info.value.kind == "no_backend"
+
+    def test_refusal_names_the_policy_not_the_missing_flag(self, governed):
+        """The operator HAS set the flag, so the old wording would misdirect.
+
+        ``allow_unsandboxed_exec is not set`` would send them to edit a config
+        key that is deliberately powerless here.
+        """
+        sel_instance = MagicMock()
+        with patch("kiro_crew.sel.sel", return_value=sel_instance):
+            with pytest.raises(SandboxUnavailableError) as exc_info:
+                wrap_argv(_ARGV, mode="strict")
+        message = str(exc_info.value)
+        assert "sandbox.min_level" in message
+        assert "governance policy forbids" in message
+        assert "allow_unsandboxed_exec is not set" not in message
+        # The audit trail must be able to distinguish a policy refusal from a
+        # plain missing-opt-in refusal.
+        error = sel_instance.log_tool_invocation.call_args.kwargs["error"]
+        assert "sandbox.min_level" in error
+        assert "overridden" in error
+
+    def test_ungoverned_host_with_the_opt_in_is_unchanged(self, monkeypatch):
+        """REGRESSION GUARD. Only governed hosts change; this is the population
+        that relies on the opt-in and must keep working byte-for-byte."""
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: True)
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            assert wrap_argv(_ARGV, mode="strict") == (_ARGV, None)
+
+    def test_governed_host_without_the_opt_in_keeps_its_original_message(
+        self, monkeypatch
+    ):
+        """A governed host that never set the flag is refused for the ordinary
+        reason, so the policy wording must not leak into that case."""
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_floor_ordinal",
+            lambda scope, **kwargs: "strict",
+        )
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as exc_info:
+                wrap_argv(_ARGV, mode="strict")
+        assert "allow_unsandboxed_exec is not set" in str(exc_info.value)
+
+    def test_a_floor_of_the_loosest_tier_does_not_deny(self, monkeypatch):
+        """REGRESSION GUARD. ``sandbox.min_level: off`` is a governed floor that
+        requires NOTHING — the loosest tier of ("off", "standard", "cc", "strict").
+
+        Testing the floor string for raw truthiness would read "no isolation
+        required" as "isolation mandatory": it would deny a spawn the operator
+        legitimately opted into, and tell them a floor of ``off`` forbids
+        unsandboxed execution. This population must be byte-for-byte unchanged.
+        """
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: True)
+        monkeypatch.setattr(
+            "kiro_crew.platform.governance_profiles.governance_floor_ordinal",
+            lambda scope, **kwargs: "off",
+        )
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            assert wrap_argv(_ARGV, mode="standard") == (_ARGV, None)
+
+    def test_every_tier_above_the_loosest_denies(self, monkeypatch):
+        """The tiers that DO mandate isolation all refuse, so the fix cannot be
+        satisfied by only the tier this change was written against."""
+        monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
+        monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: True)
+        for tier in ("standard", "cc", "strict"):
+            monkeypatch.setattr(
+                "kiro_crew.platform.governance_profiles.governance_floor_ordinal",
+                lambda scope, _tier=tier, **kwargs: _tier,
+            )
+            with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+                with pytest.raises(SandboxUnavailableError):
+                    wrap_argv(_ARGV, mode="standard")
+
+    def test_message_does_not_promise_that_built_in_spawns_keep_running(self, governed):
+        """A governed host withholds the first-party carve-out as well, so the
+        guidance must not tell an operator built-in tooling is unaffected."""
+        with patch("kiro_crew.sel.sel", return_value=MagicMock()):
+            with pytest.raises(SandboxUnavailableError) as exc_info:
+                wrap_argv(_ARGV, mode="strict")
+        message = str(exc_info.value)
+        assert "withholds the first-party carve-out" in message
+        assert "runs no agent subprocess" in message
 
 
 class TestFlagIsOtherwiseInert:

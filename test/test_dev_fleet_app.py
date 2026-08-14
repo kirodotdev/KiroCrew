@@ -286,6 +286,73 @@ async def test_remove_succeeds_when_oid_matches():
     assert result["ok"] is True
 
 
+# --- session bus graceful degradation ---
+@pytest.mark.asyncio
+async def test_remove_proceeds_when_session_bus_absent():
+    """When require_backend() raises PodBackendAbsent, removal proceeds."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+    from kiro_crew.pod.runtime import PodBackendAbsent
+
+    with patch.object(mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
+         patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
+         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
+         patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=1), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
+         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "require_backend", side_effect=PodBackendAbsent("no session bus")), \
+         patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
+         patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
+        result = await mod._worktree_remove("feat-x", force=False)
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_refuses_operational_pod_error():
+    """When require_backend() passes but active_names raises, removal is refused."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    with patch.object(mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
+         patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
+         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
+         patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=1), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
+         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "require_backend", return_value=None), \
+         patch.object(mod.rt, "active_names", side_effect=OSError("launchctl error")), \
+         patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
+        result = await mod._worktree_remove("feat-x", force=False)
+    assert result["ok"] is False
+    assert "cannot verify pod state" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_remove_still_fails_on_non_pod_exceptions():
+    """Non-PodError exceptions (e.g. OSError, TimeoutError) still refuse removal."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    with patch.object(mod, "_find_worktree", new_callable=AsyncMock,
+                      return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
+         patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
+         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
+         patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=1), \
+         patch.object(mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
+         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
+         patch.object(mod, "_load_cfg", return_value=object()), \
+         patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "require_backend", return_value=None), \
+         patch.object(mod.rt, "active_names", side_effect=OSError("disk on fire")), \
+         patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
+        result = await mod._worktree_remove("feat-x", force=False)
+    assert result["ok"] is False
+    assert "cannot verify pod state" in result["error"]
+
+
 # --- _upstream_remote fallback + override ---
 @pytest.mark.asyncio
 async def test_upstream_remote_fallback_to_origin():
@@ -845,6 +912,69 @@ async def test_fleet_includes_build_pending():
             patch.object(mod, "_build_pending", return_value=True):
         data = await mod._build_fleet()
     assert data["build_pending"] is True
+
+
+# --- provision_run_id exposed in fleet response (reattach after reload) ---
+def _fleet_patches(stack, worktrees):
+    """Patch the fleet-build collaborators shared by the provision-id tests."""
+    stack.enter_context(patch.object(
+        mod, "_discover_worktrees", new_callable=AsyncMock, return_value=worktrees))
+    stack.enter_context(patch.object(mod, "_git_info", new_callable=AsyncMock, return_value={
+        "branch": "b", "head": "abc1234", "dirty": False,
+        "ahead": 0, "behind": 0, "last_updated_at": None,
+    }))
+    stack.enter_context(patch.object(
+        mod, "_pr_status_cached", new_callable=AsyncMock, return_value=None))
+    stack.enter_context(patch.object(
+        mod, "_git_ahead", new_callable=AsyncMock, return_value=0))
+    stack.enter_context(patch.object(
+        mod, "_context_cached", new_callable=AsyncMock,
+        return_value={"issues": [], "tickets": [], "summary": None}))
+    stack.enter_context(patch.object(mod, "_load_cfg", return_value=None))
+    stack.enter_context(patch.object(mod, "_build_pending", return_value=False))
+    stack.enter_context(patch.object(mod, "_POD_IMPORTED", False))
+
+
+@pytest.mark.asyncio
+async def test_fleet_exposes_provision_run_id_for_running_and_failed_runs():
+    wts = [
+        {"path": "/fake/wt-running", "head": "abc1234", "branch": "f/run", "is_main": False},
+        {"path": "/fake/wt-failed", "head": "abc1234", "branch": "f/fail", "is_main": False},
+    ]
+    with patch.dict(mod._PROVISION_INFLIGHT, {
+        "wt-running": "rid-running", "wt-failed": "rid-failed",
+    }, clear=True), patch.dict(mod._RUNS, {
+        "rid-running": {"status": "running", "exit_code": None, "output": []},
+        "rid-failed": {"status": "done", "exit_code": 1, "output": []},
+    }, clear=True):
+        with ExitStack() as stack:
+            _fleet_patches(stack, wts)
+            data = await mod._build_fleet()
+    by_name = {w["name"]: w for w in data["worktrees"]}
+    assert by_name["wt-running"]["provision_run_id"] == "rid-running"
+    assert by_name["wt-failed"]["provision_run_id"] == "rid-failed"
+
+
+@pytest.mark.asyncio
+async def test_fleet_omits_provision_run_id_for_successful_and_evicted_runs():
+    wts = [
+        {"path": "/fake/wt-ok", "head": "abc1234", "branch": "f/ok", "is_main": False},
+        {"path": "/fake/wt-gone", "head": "abc1234", "branch": "f/gone", "is_main": False},
+        {"path": "/fake/main", "head": "abc1234", "branch": "main", "is_main": True},
+    ]
+    with patch.dict(mod._PROVISION_INFLIGHT, {
+        # Success: nothing to reattach — the fleet row shows the built state.
+        "wt-ok": "rid-ok",
+        # Evicted from the bounded run registry: output is unfetchable.
+        "wt-gone": "rid-gone",
+    }, clear=True), patch.dict(mod._RUNS, {
+        "rid-ok": {"status": "done", "exit_code": 0, "output": []},
+    }, clear=True):
+        with ExitStack() as stack:
+            _fleet_patches(stack, wts)
+            data = await mod._build_fleet()
+    for w in data["worktrees"]:
+        assert w["provision_run_id"] is None, w["name"]
 
 
 # --- SEL audit on mutations (Codex R17) ---
@@ -3671,6 +3801,102 @@ async def test_drivable_host_with_a_stage_pending_refuses(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 @_POSIX_ONLY
+async def test_stale_cancel_after_stage_completed_never_becomes_a_cutover(monkeypatch, tmp_path):
+    """The destructive variant of the two-tab race.
+
+    Stage B COMPLETES while tab A's cancel dialog is open: nothing is staged
+    any more and B is live. Tab A's stale POST names checkout A (which was
+    live) — without the entry gate it would fall past both cancel branches
+    into the FULL CUTOVER path and restart the gateway back into A. A request
+    carrying expected_staged must refuse (stage_changed) the moment the stage
+    it names is gone, whatever branch it would otherwise reach.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    # Complete the staged cutover: `other` is the running checkout now and the
+    # pointer agrees with it, so nothing is staged (and the live path resolves
+    # to `other` for the same_as_running branch below the gate).
+    monkeypatch.setattr(mod, "_running_checkout", lambda: other)
+    monkeypatch.setattr(mod, "_live_worktree_path",
+                        AsyncMock(return_value=str(other)))
+    assert mod._staged_target() is None
+
+    res = await mod._make_live(str(running), expected_staged=str(other))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "stage_changed", res
+    assert "nothing is staged now" in res["error"]
+    # Crucially: no cutover side effects — no service definition written and
+    # the pointer still names the completed target.
+    assert not mod._dropin_path().exists()
+    assert mod.live_target.read_target() == other.resolve()
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_stale_cancel_refuses_when_the_live_checkout_moved(monkeypatch, tmp_path):
+    """The other stale-cancel variant: the LIVE side moved.
+
+    A cancel re-pins the checkout the operator saw as live. If a cutover to C
+    landed and a new stage appeared while the dialog sat open, the stale
+    request's path names a checkout that is no longer running — matching the
+    (re-created) stage alone would let it fall through to the cutover path
+    and restart the gateway into the old checkout. The live binding refuses.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    # The gateway moved to a third checkout; the SAME stage happens to exist.
+    third = _mk_make_live_wt(tmp_path / "third", venv=True, dist=True)
+    monkeypatch.setattr(mod, "_running_checkout", lambda: third)
+    monkeypatch.setattr(mod, "_live_worktree_path",
+                        AsyncMock(return_value=str(third)))
+    assert mod._staged_target() == str(other)
+
+    res = await mod._make_live(str(running), expected_staged=str(other))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "stage_changed", res
+    assert "live checkout changed" in res["error"]
+    # No cutover side effects: nothing written, the stage survives.
+    assert not mod._dropin_path().exists()
+    assert mod._staged_target() == str(other)
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_cancel_refuses_when_the_stage_changed_since_confirm(monkeypatch, tmp_path):
+    """A cancel is bound to the stage the operator confirmed.
+
+    Two dashboards race: tab A opens the cancel dialog against stage A, tab B
+    cancels A and stages B, tab A submits. Without the binding the POST names
+    only the live checkout, so it would discard stage B — a stage tab A's
+    operator never saw. With ``expected_staged`` the backend refuses instead.
+    """
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+    confirmed_against = tmp_path / "some-older-stage"
+
+    res = await mod._make_live(str(running),
+                               expected_staged=str(confirmed_against))
+
+    assert res.get("ok") is False, res
+    assert res.get("code") == "stage_changed", res
+    # The current stage survives untouched, and the message names both sides.
+    assert mod._staged_target() == str(other)
+    assert other.name in res["error"]
+    assert confirmed_against.name in res["error"]
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_cancel_with_matching_expected_stage_proceeds(monkeypatch, tmp_path):
+    running, other, ptr = _stage_a_cutover(monkeypatch, tmp_path)
+
+    res = await mod._make_live(str(running), expected_staged=str(other))
+
+    assert res.get("cancelled") is True, res
+    assert mod._staged_target() is None
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_cancel_keeps_a_pointer_selected_checkout_live(monkeypatch, tmp_path):
     """The scenario that makes deletion wrong.
 
@@ -5017,6 +5243,60 @@ async def test_fleet_payload_reports_no_reason_when_pods_work():
     assert fleet["pods_unavailable_reason"] is None
 
 
+# =============================================================================
+# staged_cancel_available: the payload must mirror the _make_live cancel
+# branch's own precondition (not can_restart), NOT _gateway_service_active
+# (which also goes true for the foreground last resort, where the pointer-only
+# cancel still works). Otherwise the dashboard offers a cancel that /make-live
+# refuses with staged_cutover_pending.
+# =============================================================================
+@pytest.mark.asyncio
+async def test_staged_cancel_available_truth_table():
+    # No service backend at all: nothing to drive, cancel accepted.
+    with patch.object(mod, "_gateway_backend", return_value=None):
+        assert await mod._staged_cancel_available() is True
+    # Drivable manager (unit status ok): _make_live refuses the pointer-only
+    # cancel, so the payload must say unavailable.
+    with patch.object(mod, "_gateway_backend", return_value=object()), \
+         patch.object(mod, "_live_user_unit_status",
+                      new_callable=AsyncMock, return_value="ok"):
+        assert await mod._staged_cancel_available() is False
+    # Manager present but not drivable (e.g. system unit): cancel accepted —
+    # including the foreground-eligible codes, where _gateway_service_active
+    # would report True but can_restart stays False.
+    with patch.object(mod, "_gateway_backend", return_value=object()), \
+         patch.object(mod, "_live_user_unit_status",
+                      new_callable=AsyncMock, return_value="no_user_unit"):
+        assert await mod._staged_cancel_available() is True
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_reports_staged_cancel_available_with_stage():
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _load_cfg=lambda: None,
+        _staged_target=lambda: "/w/other",
+        _staged_cancel_available=AsyncMock(return_value=True),
+    )
+    assert fleet["staged_cancel_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_staged_cancel_false_without_stage():
+    """No stage pending: the field is False and the host is NOT probed — the
+    fleet endpoint is polled, so an unconditional service-manager probe would
+    add a subprocess per poll for a control that cannot render anyway."""
+    probe = AsyncMock(return_value=True)
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _load_cfg=lambda: None,
+        _staged_target=lambda: None,
+        _staged_cancel_available=probe,
+    )
+    assert fleet["staged_cancel_available"] is False
+    probe.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_build_state_is_reported_even_where_pods_cannot_run(tmp_path):
     """Regression: has_venv/has_dist sat behind the pod-runnable gate, so every
@@ -5510,6 +5790,7 @@ async def test_worktree_remove_refuses_when_pod_reactivates_before_mutation(rese
          patch.object(mod, "_git", new_callable=AsyncMock, return_value="a" * 40), \
          patch.object(mod, "_load_cfg", return_value=object()), \
          patch.object(mod, "_POD_AVAILABLE", True), \
+         patch.object(mod.rt, "require_backend", return_value=None), \
          patch.object(mod.rt, "active_names", side_effect=lambda cfg: next(active_calls)), \
          patch.object(mod, "_run_cmd", side_effect=fake_run_cmd):
         res = await mod._worktree_remove("wt-1", force=False)

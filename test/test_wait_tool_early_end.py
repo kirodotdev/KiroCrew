@@ -35,11 +35,11 @@ class _Clock:
     satisfy the check.
 
     Additionally, the clock checks the *immediate caller's module* to
-    distinguish calls originating from the code-under-test (``mcp_core``) from
-    infrastructure calls that happen to share the same thread (e.g.
-    pytest-xdist worker heartbeats that issue process-global
+    distinguish calls originating from the code-under-test (the ``kirocrew-core``
+    MCP server) from infrastructure calls that happen to share the same thread
+    (e.g. pytest-xdist worker heartbeats that issue process-global
     ``time.sleep(0.001)`` between test iterations). Only calls whose immediate
-    caller resides in ``mcp_core`` advance the fake timeline; all others fall
+    caller resides in that server advance the fake timeline; all others fall
     through to the real implementation.
     """
 
@@ -54,22 +54,28 @@ class _Clock:
         self._real_sleep = _time.sleep
 
     @staticmethod
-    def _caller_is_mcp_core() -> bool:
-        """True when the immediate caller of sleep/monotonic is mcp_core."""
+    def _caller_is_code_under_test() -> bool:
+        """True when the immediate caller of sleep/monotonic is the core server.
+
+        Matches the whole server rather than one file: the ``wait`` handler lives
+        in ``mcp_tools/control.py`` while the plumbing it calls stays in
+        ``mcp_core.py``. Keying on a single module name would silently stop
+        advancing the fake timeline and leave the loop sleeping for real.
+        """
         import sys
 
         # frame 0 = this method, frame 1 = sleep/monotonic, frame 2 = actual caller
         frame = sys._getframe(2)
         filename = frame.f_code.co_filename
-        return "mcp_core" in filename
+        return "mcp_core" in filename or "mcp_tools" in filename
 
     def monotonic(self) -> float:
-        if threading.current_thread() is not self._owner or not self._caller_is_mcp_core():
+        if threading.current_thread() is not self._owner or not self._caller_is_code_under_test():
             return self._real_monotonic()
         return self.t
 
     def sleep(self, secs: float) -> None:
-        if threading.current_thread() is not self._owner or not self._caller_is_mcp_core():
+        if threading.current_thread() is not self._owner or not self._caller_is_code_under_test():
             self._real_sleep(secs)
             return
         self.t += max(0.0, float(secs))

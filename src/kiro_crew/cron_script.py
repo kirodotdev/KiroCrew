@@ -11,7 +11,7 @@ Usage:
     from kiro_crew.cron_script import Skip, Done
 
     def run(ctx):
-        data = ctx.call_tool("kirocrew-core", "browse_search", {"query": "..."})
+        data = ctx.call_tool("kirocrew-core", "local_knowledge_search", {"query": "..."})
         if not ready(data):
             raise Skip()  # silent, retry next tick
         ctx.notify("Done: " + summary)

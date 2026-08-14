@@ -67,10 +67,11 @@ ENV_FILE="$ACTIVE_HOME/.env"
 
 # ── 1. Credential sync: env -> .env file, then scrub ─────────────────────
 # Keys mirror the product's credential key list (config/loader.py
-# _CREDENTIAL_KEYS). Replace-or-append line-wise so operator-added lines
-# and comments in .env survive; grep -v (not sed) avoids escaping issues
-# with arbitrary secret bytes.
-CRED_KEYS="SLACK_BOT_TOKEN SLACK_APP_TOKEN KIROCREW_OWNER_ID DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN WECOM_BOT_ID WECOM_SECRET WEBEX_BOT_TOKEN"
+# _CREDENTIAL_KEYS) — a sync test pins the two lists to set equality, so a
+# key added to one without the other fails CI. Replace-or-append line-wise so
+# operator-added lines and comments in .env survive; grep -v (not sed) avoids
+# escaping issues with arbitrary secret bytes.
+CRED_KEYS="SLACK_BOT_TOKEN SLACK_APP_TOKEN KIROCREW_OWNER_ID DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN WECOM_BOT_ID WECOM_SECRET WEBEX_BOT_TOKEN MICROSOFT_APP_ID MICROSOFT_APP_PASSWORD MICROSOFT_APP_TENANT_ID WEIXIN_TOKEN KIRO_API_KEY"
 for KEY in $CRED_KEYS; do
     VAL=$(eval "printf '%s' \"\${$KEY:-}\"")
     if [ -n "$VAL" ]; then

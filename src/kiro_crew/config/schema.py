@@ -162,21 +162,30 @@ def _build_field_schema(
     enum_values: list | None = meta.get("enum", None)
 
     tp: type = resolved_type if resolved_type is not None else str
+    # A field annotated ``X | None`` / ``Optional[X]`` maps to its base type
+    # plus ``"null"``. Without the unwrap, the union itself reaches
+    # ``_python_type_to_json`` and falls through to ``"string"`` with
+    # ``nullable=False`` — making "unset means inherit the downstream default"
+    # unexpressible for numeric fields. The ``nullable`` metadata flag remains
+    # the way to allow ``null`` on a field whose annotation is non-optional
+    # (disable-sentinel fields the loader normalizes, e.g.
+    # session.archive_retention_days: null → "disable cleanup").
+    tp, annotation_nullable = _optional_inner(tp)
+    nullable = annotation_nullable or bool(meta.get("nullable"))
     schema: dict = {}
 
     if _is_dataclass_type(tp):
         # Nested dataclass → recurse
         schema = _build_object_schema(tp)
+        if nullable:
+            schema["type"] = ["object", "null"]
     else:
         json_type = _python_type_to_json(tp)
-        # A field marked ``nullable`` in its metadata accepts JSON ``null`` in
-        # addition to its base type. Needed for disable-sentinel fields where
-        # ``null`` is a meaningful value the loader normalizes (e.g.
-        # session.archive_retention_days: null → "disable cleanup").
-        # Without this the generated schema is ``{"type": "integer"}`` and
-        # jsonschema strips the null on any host where jsonschema is installed
-        # (incl. prod), silently reverting to the default — the opposite intent.
-        if meta.get("nullable"):
+        # Emitting the plain single-type form when the field is not nullable
+        # matters: a ``["integer", "null"]`` schema lets jsonschema accept a
+        # null the loader would otherwise strip, silently reverting the field
+        # to its default — the opposite of the sentinel intent.
+        if nullable:
             schema["type"] = [json_type, "null"]
         else:
             schema["type"] = json_type
@@ -200,6 +209,16 @@ def _build_field_schema(
                 }
             else:
                 schema["additionalProperties"] = True
+            # A plain-dict field may DECLARE known sub-keys via
+            # ``_meta(..., properties={...})`` (JSON-Schema property nodes with
+            # their own x-meta). They flatten into first-class ConfigEntry
+            # paths — which is what lets a Settings control carry a configKey
+            # for a key inside a dict field — while additionalProperties above
+            # keeps every undeclared key valid, so declaring some keys never
+            # invalidates the rest of the dict.
+            declared_props = meta.get("properties")
+            if isinstance(declared_props, dict) and declared_props:
+                schema["properties"] = declared_props
 
     default = _default_for_field(f)
     if default is not None:

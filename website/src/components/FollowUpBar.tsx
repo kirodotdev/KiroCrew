@@ -6,7 +6,7 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
   options: string[]
-  picked: Set<string>
+  picked: ReadonlySet<string>
   onSelect: (option: string, event: React.MouseEvent) => void
   /** Double-click sends with this option's text directly (bypasses setInput race). */
   onSend?: (text?: string) => void
@@ -15,23 +15,82 @@ interface FollowUpBarProps {
   layout?: FollowUpLayout
 }
 
-function chipClassName(isPicked: boolean, extra: string = '') {
-  return `${extra} px-3 py-1.5 rounded-lg text-[13px] cursor-pointer transition-all border ${
-    isPicked
-      ? 'border-solid border-accent/50 text-accent bg-accent-subtle'
-      : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg-elevated'
-  }`
+/**
+ * Option labels are full user-voice instructions and can run to several
+ * hundred characters. Left unbounded they size to max-content: in the scroll
+ * layout (chips are `shrink-0`) one long option consumed the whole strip and
+ * the tail of its text sat outside the visible box, so it read as a single
+ * clipped pill with no other option in view. `followup-chip` (index.css) caps
+ * the width at roughly half the default composer, and the label wraps onto two
+ * clamped lines — the truncation is then explicit (ellipsis) instead of an
+ * invisible overflow.
+ */
+const CHIP_MAX_WIDTH = 'followup-chip'
+
+// Shape/typography shared by every chip body; the rounding and the flex sizing
+// (cap + shrink vs grow) are the only things that differ between a standalone
+// chip and the main button of a split-button, so they are supplied per-call
+// rather than baked in — see `splitMainChipClassName`.
+const CHIP_BASE = 'px-3 py-1.5 text-[13px] text-left leading-snug cursor-pointer transition-all border'
+
+function chipColors(isPicked: boolean) {
+  return isPicked
+    ? 'border-solid border-accent/50 text-accent bg-accent-subtle'
+    : 'border-border text-muted hover:text-text hover:border-accent/40 bg-bg-elevated'
+}
+
+/** Standalone chip: the flex item itself, so it owns the width cap (and, in the
+ *  scroll layout, `shrink-0` so it does not collapse). Fully rounded. */
+function chipClassName(isPicked: boolean, { shrink0 = false }: { shrink0?: boolean } = {}) {
+  return `${shrink0 ? 'shrink-0 ' : ''}${CHIP_MAX_WIDTH} ${CHIP_BASE} rounded-lg ${chipColors(isPicked)}`
+}
+
+/** Main button INSIDE a split-button wrapper. The WRAPPER is the flex item that
+ *  carries the cap + `shrink-0`, so this button must flex to fill it and be
+ *  allowed to shrink (`flex-1 min-w-0`) — otherwise it claims the wrapper's full
+ *  width and the send segment overflows the wrapper box onto the next chip. Only
+ *  the left corners round (the send segment rounds the right). Built from the
+ *  shared fragments directly, never by string-surgery on `chipClassName`, so a
+ *  future utility whose name merely contains `shrink-0`/`followup-chip`/`rounded-lg`
+ *  cannot silently rewrite the wrong token and reintroduce the overlap. */
+function splitMainChipClassName(isPicked: boolean) {
+  return `flex-1 min-w-0 ${CHIP_BASE} rounded-l-lg ${chipColors(isPicked)}`
+}
+
+/**
+ * The two-line clamp lives on an unpadded inner element on purpose:
+ * `-webkit-line-clamp` clips at the padding edge, so clamping the padded
+ * button itself leaves a sliver of the third line visible inside its bottom
+ * padding.
+ */
+function ChipLabel({ option }: { option: string }) {
+  return <span className="line-clamp-2 break-words">{option}</span>
+}
+
+/**
+ * Length above which a label is likely clamped. Past it the hover tooltip
+ * carries the full option text instead of the click hint — an unreadable label
+ * is the more pressing gap, and the gesture hint is still shown on every short
+ * chip and on the send segment. The DOM keeps the whole string either way, so
+ * the accessible name is never truncated.
+ */
+const LONG_LABEL_CHARS = 60
+
+function chipTooltip(option: string, hint: string) {
+  return option.length > LONG_LABEL_CHARS ? option : hint
 }
 /** Right-hand "send now" segment class — same palette as the chip body, divided by a border. */
 function sendSegmentClassName(isPicked: boolean) {
-  return `px-1.5 py-1.5 rounded-r-lg cursor-pointer transition-all border border-l-0 ${
+  // inline-flex + items-center keeps the arrow vertically centred when the
+  // chip body wraps onto a second line.
+  return `inline-flex items-center shrink-0 px-1.5 py-1.5 rounded-r-lg cursor-pointer transition-all border border-l-0 ${
     isPicked
       ? 'border-solid border-accent/50 text-accent bg-accent-subtle hover:bg-accent/20'
       : 'border-border text-muted hover:text-accent hover:border-accent/40 bg-bg-elevated'
   }`
 }
 
-function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Set<string>, hasOnSend: boolean) {
+function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: ReadonlySet<string>, hasOnSend: boolean) {
   if (isPicked) {
     return hasOnSend
       ? i18nT('components.followUpBar.click_to_remove_from_input_double_click_to_send')
@@ -47,7 +106,7 @@ function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Se
 interface ChipProps {
   option: string
   isPicked: boolean
-  picked: Set<string>
+  picked: ReadonlySet<string>
   quickSend: boolean | undefined
   onSelect: (option: string, event: React.MouseEvent) => void
   onSend?: (text?: string) => void
@@ -68,7 +127,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
   const useDebouncedClick = !!onSend && !(quickSend && !isPicked && picked.size === 0)
-  const title = chipTitle(isPicked, quickSend, picked, !!onSend)
+  const title = chipTooltip(option, chipTitle(isPicked, quickSend, picked, !!onSend))
   // The visible "send now" segment is the discoverable form of the existing
   // double-click-to-send gesture. Redundant (and hidden) in the quickSend
   // instant-send state, where a single click on an unpicked chip already
@@ -85,7 +144,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
         className={className}
         title={title}
       >
-        {option}
+        <ChipLabel option={option} />
       </button>
     )
   }
@@ -111,6 +170,12 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
     onSend?.(isPicked ? undefined : option)
   }
 
+  // Inside the split-button wrapper the WRAPPER (below) is the capped, shrink-0
+  // flex item; the button flexes to fill it (see splitMainChipClassName). The
+  // plain-button path (no send segment) is the standalone chip, so it keeps the
+  // passed-in `className` (cap + rounding + per-layout shrink) unchanged.
+  const mainChipClassName = showSendSegment ? splitMainChipClassName(isPicked) : className
+
   const mainChip = (
     <button
       type="button"
@@ -121,17 +186,23 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       onMouseDown={(e) => e.preventDefault()}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
-      className={showSendSegment ? className.replace('rounded-lg', 'rounded-l-lg') : className}
+      className={mainChipClassName}
       title={title}
     >
-      {option}
+      <ChipLabel option={option} />
     </button>
   )
 
   if (!showSendSegment) return mainChip
 
   return (
-    <span className="inline-flex items-stretch shrink-0">
+    // The cap is repeated on the wrapper because the wrapper — not the button —
+    // is the flex item here. Without it the wrapper's flex base size is the
+    // label's untruncated max-content width (the button's percentage max-width
+    // cannot resolve against an indefinite wrapper), leaving a wide empty gap
+    // before the next chip. On the flex item the percentage resolves against
+    // the strip's definite width.
+    <span className={`inline-flex items-stretch shrink-0 ${CHIP_MAX_WIDTH}`}>
       {mainChip}
       <button
         type="button"
@@ -235,7 +306,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
               quickSend={quickSend}
               onSelect={onSelect}
               onSend={onSend}
-              className={chipClassName(isPicked, 'shrink-0')}
+              className={chipClassName(isPicked, { shrink0: true })}
             />
           )
         })}

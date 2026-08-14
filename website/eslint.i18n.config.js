@@ -206,6 +206,23 @@ export default [
       // module parser-facing only, and keep it DOM-free, which is the property
       // that makes that easy to check.
       'src/hooks/themeCss.ts',
+      // The Kiro-ghost avatar generator's art tables. Every literal in the module
+      // is SVG handed to the SVG parser: the shipped mark's `d` path data, the
+      // per-part fragments built from it, and the hex tile colors. Translating any
+      // of them would not change a word anyone reads — it would emit a malformed
+      // path and render a blank avatar.
+      //
+      // Verified copy-free rather than assumed, and by a MECHANICAL boundary: the
+      // module's only import is a TYPE from `@dicebear/core`, it imports no `i18nT`
+      // / `useTranslation`, and it does not touch the DOM — every export is data in,
+      // SVG `string` out. Its consumer `components/CrewAvatar.tsx` stays fully
+      // gated, and that component renders the avatar `alt=""` / `aria-hidden`
+      // precisely because the crew name is shown as real translated text beside it.
+      //
+      // Stated as a false-negative class, per this file's convention: any
+      // user-visible copy ever added to THIS path will not be reported — keep the
+      // module parser-facing only, and keep it DOM-free.
+      'src/lib/kiroGhostAvatar.ts',
       // Same rationale, different convention: this app keeps its seed prompts in a
       // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
       // payload sent over the wire, never rendered.
@@ -933,6 +950,20 @@ export default [
   // any copy later added here belongs in the catalog, not behind this exemption.
   {
     files: ['src/components/Strands.tsx'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // PROTOCOL VALUES ONLY, same category as `wireValues.ts` above: the two
+  // Aperture-registered literals for the session-pulse survey (a radio
+  // question's response values, and the question text itself). Both are
+  // compared/sent by value against Aperture's registered form template
+  // (category=KiroCrew, name=SessionFeedback, version=1.0.1) — ingestion  // brand-ok: registered category id
+  // 400s on any text/type mismatch, so translating either would break the
+  // submission rather than localize it. See the module's own header.
+  {
+    files: ['src/components/sessionPulseWireValues.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

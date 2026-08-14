@@ -30,6 +30,8 @@ const mcpApply = vi.fn()
 const mcpCustomAdd = vi.fn()
 const mcpCustomUpdate = vi.fn()
 const mcpOAuthRelay = vi.fn()
+const connectionsMint = vi.fn()
+const connectionsMintState = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
@@ -39,6 +41,8 @@ vi.mock('../api/client', () => ({
     mcpCustomAdd: (...a: unknown[]) => mcpCustomAdd(...a),
     mcpCustomUpdate: (...a: unknown[]) => mcpCustomUpdate(...a),
     mcpOAuthRelay: (...a: unknown[]) => mcpOAuthRelay(...a),
+    connectionsMint: (...a: unknown[]) => connectionsMint(...a),
+    connectionsMintState: (...a: unknown[]) => connectionsMintState(...a),
   },
 }))
 
@@ -114,6 +118,12 @@ beforeEach(() => {
   mcpCustomAdd.mockReset().mockResolvedValue({ ok: true, added: [], enabled: true })
   mcpCustomUpdate.mockReset().mockResolvedValue({ ok: true, name: 'notion' })
   mcpOAuthRelay.mockReset().mockResolvedValue({ ok: true })
+  connectionsMint.mockReset().mockResolvedValue({
+    ok: true, slug: 'notion', state: 'minting', token: 'tok1',
+  })
+  connectionsMintState.mockReset().mockResolvedValue({
+    slug: 'notion', state: 'minting', token: 'tok1',
+  })
 })
 
 describe('the held-back gallery', () => {
@@ -416,15 +426,114 @@ describe('connecting a new provider', () => {
     expect(screen.getByText('Finish approving in your browser…')).toBeInTheDocument()
   })
 
-  it('reports an install failure on the card', async () => {
-    mcpCustomAdd.mockRejectedValue(new Error('name already taken'))
+  it('asks for the approval URL instead of waiting for one', async () => {
     mount()
 
     fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Action failed: name already taken')
-    expect(card('notion')).toHaveAttribute('data-state', 'not-connected')
+    // Ordered after the install: the mint activates a spec derived from the entry.
+    await waitFor(() => expect(connectionsMint).toHaveBeenCalledWith('notion'))
+    expect(mcpCustomAdd).toHaveBeenCalled()
   })
+
+  it('renders the minted approval link once the mint is waiting', async () => {
+    const minted = 'https://mcp.notion.com/authorize?state=minted'
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'waiting', oauth_url: minted })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    const link = await waitFor(() =>
+      within(card('notion')).getByRole('link', { name: /Re-open approval/ }),
+    )
+    expect(link).toHaveAttribute('href', minted)
+  })
+
+  it('offers no link while the mint has not produced one', async () => {
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'minting' })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+    expect(within(card('notion')).queryByRole('link', { name: /Re-open approval/ })).toBeNull()
+  })
+
+  it('never enters the waiting state when the mint request is rejected', async () => {
+    connectionsMint.mockRejectedValue(new Error('mint refused'))
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+
+    // A suppressed rejection left the card spinning on a mint that was never
+    // started; the failure has to reach the card's error surface instead.
+    await waitFor(() => expect(screen.getByText(/mint refused/)).toBeInTheDocument())
+    expect(card('notion')).not.toHaveAttribute('data-state', 'waiting-for-approval')
+  })
+
+  it.each(['failed', 'expired'] as const)('stops waiting when the mint reports %s', async state => {
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'minting' })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state, reason: 'mint_timeouterror' })
+
+    // Terminal means no URL is coming: the spinner must not outlive the mint.
+    await waitFor(
+      () => expect(card('notion')).not.toHaveAttribute('data-state', 'waiting-for-approval'),
+      { timeout: 8000 },
+    )
+  }, 15000)
+
+  it('probes for fresh status when the mint reports granted', async () => {
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'minting' })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+    mcpProbe.mockClear()
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'granted' })
+
+    // The cached status predates consent; without a re-probe the card keeps its
+    // pre-consent error after authorization succeeded.
+    await waitFor(() => expect(mcpProbe).toHaveBeenCalled(), { timeout: 8000 })
+  }, 15000)
+
+  it('clears the wait on an expired mint and keeps the entry', async () => {
+    let installed = false
+    const installedList = () => (installed ? [server({ status: 'unknown' })] : [])
+    mcpCustomAdd.mockImplementation(async () => {
+      installed = true
+      return { ok: true, added: ['notion'], enabled: true }
+    })
+    mcpServers.mockImplementation(async () => installedList())
+    mcpProbe.mockImplementation(async () => installedList())
+    connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 'aaa' })
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'minting', token: 'aaa' })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Connect' })))
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'waiting-for-approval'))
+
+    mcpApply.mockClear()
+    const callsAtFlip = connectionsMintState.mock.calls.length
+    connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'expired', token: 'aaa' })
+
+    // Wait for the feed to deliver the expired row. Exactly one delivery is what
+    // the effect needs -- and all it will get, since clearing the wait disables
+    // the query.
+    await waitFor(
+      () => expect(connectionsMintState.mock.calls.length).toBeGreaterThan(callsAtFlip),
+      { timeout: 8000 },
+    )
+
+    // Nothing deletes configuration on a timeout: the entry stays so the user can
+    // retry with Connect or remove it with Disconnect.
+    expect(mcpApply).not.toHaveBeenCalledWith([{ name: 'notion', uninstall: true }])
+    expect(installed).toBe(true)
+  }, 15000)
 
   it('shows the connecting label while the install is in flight', async () => {
     const pending = deferred<{ ok: boolean }>()

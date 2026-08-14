@@ -103,6 +103,7 @@ export function ContextMenu({ x, y, items, reportHitbox, onAction, onClose }: Pr
       {reportHitbox ? (
         <div
           className="cc-menu-backdrop"
+          role="presentation"
           onMouseDown={onClose}
           style={{
             // A transparent, full-viewport catcher that sits just UNDER the menu.

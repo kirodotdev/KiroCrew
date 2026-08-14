@@ -19,6 +19,7 @@ import {
   TAILWIND_RUNTIME_PATH,
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
+import { precompressPlugin } from './scripts/precompress.mjs'
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -392,7 +393,7 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -452,6 +453,25 @@ export default defineConfig({
           disableJavaScriptFileLoading: true,
           disableJavaScriptEvaluation: true,
           disableCSSFileLoading: true,
+          // Resolve a declined resource load as a silent success instead of
+          // rejecting with a NotSupportedError. happy-dom runs the load
+          // asynchronously on DOM insertion, so that rejection is orphaned —
+          // it escapes the test that inserted the node and vitest counts it as
+          // a run-level unhandled error, failing the whole shard even when every
+          // assertion passed. We assert the serialized DOM, never the sandboxed
+          // widget runtime, so a no-op success preserves the contract under test.
+          handleDisabledFileLoadingAsSuccess: true,
+          // Never follow a link or form navigation over the network. An
+          // un-intercepted `<a href>` click — e.g. an artifact anchor a test
+          // clicks with no onArtifactOpen handler — otherwise makes happy-dom
+          // dial the document origin for real; that fetch outlives the test and
+          // its ECONNREFUSED lands after msw teardown as another orphaned
+          // rejection. Disabling navigation still falls back to setting the URL
+          // (no dial), so tests that read location after a click keep working.
+          navigation: {
+            disableMainFrameNavigation: true,
+            disableChildFrameNavigation: true,
+          },
         },
       },
     },
@@ -469,8 +489,8 @@ export default defineConfig({
     // ceiling that fails a genuine leak loudly instead of dragging the host down.
     // (Vitest 4 pool rework: these are top-level, not poolOptions; minWorkers
     // was removed — only maxWorkers has effect.)
-    maxWorkers: 4,
-    execArgv: ['--max-old-space-size=4096'],
+    maxWorkers: 2,
+    execArgv: ['--max-old-space-size=3072'],
     // Default 5s is too tight for tests that ``await import(...)`` inside the
     // body: under a full concurrent forks run the collect phase can starve the
     // dynamic import past 5s and it times out. 15s gives headroom for

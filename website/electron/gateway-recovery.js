@@ -15,26 +15,52 @@
 // a terminal error dialog that QUIT the app on any button — including Retry (the
 // perceived "crash on Retry" on network change).
 //
-// This helper is the single source of truth for that fork: given whether we own
-// the gateway, return which recovery strategy to run. Keeping it pure means the
-// ownership rule is covered by tests independently of the Electron plumbing.
+// This helper is the single source of truth for that fork: given how the
+// gateway was obtained (the launcher's single ownership state), return which
+// recovery strategy to run. Keeping it pure means the ownership rule is covered
+// by tests independently of the Electron plumbing.
+
+// The launcher's gateway-ownership vocabulary (main.js keeps exactly one of
+// these in a single module-level state; see GATEWAY_OWNERSHIP_STATES):
+//   "none"           — no gateway yet, or an adopted holder that could NOT be
+//                      positively identified as local (tunnel / external).
+//   "spawned"        — this app spawned the bundled backend on this port.
+//   "reused-local"   — adopted a local same-family Kiro Crew process.
+//   "reused-service" — like reused-local, but the holder was SERVICE-classified.
+const GATEWAY_OWNERSHIP_STATES = Object.freeze(["none", "spawned", "reused-local", "reused-service"]);
+
+/**
+ * Classify an adopted (reuse-path) gateway into the ownership vocabulary.
+ * Positive identification requires BOTH a same-family health answer and a
+ * local LISTEN owner ("kirocrew"/"service"); anything less (tunnel, no visible
+ * owner, probe failure) stays "none" — the never-kill/never-respawn external
+ * classification. Pure so the classification rule is unit-testable without
+ * Electron.
+ *
+ * @param {object} o
+ * @param {string} o.reason      the reuse decision's reason (from
+ *                               decideGatewayAction); only "same-family" is a
+ *                               positive family identification.
+ * @param {string} o.localOwner  the LISTEN-owner classification for the port
+ *                               ("kirocrew" | "service" | "other" | "none" | …).
+ * @returns {"reused-service" | "reused-local" | "none"}
+ */
+function classifyAdoptedGateway({ reason, localOwner }) {
+  const local = reason === "same-family" && (localOwner === "kirocrew" || localOwner === "service");
+  if (!local) return "none";
+  return localOwner === "service" ? "reused-service" : "reused-local";
+}
 
 /**
  * Decide how to recover an unresponsive gateway.
  *
  * @param {object} o
- * @param {boolean} o.weSpawnedGateway  true only when this app spawned the
- *                                       bundled backend on this port (spawn
- *                                       path). false on the reuse path — a
- *                                       gateway was already answering at boot
- *                                       (remote tunnel or external gateway).
- * @param {boolean} [o.reusedLocalGateway=false]  true only when the reuse
- *                                       decision positively identified the
- *                                       port-holder as a LOCAL same-family
- *                                       Kiro Crew process (localOwner
- *                                       "kirocrew"/"service" + same-family
- *                                       health). A tunnel or an unidentified
- *                                       holder never sets this.
+ * @param {string} o.gatewayOwnership  one of GATEWAY_OWNERSHIP_STATES: how the
+ *                                     gateway on this port was obtained.
+ *                                     "spawned" is the only owned state; the
+ *                                     reused-* states are adopted local
+ *                                     gateways; "none" (or anything
+ *                                     unrecognized) is external/unknown.
  * @returns {"respawn" | "reconnect-bounded" | "reconnect"}
  *   "respawn"   — we own the child: kill the wedged tree, free the port, spawn a
  *                 fresh backend, re-run the boot flow.
@@ -50,9 +76,12 @@
  *                 tunnel heals, then reconnect (re-fetching a token, since the
  *                 drop likely invalidated the old one).
  */
-function chooseRecoveryStrategy({ weSpawnedGateway, reusedLocalGateway = false }) {
-  if (weSpawnedGateway) return "respawn";
-  if (reusedLocalGateway) return "reconnect-bounded";
+function chooseRecoveryStrategy({ gatewayOwnership }) {
+  if (gatewayOwnership === "spawned") return "respawn";
+  if (gatewayOwnership === "reused-local" || gatewayOwnership === "reused-service") return "reconnect-bounded";
+  // "none", undefined, or anything unrecognized: ownership defaults to "not
+  // ours" — the safe strategy is the non-destructive reconnect, never a
+  // port-kill.
   return "reconnect";
 }
 
@@ -118,6 +147,8 @@ async function waitForProcessExit({ pids, isAlive, sleep, timeoutMs = INCUMBENT_
 
 module.exports = {
   chooseRecoveryStrategy,
+  classifyAdoptedGateway,
+  GATEWAY_OWNERSHIP_STATES,
   waitForServiceRebind,
   waitForProcessExit,
   SERVICE_REBIND_GRACE_MS,

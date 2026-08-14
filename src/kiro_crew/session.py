@@ -96,6 +96,8 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -174,6 +176,16 @@ def _is_claude_backend(provider: Any) -> bool:
     return backend == "claude"
 
 
+def _provider_label(provider: Any) -> str:
+    """Backend identity key for *provider* — see ``providers.acp.provider_label``.
+
+    Deferred import for the same reason ``_is_claude_backend`` defers it.
+    """
+    from kiro_crew.providers.acp import provider_label  # circular: providers -> session
+
+    return provider_label(provider)
+
+
 def _provider_effectively_alive(provider: Any) -> bool:
     """Whether a session's provider should be treated as live (NOT stale).
 
@@ -215,7 +227,7 @@ def detect_provider_switch(session_map: "SessionMap", session_key: str, new_prov
     is achieved via KiroCrew's own history replay (build_session_replay), never
     via session_id translation.
     """
-    stored_provider = session_map.get_provider(session_key) or "acp"
+    stored_provider = session_map.get_provider(session_key) or PROVIDER_LABEL_DEFAULT
     if stored_provider == new_provider:
         return False
     # Only counts as a switch if there's actually a stored SID to discard
@@ -1586,6 +1598,10 @@ class SessionManager:
         companion subagent runtime spawns with the SAME security posture as the
         parent (sandboxed + MCP-gateway-routed), never a bare unsandboxed
         process. Returns {} when the parent/client can't be resolved.
+
+        The backend travels with the posture: a companion runtime shares its
+        parent's process topology, so resolving it independently would spawn a
+        different agent than the session it belongs to.
         """
         provider = self.get_provider(parent_session_key)
         if provider is None:
@@ -1600,6 +1616,7 @@ class SessionManager:
             ("_mcp_gateway_overlay", "mcp_gateway_overlay"),
             ("_mcp_gateway_settings_mcp_json", "mcp_gateway_settings_mcp_json"),
             ("_mcp_gateway_socket", "mcp_gateway_socket"),
+            ("backend", "acp_backend"),
         ):
             val = getattr(client, attr, None)
             if val is not None:
@@ -2155,8 +2172,6 @@ class SessionManager:
           mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
           and are re-resolved.
         """
-        from kiro_crew.agent import kiro_agents_dir_path
-
         try:
             dir_mtime = kiro_agents_dir_path().stat().st_mtime
         except OSError:
@@ -2730,7 +2745,9 @@ class SessionManager:
                 is_cc_now = (
                     ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider)
                 ) or _is_claude_backend(provider)
-                current_provider = "claude_code" if is_cc_now else "acp"
+                current_provider = (
+                    PROVIDER_LABEL_CLAUDE if is_cc_now else _provider_label(provider)
+                )
                 if detect_provider_switch(self._session_map, key, current_provider):
                     resume_sid = None
                     _provider_switched = True
@@ -2869,14 +2886,22 @@ class SessionManager:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
-                    if _provider_switched or (
+                    _replay_needed = (
                         getattr(provider, "_history_replay_needed", False) is True
-                    ):
+                    )
+                    if _provider_switched or _replay_needed:
                         # provider_switch_replay OR F2 load-recovery fell back to
                         # a fresh native session (stale lock never cleared):
                         # replay KiroCrew's conversation_log into the new session
                         # on the first prompt so the slot isn't context-free.
                         sess.provider_switch_replay = True
+                    if _replay_needed and _provider_label(provider) != PROVIDER_LABEL_DEFAULT:
+                        # SessionMap.get() only self-prunes entries whose kiro
+                        # transcript is gone; a backend that owns its own storage
+                        # is never file-checked, so a failed load is the only
+                        # signal its sid went stale. Drop it here or every later
+                        # turn re-attempts the same doomed load.
+                        self._session_map.clear_sid(key)
                     self._sessions[key] = sess
                     logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
@@ -2895,7 +2920,7 @@ class SessionManager:
                     _cwd_str = provider.cwd
                     if not is_stateless and isinstance(provider, AcpProvider):
                         sid = provider.client._session_id
-                        _prov_label = "claude_code" if _is_claude_backend(provider) else "acp"
+                        _prov_label = _provider_label(provider)
                         if sid:
                             self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                     elif (
@@ -3241,13 +3266,14 @@ class SessionManager:
 
         kiro-cli only: if the in-place ``/compact`` fails or times out, the
         session is recycled — killed so the next user message re-seeds context
-        via build_session_context(). The session_map entry is dropped so we
-        don't false-resume from stale state. That recycle happens inside
-        ``_compact_in_place``, under the turn semaphore it already holds, so no
-        queued turn can slip in between the failed compact and the kill. A
-        recycle is never forced through a live turn: if the turn semaphore
-        cannot be acquired within the budget, the attempt is skipped and the
-        next turn-end ``check_context_usage`` re-triggers it.
+        via build_session_context(). The session_map entry's resume sid is
+        cleared so we don't false-resume from stale state, while the entry
+        itself (and the channel bindings it carries) survives. That recycle
+        happens inside ``_compact_in_place``, under the turn semaphore it
+        already holds, so no queued turn can slip in between the failed compact
+        and the kill. A recycle is never forced through a live turn: if the turn
+        semaphore cannot be acquired within the budget, the attempt is skipped
+        and the next turn-end ``check_context_usage`` re-triggers it.
         """
         try:
             session = self._sessions.get(key)
@@ -3311,7 +3337,7 @@ class SessionManager:
             self._compacting.discard(key)
 
     async def _recycle_held(self, key: str, session: "_Session", pct: float) -> None:
-        """Recycle *session* — SIGKILL the provider and drop the map entry.
+        """Recycle *session* — SIGKILL the provider and clear its resume sid.
 
         The caller MUST already hold ``session.semaphore`` and is responsible
         for releasing it: this method neither acquires nor releases it, so the
@@ -3322,6 +3348,14 @@ class SessionManager:
         Operates strictly on the *session object passed in*: pop-by-identity
         means a fresh session registered by a racing cold-start is never
         popped or killed by mistake.
+
+        Housekeeping never removes a session's channel identity; only explicit
+        user actions do. The overflowed native conversation must not be resumed,
+        so this clears the sid (as :meth:`discard_conversation` does) instead of
+        deleting the session-map entry: the entry also carries the mirror
+        binding, the Slack thread/channel linkage and the durable flags, so a
+        full delete silently unlinks a mirrored session and forks its later
+        inbound messages into a new conversation.
         """
         self._recycling[key] = session
         try:
@@ -3337,9 +3371,9 @@ class SessionManager:
                 await session.provider.shutdown()
                 logger.info("Recycled session %s (context overflow; entry already replaced)", key)
             else:
-                self._session_map.delete(key)
+                self._session_map.clear_sid(key)
                 await popped.provider.shutdown()
-                logger.info("Recycled session %s (context overflow)", key)
+                logger.info("Recycled session %s (context overflow; sid cleared)", key)
             await self._fire_compact_callback(key, pct, success=True)
         finally:
             if self._recycling.get(key) is session:
@@ -3775,7 +3809,7 @@ class SessionManager:
                         # on next startup doesn't see a missing entry, default
                         # to "acp", and falsely fire a switch for users still
                         # on claude_code.
-                        _prov_label = "claude_code" if _is_claude_backend(sess.provider) else "acp"
+                        _prov_label = _provider_label(sess.provider)
                         self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                 elif ClaudeCodeProvider is not None and isinstance(
                     sess.provider, ClaudeCodeProvider
@@ -3790,6 +3824,18 @@ class SessionManager:
                         )
                     ):
                         self._session_map.set(key, sid, provider="claude_code", cwd=_cwd_str)
+
+            # The set() calls above run on the loop and therefore DEFER their
+            # disk write; the gateway exits via os._exit, which never cancels
+            # tasks, so nothing downstream would ever land them. This is the
+            # shutdown durability point: await the off-loop flush so a wedged
+            # filesystem cannot hold the loop past the shutdown deadline.
+            try:
+                await self._session_map.aflush()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("close_all: session map flush failed", exc_info=True)
 
             sessions = dict(self._sessions)
             self._sessions.clear()
@@ -4180,6 +4226,18 @@ class SessionManager:
         """Remove a session's Slack link (stop mirroring). Returns True if one was present."""
         return self._session_map.clear_slack_link(key)
 
+    def set_slack_paused(self, key: str, paused: bool) -> bool:
+        """Set whether turns reach the linked Slack thread; return the prior state.
+
+        Disconnecting retains the thread binding and its reverse index, so a reply
+        there still resolves to this session.
+        """
+        return self._session_map.set_slack_paused(key, paused)
+
+    def is_slack_paused(self, key: str) -> bool:
+        """True iff this session's Slack thread is disconnected but still bound."""
+        return self._session_map.is_slack_paused(key)
+
     def get_session_for_thread(self, thread_ts: str) -> str | None:
         """Return the session key linked to a Slack thread, or None."""
         return self._session_map.get_session_for_thread(thread_ts)
@@ -4340,6 +4398,18 @@ class SessionManager:
     def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
         """Clear every session mirroring to an exact location; return cleared keys."""
         return self._session_map.clear_mirror_links_at(link)
+
+    def set_mirror_paused(self, key: str, paused: bool, *, origin: bool = False) -> bool:
+        """Set whether turns reach one non-Slack delivery; return the prior state.
+
+        ``origin`` selects the born-in conversation rather than the explicit
+        mirror binding — a session can hold both, and they mute independently.
+        """
+        return self._session_map.set_mirror_paused(key, paused, origin=origin)
+
+    def is_mirror_paused(self, key: str, *, origin: bool = False) -> bool:
+        """True iff the named non-Slack delivery is disconnected (see the setter)."""
+        return self._session_map.is_mirror_paused(key, origin=origin)
 
     # Backward-compat aliases used by callers not yet migrated
     async def set_channel(self, key: str, channel_id: str) -> None:

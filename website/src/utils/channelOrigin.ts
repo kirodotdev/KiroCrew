@@ -106,3 +106,18 @@ export function slotChannelLabel(slotKey?: string): string {
     ? i18nT(CHANNEL_LABEL_KEY[ns])
     : CHANNEL_BRAND[ns]
 }
+
+/**
+ * The brand label for a CHANNEL TYPE (`"slack"`, `"discord"`), independent of any
+ * session key. `slotChannelLabel` answers the same question for a slot; this is
+ * for callers that already know the channel and need a label that does NOT vary
+ * with connection state — a row whose label changed between connected and
+ * disconnected would stop reading as one row with two states. Returns `''` for an
+ * unrecognised type so the caller can fall back to whatever the wire sent.
+ */
+export function channelBrandLabel(channelType?: string): string {
+  if (!channelType) return ''
+  return Object.prototype.hasOwnProperty.call(CHANNEL_BRAND, channelType)
+    ? CHANNEL_BRAND[channelType]
+    : ''
+}

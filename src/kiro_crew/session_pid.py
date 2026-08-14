@@ -24,6 +24,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.providers.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,10 @@ def _pid_start_token(pid: int) -> str | None:
 
     Thin delegate to ``platform_compat.get_process_start_id``, which is
     in-process on every platform (``/proc`` read on Linux, ``libproc`` ctypes on
-    macOS) — deliberately NOT ``ps``, so this is safe to call from the asyncio
-    event loop via ``_track_session_pid`` at spawn time
-    (``AUTOSDE: no-blocking-call-on-event-loop``).
+    macOS) — deliberately NOT ``ps``, so the token lookup itself is non-blocking
+    and safe to call from the asyncio event loop. (Whether an enclosing tracker
+    may run on the loop is governed by that tracker's exclusive file lock, not
+    by this lookup — see ``AUTOSDE: no-blocking-call-on-event-loop``.)
 
     Returns ``None`` when identity cannot be determined (Windows, or a process
     we may not introspect). Callers MUST treat ``None`` as "unknown", never as a
@@ -1090,8 +1092,9 @@ _MCP_ENTRYPOINT_MARKERS = (
 
 # Gateway/CLI entrypoints — these are peer gateways, never orphan MCP targets.
 # Checked BEFORE _MCP_ENTRYPOINT_MARKERS to prevent prefix overlap.
+_GATEWAYD_MODULE = b"kiro_crew.mcp_gateway.gatewayd"
 _GATEWAY_MARKERS = (
-    b"kiro_crew.mcp_gateway.gatewayd",
+    _GATEWAYD_MODULE,
     b"kiro_crew.cli",
     b"kiro_crew.__main__",
 )
@@ -1255,6 +1258,130 @@ def _is_sweepable_orphan_mcp(pid: int, cmdline: bytes) -> bool:
     return _is_marked_mcp_launcher(cmdline) and _env_has_kirocrew_marker(pid)
 
 
+# Grace given to a TERMed unreachable gatewayd before killpg SIGKILL. TERM is
+# sent first, deliberately: gatewayd's signal handler routes into the same
+# graceful stop path a supervised shutdown takes, so the daemon drains
+# in-flight work and reaps its own pooled backend subprocesses — a direct
+# SIGKILL would orphan them for a later sweep instead. Derived from the
+# daemon's own total shutdown budget (the same discipline the supervisor's
+# SIGTERM→SIGKILL grace follows) so the escalation can never fire while a
+# correctly-draining daemon is still inside its drain window.
+_GATEWAYD_TERM_GRACE_SECONDS = float(TOTAL_SHUTDOWN_BUDGET_SECS)
+
+
+def _gatewayd_socket_arg(cmdline: bytes) -> bytes | None:
+    """Extract the ``--socket`` argument from a gatewayd cmdline, or ``None``.
+
+    Accepts the two-token ``--socket <path>`` form (the shape every Kiro Crew
+    spawn site produces) and the argparse-equivalent ``--socket=<path>``.
+    NUL-separated argv ONLY: the space-joined ``ps`` fallback (macOS) cannot
+    delimit a path containing spaces, and statting a truncated path would
+    read as ENOENT — a wrong-kill — so anything without NULs fails closed.
+    ABSOLUTE paths only, for the same reason: a relative path would be
+    resolved against the SWEEPER's working directory, not the daemon's, so
+    a reachable daemon bound to ``gw.sock`` in another cwd would read as
+    ENOENT here. When the flag repeats, the LAST occurrence is returned —
+    argparse binds last-wins, so that is the path the daemon actually
+    created.
+    """
+    args = [a for a in cmdline.split(b"\x00") if a]
+    if len(args) <= 1:
+        return None
+    candidate: bytes | None = None
+    for i, arg in enumerate(args):
+        if arg == b"--socket" and i + 1 < len(args):
+            candidate = args[i + 1]
+        elif arg.startswith(b"--socket="):
+            candidate = arg[len(b"--socket=") :]
+    if candidate is not None and os.path.isabs(os.fsdecode(candidate)):
+        return candidate
+    return None
+
+
+def _is_sweepable_orphan_gatewayd(cmdline: bytes) -> bool:
+    """Fourth positive-identity path: a gatewayd whose listening socket is gone.
+
+    :data:`_GATEWAY_MARKERS` excludes gateway entrypoints from every other
+    sweep path because the cmdline alone cannot distinguish a live dev pod's
+    daemon from a dead launcher's. This path supplies the missing
+    information: gatewayd creates the socket it is invoked with, and once
+    that path is absent from disk no stub can ever connect to the daemon
+    again — it is provably unreachable regardless of who launched it.
+
+    Positive identity is the conjunction of:
+
+    1. a structural ``-m kiro_crew.mcp_gateway.gatewayd`` argv pair — never
+       ``kiro_crew.cli`` / ``kiro_crew.__main__``, which stay unconditionally
+       excluded (they carry no socket argument and no equivalent
+       reachability predicate);
+    2. a ``--socket`` path in argv (:func:`_gatewayd_socket_arg`, NUL-argv
+       only, fail-closed);
+    3. that path absent from disk — ``ENOENT`` only; any other stat failure
+       is inconclusive and fails closed.
+
+    The callers preserve the rest of the sweep discipline: same-uid +
+    reparented-to-init candidacy, the age floor, the kill budget, and
+    re-verification immediately before signalling.
+    """
+    args = [a for a in cmdline.split(b"\x00") if a]
+    is_gatewayd = any(
+        args[i] == b"-m" and args[i + 1] == _GATEWAYD_MODULE for i in range(len(args) - 1)
+    )
+    if not is_gatewayd:
+        return False
+    sock = _gatewayd_socket_arg(cmdline)
+    if sock is None:
+        return False
+    try:
+        os.stat(os.fsdecode(sock))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False  # inconclusive (EACCES, EIO, …) — fail closed
+    return False
+
+
+def _kill_orphan_gatewayd(pid: int, cmdline: bytes) -> int:
+    """SIGTERM an unreachable gatewayd; escalate to killpg SIGKILL if wedged.
+
+    TERM first so the daemon's graceful stop path drains and reaps its own
+    pooled backends. If the process is still alive after
+    :data:`_GATEWAYD_TERM_GRACE_SECONDS`, its identity is re-verified (PID
+    recycling) and the whole group is SIGKILLed — the daemon is its own
+    group leader (``start_new_session=True``), so ``killpg`` cannot reach
+    any foreign process.
+    """
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return 0
+    deadline = time.monotonic() + _GATEWAYD_TERM_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            _sel_orphan_kill(pid, pid, cmdline, "sigterm")
+            return 1
+        time.sleep(0.1)
+    # Still alive past the grace: re-verify identity before force-kill so a
+    # recycled PID is never SIGKILLed.
+    try:
+        if sys.platform == "linux":
+            current = Path(f"/proc/{pid}/cmdline").read_bytes()
+            if current != cmdline:
+                _sel_orphan_kill(pid, pid, cmdline, "sigterm")
+                return 1
+        pgid = os.getpgid(pid)
+        if pgid == pid and pgid != os.getpgrp() and pgid > 1:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
+    _sel_orphan_kill(pid, pid, cmdline, "sigterm+sigkill")
+    return 1
+
+
 def _work_orphan_basename(cmdline: bytes) -> bytes:
     """argv0 basename from a raw cmdline (NUL-separated Linux, space macOS)."""
     args = cmdline.split(b"\x00")
@@ -1397,6 +1524,7 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
             continue
         if not (
             _is_sweepable_orphan_mcp(pid, cmdline)
+            or _is_sweepable_orphan_gatewayd(cmdline)
             or _is_sweepable_orphan_work(pid, cmdline, pid_age)
         ):
             continue
@@ -1506,6 +1634,17 @@ def kill_orphan_mcps(pids: list[int]) -> int:
                     os.kill(pid, signal.SIGKILL)
                     killed += 1
                     _sel_orphan_kill(pid, pgid, cmdline, "kill")
+                continue
+            # Unreachable-gatewayd orphan: re-verify the FULL identity —
+            # the socket-path stat AND the age floor — right before
+            # signalling. The age recheck matters: a candidate that exited
+            # after the find phase can have its PID recycled by a brand-new
+            # gatewayd that has not bound its socket yet, and without the
+            # floor that pre-bind daemon would read as "socket absent" and
+            # be TERMed. TERM-first so the daemon drains its own backends.
+            gw_age = _linux_pid_age(pid, time.time()) if sys.platform == "linux" else 0.0
+            if gw_age >= _ORPHAN_MIN_AGE_SECONDS and _is_sweepable_orphan_gatewayd(cmdline):
+                killed += _kill_orphan_gatewayd(pid, cmdline)
                 continue
             # Work-class orphan (KIROCREW_SPAWNED marker, no launcher shape).
             # Re-verify the full identity — including the age floor — right

@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
@@ -37,7 +37,11 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.history import transcript_sort_key
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    oauth_url_contains_credential,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
 from kiro_crew.slack.outbound import (
@@ -54,6 +58,31 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def run_config_write(fn, /, *args, **kwargs):
+    """Run a blocking ``config.json`` writer under BOTH config locks.
+
+    Every ``config.json`` read-modify-write must serialize against two writer
+    generations at once: the sidecar advisory flock that ``update_config_locked``
+    takes (covering CLI / boot-refresh / other-process writers), and the
+    loop-side :func:`_get_config_lock` asyncio lock that the dashboard's legacy
+    handlers still rely on *alone* (bare ``read_config_for_update`` +
+    ``write_config_atomically`` — e.g. the memory-settings PUT). A writer that
+    holds only one of the two can interleave with the other family and silently
+    revert its settings from a stale snapshot.
+
+    This helper is the one async entry point that holds both: the asyncio lock
+    is acquired on the event loop, then ``fn`` (a sync callable that itself
+    routes through ``update_config_locked``) runs in a worker thread so the
+    flock wait never blocks the loop. Mirrors the boot-time meta-stamp refresh
+    in ``server.py``, which established the pattern.
+    """
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # lazy: import cycle
+
+    async with _get_config_lock():
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
 
 # Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
@@ -1025,6 +1054,81 @@ async def expire_slack_options(
         )
 
 
+def slack_mirror_is_paused(state: Any, session_key: str) -> bool:
+    """True when a turn must NOT be mirrored to the session's linked thread.
+
+    A pause retains the thread binding, so every inbound resolver still sees the
+    link and a reply still reaches the session that owns the thread. This is the
+    one predicate that tells outbound egress apart from that: consult it before
+    SENDING, never before routing. Gating a routing decision on it would fork a
+    new session out of a reply the user expected to continue this one.
+
+    Scope is deliberately turn mirroring — the user echo, its tool stream, the
+    assistant reply, an auth-required error and the linked approval prompt.
+    Deliveries that merely reuse the thread as an ADDRESS (a cron result, a
+    subagent completion, a requested file, an auto-nudge tick) are NOT gated: an
+    absent link makes those fall back to the owner's DM, and one of them deletes
+    the auto-nudge loop outright, so treating paused as no-link there would
+    reroute messages the user asked for and destroy a live monitor.
+
+    The channel compaction notice is also not gated, and belongs with the
+    address-based deliveries above rather than with turn output: it reports that
+    the session's own history was compacted, which stays true whether or not the
+    conversation is currently connected. (An earlier version of this note claimed
+    it "cannot reach a paused link" because an origin had no disconnect control.
+    Origin rows now DO carry one, so that reasoning is void — the exclusion
+    stands on the delivery's kind, not on the row's affordances.)
+
+    Strict ``is True`` rather than truthiness, and fails OPEN: ``sessions`` is a
+    bare ``MagicMock`` across much of the suite and returns a truthy child for
+    any unstubbed accessor, so truthiness here would silence every linked thread
+    in the test suite. Failing open leaves a muted thread noisy at worst; failing
+    closed would make a live thread silently dead.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        return sessions.is_slack_paused(session_key) is True
+    except Exception:
+        logger.debug("slack pause lookup failed for %s", session_key, exc_info=True)
+        return False
+
+
+def mirror_is_paused(state: Any, session_key: str, *, origin: bool = False) -> bool:
+    """True when a turn must NOT be mirrored to one of the session's non-Slack deliveries.
+
+    The channel-neutral twin of :func:`slack_mirror_is_paused`, and what a
+    dashboard disconnect suppresses for a non-Slack channel.
+
+    ``origin`` names WHICH delivery is being asked about, because a session can
+    hold two at once — the conversation it was born in and an explicit mirror —
+    and they mute independently. Callers that resolve a single outbound target
+    pass the flag matching the row the user acted on; see
+    :meth:`SessionMap.set_mirror_paused`.
+
+    The scope is narrower than Slack's because the hazard Slack has does not
+    exist here: no cron result, subagent completion, requested file or auto-nudge
+    tick reads a mirror binding at all — those address a channel explicitly — so
+    gating this cannot reroute a delivery to the owner's DM or destroy a monitor
+    loop. It covers the two sites that carry turn output: the user echo and the
+    assistant reply.
+
+    Same ``is True`` / fail-open contract as the Slack gate, for the same
+    MagicMock reason. A muted binding must stay visible to
+    ``find_mirror_sessions``, to the resume-conflict check and to both clear
+    paths, or in-channel ``!unlink`` and conflict detection break.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        return sessions.is_mirror_paused(session_key, origin=origin) is True
+    except Exception:
+        logger.debug("mirror pause lookup failed for %s", session_key, exc_info=True)
+        return False
+
+
 _INCOGNITO_PREFIX = (
     "[INCOGNITO SESSION] This is an ephemeral session. "
     "Do NOT call learn_add or any memory-writing tool. "
@@ -1192,13 +1296,10 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 #      consent URL never carries credential patterns; presence of
                 #      one means it's tampered/bogus.
                 #
-                # The generic EXFIL heuristic is deliberately NOT applied, matching
-                # `_oauth_url_contains_credential` (chat_runner.py), whose docstring
-                # says it omits the long-query heuristic because that heuristic
-                # "would reject every real OAuth URL". test/oauth_url_corpus.py is
-                # the contract: real provider URLs routinely exceed 200 query chars
-                # and carry a 43-char base64url `code_challenge`, so the exfil
-                # heuristic fires on all of them.
+                # The exfiltration gate is parameter-aware: standard high-entropy
+                # OAuth values are exempt only at exact code-owned endpoints, while
+                # fixed/encoded credentials, heavy percent encoding, and unknown
+                # params remain fail-closed.
                 #
                 # This function runs on the EMIT path (_prepare_messages), which
                 # serves the slot-detail endpoint that the frontend refetches on
@@ -1210,8 +1311,7 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 # aligned is what prevents that.
                 lower = v.lower()
                 safe_scheme = lower.startswith("https://") or lower.startswith("http://")
-                _, hit_cred = redact_credentials(v)
-                out[k] = v if (safe_scheme and not hit_cred) else ""
+                out[k] = v if (safe_scheme and not oauth_url_contains_credential(v)) else ""
             else:
                 out[k] = _redact_value(v)
         return out

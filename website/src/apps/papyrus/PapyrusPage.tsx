@@ -159,6 +159,10 @@ export default function PapyrusPage() {
     queryFn: () => papyrusApi.getProject(project as string),
     enabled: !!project,
     retry: false,
+    // The deleted-in-another-tab detection below depends on this query
+    // re-running on window focus. Finite staleTime lets focus-refetch fire
+    // here (global default is Infinity).
+    staleTime: 30_000,
   })
   const detail = projectQuery.data
   const mainFile = detail?.main_file ?? ''
