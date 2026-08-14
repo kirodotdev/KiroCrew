@@ -188,6 +188,12 @@ def render_unit(apparmor_profile: str = "") -> str:
     A system unit inherits no login-session environment, so the per-user
     systemd instance is also wired up explicitly — see the ``XDG_RUNTIME_DIR`` /
     ``DBUS_SESSION_BUS_ADDRESS`` lines below.
+
+    ``apparmor_profile`` renders the legacy ``AppArmorProfile=`` directive when
+    non-empty. ``install()`` never passes one (#3463): the profile is now
+    attached by path instead, and having BOTH present makes systemd's directive
+    silently win, defeating the path attachment. Kept as a parameter only for
+    this function's own unit coverage of that legacy directive shape.
     """
     bin_path = kirocrew_bin()
     user = _current_user()
@@ -530,12 +536,16 @@ def install() -> apparmor.ProfileOutcome:
             "service install`), or set $USER to a non-root account."
         )
 
-    # Decide before writing the unit: the directive has to be in the unit that
-    # systemd reloads, and the profile must be loaded before the restart.
+    # The AppArmorProfile= directive is deliberately NEVER requested here (#3463):
+    # the profile is now attached by PATH to the resolved launcher script
+    # (install_apparmor_profile, below), and #3463 found that when both mechanisms
+    # are present on the same unit, systemd's change_onexec transition silently
+    # takes precedence over the kernel's automatic path attachment and the path
+    # attachment has no effect — the two are mutually exclusive in practice, not
+    # redundant. render_unit() still accepts a profile name (tested on its own
+    # for that legacy shape) but this call site must never pass one.
     needs_profile, profile_reason = apparmor.should_install()
-    write_res = _write_unit_via_sudo(
-        render_unit(apparmor.PROFILE_NAME if needs_profile else "")
-    )
+    write_res = _write_unit_via_sudo(render_unit())
     if write_res.returncode != 0:
         raise ServiceInstallError(
             "Failed to write the unit file. The sudo step is required because "
@@ -547,11 +557,13 @@ def install() -> apparmor.ProfileOutcome:
     # `KIROCREW_PORT=...` edit + restart works without re-installing.
     _seed_env_file()
 
-    # Before daemon-reload/enable/restart: the AppArmorProfile= directive is
-    # applied by systemd at unit START, so the profile must already be loaded or
-    # the first gateway process comes up unprofiled.
-    profile_outcome = install_apparmor_profile() if needs_profile else apparmor.ProfileOutcome(
-        False, f"AppArmor profile not needed: {profile_reason}"
+    # Before daemon-reload/enable/restart: a path-attached profile applies at the
+    # kernel's own execve() time, so it must already be loaded or the first
+    # gateway process (and everything it forks) comes up unprofiled.
+    profile_outcome = (
+        install_apparmor_profile(_current_uid(user))
+        if needs_profile
+        else apparmor.ProfileOutcome(False, f"AppArmor profile not needed: {profile_reason}")
     )
 
     reload_res = _systemctl("daemon-reload")
@@ -581,18 +593,35 @@ def install() -> apparmor.ProfileOutcome:
     return profile_outcome
 
 
-def install_apparmor_profile() -> apparmor.ProfileOutcome:
+def install_apparmor_profile(expected_uid: int | None) -> apparmor.ProfileOutcome:
     """Install the userns AppArmor profile when this host needs one.
 
     Deliberately NOT fatal: a gateway running without the profile is the status
     quo, whereas aborting a service install because a hardening step failed is a
     regression. The caller prints the outcome and continues either way.
+
+    Attaches the profile to ``kirocrew_bin()`` — the same resolved path
+    ``render_unit()`` uses for ``ExecStart`` — instead of relying on
+    ``AppArmorProfile=`` (#3463; see the module docstring in ``apparmor.py``).
+
+    ``expected_uid`` is the numeric uid of the account the SERVICE runs as
+    (``_current_uid(_current_user())``, resolved once by the caller): the
+    installer process itself may be running as root (bare root, or under
+    ``sudo``), but the launcher script being attached is expected to be owned by
+    the human the gateway's ``User=`` names, not by whichever account happens to
+    be executing this installer.
     """
     # uid/gid, not sys.executable: the verification drops privilege back to the
     # invoking user inside the profile and runs a TRUSTED system python, because
     # the venv interpreter is user-writable and must never execute under sudo.
     return apparmor.install(
-        _install_file_via_sudo, _sudo_run_checked, _sudo_capture, os.getuid(), os.getgid()
+        _install_file_via_sudo,
+        _sudo_run_checked,
+        _sudo_capture,
+        os.getuid(),
+        os.getgid(),
+        exec_path=kirocrew_bin(),
+        expected_uid=expected_uid,
     )
 
 

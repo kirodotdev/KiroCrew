@@ -3,6 +3,23 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **`kirocrew service install`'s AppArmor profile now actually confines the
+  sandbox probe on a fully up-to-date Linux install.** The profile was a
+  NAMED profile applied purely via a systemd `AppArmorProfile=` unit
+  directive; that directive labels only the unit's own top-level process, and
+  the gateway's sandbox probe (a fork with no subsequent exec) runs in a
+  different PID that never received the label — reproducing identically
+  across a systemd-managed service, a bare foreground launch, and
+  `aa-exec -p`. The profile is now ATTACHED by path to the resolved kirocrew
+  launcher script instead (the same path `ExecStart` uses), which the kernel
+  applies at every `execve()` in that chain and which a forked-not-exec'd
+  child inherits — and the unit directive is no longer written, since keeping
+  both present was found to make the directive silently win over the path
+  attachment. `kirocrew doctor`'s verdict logic is updated to match: it now
+  checks whether the installed profile is attached to the launcher path this
+  host currently resolves, rather than reading the (now-retired) unit
+  directive, so a correctly-attached profile is no longer misreported as
+  broken. (#3463)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
