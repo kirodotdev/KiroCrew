@@ -289,19 +289,50 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
   const [rect, setRect] = useState<DOMRect | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  // One ref per VISIBLE item (index-aligned with `visible`, not `items`), so
+  // focus-entry and Tab containment below can skip disabled rows without
+  // reasoning about the gaps a filtered/disabled mix would otherwise leave.
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([])
   const visible = items.filter(Boolean) as MenuItemDef[]
+
+  // Explicit dismissal (Escape, an item click) restores focus to the trigger.
+  // Outside-click and scroll close WITHOUT moving focus, deliberately: the
+  // user's focus is already elsewhere by their own action there (#2533).
+  const close = useCallback(() => { setOpen(false); triggerRef.current?.focus() }, [])
+
+  // Enabled item elements, index-aligned filter over itemRefs/visible.
+  const focusableItems = useCallback(
+    () => itemRefs.current.filter((el, i) => !visible[i]?.disabled && el) as HTMLDivElement[],
+    [visible],
+  )
 
   useEffect(() => {
     if (!open) return
+    // role="menu" tells assistive technology that focus is managed here —
+    // move it onto the first enabled item so a keyboard user lands inside
+    // the menu they were just told is open, not still on the trigger.
+    focusableItems()[0]?.focus()
     // The menu is portaled to <body>, so it is not a DOM descendant of
     // the trigger — the outside-click guard must exclude BOTH the trigger and
     // the menu (a plain trigger.contains() check would close on every menu
-    // click). Escape closes and returns focus to the trigger.
+    // click).
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node
       if (!triggerRef.current?.contains(t) && !menuRef.current?.contains(t)) setOpen(false)
     }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); triggerRef.current?.focus() } }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { close(); return }
+      if (e.key !== 'Tab') return
+      // Contain Tab/Shift-Tab within the menu's enabled items — a Tab out of
+      // a still-open menu would drop a keyboard user behind it with no
+      // obvious way back (#2533).
+      const focusable = focusableItems()
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
     // position:fixed desyncs from any scrolling ancestor — close on scroll
     // (capture phase catches nested scrollers) and on resize.
     const onScrollOrResize = () => setOpen(false)
@@ -315,7 +346,13 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
     }
-  }, [open])
+    // `focusableItems` is a new function identity every render (it closes
+    // over `visible`, itself a new array every render); including it would
+    // re-run this effect (and re-steal focus onto the first item) on every
+    // unrelated parent re-render while the menu is open, not just on
+    // open/close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, close])
 
   const toggle = () => {
     if (!open && triggerRef.current) setRect(triggerRef.current.getBoundingClientRect())
@@ -359,7 +396,8 @@ function MenuBtn({ items }: { items: (MenuItemDef | null)[] }) {
           {visible.map((item, i) => (
             <Clickable
               key={'mi' + i}
-              onClick={() => { setOpen(false); item.onClick() }}
+              ref={(el) => { itemRefs.current[i] = el }}
+              onClick={() => { close(); item.onClick() }}
               disabled={!!item.disabled}
               style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left' as const, background: 'none', border: 'none', borderRadius: 7, padding: '7px 10px', fontSize: 12, color: item.danger ? 'var(--danger)' : 'var(--text)', cursor: item.disabled ? 'default' : 'pointer', opacity: item.disabled ? 0.5 : 1 } as CSSProperties}
             >
@@ -399,6 +437,11 @@ function ConfirmBtn({ title, desc, confirmLabel, onConfirm, btn, children }: Con
 
   useEffect(() => {
     if (!open) return
+    // role="dialog" tells assistive technology that focus is managed here —
+    // move it onto Cancel (the safer of the two actions) so a keyboard user
+    // lands inside the dialog they were just told they're in, not still on
+    // the trigger with an open popover they can't see is modal.
+    cancelRef.current?.focus()
     // Portaled to <body>, so the popover is not a DOM descendant of the
     // trigger — the outside-click guard must exclude BOTH, or every click
     // inside the popover (including Cancel/Start) would close it first.
