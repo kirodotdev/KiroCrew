@@ -3266,13 +3266,14 @@ class SessionManager:
 
         kiro-cli only: if the in-place ``/compact`` fails or times out, the
         session is recycled — killed so the next user message re-seeds context
-        via build_session_context(). The session_map entry is dropped so we
-        don't false-resume from stale state. That recycle happens inside
-        ``_compact_in_place``, under the turn semaphore it already holds, so no
-        queued turn can slip in between the failed compact and the kill. A
-        recycle is never forced through a live turn: if the turn semaphore
-        cannot be acquired within the budget, the attempt is skipped and the
-        next turn-end ``check_context_usage`` re-triggers it.
+        via build_session_context(). The session_map entry's resume sid is
+        cleared so we don't false-resume from stale state, while the entry
+        itself (and the channel bindings it carries) survives. That recycle
+        happens inside ``_compact_in_place``, under the turn semaphore it
+        already holds, so no queued turn can slip in between the failed compact
+        and the kill. A recycle is never forced through a live turn: if the turn
+        semaphore cannot be acquired within the budget, the attempt is skipped
+        and the next turn-end ``check_context_usage`` re-triggers it.
         """
         try:
             session = self._sessions.get(key)
@@ -3336,7 +3337,7 @@ class SessionManager:
             self._compacting.discard(key)
 
     async def _recycle_held(self, key: str, session: "_Session", pct: float) -> None:
-        """Recycle *session* — SIGKILL the provider and drop the map entry.
+        """Recycle *session* — SIGKILL the provider and clear its resume sid.
 
         The caller MUST already hold ``session.semaphore`` and is responsible
         for releasing it: this method neither acquires nor releases it, so the
@@ -3347,6 +3348,14 @@ class SessionManager:
         Operates strictly on the *session object passed in*: pop-by-identity
         means a fresh session registered by a racing cold-start is never
         popped or killed by mistake.
+
+        Housekeeping never removes a session's channel identity; only explicit
+        user actions do. The overflowed native conversation must not be resumed,
+        so this clears the sid (as :meth:`discard_conversation` does) instead of
+        deleting the session-map entry: the entry also carries the mirror
+        binding, the Slack thread/channel linkage and the durable flags, so a
+        full delete silently unlinks a mirrored session and forks its later
+        inbound messages into a new conversation.
         """
         self._recycling[key] = session
         try:
@@ -3362,9 +3371,9 @@ class SessionManager:
                 await session.provider.shutdown()
                 logger.info("Recycled session %s (context overflow; entry already replaced)", key)
             else:
-                self._session_map.delete(key)
+                self._session_map.clear_sid(key)
                 await popped.provider.shutdown()
-                logger.info("Recycled session %s (context overflow)", key)
+                logger.info("Recycled session %s (context overflow; sid cleared)", key)
             await self._fire_compact_callback(key, pct, success=True)
         finally:
             if self._recycling.get(key) is session:
