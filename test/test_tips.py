@@ -10,6 +10,7 @@ import random
 import time
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -1625,6 +1626,86 @@ class TestCuratedTips:
         # Features with no in-dashboard destination render body only (no button).
         for tid in ("steer-or-queue", "local-telemetry"):
             assert "action" not in tips[tid], f"{tid} must not carry an action"
+
+    def test_curated_tips_do_not_claim_a_catalog_doc(self) -> None:
+        """A curated tip must not carry a `doc` the docs catalog also owns.
+
+        Dismissing a tip appends its `doc` to `dismissed_docs`, and
+        `_is_eligible` then refuses EVERY tip carrying that doc. So a curated
+        tip that names an allowlisted doc silently takes the catalog's tip for
+        the same doc down with it — one dismissal, two features permanently
+        unmentionable. Doc-level dismissal exists to keep identity stable for
+        LLM-generated tips whose ids churn between regenerations; a curated tip
+        has a hand-authored, permanent id and does not need it.
+        """
+        from kiro_crew.tips import _load_curated_tips
+        from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
+
+        collisions = {
+            t["id"]: t["doc"] for t in _load_curated_tips()
+            if t.get("doc") in TIP_DOC_ALLOWLIST
+        }
+        assert not collisions, (
+            "curated tips claiming a catalog doc (dismissing one would also "
+            f"suppress the catalog tip for that doc): {collisions}"
+        )
+
+    def test_curated_highlight_anchors_exist_in_settings_registry(self) -> None:
+        """A tip's `highlight=` names a control the settings registry owns.
+
+        Two forms reach the same highlight. `key:<configKey>` finds the control
+        by a `data-setting-key` attribute, so it survives translation;
+        `<tab>.<kebab-label>` resolves the registry's ENGLISH label and matches
+        it against the rendered DOM label, which cannot match once the
+        dashboard is translated (the button still opens the right tab, and the
+        highlight is simply skipped). Prefer `key:` wherever the registry
+        carries a configKey; only 6 of 97 entries do today.
+
+        Either way the registry is generated from the panels, so a renamed or
+        deleted control silently turns the button into a navigation that
+        highlights nothing. Pin the two together.
+        """
+        from kiro_crew.tips import _load_curated_tips
+
+        registry_file = (
+            Path(__file__).resolve().parents[1]
+            / "website/src/components/commandPalette/settingsRegistry.gen.ts"
+        )
+        if not registry_file.is_file():  # packaged install carries no website/ tree
+            pytest.skip("settings registry not present in this tree")
+        source = registry_file.read_text(encoding="utf-8")
+        entries = json.loads(source[source.index("[\n  {"):source.rindex("]") + 1])
+        by_id = {e["id"]: e for e in entries}
+        by_config_key = {e["configKey"]: e for e in entries if e.get("configKey")}
+
+        for tip in _load_curated_tips():
+            route = tip.get("action", {}).get("route", "")
+            query = parse_qs(urlparse(route).query)
+            if "highlight" not in query:
+                continue
+            anchor = query["highlight"][0]
+            if anchor.startswith("key:"):
+                entry = by_config_key.get(anchor[len("key:"):])
+                assert entry is not None, (
+                    f"{tip['id']} highlights unknown config key {anchor!r}"
+                )
+            else:
+                entry = by_id.get(anchor)
+                assert entry is not None, (
+                    f"{tip['id']} highlights unknown control {anchor!r}"
+                )
+                # An id-form anchor whose control HAS a configKey is a missed
+                # chance at the translation-proof form.
+                assert not entry.get("configKey"), (
+                    f"{tip['id']} uses the label-derived id {anchor!r} while "
+                    f"the control exposes configKey {entry['configKey']!r} — "
+                    f"use highlight=key:{entry['configKey']} so the highlight "
+                    f"survives a translated dashboard"
+                )
+            assert query["tab"][0] == entry["tab"], (
+                f"{tip['id']} highlights {anchor!r}, which lives on the "
+                f"{entry['tab']!r} tab, not {query['tab'][0]!r}"
+            )
 
     @pytest.mark.asyncio
     async def test_curated_action_survives_serve(self, tmp_path: Path) -> None:

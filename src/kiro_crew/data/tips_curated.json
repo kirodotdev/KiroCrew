@@ -66,7 +66,7 @@
       "title": "Tune how many subagents run at once",
       "body": "`agent.max_subagents` caps concurrent subagents. **0 = auto-size** to your machine's memory and CPU; pin a number with `kirocrew config set agent.max_subagents 4`.",
       "why": "",
-      "doc": "dynamic-subagent-sizing.md",
+      "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Subagent config", "route": "/settings?tab=overview" }
     },
@@ -85,7 +85,7 @@
       "title": "Run crons with no LLM",
       "body": "A scheduled job can run a shell `command` or a Python `script` directly — no model, zero tokens. Ideal for polling, cleanup, and health checks.",
       "why": "",
-      "doc": "cron-and-scheduling.md",
+      "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "New scheduled job", "route": "/schedule" }
     },
@@ -108,6 +108,106 @@
       "doc": "",
       "cta_prompt": "",
       "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
+    },
+    {
+      "id": "system-monitor",
+      "feature": "System Monitor",
+      "title": "See what each session is spending",
+      "body": "A task manager for your agent: live CPU and memory per session, credits spent, and a Storage screen for what each session holds on disk. Open **Developer › System** — turn on **Developer Mode** in **Settings › Developer** to keep it in the sidebar.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open System Monitor", "route": "/developer?tab=system" }
+    },
+    {
+      "id": "web-terminal",
+      "feature": "Built-in Terminal",
+      "title": "Run commands without leaving the dashboard",
+      "body": "Click the **Terminal** icon in the sidebar for a tabbed shell that opens in the selected session's project directory; select any output and **Send to chat**. Pick your shell, font, and size in **Settings › Display**.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Terminal settings", "route": "/settings?tab=display&highlight=key:dashboard.terminal.shell" }
+    },
+    {
+      "id": "artifacts-library",
+      "feature": "Artifacts",
+      "title": "Keep the UI the agent builds for you",
+      "body": "Widgets, generated images, and documents can be saved as **Artifacts** — each gets its own page, a version history, and a companion chat for iterating on it. Browse them under **Artifacts**.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Artifacts", "route": "/artifacts" }
+    },
+    {
+      "id": "language-picker",
+      "feature": "Dashboard Language",
+      "title": "Use the dashboard in your language",
+      "body": "Switch the whole dashboard to another language in **Settings › Display › Language**, or leave it on **Auto** to follow your browser and OS.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Language setting", "route": "/settings?tab=display&highlight=display.language" }
+    },
+    {
+      "id": "auto-skills",
+      "feature": "Auto-generated Skills",
+      "title": "Turn repeated work into a skill",
+      "body": "Let Kiro Crew draft a reusable skill whenever a finished session contains a multi-step procedure worth repeating. Enable **Auto-generate skills from sessions** in **Settings › Skills** — drafts wait in a review queue and never go live without your approval. Off by default.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Skills settings", "route": "/settings?tab=skills&highlight=key:skills.auto_create_from_sessions" }
+    },
+    {
+      "id": "role-models",
+      "feature": "Per-role Models",
+      "title": "Use a different model for background work",
+      "body": "Background jobs and sub-agents can run on their own model and reasoning effort, separate from your chat. Set **Background Model** in **Settings › Chat**; a role you leave unset stays on `auto`.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Background Model setting", "route": "/settings?tab=chat&highlight=chat.background-model" }
+    },
+    {
+      "id": "agent-browsing",
+      "feature": "Agent Browsing",
+      "title": "Let the agent use a real browser",
+      "body": "Install the **Playwright CLI** from **Settings › Browser** and the agent can open pages, read them, and fill forms — you watch, and can take over, in the chat's **Browser** panel.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Browser settings", "route": "/settings?tab=browser" }
+    },
+    {
+      "id": "computer-use",
+      "feature": "Computer Use",
+      "title": "Let the agent drive a desktop app",
+      "body": "On macOS, the agent can read a native app's window through accessibility and click, type, and scroll in it. Turn on **Enable computer use** in **Settings › Computer Use** — off until you do, and an agent cannot enable it itself.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Computer Use settings", "route": "/settings?tab=computer-use&highlight=computer-use.enable-computer-use" }
+    },
+    {
+      "id": "issue-radar",
+      "feature": "Issue Radar",
+      "title": "Triage GitHub and GitLab issues",
+      "body": "Enable the **Issue Radar** app under **Apps**, connect a repository, and triage issues and pull requests from the dashboard — what the agent finds stays on the issue's card. Off until you enable it.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Apps", "route": "/apps" }
+    },
+    {
+      "id": "remote-crew",
+      "feature": "Remote Crew",
+      "title": "Reach another machine's Kiro Crew",
+      "body": "Add another Kiro Crew gateway over SSH or AWS SSM in **Settings › Remote Crew**, then switch between instances from the header.",
+      "why": "",
+      "doc": "",
+      "cta_prompt": "",
+      "action": { "kind": "route", "label": "Open Remote Crew settings", "route": "/settings?tab=instances" }
     }
   ]
 }
