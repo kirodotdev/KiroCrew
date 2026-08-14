@@ -556,7 +556,13 @@ describe('CliPanel theme and font sync', () => {
     style.id = 'mc-custom-theme-probe'
     style.textContent = ':root { --accent: #ff8800; }'
     act(() => { document.head.appendChild(style) })
-    await waitFor(() => expect(term.options.theme?.cursor).toBe('#ff8800'))
+    // Explicit budget: testing-library's default is 1000ms, which a loaded CI
+    // shard exceeded on the observer -> repaint hop (locally ~58ms). Still well
+    // inside the 15s testTimeout, so a genuine regression fails rather than hangs.
+    await waitFor(
+      () => expect(term.options.theme?.cursor).toBe('#ff8800'),
+      { timeout: 5000 },
+    )
   })
 
   it('still repaints after a frame handle whose callback never fires', async () => {
@@ -583,7 +589,13 @@ describe('CliPanel theme and font sync', () => {
     style.textContent = ':root { --accent: #ff8800; }'
     act(() => { document.head.appendChild(style) })
 
-    await waitFor(() => expect(term.options.theme?.cursor).toBe('#ff8800'))
+    // Explicit budget: testing-library's default is 1000ms, which a loaded CI
+    // shard exceeded on the observer -> repaint hop (locally ~58ms). Still well
+    // inside the 15s testTimeout, so a genuine regression fails rather than hangs.
+    await waitFor(
+      () => expect(term.options.theme?.cursor).toBe('#ff8800'),
+      { timeout: 5000 },
+    )
   })
 
   it('ignores an unrelated style element added to <head>', async () => {

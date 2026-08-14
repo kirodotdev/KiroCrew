@@ -106,7 +106,14 @@
     "open_command_bar": "打开 Command Bar",
     "focus_mode": "专注模式",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
-    "focus_mode_title_mac": "专注模式 · ⌥⇧M"
+    "focus_mode_title_mac": "专注模式 · ⌥⇧M",
+    "before_i_forget": "趁我还记得",
+    "before_i_forget_chars_other": "{{count}} 个字符",
+    "before_i_forget_clear": "清空速记本",
+    "before_i_forget_placeholder": "随手记一下…",
+    "before_i_forget_save_failed": "未保存",
+    "before_i_forget_saved": "已保存",
+    "before_i_forget_saving": "保存中…"
   },
   "appSdk": {
     "chatEmbed": {

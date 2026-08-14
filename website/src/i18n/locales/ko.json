@@ -106,7 +106,14 @@
     "open_command_bar": "Command Bar 열기",
     "focus_mode": "집중 모드",
     "focus_mode_title": "집중 모드 · Alt+Shift+M",
-    "focus_mode_title_mac": "집중 모드 · ⌥⇧M"
+    "focus_mode_title_mac": "집중 모드 · ⌥⇧M",
+    "before_i_forget": "잊기 전에",
+    "before_i_forget_chars_other": "{{count}}자",
+    "before_i_forget_clear": "메모 지우기",
+    "before_i_forget_placeholder": "떠오른 것을 적어 두세요…",
+    "before_i_forget_save_failed": "저장되지 않음",
+    "before_i_forget_saved": "저장됨",
+    "before_i_forget_saving": "저장 중…"
   },
   "appSdk": {
     "chatEmbed": {

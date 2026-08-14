@@ -56,7 +56,15 @@
     "open_command_bar": "Open Command Bar",
     "focus_mode": "Focus mode",
     "focus_mode_title": "Focus mode · Alt+Shift+M",
-    "focus_mode_title_mac": "Focus mode · ⌥⇧M"
+    "focus_mode_title_mac": "Focus mode · ⌥⇧M",
+    "before_i_forget": "Before I Forget",
+    "before_i_forget_chars_one": "{{count}} char",
+    "before_i_forget_chars_other": "{{count}} chars",
+    "before_i_forget_clear": "Clear scratchpad",
+    "before_i_forget_placeholder": "Jot something down…",
+    "before_i_forget_save_failed": "not saved",
+    "before_i_forget_saved": "saved",
+    "before_i_forget_saving": "saving…"
   },
   "appSdk": {
     "chatEmbed": {

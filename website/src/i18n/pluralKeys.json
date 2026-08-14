@@ -1,4 +1,5 @@
 [
+  "app.before_i_forget_chars",
   "apps.codeReviewSage.codeReviewSagePage.open_pr",
   "apps.codeReviewSage.codeReviewSagePage.pattern",
   "apps.codeReviewSage.components.addReposModal.contributed_events",
