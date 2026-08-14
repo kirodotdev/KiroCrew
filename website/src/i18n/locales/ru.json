@@ -6766,10 +6766,14 @@
       "transcription_request_failed": "Запрос расшифровки не удался."
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "Задача требует твоего решения",
-      "approval_required": "Требуется подтверждение",
       "tool_approval": "Подтверждение инструмента: {{name}}",
       "unknown": "Неизвестно"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "Задача требует твоего решения",
+      "approval_required": "Требуется подтверждение",
+      "new_notification": "Новое уведомление",
+      "turn_complete": "Ход завершён"
     }
   },
   "lib": {
@@ -10689,6 +10693,12 @@
         "failed_to_load_channels": "Не удалось загрузить каналы",
         "mute_notification_sources_or_override_their_prio": "Отключайте источники уведомлений или переопределяйте их приоритет. Отключённые уведомления остаются в истории, но не дают ни счётчика, ни звука, ни баннера.",
         "notifications_for": "Уведомления для {{name}}",
+        "os_notifications": "Системные уведомления",
+        "os_notifications_description": "Дублирует уведомления в центр уведомлений системы, пока приложение в фоне.",
+        "os_permission_blocked": "Уведомления для этого приложения заблокированы. Разрешите их в браузере или настройках системы.",
+        "os_permission_pending": "Ожидание разрешения на уведомления. Примите запрос, чтобы получать системные уведомления.",
+        "os_test_body": "Так будут выглядеть системные уведомления.",
+        "os_test_title": "Тестовое уведомление",
         "per_category_sounds": "Звуки по категориям",
         "play_sound_on_new_notifications": "Проигрывать звук при новых уведомлениях",
         "preset_blip": "Бип",
@@ -10696,15 +10706,16 @@
         "preset_ding": "Динь",
         "preset_none": "Без звука",
         "preset_pop": "Хлопок",
+        "preset_pulse": "Пульс",
         "priority_for": "Приоритет для {{name}}",
         "protected": "защищено",
         "protected_channel": "Защищённый канал",
+        "show_os_notifications": "Показывать системные уведомления",
         "sound": "Звук",
         "sources": "Источники",
         "test": "Проверить",
         "use_default": "Использовать по умолчанию",
-        "volume": "Громкость",
-        "preset_pulse": "Пульс"
+        "volume": "Громкость"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",

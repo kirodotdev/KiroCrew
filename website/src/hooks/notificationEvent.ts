@@ -1,9 +1,25 @@
 /** Shared contract between useSSE.ts (dispatcher) and useNotificationSound.ts (listener). */
 export const MC_NOTIFICATION_EVENT = 'mc-notification' as const
 export const MC_SOUND_SETTINGS_CHANGED_EVENT = 'mc-notification-sound-changed' as const
+export const MC_OS_SETTINGS_CHANGED_EVENT = 'mc-notification-os-changed' as const
 
 export interface McNotificationDetail {
   kind?: string
+  /** Human title of the underlying notification (bus note title, or a
+   * synthesized label for `turn` / `approval` events). Consumed by the OS
+   * notification surface — the sound surface only reads `kind`. */
+  title?: string
+  /** Human body of the underlying notification. */
+  body?: string
+  /** Dashboard-internal deep link of the underlying note (`Notification.url`,
+   * validated server-side as a path). Banner click target. */
+  url?: string
+  /** Owning chat slot, when the event belongs to a session. Lets the OS
+   * surface name the session in the banner and open it on click. */
+  slot?: string
+  /** Stable collapse tag: a retrigger of the same underlying event replaces
+   * the previous banner instead of stacking a duplicate. */
+  tag?: string
 }
 
 /**

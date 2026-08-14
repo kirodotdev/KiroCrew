@@ -3892,7 +3892,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           // No session to restore into or persist to (a draft under the session
           // auto-selection just activated would splice this into an unrelated
           // conversation, and a notification body reaches the OS notification centre
-          // — `useNativeNotification` publishes the latest unacked body, and any entry
+          // — `useOSNotification` mirrors notification events to the OS, and any entry
           // can be re-marked unread, so `acked` is no barrier). Hand the payload back
           // to the mechanism that produced it instead: re-arming `autoSendRef` makes
           // the auto-send effect resend it. Text only — paste blocks and attachments

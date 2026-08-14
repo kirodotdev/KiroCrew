@@ -18,6 +18,7 @@ import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { MC_NOTIFICATION_EVENT } from '../hooks/notificationEvent'
 import {
   useWebSocket,
   askIdsOf,
@@ -322,14 +323,14 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('raises a desktop notification for an approval while the tab is hidden', () => {
-    class MockNotification {
-      static permission = 'granted'
-      static instances: { title: string }[] = []
-      constructor(public title: string) { MockNotification.instances.push({ title }) }
-    }
-    vi.stubGlobal('Notification', MockNotification)
-    const hiddenSpy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+  it('publishes an enriched notification event for an approval (OS banner moved to useOSNotification)', () => {
+    // The inline `new Notification` this path historically fired was a SECOND
+    // banner for the same approval (useNativeNotification fired the first).
+    // The contract now: useWebSocket publishes ONE enriched event on the
+    // shared fan-out; the OS banner surface consumes it there.
+    const events: CustomEvent[] = []
+    const capture = (e: Event) => { events.push(e as CustomEvent) }
+    window.addEventListener(MC_NOTIFICATION_EVENT, capture)
     try {
       const { ws } = mount()
       act(() => {
@@ -338,12 +339,19 @@ describe('useWebSocket frame router', () => {
           data: { id: 'ap-1', slot: ACTIVE, source: 'agent', tool: 'execute_bash', tool_input: '{}', ts: 5 },
         })
       })
-      expect(MockNotification.instances).toHaveLength(1)
+      const approvalEvents = events.filter(e => e.detail?.kind === 'approval')
+      expect(approvalEvents).toHaveLength(1)
+      expect(approvalEvents[0].detail).toMatchObject({
+        kind: 'approval',
+        body: 'execute_bash',
+        slot: ACTIVE,
+        tag: 'kirocrew-approval-ap-1',
+      })
       const card = chat().messages.find(m => m.role === 'permission')
       expect(card?.meta?.approval_id).toBe('ap-1')
       expect(chat().toolLog.some(e => e.approval_id === 'ap-1')).toBe(true)
     } finally {
-      hiddenSpy.mockRestore()
+      window.removeEventListener(MC_NOTIFICATION_EVENT, capture)
     }
   })
 

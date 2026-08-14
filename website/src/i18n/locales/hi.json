@@ -6592,10 +6592,14 @@
       "transcription_request_failed": "ट्रांसक्रिप्शन अनुरोध विफल रहा।"
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "एक कार्य को तुम्हारे फ़ैसले की ज़रूरत है",
-      "approval_required": "स्वीकृति आवश्यक",
       "tool_approval": "टूल की मंज़ूरी: {{name}}",
       "unknown": "अज्ञात"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "एक कार्य को तुम्हारे फ़ैसले की ज़रूरत है",
+      "approval_required": "स्वीकृति आवश्यक",
+      "new_notification": "नई सूचना",
+      "turn_complete": "टर्न पूर्ण"
     }
   },
   "lib": {
@@ -10449,6 +10453,12 @@
         "failed_to_load_channels": "चैनल लोड करने में विफल",
         "mute_notification_sources_or_override_their_prio": "सूचना स्रोतों को म्यूट करें या उनकी प्राथमिकता बदलें। म्यूट की गई सूचनाएँ इतिहास में रहती हैं लेकिन कभी बैज, ध्वनि या बैनर नहीं दिखातीं।",
         "notifications_for": "{{name}} के लिए सूचनाएँ",
+        "os_notifications": "OS सूचनाएँ",
+        "os_notifications_description": "जब ऐप पृष्ठभूमि में हो, तो सूचनाओं को तुम्हारे सिस्टम के सूचना केंद्र में दिखाता है।",
+        "os_permission_blocked": "इस ऐप के लिए सूचनाएँ अवरुद्ध हैं। ब्राउज़र या सिस्टम सेटिंग्स में उन्हें अनुमति दो।",
+        "os_permission_pending": "सूचना अनुमति की प्रतीक्षा है। OS सूचनाएँ पाने के लिए प्रॉम्प्ट स्वीकार करो।",
+        "os_test_body": "OS सूचनाएँ इस तरह दिखेंगी।",
+        "os_test_title": "परीक्षण सूचना",
         "per_category_sounds": "श्रेणी-वार ध्वनियाँ",
         "play_sound_on_new_notifications": "नए नोटिफिकेशन पर ध्वनि बजाएँ",
         "preset_blip": "ब्लिप",
@@ -10456,15 +10466,16 @@
         "preset_ding": "डिंग",
         "preset_none": "साइलेंट",
         "preset_pop": "पॉप",
+        "preset_pulse": "पल्स",
         "priority_for": "{{name}} के लिए प्राथमिकता",
         "protected": "सुरक्षित",
         "protected_channel": "सुरक्षित चैनल",
+        "show_os_notifications": "OS सूचनाएँ दिखाएँ",
         "sound": "ध्वनि",
         "sources": "स्रोत",
         "test": "परखें",
         "use_default": "डिफ़ॉल्ट इस्तेमाल करें",
-        "volume": "वॉल्यूम",
-        "preset_pulse": "पल्स"
+        "volume": "वॉल्यूम"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",

@@ -6505,10 +6505,14 @@
       "transcription_request_failed": "받아쓰기 요청에 실패했습니다."
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "결정이 필요한 작업이 있습니다",
-      "approval_required": "승인 필요",
       "tool_approval": "도구 승인: {{name}}",
       "unknown": "알 수 없음"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "결정이 필요한 작업이 있습니다",
+      "approval_required": "승인 필요",
+      "new_notification": "새 알림",
+      "turn_complete": "턴 완료"
     }
   },
   "lib": {
@@ -10339,6 +10343,12 @@
         "failed_to_load_channels": "채널을 불러오지 못했습니다",
         "mute_notification_sources_or_override_their_prio": "알림 소스를 음소거하거나 우선순위를 재정의합니다. 음소거된 알림은 기록에는 남지만 배지, 소리, 배너로는 표시되지 않습니다.",
         "notifications_for": "{{name}} 알림",
+        "os_notifications": "OS 알림",
+        "os_notifications_description": "앱이 백그라운드에 있을 때 알림을 시스템 알림 센터로 미러링합니다.",
+        "os_permission_blocked": "이 앱의 알림이 차단되어 있습니다. 브라우저 또는 시스템 설정에서 허용하세요.",
+        "os_permission_pending": "알림 권한을 기다리는 중입니다. 프롬프트를 수락하면 OS 알림을 받을 수 있습니다.",
+        "os_test_body": "OS 알림은 이렇게 표시됩니다.",
+        "os_test_title": "테스트 알림",
         "per_category_sounds": "카테고리별 소리",
         "play_sound_on_new_notifications": "새 알림에 소리 재생",
         "preset_blip": "Blip",
@@ -10350,6 +10360,7 @@
         "priority_for": "{{name}} 우선순위",
         "protected": "보호됨",
         "protected_channel": "보호된 채널",
+        "show_os_notifications": "OS 알림 표시",
         "sound": "소리",
         "sources": "소스",
         "test": "테스트",

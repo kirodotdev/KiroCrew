@@ -2,23 +2,24 @@
  * Page-context `new Notification()` is desktop-only: Android Chrome throws
  * "Illegal constructor" even with permission granted (the platform requires
  * ServiceWorkerRegistration.showNotification, and this app registers no
- * service worker). The native toast is best-effort — a throwing constructor
+ * service worker). The OS banner is best-effort — a throwing constructor
  * must never take down the code around it:
  *
  * - on the WebSocket approval path, an uncaught throw kills the rest of the
  *   message handler, so the approval never reaches the notification feed;
- * - in useNativeNotification, it kills the effect that watches the feed.
+ * - in useOSNotification, it kills the window listener that mirrors
+ *   notification events to the OS.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
-import { useNativeNotification } from '../hooks/useNativeNotification'
-import { addNotification } from '../store/notificationsSlice'
-import type { Notification as AppNotification } from '../types'
+import { useOSNotification } from '../hooks/useOSNotification'
+import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -69,6 +70,7 @@ describe('page-context Notification construction is best-effort', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.clear()
     WS_INSTANCES.length = 0
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
@@ -93,8 +95,6 @@ describe('page-context Notification construction is best-effort', () => {
   }
 
   it('an approval frame still reaches the notification feed when the toast constructor throws', () => {
-    // The hidden-tab + permission-granted branch is the only one that
-    // constructs a Notification on the approval path.
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
     const store = createTestStore()
     const { ws } = mountWs(store)
@@ -111,24 +111,22 @@ describe('page-context Notification construction is best-effort', () => {
     expect(match!.kind).toBe('approval')
   })
 
-  it('useNativeNotification survives a throwing toast constructor', () => {
+  it('useOSNotification survives a throwing toast constructor', () => {
+    // The banner path only constructs when the tab is hidden.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
     const store = createTestStore()
     function wrapper({ children }: { children: React.ReactNode }) {
-      return createElement(Provider, { store }, children)
+      return createElement(Provider, { store },
+        createElement(MemoryRouter, null, children))
     }
-    renderHook(() => useNativeNotification('Kiro Crew', '/avatar.png'), { wrapper })
+    renderHook(() => useOSNotification('Kiro Crew', '/avatar.png'), { wrapper })
 
-    // A new unacked notification triggers the toast effect; the throw must
+    // A notification event triggers the banner listener; the throw must
     // stay inside it.
     expect(() => {
       act(() => {
-        store.dispatch(addNotification({
-          kind: 'approval',
-          title: 'Tool approval',
-          body: 'Bash',
-          ts: '1.0',
-          approval_id: 'ap-android-2',
-        } as AppNotification))
+        const detail: McNotificationDetail = { kind: 'approval', body: 'Bash', tag: 'kirocrew-approval-ap-android-2' }
+        window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
       })
     }).not.toThrow()
   })

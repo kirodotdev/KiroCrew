@@ -9,6 +9,7 @@ import {
   SOUND_PRESETS, type SoundPreset, type SoundCategory,
   loadSoundSettings, saveSoundSettings, playPreset,
 } from '../../hooks/useNotificationSound'
+import { loadOSSettings, saveOSSettings } from '../../hooks/useOSNotification'
 
 import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
@@ -54,6 +55,11 @@ const overrideLabels = (): string[] => [
  *  `PRESET_LABEL_KEY` holds keys. */
 const CATEGORY_ROWS: SoundCategory[] = [
   'all', 'turn', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner',
+]
+/** OS banner rows: same taxonomy minus 'all' — the master toggle covers it,
+ *  and a boolean per category needs no inherit-the-default sentinel row. */
+const OS_CATEGORY_ROWS: SoundCategory[] = [
+  'turn', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner',
 ]
 const CATEGORY_LABEL_KEY: Record<SoundCategory, string> = {
   all: 'pages.settings.notificationsPanel.category_all',
@@ -203,11 +209,47 @@ function ChannelsSection() {
 
 export function NotificationsPanel() {
   const [settings, setSettings] = useState(() => loadSoundSettings())
+  const [osSettings, setOSSettings] = useState(() => loadOSSettings())
+  // Chromium permission state for the OS banner surface. Re-read after every
+  // grant attempt; 'unsupported' when the API is absent (non-secure context).
+  const [osPermission, setOSPermission] = useState<NotificationPermission | 'unsupported'>(
+    () => (typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'),
+  )
 
   const update = (partial: Partial<typeof settings>) => {
     const next = { ...settings, ...partial }
     setSettings(next)
     saveSoundSettings(next)
+  }
+
+  const updateOS = (partial: Partial<typeof osSettings>) => {
+    const next = { ...osSettings, ...partial }
+    setOSSettings(next)
+    saveOSSettings(next)
+  }
+
+  /** Enabling the surface is the moment to request permission — never at
+   *  banner-fire time (an unawaited fire-time prompt loses the triggering
+   *  note, and the prompt appears with no user gesture to explain it). */
+  const toggleOSEnabled = async (v: boolean) => {
+    updateOS({ enabled: v })
+    if (v && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      try {
+        const result = await Notification.requestPermission()
+        setOSPermission(result)
+      } catch { /* denied prompt or unsupported — state re-read below */ }
+    }
+    if (typeof Notification !== 'undefined') setOSPermission(Notification.permission)
+  }
+
+  const testOSNotification = () => {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    try {
+      new Notification(i18nT('pages.settings.notificationsPanel.os_test_title'), {
+        body: i18nT('pages.settings.notificationsPanel.os_test_body'),
+        tag: 'kirocrew-os-test',
+      })
+    } catch { /* best-effort */ }
   }
 
   const setCategoryPreset = (cat: SoundCategory, preset: SoundPreset) => {
@@ -221,6 +263,7 @@ export function NotificationsPanel() {
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
+  const osBlocked = osPermission === 'denied' || osPermission === 'unsupported'
 
   return (
     <>
@@ -256,8 +299,49 @@ export function NotificationsPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.os_notifications')}>
         <SettingsCard index={1}>
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.show_os_notifications')}
+            description={i18nT('pages.settings.notificationsPanel.os_notifications_description')}
+            checked={osSettings.enabled}
+            onChange={v => { void toggleOSEnabled(v) }}
+          />
+          {osSettings.enabled && osPermission === 'default' && (
+            <div className="text-[12px] text-muted py-1">
+              {i18nT('pages.settings.notificationsPanel.os_permission_pending')}
+            </div>
+          )}
+          {osSettings.enabled && osBlocked && (
+            <div className="text-[12px] text-danger py-1">
+              {i18nT('pages.settings.notificationsPanel.os_permission_blocked')}
+            </div>
+          )}
+          {OS_CATEGORY_ROWS.map(cat => (
+            <SettingsToggle
+              key={cat}
+              label={i18nT(CATEGORY_LABEL_KEY[cat])}
+              description={i18nT(CATEGORY_DESCRIPTION_KEY[cat])}
+              checked={osSettings.perCategory[cat] !== false}
+              onChange={v => updateOS({ perCategory: { ...osSettings.perCategory, [cat]: v } })}
+              disabled={!osSettings.enabled}
+            />
+          ))}
+          <div>
+            <button
+              type="button"
+              onClick={testOSNotification}
+              disabled={!osSettings.enabled || osPermission !== 'granted'}
+              className="px-3 py-1.5 rounded-md border border-border text-[12px] font-medium cursor-pointer bg-transparent text-muted hover:text-text hover:border-border-strong disabled:opacity-40 disabled:cursor-not-allowed transition-all font-body"
+            >
+              {i18nT('pages.settings.notificationsPanel.test')}
+            </button>
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
+        <SettingsCard index={2}>
           {CATEGORY_ROWS.map(cat => {
             const hasOverride = cat !== 'all' && settings.perCategory[cat] !== undefined
             const effective: SoundPreset = cat === 'all'

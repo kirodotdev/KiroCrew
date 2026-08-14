@@ -23,7 +23,14 @@ export function useSSE() {
         const n = JSON.parse(e.data) as Notification
         dispatch(addNotification(n))
         try {
-          const detail: McNotificationDetail = { kind: n.kind }
+          const detail: McNotificationDetail = {
+            kind: n.kind,
+            title: n.title,
+            body: n.body,
+            url: n.url,
+            slot: n.slot,
+            tag: n.group_key || n.approval_id || n.job_id || n.task_id,
+          }
           window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
         } catch { /* notification listener error — non-fatal, ignore */ }
       } catch { /* ignore */ }

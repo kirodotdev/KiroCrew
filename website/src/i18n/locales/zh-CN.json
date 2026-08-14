@@ -6505,10 +6505,14 @@
       "transcription_request_failed": "转写请求失败。"
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "有任务需要你决策",
-      "approval_required": "需要审批",
       "tool_approval": "工具审批：{{name}}",
       "unknown": "未知"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "有任务需要你决策",
+      "approval_required": "需要审批",
+      "new_notification": "新通知",
+      "turn_complete": "轮次已完成"
     }
   },
   "lib": {
@@ -10328,6 +10332,12 @@
         "failed_to_load_channels": "加载渠道失败",
         "mute_notification_sources_or_override_their_prio": "静音通知来源或覆盖其优先级。已静音的通知仍保留在历史中，但不会显示角标、提示音或横幅。",
         "notifications_for": "{{name}} 的通知",
+        "os_notifications": "系统通知",
+        "os_notifications_description": "当应用在后台时，将通知镜像到系统通知中心。",
+        "os_permission_blocked": "此应用的通知已被阻止。请在浏览器或系统设置中允许通知。",
+        "os_permission_pending": "正在等待通知权限。接受提示后即可接收系统通知。",
+        "os_test_body": "系统通知将以这种方式显示。",
+        "os_test_title": "测试通知",
         "per_category_sounds": "分类提示音",
         "play_sound_on_new_notifications": "收到新通知时播放提示音",
         "preset_blip": "嘀",
@@ -10335,15 +10345,16 @@
         "preset_ding": "叮",
         "preset_none": "静默",
         "preset_pop": "啵",
+        "preset_pulse": "脉冲",
         "priority_for": "{{name}} 的优先级",
         "protected": "受保护",
         "protected_channel": "受保护渠道",
+        "show_os_notifications": "显示系统通知",
         "sound": "提示音",
         "sources": "来源",
         "test": "测试",
         "use_default": "使用默认",
-        "volume": "音量",
-        "preset_pulse": "脉冲"
+        "volume": "音量"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

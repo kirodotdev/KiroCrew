@@ -2147,8 +2147,6 @@
       "transcription_request_failed": "Transcription request failed."
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "A task needs your decision",
-      "approval_required": "Approval Required",
       "tool_approval": "Tool approval: {{name}}",
       "unknown": "Unknown"
     },
@@ -2168,6 +2166,12 @@
       "subagents": "Subagents",
       "summary": "Summary",
       "workflows": "Workflows"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "A task needs your decision",
+      "approval_required": "Approval Required",
+      "new_notification": "New notification",
+      "turn_complete": "Turn complete"
     }
   },
   "nav": {
@@ -3736,9 +3740,6 @@
       },
       "notificationsPanel": {
         "always_interrupts_cannot_be_muted_or_lowered": "Always interrupts — cannot be muted or lowered",
-        "channel_not_active_app_disabled_setting_retained": "Channel not active (app disabled) — setting retained",
-        "default_priority": "Default priority: {{priority}}",
-        "failed_to_load_channels": "Failed to load channels",
         "category_all": "Default (all categories)",
         "category_all_description": "Fallback sound when no category-specific override is set",
         "category_approval": "Approval",
@@ -3756,7 +3757,16 @@
         "category_turn": "Agent replies",
         "category_turn_description": "When the agent finishes a turn in any chat",
         "channel_default": "Channel default",
+        "channel_not_active_app_disabled_setting_retained": "Channel not active (app disabled) — setting retained",
+        "default_priority": "Default priority: {{priority}}",
+        "failed_to_load_channels": "Failed to load channels",
         "notifications_for": "Notifications for {{name}}",
+        "os_notifications": "OS notifications",
+        "os_notifications_description": "Mirror notifications to your system's notification center while the app is in the background.",
+        "os_permission_blocked": "Notifications are blocked for this app. Allow them in your browser or system settings.",
+        "os_permission_pending": "Waiting for notification permission. Accept the prompt to receive OS notifications.",
+        "os_test_body": "This is how OS notifications will look.",
+        "os_test_title": "Test notification",
         "preset_blip": "Blip",
         "preset_chime": "Chime (C6-E6-G6)",
         "preset_ding": "Ding",
@@ -3764,6 +3774,7 @@
         "preset_pop": "Pop",
         "preset_pulse": "Pulse",
         "priority_for": "Priority for {{name}}",
+        "show_os_notifications": "Show OS notifications",
         "use_default": "Use default"
       },
       "securityPanel": {

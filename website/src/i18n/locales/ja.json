@@ -6505,10 +6505,14 @@
       "transcription_request_failed": "転写リクエストが失敗しました。"
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "タスクが決定を必要としています",
-      "approval_required": "承認が必要です",
       "tool_approval": "ツールの承認：{{name}}",
       "unknown": "不明"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "タスクが決定を必要としています",
+      "approval_required": "承認が必要です",
+      "new_notification": "新しい通知",
+      "turn_complete": "ターン完了"
     }
   },
   "lib": {
@@ -10328,6 +10332,12 @@
         "failed_to_load_channels": "チャネルの読み込みに失敗しました",
         "mute_notification_sources_or_override_their_prio": "通知ソースをミュートするか、優先度をオーバーライドします。ミュートされた通知は履歴に残りますが、バッジ、サウンド、またはバナーは表示されません。",
         "notifications_for": "{{name}} の通知",
+        "os_notifications": "OS通知",
+        "os_notifications_description": "アプリがバックグラウンドにあるとき、通知をシステムの通知センターにミラーリングします。",
+        "os_permission_blocked": "このアプリの通知はブロックされています。ブラウザーまたはシステム設定で許可してください。",
+        "os_permission_pending": "通知の許可を待っています。プロンプトを承認するとOS通知を受け取れます。",
+        "os_test_body": "OS通知はこのように表示されます。",
+        "os_test_title": "テスト通知",
         "per_category_sounds": "カテゴリごとのサウンド",
         "play_sound_on_new_notifications": "新しい通知でサウンドを再生",
         "preset_blip": "Blip",
@@ -10339,6 +10349,7 @@
         "priority_for": "{{name}} の優先度",
         "protected": "保護済み",
         "protected_channel": "保護されたチャネル",
+        "show_os_notifications": "OS通知を表示",
         "sound": "サウンド",
         "sources": "ソース",
         "test": "テスト",

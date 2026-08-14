@@ -6592,10 +6592,14 @@
       "transcription_request_failed": "Transkriptionsanfrage fehlgeschlagen."
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "Eine Aufgabe braucht deine Entscheidung",
-      "approval_required": "Genehmigung erforderlich",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
       "unknown": "Unbekannt"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "Eine Aufgabe braucht deine Entscheidung",
+      "approval_required": "Genehmigung erforderlich",
+      "new_notification": "Neue Benachrichtigung",
+      "turn_complete": "Durchlauf abgeschlossen"
     }
   },
   "lib": {
@@ -10448,6 +10452,12 @@
         "failed_to_load_channels": "Kanäle konnten nicht geladen werden",
         "mute_notification_sources_or_override_their_prio": "Benachrichtigungsquellen stummschalten oder ihre Priorität übersteuern. Stummgeschaltete Benachrichtigungen bleiben im Verlauf, erzeugen aber niemals ein Abzeichen, einen Ton oder ein Banner.",
         "notifications_for": "Benachrichtigungen für {{name}}",
+        "os_notifications": "Systembenachrichtigungen",
+        "os_notifications_description": "Spiegelt Benachrichtigungen in die Benachrichtigungszentrale deines Systems, während die App im Hintergrund ist.",
+        "os_permission_blocked": "Benachrichtigungen sind für diese App blockiert. Erlaube sie im Browser oder in den Systemeinstellungen.",
+        "os_permission_pending": "Warte auf die Benachrichtigungsberechtigung. Bestätige die Abfrage, um Systembenachrichtigungen zu erhalten.",
+        "os_test_body": "So werden Systembenachrichtigungen aussehen.",
+        "os_test_title": "Testbenachrichtigung",
         "per_category_sounds": "Töne pro Kategorie",
         "play_sound_on_new_notifications": "Ton bei neuen Benachrichtigungen abspielen",
         "preset_blip": "Blip",
@@ -10455,15 +10465,16 @@
         "preset_ding": "Ding",
         "preset_none": "Stumm",
         "preset_pop": "Plopp",
+        "preset_pulse": "Puls",
         "priority_for": "Priorität für {{name}}",
         "protected": "geschützt",
         "protected_channel": "Geschützter Kanal",
+        "show_os_notifications": "Systembenachrichtigungen anzeigen",
         "sound": "Ton",
         "sources": "Quellen",
         "test": "Testen",
         "use_default": "Standard verwenden",
-        "volume": "Lautstärke",
-        "preset_pulse": "Puls"
+        "volume": "Lautstärke"
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

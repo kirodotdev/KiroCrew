@@ -6679,10 +6679,14 @@
       "transcription_request_failed": "Richiesta di trascrizione non riuscita."
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "Un'attività richiede una tua decisione",
-      "approval_required": "Approvazione richiesta",
       "tool_approval": "Approvazione dello strumento: {{name}}",
       "unknown": "Sconosciuto"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "Un'attività richiede una tua decisione",
+      "approval_required": "Approvazione richiesta",
+      "new_notification": "Nuova notifica",
+      "turn_complete": "Turno completato"
     }
   },
   "lib": {
@@ -10568,6 +10572,12 @@
         "failed_to_load_channels": "Impossibile caricare i canali",
         "mute_notification_sources_or_override_their_prio": "Silenzia le origini delle notifiche o modificane la priorità. Le notifiche silenziate restano nella cronologia ma non generano mai badge, suoni o banner.",
         "notifications_for": "Notifiche per {{name}}",
+        "os_notifications": "Notifiche di sistema",
+        "os_notifications_description": "Replica le notifiche nel centro notifiche del sistema quando l'app è in background.",
+        "os_permission_blocked": "Le notifiche sono bloccate per questa app. Consentile nel browser o nelle impostazioni di sistema.",
+        "os_permission_pending": "In attesa dell'autorizzazione alle notifiche. Accetta la richiesta per ricevere le notifiche di sistema.",
+        "os_test_body": "Ecco come appariranno le notifiche di sistema.",
+        "os_test_title": "Notifica di prova",
         "per_category_sounds": "Suoni per categoria",
         "play_sound_on_new_notifications": "Riproduci un suono per le nuove notifiche",
         "preset_blip": "Blip",
@@ -10575,15 +10585,16 @@
         "preset_ding": "Ding",
         "preset_none": "Silenzioso",
         "preset_pop": "Pop",
+        "preset_pulse": "Pulsazione",
         "priority_for": "Priorità per {{name}}",
         "protected": "protetto",
         "protected_channel": "Canale protetto",
+        "show_os_notifications": "Mostra le notifiche di sistema",
         "sound": "Suono",
         "sources": "Origini",
         "test": "Prova",
         "use_default": "Usa il predefinito",
-        "volume": "Volume",
-        "preset_pulse": "Pulsazione"
+        "volume": "Volume"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

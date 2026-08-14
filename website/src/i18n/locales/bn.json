@@ -6592,10 +6592,14 @@
       "transcription_request_failed": "ট্রান্সক্রিপশন রিকোয়েস্ট ব্যর্থ হয়েছে।"
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "একটা কাজের জন্য তোমার সিদ্ধান্ত দরকার",
-      "approval_required": "অনুমোদন দরকার",
       "tool_approval": "টুল অনুমোদন: {{name}}",
       "unknown": "অজানা"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "একটা কাজের জন্য তোমার সিদ্ধান্ত দরকার",
+      "approval_required": "অনুমোদন দরকার",
+      "new_notification": "নতুন বিজ্ঞপ্তি",
+      "turn_complete": "টার্ন সম্পন্ন"
     }
   },
   "lib": {
@@ -10449,6 +10453,12 @@
         "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
         "mute_notification_sources_or_override_their_prio": "বিজ্ঞপ্তির উৎস মিউট করুন বা তাদের অগ্রাধিকার ওভাররাইড করুন। মিউট করা বিজ্ঞপ্তি ইতিহাসে থাকে, তবে কখনও ব্যাজ, শব্দ বা ব্যানার দেখায় না।",
         "notifications_for": "{{name}}-এর বিজ্ঞপ্তি",
+        "os_notifications": "OS বিজ্ঞপ্তি",
+        "os_notifications_description": "অ্যাপ পটভূমিতে থাকাকালীন বিজ্ঞপ্তিগুলি আপনার সিস্টেমের বিজ্ঞপ্তি কেন্দ্রে প্রতিফলিত করে।",
+        "os_permission_blocked": "এই অ্যাপের জন্য বিজ্ঞপ্তি অবরুদ্ধ। ব্রাউজার বা সিস্টেম সেটিংসে সেগুলি অনুমোদন করুন।",
+        "os_permission_pending": "বিজ্ঞপ্তির অনুমতির অপেক্ষায়। OS বিজ্ঞপ্তি পেতে প্রম্পটটি গ্রহণ করুন।",
+        "os_test_body": "OS বিজ্ঞপ্তি এভাবে দেখাবে।",
+        "os_test_title": "পরীক্ষামূলক বিজ্ঞপ্তি",
         "per_category_sounds": "বিভাগভিত্তিক শব্দ",
         "play_sound_on_new_notifications": "নতুন বিজ্ঞপ্তিতে শব্দ বাজান",
         "preset_blip": "ব্লিপ",
@@ -10456,15 +10466,16 @@
         "preset_ding": "ডিং",
         "preset_none": "নীরব",
         "preset_pop": "পপ",
+        "preset_pulse": "পালস",
         "priority_for": "{{name}}-এর অগ্রাধিকার",
         "protected": "সুরক্ষিত",
         "protected_channel": "সুরক্ষিত চ্যানেল",
+        "show_os_notifications": "OS বিজ্ঞপ্তি দেখান",
         "sound": "শব্দ",
         "sources": "উৎস",
         "test": "পরীক্ষা করুন",
         "use_default": "ডিফল্ট ব্যবহার করো",
-        "volume": "ভলিউম",
-        "preset_pulse": "পালস"
+        "volume": "ভলিউম"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

@@ -6679,10 +6679,14 @@
       "transcription_request_failed": "Falló la solicitud de transcripción."
     },
     "useWebSocket": {
-      "a_task_needs_your_decision": "Una tarea necesita tu decisión",
-      "approval_required": "Se requiere aprobación",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "unknown": "Desconocido"
+    },
+    "useOSNotification": {
+      "a_task_needs_your_decision": "Una tarea necesita tu decisión",
+      "approval_required": "Se requiere aprobación",
+      "new_notification": "Nueva notificación",
+      "turn_complete": "Turno completado"
     }
   },
   "lib": {
@@ -10569,6 +10573,12 @@
         "failed_to_load_channels": "No se pudieron cargar los canales",
         "mute_notification_sources_or_override_their_prio": "Silencia fuentes de notificaciones o cambia su prioridad. Las notificaciones silenciadas se conservan en el historial, pero nunca muestran distintivo, sonido ni banner.",
         "notifications_for": "Notificaciones de {{name}}",
+        "os_notifications": "Notificaciones del sistema",
+        "os_notifications_description": "Refleja las notificaciones en el centro de notificaciones de tu sistema mientras la aplicación está en segundo plano.",
+        "os_permission_blocked": "Las notificaciones están bloqueadas para esta aplicación. Permítelas en tu navegador o en los ajustes del sistema.",
+        "os_permission_pending": "Esperando el permiso de notificaciones. Acepta la solicitud para recibir notificaciones del sistema.",
+        "os_test_body": "Así se verán las notificaciones del sistema.",
+        "os_test_title": "Notificación de prueba",
         "per_category_sounds": "Sonidos por categoría",
         "play_sound_on_new_notifications": "Reproducir un sonido con las notificaciones nuevas",
         "preset_blip": "Bip",
@@ -10576,15 +10586,16 @@
         "preset_ding": "Din",
         "preset_none": "Silencioso",
         "preset_pop": "Pop",
+        "preset_pulse": "Pulso",
         "priority_for": "Prioridad de {{name}}",
         "protected": "protegido",
         "protected_channel": "Canal protegido",
+        "show_os_notifications": "Mostrar notificaciones del sistema",
         "sound": "Sonido",
         "sources": "Fuentes",
         "test": "Probar",
         "use_default": "Usar el valor predeterminado",
-        "volume": "Volumen",
-        "preset_pulse": "Pulso"
+        "volume": "Volumen"
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

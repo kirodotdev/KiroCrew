@@ -542,6 +542,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "notifications.show-os-notifications",
+    "label": "Show OS notifications",
+    "description": "Mirror notifications to your system's notification center while the app is in the background.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "privacy.record-metrics",
     "label": "Record metrics",
     "tab": "privacy",

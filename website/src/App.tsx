@@ -22,7 +22,7 @@ import { useIsMobile } from './hooks/useIsMobile'
 import { useSidePanelDock } from './hooks/useSidePanelDock'
 import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
-import { useNativeNotification } from './hooks/useNativeNotification'
+import { useOSNotification } from './hooks/useOSNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
 import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
@@ -1608,8 +1608,8 @@ export default function App() {
     document.title = totalAttention > 0 ? `(${totalAttention}) ${botName}` : botName
   }, [totalAttention, botName])
 
-  // Browser push notification on new notification — see src/hooks/useNativeNotification.ts
-  useNativeNotification(botName, avatar)
+  // OS notification surface (banners) — see src/hooks/useOSNotification.ts
+  useOSNotification(botName, avatar)
 
   const [updateError, setUpdateError] = useState('')
   // Nav-rail "Report issue" → the shared diagnostics flow. Held at shell level

@@ -713,7 +713,14 @@ export function useWebSocket() {
             // feed-only — no sound.
             if (!n.silenced && n.priority !== 'passive') {
               try {
-                const detail: McNotificationDetail = { kind: n.kind }
+                const detail: McNotificationDetail = {
+                  kind: n.kind,
+                  title: n.title,
+                  body: n.body,
+                  url: n.url,
+                  slot: n.slot,
+                  tag: n.group_key || n.approval_id || n.job_id || n.task_id,
+                }
                 window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
               } catch (err) {
                 console.warn('mc-notification listener error', err)
@@ -738,23 +745,23 @@ export function useWebSocket() {
             // Suppressed during reconnect catch-up (same policy as turn-done).
             if (!reconnectingRef.current) {
               try {
-                const detail: McNotificationDetail = { kind: APPROVAL_KIND }
+                const detail: McNotificationDetail = {
+                  kind: APPROVAL_KIND,
+                  body: data.tool || undefined,
+                  slot: data.slot || undefined,
+                  // Stable per-approval tag: a re-delivered approval replaces
+                  // its own banner instead of stacking a duplicate.
+                  tag: data.id ? `kirocrew-approval-${data.id}` : 'kirocrew-approval',
+                }
                 window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
               } catch (err) {
                 console.warn('mc-notification listener error', err)
               }
             }
-            // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
-            if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              // Android Chrome throws "Illegal constructor" for page-context
-              // Notification; an uncaught throw here kills the whole message
-              // handler, so the native toast is best-effort.
-              try {
-                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
-              } catch {
-                /* unsupported platform */
-              }
-            }
+            // OS banner: delivered by useOSNotification consuming the event
+            // above. The historical inline `new Notification` here fired a
+            // SECOND banner for the same approval (different tag, no OS
+            // collapse) whenever the tab was hidden.
             dispatch(addNotification({
               kind: 'approval',
               title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
@@ -1197,7 +1204,13 @@ export function useWebSocket() {
               reconnecting: reconnectingRef.current,
             })) {
               try {
-                const detail: McNotificationDetail = { kind: TURN_DONE_KIND }
+                const detail: McNotificationDetail = {
+                  kind: TURN_DONE_KIND,
+                  slot: data.slot,
+                  // One banner per session's latest completion: a newer turn
+                  // in the same session replaces the previous banner.
+                  tag: `kirocrew-turn-${data.slot}`,
+                }
                 window.dispatchEvent(new CustomEvent(MC_NOTIFICATION_EVENT, { detail }))
               } catch (err) {
                 console.warn('mc-notification listener error', err)
