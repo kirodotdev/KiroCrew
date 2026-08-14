@@ -8,7 +8,9 @@ stub the import and the pip spawn — no real installs, no network.
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
+from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
@@ -171,3 +173,35 @@ def test_source_checkout_root_detects_this_repo():
     assert root is not None
     assert (root / "setup.cfg").is_file()
     assert Path(_bootstrap.__file__).is_relative_to(root)
+
+
+# ── console_scripts targets ──
+
+
+def test_every_console_script_target_resolves():
+    """Every ``console_scripts`` target must name a module that exists.
+
+    Packaging metadata is not imported by the suite, so a target left behind by
+    a deleted module passes every other gate and fails only in a user's shell:
+    pip still writes the shim onto PATH, and running it raises
+    ModuleNotFoundError. ``find_spec`` is used rather than a real import so the
+    check stays free of import side effects.
+    """
+    root = _bootstrap._source_checkout_root()
+    assert root is not None
+    cfg = ConfigParser()
+    cfg.read(root / "setup.cfg", encoding="utf-8")
+    entries = [
+        line.strip()
+        for line in cfg["options.entry_points"]["console_scripts"].splitlines()
+        if line.strip()
+    ]
+    assert entries, "setup.cfg declares no console scripts"
+    for entry in entries:
+        script, _, target = entry.partition("=")
+        module = target.strip().partition(":")[0]
+        try:
+            spec = importlib.util.find_spec(module)
+        except ModuleNotFoundError:
+            spec = None
+        assert spec is not None, f"console script {script.strip()!r} names missing module {module!r}"
