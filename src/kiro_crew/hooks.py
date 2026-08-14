@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import stat as _stat
+import tempfile
 import threading
 import time
 import uuid
@@ -23,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from kiro_crew import platform_compat, security, webhooks
+from kiro_crew.config import paths as _config_paths
 from kiro_crew.platform import current_context
 from kiro_crew.platform.governance import (
     CU_CLASS_OBSERVE,
@@ -1566,15 +1568,51 @@ def _tool_matches(pattern: str, tool_name: str) -> bool:
     return fnmatch.fnmatch(tool_name.lower(), pattern.lower())
 
 
+def is_unc_shape(raw: str) -> bool:
+    """True for a UNC-shaped path: two leading separators, either style."""
+    return len(raw) >= 2 and raw[0] in "\\/" and raw[1] in "\\/"
+
+
+def unc_probe_allowed(raw: str) -> bool:
+    """Whether a UNC-shaped path may touch the filesystem on Windows.
+
+    A UNC path names a HOST, so resolving or stat-ing untrusted text
+    (``\\\\evil\\share\\x.png`` or ``//evil/share/x.png`` echoed in any message
+    or query) makes Windows open an SMB connection to that host -- an outbound
+    credential probe the attacker controls. Filesystem access is therefore
+    restricted to UNC paths under directories this gateway itself writes
+    attachments to: the data home (on a roaming profile the home directory is
+    itself a UNC share, the one legitimate source of UNC attachment paths) and
+    the temp directory (channel-side image staging). The comparison is purely
+    lexical (``normpath``/``normcase``), so this check never touches the
+    network itself.
+    """
+    try:
+        cand = os.path.normcase(os.path.normpath(raw))
+    except (ValueError, OSError):
+        return False
+    for root in (_config_paths.data_home(), Path(tempfile.gettempdir())):
+        rootn = os.path.normcase(os.path.normpath(str(root)))
+        if not is_unc_shape(rootn):
+            continue
+        if cand == rootn or cand.startswith(rootn.rstrip("\\/") + os.sep):
+            return True
+    return False
+
+
 def validate_file_path(raw: str) -> str | None:
     """Validate and canonicalize a file path for dashboard file I/O.
 
-    Enforces: is_sensitive_path(), realpath canonicalization.
+    Enforces: the Windows UNC trusted-root gate (BEFORE any resolution --
+    ``realpath`` on a UNC path is itself the outbound SMB probe),
+    is_sensitive_path(), realpath canonicalization.
     Returns the canonical path or None if rejected.
     """
     import os
 
     if not raw:
+        return None
+    if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
         return None
     path = os.path.realpath(os.path.expanduser(raw))
     if is_sensitive_path(path):

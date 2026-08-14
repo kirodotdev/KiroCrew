@@ -32,7 +32,7 @@ import { api } from '../api/client'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { fileIcon } from '../utils/fileIcons'
-import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
+import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
@@ -178,6 +178,14 @@ export const CompactImagesCtx = createContext<boolean>(false)
  * Stable within a message, so re-renders and streaming do not re-request.
  */
 export const ImageVersionCtx = createContext<string | null>(null)
+
+/** The exact markdown string handed to ReactMarkdown, so components can map a
+ *  node's source position back to the original text. ImgWithFallback uses it
+ *  to see whether an image destination was `<…>`-wrapped — micromark strips
+ *  the wrap and percent-encodes BOTH forms identically, so the parsed url
+ *  alone cannot distinguish producer-encoded content from a legacy raw path
+ *  that happens to contain `%XX` (which must be preserved verbatim). */
+export const MdSourceCtx = createContext<string | null>(null)
 
 /**
  * Per-consumer override for rendered markdown LINKS.
@@ -850,7 +858,7 @@ const MD_COMPONENTS: Components = {
  *  in via .replaceWith(), so it never mutates DOM React owns — which could
  *  otherwise trigger "removeChild on Node" reconciliation crashes. */
 function ImgWithFallback({
-  node: _node,
+  node,
   src,
   alt,
   ...props
@@ -860,16 +868,35 @@ function ImgWithFallback({
   const basePath = useContext(BasePathCtx)
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
+  const source = useContext(MdSourceCtx)
   if (!src) return null
-  const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.')
+  // A Windows drive/UNC path (`C:/…` — urlTransform passes it through for
+  // image src) is as local as a POSIX `/…` path and must route to
+  // /api/file-raw the same way; it must NOT take the basePath-relative branch
+  // below, which is only for genuinely relative paths (issue #3497).
+  const isWinAbs = WINDOWS_ABS_PATH_RE.test(src)
+  const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.') || isWinAbs
     || (basePath && !src.startsWith('http'))
   let url: string
   if (isLocal) {
-    if (basePath && !src.startsWith('/') && !src.startsWith('~')) {
-      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + src
+    // micromark percent-encodes destinations in BOTH forms, so wrap-ness is
+    // recovered from the source text at this node's position: only a
+    // `<…>`-wrapped destination is producer-emitted (mdImageDest) and safe to
+    // decode back to the on-disk path. An unwrapped one is legacy content —
+    // a file literally named `photo%20copy.png` must stay verbatim, exactly
+    // as it resolved before destinations were ever encoded. decodeLocalPath
+    // keeps the raw form on malformed sequences and on decoded control
+    // characters (a `%00` NUL would crash the backend's realpath).
+    const start = node?.position?.start?.offset
+    const end = node?.position?.end?.offset
+    const wrapped = source != null && start != null && end != null
+      && /\]\(\s*</.test(source.slice(start, end))
+    const localPath = wrapped ? decodeLocalPath(src) : src
+    if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
+      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
       url = `/api/file-raw?path=${encodeURIComponent(resolved)}`
     } else {
-      url = `/api/file-raw?path=${encodeURIComponent(src)}`
+      url = `/api/file-raw?path=${encodeURIComponent(localPath)}`
     }
     // See ImageVersionCtx: without this every impression of a rewritten file
     // shares one cache entry and a new message renders the previous bytes. The
@@ -2136,9 +2163,11 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const fenced = fixCodeFences(clean)
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fenced)
   const md = (
-    <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-      {prepared}
-    </ReactMarkdown>
+    <MdSourceCtx.Provider value={prepared}>
+      <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
+        {prepared}
+      </ReactMarkdown>
+    </MdSourceCtx.Provider>
   )
   const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
   // The provider carries no DOM node, so sourcepos / lightbox scoping upstream

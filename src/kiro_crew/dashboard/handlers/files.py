@@ -11,6 +11,7 @@ import logging
 import mimetypes
 import os
 import re
+import stat as _stat_mod
 import subprocess
 import sys
 import threading
@@ -821,6 +822,30 @@ def _write_file_restricted(path: Path, data: bytes) -> None:
         os.write(fd, data)
     finally:
         os.close(fd)
+
+
+def _open_rb_nofollow(path: str) -> int:
+    """Open *path* read-only in binary, refusing symlinks, on every platform.
+
+    POSIX gets the atomic form: ``O_NOFOLLOW`` makes the kernel itself fail
+    the open with ``ELOOP`` when the final component is a symlink, so there is
+    no check-then-open race. Windows has no ``O_NOFOLLOW`` (referencing it
+    raises AttributeError, turning every read into an HTTP 500), so there the
+    guard is a pre-open ``lstat``: reject symlinks and any reparse point
+    (junctions included) with the same ``ELOOP`` errno the POSIX branch
+    produces, keeping callers' error handling identical. The window between
+    lstat and open is acceptable defence-in-depth there -- path containment
+    was already enforced by the caller's validation, and creating a symlink
+    on Windows requires elevated or developer-mode privileges. ``O_BINARY``
+    keeps the CRT from text-mode translating file bytes on Windows; it is 0
+    elsewhere.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        st = os.lstat(path)
+        if _stat_mod.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
+            raise OSError(errno.ELOOP, "symlinks not allowed", path)
+    return os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_BINARY", 0))
 
 
 # Magic-byte signatures for content-type validation at the upload boundary
@@ -1640,9 +1665,10 @@ async def api_file_download(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "not found"}, status=404)
 
-    # Read raw bytes via O_NOFOLLOW to atomically reject symlinks (no TOCTOU race).
+    # Read raw bytes rejecting symlinks (atomic O_NOFOLLOW on POSIX; lstat
+    # guard + O_BINARY on Windows -- see _open_rb_nofollow).
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = _open_rb_nofollow(path)
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(f.fileno())
             if st.st_size > _MAX_UPLOAD_BYTES:
@@ -1736,10 +1762,11 @@ async def api_file_raw(request: web.Request) -> web.Response:
     if not os.path.isfile(path):
         _log("not_found", path)
         return web.json_response({"error": "not found"}, status=404)
-    # Open with O_NOFOLLOW to atomically reject symlinks (no TOCTOU race).
+    # Open rejecting symlinks (atomic O_NOFOLLOW on POSIX; lstat guard +
+    # O_BINARY on Windows -- see _open_rb_nofollow).
     # Read header + full content through the same fd to avoid re-opening.
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = _open_rb_nofollow(path)
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(f.fileno())
             if st.st_size > _MAX_UPLOAD_BYTES:

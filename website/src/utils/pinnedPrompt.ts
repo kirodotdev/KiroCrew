@@ -1,4 +1,5 @@
 import type { DisplayItem } from '../pages/chat/types'
+import { mdImageDestToPath } from './fileTokens'
 
 /**
  * Geometry + selection helpers for the pinned-prompt banner (the most recent
@@ -166,8 +167,14 @@ export const PINNED_PREVIEW_LINES = 3
  * image is stripped from the text AND missed by the thumbnail pass, i.e. silently
  * lost. `g` is set; `matchAll` clones the regex and `replace` resets `lastIndex`
  * itself, so the shared instance carries no state between calls.
+ *
+ * The destination has two CommonMark shapes, mirrored from mdImageDest
+ * (fileTokens.ts): a plain run up to the first `)`, or an angle-bracket form
+ * `<…>` that may contain spaces, parentheses, and backslash-escaped `\<` `\>`
+ * `\\` — the `<…>` alternative must come first, or a wrapped destination
+ * containing `)` (e.g. `</tmp/screenshot (1).png>`) is cut at that paren.
  */
-const IMAGE_MD_RE = /!\[[^\]]*\]\(([^)]*)\)/g
+const IMAGE_MD_RE = /!\[[^\]]*\]\((<(?:\\[\\<>]|[^<>\\])*>|[^)]*)\)/g
 
 /** Fenced code block. Shared so every pass agrees on where code starts and ends. */
 const FENCE_RE = /```[\s\S]*?```/g
@@ -273,7 +280,13 @@ export function promptImages(content: string): string[] {
     // and thumbnailing it invents an image the prompt never carried.
     if (seg.fence) continue
     for (const m of seg.text.matchAll(IMAGE_MD_RE)) {
-      const src = (m[1] || '').trim()
+      // mdImageDest wraps whitespace/special-char destinations in CommonMark's
+      // `<…>` form with `\`, `<`, `>` backslash-escaped. This extractor reads
+      // the RAW markdown (micromark never sees it), so resolve the on-disk
+      // path with the shared wrap-aware inverse: producer-wrapped `<…>`
+      // destinations are unescaped and percent-decoded; unwrapped legacy
+      // destinations are preserved verbatim (issue #3497).
+      const src = mdImageDestToPath((m[1] || '').trim())
       if (src && !out.includes(src)) out.push(src)
     }
   }
@@ -300,6 +313,9 @@ export function promptImages(content: string): string[] {
 const FILE_RAW_PATH_PREFIX = '/api/file-raw?path='
 
 export function pinnedImageUrl(src: string): string {
+  // Sources arrive as on-disk paths (promptImages resolves the producer's
+  // wrapped form via mdImageDestToPath), so encode them into the query as-is —
+  // decoding here would corrupt a legacy path containing a literal `%XX`.
   return /^(?:https?:|data:|blob:)/i.test(src)
     ? src
     : FILE_RAW_PATH_PREFIX + encodeURIComponent(src)

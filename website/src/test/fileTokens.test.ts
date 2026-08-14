@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { prepareSendPayload, buildFileLabels, resolveFileSegment } from '../utils/fileTokens'
+import { prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
   it('disambiguates paths that share a basename', () => {
@@ -91,6 +91,92 @@ describe('prepareSendPayload', () => {
     expect(result.txt).toContain('[attached_file')
     expect(result.displayTxt).not.toContain('[attached_file')
     expect(result.displayTxt).toContain('![image]')
+  })
+
+  // Issue #3497: on Windows the upload endpoint returns backslash paths
+  // (`C:\Users\me\.kiro\crew\uploads\x.png`). In a markdown destination
+  // CommonMark eats `\` before punctuation (`\.` -> `.`), mangling the path,
+  // and the drive letter parses as an unknown `c:` scheme that the URL
+  // sanitizer empties — so the sender's bubble rendered no image at all.
+  describe('windows image paths (issue #3497)', () => {
+    it('emits a drive path in forward-slash form in both txt and displayTxt', () => {
+      const result = prepareSendPayload('caption', ['C:\\Users\\me\\.kiro\\crew\\uploads\\shot.png'])
+      expect(result.txt).toContain('![image](C:/Users/me/.kiro/crew/uploads/shot.png)')
+      expect(result.displayTxt).toContain('![image](C:/Users/me/.kiro/crew/uploads/shot.png)')
+      // imgPaths keeps the original path — it is the server-side identity.
+      expect(result.imgPaths).toEqual(['C:\\Users\\me\\.kiro\\crew\\uploads\\shot.png'])
+    })
+
+    it('wraps a destination containing spaces in angle brackets', () => {
+      const result = prepareSendPayload('', ['C:\\Users\\John Doe\\uploads\\shot.png'])
+      expect(result.displayTxt).toBe('![image](<C:/Users/John Doe/uploads/shot.png>)')
+    })
+
+    it('wraps a POSIX destination containing spaces without touching separators', () => {
+      const result = prepareSendPayload('', ['/tmp/my shots/pic.png'])
+      expect(result.displayTxt).toBe('![image](</tmp/my shots/pic.png>)')
+    })
+
+    it('normalizes a UNC share path to forward slashes (roaming profiles)', () => {
+      const result = prepareSendPayload('', ['\\\\fileserver\\home\\me\\.kiro\\crew\\uploads\\shot.png'])
+      expect(result.displayTxt).toBe('![image](//fileserver/home/me/.kiro/crew/uploads/shot.png)')
+    })
+
+    it('wraps and escapes a literal % so consumers decode only marked forms', () => {
+      // The wrap is the provenance marker: without it, a legacy destination
+      // containing `%20` would be indistinguishable from producer-encoded
+      // output and a file literally named `photo%20copy.png` would decode to
+      // `photo copy.png` and fetch the wrong file.
+      const result = prepareSendPayload('', ['/tmp/photo%20copy.png'])
+      expect(result.displayTxt).toBe('![image](</tmp/photo%2520copy.png>)')
+    })
+
+    it('escapes backslash-before-punctuation via the bracketed form (POSIX)', () => {
+      // `\.` in a plain destination is a CommonMark escape that collapses to
+      // `.` — the wrap + escape keeps the on-disk name intact.
+      const result = prepareSendPayload('', ['/tmp/my dir\\.hidden.png'])
+      expect(result.displayTxt).toBe('![image](</tmp/my dir\\\\.hidden.png>)')
+    })
+
+    it('escapes angle brackets inside the bracketed form', () => {
+      const result = prepareSendPayload('', ['/tmp/a <b>.png'])
+      expect(result.displayTxt).toBe('![image](</tmp/a \\<b\\>.png>)')
+    })
+
+    it('wraps a POSIX path containing a backslash (letter-follow case included)', () => {
+      // Any backslash routes into the escaped bracketed form — `\n` after `\`
+      // is not a CommonMark escape, but wrapping uniformly keeps one rule.
+      const result = prepareSendPayload('', ['/tmp/weird\\name.png'])
+      expect(result.displayTxt).toBe('![image](</tmp/weird\\\\name.png>)')
+    })
+
+    it('wraps a parenthesized duplicate-name path without escaping the parens', () => {
+      // Parens are legal inside CommonMark's <…> destination.
+      const result = prepareSendPayload('', ['/tmp/screenshot (1).png'])
+      expect(result.displayTxt).toBe('![image](</tmp/screenshot (1).png>)')
+    })
+
+    it('mdImageDestToPath is the full inverse of mdImageDest', () => {
+      // Already-forward-slashed inputs (slash normalization is one-way).
+      for (const p of [
+        '/tmp/photo.png',
+        '/tmp/screenshot (1).png',
+        'C:/Users/John Doe/uploads/shot.png',
+        '/tmp/my dir\\.hidden.png',
+        '/tmp/a <b>.png',
+        '//fileserver/home/me/shot.png',
+        '/tmp/photo%20copy.png',
+        '/tmp/100%.png',
+      ]) {
+        expect(mdImageDestToPath(mdImageDest(p))).toBe(p)
+      }
+    })
+
+    it('mdImageDestToPath preserves an unwrapped legacy destination verbatim', () => {
+      // Pre-existing history was written raw: `%20` there is part of the
+      // on-disk name, not an encoding.
+      expect(mdImageDestToPath('/tmp/photo%20copy.png')).toBe('/tmp/photo%20copy.png')
+    })
   })
 
   it('includes @-referenced files inline and unreferenced as appended tokens', () => {

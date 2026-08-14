@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -136,3 +138,50 @@ async def test_rejects_sensitive_path(tmp_path, mock_sel):
             resp = await client.get(f"/api/file-raw?path={f}")
             assert resp.status == 403
             assert "sensitive" in (await resp.json())["error"]
+
+
+# --- _open_rb_nofollow: Windows-safe open (no O_NOFOLLOW there) ---
+
+
+class TestOpenRbNofollow:
+    """The endpoint's open must work on platforms WITHOUT ``os.O_NOFOLLOW``.
+
+    Windows has no ``O_NOFOLLOW``; a bare reference raises AttributeError and
+    turns every /api/file-raw request into an HTTP 500 — on exactly the
+    platform whose image previews route through this endpoint.
+    """
+
+    def test_regular_file_opens_without_o_nofollow(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers.files import _open_rb_nofollow
+
+        f = tmp_path / "img.png"
+        f.write_bytes(b"\x89PNG payload")
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        fd = _open_rb_nofollow(str(f))
+        with os.fdopen(fd, "rb") as fh:
+            assert fh.read() == b"\x89PNG payload"
+
+    def test_symlink_rejected_with_eloop_without_o_nofollow(self, tmp_path, monkeypatch):
+        """The lstat fallback must keep the POSIX ELOOP contract so callers'
+        error handling (403 symlinks not allowed) is platform-invariant."""
+        from kiro_crew.dashboard.handlers.files import _open_rb_nofollow
+
+        target = tmp_path / "secret.png"
+        target.write_bytes(b"x")
+        link = tmp_path / "link.png"
+        os.symlink(target, link)
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        with pytest.raises(OSError) as exc_info:
+            _open_rb_nofollow(str(link))
+        assert exc_info.value.errno == errno.ELOOP
+
+    def test_symlink_rejected_with_o_nofollow_present(self, tmp_path):
+        from kiro_crew.dashboard.handlers.files import _open_rb_nofollow
+
+        target = tmp_path / "secret.png"
+        target.write_bytes(b"x")
+        link = tmp_path / "link.png"
+        os.symlink(target, link)
+        with pytest.raises(OSError) as exc_info:
+            _open_rb_nofollow(str(link))
+        assert exc_info.value.errno == errno.ELOOP
