@@ -189,6 +189,18 @@ Amazon/Brazil constructs.
 
 ### 3.1 Entry shape — tagged `source` union
 
+> **Amended: `source` is AUTHORED input only and is not published.** This section
+> describes the authored catalog, where it still holds in full. The published
+> document dropped the block entirely (`KiroCrewApps` PR #17) because nothing read
+> it: the client resolves inventory from its own bundled seed, keyed `branch`, and
+> detects an update by comparing the version at that branch's tip against the
+> installed one — it never reads install coordinates from the served document.
+> Publishing them advertised a contract nothing honoured. The four `reserved`
+> transports below (`archive`, `bundle`, `oci`, `s3`) existed only in the published
+> schema and had no authored counterpart, so they could be validated but never
+> written; they are gone. Re-publishing a coordinate is a live decision again the
+> day inventory migrates to the catalog, and §3.1's rules are what it should follow.
+
 Where an app's bytes come from is a **discriminated union** under `source`, not a
 set of flat sibling URL fields. Only `type: "git"` is defined in v1; the
 discriminator exists from day one so a second transport is additive:

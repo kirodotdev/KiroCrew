@@ -201,9 +201,8 @@ class TestAnnotate:
         assert "_index_author" not in rows[0]
 
     def test_an_entry_matching_no_row_is_ignored(self):
-        """Annotate-only: a published git source is pinned to a COMMIT and the
-        install path clones with --branch, so new inventory needs that path
-        changed first."""
+        """Annotate-only: the catalog carries no fetch coordinates, so an entry
+        that matches no existing row has nothing to install from."""
         rows = self.rows()
         oc.annotate(rows, [{"name": "not-listed", "displayName": "Ghost"}])
         assert [r["name"] for r in rows] == ["demo-app", "other-app"]

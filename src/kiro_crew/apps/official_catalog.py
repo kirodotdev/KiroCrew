@@ -22,10 +22,14 @@ instead of degrading silently:
   withdrawn app must never be rendered because we skipped the mechanism that
   withdraws it.
 - **No new inventory.** Every entry annotates a row that already exists (a
-  built-in discovered from disk, or a seed-index row). A published ``git`` source
-  is pinned to a COMMIT, and the install path clones with ``--branch``, which a
-  commit id is not -- so adding installable entries needs that path changed
-  first. An entry matching nothing is ignored.
+  built-in discovered from disk, or a seed-index row); an entry matching nothing
+  is ignored. The catalog is a PRESENTATION document and carries no fetch
+  coordinates at all, so there is nothing here to install from. Inventory is
+  resolved from the bundled seed, whose rows are keyed by ``branch``, and an
+  update is detected by comparing the version at that branch's tip against the
+  installed one. Adding installable entries means writing that read path first,
+  and choosing the key it reads -- which is where a coordinate would have to be
+  published again.
 """
 
 from __future__ import annotations
