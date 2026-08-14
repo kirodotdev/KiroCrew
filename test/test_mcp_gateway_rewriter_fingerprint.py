@@ -10,6 +10,7 @@ strictly worse than the boot cost the cache removes.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import os
@@ -43,6 +44,229 @@ def test_rewrite_agents_signature_is_pinned_to_fingerprint_inputs() -> None:
         "stub_servers",
         "pooling_enabled",
     }
+
+
+# --- Ambient-read tripwire -------------------------------------------------
+#
+# The signature pin above catches new *parameters*; this scan catches new
+# *ambient reads* — env vars, config-loader lookups, home/cwd resolution —
+# consulted inside the rewrite pass without a signature change. An ambient
+# read that affects the output but is absent from the fingerprint yields
+# silently stale overlays, so every read reaching the pass must be a conscious
+# decision: either fingerprinted or documented output-neutral.
+#
+# Scope: top-level functions in ``rewriter.py`` only. ``defs`` is built from
+# the module body, so a method on a class or a helper in another module is NOT
+# scanned — the tripwire covers the in-module helper graph, not everything the
+# pass can transitively touch. A NEW entry point added to the pass must also be
+# added to ``_REWRITE_PASS_ROOTS`` to be covered.
+#
+# Each allowlist entry is (enclosing top-level function, channel). Env reads
+# with a literal key carry the variable name (``os.environ:PATH``), so a new
+# variable read in an already-listed function still trips. On a failure,
+# classify before touching this list:
+#   * NEW only            -> a genuinely new read. Output-affecting: add it to
+#     ``_rewrite_inputs_fingerprint`` AND an invalidation test in this file.
+#     Output-neutral: document why in the fingerprint docstring (see the
+#     ``forward_declared_env`` precedent). Then extend this allowlist.
+#   * same channel NEW in one function and STALE in another -> a MOVED read
+#     (refactor). Re-key the entry to the new function; do NOT change the
+#     fingerprint — a redundant key would force a full rewrite for every
+#     existing user on upgrade.
+#   * STALE only          -> the read is gone; prune the entry.
+_AMBIENT_READ_ALLOWLIST = frozenset(
+    {
+        # PATH feeds shutil.which(); fingerprinted as path_env, and the probe
+        # RESULTS are stored + re-run on the cache-hit path.
+        ("_build_stub_entry", "os.environ:PATH"),
+        # Baked into every overlay ``command``; fingerprinted as "python".
+        ("_build_stub_entry", "sys.executable"),
+        # The fingerprint builder reading its own declared inputs.
+        ("_rewrite_inputs_fingerprint", "os.environ:PATH"),
+        ("_rewrite_inputs_fingerprint", "os.environ:PATHEXT"),
+        ("_rewrite_inputs_fingerprint", "sys.executable"),
+        # Selects warning TEXT only; documented output-neutral in the
+        # ``_rewrite_inputs_fingerprint`` docstring (gatewayd re-reads the
+        # flag at spawn time, not from the overlay).
+        ("forward_declared_env_enabled", "config-import:kiro_crew.config.loader"),
+    }
+)
+
+#: Entry points of the rewrite pass; the scan covers their transitive
+#: in-module reference closure (see ``_referenced_defs``).
+_REWRITE_PASS_ROOTS = frozenset(
+    {"rewrite_agents", "_rewrite_single_spec", "_build_stub_entry"}
+)
+
+
+def _module_config_names(tree: ast.Module) -> set[str]:
+    """Module-level names bound by importing from ``kiro_crew.config*``.
+
+    A module-scope ``from kiro_crew.config.x import Y`` followed by ``Y.load()``
+    inside a helper is a config read with no function-local import to detect,
+    so the imported names themselves become detection targets.
+    """
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").startswith("kiro_crew.config"):
+                for alias in node.names:
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("kiro_crew.config"):
+                    names.add((alias.asname or alias.name).split(".")[0])
+    return names
+
+
+def _referenced_defs(fn: ast.AST, defs: dict[str, ast.AST]) -> set[str]:
+    """Module functions REFERENCED inside ``fn`` — not just directly called.
+
+    Any ``Name`` or attribute mention counts, so aliasing (``f = helper``) and
+    callback passing (``run(helper)``) pull ``helper`` into the closure. This
+    deliberately over-approximates (a docstring cannot alias, but a mention in
+    code can): the tripwire is fail-closed by design — an over-scanned
+    function's reads surface as an explicit allowlist decision, never as a
+    silent pass.
+    """
+    out: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name):
+            out.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            out.add(node.attr)
+    return out & set(defs)
+
+
+def _is_os_environ(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
+
+
+def _env_key(args: list[ast.expr]) -> str:
+    if args and isinstance(args[0], ast.Constant) and isinstance(args[0].value, str):
+        return args[0].value
+    return "<dynamic>"
+
+
+def _ambient_reads(
+    func_name: str, fn: ast.AST, config_names: set[str]
+) -> set[tuple[str, str]]:
+    """Best-effort detectors for the common ambient channels.
+
+    Not a sandbox: a determined read can evade an AST scan. The goal is to
+    make the ORDINARY way of adding one (``os.environ``, a config-loader
+    import or name, home/cwd resolution) fail a test until the fingerprint
+    decision is made consciously.
+    """
+    hits: set[tuple[str, str]] = set()
+    consumed: set[int] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                recv = func.value
+                if isinstance(recv, ast.Name) and recv.id == "os":
+                    if func.attr == "getenv":
+                        hits.add((func_name, f"os.environ:{_env_key(node.args)}"))
+                    elif func.attr == "getcwd":
+                        hits.add((func_name, "os.getcwd"))
+                elif func.attr == "get" and _is_os_environ(recv):
+                    hits.add((func_name, f"os.environ:{_env_key(node.args)}"))
+                    consumed.add(id(recv))
+                # Receiver-agnostic on purpose: ``os.path.expanduser(p)``,
+                # ``Path(p).expanduser()``, and ``Path.home()`` all resolve
+                # the ambient home/cwd regardless of the receiver's AST shape.
+                if func.attr in ("expanduser", "expandvars", "home", "cwd"):
+                    hits.add((func_name, f".{func.attr}()"))
+        elif isinstance(node, ast.Subscript) and _is_os_environ(node.value):
+            key = "<dynamic>"
+            if isinstance(node.slice, ast.Constant) and isinstance(
+                node.slice.value, str
+            ):
+                key = node.slice.value
+            hits.add((func_name, f"os.environ:{key}"))
+            consumed.add(id(node.value))
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").startswith("kiro_crew.config"):
+                hits.add((func_name, f"config-import:{node.module}"))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("kiro_crew.config"):
+                    hits.add((func_name, f"config-import:{alias.name}"))
+    # Second pass: reads the call-shaped pass above did not consume — a bare
+    # ``os.environ`` (copy/iteration/membership), sys/platform attributes, and
+    # any mention of a module-level config-loader name (call OR alias).
+    for node in ast.walk(fn):
+        if _is_os_environ(node) and id(node) not in consumed:
+            hits.add((func_name, "os.environ:<dynamic>"))
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            base, attr = node.value.id, node.attr
+            if base == "sys" and attr in ("executable", "argv", "platform"):
+                hits.add((func_name, f"sys.{attr}"))
+            elif base == "platform":
+                hits.add((func_name, f"platform.{attr}"))
+        elif isinstance(node, ast.Name) and node.id in config_names:
+            hits.add((func_name, f"config-name:{node.id}"))
+    return hits
+
+
+def test_rewrite_pass_ambient_reads_match_pinned_allowlist() -> None:
+    """A new ambient read reaching the rewrite pass must fail until classified.
+
+    Walks the transitive in-module reference closure from the rewrite-pass
+    roots and asserts the exact set of detected ambient reads equals the
+    pinned allowlist — a NEW read fails (classify: fingerprint it or document
+    it output-neutral), a REMOVED read fails (prune the stale entry), and a
+    read that MOVED functions in a refactor shows up as one NEW + one STALE
+    for the same channel (re-key the entry; no fingerprint change).
+    """
+    tree = ast.parse(inspect.getsource(rewriter))
+    defs: dict[str, ast.AST] = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    missing_roots = _REWRITE_PASS_ROOTS - set(defs)
+    assert not missing_roots, (
+        f"rewrite-pass roots renamed or removed: {sorted(missing_roots)}; "
+        "update _REWRITE_PASS_ROOTS to the new entry points"
+    )
+    config_names = _module_config_names(tree)
+
+    reachable: set[str] = set()
+    frontier = set(_REWRITE_PASS_ROOTS)
+    while frontier:
+        name = frontier.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        frontier |= _referenced_defs(defs[name], defs) - reachable
+
+    found: set[tuple[str, str]] = set()
+    for name in sorted(reachable):
+        found |= _ambient_reads(name, defs[name], config_names)
+
+    new = found - _AMBIENT_READ_ALLOWLIST
+    stale = _AMBIENT_READ_ALLOWLIST - found
+    moved = {ch for _, ch in new} & {ch for _, ch in stale}
+    assert found == _AMBIENT_READ_ALLOWLIST, (
+        f"ambient reads changed in the rewrite pass.\n"
+        f"NEW: {sorted(new)}\n"
+        f"STALE: {sorted(stale)}\n"
+        f"Same channel in BOTH lists ({sorted(moved) or 'none'}) = a MOVED "
+        f"read: re-key the allowlist entry to the new function, do NOT touch "
+        f"the fingerprint.\n"
+        f"NEW only = a genuinely new read: classify it — output-affecting "
+        f"goes into _rewrite_inputs_fingerprint plus an invalidation test; "
+        f"output-neutral gets documented in the fingerprint docstring. Then "
+        f"extend _AMBIENT_READ_ALLOWLIST.\n"
+        f"STALE only = the read is gone: prune the entry."
+    )
 
 
 def _mk_tree(root: Path, *, n_agents: int = 2, with_env: bool = True) -> Path:
