@@ -1805,21 +1805,33 @@ class AcpRuntime:
 
         Unlike create_session()+handle.load(), this issues session/load
         DIRECTLY (no session/new first), using the ORIGINAL sid as sessionId
-        and passing cwd + mcpServers:[] + the full transcript path, exactly as
-        AcpClient._initialize_session does. This avoids the double-session
-        footgun (fresh session/new context replayed on top of the loaded
-        transcript) that produced stopReason='refusal'. Raises on failure so
-        the caller can fall back to create_session().
+        and passing cwd + the pooled broker stubs + the full transcript path,
+        exactly as AcpClient._initialize_session does. This avoids the
+        double-session footgun (fresh session/new context replayed on top of
+        the loaded transcript) that produced stopReason='refusal'. Raises on
+        failure so the caller can fall back to create_session().
         """
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
         if not self._can_load_session:
             raise AcpRuntimeError("Backend does not advertise session/load support")
 
+        # Re-declare the pooled broker stubs so a resumed session keeps talking
+        # to the broker — same injection as create_session() and the AcpClient
+        # resume path (client.py). session/load re-initializes the session's MCP
+        # servers (see the budget note below), so an empty list here is APPLIED,
+        # not ignored: the stubs stop shadowing the agent spec's same-named
+        # entries and kiro-cli spawns its own copy of every pooled server,
+        # silently un-pooling the session for the rest of its life. Resolved off
+        # the event loop — the overlay lookup stats and reads files. Empty when
+        # the shared gateway is disabled, so non-pooled installs still send [].
+        mcp_servers = await asyncio.to_thread(
+            pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
+        )
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
             "cwd": str(cwd if cwd else self._work_dir),
-            "mcpServers": [],  # kiro-cli gets its servers via --agent
+            "mcpServers": mcp_servers,
         }
         if session_file:
             # Only kiro-cli is handed a transcript path. A backend that locates

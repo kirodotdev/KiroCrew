@@ -3252,8 +3252,9 @@ class TestAcpRuntimePidTracking:
 class TestAcpRuntimeLoadSession:
     """load_session() must mirror AcpClient._initialize_session's resume path:
     issue session/load DIRECTLY (no session/new first) under the ORIGINAL sid,
-    with the same cwd + empty mcpServers + _kiro.dev/session_file _meta. The
-    double-session drift it replaces produced stopReason='refusal'."""
+    with the same cwd + mcpServers (pooled broker stubs re-declared; [] when no
+    overlay is configured) + _kiro.dev/session_file _meta. The double-session
+    drift it replaces produced stopReason='refusal'."""
 
     @pytest.mark.asyncio
     async def test_load_session_sends_direct_session_load_params(self, monkeypatch):
@@ -3287,6 +3288,8 @@ class TestAcpRuntimeLoadSession:
         assert load_params == {
             "sessionId": "sid-123",
             "cwd": "/work",
+            # [] because _make_runtime configures no MCP-gateway overlay — the
+            # non-pooled path is unchanged by the #3528 stub re-declaration.
             "mcpServers": [],
             "_meta": {"_kiro.dev/session_file": "/home/u/.kiro/sessions/cli/sid-123.json"},
         }
@@ -3339,6 +3342,8 @@ class TestAcpRuntimeLoadSession:
         await rt.load_session("/k/sid.json", "sid", cwd="/w", agent="kirocrew")
 
         # Mirror of AcpClient's kiro-branch load_params (client.py step 2).
+        # mcpServers is [] on BOTH paths here because no overlay is configured;
+        # the pooled case is covered by test_load_session_redeclares_pooled_stubs.
         expected = {
             "sessionId": "sid",
             "cwd": "/w",
@@ -3372,6 +3377,140 @@ class TestAcpRuntimeLoadSession:
             await rt.load_session("/k/sid.json", "sid-z", cwd="/w", agent="kirocrew")
         assert METHOD_SESSION_TERMINATE in methods
         assert "sid-z" not in rt._session_queues
+
+    @pytest.mark.asyncio
+    async def test_load_session_redeclares_pooled_stubs(self, tmp_path, monkeypatch):
+        """#3528 regression: a resumed session must re-declare the pooled broker
+        stubs. session/load re-initializes the session's MCP servers, so the []
+        this path used to send was APPLIED — the stubs stopped shadowing the
+        agent spec's same-named entries and kiro-cli spawned its own copy of
+        every pooled server, silently un-pooling the session for life.
+
+        Asserts on the EMITTED mcpServers of both requests: load_session must
+        carry exactly the entries create_session injects for the same agent +
+        overlay. Mutating the fix back to [] fails the first assert."""
+        from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+
+        overlay = tmp_path / "agents"
+        overlay.mkdir()
+        (overlay / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "mcpServers": {"builder-mcp": {
+                _WRAPPER_MARKER: True,
+                "command": "/data/mcp-gateway/stubs/mc-mcp-stub-wrapper.sh",
+                "args": ["--target-command=builder-mcp"],
+                "env": {},
+            }}}),
+            encoding="utf-8",
+        )
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        rt._mcp_gateway_overlay = str(overlay)
+
+        sent: list[tuple[str, dict]] = []
+
+        async def _fake_send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {}, "models": []}
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-new"}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+        await rt.load_session("/k/sid.json", "sid-r", cwd="/w", agent="kirocrew")
+        load_params = next(p for m, p in sent if m == METHOD_SESSION_LOAD)
+        assert [e["name"] for e in load_params["mcpServers"]] == ["builder-mcp"]
+
+        # Parity with create_session for the same agent + overlay: the two
+        # injection paths must never diverge.
+        await rt.create_session(cwd="/w", agent="kirocrew")
+        new_params = next(p for m, p in sent if m == METHOD_SESSION_NEW)
+        assert load_params["mcpServers"] == new_params["mcpServers"]
+
+    @pytest.mark.asyncio
+    async def test_load_session_resolves_stubs_off_the_event_loop(self, monkeypatch):
+        """The overlay lookup stats and reads files; like create_session it must
+        run via asyncio.to_thread, not on the loop thread."""
+        import threading
+
+        import kiro_crew.acp.runtime as rt_mod
+
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        rt._mcp_gateway_overlay = "/nonexistent-overlay"
+
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+
+        def _recording_pooled(overlay_dir, agent, channel_id=None):
+            seen.append(threading.current_thread())
+            return []
+
+        monkeypatch.setattr(rt_mod, "pooled_session_servers", _recording_pooled)
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        await rt.load_session("/k/sid.json", "sid-t", cwd="/w", agent="kirocrew")
+
+        assert seen, "load_session never consulted pooled_session_servers"
+        assert all(t is not loop_thread for t in seen)
+
+    def test_every_session_request_builder_consults_pooled_servers(self):
+        """#3528 guard: the stub injection now lives at multiple call sites in
+        two files, and this bug was exactly one of them silently sending [].
+        Enumerate every function that issues session/new or session/load and
+        assert each one consults the pooled-stub resolution (either
+        pooled_session_servers directly or the _pooled_mcp_servers hook), so a
+        fourth builder — or a regression in an existing one — fails here
+        instead of shipping another silent un-pooling path."""
+        import ast
+        import inspect
+
+        import kiro_crew.acp.client as client_mod
+        import kiro_crew.acp.runtime as rt_mod
+
+        _SEND_FUNCS = {"_send_request", "_send_and_await"}
+        _SESSION_METHODS = {"METHOD_SESSION_NEW", "METHOD_SESSION_LOAD"}
+
+        def _builders(module) -> dict[str, str]:
+            src = inspect.getsource(module)
+            out: dict[str, str] = {}
+            for node in ast.walk(ast.parse(src)):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for call in ast.walk(node):
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and call.func.attr in _SEND_FUNCS
+                        and call.args
+                        and isinstance(call.args[0], ast.Name)
+                        and call.args[0].id in _SESSION_METHODS
+                    ):
+                        out[node.name] = ast.get_source_segment(src, node) or ""
+                        break
+            return out
+
+        builders = {**_builders(rt_mod), **_builders(client_mod)}
+        # The four known builders; a new one is included automatically.
+        assert {
+            "create_session",
+            "load_session",
+            "_new_session_following_substitution",
+            "_initialize_session",
+        } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
+        for name, body in builders.items():
+            assert (
+                "pooled_session_servers" in body or "_pooled_mcp_servers" in body
+            ), (
+                f"{name} issues session/new or session/load but never consults "
+                "the pooled broker stubs — it would un-pool its sessions (#3528)"
+            )
 
 
 @pytest.mark.asyncio

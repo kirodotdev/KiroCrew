@@ -184,9 +184,13 @@ attempts `session/load` instead of `session/new`:
 
 1. Check `agentCapabilities.loadSession` from `initialize` response
 2. Verify `~/.kiro/sessions/cli/{sid}.json` exists on disk
-3. Send `session/load` with `sessionId`, `cwd`, `mcpServers: []`, and
-   `_meta: {"_kiro.dev/session_file": "<path>"}` (required — without it kiro-cli
-   silently ignores the request)
+3. Send `session/load` with `sessionId`, `cwd`, `mcpServers` (the pooled
+   broker stubs, re-declared so the resumed session keeps talking to the
+   shared gateway — `session/load` re-initializes the session's MCP servers,
+   so an empty list would un-pool the session; `[]` only when the gateway is
+   disabled), and `_meta: {"_kiro.dev/session_file": "<path>"}` (required —
+   without it kiro-cli silently ignores the request). `AcpRuntime.load_session`
+   builds the same params for the multiplexed runtime.
 4. On success (response contains `modes`): set `_session_id`, `_resumed = True`
 5. On failure (JSON-RPC error, timeout, file missing): fall through to `session/new`
 
