@@ -412,6 +412,32 @@ async def test_sessions_finds_a_session_by_conversation_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sessions_cjk_query_reaches_title_fallback() -> None:
+    """A spaceless CJK query must trigger the zero-hit TITLE fallback.
+
+    The fallback used to gate on a whitespace word count, which a spaceless
+    CJK query (one "word") never satisfied — so when the shared search found
+    nothing, the fallback silently demanded the literal title substring. The
+    gate now derives from the same parse_search_query needles as the shared
+    search, so a title holding the query's words apart still resolves.
+    """
+    log = _ConversationLog(
+        [
+            {"key": "dashboard_chat-0", "title": "内存的泄漏问题排查", "memory_mode": "persistent"},
+            {"key": "dashboard_chat-1", "title": "Unrelated", "memory_mode": "persistent"},
+        ],
+        {"dashboard:chat-0": [], "dashboard:chat-1": []},
+    )
+    dispatcher, client, _ = _dispatcher({"u1"}, log)
+
+    await dispatcher.handle_message(_message("!session 内存泄漏"))
+
+    # The fake shared search misses (no literal phrase anywhere), so only the
+    # title fallback — running the REAL parse + gate — can produce this row.
+    assert _picker_labels(client) == ["1. 内存的泄漏问题排查"]
+
+
+@pytest.mark.asyncio
 async def test_sessions_delegates_to_the_shared_search() -> None:
     """Assert DELEGATION, not re-implemented ranking.
 

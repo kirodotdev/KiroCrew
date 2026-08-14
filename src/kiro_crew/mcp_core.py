@@ -44,7 +44,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.context_management import summarize_result
 from kiro_crew.dashboard.origin import dashboard_socket_path
 from kiro_crew.history import _SEARCH_SCAN_WINDOW as SEARCH_SCAN_WINDOW
-from kiro_crew.history import ConversationLog, is_incognito_transcript, search_query_tokens
+from kiro_crew.history import ConversationLog, is_incognito_transcript, snippet_needles
 from kiro_crew.knowledge.dedup import dedup_sweep
 from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.retrieval import HybridRetriever
@@ -1369,14 +1369,15 @@ def _extract_history_snippet(messages: list[dict], needle: str) -> str:
     # is independently callable.
     if not needle.strip():
         return ""
-    # Same tokenizer as search_sessions: that call decides a session MATCHED on
-    # scattered tokens, so searching only the whole phrase here would return ""
+    # Same parse as search_sessions: that call decides a session MATCHED on
+    # scattered needles, so searching only the whole phrase here would return ""
     # and suppress the row's snippet for exactly the multi-word queries the
-    # token-wise match enables. Bounded + deduplicated for the same reason.
-    tokens, phrase = search_query_tokens(needle)
-    if not tokens:
+    # needle-wise match enables. Ordered highest-signal first (phrase, whole
+    # terms and CJK bigrams, then lone characters) so the excerpt centers on
+    # the most meaningful hit available.
+    needles_cf = snippet_needles(needle)
+    if not needles_cf:
         return ""
-    needles_cf = [phrase] if tokens == [phrase] else [phrase, *tokens]
     for m in messages:
         # Only surface user/assistant content (mirror get_chat_session) so the
         # snippet is the human-facing context, not a tool/system trace blob.
