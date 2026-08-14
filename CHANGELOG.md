@@ -139,6 +139,26 @@ All notable changes to KiroCrew are documented in this file.
   agent-mediated `deploy_artifact` preview. Operators who had already narrowed
   `publish.allowed_destinations` must add `deploy-web-aws` to keep deploying. (#3599)
 
+- **The Linux desktop app no longer shows two title bars on GNOME-family
+  Wayland desktops.** The window manager's native decoration used to stack on
+  top of the dashboard's own 42px header, wasting vertical space and
+  duplicating controls. On Wayland sessions of desktops that prefer
+  client-side decorations (GNOME, Ubuntu, Unity, Pantheon, Budgie) the window
+  now drops the native frame: the header doubles as the title bar via an
+  injected drag region, and a minimize/maximize/close cluster is injected at
+  the header's top-right (frameless Linux gets no OS-painted controls, unlike
+  the macOS traffic lights and the Windows caption overlay). X11 sessions,
+  desktops that expect server-side decorations (KDE, XFCE, tiling window
+  managers — including hybrids like Regolith that also report a GNOME token),
+  and unknown environments keep the native frame: frameless X11 windows lose
+  mouse edge-resize, which would be worse than the doubled bar. The
+  `linuxFrameless` key in the desktop app's own config (Connection → Open
+  Config File, also in the tray menu; read once at launch) forces either
+  shape. On frameless windows the menu bar auto-hides (press Alt to reveal
+  it) — kept visible it would re-create the stacked-bars problem, removed it
+  would take the menu away entirely. Connection windows follow the same
+  decision. (#3606)
+
 - **A lesson from a previous embedding-model generation could no longer get
   silently deleted or offered as a false contradiction.** `write_lesson`'s
   semantic dedup and `find_contradiction_candidates` compared raw embeddings

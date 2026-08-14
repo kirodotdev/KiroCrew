@@ -38,9 +38,9 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
 import InstanceTabBar, { visibleInstanceTabs, useCrewSwitcherExpanded, setCrewSwitcherExpanded } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
-import { TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
-import { isElectron, isWinElectron } from '../lib/electron'
+import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
 import type { DragGap } from '../lib/dragGaps'
 
 import { i18nT } from '../i18n/t'
@@ -492,11 +492,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           swallows a header button's clicks. */}
       {isElectron && activeId && !showPanel && !showLoading && !!warm[activeId] && activeReady &&
         (dragGaps[activeId] ?? []).map((g, i) => {
-          // On Windows, stay clear of the native titleBarOverlay caption buttons
-          // (right edge); the pane can't know the host is Windows, so clip here.
+          // Stay clear of the caption controls at the right edge: Windows'
+          // native titleBarOverlay buttons, or frameless Linux's injected
+          // cluster (#electron-linux-controls). The pane can't know the host
+          // platform, so clip here — otherwise a drag strip overlays Close and
+          // a click there drags the window instead.
           const rightBound = isWinElectron
             ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
-            : Number.POSITIVE_INFINITY
+            : isLinuxFramelessElectron
+              ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
+              : Number.POSITIVE_INFINITY
           const left = g.x
           const width = Math.min(g.x + g.w, rightBound) - left
           if (width < 1) return null

@@ -79,6 +79,7 @@
       "local-token.js",
       "local-gateway.js",
       "window-state.js",
+      "linux-frame.js",
       "global-hotkey.js",
       "gateway-liveness.js",
       "gateway-recovery.js",

@@ -109,6 +109,7 @@ const store = new Store({
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
     runLocalGateway: true,                 // false = act as a pure client; never start a gateway on this machine
+    linuxFrameless: null,                  // Linux window chrome: true = frameless, false = native frame, null = follow the desktop environment (see linux-frame.js)
   },
 });
 
@@ -174,6 +175,17 @@ const WINDOWS_TITLEBAR_MENU_IDS = new Set([
   "window-menu",
   "help-menu",
 ]);
+const IS_LINUX = process.platform === "linux";
+// Whether Linux windows drop the native frame so the dashboard's 42px header
+// can double as the title bar (as on macOS/Windows) instead of stacking under
+// the WM's own decoration. Decided ONCE at launch from the desktop
+// environment plus the operator override, because every window in the process
+// must agree (see linux-frame.js for the full contract).
+const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
+const LINUX_FRAME_DECISION = IS_LINUX
+  ? decideLinuxFrame({ env: process.env, override: store.get("linuxFrameless") })
+  : null;
+const LINUX_FRAMELESS = !!(LINUX_FRAME_DECISION && LINUX_FRAME_DECISION.frameless);
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -186,7 +198,10 @@ function currentThemeAccent() {
 // The dashboard view fills the whole content area on all platforms. On macOS
 // and Windows the dashboard's own 42px header doubles as the title bar. macOS
 // insets native traffic lights; Windows overlays its native caption controls
-// and renders application-menu triggers inside the header.
+// and renders application-menu triggers inside the header. On Linux the window
+// is frameless (frame:false) on desktops that prefer client-side decorations —
+// same injected drag region, with an injected caption-control cluster instead
+// of native controls (see linux-frame.js).
 
 const { validateRemoteSettings } = require("./validation");
 const { attachContextMenu } = require("./context-menu");
@@ -1163,6 +1178,11 @@ function setupWindowContents(win, backendUrl) {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // The SPA reserves header space for the injected Linux caption controls
+      // only when the window is actually frameless -- a runtime decision
+      // (desktop environment + override), not a platform constant, so it is
+      // carried to the preload explicitly (read back via process.argv there).
+      additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
     },
   });
   view.setBackgroundColor("#00000000");
@@ -1548,17 +1568,19 @@ function setupWindowContents(win, backendUrl) {
   view.webContents.on("page-title-updated", (e) => { e.preventDefault(); applyTitle(); });
 
   view.webContents.on("did-finish-load", () => {
-    // macOS + Windows + Linux (non-native-frame): the frameless window needs
-    // an injected drag region so the dashboard header can move the window.
-    // On macOS titleBarStyle:"hidden" makes the whole window frameless; on
-    // Windows titleBarOverlay provides caption controls but no drag area.
+    // Frameless platforms need an injected drag region so the dashboard
+    // header can move the window. On macOS titleBarStyle:"hidden" makes the
+    // whole window frameless; on Windows titleBarOverlay provides caption
+    // controls but no drag area; on Linux frame:false (when the desktop
+    // environment prefers client-side decorations) removes the WM-provided
+    // drag surface entirely, so without this bar the window is undraggable.
     // The drag bar is pointer-events:none so clicks pass through to the SPA;
     // interactive controls are marked no-drag so they remain clickable.
-    if (IS_MAC || IS_WIN) {
+    if (IS_MAC || IS_WIN || LINUX_FRAMELESS) {
       view.webContents.insertCSS(`
         #electron-drag-bar {
           position: fixed;
-          top: 0; left: 0; right: ${IS_WIN ? '138px' : '0'};
+          top: 0; left: 0; right: ${IS_WIN ? '138px' : LINUX_FRAMELESS ? '108px' : '0'};
           height: 42px;
           -webkit-app-region: drag;
           z-index: 99999;
@@ -1576,6 +1598,106 @@ function setupWindowContents(win, backendUrl) {
           document.body.prepend(bar);
         }
       `);
+    }
+    // Frameless Linux has no OS-painted caption controls (macOS keeps traffic
+    // lights, Windows keeps titleBarOverlay), so inject a minimal
+    // minimize / maximize / close cluster into the header's top-right corner.
+    // Same injection mechanism as the drag bar; actions round-trip through the
+    // preload's windowControl bridge to applyWindowControl in this process.
+    // The 108px drag-bar inset above keeps the drag region from covering it.
+    if (LINUX_FRAMELESS) {
+      view.webContents.insertCSS(`
+        #electron-linux-controls {
+          position: fixed;
+          top: 0; right: 0;
+          height: 42px;
+          display: flex;
+          align-items: stretch;
+          z-index: 100000;
+          -webkit-app-region: no-drag;
+        }
+        #electron-linux-controls button {
+          position: relative;
+          width: 36px;
+          border: 0;
+          background: transparent;
+          color: var(--text, #e2e8f0);
+          opacity: 0.55;
+          cursor: default;
+          -webkit-app-region: no-drag;
+        }
+        #electron-linux-controls button:hover { opacity: 1; background: rgba(128,128,128,0.18); }
+        #electron-linux-controls button.close:hover { background: #e81123; color: #fff; }
+        /* The control marks are CSS-drawn (borders/pseudo-elements), not font
+           glyphs: U+2013/U+25A1/U+2715 render at inconsistent sizes or as
+           tofu boxes depending on the distro's font set. */
+        #electron-linux-controls button::before {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          transform: translate(-50%, -50%);
+        }
+        #electron-linux-controls button.minimize::before {
+          width: 10px; height: 0;
+          border-top: 1px solid currentColor;
+        }
+        #electron-linux-controls button.maximize::before {
+          width: 9px; height: 9px;
+          border: 1px solid currentColor;
+        }
+        /* Maximized: the "restore" mark — two offset squares. */
+        #electron-linux-controls.is-maximized button.maximize::before {
+          width: 7px; height: 7px;
+          transform: translate(-70%, -30%);
+        }
+        #electron-linux-controls.is-maximized button.maximize::after {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          width: 7px; height: 7px;
+          transform: translate(-30%, -70%);
+          border: 1px solid currentColor;
+          border-bottom: 0;
+          border-left: 0;
+        }
+        #electron-linux-controls button.close::before {
+          width: 12px; height: 0;
+          border-top: 1px solid currentColor;
+          transform: translate(-50%, -50%) rotate(45deg);
+        }
+        #electron-linux-controls button.close::after {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          width: 12px; height: 0;
+          border-top: 1px solid currentColor;
+          transform: translate(-50%, -50%) rotate(-45deg);
+        }
+      `);
+      view.webContents.executeJavaScript(`
+        if (!document.getElementById('electron-linux-controls')) {
+          const wrap = document.createElement('div');
+          wrap.id = 'electron-linux-controls';
+          const mk = (cls, label, action) => {
+            const b = document.createElement('button');
+            b.className = cls;
+            b.setAttribute('aria-label', label);
+            // Caption controls are window chrome, not page content: native
+            // caption buttons are never in the tab order, so keep these out
+            // of it too (WM shortcuts cover keyboard users).
+            b.tabIndex = -1;
+            b.addEventListener('click', () => window.kirocrew?.windowControl?.(action));
+            return b;
+          };
+          wrap.append(
+            mk('minimize', 'Minimize', 'minimize'),
+            mk('maximize', 'Maximize', 'maximize-toggle'),
+            mk('close', 'Close', 'close'),
+          );
+          document.body.prepend(wrap);
+        }
+      `);
+      syncLinuxMaximizeState(win, view);
     }
     // Sync window background to theme color (visible in tab bar padding area)
     view.webContents.executeJavaScript(
@@ -1665,6 +1787,38 @@ function windowForWebContents(wc) {
   return null;
 }
 
+// Keep the injected Linux caption cluster's maximize button in sync with the
+// window's real state: the native control it replaces flips between a
+// "maximize" and a "restore" mark, and screen-reader users get the matching
+// verb. Renderer-side the state is just a class on the cluster (the restore
+// mark is CSS-drawn off `.is-maximized` — see the insertCSS block in
+// setupWindowContents). Fire-and-forget: a mid-teardown window rejects the
+// executeJavaScript promise, which is fine to drop.
+function syncLinuxMaximizeState(win, view) {
+  const push = () => {
+    if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+    const maxed = win.isMaximized();
+    view.webContents.executeJavaScript(`
+      {
+        const wrap = document.getElementById('electron-linux-controls');
+        if (wrap) {
+          wrap.classList.toggle('is-maximized', ${maxed});
+          const b = wrap.querySelector('button.maximize');
+          if (b) b.setAttribute('aria-label', ${maxed} ? 'Restore' : 'Maximize');
+        }
+      }
+    `).catch(() => {});
+  };
+  // Called from did-finish-load, which re-fires on every reload: register the
+  // window listeners once and only re-push the current state afterwards.
+  if (!win._mcLinuxMaximizeSyncArmed) {
+    win._mcLinuxMaximizeSyncArmed = true;
+    win.on("maximize", push);
+    win.on("unmaximize", push);
+  }
+  push();
+}
+
 // Persist the main window's state (geometry + fullscreen + Keep on Top) to the
 // store. Module-level so both createWindow()'s geometry listeners and the View
 // menu's Keep on Top toggle can trigger a save. No-op while mainWindow is
@@ -1695,9 +1849,13 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: "#0f1117",
   };
-  // The dashboard's 42px header doubles as the title bar on both desktop
-  // platforms with overlay-capable native controls. Linux retains its native
-  // frame because electron-builder's AppImage support varies by WM.
+  // Frameless chrome: the dashboard's 42px header doubles as the title bar.
+  // macOS: titleBarStyle:"hidden" + native traffic lights inset into it.
+  // Windows: titleBarStyle:"hidden" + titleBarOverlay puts native caption
+  //   controls (minimize/maximize/close) in an overlay strip synced to theme.
+  // Linux: frame:false on desktops that expect client-side decorations,
+  //   native frame elsewhere (see linux-frame.js). titleBarStyle is ignored
+  //   by Electron on Linux, so the explicit frame flag is the mechanism.
   if (IS_MAC) opts.titleBarStyle = "hidden";
   if (IS_WINDOWS) {
     opts.titleBarStyle = "hidden";
@@ -1709,8 +1867,19 @@ function createWindow() {
         : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
       height: HEADER_CSS_PX,
     };
-    // Running unpackaged (`electron .`) otherwise shows the default Electron
-    // icon. macOS and Linux source their icons from their app bundles.
+  }
+  if (LINUX_FRAMELESS) {
+    opts.frame = false;
+    // A visible menu bar under a frameless window re-creates the stacked-bars
+    // problem (#3606); removing it entirely would take the app menu — and with
+    // it the discoverable path to windowing actions — away. Auto-hide keeps it
+    // out of the resting chrome while Alt still reveals it.
+    opts.autoHideMenuBar = true;
+  }
+  // Window + taskbar icon (Windows only): running unpackaged (`electron .`)
+  // otherwise shows the default Electron icon. macOS takes its icon from the
+  // .app bundle and Linux from the .desktop/AppImage, so leave those untouched.
+  if (IS_WIN) {
     const iconFile = identityFamily(app.getVersion()) === "nightly"
       && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
       ? "icon-nightly.png" : "icon.png";
@@ -2617,7 +2786,9 @@ async function openNewConnectionWindow() {
       minHeight: 600,
       backgroundColor: "#0f1117",
     };
-    // Same platform-conditional chrome as the main window (see createWindow).
+    // Same platform-conditional chrome as the main window (see createWindow):
+    // frameless + inset traffic lights on macOS, titleBarOverlay on Windows,
+    // frame:false on CSD-preferring Linux desktops, native frame elsewhere.
     if (IS_MAC) connOpts.titleBarStyle = "hidden";
     if (IS_MAC) connOpts.trafficLightPosition = trafficLightPositionForZoom(1);
     if (IS_WINDOWS) {
@@ -2630,6 +2801,10 @@ async function openNewConnectionWindow() {
           : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
         height: HEADER_CSS_PX,
       };
+    }
+    if (LINUX_FRAMELESS) {
+      connOpts.frame = false;
+      connOpts.autoHideMenuBar = true; // same rationale as createWindow
     }
     const connWin = new BaseWindow(connOpts);
     if (IS_WINDOWS && typeof connWin.setMenuBarVisibility === "function") {
@@ -2792,6 +2967,12 @@ process.on("unhandledRejection", (reason) => {
 });
 
 app.whenReady().then(async () => {
+  // The frame decision's `reason` exists for support bundles: "why does my
+  // window (not) have a native frame" is answerable from the gateway log
+  // without asking the user for their desktop environment.
+  if (LINUX_FRAME_DECISION) {
+    glog(`linux frame decision: frameless=${LINUX_FRAME_DECISION.frameless} reason=${LINUX_FRAME_DECISION.reason}`);
+  }
   // Debug-only per-process metrics recorder. No-ops unless KIROCREW_DEBUG is set,
   // so a normal install pays nothing; when on, it writes a bounded rolling
   // artifact next to the gateway log for `kirocrew desktop metrics` to read.
@@ -2983,6 +3164,19 @@ app.whenReady().then(async () => {
     if (typeof hex === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) {
       store.set("themeAccent", hex);
     }
+  });
+
+  // Caption controls for the frameless Linux window (see the injected
+  // #electron-linux-controls cluster in setupWindowContents). Resolved from
+  // the SENDER's own window -- never a broadcast -- so a connection window's
+  // close button cannot touch the main window. Actions outside the
+  // applyWindowControl allowlist are no-ops. Gated on LINUX_FRAMELESS: on
+  // framed windows the native controls own these verbs, and no button that
+  // sends this message is ever injected there.
+  ipcMain.on("window-control", (event, action) => {
+    if (!LINUX_FRAMELESS) return;
+    const win = windowForWebContents(event.sender);
+    if (win) applyWindowControl(win, action);
   });
 
   // The renderer reports its dark/light mode PREFERENCE whenever it changes (see

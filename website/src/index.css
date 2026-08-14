@@ -1594,6 +1594,15 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   cursor:default;
   transition:background-color .12s ease,color .12s ease;
 }
+
+/* ── Frameless Electron window (Linux) ──
+   The main process injects a caption-control cluster (min/max/close, three
+   36px buttons) at the window's top-right (#electron-linux-controls in
+   electron/main.js). Inset the header's right side so interactive elements
+   stay clear of it. Keep 108px in sync with LINUX_CAPTION_CONTROLS_WIDTH in
+   src/lib/electron.ts. Applied only when the window is actually frameless
+   (runtime decision — see isLinuxFramelessElectron). */
+.linux-electron header.topbar-glass{padding-right:112px}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
    the `.mac-electron` rule never applies. The parent relays whether it is a
