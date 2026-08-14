@@ -1401,7 +1401,9 @@
       "tunnel_connecting": "Tunnel connecting…",
       "tunnel_error": "tunnel error",
       "tunnel_state": "Tunnel {{state}}.",
-      "stopped": "stopped"
+      "stopped": "stopped",
+      "show_all_crews": "Show all crews",
+      "collapse_crews": "Collapse crews"
     },
     "issuePanel": {
       "add_to_chat": "Add to chat",

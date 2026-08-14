@@ -5098,7 +5098,9 @@
       "n_unread": "{{n}} অপঠিত",
       "switch_crew_active": "ক্রু বদলান, বর্তমানে {{name}}",
       "switch_crew_active_unread": "ক্রু বদলান, বর্তমানে {{name}}, অন্যগুলিতে {{n}} অপঠিত",
-      "stopped": "বন্ধ"
+      "stopped": "বন্ধ",
+      "show_all_crews": "সমস্ত ক্রু দেখান",
+      "collapse_crews": "ক্রু সংকুচিত করুন"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",

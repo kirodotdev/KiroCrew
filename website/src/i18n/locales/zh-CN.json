@@ -5017,7 +5017,9 @@
       "n_unread": "{{n}} 条未读",
       "switch_crew_active": "切换 Crew，当前为 {{name}}",
       "switch_crew_active_unread": "切换 Crew，当前为 {{name}}，其他 Crew 有 {{n}} 条未读",
-      "stopped": "已停止"
+      "stopped": "已停止",
+      "show_all_crews": "展开所有 Crew",
+      "collapse_crews": "收起 Crew"
     },
     "instancesViewport": {
       "connecting": "正在连接…",

@@ -5098,7 +5098,9 @@
       "n_unread": "{{n}} ungelesen",
       "switch_crew_active": "Crew wechseln, aktuell {{name}}",
       "switch_crew_active_unread": "Crew wechseln, aktuell {{name}}, {{n}} ungelesen in anderen",
-      "stopped": "gestoppt"
+      "stopped": "gestoppt",
+      "show_all_crews": "Alle Crews anzeigen",
+      "collapse_crews": "Crews einklappen"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",

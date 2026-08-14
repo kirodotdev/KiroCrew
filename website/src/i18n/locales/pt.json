@@ -5179,7 +5179,9 @@
       "n_unread": "Não lidas: {{n}}",
       "switch_crew_active": "Trocar de crew, atualmente {{name}}",
       "switch_crew_active_unread": "Trocar de crew, atualmente {{name}}, não lidas em outras: {{n}}",
-      "stopped": "parado"
+      "stopped": "parado",
+      "show_all_crews": "Mostrar todos os crews",
+      "collapse_crews": "Recolher crews"
     },
     "instancesViewport": {
       "connecting": "Conectando…",

@@ -5179,7 +5179,9 @@
       "n_unread": "Non letti: {{n}}",
       "switch_crew_active": "Cambia crew, attualmente {{name}}",
       "switch_crew_active_unread": "Cambia crew, attualmente {{name}}, non letti altrove: {{n}}",
-      "stopped": "arrestato"
+      "stopped": "arrestato",
+      "show_all_crews": "Mostra tutti i crew",
+      "collapse_crews": "Comprimi crew"
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",

@@ -2,11 +2,12 @@
  * InstanceTabBar — a thin, full-width strip at the very top of the dashboard
  * that switches between the local dashboard and connected remote crews.
  *
- * The switcher is a single dropdown, not a row of chips: the number of crews a
- * user configures is unbounded, and a horizontal strip forced them to shrink
- * the window or scroll sideways to reach the last one. The trigger shows the
- * crew currently on screen; the menu lists Local plus every crew, so the strip
- * costs constant width no matter how many crews exist.
+ * The switcher is a single dropdown by default: the number of crews a user
+ * configures is unbounded, and a horizontal strip forced them to shrink the
+ * window or scroll sideways to reach the last one, so the collapsed trigger
+ * costs constant width no matter how many crews exist. A many-crew user can
+ * PIN it open (see the Switcher pin) to trade that constant width for an
+ * always-visible chip row, so switching costs no dropdown click.
  *
  * Unread counts survive that collapse in two places, because a count hidden
  * behind a closed menu would be invisible: the trigger carries an AGGREGATE
@@ -22,14 +23,15 @@
  * state + token auto-refresh countdown (host SSH expiry lives in the title bar,
  * not duplicated here).
  */
-import { useCallback, useMemo, useState, Fragment, type CSSProperties } from 'react'
+import { useCallback, useMemo, useState, useSyncExternalStore, Fragment, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Server, Loader2, ChevronDown } from 'lucide-react'
+import { Home, Server, Loader2, ChevronDown, Pin } from 'lucide-react'
 import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
 import { useSelectInstance } from '../hooks/useSelectInstance'
+import { safeSetItem } from '../utils/safeStorage'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -70,6 +72,52 @@ const BADGE_MAX = 99
 // The radio group needs a non-empty value for the Local destination, whose id is
 // null; no crew id can collide with it (ids match ^[a-z0-9][a-z0-9-]{0,62}$).
 const LOCAL_VALUE = '__local__'
+
+// Persisted preference: when set, the switcher renders every crew as an
+// always-visible chip row instead of collapsing behind the dropdown. Power
+// users with many crews opt in so switching costs no extra click and each
+// crew's live state is visible at a glance. Off by default — the compact
+// dropdown stays the norm.
+//
+// Backed by a module-level store (not usePersistedBool) because several bars in
+// THIS realm can be mounted at once and must flip together the instant the pin
+// is toggled: the header's inline bar and the InstancesViewport loading/error
+// overlay strips coexist and are hidden (display:none), not unmounted, so a
+// per-instance hook would leave a hidden bar on its stale value until a remount.
+// It does NOT reach a remote pane's embedded bar — that runs in a separate
+// cross-origin iframe realm with its own localStorage — so an embedded bar
+// carries its own per-pane pin state.
+const EXPANDED_PREF_KEY = 'mc-crew-switcher-expanded'
+
+let expandedState: boolean = (() => {
+  try {
+    return localStorage.getItem(EXPANDED_PREF_KEY) === '1'
+  } catch {
+    return false
+  }
+})()
+
+const expandedListeners = new Set<() => void>()
+
+export function setCrewSwitcherExpanded(next: boolean) {
+  if (next === expandedState) return
+  expandedState = next
+  safeSetItem(EXPANDED_PREF_KEY, next ? '1' : '0')
+  expandedListeners.forEach(l => l())
+}
+
+function subscribeExpanded(cb: () => void) {
+  expandedListeners.add(cb)
+  return () => {
+    expandedListeners.delete(cb)
+  }
+}
+
+/** Reactive read of the pin preference + a setter that broadcasts to every bar. */
+function useCrewSwitcherExpanded(): [boolean, (v: boolean) => void] {
+  const expanded = useSyncExternalStore(subscribeExpanded, () => expandedState, () => expandedState)
+  return [expanded, setCrewSwitcherExpanded]
+}
 
 /** Parse a `<int>[hm]` TTL (e.g. "20h", "30m") to seconds; 0 if unparseable. */
 function ttlToSeconds(ttl: string): number {
@@ -318,6 +366,149 @@ function SwitcherMenu({
 }
 
 /**
+ * One crew as an always-visible chip, used by the expanded switcher. Same
+ * icon/state/unread vocabulary as a menu row, but a plain button: the expanded
+ * row is not a menu, so it carries no `menuitemradio` semantics — `aria-current`
+ * names the pane on screen instead. State reaches non-sighted and colourblind
+ * users the same way the menu rows carry it: `aria-label` folds the tunnel
+ * state into the accessible name, and a non-ok state shows its word (not colour
+ * alone), so the errored crew is findable without hovering every chip.
+ */
+function SwitcherChip({
+  entry,
+  active,
+  onSelect,
+}: {
+  entry: SwitcherEntry
+  active: boolean
+  onSelect: () => void
+}) {
+  const isLocal = entry.id === null
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={active ? 'true' : undefined}
+      aria-label={entry.title}
+      title={entry.title}
+      className={
+        'flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap transition-colors shrink-0 border focus-ring ' +
+        (active
+          ? 'bg-accent-subtle text-accent font-bold border-transparent'
+          : 'border-border text-text hover:bg-bg-hover')
+      }
+    >
+      {isLocal ? (
+        <Home className="lucide-inline shrink-0" />
+      ) : entry.connecting ? (
+        <Loader2 className="lucide-inline shrink-0 animate-spin" />
+      ) : (
+        <span
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${stateDotCls(entry.state)}`}
+          aria-hidden
+        />
+      )}
+      <span className="truncate max-w-[140px]">{entry.name}</span>
+      {entry.unread > 0 ? (
+        <UnreadBadge
+          count={entry.unread}
+          label={i18nT('components.instanceTabBar.n_unread', { n: entry.unread })}
+        />
+      ) : null}
+      {/* Only non-ok state gets a visible word, so a connected chip stays compact
+          while an errored/connecting one is spottable without colour or hover. */}
+      {entry.state && entry.state !== 'connected' ? (
+        <span className={`shrink-0 text-[11px] ${stateTextCls(entry.state)}`}>
+          {stateLabel(entry.state)}
+        </span>
+      ) : null}
+    </button>
+  )
+}
+
+/**
+ * The pin that flips the switcher between the compact dropdown and the
+ * always-expanded chip row. Pressed (accent, filled) means pinned open; the
+ * choice is persisted so it survives reloads and pane switches.
+ */
+function ExpandToggle({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+  const label = expanded
+    ? i18nT('components.instanceTabBar.collapse_crews')
+    : i18nT('components.instanceTabBar.show_all_crews')
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={expanded}
+      title={label}
+      aria-label={label}
+      className={
+        'flex items-center justify-center h-6 w-6 rounded-md shrink-0 transition-colors border border-transparent focus-ring ' +
+        (expanded ? 'bg-accent-subtle text-accent' : 'text-muted hover:bg-bg-hover hover:text-text')
+      }
+    >
+      <Pin className={`lucide-inline ${expanded ? 'fill-current' : ''}`} />
+    </button>
+  )
+}
+
+/**
+ * The switcher surface both bars mount: the compact dropdown by default, or —
+ * when the user pins it — every crew as an always-visible chip row. The pin
+ * lives beside either form so the preference is reachable in both states.
+ *
+ * The expanded row always stays one line and scrolls horizontally: both the
+ * fixed-height `inline` header and the fixed-height `strip` overlay bar would
+ * spill a wrapped second row over the panel beneath them, so wrapping is not an
+ * option in either. The `inline` header additionally caps its width so the row
+ * never runs under the centered top-bar search.
+ */
+function Switcher({
+  entries,
+  activeId,
+  onSelect,
+  variant,
+}: {
+  entries: SwitcherEntry[]
+  activeId: string | null
+  onSelect: (id: string | null) => void
+  variant: 'strip' | 'inline'
+}) {
+  const [expanded, setExpanded] = useCrewSwitcherExpanded()
+  if (!expanded) {
+    return (
+      <div className="flex items-center gap-1 min-w-0">
+        <SwitcherMenu entries={entries} activeId={activeId} onSelect={onSelect} />
+        <ExpandToggle expanded={false} onToggle={() => setExpanded(true)} />
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1 min-w-0">
+      {/* No role/aria here: the parent bar is already a role="group" labelled
+          "Remote crews", so a second group with the same name would be
+          announced twice around one control set. */}
+      <div
+        className={
+          'flex items-center gap-1 min-w-0 flex-nowrap overflow-x-auto ' +
+          (variant === 'inline' ? 'max-w-[42vw]' : '')
+        }
+      >
+        {entries.map(entry => (
+          <SwitcherChip
+            key={entry.id ?? LOCAL_VALUE}
+            entry={entry}
+            active={(entry.id ?? null) === activeId}
+            onSelect={() => onSelect(entry.id)}
+          />
+        ))}
+      </div>
+      <ExpandToggle expanded onToggle={() => setExpanded(false)} />
+    </div>
+  )
+}
+
+/**
  * Embedded (remote pane) switcher: renders the SAME dropdown as the local tab,
  * driven by the model the parent relays into `instances.host`, and posts switch
  * requests back up so the parent flips `activeId`. This is what collapses the
@@ -357,7 +548,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
       role="group"
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
-      <SwitcherMenu entries={entries} activeId={host.activeId} onSelect={onSelect} />
+      <Switcher entries={entries} activeId={host.activeId} onSelect={onSelect} variant={variant} />
     </div>
   )
 }
@@ -481,7 +672,7 @@ export default function InstanceTabBar({
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
       <div className={`flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <SwitcherMenu entries={entries} activeId={activeId} onSelect={onSelect} />
+        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} variant={variant} />
       </div>
       {variant === 'strip' && activeInst && (
         <div className="flex items-center gap-1.5 shrink-0 pl-2 pr-1" title={tunnelTitle}>

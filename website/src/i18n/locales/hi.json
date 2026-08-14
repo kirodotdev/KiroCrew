@@ -5098,7 +5098,9 @@
       "n_unread": "{{n}} अपठित",
       "switch_crew_active": "क्रू बदलें, वर्तमान में {{name}}",
       "switch_crew_active_unread": "क्रू बदलें, वर्तमान में {{name}}, अन्य में {{n}} अपठित",
-      "stopped": "रुका हुआ"
+      "stopped": "रुका हुआ",
+      "show_all_crews": "सभी क्रू दिखाएँ",
+      "collapse_crews": "क्रू संक्षिप्त करें"
     },
     "instancesViewport": {
       "connecting": "कनेक्ट हो रहा है…",

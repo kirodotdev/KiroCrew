@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
-import InstanceTabBar from '../components/InstanceTabBar'
+import InstanceTabBar, { setCrewSwitcherExpanded } from '../components/InstanceTabBar'
 import type { InstanceView, SsoStatus } from '../api/client'
 
 vi.mock('../api/client', () => {
@@ -45,6 +45,8 @@ const listResp = (instances: InstanceView[]) => ({ active: true, instances, warm
 
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.clear()
+  setCrewSwitcherExpanded(false)
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
 })
 
@@ -244,5 +246,44 @@ describe('InstanceTabBar', () => {
     renderWithProviders(<InstanceTabBar />)
     const row = await openSwitcher(u, /clouddeskARM/i)
     expect(row.textContent?.match(/clouddeskARM/g) ?? []).toHaveLength(1)
+  })
+
+  it('pins the switcher open as an always-visible crew row and remembers the choice', async () => {
+    // Collapsed by default: the crew lives behind the dropdown, one click away.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    expect(await screen.findByRole('button', { name: /Show all crews/i })).toBeInTheDocument()
+    // The crew is not on screen yet — it is inside the still-closed menu.
+    expect(screen.queryByRole('button', { name: /Cloud One/i })).toBeNull()
+
+    // Pin it open: every crew becomes a directly-clickable chip, no dropdown.
+    await u.click(screen.getByRole('button', { name: /Show all crews/i }))
+    expect(await screen.findByRole('button', { name: /Cloud One/i })).toBeInTheDocument()
+    // The preference is persisted so it survives reloads and pane switches.
+    expect(localStorage.getItem('mc-crew-switcher-expanded')).toBe('1')
+    // ...and the pin now offers the reverse.
+    expect(screen.getByRole('button', { name: /Collapse crews/i })).toBeInTheDocument()
+  })
+
+  it('switches by clicking a crew chip when the switcher is pinned open', async () => {
+    setCrewSwitcherExpanded(true)
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    // No dropdown to open — the chip is on screen and switches on a single click.
+    await u.click(await screen.findByRole('button', { name: /Cloud One/i }))
+    expect(store.getState().instances.activeId).toBe('cd-1')
+    // A live, warm pane just switches — clicking it must not re-mint.
+    await new Promise(r => setTimeout(r, 0))
+    expect(api.connectInstance).not.toHaveBeenCalled()
   })
 })

@@ -5260,7 +5260,9 @@
       "n_unread": "Непрочитанных: {{n}}",
       "switch_crew_active": "Сменить экипаж, сейчас {{name}}",
       "switch_crew_active_unread": "Сменить экипаж, сейчас {{name}}, непрочитанных в других: {{n}}",
-      "stopped": "остановлен"
+      "stopped": "остановлен",
+      "show_all_crews": "Показать все команды",
+      "collapse_crews": "Свернуть команды"
     },
     "instancesViewport": {
       "connecting": "Подключение…",

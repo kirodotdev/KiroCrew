@@ -5017,7 +5017,9 @@
       "n_unread": "未読 {{n}} 件",
       "switch_crew_active": "クルーを切り替え、現在は {{name}}",
       "switch_crew_active_unread": "クルーを切り替え、現在は {{name}}、他に未読 {{n}} 件",
-      "stopped": "停止中"
+      "stopped": "停止中",
+      "show_all_crews": "すべてのクルーを表示",
+      "collapse_crews": "クルーを折りたたむ"
     },
     "instancesViewport": {
       "connecting": "接続中…",

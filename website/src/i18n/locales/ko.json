@@ -5017,7 +5017,9 @@
       "n_unread": "읽지 않음 {{n}}개",
       "switch_crew_active": "크루 전환, 현재 {{name}}",
       "switch_crew_active_unread": "크루 전환, 현재 {{name}}, 다른 크루에 읽지 않음 {{n}}개",
-      "stopped": "중지됨"
+      "stopped": "중지됨",
+      "show_all_crews": "모든 크루 표시",
+      "collapse_crews": "크루 접기"
     },
     "instancesViewport": {
       "connecting": "연결 중…",

@@ -5179,7 +5179,9 @@
       "n_unread": "Non lus : {{n}}",
       "switch_crew_active": "Changer d'équipe, actuellement {{name}}",
       "switch_crew_active_unread": "Changer d'équipe, actuellement {{name}}, non lus ailleurs : {{n}}",
-      "stopped": "arrêté"
+      "stopped": "arrêté",
+      "show_all_crews": "Afficher tous les crews",
+      "collapse_crews": "Réduire les crews"
     },
     "instancesViewport": {
       "connecting": "Connexion…",
