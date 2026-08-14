@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 import threading
 import zlib
 from types import SimpleNamespace
@@ -123,6 +124,87 @@ class TestFindContradictionCandidates:
             assert store.write_lesson(word)
         result = store.find_contradiction_candidates(query_text)
         assert len(result) == 5
+
+
+class TestDimensionMismatchOnThresholdPaths:
+    """A row embedded at another dimensionality must not clear either threshold.
+
+    ``zip`` truncates the dot product to the shorter vector while both norms are
+    still taken over their full length, so a row from a previous embedding model
+    produces a plausible partial-overlap score instead of being rejected. On the
+    two paths that compare against a threshold rather than sorting, that score
+    does damage: it lands inside the contradiction band, and it can clear the
+    0.85 dedup bar and delete an unrelated lesson.
+    """
+
+    # Word-disjoint, neither a substring of the other, so the substring and
+    # topic-overlap dedup passes leave both rows alone and only the embedding
+    # comparison under test decides the outcome.
+    STORED = "Prefer tabs over spaces"
+    INCOMING = "Rotate signing certificates quarterly"
+
+    def test_mismatched_row_is_not_offered_as_a_contradiction(self, tmp_path):
+        """Truncation scores this row 0.5, right inside the [0.4, 0.85) band."""
+        emb = {
+            self.STORED: [1.0, 0.0, 0.0, 0.0],
+            self.INCOMING: [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        }
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda text: emb.get(text)
+        assert store.write_lesson(self.STORED)
+
+        assert store.find_contradiction_candidates(self.INCOMING) == [], (
+            "a row embedded at another dimensionality was offered as a contradiction"
+        )
+
+    def test_mismatched_row_does_not_dedup_an_unrelated_lesson(self, tmp_path):
+        """Truncation scores this row 1.0, clearing the 0.85 dedup bar.
+
+        The rows share no words and mean unrelated things, so whichever way the
+        dedup resolves, one of them is lost to a comparison that never should
+        have happened.
+        """
+        emb = {
+            self.STORED: [1.0, 1.0, 1.0, 1.0],
+            self.INCOMING: [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        }
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = lambda text: emb.get(text)
+        assert store.write_lesson(self.STORED)
+
+        assert store.write_lesson(self.INCOMING)
+
+        # Neither lesson carries a NOT-clause, so the stored value is the rule.
+        stored = {json.loads(r["value_json"]) for r in store.get_lessons()}
+        assert stored == {self.STORED, self.INCOMING}, (
+            f"a mismatched-dimension row deduped an unrelated lesson; kept {stored}"
+        )
+
+    def test_scorer_agrees_with_cosine_sim_to_float64_rounding(self, tmp_path):
+        """float32 arithmetic lands far enough off to flip a score on a threshold."""
+        query = [0.1 + i * 1e-4 for i in range(384)]
+        row = [0.2 - i * 7e-5 for i in range(384)]
+        blob = struct.pack(f"{len(row)}f", *row)
+        # Compare against the same float32 values the blob round-trips to, so the
+        # only difference measured is accumulation precision, not the packing.
+        unpacked = list(struct.unpack(f"{len(row)}f", blob))
+
+        scorer = VectorMemoryStore._stored_similarity_scorer(query)
+        expected = VectorMemoryStore._cosine_sim(query, unpacked)
+
+        assert abs(scorer({"embedding": blob}) - expected) < 1e-12
+
+    def test_scorer_does_not_clamp_a_negative_similarity(self, tmp_path):
+        """The threshold callers compare the raw value, so clamping would lie."""
+        query = [1.0] + [0.0] * 383
+        opposed = [-1.0] + [0.0] * 383
+        blob = struct.pack(f"{len(opposed)}f", *opposed)
+
+        scorer = VectorMemoryStore._stored_similarity_scorer(query)
+
+        assert scorer({"embedding": blob}) == pytest.approx(-1.0)
 
 
 @pytest.mark.asyncio
