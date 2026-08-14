@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -271,14 +272,14 @@ class TestHazardLedger:
         led.flush()
 
         fresh = hazards.load_ledger(tmp_path)
-        assert fresh.codes_for("srv") == (hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,)
-        assert fresh.codes_for("other") == ()
+        assert fresh.codes_for_name("srv") == (hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,)
+        assert fresh.codes_for_name("other") == ()
 
     def test_unknown_code_is_refused(self, tmp_path) -> None:
         """The vocabulary is a UI contract; a typo must not disqualify forever."""
         led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
         assert led.record("srv", "made_up") is False
-        assert led.codes_for("srv") == ()
+        assert led.codes_for_name("srv") == ()
         led.flush()
         assert not hazards.ledger_path(tmp_path).exists()
 
@@ -310,8 +311,8 @@ class TestHazardLedger:
             encoding="utf-8",
         )
         led = hazards.load_ledger(tmp_path)
-        assert led.codes_for("a") == ()
-        assert led.codes_for("b") == (hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,)
+        assert led.codes_for_name("a") == ()
+        assert led.codes_for_name("b") == (hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,)
 
     def test_flush_is_a_no_op_when_clean(self, tmp_path) -> None:
         led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
@@ -343,7 +344,7 @@ class TestHazardLedger:
 
         assert led._dirty is True, "the concurrent observation was marked persisted"
         led.flush()
-        assert hazards.load_ledger(tmp_path).codes_for("other") == (
+        assert hazards.load_ledger(tmp_path).codes_for_name("other") == (
             hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,
         )
 
@@ -399,7 +400,7 @@ class TestHazardLedger:
         led.record("srv", hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
         led.flush()
 
-        observed = hazards.load_ledger(tmp_path).codes_for("srv")
+        observed = hazards.load_ledger(tmp_path).codes_for_name("srv")
         verdict = assess(
             ShareEvidence(
                 name="srv", probe_ok=True, capabilities={}, observed_hazards=observed
@@ -448,7 +449,7 @@ class TestHostileRecordNumbers:
 
         led = hazards.load_ledger(tmp_path)
 
-        assert led.codes_for("srv") == (hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,)
+        assert led.codes_for_name("srv") == (hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,)
 
     def test_a_huge_timestamp_does_not_take_the_verdict_cache_down(self, tmp_path) -> None:
         vc.cache_path(tmp_path).write_text(
@@ -779,7 +780,206 @@ class TestNoBlockingRecordIoOnTheLoop:
         assert cache.server_names() == {"a", "b"}
 
 
+class TestHazardInvalidation:
+    """A hazard must survive what does not change the program, and only that.
+
+    The ledger's neighbour — the pre-flight cache — re-measures when a server's
+    launch identity changes. Without the same rule here a single observation
+    disqualifies a server for ever, so wiring a pooling refusal to this ledger
+    would strand a server on evidence about a version it no longer runs.
+    """
+
+    @staticmethod
+    def _ident(binary: str = "v1") -> str:
+        return hazards.launch_identity("cmd1", "env1", binary)
+
+    def test_an_upgrade_discards_the_prior_observation(self, tmp_path) -> None:
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, self._ident("v1"))
+        assert led.codes_for("srv", self._ident("v1")) != ()
+
+        # Same path, same args, new bytes: the evidence described the old build.
+        assert led.codes_for("srv", self._ident("v2")) == ()
+
+    def test_the_discard_is_a_replacement_not_an_accumulation(self, tmp_path) -> None:
+        """A new identity starts clean — it does not inherit the old codes.
+
+        Inheriting would make an upgrade look like it exhibited behaviour it
+        never showed, which is the same permanence bug wearing a new identity.
+        """
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, self._ident("v1"))
+        led.record("srv", hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION, self._ident("v2"))
+
+        assert led.codes_for("srv", self._ident("v2")) == (
+            hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,
+        )
+
+    def test_a_draining_backend_cannot_erase_the_new_builds_evidence(
+        self, tmp_path
+    ) -> None:
+        """Two identities are live at once during a blue/green drain.
+
+        The pool keeps the outgoing build serving its attached stubs while the
+        incoming one starts, so BOTH can still record. Collapsing them into one
+        row per name let a late frame from the draining backend overwrite what
+        the new build had already observed — and that reads as "nothing observed"
+        for the build actually being kept, the permissive direction.
+        """
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        new = self._ident("v2")
+        old = self._ident("v1")
+
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, new)
+        # The outgoing backend emits one more frame AFTER the new build recorded.
+        led.record("srv", hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION, old)
+
+        assert led.codes_for("srv", new) == (
+            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+        ), "the new build's evidence survived a late frame from the old one"
+        assert led.codes_for("srv", old) == (
+            hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,
+        ), "each identity keeps its own observations"
+
+        led.flush()
+        reloaded = hazards.load_ledger(tmp_path)
+        assert reloaded.codes_for("srv", new) == (
+            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+        )
+
+    def test_an_unchanged_server_keeps_its_hazard(self, tmp_path) -> None:
+        """The direction that must NOT clear — otherwise the ledger is useless.
+
+        Two codes under ONE identity, because a single observation cannot tell a
+        correct implementation from one that resets on every record: both would
+        end up holding exactly the code just written.
+        """
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, self._ident())
+        led.record("srv", hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION, self._ident())
+        led.flush()
+
+        reloaded = hazards.load_ledger(tmp_path)
+        assert reloaded.codes_for("srv", self._ident()) == (
+            hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,
+            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+        ), "observations under one identity accumulate, they do not replace"
+
+    def test_identity_is_not_the_preflight_identity(self) -> None:
+        """The two stores must not share an invalidation trigger.
+
+        ``verdict_cache.Identity`` folds in the pre-flight schema, because a
+        measurement is void when the way we measure changes. A hazard is an
+        observation of real traffic and stays true however the prober evolves, so
+        sharing that field would let a schema bump erase witnessed evidence.
+        """
+        launch = hazards.launch_identity("cmd1", "env1", "1.0.0")
+        preflight = vc.Identity("cmd1", "env1", "1.0.0").as_str()
+        assert launch != preflight
+        assert str(vc.SCHEMA) not in launch.split("\u0000")
+
+    def test_a_legacy_row_reads_as_unobserved_but_still_shows(self, tmp_path) -> None:
+        """A v1 file still loads; its rows just cannot be attributed.
+
+        They must not be deleted — that would discard real evidence to add a
+        field — and must not be trusted for a launch either, so they land under
+        the empty identity: invisible to the checked read, still surfaced by the
+        name-only one so the dashboard keeps showing the withdrawal.
+        """
+        (tmp_path / hazards.HAZARDS_FILENAME).write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "servers": {
+                        "srv": {
+                            "codes": [hazards.HAZARD_UNROUTABLE_SERVER_REQUEST],
+                            "count": 1,
+                            "lastSeen": 1.0,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        led = hazards.load_ledger(tmp_path)
+        assert led.codes_for("srv", self._ident()) == ()
+        assert led.codes_for_name("srv") == (
+            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+        )
+
+    def test_an_older_reader_still_sees_the_evidence(self, tmp_path) -> None:
+        """The written file must not lock out a build that predates identities.
+
+        Make Live can put an earlier worktree back in front of the same data
+        home, so a version-gated shape change would read as "future, ignore"
+        there and silently drop every observation. The writer therefore keeps the
+        schema and emits the flat union alongside the nested map.
+        """
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, self._ident("v1"))
+        led.record("srv", hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION, self._ident("v2"))
+        led.flush()
+
+        raw = json.loads((tmp_path / hazards.HAZARDS_FILENAME).read_text())
+        assert raw["schema"] == 1, "a bump would make an older reader ignore the file"
+        entry = raw["servers"]["srv"]
+        # What a reader that knows nothing about identities parses:
+        assert entry["codes"] == [
+            hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION,
+            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+        ], "the flat union carries every code an older reader would need"
+        # ...and the shape this build actually reads, unaffected by it:
+        assert set(entry["identities"]) == {self._ident("v1"), self._ident("v2")}
+
+    def test_clear_drops_evidence_that_is_still_current(self, tmp_path) -> None:
+        """The escape hatch identity cannot provide.
+
+        A frame this gateway misattributed is our defect; fixing it changes
+        nothing about the server, so without an explicit clear the record would
+        stand for ever against a server that never misbehaved.
+        """
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, self._ident())
+        led.flush()
+
+        assert led.clear("srv") is True
+        assert led.clear("srv") is False, "a second clear reports nothing to forget"
+        led.flush()
+        assert hazards.load_ledger(tmp_path).codes_for_name("srv") == ()
+
+    def test_nothing_expires_by_age(self, tmp_path) -> None:
+        """Ageing an observation out would manufacture a safety nothing observed.
+
+        A server that personalises state per caller does not become safe because
+        time passed, so a very old hazard on an UNCHANGED identity still stands.
+        """
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("srv", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, self._ident())
+        # Backdate well past any plausible expiry window.
+        led._records["srv"][self._ident()].last_seen = 1.0
+        led.flush()
+
+        assert hazards.load_ledger(tmp_path).codes_for("srv", self._ident()) == (
+            hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
+        )
+
+    def test_the_recording_site_stamps_the_pool_key(self) -> None:
+        """The identity must come from the launch, with no IO on the loop.
+
+        ``PoolKey`` already carries the three fingerprints, which is what makes
+        stamping free at a site that runs on the event loop.
+        """
+        from kiro_crew.mcp_gateway import backend as backend_mod
+
+        src = inspect.getsource(backend_mod.Backend._record_hazard)
+        assert "launch_identity" in src
+        assert "key.command_args_hash" in src and "key.binary_version" in src
+        for forbidden in ("open(", "read_bytes", "sha256", "to_thread"):
+            assert forbidden not in src, f"{forbidden} would put IO on the loop"
+
+
 class TestRecordsDirIsNotGatedOnABroker:
+
     """A machine that never enabled stubbing must still get verdicts.
 
     Deriving the records directory from ``mcp_gateway.socket_path`` made the
@@ -856,12 +1056,15 @@ class TestBackendRecordsHazards:
 
     @staticmethod
     def _backend(server_name: str, *, exclusive_token: str = "", refcount: int = 2) -> object:
-        """A Backend-shaped stand-in for the three fields ``_record_hazard`` reads.
+        """A Backend-shaped stand-in for the fields ``_record_hazard`` reads.
 
         Deliberately not a MagicMock: the point is to pin that the method reads
-        ``pool_key.server_name``, ``exclusive_token`` and ``refcount`` — the REAL
-        field names on ``Backend`` — so a rename cannot leave this passing
-        against a mock that would answer to anything.
+        ``pool_key.server_name``, the three launch fingerprints,
+        ``exclusive_token`` and ``refcount`` — the REAL field names on
+        ``Backend`` and ``PoolKey`` — so a rename cannot leave this passing
+        against a mock that would answer to anything. That the fingerprints are
+        already ON the pool key is what lets the recording site stamp an identity
+        without doing IO on the event loop.
 
         ``refcount`` defaults to 2 because that is the only state in which a
         hazard means anything: two clients attached, so an unattributable frame
@@ -870,7 +1073,12 @@ class TestBackendRecordsHazards:
         from kiro_crew.mcp_gateway.backend import Backend
 
         obj = object.__new__(Backend)
-        obj.pool_key = SimpleNamespace(server_name=server_name)  # type: ignore[attr-defined]
+        obj.pool_key = SimpleNamespace(  # type: ignore[attr-defined]
+            server_name=server_name,
+            command_args_hash="cmd1",
+            effective_env_hash="env1",
+            binary_version="v1",
+        )
         obj.exclusive_token = exclusive_token  # type: ignore[attr-defined]
         obj.refcount = refcount  # type: ignore[attr-defined]
         return obj
@@ -880,7 +1088,7 @@ class TestBackendRecordsHazards:
         backend = self._backend("srv")
         backend._record_hazard(hazards.HAZARD_UNROUTABLE_SERVER_REQUEST)  # type: ignore[attr-defined]
         hazards.flush_sink()
-        assert hazards.load_ledger(tmp_path).codes_for("srv") == (
+        assert hazards.load_ledger(tmp_path).codes_for_name("srv") == (
             hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
         )
 

@@ -59,8 +59,13 @@ process happened to start in.
 Path: `<records dir>/observed-hazards.json`, a sibling of `hot-keys.json`. Writer: gatewayd (`mcp_gateway/hazards.py`). Reader: the dashboard.
 
 ```json
-{"schema": 1, "servers": {"<name>": {"codes": ["..."], "count": 3, "lastSeen": 1.0}}}
+{"schema": 1, "servers": {"<name>": {
+  "identities": {"<hash>": {"codes": ["..."], "count": 3, "lastSeen": 1.0}},
+  "codes": ["..."], "count": 3, "lastSeen": 1.0
+}}}
 ```
+
+`identities` is the authoritative shape; the flat `codes`/`count`/`lastSeen` beside it are its union, written for a reader that predates the map. The version is deliberately NOT bumped: Make Live can put an earlier worktree back in front of the same data home, and a version-gated shape change would read as "future, ignore" there and silently drop every observation. Emitting both under one version costs a derived duplicate — built from the same records in the same payload, so the two cannot disagree — and keeps a downgrade readable. A reader that finds no `identities` treats the flat fields as one record under the empty identity, which is exactly how an older writer's file is absorbed.
 
 Codes are a closed vocabulary; an unknown code is refused on write and dropped on read, because a typo that silently became a permanent hazard would disqualify a server for ever with no way to read why:
 
@@ -70,6 +75,16 @@ Codes are a closed vocabulary; an unknown code is refused on write and dropped o
 Both are recorded ONLY for a shared backend (`exclusive_token` empty). A 1:1 backend legitimately owns its single client, so the same frame there proves nothing, and recording it would disqualify servers for behaviour that is correct when unshared.
 
 A missing, unreadable or future-schema file reads as "nothing observed" — never as "safe". Recording is in-memory and safe on the event loop; the flush is blocking IO and runs off-loop from the heartbeat sweep. Prior observations are reloaded when the sink is installed, so a daemon restart does not forget them.
+
+**Invalidation is tied to change, never to age.** Observations are stored per launch `identity` — the command/args, effective env and binary fingerprints the pool key already holds, so the recording site stamps one without doing IO on the loop. Each identity accumulates independently and nothing is ever moved or discarded across identities, because two backends for one NAME can be live at once: a blue/green drain keeps the outgoing build serving its attached stubs while the incoming one starts, so both can still record. A store that collapsed them into one row per name would let a late frame from the draining backend overwrite what the new build had already observed, and that reads as "nothing observed" for the build actually being kept — the permissive direction.
+
+Invalidation therefore happens on the READ: a launch whose identity has no record of its own reads as unobserved, so upgrading or reconfiguring a server clears its verdict without any write-side deletion. The identity deliberately excludes the pre-flight schema — a hazard is an observation of real traffic and stays true however the prober evolves, so folding that field in would let a schema bump erase evidence the gateway actually witnessed.
+
+There is no expiry by age, and that is a decision rather than an omission: a server that personalises state per caller does not become safe because a month passed, so ageing an observation out would manufacture a "safe to share" that nothing observed. The one case identity cannot cover is a frame THIS gateway misattributed — our own defect, which changes nothing about the server — so `clear(server_name)` is the explicit operator path for dropping evidence that is otherwise still current, and the only way to drop it.
+
+Row count is bounded by the number of distinct builds of a server that **actually misbehaved**: an identity appears only once a hazard is observed under it, so a well-behaved server never occupies space however often it is reconfigured. No cap is applied, deliberately — any age- or count-based eviction can evict the CURRENT build's record while a chatty outgoing one survives, which is the failure this shape exists to prevent.
+
+A file written **without** `identities` — by an older build, or by one this build later hands back to an older one — still loads. Its flat fields become one record under the empty identity: surfaced by the name-only read so the dashboard keeps showing the withdrawal, and matching no launch for the identity-checked read, which is the honest treatment of evidence that cannot be attributed. The name-only read (`codes_for_name`) unions across identities; that is a bounded difference in the safe direction — a row may show a withdrawal the next probe clears, never a recommendation the evidence contradicts.
 
 Because the flush runs off-loop while `record` keeps running ON it, an observation can land between building the payload and clearing the dirty flag. The generation counter is captured with the payload and dirty is cleared only if nothing moved in between: clearing unconditionally would drop that observation permanently, leaving the ledger looking clean while the file lacked the entry — a hazard the gateway actually saw that never withdraws a recommendation.
 

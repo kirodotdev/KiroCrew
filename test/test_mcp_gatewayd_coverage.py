@@ -512,7 +512,7 @@ class TestHeartbeatSweeper:
             task.cancel()
             await asyncio.wait_for(task, timeout=5)
 
-            assert hazards.load_ledger(tmp_path).codes_for("srv") == (
+            assert hazards.load_ledger(tmp_path).codes_for_name("srv") == (
                 hazards.HAZARD_UNROUTABLE_SERVER_REQUEST,
             )
         finally:

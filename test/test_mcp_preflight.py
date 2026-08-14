@@ -124,7 +124,7 @@ class TestCacheDegradesSafely:
             b'{"schema": 1, "servers": {"a\xff\xfe": {}}}'
         )
         ledger = hazards.load_ledger(tmp_path)
-        assert ledger.codes_for("a") == ()
+        assert ledger.codes_for_name("a") == ()
 
     def test_entry_that_cannot_say_whether_it_ran_is_dropped(self, tmp_path) -> None:
         vc.cache_path(tmp_path).write_text(

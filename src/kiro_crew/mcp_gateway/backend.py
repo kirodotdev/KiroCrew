@@ -1220,16 +1220,26 @@ class Backend:
         stub attaches, and recording during that window would disqualify a
         server for behaviour that is correct.
 
-        Biased toward under-recording on purpose. A hazard is permanent and has
-        no redemption path, so a false one silently kills a server that is fine;
-        a missed one costs a withdrawal that the next observation makes again.
+        Biased toward under-recording on purpose. A false hazard withdraws a
+        recommendation for a server that is fine, so the bar is real traffic on a
+        genuinely shared backend; a missed one costs a withdrawal that the next
+        observation makes again.
+
+        The observation is stamped with what this backend actually launched, read
+        straight off the pool key, so upgrading or reconfiguring the server
+        invalidates it rather than holding the new version responsible for the
+        behaviour of the one it replaced.
 
         In-memory only — the flush is off-loop.
         """
         if self.exclusive_token or self.refcount <= 1:
             return
-        name = self.pool_key.server_name
-        if name and hazards.record_observed(name, code):
+        key = self.pool_key
+        name = key.server_name
+        identity = hazards.launch_identity(
+            key.command_args_hash, key.effective_env_hash, key.binary_version
+        )
+        if name and hazards.record_observed(name, code, identity):
             logger.warning(
                 "hazard: server %r first exhibited %s while shared; the "
                 "MCP page will withdraw its recommendation",
