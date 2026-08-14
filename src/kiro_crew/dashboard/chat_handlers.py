@@ -2583,10 +2583,16 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         _sync_dashboard_slots(state)
         state.push_slots_update()
         state.push_refresh("history")
+    if not failed:
+        cleanup_outcome = "ok"
+    elif archived:
+        cleanup_outcome = "partial"
+    else:
+        cleanup_outcome = "error"
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slots_cleanup",
-        outcome="ok" if not failed else ("partial" if archived else "error"),
+        outcome=cleanup_outcome,
         source="dashboard",
         resources=f"archived={len(archived)} failed={len(failed)} threshold={max_days}d keys={','.join(archived[:10])}",
     )

@@ -289,8 +289,6 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
 
     updated = False
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.post(
@@ -739,8 +737,6 @@ async def dispatch(payload: dict) -> None:
         url = action.get("value", "")
         response_url = payload.get("response_url", "")
         if response_url and url:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
@@ -825,8 +821,6 @@ async def dispatch(payload: dict) -> None:
             )
             response_url = payload.get("response_url", "")
             if response_url and response_url.startswith("https://hooks.slack.com/"):
-                import aiohttp
-
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
@@ -849,8 +843,6 @@ async def dispatch(payload: dict) -> None:
         # Replace the button with confirmation
         response_url = payload.get("response_url", "")
         if response_url and response_url.startswith("https://hooks.slack.com/"):
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
@@ -1007,22 +999,22 @@ async def dispatch(payload: dict) -> None:
             sess_key = SlackApprovalDecider.session_for(approval_key)
             add_trusted_session(sess_key, _orch.sessions if _orch else None)
         resolved = SlackApprovalDecider.resolve_global(approval_key, approved)
-        if resolved:
-            label = (
-                "🔓 Trusted this session — tools auto-approved"
-                if is_trust
-                else ("✅ Approved" if approved else "🚫 Denied")
-            )
-        else:
+        if not resolved:
             label = "⏱ This approval already expired."
+            outcome = "expired"
+        elif is_trust:
+            label = "🔓 Trusted this session — tools auto-approved"
+            outcome = "trusted"
+        elif approved:
+            label = "✅ Approved"
+            outcome = "approved"
+        else:
+            label = "🚫 Denied"
+            outcome = "denied"
         sel().log_api_access(
             caller=user_id,
             operation="slack.transport_tool_approval",
-            outcome=(
-                ("trusted" if is_trust else ("approved" if approved else "denied"))
-                if resolved
-                else "expired"
-            ),
+            outcome=outcome,
             source="slack",
             resources=f"approval_key={approval_key}",
         )
@@ -2267,8 +2259,6 @@ async def _handle_agent_select(
 
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2290,6 +2280,8 @@ async def _handle_users_select(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Handle multi_users_select — update allowlist."""
+    # Imported at call time on purpose: tests patch ``handler.is_owner`` to drive
+    # the non-owner rejection, and only a call-time rebind observes that patch.
     from kiro_crew.slack.handler import is_owner, set_allowed_users
 
     if not is_owner(user_id):
@@ -2337,6 +2329,8 @@ async def _handle_channels_select(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Handle multi_channels_select — update tracked channels."""
+    # Imported at call time on purpose: tests patch ``handler.is_owner`` to drive
+    # the non-owner rejection, and only a call-time rebind observes that patch.
     from kiro_crew.slack.handler import is_owner, set_tracking_channels
 
     if not is_owner(user_id):
@@ -2415,8 +2409,6 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
         async def _update_ephemeral(blocks: list[dict], text: str) -> None:
             if response_url:
-                import aiohttp
-
                 try:
                     async with aiohttp.ClientSession() as sess:
                         await sess.post(
@@ -2462,8 +2454,6 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
         response_url = payload.get("response_url", "")
         label = "Nothing running."
         if response_url:
-            import aiohttp
-
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
@@ -2483,8 +2473,6 @@ async def _handle_stop_cancel(payload: dict, channel: str, msg_ts: str) -> None:
     """Delete the ephemeral stop confirmation message on cancel."""
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2534,8 +2522,6 @@ async def _handle_stop_kill_now(
         from kiro_crew.slack.blocks import build_stop_failed_blocks
 
         if response_url:
-            import aiohttp
-
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
@@ -2591,8 +2577,6 @@ async def _handle_allowlist_remove(
 
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2632,8 +2616,6 @@ async def _handle_channel_remove(
 
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2660,8 +2642,6 @@ async def _handle_session_resume(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Show choice buttons for how to resume a session."""
-    import json
-
     if not is_owner(user_id):
         logger.warning("session_resume rejected: non-owner %s", user_id)
         sel().log_api_access(
@@ -2785,8 +2765,6 @@ async def _handle_resume_choice(
     mode: str,
 ) -> None:
     """Dispatch session resume to thread or DM based on user choice."""
-    import json
-
     if not is_owner(user_id):
         logger.warning("resume_choice rejected: non-owner %s", user_id)
         sel().log_api_access(
@@ -2834,8 +2812,6 @@ async def _handle_resume_choice(
             label = f"\U0001f9f5 Already active: <{link}|Go to conversation>"
             response_url = payload.get("response_url", "")
             if response_url:
-                import aiohttp
-
                 try:
                     async with aiohttp.ClientSession() as sess:
                         await sess.post(
@@ -2952,8 +2928,6 @@ async def _handle_resume_choice(
         # Update the choice message
         response_url = payload.get("response_url", "")
         if response_url:
-            import aiohttp
-
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
@@ -3014,8 +2988,6 @@ async def _handle_session_end(
     response_url = payload.get("response_url", "")
     label = f"🛑 Session `{session_id[:12]}…` ended."
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"replace_original": True, "text": label})
@@ -3130,8 +3102,6 @@ async def _handle_session_new(
     response_url = payload.get("response_url", "")
     label = "✨ New session created."
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"replace_original": False, "text": label})
@@ -3219,8 +3189,6 @@ async def _post_review_auth_error(response_url: str) -> None:
     if not response_url:
         return
     try:
-        import aiohttp
-
         async with aiohttp.ClientSession() as sess:
             await sess.post(
                 response_url,
@@ -3284,8 +3252,6 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -3337,8 +3303,6 @@ async def _handle_review_edit(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -3382,8 +3346,6 @@ async def _handle_review_cancel(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -3488,8 +3450,6 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:

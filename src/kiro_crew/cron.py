@@ -1363,7 +1363,12 @@ class CronService:
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
-            _eff_sub = int(timeout) if timeout else (30 if script else 300)
+            if timeout:
+                _eff_sub = int(timeout)
+            elif script:
+                _eff_sub = 30
+            else:
+                _eff_sub = 300
             if int(timeout_secs) < _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS:
                 raise ValueError(
                     "timeout_secs (wake budget) must cover the command/script "
@@ -1615,9 +1620,9 @@ class CronService:
                         raise ValueError(
                             f"timeout_secs must be within 1..86400, got {_tsecs}"
                         )
-                # Script/command subprocess timeout. MCP cron_update has passed
-                # this since the field existed, but no branch consumed it — the
-                # update was accepted and silently dropped.
+                # Script/command subprocess timeout. MCP cron_update passes this
+                # field, so a branch has to consume it here — otherwise the
+                # update is accepted and silently dropped.
                 _tsub: int | None = None
                 if "timeout" in kwargs and kwargs["timeout"] is not None:
                     try:
@@ -1634,11 +1639,12 @@ class CronService:
                 if job.command or job.script:
                     _eff_secs = _tsecs if _tsecs is not None else job.timeout_secs
                     _eff_sub_new = _tsub if _tsub is not None else job.timeout
-                    _eff_sub = (
-                        int(_eff_sub_new)
-                        if _eff_sub_new
-                        else (30 if job.script else 300)
-                    )
+                    if _eff_sub_new:
+                        _eff_sub = int(_eff_sub_new)
+                    elif job.script:
+                        _eff_sub = 30
+                    else:
+                        _eff_sub = 300
                     if (_tsecs is not None or _tsub is not None) and _eff_secs < (
                         _eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS
                     ):

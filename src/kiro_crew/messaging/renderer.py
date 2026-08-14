@@ -173,8 +173,8 @@ def apply_options_cap(
     * ``len(choices) <= max_buttons`` — byte-identical pass-through.
     * overflow — the first ``max_buttons`` choices are kept for the widget;
       the remainder is appended to ``body`` as a numbered text list
-      (numbering continues after the widget slots). Previously overflow was
-      silently dropped: the user never learned those choices existed.
+      (numbering continues after the widget slots) rather than dropped, so
+      the user still learns those choices exist.
     * ``max_buttons <= 0`` — returns ``(body, [])``; zero-widget channels
       own their trailer handling (today: strip).
     """
@@ -184,7 +184,12 @@ def apply_options_cap(
     if not overflow:
         return body, kept
     lines = format_overflow(overflow, start=len(kept))
-    sep = "\n\n" if body and not body.endswith("\n") else "\n" if body else ""
+    if not body:
+        sep = ""
+    elif body.endswith("\n"):
+        sep = "\n"
+    else:
+        sep = "\n\n"
     return f"{body}{sep}{lines}", kept
 
 

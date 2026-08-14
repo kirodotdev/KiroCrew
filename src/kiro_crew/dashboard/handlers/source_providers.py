@@ -1659,15 +1659,14 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
         _mark_partial(partial_sections, "files")
     normalized_files = []
     for item in change_rows:
-        status = (
-            "deleted"
-            if item.get("deleted_file")
-            else (
-                "added"
-                if item.get("new_file")
-                else "renamed" if item.get("renamed_file") else "modified"
-            )
-        )
+        if item.get("deleted_file"):
+            status = "deleted"
+        elif item.get("new_file"):
+            status = "added"
+        elif item.get("renamed_file"):
+            status = "renamed"
+        else:
+            status = "modified"
         patch = item.get("diff") or ""
         normalized_files.append(
             {

@@ -284,7 +284,12 @@ class FakeWireSession:
         Webex's ``_api`` drives every verb through this one call, so a fake
         lacking it would make those clients untestable at the wire layer.
         """
-        body = data if data is not None else (_dumps(json) if json is not None else None)
+        if data is not None:
+            body = data
+        elif json is not None:
+            body = _dumps(json)
+        else:
+            body = None
         return self._dispatch(method.upper(), url, headers, body, params)
 
     def post(
@@ -296,7 +301,12 @@ class FakeWireSession:
         headers: Optional[Dict[str, str]] = None,
         **_kw: Any,
     ) -> _FakeResponseCM:
-        body = data if data is not None else (_dumps(json) if json is not None else None)
+        if data is not None:
+            body = data
+        elif json is not None:
+            body = _dumps(json)
+        else:
+            body = None
         return self._dispatch("POST", url, headers, body, None)
 
     def get(

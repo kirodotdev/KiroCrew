@@ -2041,11 +2041,17 @@ class KiroPrerequisiteService:
                 "probe execution failed",
             )
             return ProcessResult(ok=False, error="Kiro CLI probe could not run")
+        if result.ok:
+            audit_detail = ""
+        elif result.timed_out:
+            audit_detail = "timeout"
+        else:
+            audit_detail = "nonzero exit"
         await self._set_terminal_audit(
             action,
             "completed" if result.ok else "failed",
             "gateway-status",
-            "" if result.ok else ("timeout" if result.timed_out else "nonzero exit"),
+            audit_detail,
         )
         return result
 
@@ -2192,11 +2198,17 @@ class KiroPrerequisiteService:
                 "probe execution failed",
             )
             return ProcessResult(ok=False, error="Kiro identity probe could not run")
+        if result.ok:
+            audit_detail = ""
+        elif result.timed_out:
+            audit_detail = "timeout"
+        else:
+            audit_detail = "nonzero exit"
         await self._set_terminal_audit(
             action,
             "completed" if result.ok else "failed",
             "gateway-status",
-            "" if result.ok else ("timeout" if result.timed_out else "nonzero exit"),
+            audit_detail,
         )
         return result
 

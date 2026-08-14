@@ -279,8 +279,6 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     """GET /api/outbox/{filename} — download a file from the outbox."""
-    import urllib.parse  # noqa: F811
-
     from kiro_crew.config.loader import outbox_dir  # noqa: F811
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes  # noqa: F811
 
@@ -1084,7 +1082,6 @@ async def api_workspaces(request: web.Request) -> web.Response:
 
 async def api_workspaces_create(request: web.Request) -> web.Response:
     """POST /api/workspaces — create a new workspace."""
-    import asyncio  # noqa: F811
     import shutil  # noqa: F811
 
     from kiro_crew.validation import WORKSPACE_NAME_RE  # noqa: F811
@@ -1449,9 +1446,6 @@ async def api_file_watch(request: web.Request) -> web.StreamResponse:
 
 async def api_file_read(request: web.Request) -> web.Response:
     """GET /api/file-read?path=... — read file content for the markdown panel."""
-    import logging  # noqa: F811
-    import os  # noqa: F811
-
     from kiro_crew.validation import (  # noqa: F811
         FILE_READ_SCHEMA,
         ValidationError,
@@ -1715,8 +1709,6 @@ async def api_file_download(request: web.Request) -> web.Response:
 
 async def api_file_raw(request: web.Request) -> web.Response:
     """GET /api/file-raw?path=... — serve a file with its native content type (images, etc.)."""
-    import os  # noqa: F811
-
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
 
     def _log(outcome: str, res: str) -> None:
@@ -1796,9 +1788,6 @@ async def api_file_raw(request: web.Request) -> web.Response:
 
 async def api_file_write(request: web.Request) -> web.Response:
     """POST /api/file-write — write file content from the markdown panel."""
-    import logging  # noqa: F811
-    import os  # noqa: F811
-
     from kiro_crew.validation import (  # noqa: F811
         FILE_WRITE_SCHEMA,
         ValidationError,
@@ -1841,7 +1830,6 @@ async def api_file_write(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "not found"}, status=404)
     try:
-        import os  # noqa: F811
         import shutil  # noqa: F811
         import tempfile  # noqa: F811
 
@@ -1928,9 +1916,9 @@ def _fuzzy_score(q: str, name: str, rel: str) -> float:
 
 async def api_file_search(request: web.Request) -> web.Response:
     """GET /api/file-search?q=... — fuzzy filename search for the @-mention file picker."""
-    import os  # noqa: F811
-    import time  # noqa: F811
-
+    # Re-imported at call time (not reused from the module-level binding) so a
+    # test that stubs ``kiro_crew.security.is_sensitive_path`` is observed by the
+    # project-root rejection below.
     from kiro_crew.security import is_sensitive_path  # noqa: F811
 
     caller = request.get("user", "dashboard")
@@ -2246,8 +2234,6 @@ def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict
 
 async def api_browse_dirs(request: web.Request) -> web.Response:
     """GET /api/browse-dirs?path=... — list subdirectories for directory browser."""
-    import os  # noqa: F811
-
     from kiro_crew.security import is_sensitive_path  # noqa: F811
 
     caller = request.get("user", "dashboard")
@@ -2529,9 +2515,9 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
     # Offloaded: KiroCrewConfig.load() stats, reads, parses, and validates config
-    # files. The client now polls this endpoint on an interval to pick up
-    # externally edited dashboard.gitlab_hosts, so a slow or network-backed config
-    # directory would otherwise stall the sole event loop on every poll.
+    # files. The client polls this endpoint on an interval to pick up externally
+    # edited dashboard.gitlab_hosts, so a slow or network-backed config directory
+    # would otherwise stall the sole event loop on every poll.
     try:
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
     except asyncio.CancelledError:

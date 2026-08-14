@@ -1725,7 +1725,10 @@ def _schedule_from_record(record: Any, scan: _Scan) -> dict[str, Any] | None:
             scan.diagnostic("schedules", "ambiguous_schedule_trigger", unsupported=True)
             return None
         family = next(iter(trigger_families))
-        expected_kind = "cron" if family == "cron" else "at" if family == "at" else "every"
+        # Exactly one family here (guarded above), drawn from the three literals
+        # added while scanning the schedule dict. The cron store spells the
+        # interval family "every".
+        expected_kind = {"cron": "cron", "at": "at", "interval": "every"}[family]
         allowed_kinds = {
             "cron": {"cron"},
             "interval": {"every", "interval"},
@@ -3517,11 +3520,12 @@ def _write_workspace(
 
     canonical = str(workspace)
     for existing in workspaces.values():
-        existing_dir = (
-            existing.get("dir")
-            if isinstance(existing, dict)
-            else existing if isinstance(existing, str) else None
-        )
+        if isinstance(existing, dict):
+            existing_dir = existing.get("dir")
+        elif isinstance(existing, str):
+            existing_dir = existing
+        else:
+            existing_dir = None
         if not isinstance(existing_dir, str):
             continue
         try:

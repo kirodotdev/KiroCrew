@@ -97,19 +97,19 @@ def _fence_untrusted(text: str) -> str:
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 RESEARCH_DIR: Path | None = None
 DB_PATH: Path | None = None
 
 
 def research_dir() -> Path:
-    """Research workspace dir, resolved against the live data home (issue #874)."""
+    """Research workspace dir, resolved against the live data home."""
     return RESEARCH_DIR if RESEARCH_DIR is not None else data_home() / "workspace" / "research"
 
 
 def db_path() -> Path:
-    """Campaigns sqlite DB path, resolved against the live data home (issue #874)."""
+    """Campaigns sqlite DB path, resolved against the live data home."""
     return (
         DB_PATH if DB_PATH is not None else data_home() / "apps" / "auto-research" / "campaigns.db"
     )
@@ -1808,11 +1808,12 @@ def _write_brief(cid: str, row: Any) -> None:
         for s in subs:
             text = s.get("text", "") if isinstance(s, dict) else str(s)
             origin = s.get("origin", "grill") if isinstance(s, dict) else "grill"
-            tag = (
-                " _(emergent)_"
-                if origin == "emergent"
-                else " _(user guidance)_" if origin == "manual" else ""
-            )
+            if origin == "emergent":
+                tag = " _(emergent)_"
+            elif origin == "manual":
+                tag = " _(user guidance)_"
+            else:
+                tag = ""
             lines.append(f"- {text}{tag}")
     else:
         lines.append(

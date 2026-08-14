@@ -450,6 +450,8 @@ def _audit_governance_deny(session_key: str, tool_name: str, scope: str, decisio
     trail. Never raises (audit must not wedge the deny path).
     """
     try:
+        # Resolved from ``kiro_crew.sel`` at call time, not through the
+        # module-level binding, so a substituted SEL factory is observed.
         from kiro_crew.sel import sel
 
         sel().log_governance_decision(

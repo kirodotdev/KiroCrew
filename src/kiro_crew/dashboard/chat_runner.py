@@ -3389,7 +3389,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     cron_label, _ = redact_credentials(cron_label)
     # Structured completion facts stamped at enqueue time (gateway _subagent_done)
     # ride through to the row so the card reads them instead of re-parsing the
-    # header prose (#1792). Only a single, un-merged system injection carries
+    # header prose. Only a single, un-merged system injection carries
     # them: a merge concatenates several entries under one synthetic header, for
     # which per-entry facts are meaningless — subagent completions never merge
     # (they drain one at a time and break any user-message merge), so this only
@@ -3400,14 +3400,24 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # the synthesis turn).
     if is_subagent and slot._pending_synthesis and isinstance(_row_meta, dict):
         _row_meta = {**_row_meta, "synthesisPending": True}
+    if is_subagent:
+        row_role = "subagent"
+    elif is_cron or is_recovery:
+        row_role = "inject"
+    else:
+        row_role = "user"
+    if is_cron:
+        # A cron row's `cls` slot carries a JSON payload, not a CSS class name:
+        # `cronLabel` is structured data the frontend reads off the row.
+        row_cls = json.dumps({"cronLabel": cron_label})
+    elif is_recovery:
+        row_cls = "msg msg-inject"
+    else:
+        row_cls = "msg msg-u"
     slot.append(
-        "subagent" if is_subagent else "inject" if (is_cron or is_recovery) else "user",
+        row_role,
         next_msg,
-        (
-            json.dumps({"cronLabel": cron_label})
-            if is_cron
-            else "msg msg-inject" if is_recovery else "msg msg-u"
-        ),
+        row_cls,
         meta=_row_meta if isinstance(_row_meta, dict) else None,
     )
 
@@ -3524,8 +3534,9 @@ def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: boo
     read side by side.
     """
     try:
-        # circular import: metrics.provider -> config.loader -> ... (same
-        # reason _emit_kiro_startup_metric imports lazily).
+        # Re-read at call time even though the module also imports it at the
+        # top: the rebind is what lets a test patching
+        # ``kiro_crew.metrics.provider.get_recorder`` reach this emit.
         from kiro_crew.metrics.provider import get_recorder
 
         get_recorder().histogram(

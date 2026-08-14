@@ -162,11 +162,11 @@ class CursorPath:
         EXACTLY (not evaluated) so ``point_at(0)``/``point_at(1)`` are bit-equal
         to ``start``/``end`` and cannot drift by a float epsilon.
         """
-        clamped = 0.0 if t < 0.0 else (1.0 if t > 1.0 else float(t))
-        if clamped <= 0.0:
+        if t <= 0.0:
             return self.start
-        if clamped >= 1.0:
+        if t >= 1.0:
             return self.end
+        clamped = float(t)
         omt = 1.0 - clamped
         a = omt * omt * omt
         b = 3.0 * omt * omt * clamped

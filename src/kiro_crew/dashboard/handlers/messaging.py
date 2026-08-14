@@ -1414,20 +1414,25 @@ async def api_send_message(request: web.Request) -> web.Response:
             thread_hint = " threaded=1" if thread_ts else ""
             if reply_broadcast:
                 thread_hint += " broadcast=1"
-            base_res = (
-                f"target_channel={target_channel} target_user={target_user}"
-                if (target_channel or target_user)
-                else ("session=origin" if sent_session else "fallback=owner_dm")
-            )
+            if target_channel or target_user:
+                base_res = f"target_channel={target_channel} target_user={target_user}"
+            elif sent_session:
+                base_res = "session=origin"
+            else:
+                base_res = "fallback=owner_dm"
+            if sent_session:
+                downstream_service = "session"
+            elif sent_slack:
+                downstream_service = "slack"
+            else:
+                downstream_service = "dashboard"
             _sel().log_tool_invocation(
                 session_key="dashboard",
                 tool_name="send_message",
                 outcome=(
                     "completed" if sent_slack or sent_session or not slack_attempted else "error"
                 ),
-                downstream_service=(
-                    "session" if sent_session else ("slack" if sent_slack else "dashboard")
-                ),
+                downstream_service=downstream_service,
                 resources=base_res + thread_hint,
             )
         except Exception:
@@ -1439,9 +1444,9 @@ async def api_send_message(request: web.Request) -> web.Response:
             {"ok": False, "error": f"Slack delivery failed: {safe_error}", "slack": False},
             status=502,
         )
-    # A: report the actual delivery channel so callers (and the read-back
+    # Report the actual delivery channel so callers (and the read-back
     # steering) can distinguish a real Slack post from a notification-only
-    # send. "ok: true" alone previously masked notification-only outcomes.
+    # send; "ok: true" alone masks that difference.
     if sent_session:
         delivered_to = "session"
     elif sent_slack:
@@ -1689,8 +1694,6 @@ def _missing_scope_message(needed: str) -> str:
 
 async def api_slack_profile(request: web.Request) -> web.Response:
     """POST /api/slack-profile — read a Slack user's profile."""
-    import time  # noqa: F811
-
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
     from kiro_crew.validation import USER_ID_RE  # noqa: F811
 

@@ -345,10 +345,10 @@ def _subagent_default_model() -> str:
     """Explicit sub-agent model pin (``agent.role_models['subagent']``), or ``""``.
 
     Returns ``""`` when the sub-agent role is unpinned so the caller OMITS the
-    model kwarg and keeps deferring to the provider's configured default exactly
-    as before this knob existed — rather than forcing the chat default on as an
-    explicit override (which also breaks callers/mocks that don't expect the
-    kwarg). Only a deliberate pin overrides. Never raises.
+    model kwarg and keeps deferring to the provider's configured default —
+    rather than forcing the chat default on as an explicit override (which also
+    breaks callers/mocks that don't expect the kwarg). Only a deliberate pin
+    overrides. Never raises.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig, normalize_agent_model
@@ -362,8 +362,8 @@ def _subagent_default_effort() -> str:
     """Explicit sub-agent effort pin (``agent.role_efforts['subagent']``), or ``""``.
 
     Returns ``""`` when unpinned so the caller omits ``reasoning_effort_override``
-    and the factory's default effort applies — the prior behavior. Only a
-    deliberate pin overrides. Never raises.
+    and the factory's default effort applies. Only a deliberate pin overrides.
+    Never raises.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -2579,17 +2579,11 @@ class SubagentManager:
         measurement divided by the number of concurrently-live sharing sessions
         on the same pid, i.e. an average share, not an exclusive figure.
         """
-
-        def _r(s: str) -> str:
-            s, _ = redact_exfiltration_urls(s)
-            s, _ = redact_credentials(s)
-            return s
-
         return [
             {
                 "id": a.id,
-                "task": _r(a.task[:80]),
-                "agent": _r(a.agent),
+                "task": _redact(a.task[:80]),
+                "agent": _redact(a.agent),
                 "parent": a.parent_session_key,
                 "rss_mb": round(a.last_rss_gb * 1024, 1),
                 "peak_rss_mb": round(a.peak_rss_gb * 1024, 1),
@@ -3930,8 +3924,8 @@ class SubagentManager:
             # A user Stop funnels into `_force_reap` and can land while this
             # approval is still pending (a human prompt has no deadline), and
             # `_force_reap` releases the slot and reports. A bare decrement here
-            # then double-released — driving `_running_count` negative — and the
-            # announce below double-reported the completion.
+            # would double-release — driving `_running_count` negative — and the
+            # announce below would double-report the completion.
             if self._release_slot(info):
                 self._running_count -= 1
                 self._drain_queue()

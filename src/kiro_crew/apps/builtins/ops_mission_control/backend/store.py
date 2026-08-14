@@ -413,9 +413,9 @@ def update_fields(incident_id: str, **updates: Any) -> Incident:
 
     Passes ``_KEEP_STATUS`` rather than reading the status here and handing it back: a read
     outside the lock is stale by the time the locked write runs, so on a mutually-legal
-    transition pair (`investigating` <-> `needs_human`) that stale value silently reverted a
-    concurrent change — the incident-index sibling of the proposal races. The status is now
-    only ever read INSIDE the lock, so a field edit cannot move it.
+    transition pair (`investigating` <-> `needs_human`) that stale value would silently revert
+    a concurrent change — the incident-index sibling of the proposal races. The status is only
+    ever read INSIDE the lock, so a field edit cannot move it.
     """
     return transition(incident_id, _KEEP_STATUS, **updates)
 

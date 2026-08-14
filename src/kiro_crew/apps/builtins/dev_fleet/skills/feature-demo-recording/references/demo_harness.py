@@ -172,7 +172,6 @@ class Demo:
         if main:
             with self._safe_open(f"{self.out}/MAIN_WEBM", workdir=self.out) as f:
                 f.write(main)
-        import json
         rec_ms = int((time.time() - (self._t_video0 or time.time())) * 1000)
         with self._safe_open(f"{self.out}/events.json", workdir=self.out) as f:
             json.dump({"viewport": {"width": self.width, "height": self.height},

@@ -579,6 +579,8 @@ def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | 
     if not caller_session.startswith("channel:"):
         return None
     try:
+        # Resolved from ``kiro_crew.sel`` at call time, not through the
+        # module-level binding, so a substituted SEL factory is observed.
         from kiro_crew.sel import sel
 
         sel().log_tool_invocation(
@@ -729,6 +731,8 @@ def _audit_governance_deny(session_key: str, tool_name: str, scope: str, decisio
     """Best-effort SEL audit of a governance denial (writes to the JSONL file,
     NOT stdout — safe in the stdio MCP server). Never raises."""
     try:
+        # Resolved from ``kiro_crew.sel`` at call time, not through the
+        # module-level binding, so a substituted SEL factory is observed.
         from kiro_crew.sel import sel
 
         sel().log_governance_decision(

@@ -469,9 +469,9 @@ class Artifact:
     #: the live read of it FAILED — the file was deleted or moved, is no longer
     #: readable, or resolves outside the roots that authorize it. The store
     #: falls back to the last snapshot in that case so the artifact stays
-    #: viewable, which used to make a dead pointer indistinguishable from a
-    #: healthy one (``live_dirty`` was computed against the fallback and so
-    #: read "in sync"). This field is the signal that the pointer is dead.
+    #: viewable, which on its own makes a dead pointer indistinguishable from a
+    #: healthy one (``live_dirty`` is computed against the fallback and so
+    #: reads "in sync"). This field is the signal that the pointer is dead.
     #: Not persisted; set by ``get()`` — same contract as ``live_dirty``.
     source_missing: bool = False
     #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
@@ -838,12 +838,12 @@ def _validate_description(description: str | None) -> str:
 def _validate_source_path(value: str | None, field_name: str = "source_path") -> str:
     """Validate a filesystem-pointer field (``source_path`` / ``source_root``).
 
-    REJECTS an over-long value instead of truncating it. Truncation used to be
-    silent (``source_path[:512]``), which turned a too-long-but-valid path into
-    a shorter path that points somewhere else — practically always somewhere
-    that doesn't exist. The artifact then looked file-backed while its live read
-    could never succeed. Failing the save is the honest outcome: the caller
-    learns immediately instead of the user discovering a hollow artifact later.
+    REJECTS an over-long value instead of truncating it. Silent truncation
+    (``source_path[:512]``) turns a too-long-but-valid path into a shorter path
+    that points somewhere else — practically always somewhere that doesn't
+    exist. The artifact then looks file-backed while its live read can never
+    succeed. Failing the save is the honest outcome: the caller learns
+    immediately instead of the user discovering a hollow artifact later.
     """
     if value is None:
         return ""
@@ -1366,8 +1366,8 @@ class ArtifactStore:
                 else:
                     # Fall through to the snapshot fallback — file moved /
                     # deleted / unreadable / outside the authorized root. Flag
-                    # it: the fallback keeps the artifact viewable, which
-                    # previously made a dead pointer look completely healthy.
+                    # it: the fallback keeps the artifact viewable, which on its
+                    # own makes a dead pointer look completely healthy.
                     meta.source_missing = True
                     meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
             else:
@@ -1499,12 +1499,11 @@ class ArtifactStore:
                 return None
             # Bound the read at the FILE level, not after-the-fact: read
             # MAX_CONTENT_BYTES+1 bytes from disk, decode (errors='replace'
-            # for invalid sequences). Previously called
-            # p.read_text() which loads the entire file into memory before
-            # the size check — a multi-GB file pointed to by source_path
-            # would exhaust memory before truncation triggered. Bounding
-            # the read caps memory at MAX_CONTENT_BYTES+1 regardless of
-            # file size.
+            # for invalid sequences). p.read_text() would load the entire
+            # file into memory before the size check — a multi-GB file
+            # pointed to by source_path would exhaust memory before
+            # truncation triggered. Bounding the read caps memory at
+            # MAX_CONTENT_BYTES+1 regardless of file size.
             # Read through the descriptor-pinned helper rather than by name.
             # The containment check above is on a RESOLVED path, which still
             # leaves a check-to-use window: the final component, or an ancestor
@@ -1780,11 +1779,12 @@ class ArtifactStore:
                     # Lifecycle event. Caller-specified event_type wins
                     # (revert flow uses 'reverted'); otherwise actor-based
                     # default: agent → iterated, user → edited.
-                    resolved_event_type = (
-                        event_type
-                        if event_type is not None
-                        else ("iterated" if actor == "agent" else "edited")
-                    )
+                    if event_type is not None:
+                        resolved_event_type = event_type
+                    elif actor == "agent":
+                        resolved_event_type = "iterated"
+                    else:
+                        resolved_event_type = "edited"
                     self._append_event(
                         art,
                         type=resolved_event_type,

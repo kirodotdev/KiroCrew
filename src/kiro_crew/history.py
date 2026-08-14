@@ -834,7 +834,6 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     entirely — the user manages archive deletion manually.
     """
     global _last_cleanup
-    import time as _time
 
     # Explicit negative disables cleanup immediately (no config read needed).
     if retention_days is not None and retention_days < 0:
@@ -848,8 +847,7 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     # Past the throttle window: stamp _last_cleanup NOW, before resolving
     # retention. Otherwise a config-resolved "disabled" (negative) would return
     # without updating the window, so every subsequent archive write would
-    # re-run the expensive KiroCrewConfig.load() — reintroducing the
-    # regression for the disabled case.
+    # re-run the expensive KiroCrewConfig.load().
     _last_cleanup = now
     # Resolve retention from config if not given, honoring a config-resolved
     # negative as the disable signal too.
@@ -1085,12 +1083,12 @@ def latest_transcript_ts(*candidates: str | None) -> str | None:
 
 
 #: Default upper bound on the number of distinct session keys held in the
-#: in-memory transcript / metadata caches.  The previous implementation used
-#: plain ``dict`` caches that grew one entry per session key touched and never
-#: evicted — on a gateway serving thousands of sessions the parsed message
-#: lists (each up to ~200 messages / 2 MB of source JSONL) accumulated in RAM
-#: for the lifetime of the process.  A bounded LRU keeps hot sessions resident
-#: while giving the working set a deterministic ceiling.
+#: in-memory transcript / metadata caches.  Unbounded ``dict`` caches grow one
+#: entry per session key touched and never evict — on a gateway serving
+#: thousands of sessions the parsed message lists (each up to ~200 messages /
+#: 2 MB of source JSONL) accumulate in RAM for the lifetime of the process.  A
+#: bounded LRU keeps hot sessions resident while giving the working set a
+#: deterministic ceiling.
 _TRANSCRIPT_CACHE_MAX = 256
 
 # Metadata reads retry briefly before reporting "no metadata": on Windows a

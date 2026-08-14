@@ -419,6 +419,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             try:
                                 if native.get("done"):
                                     _err = native.get("error")
+                                    # Same precedence the producer uses, for a
+                                    # snapshot that carries no outcome of its own.
+                                    if native.get("stopped"):
+                                        _outcome = "stopped"
+                                    elif _err:
+                                        _outcome = "failed"
+                                    else:
+                                        _outcome = "completed"
                                     _replay.append(
                                         {
                                             "type": "subagent_done",
@@ -428,18 +436,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "elapsed": native["elapsed"],
                                                 "error": _r(str(_err)) if _err else None,
                                                 "stopped": bool(native.get("stopped")),
-                                                "outcome": str(
-                                                    native.get("outcome")
-                                                    or (
-                                                        "stopped"
-                                                        if native.get("stopped")
-                                                        else (
-                                                            "failed"
-                                                            if native.get("error")
-                                                            else "completed"
-                                                        )
-                                                    )
-                                                ),
+                                                "outcome": str(native.get("outcome") or _outcome),
                                                 "task": _r(str(native["task"])),
                                                 "agent": _r(str(native["agent"])),
                                                 "result": _r(str(native["result"])),

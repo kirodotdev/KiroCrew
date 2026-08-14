@@ -1071,8 +1071,15 @@ async def pull_upstream(
     except Exception as exc:  # pragma: no cover — pull must not 500
         logger.warning("pull_upstream: write-back failed for %s: %s", slug, exc)
         return {"pulled": False, "reason": "write-back failed", "source": source}
+    # Prefer the version the fetch reported, fall back to the pre-pull remote
+    # state, and 0 when neither carries an integer version.
     pcv = pulled.get("current_version")
-    cloud_dest_v = pcv if isinstance(pcv, int) else (cur_v if isinstance(cur_v, int) else 0)
+    if isinstance(pcv, int):
+        cloud_dest_v = pcv
+    elif isinstance(cur_v, int):
+        cloud_dest_v = cur_v
+    else:
+        cloud_dest_v = 0
     if is_pub and updated.publication is not None:
         upub = updated.publication
         version_map = dict(upub.version_map)

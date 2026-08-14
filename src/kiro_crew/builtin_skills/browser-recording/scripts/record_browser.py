@@ -131,9 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", args.name):
         _fail("--name must be a plain filename fragment (letters, digits, . _ -)")
 
-    project = Path(args.project).resolve() if args.project else (
-        scenario.parent if scenario else Path.cwd()
-    )
+    if args.project:
+        project = Path(args.project).resolve()
+    elif scenario:
+        project = scenario.parent
+    else:
+        project = Path.cwd()
     node = _probe_node()
     _probe_playwright(project)
 

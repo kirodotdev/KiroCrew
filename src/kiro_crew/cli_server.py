@@ -130,7 +130,7 @@ def _token(args: argparse.Namespace) -> None:
     runs this over SSH and regex-extracts the JWT from stdout, so mixing error
     prose into stdout both violates the Unix convention and hides the reason
     from any caller that only captures stderr (which is how a failed remote
-    mint used to surface as a useless ``<no stderr>``).
+    mint surfaces as a useless ``<no stderr>``).
     """
     # Seam-supplied pre-launch checks (CPP IdentityProvider seam) — e.g. a
     # companion SSO-session freshness prompt before minting a token. Public
@@ -326,8 +326,8 @@ def _stop(cli_port: int | None = None) -> None:
         return
 
     # Cross-platform port -> listening PID lookup (lsof on POSIX, netstat -ano
-    # on Windows — there is no lsof there, which previously made `kirocrew stop`
-    # a no-op on Windows).
+    # on Windows — there is no lsof there, so an lsof-only lookup makes
+    # `kirocrew stop` a no-op on Windows).
     pids = platform_compat.find_listening_pids(port)
 
     if not pids:
@@ -898,7 +898,7 @@ def _restart(cli_port: int | None = None) -> None:
     pid = proc.pid
     # A pid is not a running gateway. The replacement can be refused by the
     # ownership guard, crash on a bad config, or hang before it binds — all of
-    # which used to print the success line below and exit 0 with nothing serving.
+    # which would print the success line below and exit 0 with nothing serving.
     # Report success only once the NEW gateway answers, and audit what happened.
     verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, _RESTART_READY_TIMEOUT)
     if verdict != _READY_OK:
@@ -1130,9 +1130,7 @@ def _update_wheel(layout) -> None:
     the standard state for ``curl | sh`` installs where the venv at
     ``~/.kiro/crew-venv`` has no source tree.
     """
-    import json
     import re
-    import urllib.request
 
     from kiro_crew import __version__ as local_version
     from kiro_crew.platform.update_governance import update_blocked_reason

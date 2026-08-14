@@ -1572,8 +1572,6 @@ def validate_file_path(raw: str) -> str | None:
     Enforces: is_sensitive_path(), realpath canonicalization.
     Returns the canonical path or None if rejected.
     """
-    import os
-
     if not raw:
         return None
     path = os.path.realpath(os.path.expanduser(raw))
@@ -1597,9 +1595,6 @@ def safe_read_file(path: str) -> str:
     detected. Other read errors (missing file, permission denied) propagate
     unchanged so callers surface accurate messages.
     """
-    import errno
-    import os
-
     resolved = os.path.realpath(os.path.expanduser(path))
     if is_sensitive_path(resolved):
         raise PermissionError(f"Blocked: access to sensitive path: {resolved}")
@@ -1634,8 +1629,6 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
 
     Returns file content as bytes, or None if path is rejected or unreadable.
     """
-    import os
-
     path = validate_file_path(raw)
     if path is None:
         return None
@@ -1675,9 +1668,6 @@ def safe_read_file_bytes_with_identity(
     exceeds ``MAX_FILE_BYTES``. Returns ``None`` when the path is rejected by
     :func:`validate_file_path` or is otherwise unreadable.
     """
-    import errno
-    import os
-
     path = validate_file_path(raw)
     if path is None:
         return None
@@ -1713,8 +1703,6 @@ def stat_identity(raw: str) -> tuple[int, int] | None:
 
     Returns ``(dev, ino)`` or ``None`` if the path is rejected or unstattable.
     """
-    import os
-
     path = validate_file_path(raw)
     if path is None:
         return None
@@ -1727,8 +1715,6 @@ def stat_identity(raw: str) -> tuple[int, int] | None:
 
 def _fd_real_path(fd: int) -> str | None:
     """Real filesystem path of an OPEN descriptor."""
-    import os
-
     if os.name == "nt":
         try:
             import ctypes
@@ -1808,9 +1794,6 @@ def safe_read_file_bytes_nolink(
     Returns file content as bytes, or None if the path is rejected,
     hardlinked, non-regular, escaping ``within_root``, or unreadable.
     """
-    import os
-    import stat as _stat
-
     # Callers that pass an explicit limit own the higher-level bound (for
     # example, the importer's trusted 64 MiB SQLite snapshot cap). Keep the
     # default cap for general reads, but do not silently narrow a documented
@@ -2253,8 +2236,6 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
     the inode actually opened and copied, so no check-to-use window remains.
     If the fd's real path cannot be determined, fail closed.
     """
-    import os
-    import stat as _stat
     import tempfile
 
     path = validate_file_path(raw)
@@ -2320,8 +2301,6 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
 
     Returns up to *n* bytes, or None if the path is rejected or unreadable.
     """
-    import os
-
     if n <= 0:
         return b""
     path = validate_file_path(raw)
@@ -2480,7 +2459,6 @@ def safe_read_file_internal(read_id: str) -> bytes | None:
     # refused, binding the read to the real allowlisted file rather than a
     # redirected target. Check + read share ONE descriptor (TOCTOU-safe), and
     # fstat confirms a regular file before reading.
-    import os
     import stat
 
     try:
@@ -2751,8 +2729,6 @@ async def run_script_hook(
 
     Passes hook event as JSON via STDIN (Kiro CLI compatible).
     """
-    import os
-
     start = time.monotonic()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
     # running script hooks for the active surface. Checked before the subprocess
@@ -2868,7 +2844,12 @@ async def run_script_hook(
         elapsed = int((time.monotonic() - start) * 1000)
         exit_code = proc.returncode or 0
         hook.last_run = time.time()
-        hook.last_status = "blocked" if exit_code == 2 else ("ok" if exit_code == 0 else "error")
+        if exit_code == 2:
+            hook.last_status = "blocked"
+        elif exit_code == 0:
+            hook.last_status = "ok"
+        else:
+            hook.last_status = "error"
         hook.run_count += 1
         return ScriptHookResult(
             hook_id=hook.id,
@@ -3098,8 +3079,6 @@ class ScriptHookStore:
         ``run_script_hook`` (ARG_MAX safety), so a hook keying on the tail of the
         segment reads it from stdin JSON rather than the truncated env var.
         """
-        import os
-
         results = []
         # Build base hook event (Kiro CLI format)
         hook_event: dict = {"hook_event_name": event, "cwd": os.getcwd()}

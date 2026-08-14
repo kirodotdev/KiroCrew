@@ -1098,7 +1098,7 @@ class VectorMemoryStore:
             # Context assembly runs on executor threads (subagent context builds,
             # run_in_embed_pool) concurrent with writers on worker threads, and
             # context.py does not guard this call — an unserialized fetch here
-            # used to kill the whole subagent run (see the locked-fetch helper
+            # kills the whole subagent run (see the locked-fetch helper
             # contract). The helper materializes the rows.
             all_rows = self._fetch_all_locked(
                 "SELECT key, value_json, updated_at, embedding FROM semantic_memory "
@@ -1397,8 +1397,6 @@ class VectorMemoryStore:
 
         embedding_blob: bytes | None = None
         if embedding is not None:
-            import struct
-
             if _HAS_NUMPY:
                 vec = np.array(embedding, dtype=np.float32)
                 norm = np.linalg.norm(vec)
@@ -1743,15 +1741,13 @@ class VectorMemoryStore:
         relevance_filter: bool = False,
     ) -> list[dict]:
         """Cosine similarity search using embeddings stored in SQLite (stdlib only)."""
-        import struct
-
         # Normalize query
         norm = math.sqrt(sum(x * x for x in query_embedding))
         q = [x / norm for x in query_embedding] if norm > 0 else query_embedding
         q_len = len(q)
 
         # Serialized via the locked helper — two threads running a statement at
-        # the same time used to corrupt each other's row iteration (observed as
+        # the same time corrupt each other's row iteration (surfacing as
         # DatabaseError("another row available") and, on Windows CI, a NULL
         # value for a column the WHERE clause excludes). Only the fetch is
         # locked: the scoring loop below works on materialized rows.

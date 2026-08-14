@@ -2199,7 +2199,7 @@ async def start_dashboard(
     except Exception:
         logger.debug("Could not register pending-skill staged hook", exc_info=True)
 
-    # --- Dynamic Workflows (M6) ---
+    # --- Dynamic Workflows ---
     try:
         from kiro_crew.dashboard.handlers import workflows as wf_handlers
         from kiro_crew.dashboard.workflow_inject import inject_workflow_result

@@ -498,9 +498,12 @@ def _detail_html(r: dict) -> str:
     label = (f"Design reasoning + {n} finding{'s' if n != 1 else ''}"
              if n else "Design reasoning")
     verdict = html.escape(r["gate_verdict"])
-    vc, vbg = (_SEV_COLORS["red"] if verdict == "BLOCK"
-               else _SEV_COLORS["yellow"] if verdict == "CONCERNS"
-               else _SEV_COLORS["green"])
+    if verdict == "BLOCK":
+        vc, vbg = _SEV_COLORS["red"]
+    elif verdict == "CONCERNS":
+        vc, vbg = _SEV_COLORS["yellow"]
+    else:
+        vc, vbg = _SEV_COLORS["green"]
     body = ""
     if design:
         body += (

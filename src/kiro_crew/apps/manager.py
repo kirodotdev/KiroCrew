@@ -1115,11 +1115,9 @@ def _app_activation_denied(name: str) -> str | None:
     session key (surface ``host``): app activation is an operator/host action, so
     it is governed by the policy ceiling AND any ``bind: {type: surface, id:
     host}`` profile — an honest, stable bind target.  (It must NOT use an empty
-    key, which would classify to surface ``unknown`` and silently match nothing;
-    an empty key previously mis-classified to ``slack`` and accidentally picked up
-    slack-bound profiles.)  Best-effort beyond the always-on
-    checks: a ``PlatformCompositionError`` propagates (fail-closed CPP); any other
-    error degrades to "no opinion" (None).
+    key, which classifies to surface ``unknown`` and silently matches nothing.)
+    Best-effort beyond the always-on checks: a ``PlatformCompositionError``
+    propagates (fail-closed CPP); any other error degrades to "no opinion" (None).
     """
     from kiro_crew.platform.context import PlatformCompositionError
 

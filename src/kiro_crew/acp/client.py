@@ -1018,15 +1018,15 @@ _RE_5XX_NAMED = re.compile(
     r"|DispatchFailure|ConnectionReset(?:Error)?)\b"
 )
 _RE_5XX_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:50[0234]|529)\b", re.IGNORECASE)
-# Genuine retry hint only. "response stream" USED TO BE matched here, which made
-# this branch a catch-all: kiro-cli wraps EVERY mid-stream provider failure as
-# "Encountered an error in the response stream: <real cause>", so the wrapper
-# prefix alone — present on quota exhaustion, validation errors, anything —
-# classified the error as a momentary 5xx, told the user to retry, and DISCARDED
-# the real cause. A monthly-usage-limit rejection surfaced as "The model backend
-# hit a transient error (HTTP 5xx)" and burned the retry ladder. The wrapper is
-# a transport envelope, not a signal about the failure inside it; classification
-# now reads the inner detail (see _provider_detail).
+# Genuine retry hint only. "response stream" is deliberately NOT matched here,
+# because that would make this branch a catch-all: kiro-cli wraps EVERY mid-stream
+# provider failure as "Encountered an error in the response stream: <real cause>",
+# so the wrapper prefix alone — present on quota exhaustion, validation errors,
+# anything — would classify the error as a momentary 5xx, tell the user to retry,
+# and DISCARD the real cause. A monthly-usage-limit rejection would surface as
+# "The model backend hit a transient error (HTTP 5xx)" and burn the retry ladder.
+# The wrapper is a transport envelope, not a signal about the failure inside it;
+# classification reads the inner detail (see _provider_detail).
 _RE_5XX_HINT = re.compile(r"(please try again)", re.IGNORECASE)
 # Session expiry, by HTTP status. An expired session is rejected with 401/403,
 # and nothing else in this module recognised those codes: the error fell through
@@ -1465,9 +1465,9 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
             # Unrecognised failure mode. Show the PROVIDER'S OWN message when
             # there is one — it is the true error, and the same words the CLI
             # prints, so the two surfaces agree. This is the path every provider
-            # failure without a curated branch above now takes; previously such
-            # errors were swallowed by an over-broad 5xx match and reported as a
-            # momentary blip, so the real cause never reached the user at all.
+            # failure without a curated branch above takes; an over-broad 5xx
+            # match would swallow such an error and report a momentary blip, so
+            # the real cause would never reach the user at all.
             #
             # Falls back to the raw dict only when there is no usable detail
             # (empty/odd data), so a genuinely opaque shape still loses nothing.
@@ -3365,15 +3365,15 @@ class AcpClient:
             return None
         except (ValueError, asyncio.LimitOverrunError) as exc:
             # A single JSON-RPC line exceeded the stdout StreamReader buffer
-            # (_STDOUT_BUFFER_LIMIT). This does NOT corrupt the stream, contrary
-            # to what this call site used to assume: before raising ValueError,
-            # readline() deletes the oversize line through its terminating
-            # newline when one is already buffered, else clears the buffer, then
-            # resumes the transport (CPython asyncio.streams.StreamReader
-            # .readline — its docstring states this). So drop the frame and let
-            # the caller read the next one, exactly like the blank-line and
-            # non-JSON paths below; raising AcpProcessDied here ended a healthy
-            # live turn over one unreadably large frame.
+            # (_STDOUT_BUFFER_LIMIT). This does NOT corrupt the stream: before
+            # raising ValueError, readline() deletes the oversize line through
+            # its terminating newline when one is already buffered, else clears
+            # the buffer, then resumes the transport (CPython
+            # asyncio.streams.StreamReader.readline — its docstring states this).
+            # So drop the frame and let the caller read the next one, exactly
+            # like the blank-line and non-JSON paths below; raising
+            # AcpProcessDied here would end a healthy live turn over one
+            # unreadably large frame.
             #
             # NOTE the deliberate asymmetry with AcpRuntime._reader_loop, which
             # additionally enforces a drain budget: that reader is a standalone
@@ -4415,9 +4415,8 @@ class AcpClient:
             raw = result.get("text", "") or result.get("message", "")
             if raw:
                 # Two-pass redaction (URLs + credentials) to match the shared
-                # AcpSessionHandle.send_command path; a URL-only pass previously
-                # leaked tokens/keys in slash-command output on the legacy path.
-                # (redact_* imported at module top.)
+                # AcpSessionHandle.send_command path: a URL-only pass leaves
+                # tokens/keys in slash-command output.
                 raw, _ = redact_exfiltration_urls(raw)
                 raw, _ = redact_credentials(raw)
             return raw
@@ -4987,6 +4986,9 @@ class AcpClient:
             "kiro-cli cancelled tool use(s) [site=%s session=%s]", site, self._session_id
         )
         try:
+            # Re-imported at call time on purpose: the module-level binding is
+            # captured at import time, so only this rebind resolves the CURRENT
+            # ``kiro_crew.sel.sel`` and lets a substituted emitter be observed.
             from kiro_crew.sel import sel
 
             sel().log_tool_invocation(

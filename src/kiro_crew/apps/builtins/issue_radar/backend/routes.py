@@ -2626,8 +2626,6 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
             status=502,
         )
 
-    import time
-
     generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {"recommendations": result["recommendations"], "generated_at": generated_at}
     await _st(key, store.write_recommendations_cache, owner, repo, payload)
@@ -2831,10 +2829,10 @@ async def _handle_get_tagging(request: web.Request) -> web.Response:
     untagged = [r["number"] for r in rows]
 
     # Per-label OPEN-issue counts and open-issue titles, derived from the same
-    # set this route already loaded. Both used to be read from the shared issue
-    # list, which follows the user's open/closed filter — so entering Tagging
-    # from a Closed filter reported closed counts as open ones and lost the
-    # example titles. Serving them here makes the dashboard filter-independent.
+    # set this route already loaded rather than from the shared issue list: that
+    # list follows the user's open/closed filter, so entering Tagging from a
+    # Closed filter would report closed counts as open ones and lose the example
+    # titles. Serving them here makes the dashboard filter-independent.
     label_counts: dict[str, int] = {}
     for iss in issues:
         if not isinstance(iss, dict):

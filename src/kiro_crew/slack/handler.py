@@ -2129,11 +2129,14 @@ def build_timing_footer(
     if client is not None:
         try:
             ctx_pct = round(client.context_usage_pct())
-            ctx_icon = (
-                "🔴"
-                if ctx_pct >= 70
-                else "🟠" if ctx_pct >= 50 else "🟡" if ctx_pct >= 30 else "🟢"
-            )
+            if ctx_pct >= 70:
+                ctx_icon = "🔴"
+            elif ctx_pct >= 50:
+                ctx_icon = "🟠"
+            elif ctx_pct >= 30:
+                ctx_icon = "🟡"
+            else:
+                ctx_icon = "🟢"
             footer_text = f"Finished in {duration} · {ctx_icon} ctx {ctx_pct}%"
         except Exception:
             logger.debug("Failed to retrieve context usage", exc_info=True)
@@ -4490,6 +4493,9 @@ async def handle_interaction(
                     error="not_thread_owner",
                 )
                 return None
+            # Imported at call time on purpose: tests patch
+            # ``kiro_crew.session.SessionMap`` to drive the fail-closed path, and
+            # only a call-time rebind observes that patch.
             from kiro_crew.session import SessionMap
 
             session_key = thread_ts

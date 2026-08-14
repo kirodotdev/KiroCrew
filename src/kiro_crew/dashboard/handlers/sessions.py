@@ -1692,8 +1692,6 @@ async def _reset_all_sessions(request: web.Request) -> int:
         if providers:
 
             async def _safe_shutdown(p: LLMProvider) -> None:
-                import kiro_crew.dashboard.handlers as _h  # noqa: F811
-
                 _timeout = _SHUTDOWN_TIMEOUT_SECS
                 try:
                     await asyncio.wait_for(p.shutdown(), timeout=_timeout)

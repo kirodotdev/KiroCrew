@@ -3864,6 +3864,12 @@ class DashboardState:
                     done_at = float(info.get("done_at") or 0.0)
                     if done_at and (now - done_at) > ttl_secs:
                         continue
+                    if info.get("stopped"):
+                        outcome = "stopped"
+                    elif info.get("error"):
+                        outcome = "failed"
+                    else:
+                        outcome = "completed"
                     done.append(
                         {
                             **base,
@@ -3871,11 +3877,7 @@ class DashboardState:
                             "elapsed": float(info.get("elapsed") or 0.0),
                             "error": info.get("error"),
                             "stopped": bool(info.get("stopped")),
-                            "outcome": (
-                                "stopped"
-                                if info.get("stopped")
-                                else ("failed" if info.get("error") else "completed")
-                            ),
+                            "outcome": outcome,
                             "result": str(info.get("result") or ""),
                             "done_at": done_at,
                         }
@@ -4967,6 +4969,21 @@ class DashboardState:
             if nested and nested[0] == channel_type:
                 channel_id = nested[1]
             normalized = ChannelLink(channel_type, channel_id, link.thread_id)
+            # Real on EVERY row, origin included: the conversation a session was
+            # born in can be disconnected too, so it stops syndicating there and
+            # the session carries on in the dashboard. `direction` still records
+            # the provenance the sidebar mark needs; it no longer decides whether
+            # the row has a control.
+            #
+            # Keyed to the row's SOURCE, not just its channel: a session born in
+            # Discord that also mirrors to Telegram draws two non-Slack rows, and
+            # while both read one value, muting either silently muted the other.
+            if channel_type == SLACK_NAMESPACE:
+                paused = slack_paused
+            elif direction == "origin":
+                paused = origin_paused
+            else:
+                paused = mirror_paused
             links.append(
                 {
                     "channel": channel_type,
@@ -4974,22 +4991,7 @@ class DashboardState:
                     "target": _redacted_link_target(channel_id),
                     "direction": direction,
                     "live": self._channel_link_is_live(normalized),
-                    # Real on EVERY row, origin included: the conversation a
-                    # session was born in can be disconnected too, so it stops
-                    # syndicating there and the session carries on in the
-                    # dashboard. `direction` still records the provenance the
-                    # sidebar mark needs; it no longer decides whether the row
-                    # has a control.
-                    #
-                    # Keyed to the row's SOURCE, not just its channel: a session
-                    # born in Discord that also mirrors to Telegram draws two
-                    # non-Slack rows, and while both read one value, muting
-                    # either silently muted the other.
-                    "paused": (
-                        slack_paused
-                        if channel_type == SLACK_NAMESPACE
-                        else origin_paused if direction == "origin" else mirror_paused
-                    ),
+                    "paused": paused,
                 }
             )
 
