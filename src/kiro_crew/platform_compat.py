@@ -17,6 +17,7 @@ import io
 import logging
 import ntpath
 import os
+import pathlib
 import platform
 import shutil
 import signal
@@ -3366,6 +3367,34 @@ def is_link_or_junction(path: str | os.PathLike) -> bool:
         except (OSError, ValueError):
             return False
     return _is_junction_fallback(path)
+
+
+def first_linked_ancestor(path: str | os.PathLike) -> str | None:
+    r"""First ANCESTOR of *path* that is a symlink/junction, or None.
+
+    :func:`is_link_or_junction` tests one path, so a caller that checks only
+    the path it was handed still resolves through a linked PARENT. That gap is
+    not cosmetic on Windows: an ancestor link whose target is ``\\host\share``
+    turns the first innocent-looking ``is_dir()`` on a LOCAL-looking path into
+    an outbound SMB connection that authenticates as this process. A lexical
+    UNC screen cannot catch it, because the path being probed is not itself
+    UNC-shaped -- only the link's target is.
+
+    Ancestors are tested ROOT-FIRST and the walk stops at the first hit. That
+    order is the safety property, not a detail: each ``lstat`` runs only after
+    every ancestor above it is known not to be a link, so the probe itself
+    never traverses one. Returns the offending ancestor for logging; callers
+    deciding whether to REJECT should not put it in a user-facing message,
+    since which ancestor is a link is filesystem layout the caller supplied a
+    path to guess at.
+
+    The leaf is deliberately excluded -- pair this with
+    :func:`is_link_or_junction` on the path itself.
+    """
+    for ancestor in reversed(pathlib.Path(os.fspath(path)).parents):
+        if is_link_or_junction(ancestor):
+            return str(ancestor)
+    return None
 
 
 def unlink_link_or_junction(path: str | os.PathLike) -> None:
