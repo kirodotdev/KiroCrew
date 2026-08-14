@@ -92,7 +92,6 @@ def _pool_key(server: str = "example-mcp") -> PoolKey:
         autoapprove_set_hash="aah",
         approval_mode="reads",
         trust_all_tools=False,
-        user_identity="testuser",
         config_snapshot_hash="csh",
     )
 

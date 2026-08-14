@@ -44,7 +44,6 @@ def _make_pool_key(server: str = "test-mcp") -> PoolKey:
         "autoapprove_set_hash": "c" * 64,
         "approval_mode": "interactive",
         "trust_all_tools": False,
-        "user_identity": "test-user",
         "config_snapshot_hash": "d" * 64,
     })
 
@@ -527,7 +526,6 @@ class TestDetachOnCancelFailure:
             "autoapprove_set_hash": "2" * 64,
             "approval_mode": "interactive",
             "trust_all_tools": False,
-            "user_identity": "leak",
             "channel_id": "C_LEAK",
             "config_snapshot_hash": "3" * 64,
             "session_key": "dashboard:chat-leak",

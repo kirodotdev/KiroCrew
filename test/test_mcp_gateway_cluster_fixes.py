@@ -199,7 +199,6 @@ class TestNamingMigration:
             autoapprove_set_hash="a",
             approval_mode="interactive",
             trust_all_tools=False,
-            user_identity="test",
             config_snapshot_hash="c",
         )
         env_patch = {"MC_MCP_TARGET_TEST_SRV": "/usr/bin/test-srv --stdio"}
@@ -230,7 +229,6 @@ class TestNamingMigration:
             autoapprove_set_hash="a",
             approval_mode="interactive",
             trust_all_tools=False,
-            user_identity="test",
             config_snapshot_hash="c",
         )
         env_patch = {

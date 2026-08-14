@@ -2113,6 +2113,9 @@ async def _handle_connection(
                     session_key=resolved_session_key,
                     session_type="peer-resolved",
                     principal_id=str(
+                        # ``user_identity`` is the legacy spelling an older
+                        # stub may still send; the field was deleted from
+                        # PoolKey but stays honored here as a diagnostic.
                         register.get("principal_id") or register.get("user_identity") or ""
                     ),
                     channel_id=str(register.get("channel_id") or ""),

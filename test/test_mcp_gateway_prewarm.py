@@ -38,7 +38,6 @@ def _register(server: str = "test-mcp") -> dict[str, object]:
         "autoapprove_set_hash": "c" * 64,
         "approval_mode": "interactive",
         "trust_all_tools": False,
-        "user_identity": "test-user",
         "config_snapshot_hash": "d" * 64,
     }
 

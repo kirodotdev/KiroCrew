@@ -58,7 +58,6 @@ def _register(server: str = "test-mcp", agent: str = "test-agent") -> dict[str, 
         "autoapprove_set_hash": "c" * 64,
         "approval_mode": "interactive",
         "trust_all_tools": False,
-        "user_identity": "test-user",
         "config_snapshot_hash": "d" * 64,
     }
 

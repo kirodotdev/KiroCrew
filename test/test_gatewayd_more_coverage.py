@@ -106,7 +106,6 @@ def _register_frame(**overrides: Any) -> dict[str, Any]:
         "autoapprove_set_hash": "b" * 8,
         "approval_mode": "reads",
         "trust_all_tools": False,
-        "user_identity": "cov",
         "config_snapshot_hash": "c" * 8,
         "session_key": "sess-cov",
         "session_type": "dashboard",

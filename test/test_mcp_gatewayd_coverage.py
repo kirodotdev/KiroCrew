@@ -98,7 +98,6 @@ def _pool_key(server: str = "demo-mcp", agent: str = "cov-agent", env_hash: str 
         autoapprove_set_hash="b" * 8,
         approval_mode="reads",
         trust_all_tools=False,
-        user_identity="cov",
         config_snapshot_hash="c" * 8,
     )
 

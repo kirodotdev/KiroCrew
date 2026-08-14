@@ -63,7 +63,6 @@ def _register(
         "autoapprove_set_hash": "2" * 64,
         "approval_mode": "interactive",
         "trust_all_tools": False,
-        "user_identity": "cp",
         "channel_id": "C_CP",
         "config_snapshot_hash": "3" * 64,
         "parent_pid": (ancestor_pids or _ANCESTORS)[0],  # legacy field, first ancestor
@@ -724,6 +723,23 @@ def test_stub_register_payload_carries_ancestor_pids() -> None:
     # Chain walks upward: on Linux the second entry (when present) must be
     # the parent of the first.
     assert len(set(chain)) == len(chain)  # no cycles
+
+
+def test_stub_register_payload_keeps_legacy_user_identity_key() -> None:
+    """Wire-compat ratchet (#3604): ``user_identity`` was deleted as a
+    PoolKey dimension, but the register payload must keep sending the key.
+    The manager adopts a running daemon with no version handshake, so a
+    daemon predating the deletion can serve new stubs — and its
+    ``PoolKey.from_register`` hard-requires the field, rejecting a payload
+    without it and silently un-pooling every session until the daemon
+    restarts. Drop this only when no pre-#3604 daemon can be adopted."""
+    args = stub_mod._parse_args(
+        ["--server", "echo-mcp", "--agent", "cp-agent",
+         "--target-command", "/bin/true", "--work-dir", "/tmp"]
+    )
+    payload = stub_mod.build_register_payload(args)
+    assert "user_identity" in payload
+    assert isinstance(payload["user_identity"], str) and payload["user_identity"]
 
 
 def test_classify_session_type() -> None:

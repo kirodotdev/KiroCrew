@@ -46,7 +46,6 @@ def _make_pool_key(server: str = "test-server", agent: str = "test-agent") -> Po
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        user_identity="testuser",
         config_snapshot_hash="jkl012",
     )
 

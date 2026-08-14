@@ -4,12 +4,12 @@ Two sessions sharing a single backend MUST produce the same answers as if
 each had its own backend. Every attribute that changes backend behavior
 MUST be in :class:`PoolKey`, or two sessions can see cross-tenant state.
 
-The 13 dimensions captured below are the union of every spawn-time input
+The 12 dimensions captured below are the union of every spawn-time input
 that influences a Kiro MCP subprocess: identity (``server_name``,
 ``agent_name``), execution (``command_args_hash``, ``effective_env_hash``,
 ``work_dir``, ``binary_version``), security (``os_uid``, ``sandbox_mode``,
-``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``,
-``user_identity``), and config drift (``config_snapshot_hash``).
+``autoapprove_set_hash``, ``approval_mode``, ``trust_all_tools``), and
+config drift (``config_snapshot_hash``).
 
 There is deliberately NO channel dimension. A channel is not a trust
 boundary and never was a usable proxy for one:
@@ -27,11 +27,17 @@ boundary and never was a usable proxy for one:
   onto every forwarded ``tools/call``, so a channel-aware backend learns the
   channel PER CALL and does not need a process to itself.
 
-The axis that genuinely expresses "a different person must not share a
-backend" is ``user_identity``. It is present above, and today it degrades to
-the OS user because nothing populates ``KIROCREW_PRINCIPAL`` — making that
-real is the prerequisite for a shared multi-principal gateway, and is
-tracked separately. Re-adding a channel dimension is not that fix.
+There is deliberately NO per-principal dimension either. Kiro Crew is
+single-operator: a Slack bot and a cron job are the same operator's
+automations, not separate principals, so a multi-principal shared gateway
+is not a supported deployment model. A ``user_identity`` field existed
+here historically, but nothing ever populated its ``KIROCREW_PRINCIPAL``
+source, so it always collapsed to the OS user and never isolated anything
+— it was deleted rather than kept as a misleading affordance. The
+cross-OS-user boundary that IS real is carried by ``os_uid``. If
+multi-principal isolation is ever wanted, it needs a real design (what
+counts as a principal on an unattended surface is the hard part);
+re-adding a key field would be the small part.
 
 Stable hashing uses SHA-256 over a JSON-serialized tuple with sorted keys.
 Python's built-in ``hash()`` is intentionally non-deterministic across
@@ -236,7 +242,6 @@ class PoolKey:
     autoapprove_set_hash: str
     approval_mode: str
     trust_all_tools: bool
-    user_identity: str
 
     # Config drift
     config_snapshot_hash: str
@@ -267,7 +272,9 @@ class PoolKey:
         # stub still reports it because gatewayd threads it into the per-call
         # caller identity (see ``_build_caller_block``), and an older stub
         # against a newer daemon must keep registering cleanly. It is simply
-        # not a pool dimension — see the module docstring.
+        # not a pool dimension — see the module docstring. The same applies
+        # to ``user_identity``, which older stubs still send: it was deleted
+        # as a pool dimension (it never isolated anything) and is ignored.
         # Security-boundary dims: type-check rather than coerce. bool("false")
         # is True and int() on a bool silently passes, so a stub sending a JSON
         # string/number for these could land in the wrong trust/uid partition.
@@ -292,7 +299,6 @@ class PoolKey:
                 autoapprove_set_hash=str(register["autoapprove_set_hash"]),
                 approval_mode=str(register["approval_mode"]),
                 trust_all_tools=trust_all_tools,
-                user_identity=str(register["user_identity"]),
                 config_snapshot_hash=str(register["config_snapshot_hash"]),
             )
         except (TypeError, ValueError) as exc:

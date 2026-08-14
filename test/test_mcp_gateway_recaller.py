@@ -42,7 +42,6 @@ def _register(session_key: str) -> dict[str, Any]:
         "autoapprove_set_hash": "2" * 64,
         "approval_mode": "interactive",
         "trust_all_tools": False,
-        "user_identity": "rc",
         "channel_id": "C_RC",
         "config_snapshot_hash": "3" * 64,
         "session_key": session_key,
