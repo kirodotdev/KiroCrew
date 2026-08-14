@@ -323,9 +323,16 @@ running `playwright-cli` commands, so it needs Node.js 20 or newer:
 
 ```bash
 npm install -g @playwright/cli@latest
-playwright-cli install-browser              # add --with-deps on Linux
+playwright-cli install-browser              # --with-deps on Debian/Ubuntu only
 playwright-cli install --skills agents --global
 ```
+
+`--with-deps` installs OS libraries through `apt` and needs root. Playwright
+implements it for apt alone, so on Fedora, RHEL, CentOS or Amazon Linux it
+misfires against Ubuntu package names; install the libraries with your own
+package manager instead. The Settings → Browser install button adapts to the
+host and reports the command to run when it needs root — see
+[the browser module spec](../system-specs/modules/browser.md#os-dependencies).
 
 The dashboard's **Browser** panel embeds the CLI's own dashboard over loopback,
 which shows the live session and lets you take over with real mouse and keyboard.

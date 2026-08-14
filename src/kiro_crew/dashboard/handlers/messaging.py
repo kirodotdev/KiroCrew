@@ -1958,7 +1958,22 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
             state._browser_install_error = None
             try:
                 result = await asyncio.to_thread(browser_cli_install.install)
-                failed = [s for s in result.get("steps", []) if not s.get("ok")]
+                # The LAST step, not the first failed one. Two reasons, both of
+                # them cases this string is the only cure for:
+                #   * A step can fail and be RECOVERED -- a refused
+                #     ``--with-deps`` is retried without the flag
+                #     (browser_cli.os_deps) and its failed attempt stays in
+                #     ``steps`` so the operator can see what was tried. Reporting
+                #     "any failed step" would raise a permanent banner quoting a
+                #     sudo refusal on a host where browsing works.
+                #   * When the install really did fail, the FIRST failed step may
+                #     be that same recovered one, which would mask the step that
+                #     actually decided the outcome and drop the remedy it carries.
+                # ``install`` returns ``ok`` from its last step and every earlier
+                # gate returns on a real failure, so the last step is always the
+                # decisive one.
+                steps = result.get("steps") or []
+                failed = [] if result.get("ok") or not steps else steps[-1:]
                 if failed:
                     first = failed[0]
                     # `stderr`, not `error`: install steps only ever carry
@@ -2034,7 +2049,11 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
         state._browser_install_error = None
         try:
             result = await asyncio.to_thread(browser_cli_install.install_browser, engine)
-            failed = [s for s in result.get("steps", []) if not s.get("ok")]
+            # The decisive step, not the first failed one: see the CLI install
+            # path above for why a recovered attempt must neither raise a banner
+            # nor mask the step that actually decided the outcome.
+            steps = result.get("steps") or []
+            failed = [] if result.get("ok") or not steps else steps[-1:]
             if failed:
                 first = failed[0]
                 state._browser_install_error = _redact(

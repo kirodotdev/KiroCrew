@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import platform_compat
 from kiro_crew.browser_cli import install as mod
 
 
@@ -18,6 +17,19 @@ def isolated_browser_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     cache.mkdir()
     monkeypatch.setattr(mod, "_browsers_cache_dir", lambda: cache)
     return cache
+
+
+@pytest.fixture(autouse=True)
+def _default_no_os_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default every test to a host with no OS-package step.
+
+    The browser step now asks :mod:`kiro_crew.browser_cli.os_deps` what this host
+    allows, and the answer is read from the DEVELOPER's ``/etc/os-release``
+    otherwise -- which would make the argv assertions here pass on macOS and fail
+    on Ubuntu. Tests that care about the flag opt in explicitly.
+    """
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: False)
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "")
 
 
 def _wire(
@@ -164,7 +176,6 @@ def test_install_aborts_when_npm_is_missing(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_install_runs_all_three_steps_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(platform_compat, "IS_LINUX", False)
     calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/playwright-cli"})
 
     result = mod.install()
@@ -186,18 +197,226 @@ def test_install_runs_all_three_steps_in_order(monkeypatch: pytest.MonkeyPatch) 
     ]
 
 
-def test_install_adds_with_deps_on_linux_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``--with-deps`` drives the system package manager, so it is Linux-only."""
-    monkeypatch.setattr(platform_compat, "IS_LINUX", True)
-    linux_calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+def test_install_adds_with_deps_only_where_the_host_honours_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--with-deps`` drives the system package manager, and Playwright's
+    implementation of it is apt-only, so the flag is gated on the host family
+    rather than on "is Linux"."""
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+    apt_calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
     mod.install()
-    assert ["/n/pw", "install-browser", "--with-deps"] in linux_calls
+    assert ["/n/pw", "install-browser", "--with-deps"] in apt_calls
 
-    monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: False)
     other_calls = _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
     mod.install()
     assert ["/n/pw", "install-browser"] in other_calls
     assert all("--with-deps" not in argv for argv in other_calls)
+
+
+def test_install_falls_back_without_deps_when_the_package_step_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused ``apt-get`` must not cost the operator the browser.
+
+    Regression for a real dev-desktop failure: ``--with-deps`` shells out to
+    ``apt-get`` as root, sudo policy refuses it, and because the flag and the
+    download are one CLI invocation the download failed too -- even though it
+    needs no privilege at all.
+    """
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "run this: sudo apt-get ...")
+    calls = _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        # Keyed on argv[0], so this fails BOTH browser attempts and the skills
+        # step too; the with-deps branch is distinguished below by argv content.
+    )
+
+    def fake_run(argv: list[str], timeout: float) -> tuple[int, str, str]:
+        calls.append(list(argv))
+        if "--with-deps" in argv:
+            return (
+                1,
+                "",
+                "Sorry, user bolichen is not allowed to execute "
+                "'/bin/sh -c apt-get update' as root on dev-dsk-example.",
+            )
+        return (0, "", "")
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "install-browser",
+        "install-browser-no-deps",
+        "install-skills",
+    ]
+    # The refused attempt stays visible rather than being swallowed...
+    assert result["steps"][1]["ok"] is False
+    # ...but it must not veto an install the retry completed.
+    assert result["steps"][2]["ok"] is True
+    assert ["/n/pw", "install-browser", "--with-deps"] in calls
+    assert ["/n/pw", "install-browser"] in calls
+
+
+def test_a_zero_exit_carrying_the_host_validation_warning_is_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MEASURED: ``install-browser`` exits 0 when the host is missing libraries.
+
+    Playwright classifies it as a warning, so trusting the exit code reports a
+    browser that cannot launch as installed -- the panel goes green and the real
+    error arrives at the user's first browse as an opaque stack trace. The step
+    must fail, and must carry the remedy.
+    """
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    warning = (
+        "Playwright Host validation warning: \n"
+        "Host system is missing dependencies to run browsers.\n"
+        "Missing libraries:\n    libgtk-4.so.1\n"
+    )
+    _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        {"/n/pw": (0, "", warning)},
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    browser_step = result["steps"][1]
+    assert browser_step["name"] == "install-browser"
+    assert browser_step["ok"] is False
+    # rc stays 0 -- the exit code is honestly reported, it is just not the verdict.
+    assert browser_step["returncode"] == 0
+    assert "missing dependencies" in browser_step["stderr"]
+    assert "sudo dnf install -y nss" in browser_step["stderr"]
+    # The skills step never runs behind a browser that cannot launch.
+    assert [s["name"] for s in result["steps"]] == ["npm-install-global", "install-browser"]
+
+
+def test_the_host_validation_warning_is_caught_on_stdout_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The diagnostic is on stderr today; a version that moves it to stdout must
+    not silently reopen the bug."""
+    _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        {"/n/pw": (0, "Host system is missing dependencies to run browsers.", "")},
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    assert result["steps"][1]["ok"] is False
+    assert "missing dependencies" in result["steps"][1]["stderr"]
+
+
+def test_an_ordinary_zero_exit_browser_step_still_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The signal must not fail an install that actually worked: Playwright writes
+    progress and download notices to stderr on a healthy run."""
+    _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        {"/n/pw": (0, "", "Downloading Chromium 141.0 (playwright build v1237)")},
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "install-browser",
+        "install-skills",
+    ]
+
+
+def test_install_still_fails_when_the_no_deps_retry_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback is a retry, not a guarantee: a real download failure stays fatal.
+
+    Also pins WHERE the remedy lands. It belongs on the retry, which is the
+    attempt that actually ran without the package step; putting it on the
+    with-deps attempt would hang a remediation command on a failure the retry may
+    well have recovered from.
+    """
+    monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    calls = _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        {"/n/pw": (1, "", "network unreachable")},
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    assert [s["name"] for s in result["steps"]] == [
+        "npm-install-global",
+        "install-browser",
+        "install-browser-no-deps",
+    ]
+    assert "sudo dnf install -y nss" not in result["steps"][1]["stderr"]
+    assert "sudo dnf install -y nss" in result["steps"][2]["stderr"]
+    assert all("--skills" not in argv for argv in calls)
+
+
+def test_a_failed_browser_step_carries_the_manual_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a host whose libraries only root can install, the failure detail must
+    carry the command that resolves it -- the settings panel shows that detail
+    verbatim, so this is the whole remediation surface."""
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        {"/n/pw": (1, "", "Host system is missing dependencies!")},
+    )
+
+    result = mod.install()
+
+    assert result["ok"] is False
+    detail = result["steps"][-1]["stderr"]
+    assert "Host system is missing dependencies!" in detail
+    assert "sudo dnf install -y nss" in detail
+
+
+def test_the_remedy_survives_a_stderr_long_enough_to_hit_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hint is appended AFTER truncation. Appending before it would let a
+    verbose package manager push the one actionable line out of view."""
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    _wire(
+        monkeypatch,
+        {"npm": "/n/npm", "playwright-cli": "/n/pw"},
+        {"/n/pw": (1, "", "x" * 50_000)},
+    )
+
+    result = mod.install()
+
+    assert "sudo dnf install -y nss" in result["steps"][-1]["stderr"]
+
+
+def test_a_successful_step_carries_no_remedy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hint is failure-only: on a green install it would read as a warning."""
+    monkeypatch.setattr(mod.os_deps, "missing_deps_hint", lambda: "sudo dnf install -y nss")
+    _wire(monkeypatch, {"npm": "/n/npm", "playwright-cli": "/n/pw"})
+
+    result = mod.install()
+
+    assert result["ok"] is True
+    assert all(s["stderr"] == "" for s in result["steps"])
 
 
 def test_install_stops_at_the_first_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -233,7 +452,6 @@ def test_install_reports_binary_unresolvable_after_npm_success(
 
 
 def test_install_browser_failure_skips_skills(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(platform_compat, "IS_LINUX", False)
     calls = _wire(
         monkeypatch,
         {"npm": "/n/npm", "playwright-cli": "/n/pw"},
@@ -346,10 +564,10 @@ class TestPerEngineDownloads:
     def test_a_known_engine_is_passed_through(self, monkeypatch, tmp_path):
         fake_cli = tmp_path / "playwright-cli"
         fake_cli.write_text("")
-        monkeypatch.setattr(mod, "cli_path", lambda: fake_cli)
+        monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
         seen: list[list[str]] = []
 
-        def _fake_step(name, argv, timeout):
+        def _fake_step(name, argv, timeout, hint="", failure_signal=None):
             seen.append(argv)
             return {"name": name, "ok": True, "returncode": 0}
 
@@ -365,6 +583,51 @@ class TestPerEngineDownloads:
         result = mod.install_browser("chromium")
         assert result["ok"] is False
         assert result["steps"][0]["name"] == "resolve-binary"
+
+    def test_a_refused_package_step_falls_back_to_a_plain_retry(self, monkeypatch, tmp_path):
+        """The per-engine path shares `_download_browser` with `install()`, so a
+        host that refuses the package manager must not cost it the download here
+        either."""
+        monkeypatch.setattr(mod.os_deps, "with_deps_supported", lambda: True)
+        fake_cli = tmp_path / "playwright-cli"
+        fake_cli.write_text("")
+        monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
+
+        seen: list[list[str]] = []
+
+        def fake_run(argv, timeout):
+            seen.append(list(argv))
+            if "--with-deps" in argv:
+                return (1, "", "not allowed to execute ... as root")
+            return (0, "", "")
+
+        monkeypatch.setattr(mod, "_run", fake_run)
+
+        result = mod.install_browser("firefox")
+
+        assert result["ok"] is True
+        assert [s["name"] for s in result["steps"]] == [
+            "install-browser-firefox",
+            "install-browser-firefox-no-deps",
+        ]
+        assert [str(fake_cli), "install-browser", "firefox", "--with-deps"] in seen
+        assert [str(fake_cli), "install-browser", "firefox"] in seen
+
+    def test_the_engine_still_reaches_argv_once_on_a_host_without_the_flag(
+        self, monkeypatch, tmp_path
+    ):
+        """The no-flag path must keep the engine argument: dropping it would
+        silently download Chromium while reporting the engine the user asked for."""
+        fake_cli = tmp_path / "playwright-cli"
+        fake_cli.write_text("")
+        monkeypatch.setattr(mod, "cli_path", lambda: str(fake_cli))
+        seen: list[list[str]] = []
+        monkeypatch.setattr(mod, "_run", lambda argv, t: (seen.append(list(argv)), (0, "", ""))[1])
+
+        result = mod.install_browser("webkit")
+
+        assert result["ok"] is True
+        assert seen == [[str(fake_cli), "install-browser", "webkit"]]
 
 
 class TestFailureDetailIsRedactedAtTheSource:

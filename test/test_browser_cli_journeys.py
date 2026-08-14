@@ -523,6 +523,147 @@ class TestOneInstallSlotIsNotAFoldedLie:
         assert _json.loads(resp.text)["code"] == "install_already_running"
 
 
+class TestARecoveredStepIsNotReportedAsAnError:
+    """A step can fail and be RECOVERED, so "any step failed" is not the verdict.
+
+    ``--with-deps`` is refused by sudo policy on a managed workstation; the
+    browser download is then retried without it and succeeds. That first attempt
+    stays in ``steps`` so the operator can see what was tried, which means
+    scanning every step for ``ok=False`` raises a permanent error banner quoting
+    a sudo refusal on a host where browsing now works. The panel renders
+    ``last_error`` with no gate of its own, so the verdict is made here.
+    """
+
+    #: What ``install()`` returns once a refused package step has been recovered.
+    _RECOVERED = {
+        "ok": True,
+        "steps": [
+            {"name": "npm-install-global", "ok": True, "returncode": 0, "stderr": ""},
+            {
+                "name": "install-browser",
+                "ok": False,
+                "returncode": 1,
+                "stderr": "not allowed to execute '/bin/sh -c apt-get update' as root",
+            },
+            {
+                "name": "install-browser-no-deps",
+                "ok": True,
+                "returncode": 0,
+                "stderr": "",
+            },
+            {"name": "install-skills", "ok": True, "returncode": 0, "stderr": ""},
+        ],
+    }
+
+    def _owner_request(self, state):
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.path = "/api/browser/install"
+        _claims = {"app": "", "user": "the-owner"}
+        req.get = lambda key, default=None: _claims.get(key, default)
+        req.__contains__ = lambda self_inner, key: key in _claims
+        req.__getitem__ = lambda self_inner, key: _claims[key]
+
+        async def _json():
+            return {}
+
+        req.json = _json
+        req.app = {"state": state}
+        return req
+
+    def _last_error(self, monkeypatch, result):
+        import asyncio
+
+        from kiro_crew.dashboard.handlers import messaging as msg
+
+        monkeypatch.setattr(msg.browser_cli_install, "install", lambda: result)
+        monkeypatch.setattr(
+            msg.browser_cli_install, "detect", lambda: {"installed": True}
+        )
+        monkeypatch.setattr(msg.browser_cli_token, "has_token", lambda: False)
+
+        async def _go():
+            state = type("S", (), {})()
+            state.owner_id = "the-owner"
+            state._browser_install_task = None
+            state._browser_install_error = None
+            await msg.api_browser_install_start(self._owner_request(state))
+            task = state._browser_install_task
+            if task is not None:
+                await task
+            return state._browser_install_error
+
+        return asyncio.run(_go())
+
+    def test_a_recovered_with_deps_refusal_leaves_no_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        assert self._last_error(monkeypatch, self._RECOVERED) is None
+
+    def test_a_recovered_failure_does_not_mask_the_step_that_decided_the_outcome(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The FIRST failed step can be the recovered one, so reporting it would
+        hide the real failure and drop the remedy the operator needs."""
+        masked = {
+            "ok": False,
+            "steps": [
+                {
+                    "name": "npm-install-global",
+                    "ok": True,
+                    "returncode": 0,
+                    "stderr": "",
+                },
+                {
+                    "name": "install-browser",
+                    "ok": False,
+                    "returncode": 1,
+                    "stderr": "not allowed to execute '/bin/sh -c apt-get update' as root",
+                },
+                {
+                    "name": "install-browser-no-deps",
+                    "ok": False,
+                    "returncode": 0,
+                    "stderr": "Host system is missing dependencies!\nsudo dnf install -y nss",
+                },
+            ],
+        }
+        error = self._last_error(monkeypatch, masked)
+        assert error is not None
+        # The decisive step and ITS remedy, not the recovered sudo refusal.
+        assert "install-browser-no-deps" in error
+        assert "sudo dnf install -y nss" in error
+        assert "apt-get update" not in error
+
+    def test_a_genuine_failure_still_reports_its_detail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The gate must not swallow a real failure: the remedy the operator
+        needs travels in exactly this string."""
+        failed = {
+            "ok": False,
+            "steps": [
+                {
+                    "name": "npm-install-global",
+                    "ok": True,
+                    "returncode": 0,
+                    "stderr": "",
+                },
+                {
+                    "name": "install-browser",
+                    "ok": False,
+                    "returncode": 1,
+                    "stderr": "Host system is missing dependencies!\nsudo dnf install -y nss",
+                },
+            ],
+        }
+        error = self._last_error(monkeypatch, failed)
+        assert error is not None
+        assert "install-browser" in error
+        assert "sudo dnf install -y nss" in error
+
+
 def test_non_object_json_is_a_validation_error_not_a_500():
     """`body.get()` on valid-but-non-object JSON raises AttributeError.
 

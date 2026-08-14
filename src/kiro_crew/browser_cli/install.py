@@ -27,10 +27,12 @@ import logging
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.browser_cli import os_deps
 from kiro_crew.env import augmented_path, find_node_tool, node_augmented_path
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -377,7 +379,13 @@ def _redact(text: str) -> str:
     return text
 
 
-def _step(name: str, argv: list[str], timeout: float) -> dict[str, Any]:
+def _step(
+    name: str,
+    argv: list[str],
+    timeout: float,
+    hint: str = "",
+    failure_signal: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
     """Run one install step and describe its outcome.
 
     stderr is carried only on failure: a successful ``npm install`` writes
@@ -390,9 +398,21 @@ def _step(name: str, argv: list[str], timeout: float) -> dict[str, Any]:
     and the log is the longer-lived of the two surfaces: `kirocrew logs` output
     gets pasted into bug reports. Redacting at the boundary would have left the
     secret in the log file, which is the copy that outlives the session.
+
+    *failure_signal* inspects the child's output for a failure the exit code does
+    NOT report. A zero exit is otherwise taken at face value, which is wrong for
+    exactly one case -- see :func:`os_deps.host_deps_unsatisfied`.
+
+    *hint* is our own trusted remediation line, appended AFTER the cap so a long
+    stderr cannot push the actionable part out of the operator's view. It is not
+    redacted because it is a constant composed here, never external output.
     """
-    rc, _out, err = _run(argv, timeout)
+    rc, out, err = _run(argv, timeout)
     ok = rc == 0
+    # Both streams: the diagnostic is on stderr today, and a step that starts
+    # printing it to stdout must not silently reopen the bug this guards.
+    if ok and failure_signal is not None and failure_signal(f"{err}\n{out}"):
+        ok = False
     # Redact BEFORE truncating: a credential straddling the truncation
     # boundary no longer matches its regex (e.g. the trailing ``@`` in a
     # ``://user:pass@host`` URL is past the cap), so truncating first can
@@ -401,15 +421,57 @@ def _step(name: str, argv: list[str], timeout: float) -> dict[str, Any]:
     # alternation with no nested quantifiers, so redacting the full
     # stderr is linear in input length — measured at <200 ms on 50 KB of
     # adversarial input, well below the subprocess timeout.
-    detail = "" if ok else _redact(err.strip())[:_STDERR_CAP]
+    detail = "" if ok else _redact((err.strip() or out.strip()))[:_STDERR_CAP]
     if not ok:
         logger.warning("playwright-cli install step %s failed (rc=%d): %s", name, rc, detail)
+        if hint:
+            detail = f"{detail}\n\n{hint}" if detail else hint
     return {
         "name": name,
         "ok": ok,
         "returncode": rc,
         "stderr": detail,
     }
+
+
+def _download_browser(path: str, engine: str | None = None) -> list[dict[str, Any]]:
+    """Download a browser build, adapting to what this host's OS allows.
+
+    Shared by :func:`install` and :func:`install_browser` so the two cannot
+    disagree about a host: they answer different product questions but face the
+    same package manager.
+
+    ``--with-deps`` is passed only where Playwright can honour it (see
+    :mod:`kiro_crew.browser_cli.os_deps`), and even there a refusal is not fatal.
+    Installing OS packages needs root, a managed workstation often withholds it,
+    and the download itself needs no privilege at all -- so the flag is dropped
+    and the download retried rather than losing the browser over a permission the
+    operator may never have. Returns every attempt, so the panel shows what was
+    tried instead of only the last verdict.
+
+    Every attempt is judged on its output as well as its exit code: a build whose
+    libraries are missing downloads "successfully" and cannot launch.
+    """
+    base = [path, "install-browser"] + ([engine] if engine else [])
+    suffix = f"-{engine}" if engine else ""
+    hint = os_deps.missing_deps_hint()
+
+    def attempt(step_name: str, argv: list[str], with_hint: bool) -> dict[str, Any]:
+        return _step(
+            step_name,
+            argv,
+            _BROWSER_INSTALL_TIMEOUT_S,
+            hint=hint if with_hint else "",
+            failure_signal=os_deps.host_deps_unsatisfied,
+        )
+
+    if not os_deps.with_deps_supported():
+        return [attempt(f"install-browser{suffix}", base, True)]
+
+    first = attempt(f"install-browser{suffix}", base + ["--with-deps"], False)
+    if first["ok"]:
+        return [first]
+    return [first, attempt(f"install-browser{suffix}-no-deps", base, True)]
 
 
 def install() -> dict[str, Any]:
@@ -420,9 +482,8 @@ def install() -> dict[str, Any]:
     step installs. The result carries every step attempted so an operator sees
     which one failed rather than only that something did.
 
-    ``--with-deps`` is Linux-only. It installs OS packages through the system
-    package manager, which needs privileges and has no meaning on macOS or
-    Windows, where the browser download alone is sufficient.
+    The browser step adapts to the host's package manager; see
+    :func:`_download_browser`.
     """
     steps: list[dict[str, Any]] = []
 
@@ -458,10 +519,7 @@ def install() -> dict[str, Any]:
         )
         return {"ok": False, "steps": steps}
 
-    browser_argv = [path, "install-browser"]
-    if platform_compat.IS_LINUX:
-        browser_argv.append("--with-deps")
-    steps.append(_step("install-browser", browser_argv, _BROWSER_INSTALL_TIMEOUT_S))
+    steps.extend(_download_browser(path))
     if not steps[-1]["ok"]:
         return {"ok": False, "steps": steps}
 
@@ -472,7 +530,11 @@ def install() -> dict[str, Any]:
             _SKILLS_INSTALL_TIMEOUT_S,
         )
     )
-    return {"ok": all(s["ok"] for s in steps), "steps": steps}
+    # The LAST step decides, not every step: a recovered ``--with-deps`` refusal
+    # leaves its failed attempt in the list for the operator to see, and that
+    # entry must not veto an install the retry actually completed. Every earlier
+    # gate has already returned on a real failure, so only this step is undecided.
+    return {"ok": steps[-1]["ok"], "steps": steps}
 
 
 def install_browser(engine: str) -> dict[str, Any]:
@@ -513,8 +575,5 @@ def install_browser(engine: str) -> dict[str, Any]:
                 }
             ],
         }
-    argv = [path, "install-browser", engine]
-    if platform_compat.IS_LINUX:
-        argv.append("--with-deps")
-    step = _step(f"install-browser-{engine}", argv, _BROWSER_INSTALL_TIMEOUT_S)
-    return {"ok": step["ok"], "steps": [step]}
+    steps = _download_browser(path, engine)
+    return {"ok": steps[-1]["ok"], "steps": steps}

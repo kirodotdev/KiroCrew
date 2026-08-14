@@ -38,6 +38,51 @@ TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"
 
 _TOKEN_FILE = "playwright-extension-token"
 
+#: Shell keywords a pasted assignment may carry. The extension's setup text is a
+#: shell line, and a user copying it takes the whole line.
+_ASSIGNMENT_PREFIXES = ("export ", "set ", "setx ")
+
+
+def normalize_paste(raw: str) -> str:
+    """The token value out of whatever the user pasted.
+
+    The extension presents the token as a shell assignment, so both of these are
+    what a user reasonably pastes into one field, and both mean the same token::
+
+        PLAYWRIGHT_MCP_EXTENSION_TOKEN=<value>
+        <value>
+
+    Accepting only the bare form stores the variable name as part of the
+    credential, and the failure is silent and far away: the token is written, the
+    panel says "stored", and the extension simply keeps asking for approval as
+    though none were set.
+
+    The prefix is stripped only when the text left of the FIRST ``=`` is exactly
+    :data:`TOKEN_ENV`. That condition is the safety property, not a nicety --
+    these tokens are base64url and can legitimately contain ``=`` padding, so a
+    rule like "take everything after the last ``=``" would corrupt a bare token
+    that this function must pass through untouched.
+    """
+    text = (raw or "").strip()
+    lowered = text.lower()
+    for prefix in _ASSIGNMENT_PREFIXES:
+        if lowered.startswith(prefix):
+            text = text[len(prefix) :].strip()
+            break
+    name, sep, value = text.partition("=")
+    # Case-insensitive on the NAME only: it is a label the user transcribed, while
+    # the value is a credential and stays byte-exact.
+    if sep and name.strip().upper() == TOKEN_ENV:
+        text = value.strip()
+    # Quotes come from the shell form (`NAME="value"`), where they are syntax
+    # rather than token bytes. Stripped as a matched pair only, so a token that
+    # legitimately begins or ends with a quote is not silently shortened.
+    for quote in ('"', "'"):
+        if len(text) >= 2 and text.startswith(quote) and text.endswith(quote):
+            text = text[1:-1]
+            break
+    return text.strip()
+
 
 def token_path() -> Path:
     """Where the token is stored.
@@ -52,11 +97,15 @@ def token_path() -> Path:
 def read_token() -> str | None:
     """The stored token, or ``None`` when none is set.
 
-    Whitespace is stripped because the value is pasted from a browser UI, where a
-    trailing newline is the norm and would otherwise be sent as part of the token.
+    Normalized on the way out as well as in, via :func:`normalize_paste`: a stored
+    value can hold the whole pasted assignment rather than the token alone, and the
+    resulting failure is invisible (the panel reports "stored" while the extension
+    keeps prompting). Repairing it on read costs the user nothing, where noticing
+    and re-pasting costs them the diagnosis first. The call is idempotent, so a
+    value that is already clean passes through byte-exact.
     """
     try:
-        raw = token_path().read_text(encoding="utf-8").strip()
+        raw = normalize_paste(token_path().read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         return None
     return raw or None
@@ -75,12 +124,16 @@ def has_token() -> bool:
 def set_token(value: str) -> None:
     """Store *value*, or clear the token when it is blank.
 
+    The input is whatever the user pasted, so it goes through
+    :func:`normalize_paste` first: a copied shell assignment stores the same token
+    as the bare value rather than the variable name plus the token.
+
     Written owner-only via ``restrict_to_owner`` and atomically, so a concurrent
     read never sees a half-written token, a later reader cannot pick up a truncated
     one, and the file is never world-readable — even on Windows where a numeric
     mode is silently ignored.
     """
-    cleaned = (value or "").strip()
+    cleaned = normalize_paste(value)
     if not cleaned:
         clear_token()
         return

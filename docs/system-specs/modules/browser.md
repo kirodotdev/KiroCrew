@@ -88,10 +88,11 @@ once, at install, so registry auth applies at install time only.
 
 1. Detect `playwright-cli` on PATH and Node.js 20 or newer.
 2. Install when absent: `npm install -g @playwright/cli@latest`.
-3. `playwright-cli install-browser` for the browser binary (`--with-deps` on
-   Linux). The CLI downloads one on first use regardless, so the explicit step
-   exists to give the operator a progress surface and a visible failure rather
-   than a stall inside the first browse.
+3. `playwright-cli install-browser` for the browser binary. The CLI downloads one
+   on first use regardless, so the explicit step exists to give the operator a
+   progress surface and a visible failure rather than a stall inside the first
+   browse. `--with-deps` is appended only on an apt host, and a refusal there is
+   retried without it — see [OS dependencies](#os-dependencies).
 4. `playwright-cli install --skills agents --global` so the command reference is
    discoverable from the skill file rather than occupying the system prompt.
    `--skills` accepts `claude` (default) or `agents`; `--global` targets the home
@@ -135,6 +136,30 @@ is what the [accepted risk](#accepted-risk) above is about.
 
 State files hold live session credentials and are written with owner-only
 permissions.
+
+**The attach token.** `attach --extension` works without one: the extension
+answers a tokenless handshake by asking the human to approve the connection in the
+browser. Setting `PLAYWRIGHT_MCP_EXTENSION_TOKEN` removes that one click and
+nothing else, so it is opt-in and absent by default. `browser_cli/token.py` stores
+it owner-only behind `security._CREW_SECRET_LEAVES` — the agent inherits it through
+the environment and can never open the file — and no status surface returns the
+value, only whether one exists.
+
+The extension presents the token as a shell assignment, so the settings field
+accepts either form and stores the same token:
+
+```
+PLAYWRIGHT_MCP_EXTENSION_TOKEN=<value>
+<value>
+```
+
+`normalize_paste` strips the prefix only when the text left of the **first** `=`
+is exactly the variable name. That condition is a safety property rather than a
+nicety: these tokens are base64url and can legitimately contain `=`, so a looser
+rule would corrupt a bare token. `export`/`set` keywords and a matched pair of
+surrounding quotes are removed for the same reason. Normalization also runs on
+read, so a stored value holding the whole assignment repairs itself instead of
+reporting "stored" while the extension keeps prompting.
 
 ### Snapshot retention
 
@@ -191,8 +216,58 @@ exposes an interactive takeover surface to the network.
 |---|---|
 | Node.js | 20 or newer |
 | Install | `npm install -g @playwright/cli@latest` |
-| Browser binary | `install-browser`, with `--with-deps` on Linux |
+| Browser binary | `install-browser`; `--with-deps` on an apt host only |
 | Attach | Chromium-family only, since Playwright ships an attach extension for that family alone |
+
+### OS dependencies
+
+Playwright's `--with-deps` implementation is **apt-only**. On a distribution it
+does not recognize it does not decline — it selects its nearest Ubuntu package
+set and runs `apt-get` as root anyway. On an rpm host that is wrong twice: the
+package names do not exist, and the command needs a privilege a managed
+workstation withholds. Because the flag and the browser download are one CLI
+invocation, that refusal also took the download down, which is what made a
+missing OS library present as a sudo policy error quoting a 60-package `apt-get`
+line the user never typed.
+
+`browser_cli/os_deps.py` resolves the host family from `/etc/os-release`
+(`ID` plus `ID_LIKE`, so derivatives resolve through their base) and the browser
+step adapts:
+
+| Family | `--with-deps` | On failure |
+|---|---|---|
+| debian / ubuntu | passed | retried without the flag, so the download still lands |
+| rpm (rhel, fedora, centos, amzn, rocky, alma, suse) | never passed | failure detail carries a `sudo dnf install` line naming the rpm packages |
+| unrecognized Linux | never passed | no remedy offered — a guessed package manager fails on its own first argument and reads as the product being broken |
+| macOS / Windows | not applicable | the browser download alone is sufficient |
+
+The remedy is a command for a human to run, appended to the failing step's
+`stderr` (which the settings panel already renders verbatim) rather than a new UI
+state. Nothing in this path elevates or runs a package manager. The rpm list
+covers Chromium alone: it is the engine `attach` supports and the one `browser_ok`
+gates on, so it is what "browsing works" means.
+
+**A zero exit is not a verdict.** MEASURED on Amazon Linux 2023: with libraries
+missing, `install-browser` prints
+
+```
+Playwright Host validation warning:
+║ Host system is missing dependencies to run browsers. ║
+```
+
+and **exits 0**, leaving the browser directories in the cache. Playwright
+classifies it as a warning. Reading the exit code alone therefore reports a
+browser that cannot launch as installed — the panel goes green, `browser_ok`
+turns true because the build is genuinely on disk, and the real error arrives at
+the user's first browse as an opaque stack trace. Every browser step is judged on
+its output as well as its exit code (`os_deps.host_deps_unsatisfied`, matched
+against the header and the message body so a reworded box still trips one), and a
+match fails the step and carries the remedy.
+
+`browser_ok` keeps meaning "a build is downloaded", which stays literally true on
+such a host; the install error is what carries the truth that it cannot run.
+Making `browser_ok` mean "and it can launch" would need a validation probe on
+every settings poll.
 
 ### Standalone enterprise installer
 
