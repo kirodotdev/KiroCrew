@@ -361,9 +361,16 @@ was measured on this repo to suppress findings the same model reports reliably
 without the precision clauses, because a prompt asked to discover AND to police
 its own precision stops discovering. Its discovery half therefore carries no
 precision gates, and its validation half applies a confidence floor and the closed
-blocking list to candidates that already exist. A
+blocking list. A
 candidate survives only if pass 2 re-derived the input, the call path and the
-observable outcome itself from code it opened in that pass. Pass 2 is the only
+observable outcome itself from code it opened in that pass. Pass 2 may also *add* a
+defect discovery missed, in both lanes, but only under that same three-part
+grounding and the same confidence floor — killing a candidate stays its primary
+job, and a self-found finding gets no second opinion, so it earns no cheaper path
+in. In the Opus lane such a finding is tagged `(origin: validation)` in the posted
+review, because it is un-falsified by construction: the tag is what lets a reader
+weight it accordingly, and what lets the precision of self-added findings be
+compared against survivors' rather than assumed equal. Pass 2 is the only
 gated verdict. Falsification raises precision *within a single run*, which is why
 neither reviewer carries cross-round state: each judges only the current SHA's code
 and therefore cannot contradict itself across rounds.
