@@ -53,6 +53,7 @@ const ENGINE_LABEL_KEY: Record<string, string> = {
 
 export function BrowserPanel() {
   const [token, setToken] = useState('')
+  const [tokenEdited, setTokenEdited] = useState(false)
   const [showExtension, setShowExtension] = useState<boolean | null>(null)
   const [enabledOverride, setEnabledOverride] = useState<boolean | null>(null)
   const [engineOverride, setEngineOverride] = useState<string | null>(null)
@@ -78,6 +79,7 @@ export function BrowserPanel() {
       setTimeout(() => setError(''), 5000)
     },
     onSuccess: (res: SaveResult) => {
+      setTokenEdited(false)
       // Never leave the raw extension token sitting in the input after a save:
       // mask it once it has been persisted (it is write-only server-side and is
       // a credential). An empty field stays empty.
@@ -100,7 +102,7 @@ export function BrowserPanel() {
   const engine = engineOverride ?? config?.engine ?? 'chromium'
   const engines = config?.engines ?? ['chromium', 'firefox', 'webkit']
   const extensionMode = showExtension ?? config?.extension_mode ?? false
-  const displayToken = token || (config?.extension_mode && config?.token ? '••••••••' : '')
+  const displayToken = tokenEdited ? token : (token || (config?.extension_mode && config?.token ? '••••••••' : ''))
 
   const persist = useCallback(
     (next: { enabled: boolean; engine: string; extension_mode: boolean; token: string }) => {
@@ -165,6 +167,18 @@ export function BrowserPanel() {
     }
     persist({ enabled, engine, extension_mode: true, token: cleanToken })
   }, [persist, enabled, engine, token])
+
+  const handleTokenChange = useCallback((value: string) => {
+    setTokenEdited(true)
+    setToken(value)
+  }, [])
+
+  const handleTokenKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      handleSaveExtension()
+    }
+  }, [handleSaveExtension])
 
   const handleConfirmHeadless = useCallback(() => {
     persist({ enabled, engine, extension_mode: false, token: '' })
@@ -337,7 +351,8 @@ export function BrowserPanel() {
                     label={i18nT('pages.settings.browserPanel.connection_token_optional')}
                     description={i18nT('pages.settings.browserPanel.paste_playwright_mcp_extension_token_value_from')}
                     value={displayToken}
-                    onChange={setToken}
+                    onChange={handleTokenChange}
+                    onKeyDown={handleTokenKeyDown}
                     placeholder={i18nT('pages.settings.browserPanel.paste_token_here')}
                   />
                 </div>

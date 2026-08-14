@@ -129,6 +129,7 @@ interface SettingsInputProps {
   value: string
   onChange: (value: string) => void
   onBlur?: () => void
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void
   placeholder?: string
   type?: 'text' | 'number'
   min?: number
@@ -141,7 +142,7 @@ interface SettingsInputProps {
   configKey?: string
 }
 
-export function SettingsInput({ label, description, hint, value, onChange, onBlur, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
+export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
   // Per-instance id pairing the caption's htmlFor with the control. This is
   // what gives the single-line branch an accessible name by DEFAULT: it used
   // to render aria-label={ariaLabel} with ariaLabel undefined unless a caller
@@ -157,6 +158,7 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           value={value}
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           disabled={disabled}
           rows={3}
@@ -170,6 +172,7 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           value={value}
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           min={min}
           max={max}
