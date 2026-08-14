@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
@@ -249,5 +249,40 @@ describe('LanguageProvider — an empty server value must not erase a local choi
     wrap(<Probe />, { language: '' })
     await waitFor(() => expect(screen.getByTestId('resolved')).toHaveTextContent('en'))
     expect(screen.getByTestId('choice')).toHaveTextContent('(auto)')
+  })
+})
+
+describe('LanguageProvider cross-tab boot ordering', () => {
+  it('keeps a cross-tab choice when an older boot response arrives later', async () => {
+    let resolveBoot!: (value: { language: string }) => void
+    const bootPromise = new Promise<{ language: string }>((resolve) => {
+      resolveBoot = resolve
+    })
+    vi.spyOn(api, 'themeBoot').mockReturnValue(bootPromise as never)
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <LanguageProvider><Probe /></LanguageProvider>
+      </QueryClientProvider>,
+    )
+
+    localStorage.setItem(LANG_STORAGE_KEY, 'zh-CN')
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: LANG_STORAGE_KEY,
+        newValue: 'zh-CN',
+        storageArea: localStorage,
+      }))
+    })
+    await waitFor(() => expect(screen.getByTestId('choice')).toHaveTextContent('zh-CN'))
+
+    resolveBoot({ language: 'en' })
+    await waitFor(() => {
+      expect(qc.getQueryData(['theme-boot'])).toEqual({ language: 'en' })
+    })
+
+    expect(screen.getByTestId('choice')).toHaveTextContent('zh-CN')
+    expect(localStorage.getItem(LANG_STORAGE_KEY)).toBe('zh-CN')
   })
 })

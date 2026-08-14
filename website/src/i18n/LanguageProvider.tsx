@@ -260,10 +260,13 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // Cross-tab sync: switching language in one tab updates the others without a
-  // reload. Same StorageEvent pattern as useUIMode.
+  // reload. A storage event represents an explicit choice in another tab, so it
+  // must also outrank any server value that was already in flight at boot.
+  // Same StorageEvent pattern as useUIMode.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== LANG_STORAGE_KEY) return
+      userChose.current = true
       setLanguageState(e.newValue ?? AUTO_LANGUAGE)
     }
     window.addEventListener('storage', onStorage)

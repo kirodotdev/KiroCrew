@@ -917,6 +917,11 @@ Auto option writes `""` to clear a previous explicit choice. An explicit choice
 always outranks detection, so a user who selects English on a zh-CN machine is
 not re-detected back to Chinese on the next load.
 
+A cross-tab `storage` event is also an explicit user choice. Once one arrives,
+`LanguageProvider` refuses to adopt the older `/api/theme/boot` response that may
+still be in flight, so the UI, local mirror, and workspace write cannot diverge
+because of response ordering.
+
 The picker's Auto row is labelled plain **"Auto"**, not "Auto (follow browser)".
 The desktop app has no browser preference to follow — its locale comes from the
 OS — so naming the browser was wrong on that surface. The row annotates itself
