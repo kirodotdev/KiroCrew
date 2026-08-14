@@ -143,6 +143,45 @@ class TestScriptExecution:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_skip_is_success_not_failure(self):
+        # A completed Skip is a SUCCESS outcome (mirrors the ok/done/report
+        # siblings): the branch returns None and never marks the run
+        # last_status="error", so CronScheduler._execute treats the tick as
+        # healthy and resets the strike counter for it one frame up. Long-lived
+        # pollers end EVERY tick with Skip, so mis-classifying Skip as a failure
+        # would trip the 5-strike auto-pause on a >99% healthy job.
+        gw = _make_gw()
+        job = _make_script_job()
+        job.consecutive_failures = 3
+        result, _ = await _run_script_callback(gw, job, {"status": "skip"})
+        assert result is None
+        assert job.last_status != "error"
+
+    @pytest.mark.asyncio
+    async def test_skip_defers_strike_reset_to_execute(self):
+        # The Skip branch must NOT reset the counter or lift auto-pause itself:
+        # that is record_success's job, reached only through
+        # CronScheduler._execute, whose reset is guarded by the _cancelled_jobs
+        # cancel-race check. An unguarded reset in this branch would clear the
+        # pause and re-enable a job cancelled mid-tick, so the callback layer
+        # leaves the bookkeeping untouched and defers to _execute. (The guarded
+        # _execute reset — and the cancel guard — are covered by
+        # TestExecuteSuccessResetsCounter in test_cron_autopause_persist.)
+        gw = _make_gw()
+        job = _make_script_job()
+        job.consecutive_failures = 5
+        job.auto_paused = True
+        job.user_paused = True
+        job.enabled = False
+        result, _ = await _run_script_callback(gw, job, {"status": "skip"})
+        assert result is None
+        assert job.last_status != "error"
+        assert job.consecutive_failures == 5
+        assert job.auto_paused is True
+        assert job.user_paused is True
+        assert job.enabled is False
+
+    @pytest.mark.asyncio
     async def test_done_removes_job(self):
         gw = _make_gw()
         job = _make_script_job()

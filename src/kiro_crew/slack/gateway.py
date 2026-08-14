@@ -2476,6 +2476,17 @@ class GatewayOrchestrator:
                             logger.debug("SEL logging failed in cron script ok path", exc_info=True)
                         return "ok"
                     elif status == "skip":
+                        # A completed Skip is a successful run that chose no-op —
+                        # the same "success" outcome as the ok/done/report
+                        # siblings above. Unlike them it deliberately does NOT
+                        # call job.record_success() here: CronScheduler._execute
+                        # is the backstop that resets consecutive_failures (and
+                        # lifts auto-pause) on every non-error return — Skip
+                        # included, since this branch returns None without
+                        # setting last_status="error" — and its reset is guarded
+                        # by the _cancelled_jobs cancel-race check. Resetting in
+                        # this branch would bypass that guard and could re-enable
+                        # a job cancelled mid-tick.
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
