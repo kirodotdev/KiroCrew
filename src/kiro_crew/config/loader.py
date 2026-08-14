@@ -1324,10 +1324,32 @@ class AgentConfig:
             "MCP Tool Search",
             "Load MCP tool specs on demand (search-and-call) instead of sending "
             "every tool definition each turn, keeping the context window clear "
-            "when many MCP servers are configured. kiro-cli backend only. When "
-            "enabled, Kiro Crew forces deferral always-on (minPct=0/minTokens=0) "
-            "via the per-session kiro settings overlay; disabling reverts to "
-            "sending full tool specs. No effect on an alternate ACP backend.",
+            "when many MCP servers are configured. kiro-cli backend only. "
+            "Deferral only starts once the specs cross tool_search_min_pct or "
+            "tool_search_min_tokens; disabling reverts to sending full tool "
+            "specs. No effect on an alternate ACP backend.",
+        ),
+    )
+    tool_search_min_pct: int = field(
+        default=5,
+        metadata=_meta(
+            "Tool Search threshold (% of context)",
+            "Start deferring MCP tool specs once they exceed this percentage of "
+            "the context window. Paired with tool_search_min_tokens — whichever "
+            "is crossed first wins. Below both thresholds every spec is sent "
+            "directly, so the agent never pays a tool_search round-trip for a "
+            "small tool set. 0 with tool_search_min_tokens 0 defers always. "
+            "Clamped to 0-100; matches the kiro-cli default.",
+        ),
+    )
+    tool_search_min_tokens: int = field(
+        default=50000,
+        metadata=_meta(
+            "Tool Search threshold (tokens)",
+            "Start deferring MCP tool specs once they exceed this many tokens. "
+            "Paired with tool_search_min_pct — whichever is crossed first wins. "
+            "0 with tool_search_min_pct 0 defers always. Matches the kiro-cli "
+            "default.",
         ),
     )
     session_sharing: bool = field(
@@ -5708,6 +5730,10 @@ class KiroCrewConfig:
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),
                 conductor_skill=agent_data.get("conductor_skill", False),
                 tool_search=bool(agent_data.get("tool_search", True)),
+                tool_search_min_pct=_safe_int(agent_data.get("tool_search_min_pct", 5), 5),
+                tool_search_min_tokens=_safe_int(
+                    agent_data.get("tool_search_min_tokens", 50000), 50000
+                ),
                 session_sharing=bool(agent_data.get("session_sharing", True)),
                 max_subagents=agent_data.get("max_subagents", 0),
                 subagent_mem_buffer_pct=_safe_int(
@@ -6638,6 +6664,8 @@ class KiroCrewConfig:
 
         sandbox = self.agent.sandbox
         tool_search = self.agent.tool_search
+        tool_search_min_pct = self.agent.tool_search_min_pct
+        tool_search_min_tokens = self.agent.tool_search_min_tokens
         # Global default effort for new sessions. A per-slot override always
         # wins; this only fills in when the slot carries none, so a session that
         # has never touched the effort control still starts at the user's
@@ -6736,6 +6764,8 @@ class KiroCrewConfig:
                 acp_backend=self.agent.acp_backend,
                 effort_per_model=_eff_per_model,
                 tool_search=tool_search,
+                tool_search_min_pct=tool_search_min_pct,
+                tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_settings_mcp_json=_gw_settings,
                 mcp_gateway_socket=_gw_socket,

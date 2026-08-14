@@ -104,7 +104,38 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
     atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
 
 
-def _write_tool_search_overlay(work_dir: Path, enabled: bool) -> None:
+#: kiro-cli's own Tool Search activation thresholds. Mirrored as the defaults of
+#: ``AgentConfig.tool_search_min_pct`` / ``tool_search_min_tokens``; a test pins
+#: the two spellings together (config cannot import this module — it would be a
+#: circular import).
+TOOL_SEARCH_DEFAULT_MIN_PCT = 5
+TOOL_SEARCH_DEFAULT_MIN_TOKENS = 50_000
+
+
+def _clamp_min_pct(value: object) -> int:
+    """Coerce a configured percentage into 0..100, falling back to the default."""
+    try:
+        pct = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return TOOL_SEARCH_DEFAULT_MIN_PCT
+    return max(0, min(100, pct))
+
+
+def _clamp_min_tokens(value: object) -> int:
+    """Coerce a configured token count to >= 0, falling back to the default."""
+    try:
+        tokens = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return TOOL_SEARCH_DEFAULT_MIN_TOKENS
+    return max(0, tokens)
+
+
+def _write_tool_search_overlay(
+    work_dir: Path,
+    enabled: bool,
+    min_pct: object = TOOL_SEARCH_DEFAULT_MIN_PCT,
+    min_tokens: object = TOOL_SEARCH_DEFAULT_MIN_TOKENS,
+) -> None:
     """Write kiro Tool Search settings into the workspace cli.json overlay.
 
     Path: ``<work_dir>/.kiro/settings/cli.json`` — the SAME per-session overlay
@@ -114,13 +145,22 @@ def _write_tool_search_overlay(work_dir: Path, enabled: bool) -> None:
 
     Tool Search (https://kiro.dev/docs/cli/mcp/tool-search/) loads MCP tool
     specs on demand ("search-and-call") instead of sending every spec each
-    turn. When *enabled* we also zero ``minPct``/``minTokens`` so deferral is
-    always active whenever MCP tools are present — KiroCrew sessions always
-    carry several MCP servers (well past kiro's default 50k-token trigger), but
-    zeroing guarantees the search-and-call behavior rather than relying on the
-    spec size crossing a threshold. The flag is written deterministically for
-    BOTH true and false so the KiroCrew toggle stays authoritative regardless
-    of any value in the user's global kiro settings.
+    turn. Deferral costs a round-trip: a deferred tool's spec is absent from the
+    model's tool list, so the first direct call fails and the model has to load
+    it with ``tool_search`` before retrying. That trade only pays once the specs
+    are actually large, which is what *min_pct* (percent of the context window)
+    and *min_tokens* express — kiro-cli activates deferral when EITHER is
+    exceeded. Both are configurable (``agent.tool_search_min_pct`` /
+    ``tool_search_min_tokens``) and default to kiro-cli's own thresholds; a
+    small install therefore keeps its full tool specs and never pays the
+    round-trip, while a heavy one still defers. Setting both to 0 restores
+    unconditional deferral.
+
+    The flag is written deterministically for BOTH true and false so the
+    Kiro Crew toggle stays authoritative regardless of any value in the user's
+    global kiro settings, and the thresholds are written EXPLICITLY rather than
+    omitted — an earlier build forced them to 0, and leaving that behind would
+    silently keep deferral unconditional on an already-configured machine.
 
     Merge-safe and idempotent — preserves the effort ``chat.modelDefaults`` keys
     and any other settings already present. kiro cli.json uses flat dotted keys
@@ -138,13 +178,11 @@ def _write_tool_search_overlay(work_dir: Path, enabled: bool) -> None:
         existing = {}
     existing["toolSearch.enabled"] = bool(enabled)
     if enabled:
-        # Force always-on deferral regardless of tool-spec size.
-        existing["toolSearch.minPct"] = 0
-        existing["toolSearch.minTokens"] = 0
+        existing["toolSearch.minPct"] = _clamp_min_pct(min_pct)
+        existing["toolSearch.minTokens"] = _clamp_min_tokens(min_tokens)
     else:
-        # Drop the forced-on thresholds when disabling so we don't leave zeroed
-        # thresholds behind that would silently force-activate Tool Search if a
-        # later build flips the global default on.
+        # Drop the thresholds when disabling so nothing is left behind that
+        # would take effect if a later build flips the global default on.
         existing.pop("toolSearch.minPct", None)
         existing.pop("toolSearch.minTokens", None)
     atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
@@ -248,6 +286,8 @@ class AcpProvider(LLMProvider):
         effort_per_model: dict[str, str] | None = None,
         effort_defaults: object = None,
         tool_search: bool | None = None,
+        tool_search_min_pct: object = None,
+        tool_search_min_tokens: object = None,
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_settings_mcp_json: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
@@ -300,6 +340,16 @@ class AcpProvider(LLMProvider):
         # True/False = write the kiro settings overlay deterministically so the
         # KiroCrew toggle is authoritative over any global kiro setting.
         self._tool_search = tool_search
+        # None = caller expressed no preference; fall back to kiro-cli's own
+        # activation thresholds rather than inventing a product-specific one.
+        self._tool_search_min_pct = (
+            TOOL_SEARCH_DEFAULT_MIN_PCT if tool_search_min_pct is None else tool_search_min_pct
+        )
+        self._tool_search_min_tokens = (
+            TOOL_SEARCH_DEFAULT_MIN_TOKENS
+            if tool_search_min_tokens is None
+            else tool_search_min_tokens
+        )
         if not self.is_claude_backend:
             # Recover overlay-persisted levels (server-restart resilience) and
             # write the overlay BEFORE the first spawn so kiro-cli reads it on
@@ -854,10 +904,21 @@ class AcpProvider(LLMProvider):
         if self.is_claude_backend or self._tool_search is None:
             return
         try:
-            _write_tool_search_overlay(self._client._work_dir, self._tool_search)
-            logger.debug(
-                "ACP MCP Tool Search overlay applied: enabled=%s (%s)",
+            _write_tool_search_overlay(
+                self._client._work_dir,
                 self._tool_search,
+                self._tool_search_min_pct,
+                self._tool_search_min_tokens,
+            )
+            # The interpolated values are a bool and two integer thresholds, plus a
+            # path. Semgrep matches on the word "tokens" in the message string, not
+            # on the arguments; the setting names are kept verbatim so the log line
+            # greps against the kiro settings it writes.
+            logger.debug(  # nosemgrep: python-logger-credential-disclosure
+                "ACP MCP Tool Search overlay applied: enabled=%s minPct=%s minTokens=%s (%s)",
+                self._tool_search,
+                self._tool_search_min_pct,
+                self._tool_search_min_tokens,
                 self._client._work_dir / ".kiro" / "settings" / "cli.json",
             )
         except Exception:
