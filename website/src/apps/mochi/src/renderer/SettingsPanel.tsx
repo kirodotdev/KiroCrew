@@ -998,7 +998,7 @@ const McpSection: React.FC<{
   const [loading, setLoading] = React.useState(true)
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const [activeTab, setActiveTab] = React.useState<Record<string, 'chat' | 'bg'>>({})
-  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string }>>({})
+  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string; status?: string }>>({})
   const [refreshing, setRefreshing] = React.useState<string | null>(null)
   const [stagedConfigs, setStagedConfigs] = React.useState<Record<string, { agents: ('chat' | 'bg')[]; autoApprove: string[]; disabledTools: string[] }>>({})
 
@@ -1150,9 +1150,16 @@ const McpSection: React.FC<{
           <span
             role="status"
             aria-live="polite"
-            style={{ fontSize: 11, color: 'var(--danger, #e5484d)' }}
+            style={{
+              fontSize: 11,
+              color: toolData?.status === 'needs_auth'
+                ? 'var(--text-muted)'
+                : 'var(--danger, #e5484d)',
+            }}
           >
-            {toolData?.errorCode ? mcpErrorText(toolData.errorCode) : ''}
+            {toolData?.status === 'needs_auth'
+              ? i18nT('pages.overview.mcpTab.not_verified')
+              : toolData?.errorCode ? mcpErrorText(toolData.errorCode) : ''}
           </span>
         </div>
         {/* Tool lists */}
