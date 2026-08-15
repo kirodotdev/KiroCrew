@@ -320,7 +320,7 @@ describe('usePanelTabs — per-slot isolation', () => {
     const { result } = renderHook(() => usePanelTabs())
     act(() => result.current.openView('logs'))
     act(() => result.current.syncPinned(['files', 'changes']))
-    // Pinned views are ordered per PINNED_VIEWS (changes, files, artifacts),
+    // Pinned views are ordered per PINNED_VIEWS (changes, artifacts, files),
     // always ahead of dynamic tabs.
     expect(result.current.tabs.map(t => t.id)).toEqual(['changes', 'files', 'logs'])
   })

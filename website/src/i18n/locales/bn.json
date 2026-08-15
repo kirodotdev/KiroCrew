@@ -3716,9 +3716,7 @@
         "typesetting_hints_one": "{{count}}টি টাইপসেটিং পরামর্শ",
         "typesetting_hints_other": "{{count}}টি টাইপসেটিং পরামর্শ"
       },
-      "editor": {
-        "loading_editor": "এডিটর লোড হচ্ছে…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} মুছুন",
         "files": "ফাইল",
@@ -4996,7 +4994,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "টাইপ করার সঙ্গে সঙ্গে পরিবর্তনগুলো প্রিভিউতে দেখা যাবে।",
       "editing_svg": "SVG সম্পাদনা করা হচ্ছে",
-      "loading_editor": "এডিটর লোড হচ্ছে…",
       "svg_source_code": "SVG সোর্স কোড"
     },
     "contextBar": {
@@ -5021,26 +5018,19 @@
       "close": "বন্ধ করুন"
     },
     "diffBlock": {
-      "collapse": "▲ সংকুচিত করুন",
-      "context_lines": "প্রসঙ্গ লাইন",
       "copied": "কপি হয়েছে!",
       "copy_patch": "প্যাচ কপি করো",
-      "diff": "diff",
       "generating_diff": "diff তৈরি হচ্ছে…",
-      "lines_hidden": "লাইন লুকানো আছে",
       "open": "খুলুন",
       "open_in_side_panel": "সাইড প্যানেলে {{path}} খোলো",
       "split_view": "স্প্লিট ভিউ",
       "switch_to_split_view": "স্প্লিট ভিউতে যাও",
       "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
-      "unchanged_lines_one": "{{count}}টি অপরিবর্তিত লাইন",
-      "unchanged_lines_other": "{{count}}টি অপরিবর্তিত লাইন",
       "unified_view": "ইউনিফায়েড ভিউ"
     },
     "diffPanel": {
       "click_to_copy_path": "পাথ কপি করতে ক্লিক করুন",
-      "contents_identical": "বিষয়বস্তু অভিন্ন",
-      "loading_diff": "diff লোড হচ্ছে…"
+      "contents_identical": "বিষয়বস্তু অভিন্ন"
     },
     "discoverySearchBar": {
       "clear_search": "অনুসন্ধান মুছুন",
@@ -5101,15 +5091,22 @@
       "video": "ভিডিও: {{name}}"
     },
     "fileChangeChips": {
+      "additions_one": "{{count}}টি সংযোজন",
+      "additions_other": "{{count}}টি সংযোজন",
       "artifact": "আর্টিফ্যাক্ট",
       "changed": "পরিবর্তিত",
       "file_one": "{{count}}টি ফাইল",
       "file_other": "{{count}}টি ফাইল",
       "more": "আরও",
       "no_changes": "কোনো পরিবর্তন নেই",
+      "open": "ফাইল খুলুন",
+      "open_in_side_panel": "সাইড প্যানেলে {{path}} খোলো",
+      "removals_one": "{{count}}টি অপসারণ",
+      "removals_other": "{{count}}টি অপসারণ",
       "show": "দেখান",
       "show_less": "কম দেখান",
-      "this_document_is_tracked_as_a_session_artifact_n": "এই ডকুমেন্টটি সেশন আর্টিফ্যাক্ট হিসেবে ট্র্যাক করা হয়, সোর্স-ফাইলের পরিবর্তন হিসেবে নয়"
+      "this_document_is_tracked_as_a_session_artifact_n": "এই ডকুমেন্টটি সেশন আর্টিফ্যাক্ট হিসেবে ট্র্যাক করা হয়, সোর্স-ফাইলের পরিবর্তন হিসেবে নয়",
+      "toggle_diff": "{{path}}-এর ডিফ দেখান বা লুকান"
     },
     "filePickerMenu": {
       "folder": "ফোল্ডার",
@@ -5489,7 +5486,6 @@
       "adding": "যোগ হচ্ছে…",
       "adding_2": "যোগ হচ্ছে...",
       "already_in_library": "লাইব্রেরিতে আগেই আছে",
-      "autocomplete": "অটোকমপ্লিট",
       "cancel": "বাতিল করুন",
       "cancel_discard_unsaved_edits": "বাতিল করুন — অসংরক্ষিত সম্পাদনা বাদ দিন",
       "cannot_read_file": "ফাইল পড়া যাচ্ছে না",
@@ -5498,6 +5494,7 @@
       "click_to_copy_path": "পাথ কপি করতে ক্লিক করুন",
       "close_esc": "বন্ধ করুন (Esc)",
       "close_find": "খোঁজা বন্ধ করুন",
+      "collapse_unchanged": "অপরিবর্তিত অংশ সংকুচিত করুন",
       "copy_content": "কনটেন্ট কপি করুন",
       "copy_path": "পাথ কপি করুন",
       "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তন বাতিল করবেন?",
@@ -5517,14 +5514,13 @@
       "in_knowledge_library": "নলেজ লাইব্রেরিতে",
       "in_library": "লাইব্রেরিতে",
       "line_numbers": "লাইন নম্বর",
-      "loading_diff": "ডিফ লোড হচ্ছে…",
       "more_options": "আরও অপশন",
       "next_enter": "পরবর্তী (Enter)",
       "next_match": "পরবর্তী মিল",
+      "no_changes_in_file": "এই ফাইলে কোনো পরিবর্তন নেই",
       "no_results": "কোনো ফলাফল নেই",
       "open_artifact": "{{name}} আর্টিফ্যাক্ট খোলো",
       "open_as_artifact": "আর্টিফ্যাক্ট হিসেবে খুলুন",
-      "open_folder": "ফোল্ডার খুলুন {{path}}",
       "open_in_file_explorer": "File Explorer-এ খুলুন",
       "open_in_finder": "Finder-এ খুলুন",
       "open_with_default_app": "ডিফল্ট অ্যাপে খোলো",
@@ -5541,14 +5537,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "এই ফাইলটি আর্টিফ্যাক্ট হিসেবে সংরক্ষণ করুন (ভার্সনযুক্ত, স্থায়ী, মন্তব্য করার যোগ্য)",
       "saving": "সেভ হচ্ছে…",
       "select_any_text_to_add_inline_comments_then_subm": "ইনলাইন মন্তব্য যোগ করতে যেকোনো টেক্সট নির্বাচন করুন, তারপর সেগুলো সবই চ্যাটে পাঠান।",
+      "show_full_file": "সম্পূর্ণ ফাইল দেখান",
       "show_in_file_manager": "ফাইল ম্যানেজারে দেখাও",
       "snapshot_version": "সংস্করণ স্ন্যাপশট করো",
       "snapshotting": "স্ন্যাপশট হচ্ছে…",
-      "switch_to_split_view": "স্প্লিট ভিউতে যাও",
-      "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
+      "split_view": "স্প্লিট ভিউ",
       "tip": "টিপ:",
-      "toggle_autocomplete": "অটোকমপ্লিট চালু/বন্ধ করুন",
       "toggle_diff_view": "ডিফ ভিউ চালু/বন্ধ করুন",
+      "toggle_file_browser": "ফাইল ব্রাউজার টগল করুন",
       "toggle_line_numbers": "লাইন নম্বর চালু/বন্ধ করুন",
       "toggle_word_wrap": "ওয়ার্ড র‍্যাপ চালু/বন্ধ করুন",
       "tracking_description": "{{path}} ট্র্যাক করা হচ্ছে",
@@ -5686,9 +5682,7 @@
       "close_editor": "এডিটর বন্ধ করুন",
       "copied": "কপি হয়েছে!",
       "copy": "কপি",
-      "edit_code_block": "কোড ব্লক সম্পাদনা করুন",
-      "edit_in_monaco_editor": "Monaco এডিটরে সম্পাদনা করুন",
-      "loading_editor": "এডিটর লোড হচ্ছে…"
+      "edit_code_block": "কোড ব্লক সম্পাদনা করুন"
     },
     "notifications": {
       "notifMeta": {
@@ -6726,14 +6720,15 @@
       "context": "কনটেক্সট",
       "diff": "{{name}} - ডিফ",
       "files": "ফাইল",
+      "git": "Git",
       "issues": "ইস্যু",
+      "links": "লিংক",
       "logs": "লগ",
+      "pins": "পিন",
       "side": "সাইড",
       "subagents": "সাবএজেন্ট",
       "summary": "সারসংক্ষেপ",
-      "workflows": "ওয়ার্কফ্লো",
-      "git": "Git",
-      "pins": "পিন"
+      "workflows": "ওয়ার্কফ্লো"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "সব স্লট ভর্তি",
@@ -7559,32 +7554,24 @@
         "artifacts_search_library": "আপনার লাইব্রেরি খুঁজুন...",
         "artifacts_this_session": "এই সেশন",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "আমাকে বলুন \"একটি ডায়নামিক ওয়ার্কফ্লো ব্যবহার করে …\" — এই চ্যাট থেকে চালানো রানগুলো এখানে লাইভ দেখা যাবে।",
-        "back_to_files": "ফাইলে ফিরে যান",
         "cancel": "বাতিল",
         "cancelled": "বাতিল করা হয়েছে",
-        "changed_files": "পরিবর্তিত ফাইল",
         "changes": "পরিবর্তন",
         "clear": "সাফ করুন",
         "complete": "সম্পূর্ণ",
-        "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তন বাতিল করবেন?",
         "dismiss_done_count": "সম্পন্নগুলো বাদ দিন ({{count}})",
         "error": "ত্রুটি",
         "failed_click_to_retry": "ব্যর্থ — আবার চেষ্টা করতে ক্লিক করুন",
-        "file_artifact_add": "আর্টিফ্যাক্টে যোগ করুন",
-        "file_artifact_add_aria": "এই ফাইলটি আর্টিফ্যাক্ট লাইব্রেরিতে যোগ করুন",
-        "file_artifact_add_failed": "যোগ করা যায়নি — আবার চেষ্টা করুন",
-        "file_artifact_open": "আর্টিফ্যাক্ট খুলুন",
-        "file_artifact_open_aria": "এই ফাইলের আর্টিফ্যাক্ট খুলুন",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "ডিস্কে ফাইলটি পাওয়া যায়নি। হয়তো সরানো বা মুছে ফেলা হয়েছে।",
-        "files": "ফাইল",
         "input": "ইনপুট",
         "issues": "ইস্যু",
         "last_tool": "শেষ টুল:",
+        "links": "Links",
         "load_output_from_disk": "ডিস্ক থেকে আউটপুট লোড করুন",
         "loading": "লোড হচ্ছে…",
+        "loading_workspace": "ওয়ার্কস্পেস লোড হচ্ছে…",
         "logs": "লগ",
-        "no_files_changed_yet": "এখনও কোনো ফাইল পরিবর্তিত হয়নি",
         "no_issues_in_this_session_yet_mention_a_github_o": "এই সেশনে এখনও কোনো issue নেই। GitHub বা GitLab-এর issue-র লিংক উল্লেখ করো, সেটা এখানে দেখা যাবে।",
+        "no_links_yet": "এই সেশনে এখনও কোনো লিংক নেই। চ্যাটে কোনো URL উল্লেখ করো, সেটা এখানে দেখা যাবে।",
         "no_matches": "কোনো মিল নেই",
         "no_pull_requests_yet": "এই সেশনে এখনও কোনো পুল রিকোয়েস্ট নেই",
         "no_subagents_running": "কোনো সাবএজেন্ট চলছে না",
@@ -7595,8 +7582,6 @@
         "pending_approval": "অনুমোদনের অপেক্ষায়",
         "reject": "প্রত্যাখ্যান করুন",
         "rejected": "প্রত্যাখ্যাত",
-        "remove": "সরান",
-        "remove_file_from_list": "তালিকা থেকে ফাইল সরান",
         "resolved": "সমাধান হয়েছে",
         "resolving": "রিজলভ হচ্ছে…",
         "resolving_2": "রিজলভ হচ্ছে...",
@@ -7604,11 +7589,10 @@
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
         "resources": "রিসোর্স",
-        "retry": "আবার চেষ্টা করুন",
         "retry_failed_count": "ব্যর্থগুলো আবার চালান ({{count}})",
         "running": "চলছে",
         "running_tool": "চলমান টুল",
-        "search_files": "ফাইলের নাম, ফোল্ডার বা লিঙ্ক দিয়ে খুঁজুন…",
+        "search_files": "লেবেল বা URL দিয়ে খুঁজুন…",
         "show_all_count": "সব দেখান ({{count}})",
         "side": "সাইড",
         "starting": "শুরু হচ্ছে…",
@@ -7618,11 +7602,11 @@
         "trusted": "বিশ্বস্ত",
         "trusted_base": "বিশ্বস্ত বেস",
         "trusted_command": "বিশ্বস্ত কমান্ড",
-        "unable_to_read_file": "ফাইল পড়া যাচ্ছে না।",
-        "unable_to_read_this_file": "এই ফাইলটি পড়া যাচ্ছে না।",
         "waiting_for_output": "আউটপুটের অপেক্ষায়…",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
-        "workflows": "ওয়ার্কফ্লো"
+        "workflows": "ওয়ার্কফ্লো",
+        "workspace_empty": "এই ওয়ার্কস্পেসে এখনও কোনো ফাইল নেই",
+        "workspace_truncated": "বড় ওয়ার্কস্পেস — প্রথম ১০,০০০টি ফাইল দেখানো হচ্ছে"
       },
       "assistantMessage": {
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",
@@ -7696,6 +7680,7 @@
       "folderPanel": {
         "empty_folder": "খালি ফোল্ডার",
         "loading": "লোড হচ্ছে…",
+        "no_changes": "ওয়ার্কিং ট্রিতে কোনো পরিবর্তন নেই",
         "open_in_file_explorer": "File Explorer-এ খুলুন",
         "open_in_finder": "Finder-এ খুলুন",
         "parent_folder": "প্যারেন্ট ফোল্ডার",
@@ -7807,10 +7792,16 @@
         "menu_context_desc": "এই সেশনের টার্নগুলোর সময় যোগ করা কনটেক্সট",
         "menu_files": "ফাইল",
         "menu_files_desc": "ফাইল ব্রাউজ ও এডিট করো",
+        "menu_git": "Git",
+        "menu_git_desc": "ব্রাঞ্চ, পরিবর্তন এবং সাম্প্রতিক কমিট",
         "menu_issues": "ইস্যু",
         "menu_issues_desc": "এই সেশনে উল্লেখ করা ইস্যু",
+        "menu_links": "লিংক",
+        "menu_links_desc": "এই চ্যাটে উল্লেখ করা URL",
         "menu_logs": "লগ",
         "menu_logs_desc": "গেটওয়ে লগ স্ট্রিম",
+        "menu_pins": "পিন",
+        "menu_pins_desc": "এই সেশনে আপনি পিন করা বার্তা",
         "menu_side": "সাইড",
         "menu_side_desc": "সমান্তরাল চ্যাট, একই কনটেক্সট",
         "menu_subagents": "সাবএজেন্ট",
@@ -7829,11 +7820,7 @@
         "switch_to_split_view": "স্প্লিট ভিউতে যাও",
         "switch_to_unified_view": "ইউনিফায়েড ভিউতে যাও",
         "this_app_render_is_no_longer_available": "এই অ্যাপ রেন্ডার আর উপলব্ধ নেই। এটি দেখতে টুলটি আবার চালান।",
-        "turn_diff": "টার্ন ডিফ",
-        "menu_git": "Git",
-        "menu_git_desc": "ব্রাঞ্চ, পরিবর্তন এবং সাম্প্রতিক কমিট",
-        "menu_pins": "পিন",
-        "menu_pins_desc": "এই সেশনে আপনি পিন করা বার্তা"
+        "turn_diff": "টার্ন ডিফ"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "থামানো ব্যর্থ, সেশন রিসেট হয়েছে",
@@ -8008,6 +7995,23 @@
         "updated_behind": "{{when}} আপডেট হয়েছে — কথোপকথনের চেয়ে পিছিয়ে",
         "where_it_stands": "এখন কী অবস্থা",
         "you_asked_for": "আপনি যা চেয়েছিলেন"
+      },
+      "fileBrowserRail": {
+        "all_files": "সব ফাইল",
+        "changed": "পরিবর্তিত",
+        "close_search": "অনুসন্ধান বন্ধ করুন",
+        "filter_placeholder": "ফাইল ফিল্টার করুন…",
+        "refresh": "রিফ্রেশ করুন",
+        "resize": "ফাইল ব্রাউজারের আকার পরিবর্তন করুন",
+        "tree_mode": "ফাইল তালিকা মোড"
+      },
+      "filesHome": {
+        "no_project_dir": "এই চ্যাটের জন্য কোনো প্রজেক্ট ডিরেক্টরি সেট করা নেই",
+        "refresh": "রিফ্রেশ",
+        "reveal_in_finder": "ফাইল ম্যানেজারে দেখান",
+        "select_file_hint": "নতুন ট্যাবে খুলতে ট্রি থেকে একটি ফাইল নির্বাচন করুন",
+        "title": "ফাইল",
+        "tree_error": "ফাইল ট্রি লোড করা যায়নি"
       }
     },
     "chatPage": {

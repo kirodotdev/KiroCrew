@@ -1,7 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import DOMPurify from 'dompurify'
 import { Download, Image as ImageIcon, ImageOff } from 'lucide-react'
-import hljs from '../utils/hljs'
 import { useTheme } from '../hooks/useTheme'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
@@ -66,7 +64,7 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
 /** Renders a non-iframe artifact body — markdown / text / json / svg.
  * Theme vars are inherited naturally because we're not in a sandboxed
  * iframe; nothing to inject. When `editing` is true, swaps the preview
- * for a Monaco code editor. The `previewRef` is owned by the parent so
+ * for a Pierre code editor. The `previewRef` is owned by the parent so
  * the detail page / side panel can attach selection-to-comment handlers
  * above it. */
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
@@ -105,13 +103,8 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   const lang = langFor(ext)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const displayContent = isMarkdown ? content : wrapCode(content, ext)
-  const highlightedHtml = useMemo(() => {
-    if (isMarkdown || editing || isRichType) return ''
-    try { return DOMPurify.sanitize(hljs.highlight(content, { language: lang }).value) + '\n' }
-    catch { return DOMPurify.sanitize(hljs.highlightAuto(content).value) + '\n' }
-  }, [content, lang, isMarkdown, editing, isRichType])
   // Comment overlay for every natively-rendered body that has a previewRef —
-  // markdown (rendered DOM) AND the <pre> path (text/json/svg). Widgets/HTML use
+  // markdown (rendered DOM) AND the code path (text/json/svg). Widgets/HTML use
   // the iframe bridge instead.
   const showOverlay = !editing && !!onActivateComment && (comments?.length ?? 0) > 0
   return (
@@ -129,12 +122,10 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
           lang={lang}
           lineNums={true}
           wordWrap={true}
-          autocomplete={false}
           onChange={onChange}
           previewRef={previewRef}
           displayContent={displayContent}
           isMarkdown={isMarkdown}
-          highlightedHtml={highlightedHtml}
           flush={flush}
           markdownClassName="msg-content text-sm leading-relaxed"
         />
@@ -236,7 +227,7 @@ export function artifactAssetUrl(slug: string): string {
 }
 
 /** Renders an image artifact: the picture itself streamed from the asset URL,
- * plus a Download control pointing at the same URL. No Monaco, no iframe —
+ * plus a Download control pointing at the same URL. No editor, no iframe —
  * image is not an editable text kind, so it never reaches ArtifactBodyNative /
  * ArtifactBodyIframe. Reads the optional `image` metadata defensively: `alt`
  * drives the accessible description (falling back to the artifact name), and

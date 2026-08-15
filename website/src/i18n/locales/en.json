@@ -2723,9 +2723,7 @@
         "typesetting_hints_one": "{{count}} typesetting hint",
         "typesetting_hints_other": "{{count}} typesetting hints"
       },
-      "editor": {
-        "loading_editor": "Loading editor…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "Delete {{file}}",
         "files": "Files",
@@ -3641,7 +3639,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Changes update the preview as you type.",
       "editing_svg": "Editing SVG",
-      "loading_editor": "Loading editor…",
       "svg_source_code": "SVG source code"
     },
     "detailPanel": {
@@ -3657,17 +3654,12 @@
       "close": "Close"
     },
     "diffBlock": {
-      "collapse": "▲ collapse",
-      "context_lines": "context lines",
-      "diff": "diff",
       "generating_diff": "generating diff…",
-      "lines_hidden": "lines hidden",
       "open": "Open"
     },
     "diffPanel": {
       "click_to_copy_path": "Click to copy path",
-      "contents_identical": "Contents are identical",
-      "loading_diff": "Loading diff…"
+      "contents_identical": "Contents are identical"
     },
     "discoverySearchBar": {
       "clear_search": "Clear search",
@@ -3708,15 +3700,22 @@
       "save": "Save"
     },
     "fileChangeChips": {
+      "additions_one": "{{count}} addition",
+      "additions_other": "{{count}} additions",
       "artifact": "Artifact",
       "changed": "changed",
       "file_one": "{{count}} file",
       "file_other": "{{count}} files",
       "more": "more",
       "no_changes": "no changes",
+      "open": "Open File",
+      "open_in_side_panel": "Open {{path}} in side panel",
+      "removals_one": "{{count}} removal",
+      "removals_other": "{{count}} removals",
       "show": "Show",
       "show_less": "Show less",
-      "this_document_is_tracked_as_a_session_artifact_n": "This document is tracked as a session artifact, not a source-file change"
+      "this_document_is_tracked_as_a_session_artifact_n": "This document is tracked as a session artifact, not a source-file change",
+      "toggle_diff": "Show or hide the diff for {{path}}"
     },
     "filePickerMenu": {
       "folder": "Folder",
@@ -3876,7 +3875,6 @@
       "add_to_knowledge": "Add to Knowledge",
       "add_to_knowledge_library": "Add to Knowledge Library",
       "added": "Added!",
-      "autocomplete": "Autocomplete",
       "cancel": "Cancel",
       "cancel_discard_unsaved_edits": "Cancel — discard unsaved edits",
       "capture_the_current_file_content_as_a_new_artifa": "Capture the current file content as a new artifact version",
@@ -3884,6 +3882,7 @@
       "click_to_copy_path": "Click to copy path",
       "close_esc": "Close (Esc)",
       "close_find": "Close find",
+      "collapse_unchanged": "Collapse unchanged",
       "copy_content": "Copy content",
       "copy_path": "Copy path",
       "discard_unsaved_changes": "Discard unsaved changes?",
@@ -3898,7 +3897,6 @@
       "in_knowledge_library": "In Knowledge Library",
       "in_library": "In Library",
       "line_numbers": "Line numbers",
-      "loading_diff": "Loading diff…",
       "more_options": "More options",
       "next_enter": "Next (Enter)",
       "next_match": "Next match",
@@ -3909,7 +3907,6 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Save this file as an artifact (versioned, persistent, comment-able)",
       "select_any_text_to_add_inline_comments_then_subm": "Select any text to add inline comments, then submit them all to the chat.",
       "tip": "Tip:",
-      "toggle_autocomplete": "Toggle autocomplete",
       "toggle_diff_view": "Toggle diff view",
       "toggle_line_numbers": "Toggle line numbers",
       "toggle_word_wrap": "Toggle word wrap",
@@ -4001,9 +3998,7 @@
     },
     "monacoCodeBlock": {
       "close_editor": "Close editor",
-      "edit_code_block": "Edit code block",
-      "edit_in_monaco_editor": "Edit in Monaco editor",
-      "loading_editor": "Loading editor…"
+      "edit_code_block": "Edit code block"
     },
     "notifications": {
       "notificationDetailPanel": {
@@ -5136,17 +5131,14 @@
         "approved": "Approved",
         "artifacts_this_session": "This session",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Ask me to \"use a dynamic workflow to …\" — runs from this chat appear here live.",
-        "back_to_files": "Back to files",
         "cancel": "Cancel",
-        "changed_files": "Changed files",
-        "discard_unsaved_changes": "Discard unsaved changes?",
         "failed_click_to_retry": "Failed — click to retry",
-        "files": "Files",
         "input": "Input",
         "last_tool": "Last tool:",
+        "links": "Links",
         "load_output_from_disk": "Load output from disk",
         "loading": "Loading…",
-        "no_files_changed_yet": "No files changed yet",
+        "no_links_yet": "No links in this session yet. Mention a URL in the chat and it will appear here.",
         "no_subagents_running": "No subagents running",
         "no_workflow_runs": "No workflow runs",
         "open_artifact": "Open artifact",
@@ -5154,12 +5146,9 @@
         "output_shown_in_chat": "(output shown in chat)",
         "reject": "Reject",
         "rejected": "Rejected",
-        "remove": "Remove",
-        "remove_file_from_list": "Remove file from list",
         "resolving": "Resolving…",
         "resolving_2": "resolving...",
         "resources": "Resources",
-        "retry": "Retry",
         "trusted": "Trusted",
         "trusted_base": "Trusted base",
         "trusted_command": "Trusted command",

@@ -3830,9 +3830,7 @@
         "typesetting_hints_one": "{{count}} замечание по вёрстке",
         "typesetting_hints_other": "{{count}} замечания по вёрстке"
       },
-      "editor": {
-        "loading_editor": "Загрузка редактора…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "Удалить {{file}}",
         "files": "Файлы",
@@ -5146,7 +5144,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Изменения обновляют предпросмотр по мере ввода.",
       "editing_svg": "Редактирование SVG",
-      "loading_editor": "Загрузка редактора…",
       "svg_source_code": "Исходный код SVG"
     },
     "contextBar": {
@@ -5171,28 +5168,19 @@
       "close": "Закрыть"
     },
     "diffBlock": {
-      "collapse": "▲ свернуть",
-      "context_lines": "строк контекста",
       "copied": "Скопировано!",
       "copy_patch": "Копировать патч",
-      "diff": "diff",
       "generating_diff": "создание diff…",
-      "lines_hidden": "строк скрыто",
       "open": "Открыть",
       "open_in_side_panel": "Открыть {{path}} в боковой панели",
       "split_view": "Разделённый вид",
       "switch_to_split_view": "Переключить на разделённый вид",
       "switch_to_unified_view": "Переключить на объединённый вид",
-      "unchanged_lines_few": "{{count}} неизменённые строки",
-      "unchanged_lines_many": "{{count}} неизменённых строк",
-      "unchanged_lines_one": "{{count}} неизменённая строка",
-      "unchanged_lines_other": "{{count}} неизменённой строки",
       "unified_view": "Объединённый вид"
     },
     "diffPanel": {
       "click_to_copy_path": "Нажмите, чтобы скопировать путь",
-      "contents_identical": "Содержимое идентично",
-      "loading_diff": "Загрузка diff…"
+      "contents_identical": "Содержимое идентично"
     },
     "discoverySearchBar": {
       "clear_search": "Очистить поиск",
@@ -5255,6 +5243,10 @@
       "video": "Видео: {{name}}"
     },
     "fileChangeChips": {
+      "additions_few": "{{count}} добавления",
+      "additions_many": "{{count}} добавлений",
+      "additions_one": "{{count}} добавление",
+      "additions_other": "{{count}} добавления",
       "artifact": "Артефакт",
       "changed": "изменено",
       "file_few": "{{count}} файла",
@@ -5263,9 +5255,16 @@
       "file_other": "{{count}} файла",
       "more": "ещё",
       "no_changes": "нет изменений",
+      "open": "Открыть файл",
+      "open_in_side_panel": "Открыть {{path}} в боковой панели",
+      "removals_few": "{{count}} удаления",
+      "removals_many": "{{count}} удалений",
+      "removals_one": "{{count}} удаление",
+      "removals_other": "{{count}} удаления",
       "show": "Показать",
       "show_less": "Показать меньше",
-      "this_document_is_tracked_as_a_session_artifact_n": "Этот документ отслеживается как артефакт сессии, а не как изменение исходного файла"
+      "this_document_is_tracked_as_a_session_artifact_n": "Этот документ отслеживается как артефакт сессии, а не как изменение исходного файла",
+      "toggle_diff": "Показать или скрыть diff для {{path}}"
     },
     "filePickerMenu": {
       "folder": "Папка",
@@ -5651,7 +5650,6 @@
       "adding": "Добавление…",
       "adding_2": "Добавление...",
       "already_in_library": "Уже в библиотеке",
-      "autocomplete": "Автодополнение",
       "cancel": "Отмена",
       "cancel_discard_unsaved_edits": "Отмена — несохранённые правки будут отброшены",
       "cannot_read_file": "Не удалось прочитать файл",
@@ -5660,6 +5658,7 @@
       "click_to_copy_path": "Нажмите, чтобы скопировать путь",
       "close_esc": "Закрыть (Esc)",
       "close_find": "Закрыть поиск",
+      "collapse_unchanged": "Свернуть неизменённые",
       "copy_content": "Копировать содержимое",
       "copy_path": "Копировать путь",
       "discard_unsaved_changes": "Отбросить несохранённые изменения?",
@@ -5679,14 +5678,13 @@
       "in_knowledge_library": "В библиотеке знаний",
       "in_library": "В библиотеке",
       "line_numbers": "Номера строк",
-      "loading_diff": "Загрузка diff…",
       "more_options": "Дополнительные параметры",
       "next_enter": "Далее (Enter)",
       "next_match": "Следующее совпадение",
+      "no_changes_in_file": "В этом файле нет изменений",
       "no_results": "Ничего не найдено",
       "open_artifact": "Открыть артефакт {{name}}",
       "open_as_artifact": "Открыть как артефакт",
-      "open_folder": "Открыть папку {{path}}",
       "open_in_file_explorer": "Открыть в проводнике",
       "open_in_finder": "Открыть в Finder",
       "open_with_default_app": "Открыть в приложении по умолчанию",
@@ -5703,14 +5701,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Сохранить этот файл как артефакт (с версиями, постоянный, с комментариями)",
       "saving": "Сохранение…",
       "select_any_text_to_add_inline_comments_then_subm": "Выделите любой текст, чтобы добавить встроенные комментарии, затем отправьте их все в чат.",
+      "show_full_file": "Показать весь файл",
       "show_in_file_manager": "Показать в файловом менеджере",
       "snapshot_version": "Снимок версии",
       "snapshotting": "Создание снимка…",
-      "switch_to_split_view": "Переключить на разделённый вид",
-      "switch_to_unified_view": "Переключить на объединённый вид",
+      "split_view": "Разделённый вид",
       "tip": "Совет:",
-      "toggle_autocomplete": "Включить/выключить автодополнение",
       "toggle_diff_view": "Включить/выключить просмотр diff",
+      "toggle_file_browser": "Переключить обозреватель файлов",
       "toggle_line_numbers": "Включить/выключить номера строк",
       "toggle_word_wrap": "Включить/выключить перенос строк",
       "tracking_description": "Отслеживание {{path}}",
@@ -5848,9 +5846,7 @@
       "close_editor": "Закрыть редактор",
       "copied": "Скопировано!",
       "copy": "Копировать",
-      "edit_code_block": "Редактировать блок кода",
-      "edit_in_monaco_editor": "Редактировать в редакторе Monaco",
-      "loading_editor": "Загрузка редактора…"
+      "edit_code_block": "Редактировать блок кода"
     },
     "notifications": {
       "notifMeta": {
@@ -6902,14 +6898,15 @@
       "context": "Контекст",
       "diff": "{{name}} — Изменения",
       "files": "Файлы",
+      "git": "Git",
       "issues": "Задачи",
+      "links": "Ссылки",
       "logs": "Логи",
+      "pins": "Закреплённые",
       "side": "Параллельный чат",
       "subagents": "Субагенты",
       "summary": "Сводка",
-      "workflows": "Рабочие процессы",
-      "git": "Git",
-      "pins": "Закреплённые"
+      "workflows": "Рабочие процессы"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Все слоты заняты",
@@ -7759,32 +7756,24 @@
         "artifacts_search_library": "Поиск в библиотеке...",
         "artifacts_this_session": "Эта сессия",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Попросите меня «использовать динамический рабочий процесс, чтобы …» — запуски из этого чата появляются здесь в реальном времени.",
-        "back_to_files": "Назад к файлам",
         "cancel": "Отмена",
         "cancelled": "Отменено",
-        "changed_files": "Изменённые файлы",
         "changes": "Изменения",
         "clear": "Очистить",
         "complete": "Завершено",
-        "discard_unsaved_changes": "Отменить несохранённые изменения?",
         "dismiss_done_count": "Скрыть завершённые ({{count}})",
         "error": "Ошибка",
         "failed_click_to_retry": "Ошибка — нажмите, чтобы повторить",
-        "file_artifact_add": "Добавить в артефакты",
-        "file_artifact_add_aria": "Добавить этот файл в библиотеку артефактов",
-        "file_artifact_add_failed": "Не удалось добавить — попробуйте снова",
-        "file_artifact_open": "Открыть артефакт",
-        "file_artifact_open_aria": "Открыть артефакт для этого файла",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "Файл не найден на диске. Возможно, он был перемещён или удалён.",
-        "files": "Файлы",
         "input": "Ввод",
         "issues": "Задачи",
         "last_tool": "Последний инструмент:",
+        "links": "Links",
         "load_output_from_disk": "Загрузить вывод с диска",
         "loading": "Загрузка…",
+        "loading_workspace": "Загрузка рабочей области…",
         "logs": "Логи",
-        "no_files_changed_yet": "Изменённых файлов пока нет",
         "no_issues_in_this_session_yet_mention_a_github_o": "В этой сессии пока нет issue’ов. Упомяни ссылку на issue в GitHub или GitLab, и он появится здесь.",
+        "no_links_yet": "В этой сессии пока нет ссылок. Упомяни URL в чате, и он появится здесь.",
         "no_matches": "Нет совпадений",
         "no_pull_requests_yet": "В этом сеансе пока нет пул-реквестов",
         "no_subagents_running": "Нет запущенных субагентов",
@@ -7795,8 +7784,6 @@
         "pending_approval": "Ожидает подтверждения",
         "reject": "Отклонить",
         "rejected": "Отклонено",
-        "remove": "Удалить",
-        "remove_file_from_list": "Удалить файл из списка",
         "resolved": "Обработано",
         "resolving": "Разрешение…",
         "resolving_2": "разрешение...",
@@ -7804,11 +7791,10 @@
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
         "resources": "Ресурсы",
-        "retry": "Повторить",
         "retry_failed_count": "Повторить неудачные ({{count}})",
         "running": "Выполняется",
         "running_tool": "Выполняется инструмент",
-        "search_files": "Поиск по имени файла, папке или ссылке…",
+        "search_files": "Поиск по метке или URL…",
         "show_all_count": "Показать все ({{count}})",
         "side": "Параллельный чат",
         "starting": "Запуск...",
@@ -7818,11 +7804,11 @@
         "trusted": "Доверено",
         "trusted_base": "Доверенная базовая команда",
         "trusted_command": "Доверенная команда",
-        "unable_to_read_file": "Не удалось прочитать файл.",
-        "unable_to_read_this_file": "Не удалось прочитать этот файл.",
         "waiting_for_output": "Ожидание вывода…",
         "waiting_to_start_queued_behind_the_concurrency_l": "ожидает запуска — в очереди из-за лимита одновременных запусков",
-        "workflows": "Рабочие процессы"
+        "workflows": "Рабочие процессы",
+        "workspace_empty": "В этой рабочей области пока нет файлов",
+        "workspace_truncated": "Большая рабочая область — показаны первые 10 000 файлов"
       },
       "assistantMessage": {
         "applied_to_tasks": "Применено к задачам",
@@ -7898,6 +7884,7 @@
       "folderPanel": {
         "empty_folder": "Пустая папка",
         "loading": "Загрузка…",
+        "no_changes": "Рабочее дерево без изменений",
         "open_in_file_explorer": "Открыть в проводнике",
         "open_in_finder": "Открыть в Finder",
         "parent_folder": "Родительская папка",
@@ -8011,10 +7998,16 @@
         "menu_context_desc": "Контекст, добавленный в ходе этого сеанса",
         "menu_files": "Файлы",
         "menu_files_desc": "Просмотр и редактирование файлов",
+        "menu_git": "Git",
+        "menu_git_desc": "Ветка, изменения и последние коммиты",
         "menu_issues": "Задачи",
         "menu_issues_desc": "Задачи, упомянутые в этой сессии",
+        "menu_links": "Ссылки",
+        "menu_links_desc": "URL-адреса, упомянутые в этом чате",
         "menu_logs": "Логи",
         "menu_logs_desc": "Поток логов шлюза",
+        "menu_pins": "Закреплённые",
+        "menu_pins_desc": "Сообщения, закреплённые вами в этой сессии",
         "menu_side": "Параллельный чат",
         "menu_side_desc": "Параллельный чат, общий контекст",
         "menu_subagents": "Субагенты",
@@ -8033,11 +8026,7 @@
         "switch_to_split_view": "Переключиться на раздельный вид",
         "switch_to_unified_view": "Переключиться на единый вид",
         "this_app_render_is_no_longer_available": "Этот рендер приложения больше недоступен. Запустите инструмент снова, чтобы посмотреть его.",
-        "turn_diff": "Изменения за ход",
-        "menu_git": "Git",
-        "menu_git_desc": "Ветка, изменения и последние коммиты",
-        "menu_pins": "Закреплённые",
-        "menu_pins_desc": "Сообщения, закреплённые вами в этой сессии"
+        "turn_diff": "Изменения за ход"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Не удалось остановить, сессия сброшена",
@@ -8214,6 +8203,23 @@
         "updated_behind": "Обновлено {{when}} — отстаёт от разговора",
         "where_it_stands": "Текущее состояние",
         "you_asked_for": "Что вы просили"
+      },
+      "fileBrowserRail": {
+        "all_files": "Все файлы",
+        "changed": "Изменённые",
+        "close_search": "Закрыть поиск",
+        "filter_placeholder": "Фильтр файлов…",
+        "refresh": "Обновить",
+        "resize": "Изменить размер обозревателя файлов",
+        "tree_mode": "Режим списка файлов"
+      },
+      "filesHome": {
+        "no_project_dir": "Для этого чата не задан каталог проекта",
+        "refresh": "Обновить",
+        "reveal_in_finder": "Показать в файловом менеджере",
+        "select_file_hint": "Выберите файл в дереве, чтобы открыть его в новой вкладке",
+        "title": "Файлы",
+        "tree_error": "Не удалось загрузить дерево файлов"
       }
     },
     "chatPage": {

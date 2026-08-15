@@ -60,7 +60,7 @@ const prefersReducedMotion = () =>
  * usable without a ThemeProvider. `applyTheme` composes that attribute as
  * `<slug>-<mode>` (and bare `<mode>` for the base 'emerald' theme), so the mode
  * suffix is stripped back off to recover the slug the themeBranding registry is
- * keyed by. Mirrors the MonacoCodeBlock / CliPanel MutationObserver pattern, so
+ * keyed by. Mirrors the CliPanel MutationObserver pattern, so
  * a mid-turn theme switch swaps the artwork without needing a remount.
  */
 function useThemeSlug(): string {

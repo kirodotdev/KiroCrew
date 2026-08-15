@@ -40,12 +40,15 @@ describe('highlight.js barrel is not in the eager bundle', () => {
     expect(offenders.map(p => p.slice(WEBSITE_ROOT.length + 1))).toEqual([])
   })
 
-  it('leaves the two former callers pointed at the core build', () => {
-    // Named explicitly so a revert of either file reads as "back to the barrel"
-    // rather than as a vague global count change.
+  it('leaves the remaining caller pointed at the core build', () => {
+    // Named explicitly so a revert reads as "back to the barrel" rather than as a
+    // vague global count change. ArtifactBody and MarkdownPanel were the other two
+    // callers; both now highlight through Pierre and import no hljs at all, so
+    // MarkdownRenderer is the only module left that pulls the core wrapper in.
+    const src = readFileSync(join(WEBSITE_ROOT, 'src/components/MarkdownRenderer.tsx'), 'utf-8')
+    expect(src).toMatch(/import '\.\.\/utils\/hljs'/)
     for (const rel of ['src/components/ArtifactBody.tsx', 'src/components/MarkdownPanel.tsx']) {
-      const src = readFileSync(join(WEBSITE_ROOT, rel), 'utf-8')
-      expect(src, rel).toMatch(/import hljs from '\.\.\/utils\/hljs'/)
+      expect(readFileSync(join(WEBSITE_ROOT, rel), 'utf-8'), rel).not.toMatch(/utils\/hljs/)
     }
   })
 

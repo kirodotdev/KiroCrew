@@ -149,12 +149,14 @@ describe('PullRequestPanel', () => {
     expect(screen.getByText('Github', { exact: false })).toBeInTheDocument()
     expect(screen.getByText('src/panel.tsx')).toBeInTheDocument()
     expect(screen.getByText('1 File Changed')).toBeInTheDocument()
-    // Diffs stay unmounted until explicitly expanded, then parse after the
-    // drawer animation deferral.
-    expect(screen.queryByText('new')).not.toBeInTheDocument()
+    // Diffs stay unmounted until explicitly expanded, then mount after the
+    // drawer animation deferral. Row CONTENT is not asserted here: Pierre
+    // renders it inside a shadow root, which Testing Library cannot query — the
+    // loading placeholder giving way to the diff surface is the observable
+    // contract from the light DOM.
+    expect(screen.queryByTestId('pr-diff-surface')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /src\/panel\.tsx/i }))
-    expect(await screen.findByText('new')).toBeInTheDocument()
-    expect(screen.getByText('old')).toBeInTheDocument()
+    expect(await screen.findByTestId('pr-diff-surface')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /All checks passed/i })).toBeInTheDocument()
     const githubTab = screen.getByRole('tab', { name: /PR #12/i })
     const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })

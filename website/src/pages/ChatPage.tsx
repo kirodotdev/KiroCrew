@@ -46,7 +46,6 @@ import { type FileChangeEntry } from '../components/FileChangeChips'
 import PastedChip from '../components/PastedChip'
 import SnipOverlay from '../components/SnipOverlay'
 import { captureScreen, screenSnipSupported, currentTabCaptureDeps } from '../hooks/useScreenSnip'
-import { useTouchedFiles } from '../hooks/useTouchedFiles'
 import { useTheme } from '../hooks/useTheme'
 import CollapsibleToolGroup from './chat/CollapsibleToolGroup'
 import ThinkingBlock from './chat/ThinkingBlock'
@@ -183,6 +182,7 @@ import type { ChatMessage, Artifact } from '../types'
 
 import ToolCallLine from './chat/ToolCallLine'
 import { shouldMountSidePanel, isSidePanelHidden } from './chat/sidePanelMount'
+import { optsForReplace } from './chat/replaceGuard'
 import WorkflowRunCard, { extractWorkflowRunId } from './chat/WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch } from './chat/SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './chat/WorkflowCompletionCard'
@@ -942,9 +942,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // tool chunk, and their only consumer is the Activity panel (SidePanel), which
   // is closed by default and now subscribes to them itself. Subscribing to the
   // arrays here re-rendered this whole component per chunk for data it never
-  // read. The touched-file scan below needs the entries, but only when the log
-  // GREW, so it reads them from the store at effect time instead.
-  const toolLogLen = useAppSelector(s => s.chat.toolLog.length)
+  // read.
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const slotHasMore = useAppSelector(s => s.chat.slotHasMore)
   const slotOldestIndex = useAppSelector(s => s.chat.slotOldestIndex)
@@ -2220,25 +2218,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // slot's browser view already unmounts (its WebContentsView released) on the
   // slot switch. So keep-mounted follows THIS slot's tabs, not every slot's.
   const hasBrowserTab = tabsCtl.tabs.some(t => t.kind === 'browser')
-  // Which file (if any) the Files tab is showing inline — kept PER SLOT (above
-  // the SidePanel subtree so it survives panel collapse). Per-slot (not a single
-  // value reset on switch) so it stays consistent with the per-slot tab buckets
-  // AND the per-(slot,path) draft store: switching A→B→A restores A's inline
-  // editor rather than resetting it, so handleFileOpen's one-editor-per-path
-  // guard still recognizes the file as open inline after a round-trip (no
-  // competing document tab, no stale-draft overwrite).
-  const [inlinePreviewBySlot, setInlinePreviewBySlot] = useState<Record<string, string | null>>({})
-  const inlinePreviewPath = inlinePreviewBySlot[activeSlot ?? ''] ?? null
-  const inlinePreviewPathRef = useRef(inlinePreviewPath); inlinePreviewPathRef.current = inlinePreviewPath
-  const setInlinePreviewPath = useCallback((p: string | null) => {
-    setInlinePreviewBySlot(m => ({ ...m, [activeSlotRef.current ?? '']: p }))
-  }, [])
   // Find/search pane state. Declared above handleFileOpen / handleOpenDiff so
   // those handlers can call search.close() directly when opening a dock panel
   // (the right-hand dock is a single slot and the file/diff panes are
   // render-gated behind !search.isOpen).
   const search = useMessageSearch(messages, activeSlot)
-  const touchedFiles = useTouchedFiles(activeSlot ?? undefined)
   const sourceLinkIndex = useRef(new PullRequestLinkIndex())
   // Self-managed GitLab hosts the operator authorized (config-only, read-only
   // here). Without them a pasted self-hosted MR link is not a Changes source.
@@ -2552,45 +2536,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setInput(previous => previous.trim() ? `${previous.trimEnd()}\n\n${text}` : text)
   }, [])
 
-  // Auto-track files touched by tool calls (read, write, grep, glob)
-  const lastToolLen = useRef(0)
-  useEffect(() => {
-    // Read the log at effect time rather than subscribing to it: this effect only
-    // runs when the length changed, and the append-only log's tail is what it wants.
-    const toolLog = store.getState().chat.toolLog
-    if (toolLog.length <= lastToolLen.current) { lastToolLen.current = toolLog.length; return }
-    const newEntries = toolLog.slice(lastToolLen.current)
-    lastToolLen.current = toolLog.length
-    for (const e of newEntries) {
-      if (e.type !== 'tool' || !e.input) continue
-      const name = e.text?.replace(/^🔧\s*/, '') ?? ''
-      // Extract paths from tool input JSON preview
-      try {
-        const inp = e.input
-        let paths: string[] = []
-        if (/^(read|write)$/i.test(name)) {
-          // read: {"operations":[{"path":"/..."}]}  write: {"path":"/..."}
-          const pm = inp.match(/"path"\s*:\s*"(\/[^"]+)"/g)
-          if (pm) paths = pm.map(m => m.match(/"(\/[^"]+)"$/)?.[1]).filter(Boolean) as string[]
-        } else if (/^grep$/i.test(name)) {
-          const pm = inp.match(/"path"\s*:\s*"(\/[^"]+)"/)
-          if (pm?.[1]) paths = [pm[1]]
-        } else if (/^glob$/i.test(name)) {
-          const pm = inp.match(/"path"\s*:\s*"(\/[^"]+)"/)
-          if (pm?.[1]) paths = [pm[1]]
-        }
-        for (const p of paths) {
-          if (touchedFiles.shouldScanAdd(e.ts)) touchedFiles.addFile(p, 'tool')
-        }
-      } catch { /* ignore parse errors */ }
-    }
-    // Keyed on toolLog.length (the log is append-only; lastToolLen slices just
-    // the new entries) and on the specific touchedFiles methods used. Depending
-    // on the whole `toolLog`/`touchedFiles` objects would reprocess on unrelated
-    // identity changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolLogLen, touchedFiles.addFile, touchedFiles.shouldScanAdd])
-
   const { colorTheme } = useTheme()
   // Mirror colorTheme into a ref so the `send` callback (which does not depend
   // on colorTheme, to avoid re-creating on every theme switch) can always read
@@ -2606,18 +2551,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The `ok` flag gates whether the file is recorded in history — 404s and
   // other HTTP failures show a placeholder in the panel but should NOT
   // pollute the history list with files that don't exist on disk.
-  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => {
-    // One editor per path: if this file is already open INLINE in the Files tab,
-    // route back to that inline editor (focus the Files view) instead of
-    // spawning a competing document tab — two live editors for one on-disk file
-    // would have independent dirty buffers and could silently overwrite each
-    // other. (Uses a ref so this callback stays identity-stable.)
-    if (filePath === inlinePreviewPathRef.current) {
-      dispatch(openActivityPanel())
-      tabsCtl.setActive('files')
-      search.close()
-      return
-    }
+  const handleFileOpen = useCallback(async (filePath: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean }) => {
     // Plugin host integration: notify the IntelliJ plugin (if active) so
     // it can open the file natively in the IDE editor. If the plugin
     // handles file opens, skip the dashboard's DiffPanel — the user wanted
@@ -2625,7 +2559,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
     if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
     try {
-      const [{ text, ok }] = await Promise.all([
+      const [{ text }] = await Promise.all([
         queryClient.fetchQuery({
           queryKey: ['file-read', filePath],
           queryFn: async () => {
@@ -2644,36 +2578,29 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           queryFn: () => api.fileDiff(filePath),
         }),
       ])
-      tabsCtl.openFile(filePath, text, activeSlotRef.current ?? null, opts)
+      tabsCtl.openFile(filePath, text, activeSlotRef.current ?? null, optsForReplace(opts))
       dispatch(openActivityPanel())
       // The right-hand dock is a single slot; the file viewer is render-gated
       // behind !search.isOpen. Close the find pane so the opened file actually
       // shows instead of being silently suppressed.
       search.close()
-      if (ok) touchedFiles.addFile(filePath, 'history')
     } catch {
-      tabsCtl.openFile(filePath, i18nT('pages.chatPage.error_reading_file'), activeSlotRef.current ?? null, opts)
+      tabsCtl.openFile(filePath, i18nT('pages.chatPage.error_reading_file'), activeSlotRef.current ?? null, optsForReplace(opts))
       dispatch(openActivityPanel())
       search.close()
     }
-    // Depend on the stable members, not the whole hook objects:
-    //   search.close      — useCallback([]) in useMessageSearch; the `search`
-    //                       object changes identity on every search-state change
-    //                       (isOpen/term/matches).
-    //   touchedFiles.addFile — useTouchedFiles memoizes on `files`, so its object
-    //                       changes identity every time a file lands, including
-    //                       mid-run when the tool-log scan above calls addFile.
-    // Either whole-object dep churned this callback and the onFileOpen prop on
-    // every row. (tabsCtl still churns on tab changes, but those are user actions,
-    // not per-chunk.)
-  }, [queryClient, tabsCtl, dispatch, search.close, touchedFiles.addFile])
+    // Depend on the stable member, not the whole hook object: `search.close` is a
+    // useCallback([]) in useMessageSearch, while the `search` object changes
+    // identity on every search-state change (isOpen/term/matches), which would
+    // churn this callback and the onFileOpen prop on every row. (tabsCtl still
+    // churns on tab changes, but those are user actions, not per-chunk.)
+  }, [queryClient, tabsCtl, dispatch, search.close])
 
   /** Open a DIRECTORY as a panel tab.
    *
    *  The folder twin of handleFileOpen, and deliberately much thinner: there is
    *  no content to prefetch (FolderPanel owns its own ['browse-files', path]
-   *  query) and nothing to record in touched-files, which tracks files the run
-   *  actually read or wrote. Only reachable for paths the backend already
+   *  query). Only reachable for paths the backend already
    *  confirmed are directories, so there is no not-found branch to handle. */
   const handleFolderOpen = useCallback((dirPath: string) => {
     tabsCtl.openFolder(dirPath, activeSlotRef.current ?? null)
@@ -2739,7 +2666,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient, tabsCtl, dispatch, search.close])
 
-  // Open the Monaco diff panel from a file-change chip click. Closes the
+  // Open the diff panel from a file-change chip click. Closes the
   // markdown viewer and the activity panel so panels stay mutually exclusive.
   const handleOpenDiff = useCallback((filePath: string, modified: string, original: string) => {
     // If the IntelliJ plugin's file bridge is active, dispatch the event
@@ -2768,20 +2695,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabsCtl, dispatch, search.close, handleFileOpen])
-
-  // Auto-surface files modified by the agent (carried in m.meta.file_changes)
-  // into the activity Files tab so the user sees a unified list. Skip files
-  // referenced by messages older than the last 'tool' watermark — once the
-  // user clears suggested files, those entries stay gone unless the agent
-  // touches them again in a newer turn.
-  useEffect(() => {
-    for (const m of messages) {
-      const ts = typeof m.ts === 'string' ? Date.parse(m.ts) : (m.ts as unknown as number) || 0
-      if (!touchedFiles.shouldScanAdd(ts)) continue
-      const fc = (m.meta as Record<string, unknown> | undefined)?.file_changes as Array<{ path: string }> | undefined
-      if (fc) for (const f of fc) touchedFiles.addFile(f.path, 'tool')
-    }
-  }, [messages.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   const handleFork = useCallback(async (visibleIndex: number) => {
@@ -4720,15 +4633,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 
-  // Auto-open the folder tab for the project dir once per slot+path.
-  useEffect(() => {
-    if (!activeSlot || !_slotProject) return
-    const key = `mc-folder-panel-opened:${activeSlot}:${_slotProject}`
-    if (localStorage.getItem(key)) return
-    // Same quota guard as the git-panel effect above.
-    try { localStorage.setItem(key, '1') } catch { return }
-    tabsCtl.openFolder(_slotProject, activeSlot)
-  }, [activeSlot, _slotProject, tabsCtl])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
@@ -7085,7 +6989,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             <SidePanel
               tabsCtl={tabsCtl}
               slot={activeSlot || ''}
-              files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
+              onFileOpen={handleFileOpen}
               onArtifactOpen={handleArtifactOpen}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
               sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
@@ -7094,7 +6998,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
               pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPinnedMessage} onUnpin={handleUnpinById}
               slotTitle={activeSlotTitle} chatMode={mode}
-              inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
               canDockBottom={false}
@@ -7124,7 +7027,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <SidePanel
                 tabsCtl={tabsCtl}
                 slot={activeSlot || ''}
-                files={touchedFiles.files} onFileOpen={handleFileOpen} onFileRemove={touchedFiles.removeFile} onFilesClear={touchedFiles.clearBySource}
+                onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
                 sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
@@ -7133,7 +7036,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 onSubmitComments={submitComments} onFileSave={handleFileSave} onClose={toggleAct}
                 pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPinnedMessage} onUnpin={handleUnpinById}
                 slotTitle={activeSlotTitle} chatMode={mode}
-                inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}
               />

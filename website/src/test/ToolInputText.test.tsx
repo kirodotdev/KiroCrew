@@ -1,48 +1,44 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { ToolInputText } from '../components/ToolInputText'
+
+/* Diff-shaped input is handed to Pierre, which paints its rows inside a shadow
+ * root behind a lazy chunk — so the per-line tints, the hunk chrome and the
+ * stripped `---`/`+++` headers are not assertable here; that appearance is
+ * Playwright's job. What this suite still owns is the routing decision: which
+ * inputs take the diff path versus JSON highlighting versus plain text.
+ *
+ * Owning that claim means asserting the diff arm too, which needs the mocked
+ * `../pierre` below: unmocked, the lazy chunk resolves to a Suspense fallback
+ * that renders the raw text, so the diff arm and the plain-text arm are
+ * indistinguishable from the outside and the routing goes untested. */
+vi.mock('../pierre', () => ({
+  PierrePatch: ({ patch }: { patch: string }) => <div data-testid="pierre-patch" data-patch={patch} />,
+}))
 
 describe('ToolInputText', () => {
   it('renders plain text when no diff markers present', () => {
     const { container } = render(<ToolInputText text="just some text" />)
     expect(container.textContent).toBe('just some text')
-    expect(container.querySelectorAll('.bg-diff-add')).toHaveLength(0)
+    expect(container.querySelector('[data-testid="pierre-patch"]')).toBeNull()
   })
 
-  it('colors added lines green', () => {
-    const { container } = render(<ToolInputText text={"@@ -1,1 +1,1 @@\n+added line"} />)
-    const div = container.querySelector('.bg-diff-add')
-    expect(div).not.toBeNull()
-    expect(div!.textContent).toContain('added line')
+  it('routes diff-shaped input to Pierre with the patch unmodified', () => {
+    const patch = `--- a/file.ts\n+++ b/file.ts\n@@ -1,2 +1,2 @@\n-old\n+new`
+    const { container } = render(<ToolInputText text={patch} />)
+    const surface = container.querySelector('[data-testid="pierre-patch"]')
+    expect(surface).not.toBeNull()
+    // The raw patch goes through untouched — ToolInputText does not reformat it.
+    expect(surface!.getAttribute('data-patch')).toBe(patch)
   })
 
-  it('colors removed lines red', () => {
-    const { container } = render(<ToolInputText text={"@@ -1,1 +1,1 @@\n-removed line"} />)
-    const div = container.querySelector('.bg-diff-del')
-    expect(div).not.toBeNull()
-    expect(div!.textContent).toContain('removed line')
-  })
-
-  it('strips --- and +++ path headers', () => {
-    const text = "--- /home/user/file.ts\n+++ /home/user/file.ts\n@@ -1,2 +1,2 @@\n-old\n+new"
+  it('prefers JSON highlighting over the diff path when the text is both', () => {
+    // A JSON body whose string values contain `+++`/`---` lines still routes to
+    // the JSON arm, because that branch runs first.
+    const text = '{"patch": "--- a/x\\n+++ b/x\\n@@ -1 +1 @@"}'
     const { container } = render(<ToolInputText text={text} />)
-    expect(container.textContent).not.toContain('---')
-    expect(container.textContent).not.toContain('+++')
-    expect(container.textContent).toContain('old')
-    expect(container.textContent).toContain('new')
-  })
-
-  it('renders hunk headers with hunk styling', () => {
-    const text = "@@ -1,3 +1,3 @@\n context\n-old\n+new"
-    const { container } = render(<ToolInputText text={text} />)
-    expect(container.querySelector('.bg-diff-hunk')).not.toBeNull()
-  })
-
-  it('renders multi-line diffs with correct classes', () => {
-    const text = "@@ -1,2 +1,2 @@\n-old line 1\n-old line 2\n+new line 1\n+new line 2\n context line"
-    const { container } = render(<ToolInputText text={text} />)
-    expect(container.querySelectorAll('.bg-diff-del')).toHaveLength(2)
-    expect(container.querySelectorAll('.bg-diff-add')).toHaveLength(2)
+    expect(container.querySelector('[data-testid="pierre-patch"]')).toBeNull()
+    expect(container.querySelectorAll('span').length).toBeGreaterThan(1)
   })
 
   it('highlights JSON keys and values', () => {

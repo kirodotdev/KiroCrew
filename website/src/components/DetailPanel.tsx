@@ -33,7 +33,7 @@ interface DetailPanelProps {
   reserveWidth?: number
   storageKey?: string
   children: React.ReactNode
-  /** Drop the default px-5 py-4 children padding. Used by panels that fill the viewport themselves (e.g. Monaco diff). */
+  /** Drop the default px-5 py-4 children padding. Used by panels that fill the viewport themselves (e.g. the diff). */
   noPadding?: boolean
   /** Override the header's default border-color/bg (e.g. to match an embedded editor). When provided, replaces the default `border-border bg-bg` styling. */
   headerClassName?: string

@@ -36,7 +36,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// MarkdownPanel drags in Monaco; stub it with the same imperative handle the
+// MarkdownPanel drags in Pierre; stub it with the same imperative handle the
 // real panel exposes so the inline preview's guarded close still works.
 vi.mock('../components/MarkdownPanel', async () => {
   const { forwardRef, useImperativeHandle } = await import('react')
@@ -54,9 +54,8 @@ import ActivityViewer, { countDiffStats } from '../pages/chat/ActivityViewer'
 import { api } from '../api/client'
 import { createTestStore } from './helpers'
 import { openActivityToTab, selectSubagent } from '../store/chatSlice'
-import { setInlineDraft, __resetPanelTabs } from '../hooks/usePanelTabs'
+import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import type { SubagentActivity, ToolActivity, Artifact } from '../types'
-import type { TouchedFile } from '../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../utils/extractChatLinks'
 
 const SLOT = 'test-slot'
@@ -98,9 +97,6 @@ const mkAgent = (id: string, over: Partial<SubagentActivity> = {}): SubagentActi
   ...over,
 })
 
-const mkFile = (path: string, over: Partial<TouchedFile> = {}): TouchedFile => ({
-  path, ts: 1_700_000_000_000, source: 'tool', ...over,
-})
 
 const mkArtifact = (slug: string, over: Partial<Artifact> = {}): Artifact => ({
   slug,
@@ -532,88 +528,10 @@ describe('ActivityViewer — changed-file rows', () => {
     expect(countDiffStats(' context only')).toEqual({ added: 0, removed: 0 })
   })
 
-  it('renders the diffstat for a changed file', async () => {
-    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '--- a\n+++ b\n+one\n+two\n-old' })
-    renderPanel(
-      <ActivityViewer {...baseProps} view="files" files={[mkFile('/proj/src/app.ts')]} onFileOpen={vi.fn()} />,
-    )
-    expect(await screen.findByText('+2')).toBeInTheDocument()
-    expect(screen.getByText('-1')).toBeInTheDocument()
-    expect(screen.getByText('/proj/src')).toBeInTheDocument()
-  })
 
-  it('opens a file row from the keyboard, ignoring other keys', () => {
-    const onFileOpen = vi.fn()
-    renderPanel(
-      <ActivityViewer {...baseProps} view="files" files={[mkFile('/proj/a.ts')]} onFileOpen={onFileOpen} />,
-    )
-    const row = screen.getByTitle('/proj/a.ts')
-    fireEvent.keyDown(row, { key: 'Enter' })
-    fireEvent.keyDown(row, { key: ' ' })
-    fireEvent.keyDown(row, { key: 'x' })
-    expect(onFileOpen).toHaveBeenCalledTimes(2)
-    expect(onFileOpen).toHaveBeenCalledWith('/proj/a.ts')
-  })
 
-  it('removes a row without opening the file underneath it', () => {
-    const onFileOpen = vi.fn()
-    const onFileRemove = vi.fn()
-    renderPanel(
-      <ActivityViewer
-        {...baseProps}
-        view="files"
-        files={[mkFile('/proj/a.ts')]}
-        onFileOpen={onFileOpen}
-        onFileRemove={onFileRemove}
-      />,
-    )
-    const remove = screen.getByRole('button', { name: 'Remove file from list' })
-    fireEvent.keyDown(remove, { key: 'Enter' })
-    fireEvent.click(remove)
 
-    expect(onFileRemove).toHaveBeenCalledWith('/proj/a.ts')
-    expect(onFileOpen).not.toHaveBeenCalled()
-  })
 
-  it('keeps the add-to-artifacts control from opening the file underneath it', () => {
-    const onFileOpen = vi.fn()
-    renderPanel(
-      <ActivityViewer
-        {...baseProps}
-        view="files"
-        files={[mkFile('/proj/notes.md')]}
-        onFileOpen={onFileOpen}
-      />,
-    )
-    const add = screen.getByTestId('file-artifact-/proj/notes.md')
-    fireEvent.keyDown(add, { key: 'Enter' })
-    expect(onFileOpen).not.toHaveBeenCalled()
-  })
-
-  it('links a promoted file to its artifact page when no panel host is wired', async () => {
-    vi.mocked(api.artifacts).mockResolvedValue({
-      artifacts: [mkArtifact('proj-notes', { source_path: '/proj/notes.md' })],
-    })
-    const onFileOpen = vi.fn()
-    renderPanel(
-      <ActivityViewer
-        {...baseProps}
-        view="files"
-        files={[mkFile('/proj/notes.md')]}
-        onFileOpen={onFileOpen}
-      />,
-    )
-    const link = await waitFor(() => {
-      const el = screen.getByTestId('file-artifact-/proj/notes.md')
-      expect(el.tagName).toBe('A')
-      return el
-    })
-    expect(link).toHaveAttribute('href', '/artifacts/proj-notes')
-
-    fireEvent.keyDown(link, { key: 'Enter' })
-    fireEvent.click(link)
-    expect(onFileOpen).not.toHaveBeenCalled()
-  })
 })
 
 /* ── Resource rows ──────────────────────────────────────────────────────────*/
@@ -623,7 +541,7 @@ describe('ActivityViewer — resource rows', () => {
     renderPanel(
       <ActivityViewer
         {...baseProps}
-        view="files"
+        view="links"
         navLinks={[mkLink('not a url at all', 'Broken reference')]}
       />,
     )
@@ -637,7 +555,7 @@ describe('ActivityViewer — resource rows', () => {
     renderPanel(
       <ActivityViewer
         {...baseProps}
-        view="files"
+        view="links"
         navLinks={[
           mkLink('https://github.com/o/r/pull/1', 'PR one', 'cr'),
           mkLink('https://github.com/o/r/issues/2', 'Issue two', 'issue'),
@@ -650,81 +568,23 @@ describe('ActivityViewer — resource rows', () => {
     expect(screen.getAllByText('github.com')).toHaveLength(2)
   })
 
-  it('clears an active file search from the inline control', () => {
+  it('clears an active link search from the inline control', () => {
     renderPanel(
       <ActivityViewer
         {...baseProps}
-        view="files"
-        files={['a', 'b', 'c', 'd', 'e', 'f'].map(n => mkFile(`/proj/${n}.ts`))}
-        onFileOpen={vi.fn()}
+        view="links"
+        navLinks={['a', 'b', 'c', 'd', 'e', 'f'].map(n => ({
+          url: `https://example.com/${n}`, type: 'other' as const, label: `${n} link`, msgIdx: 0,
+        }))}
       />,
     )
-    const box = screen.getByLabelText('Search by file name, folder, or link…') as HTMLInputElement
-    fireEvent.change(box, { target: { value: 'c.ts' } })
-    expect(screen.queryByTitle('/proj/a.ts')).not.toBeInTheDocument()
+    const box = screen.getByLabelText('Search by label or URL…') as HTMLInputElement
+    fireEvent.change(box, { target: { value: 'c link' } })
+    expect(screen.queryByTitle('https://example.com/a')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
     expect(box.value).toBe('')
-    expect(screen.getByTitle('/proj/a.ts')).toBeInTheDocument()
-  })
-})
-
-/* ── Inline file preview ────────────────────────────────────────────────────*/
-
-describe('ActivityViewer — inline file preview', () => {
-  it('retries a failed read from the error state', async () => {
-    const fetchMock = stubFetch({ fileOk: false, fileText: 'nope' })
-    renderPanel(
-      <ActivityViewer
-        {...baseProps}
-        view="files"
-        files={[mkFile('/proj/a.md')]}
-        onFileOpen={vi.fn()}
-        onFileSave={vi.fn().mockResolvedValue(undefined)}
-      />,
-    )
-    fireEvent.click(screen.getByTitle('/proj/a.md'))
-    const retry = await screen.findByRole('button', { name: 'Retry' })
-
-    fetchMock.mockResolvedValue({
-      ok: true, status: 200, text: async () => 'recovered', headers: { get: () => null },
-      json: async () => ({}),
-    } as unknown as Response)
-    fireEvent.click(retry)
-
-    expect(await screen.findByTestId('md-panel')).toHaveTextContent('/proj/a.md::recovered')
-  })
-
-  it('confirms before discarding an unsaved draft with no editor mounted', async () => {
-    stubFetch({ fileOk: false, fileText: 'nope' })
-    setInlineDraft(SLOT, '/proj/a.md', 'unsaved work')
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    try {
-      renderPanel(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[mkFile('/proj/a.md')]}
-          onFileOpen={vi.fn()}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-        />,
-      )
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      await screen.findByRole('button', { name: 'Retry' })
-
-      // Declined: the preview stays put and the draft survives.
-      fireEvent.click(screen.getByRole('button', { name: 'Back to files' }))
-      expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
-      expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
-
-      // Confirmed: back to the list.
-      confirmSpy.mockReturnValue(true)
-      fireEvent.click(screen.getByRole('button', { name: 'Back to files' }))
-      await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument())
-      expect(screen.getByTitle('/proj/a.md')).toBeInTheDocument()
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    expect(screen.getByTitle('https://example.com/a')).toBeInTheDocument()
   })
 })
 
@@ -866,7 +726,7 @@ describe('ActivityViewer — panel behaviour', () => {
     const store = createTestStore()
     renderPanel(<ActivityViewer {...baseProps} />, store)
     // jsdom reports a zero-width parent, so the control collapses to a dropdown.
-    fireEvent.click(screen.getByRole('button', { name: /Files/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Links/ }))
     fireEvent.click(screen.getByRole('button', { name: /Artifacts/ }))
 
     await waitFor(() => expect(store.getState().chat.activityTab).toBe('artifacts'))

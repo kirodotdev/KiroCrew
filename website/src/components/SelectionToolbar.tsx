@@ -244,7 +244,7 @@ interface SelectionToolbarProps {
   containerRef: React.RefObject<HTMLElement | null>
   /** Actions to show in the toolbar */
   actions: SelectionAction[]
-  /** External trigger (e.g. from Monaco) — shows toolbar at given position with given text */
+  /** External trigger (e.g. from the code editor) — shows toolbar at given position with given text */
   externalSelection?: { text: string; x: number; y: number } | null
 }
 
@@ -279,7 +279,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   const checkSelection = useCallback(() => {
     const sel = window.getSelection()
     if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-      // Only dismiss if toolbar was shown by DOM selection (not external/Monaco)
+      // Only dismiss if toolbar was shown by DOM selection (not external/editor)
       if (sourceRef.current === 'dom') setVisible(false)
       return
     }
@@ -344,7 +344,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     }
   }, [visible, pos])
 
-  // External trigger (Monaco selections that don't use window.getSelection)
+  // External trigger (editor selections that don't use window.getSelection)
   useEffect(() => {
     if (externalSelection) {
       selectedTextRef.current = externalSelection.text

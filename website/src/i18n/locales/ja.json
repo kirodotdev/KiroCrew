@@ -3659,9 +3659,7 @@
         "no_messages": "コンパイラーが何も報告していません。",
         "typesetting_hints_other": "{{count}} 件の植字ヒント"
       },
-      "editor": {
-        "loading_editor": "エディターを読み込み中…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} を削除",
         "files": "ファイル",
@@ -4921,7 +4919,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "入力内容に合わせてプレビューが更新されます。",
       "editing_svg": "SVG を編集中",
-      "loading_editor": "エディターを読み込み中…",
       "svg_source_code": "SVG ソースコード"
     },
     "contextBar": {
@@ -4946,25 +4943,19 @@
       "close": "閉じる"
     },
     "diffBlock": {
-      "collapse": "▲ 折りたたむ",
-      "context_lines": "コンテキスト行",
       "copied": "コピーしました！",
       "copy_patch": "パッチをコピー",
-      "diff": "diff",
       "generating_diff": "diff を生成中…",
-      "lines_hidden": "行を非表示",
       "open": "開く",
       "open_in_side_panel": "{{path}} をサイドパネルで開く",
       "split_view": "分割ビュー",
       "switch_to_split_view": "分割ビューに切り替え",
       "switch_to_unified_view": "統一ビューに切り替え",
-      "unchanged_lines_other": "{{count}} 行の変更なし",
       "unified_view": "統一ビュー"
     },
     "diffPanel": {
       "click_to_copy_path": "クリックしてパスをコピー",
-      "contents_identical": "内容は同じです",
-      "loading_diff": "diff を読み込み中…"
+      "contents_identical": "内容は同じです"
     },
     "discoverySearchBar": {
       "clear_search": "検索をクリア",
@@ -5024,14 +5015,19 @@
       "video": "動画：{{name}}"
     },
     "fileChangeChips": {
+      "additions_other": "{{count}} 件の追加",
       "artifact": "アーティファクト",
       "changed": "変更",
       "file_other": "{{count}} 個のファイル",
       "more": "その他",
       "no_changes": "変更なし",
+      "open": "ファイルを開く",
+      "open_in_side_panel": "{{path}} をサイドパネルで開く",
+      "removals_other": "{{count}} 件の削除",
       "show": "表示",
       "show_less": "表示を減らす",
-      "this_document_is_tracked_as_a_session_artifact_n": "このドキュメントはセッションアーティファクトとして追跡されており、ソースファイルの変更ではありません"
+      "this_document_is_tracked_as_a_session_artifact_n": "このドキュメントはセッションアーティファクトとして追跡されており、ソースファイルの変更ではありません",
+      "toggle_diff": "{{path}} の差分を表示または非表示にする"
     },
     "filePickerMenu": {
       "folder": "フォルダー",
@@ -5408,7 +5404,6 @@
       "adding": "追加中…",
       "adding_2": "追加中…",
       "already_in_library": "既にライブラリに含まれています",
-      "autocomplete": "オートコンプリート",
       "cancel": "キャンセル",
       "cancel_discard_unsaved_edits": "キャンセル — 保存されていない編集内容を破棄",
       "cannot_read_file": "ファイルを読み込めません",
@@ -5417,6 +5412,7 @@
       "click_to_copy_path": "クリックしてパスをコピー",
       "close_esc": "閉じる (Esc)",
       "close_find": "検索を閉じる",
+      "collapse_unchanged": "変更なしを折りたたむ",
       "copy_content": "コンテンツをコピー",
       "copy_path": "パスをコピー",
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
@@ -5436,14 +5432,13 @@
       "in_knowledge_library": "ナレッジライブラリに含まれています",
       "in_library": "ライブラリに含まれています",
       "line_numbers": "行番号",
-      "loading_diff": "差分を読み込み中…",
       "more_options": "その他のオプション",
       "next_enter": "次へ (Enter)",
       "next_match": "次の一致",
+      "no_changes_in_file": "このファイルに変更はありません",
       "no_results": "結果がありません",
       "open_artifact": "アーティファクト {{name}} を開く",
       "open_as_artifact": "アーティファクトとして開く",
-      "open_folder": "フォルダー {{path}} を開く",
       "open_in_file_explorer": "エクスプローラーで開く",
       "open_in_finder": "Finder で開く",
       "open_with_default_app": "デフォルトアプリで開く",
@@ -5460,14 +5455,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "このファイルをアーティファクトとして保存 (バージョン管理、永続化、コメント可能)",
       "saving": "保存中…",
       "select_any_text_to_add_inline_comments_then_subm": "任意のテキストを選択してインラインコメントを追加し、すべてをチャットに送信します。",
+      "show_full_file": "ファイル全体を表示",
       "show_in_file_manager": "ファイルマネージャーに表示",
       "snapshot_version": "スナップショットバージョン",
       "snapshotting": "スナップショット作成中…",
-      "switch_to_split_view": "分割ビューに切り替え",
-      "switch_to_unified_view": "統合ビューに切り替え",
+      "split_view": "分割ビュー",
       "tip": "ヒント：",
-      "toggle_autocomplete": "オートコンプリートを切り替え",
       "toggle_diff_view": "差分ビューを切り替え",
+      "toggle_file_browser": "ファイルブラウザーを切り替え",
       "toggle_line_numbers": "行番号を切り替え",
       "toggle_word_wrap": "ワードラップを切り替え",
       "tracking_description": "{{path}} を追跡中",
@@ -5605,9 +5600,7 @@
       "close_editor": "エディターを閉じる",
       "copied": "コピーしました！",
       "copy": "コピー",
-      "edit_code_block": "コードブロックを編集",
-      "edit_in_monaco_editor": "Monaco エディターで編集",
-      "loading_editor": "エディターを読み込み中…"
+      "edit_code_block": "コードブロックを編集"
     },
     "notifications": {
       "notifMeta": {
@@ -6638,14 +6631,15 @@
       "context": "コンテキスト",
       "diff": "{{name}} - 差分",
       "files": "ファイル",
+      "git": "Git",
       "issues": "イシュー",
+      "links": "リンク",
       "logs": "ログ",
+      "pins": "ピン",
       "side": "サイド",
       "subagents": "サブエージェント",
       "summary": "サマリー",
-      "workflows": "ワークフロー",
-      "git": "Git",
-      "pins": "ピン"
+      "workflows": "ワークフロー"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "すべてのスロットが使用中です",
@@ -7459,32 +7453,24 @@
         "artifacts_search_library": "ライブラリを検索…",
         "artifacts_this_session": "このセッション",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "「動的ワークフローを使用して…」とお願いしてください。このチャットからの実行がここにライブで表示されます。",
-        "back_to_files": "ファイルに戻る",
         "cancel": "キャンセル",
         "cancelled": "キャンセル済み",
-        "changed_files": "変更されたファイル",
         "changes": "変更",
         "clear": "クリア",
         "complete": "完了",
-        "discard_unsaved_changes": "保存していない変更を破棄しますか？",
         "dismiss_done_count": "完了を閉じる({{count}})",
         "error": "エラー",
         "failed_click_to_retry": "失敗 — クリックして再試行",
-        "file_artifact_add": "アーティファクトに追加",
-        "file_artifact_add_aria": "このファイルをアーティファクトライブラリに追加",
-        "file_artifact_add_failed": "追加できません — もう一度試してください",
-        "file_artifact_open": "アーティファクトを開く",
-        "file_artifact_open_aria": "このファイルのアーティファクトを開く",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "ファイルがディスクに見つかりません。移動または削除されている可能性があります。",
-        "files": "ファイル",
         "input": "入力",
         "issues": "イシュー",
         "last_tool": "最後のツール:",
+        "links": "Links",
         "load_output_from_disk": "ディスクから出力を読み込む",
         "loading": "読み込み中…",
+        "loading_workspace": "ワークスペースを読み込み中…",
         "logs": "ログ",
-        "no_files_changed_yet": "まだファイルは変更されていません",
         "no_issues_in_this_session_yet_mention_a_github_o": "このセッションにはまだイシューがありません。GitHub または GitLab のイシューリンクを言及すると、ここに表示されます。",
+        "no_links_yet": "このセッションにはまだリンクがありません。チャットで URL を言及すると、ここに表示されます。",
         "no_matches": "一致するものがありません",
         "no_pull_requests_yet": "このセッションにはまだプルリクエストがありません",
         "no_subagents_running": "実行中のサブエージェントはありません",
@@ -7495,8 +7481,6 @@
         "pending_approval": "承認待ち",
         "reject": "却下",
         "rejected": "却下済み",
-        "remove": "削除",
-        "remove_file_from_list": "リストからファイルを削除",
         "resolved": "解決済み",
         "resolving": "解決中…",
         "resolving_2": "解決中…",
@@ -7504,11 +7488,10 @@
         "resource_type_link": "リンク",
         "resource_type_pr": "PR",
         "resources": "リソース",
-        "retry": "再試行",
         "retry_failed_count": "失敗を再試行({{count}})",
         "running": "実行中",
         "running_tool": "ツール実行中",
-        "search_files": "ファイル名、フォルダー、またはリンクで検索…",
+        "search_files": "ラベルまたは URL で検索…",
         "show_all_count": "すべて表示({{count}})",
         "side": "サイド",
         "starting": "開始中…",
@@ -7518,11 +7501,11 @@
         "trusted": "信頼済み",
         "trusted_base": "信頼済みベース",
         "trusted_command": "信頼済みコマンド",
-        "unable_to_read_file": "ファイルを読み込めません。",
-        "unable_to_read_this_file": "このファイルを読み込めません。",
         "waiting_for_output": "出力待機中…",
         "waiting_to_start_queued_behind_the_concurrency_l": "開始を待機中 — 同時実行制限の後ろのキューに入っています",
-        "workflows": "ワークフロー"
+        "workflows": "ワークフロー",
+        "workspace_empty": "このワークスペースにはまだファイルがありません",
+        "workspace_truncated": "大規模なワークスペース — 最初の10,000ファイルのみ表示しています"
       },
       "assistantMessage": {
         "applied_to_tasks": "タスクに適用済み",
@@ -7595,6 +7578,7 @@
       "folderPanel": {
         "empty_folder": "空のフォルダー",
         "loading": "読み込み中…",
+        "no_changes": "作業ツリーに変更はありません",
         "open_in_file_explorer": "エクスプローラーで開く",
         "open_in_finder": "Finder で開く",
         "parent_folder": "親フォルダー",
@@ -7705,10 +7689,16 @@
         "menu_context_desc": "このセッションのターン中に追加されたコンテキスト",
         "menu_files": "ファイル",
         "menu_files_desc": "ファイルを閲覧・編集",
+        "menu_git": "Git",
+        "menu_git_desc": "ブランチ、変更、最近のコミット",
         "menu_issues": "Issue",
         "menu_issues_desc": "このセッションで言及された Issue",
+        "menu_links": "リンク",
+        "menu_links_desc": "このチャットで参照された URL",
         "menu_logs": "ログ",
         "menu_logs_desc": "ゲートウェイのログストリーム",
+        "menu_pins": "ピン",
+        "menu_pins_desc": "このセッションでピン留めしたメッセージ",
         "menu_side": "サイド",
         "menu_side_desc": "コンテキストを共有する並行チャット",
         "menu_subagents": "サブエージェント",
@@ -7727,11 +7717,7 @@
         "switch_to_split_view": "分割表示に切り替え",
         "switch_to_unified_view": "統合表示に切り替え",
         "this_app_render_is_no_longer_available": "このアプリの表示は利用できなくなりました。もう一度ツールを実行して表示してください。",
-        "turn_diff": "ターンの差分",
-        "menu_git": "Git",
-        "menu_git_desc": "ブランチ、変更、最近のコミット",
-        "menu_pins": "ピン",
-        "menu_pins_desc": "このセッションでピン留めしたメッセージ"
+        "turn_diff": "ターンの差分"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止に失敗したため、セッションをリセットしました",
@@ -7905,6 +7891,23 @@
         "updated_behind": "{{when}}に更新 — 会話に追いついていません",
         "where_it_stands": "現在の状況",
         "you_asked_for": "依頼した内容"
+      },
+      "fileBrowserRail": {
+        "all_files": "すべてのファイル",
+        "changed": "変更あり",
+        "close_search": "検索を閉じる",
+        "filter_placeholder": "ファイルを絞り込む…",
+        "refresh": "更新",
+        "resize": "ファイルブラウザーのサイズを変更",
+        "tree_mode": "ファイル一覧モード"
+      },
+      "filesHome": {
+        "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",
+        "refresh": "更新",
+        "reveal_in_finder": "ファイルマネージャーで表示",
+        "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
+        "title": "ファイル",
+        "tree_error": "ファイルツリーを読み込めませんでした"
       }
     },
     "chatPage": {

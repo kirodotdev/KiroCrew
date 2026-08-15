@@ -12,17 +12,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { lazy } from 'react'
 
-// The editor pages (/papyrus, /md-notebook) eagerly pull Monaco, whose real
-// bundle costs seconds to transform for no benefit here — this test only needs
-// each page module to EVALUATE and expose a default export. Stubbed the same
-// way DiffPanel's own suites stub it.
-vi.mock('@monaco-editor/react', () => ({
-  default: () => null,
-  Editor: () => null,
-  DiffEditor: () => null,
-  useMonaco: () => null,
-  loader: { config: () => {}, init: () => Promise.resolve({}) },
-}))
+// No editor stub is needed for the code surfaces any more. The editor pages
+// (/papyrus, /md-notebook) reach Pierre only through `src/pierre`, whose public
+// wrappers hold the `@pierre/diffs` runtime behind `React.lazy` — importing a
+// page module therefore pulls no highlighter and no shadow-DOM renderer, only a
+// thenable that this test never resolves. (Monaco, which the earlier revision
+// had to stub here because it was pulled eagerly, is no longer a dependency.)
 
 // `/papyrus` reaches ChatPage through CoAuthorPanel, which drags the ENTIRE chat
 // tree (chat rows, markdown, KaTeX, the tool panels) into this file's transform

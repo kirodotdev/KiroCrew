@@ -56,9 +56,22 @@ allow-licenses:
 #   pip:   pkg:pypi/<name>
 #   npm:   pkg:npm/<name>              scoped: pkg:npm/%40scope/name
 # Add a comment with the real license + evidence for every entry.
-allow-dependencies-licenses: []
+allow-dependencies-licenses:
   # Example — package ships MIT but GitHub reports "unknown":
   # - pkg:pypi/example-lib            # MIT — see https://github.com/org/example-lib/blob/main/LICENSE
+  
+  # The @pierre/* packages declare `"license": "apache-2.0"` in their manifests.
+  # SPDX identifiers are case-sensitive, so the gate cannot validate that spelling
+  # and fails on license VALIDITY rather than policy — the canonical `Apache-2.0`
+  # is allowed above and is this project's own license. Evidence: each package
+  # ships the Apache-2.0 text verbatim, in the published tarball and at the URL
+  # below. No version is pinned, so both resolved @pierre/theming lines match.
+  # Remove these once upstream publishes the canonical casing.
+  - pkg:npm/%40pierre/diffs        # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/diffs/LICENSE.md
+  - pkg:npm/%40pierre/theme        # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/theme/LICENSE
+  - pkg:npm/%40pierre/theming      # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/theming/LICENSE.md
+  - pkg:npm/%40pierre/trees        # Apache-2.0 — https://github.com/pierrecomputer/pierre/blob/main/packages/trees/LICENSE.md
+ 
 
 # License gate only — vulnerability scanning is covered separately by the
 # Dependency Audit / Semgrep / CodeQL jobs, so we don't duplicate it here.

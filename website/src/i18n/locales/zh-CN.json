@@ -3659,9 +3659,7 @@
         "no_messages": "编译器没有输出任何信息。",
         "typesetting_hints_other": "{{count}} 条排版提示"
       },
-      "editor": {
-        "loading_editor": "正在加载编辑器……"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "删除 {{file}}",
         "files": "文件",
@@ -4921,7 +4919,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "输入时，预览会实时更新。",
       "editing_svg": "正在编辑 SVG",
-      "loading_editor": "正在加载编辑器…",
       "svg_source_code": "SVG 源代码"
     },
     "contextBar": {
@@ -4946,25 +4943,19 @@
       "close": "关闭"
     },
     "diffBlock": {
-      "collapse": "▲ 折叠",
-      "context_lines": "上下文行",
       "copied": "已复制！",
       "copy_patch": "复制补丁",
-      "diff": "差异",
       "generating_diff": "正在生成差异…",
-      "lines_hidden": "行已隐藏",
       "open": "打开",
       "open_in_side_panel": "在侧边面板中打开 {{path}}",
       "split_view": "分屏视图",
       "switch_to_split_view": "切换到分屏视图",
       "switch_to_unified_view": "切换到统一视图",
-      "unchanged_lines_other": "{{count}} 行未更改",
       "unified_view": "统一视图"
     },
     "diffPanel": {
       "click_to_copy_path": "点击复制路径",
-      "contents_identical": "内容相同",
-      "loading_diff": "正在加载差异…"
+      "contents_identical": "内容相同"
     },
     "discoverySearchBar": {
       "clear_search": "清除搜索",
@@ -5024,14 +5015,19 @@
       "video": "视频：{{name}}"
     },
     "fileChangeChips": {
+      "additions_other": "{{count}} 处新增",
       "artifact": "工件",
       "changed": "已更改",
       "file_other": "{{count}} 个文件",
       "more": "更多",
       "no_changes": "无更改",
+      "open": "打开文件",
+      "open_in_side_panel": "在侧边面板中打开 {{path}}",
+      "removals_other": "{{count}} 处删除",
       "show": "展开",
       "show_less": "收起",
-      "this_document_is_tracked_as_a_session_artifact_n": "此文档被记录为会话工件，而非源文件更改"
+      "this_document_is_tracked_as_a_session_artifact_n": "此文档被记录为会话工件，而非源文件更改",
+      "toggle_diff": "显示或隐藏 {{path}} 的差异"
     },
     "filePickerMenu": {
       "folder": "文件夹",
@@ -5408,7 +5404,6 @@
       "adding": "添加中…",
       "adding_2": "添加中…",
       "already_in_library": "已在库中",
-      "autocomplete": "自动补全",
       "cancel": "取消",
       "cancel_discard_unsaved_edits": "取消 — 丢弃未保存的修改",
       "cannot_read_file": "无法读取文件",
@@ -5417,6 +5412,7 @@
       "click_to_copy_path": "点击复制路径",
       "close_esc": "关闭（Esc）",
       "close_find": "关闭查找",
+      "collapse_unchanged": "折叠未更改内容",
       "copy_content": "复制内容",
       "copy_path": "复制路径",
       "discard_unsaved_changes": "放弃未保存的更改？",
@@ -5436,14 +5432,13 @@
       "in_knowledge_library": "已在知识库中",
       "in_library": "已在库中",
       "line_numbers": "行号",
-      "loading_diff": "正在加载差异…",
       "more_options": "更多选项",
       "next_enter": "下一个（Enter）",
       "next_match": "下一个匹配",
+      "no_changes_in_file": "此文件没有更改",
       "no_results": "无结果",
       "open_artifact": "打开工件 {{name}}",
       "open_as_artifact": "作为工件打开",
-      "open_folder": "打开文件夹 {{path}}",
       "open_in_file_explorer": "在文件资源管理器中打开",
       "open_in_finder": "在 Finder 中打开",
       "open_with_default_app": "用默认应用打开",
@@ -5460,14 +5455,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "将此文件保存为工件（带版本、持久化、可评论）",
       "saving": "保存中…",
       "select_any_text_to_add_inline_comments_then_subm": "选中任意文本添加行内评论，然后一并提交到聊天。",
+      "show_full_file": "显示完整文件",
       "show_in_file_manager": "在文件管理器中显示",
       "snapshot_version": "快照版本",
       "snapshotting": "正在快照…",
-      "switch_to_split_view": "切换到分屏视图",
-      "switch_to_unified_view": "切换到统一视图",
+      "split_view": "分屏视图",
       "tip": "提示：",
-      "toggle_autocomplete": "切换自动补全",
       "toggle_diff_view": "切换差异视图",
+      "toggle_file_browser": "切换文件浏览器",
       "toggle_line_numbers": "切换行号",
       "toggle_word_wrap": "切换自动换行",
       "tracking_description": "正在跟踪 {{path}}",
@@ -5605,9 +5600,7 @@
       "close_editor": "关闭编辑器",
       "copied": "已复制！",
       "copy": "复制",
-      "edit_code_block": "编辑代码块",
-      "edit_in_monaco_editor": "在 Monaco 编辑器中编辑",
-      "loading_editor": "正在加载编辑器…"
+      "edit_code_block": "编辑代码块"
     },
     "notifications": {
       "notifMeta": {
@@ -6638,14 +6631,15 @@
       "context": "上下文",
       "diff": "{{name}} - 差异",
       "files": "文件",
+      "git": "Git",
       "issues": "Issues",
+      "links": "链接",
       "logs": "日志",
+      "pins": "置顶",
       "side": "旁支",
       "subagents": "子代理",
       "summary": "摘要",
-      "workflows": "工作流",
-      "git": "Git",
-      "pins": "置顶"
+      "workflows": "工作流"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "所有槽位都已占用",
@@ -7459,32 +7453,24 @@
         "artifacts_search_library": "搜索你的工件库…",
         "artifacts_this_session": "本次会话",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "让我“用动态工作流来 …” — 此聊天中的运行会实时显示在这里。",
-        "back_to_files": "返回文件",
         "cancel": "取消",
         "cancelled": "已取消",
-        "changed_files": "已更改的文件",
         "changes": "变更",
         "clear": "清除",
         "complete": "已完成",
-        "discard_unsaved_changes": "放弃未保存的更改？",
         "dismiss_done_count": "忽略已完成（{{count}}）",
         "error": "错误",
         "failed_click_to_retry": "失败 — 点击重试",
-        "file_artifact_add": "添加到工件",
-        "file_artifact_add_aria": "将此文件添加到工件库",
-        "file_artifact_add_failed": "无法添加 — 请重试",
-        "file_artifact_open": "打开工件",
-        "file_artifact_open_aria": "打开此文件的工件",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "磁盘上找不到此文件。可能已移动或删除。",
-        "files": "文件",
         "input": "输入",
         "issues": "Issues",
         "last_tool": "最后一个工具：",
+        "links": "Links",
         "load_output_from_disk": "从磁盘加载输出",
         "loading": "正在加载…",
+        "loading_workspace": "正在加载工作区…",
         "logs": "日志",
-        "no_files_changed_yet": "尚无文件更改",
         "no_issues_in_this_session_yet_mention_a_github_o": "这个会话里还没有 issue。提到一个 GitHub 或 GitLab 的 issue 链接，它就会出现在这里。",
+        "no_links_yet": "这个会话里还没有链接。在聊天中提到一个网址，它就会出现在这里。",
         "no_matches": "无匹配项",
         "no_pull_requests_yet": "此会话中还没有拉取请求",
         "no_subagents_running": "没有运行中的子代理",
@@ -7495,8 +7481,6 @@
         "pending_approval": "等待审批",
         "reject": "拒绝",
         "rejected": "已拒绝",
-        "remove": "移除",
-        "remove_file_from_list": "从列表中移除文件",
         "resolved": "已解决",
         "resolving": "解析中…",
         "resolving_2": "解析中…",
@@ -7504,11 +7488,10 @@
         "resource_type_link": "链接",
         "resource_type_pr": "PR",
         "resources": "资源",
-        "retry": "重试",
         "retry_failed_count": "重试失败项（{{count}}）",
         "running": "运行中",
         "running_tool": "工具运行中",
-        "search_files": "按文件名、文件夹或链接搜索…",
+        "search_files": "按标签或 URL 搜索…",
         "show_all_count": "显示全部（{{count}}）",
         "side": "旁支",
         "starting": "正在启动…",
@@ -7518,11 +7501,11 @@
         "trusted": "已信任",
         "trusted_base": "已信任的基础项",
         "trusted_command": "已信任的命令",
-        "unable_to_read_file": "无法读取文件。",
-        "unable_to_read_this_file": "无法读取此文件。",
         "waiting_for_output": "等待输出…",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
-        "workflows": "工作流"
+        "workflows": "工作流",
+        "workspace_empty": "此工作区还没有文件",
+        "workspace_truncated": "工作区较大 — 仅显示前 10,000 个文件"
       },
       "assistantMessage": {
         "applied_to_tasks": "已应用到任务",
@@ -7595,6 +7578,7 @@
       "folderPanel": {
         "empty_folder": "空目录",
         "loading": "正在加载…",
+        "no_changes": "工作区无更改",
         "open_in_file_explorer": "在文件资源管理器中打开",
         "open_in_finder": "在 Finder 中打开",
         "parent_folder": "上级目录",
@@ -7705,10 +7689,16 @@
         "menu_context_desc": "本次会话各轮次中添加的上下文",
         "menu_files": "文件",
         "menu_files_desc": "浏览与编辑文件",
+        "menu_git": "Git",
+        "menu_git_desc": "分支、更改和最近的提交",
         "menu_issues": "Issues",
         "menu_issues_desc": "本会话中提到的 issue",
+        "menu_links": "链接",
+        "menu_links_desc": "此对话引用的网址",
         "menu_logs": "日志",
         "menu_logs_desc": "网关日志流",
+        "menu_pins": "置顶",
+        "menu_pins_desc": "你在这个会话里标记的消息",
         "menu_side": "旁支",
         "menu_side_desc": "并行聊天，共享上下文",
         "menu_subagents": "子代理",
@@ -7727,11 +7717,7 @@
         "switch_to_split_view": "切换到并排视图",
         "switch_to_unified_view": "切换到统一视图",
         "this_app_render_is_no_longer_available": "此应用渲染已不可用。请重新运行工具以查看。",
-        "turn_diff": "本轮差异",
-        "menu_git": "Git",
-        "menu_git_desc": "分支、更改和最近的提交",
-        "menu_pins": "置顶",
-        "menu_pins_desc": "你在这个会话里标记的消息"
+        "turn_diff": "本轮差异"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "停止失败，会话已重置",
@@ -7905,6 +7891,23 @@
         "updated_behind": "{{when}}更新，落后于当前对话",
         "where_it_stands": "当前进展",
         "you_asked_for": "你的要求"
+      },
+      "fileBrowserRail": {
+        "all_files": "全部文件",
+        "changed": "已更改",
+        "close_search": "关闭搜索",
+        "filter_placeholder": "筛选文件…",
+        "refresh": "刷新",
+        "resize": "调整文件浏览器大小",
+        "tree_mode": "文件列表模式"
+      },
+      "filesHome": {
+        "no_project_dir": "此聊天未设置项目目录",
+        "refresh": "刷新",
+        "reveal_in_finder": "在文件管理器中显示",
+        "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
+        "title": "文件",
+        "tree_error": "无法加载文件树"
       }
     },
     "chatPage": {

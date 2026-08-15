@@ -1,16 +1,12 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, FileText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, ArrowLeft, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
+import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageSquare, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
-import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
-import { fileReadUrl } from '../../utils/fileReadUrl'
 import { LogViewer } from '../LogsPage'
 import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
-import type { TouchedFile } from '../../hooks/useTouchedFiles'
-import { getInlineDraft, setInlineDraft, clearInlineDraft } from '../../hooks/usePanelTabs'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -22,8 +18,6 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
 import { PanelSectionHeader } from '../../components/ui'
-import { colorForExt, fileIcon } from '../../utils/fileIcons'
-import { kindForFilename } from '../../lib/artifactImport'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
@@ -45,12 +39,11 @@ const STATUS = {
 // Resource-link type ('cr' | 'issue' | 'other', from extractChatLinks) is
 // encoded on the ResourceRow ICON — a pull-request glyph in accent for code
 // reviews, a filled-dot glyph in ok for provider issues, a link glyph in muted
-// for everything else — rather than a leading text badge. A badge's width
-// varies with its label, which pushed link labels off the left text edge shared
-// with the Changed-files rows above; an icon is fixed-width, so both sections
-// line up. Since the icon is now the only VISUAL type signal, each row also
-// carries the type as sr-only text — translated, because it is the only signal
-// a screen-reader user gets.
+// for everything else — rather than a leading text badge. An icon is
+// fixed-width, so every row's label starts at the same left text edge; a
+// badge's width varies with its label and would ragged them. The icon is the
+// only VISUAL type signal, so each row also carries the type as sr-only text —
+// translated, because it is the only signal a screen-reader user gets.
 const resourceTypeLabel = (type: string): string =>
   type === 'cr' ? i18nT('pages.chat.activityViewer.resource_type_pr')
     : type === 'issue' ? i18nT('pages.chat.activityViewer.resource_type_issue')
@@ -305,296 +298,22 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
   )
 }
 
-/* ── Files-tab inline file preview ──────────────────────────────────────────
- * Opening a file from the Files tab keeps it IN the Files tab (no new document
- * tab in the strip): the list is replaced by the file's content plus a "Back to
- * files" bar. Content is fetched here (same file-read query key as ChatPage's
- * tab opener, so re-opening is cache-instant) and rendered through the shared
- * embedded MarkdownPanel — identical viewer to the document-tab path, just
- * hosted inline. Back returns to the list. */
-
-function FilePreview({ path, slot, onBack, onFileSave, onSubmitComments, onFolderOpen }: {
-  path: string
-  slot: string
-  onBack: () => void
-  onFileSave: (filePath: string, content: string) => Promise<void>
-  onSubmitComments?: (message: string) => void
-  /** Open a directory (a clicked breadcrumb segment) as a folder tab. */
-  onFolderOpen?: (p: string) => void
-}) {
-  const { data, isLoading, refetch } = useQuery({
-    queryKey: ['file-read', path],
-    // Same query key + result shape ({ text, ok }) as ChatPage's document-tab
-    // reader, so the inline view SHARES that cache instead of colliding with it.
-    queryFn: async () => {
-      try {
-        const res = await fetch(fileReadUrl(path))
-        const text = res.ok
-          ? await res.text()
-          : res.status === 404 ? i18nT('pages.chat.activityViewer.file_not_found_on_disk_it_may_have_been_moved_or')
-            : i18nT('pages.chat.activityViewer.unable_to_read_file')
-        return { text, ok: res.ok }
-      } catch {
-        // Network-level failure (fetch rejected) — return a NOT-ok result rather
-        // than throwing, so `data` is always defined and the editor is never
-        // mounted over an empty buffer that a save could write to the file.
-        return { text: i18nT('pages.chat.activityViewer.unable_to_read_file'), ok: false }
-      }
-    },
-    staleTime: 10_000,
-  })
-  // Working copy is backed by the module-level inline-draft store (keyed by
-  // path), NOT component state, so an in-progress edit survives everything that
-  // unmounts this subtree — the close control, an activity-tab switch, a chat-
-  // slot switch, and the automatic force-collapse on window resize — matching
-  // how document-tab content persists above the panel. On (re)open we restore a
-  // preserved draft if present, else seed once from a successful disk read
-  // (never the failure placeholder). One draft per path = one editor per path.
-  const [content, setContentState] = useState<string>(() => getInlineDraft(slot, path) ?? '')
-  // Keep the working copy synced to the freshest SUCCESSFUL disk read UNTIL the
-  // user starts editing (a draft exists for this path). This avoids locking the
-  // editor onto a stale (≤10s) cached read when the file changed on disk since;
-  // once the user has a draft we stop syncing so their edits aren't clobbered.
-  useEffect(() => {
-    if (data?.ok && getInlineDraft(slot, path) === undefined) {
-      setContentState(prev => (prev === data.text ? prev : data.text))
-    }
-  }, [data, path, slot])
-  const setContent = useCallback((c: string) => {
-    setContentState(c)
-    setInlineDraft(slot, path, c)
-  }, [slot, path])
-  // Only mount the editable panel once the working copy is RECONCILED with the
-  // source of truth: either the user has a draft (their edits), or the content
-  // equals the successful disk read. This defers the editor past the brief
-  // window where `content` is still the initial '' (or a not-yet-synced value)
-  // while `data.ok` is already true from cache — mounting then would show an
-  // empty/dirty buffer whose save could truncate the file.
-  const inlineReady = getInlineDraft(slot, path) !== undefined || (!!data?.ok && content === data.text)
-  const name = path.split('/').pop() || path
-  // Keep the shared ['file-read', path] cache coherent after a save (otherwise a
-  // reopen within the 10s stale window seeds pre-save content and a subsequent
-  // edit could clobber the newer file), and drop the now-committed draft. Wraps
-  // — never replaces — the caller's save.
-  const qc = useQueryClient()
-  const handleSave = useCallback(async (p: string, c: string) => {
-    await onFileSave(p, c)
-    qc.setQueryData(['file-read', p], { text: c, ok: true })
-    // Draft reconciliation (clearing) is owned by ChatPage.handleFileSave, which
-    // clears only if the draft still equals what was saved — so edits typed
-    // during a pending save aren't dropped. We don't clear here.
-  }, [onFileSave, qc])
-  // "Back to files" reuses MarkdownPanel's existing close guard (via the
-  // imperative handle) so leaving with unsaved edits shows its normal discard
-  // prompt. guardedClose only calls this after the guard accepts (not dirty, or
-  // the user confirmed discard), so it is safe to drop the draft here — a
-  // confirmed discard should not survive to the next open. (An involuntary
-  // unmount never reaches this path, so the draft is preserved there.)
-  const handleClose = useCallback(() => { clearInlineDraft(slot, path); onBack() }, [slot, path, onBack])
-  const panelRef = useRef<MarkdownPanelHandle>(null)
-  const back = useCallback(() => {
-    if (panelRef.current) { panelRef.current.requestClose(); return }
-    // No editor mounted (e.g. the read failed, so the retry state is showing
-    // instead of MarkdownPanel) — its close guard can't fire. If an unsaved
-    // draft exists, confirm before discarding it ourselves; otherwise just go
-    // back. (The guarded path above already prompts, so this never double-asks.)
-    if (getInlineDraft(slot, path) !== undefined && !window.confirm(i18nT('pages.chat.activityViewer.discard_unsaved_changes'))) return
-    handleClose()
-  }, [slot, path, handleClose])
-
-  return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {/* Back-to-list bar — mirrors the file's tab-chip identity so the Files
-          tab reads as one place that swaps between list and file. */}
-      <div className="flex items-center gap-2 h-[38px] px-2 shrink-0 border-b border-border">
-        <button
-          onClick={back}
-          className="flex items-center gap-1.5 h-7 px-2 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-          title={i18nT('pages.chat.activityViewer.back_to_files')}
-          aria-label={i18nT('pages.chat.activityViewer.back_to_files')}
-        >
-          <ArrowLeft size={14} />
-          <span>{i18nT('pages.chat.activityViewer.files')}</span>
-        </button>
-        <span aria-hidden="true" className="w-px h-4 bg-border shrink-0" />
-        <span className="flex items-center gap-1.5 min-w-0 text-[12px] text-text-strong">
-          <FileText size={13} className="text-muted shrink-0" />
-          <span className="truncate" title={path}>{name}</span>
-        </span>
-      </div>
-      <div className="flex-1 min-h-0 relative">
-        {isLoading || (data?.ok && !inlineReady) ? (
-          <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.chat.activityViewer.loading')}</div>
-        ) : data?.ok ? (
-          <MarkdownPanel
-            ref={panelRef}
-            embedded
-            filePath={path}
-            content={content}
-            onContentChange={setContent}
-            onSave={handleSave}
-            onClose={handleClose}
-            savedBaseline={data?.ok ? data.text : undefined}
-            onSubmitComments={onSubmitComments}
-            onOpenFolder={onFolderOpen}
-          />
-        ) : (
-          // Loading finished but the read did NOT succeed (404, HTTP error, or a
-          // network-level rejection → `data` may be undefined). Never mount an
-          // editable panel here: a save would write empty/placeholder content
-          // over the real (or temporarily-unreadable) file. Offer a retry.
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
-            <span className="text-[13px] text-muted">
-              {data?.text ? data.text.replace(/^_|_$/g, '') : i18nT('pages.chat.activityViewer.unable_to_read_this_file')}
-            </span>
-            <button
-              onClick={() => refetch()}
-              className="h-7 px-3 rounded-md text-[12px] text-text border border-border hover:bg-bg-hover transition-colors bg-transparent cursor-pointer"
-            >
-              {i18nT('pages.chat.activityViewer.retry')}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/* ── Files tab ────────────────────────────────────────────────────────────────
- * Two scannable lists — the files the agent touched this turn ("Changed files")
- * and any links it surfaced ("Resources") — with a search box that filters both
- * by name/path (and link label/URL). Opening a file previews it inline (see
- * FilePreview) rather than spawning a document tab. Extracted from the render so
- * it can own the search state as a real component (hooks can't live in the
- * conditional render IIFE it replaced). */
-function FilesTab({
-  files, sources, issues, navLinks, navResolving, slot,
-  onFileOpen, onArtifactOpen, onFileRemove, onFileSave, onSubmitComments, onFolderOpen, openDocPaths,
-  previewPathValue, setPreviewPath,
+/* ── Links tab ────────────────────────────────────────────────────────────────
+ * One scannable list of the links this session surfaced, with a search box that
+ * filters by label and URL. Files are NOT listed here: the pinned Files tab
+ * browses the project tree and its git working-tree status, which is the
+ * general "what changed" view — this tab is only the URLs the conversation
+ * referenced. */
+function LinksTab({
+  sources, issues, navLinks, navResolving,
 }: {
-  files?: TouchedFile[]
   sources?: PullRequestLink[]
   issues?: PullRequestLink[]
   navLinks?: ExtractedLink[]
   navResolving?: boolean
-  slot: string
-  onFileOpen?: (path: string) => void
-  /** Opens an artifact tab in this same panel — the target for a file row whose
-   *  artifact already exists (so the row opens it instead of saving a second). */
-  onArtifactOpen?: (slug: string) => void
-  onFileRemove?: (path: string) => void
-  onFileSave?: (filePath: string, content: string) => Promise<void>
-  onSubmitComments?: (message: string) => void
-  onFolderOpen?: (p: string) => void
-  openDocPaths?: Set<string>
-  previewPathValue: string | null
-  setPreviewPath: (p: string | null) => void
 }) {
   const [query, setQuery] = useState('')
-  const qc = useQueryClient()
 
-  /* ── Add-to-library, per file row ──────────────────────────────────────────
-   * The Artifacts tab lists artifact RECORDS only, so a plain file can no
-   * longer drift into the library by having the right extension — getting in is
-   * an explicit act, and this is where that act lives, next to the files.
-   *
-   * Derived above the inline-preview early return below so every hook here runs
-   * unconditionally (a hook after that `return` would be a conditional hook). */
-  const changed = useMemo(() => (files || []).filter(f => f.source === 'tool'), [files])
-  // Which rows can even offer it, by extension. IMPORTABLE_EXT_KINDS is the
-  // shared extension→kind map the "Add Artifact" file picker already enforces
-  // (and which `test/test_artifact_import_parity.py` holds identical to the
-  // backend's `_EXT_KIND_MAP`) — so both ways into the library agree on what is
-  // admissible, and every kind it yields has a real renderer.
-  const promotable = useMemo(
-    () => new Map(changed.map(f => [f.path, kindForFilename(f.path)] as const)),
-    [changed],
-  )
-  const anyPromotable = useMemo(() => [...promotable.values()].some(k => k !== null), [promotable])
-  // Already-in-the-library detection. Same query key AND fetcher as the
-  // Artifacts tab's library section, so the two tabs share ONE cache entry and
-  // one request rather than each holding its own copy of the library. Gated on
-  // there being a promotable row at all: a session that only touched code
-  // never pulls the library. (Keyed off the UNFILTERED list so typing in the
-  // search box can't toggle the query on and off.)
-  const { data: libraryData } = useQuery<{ artifacts: Artifact[] }>({
-    queryKey: ['artifacts', 'panel-library'],
-    queryFn: () => api.artifacts({}),
-    enabled: anyPromotable,
-  })
-  // source_path → slug. Only LINKED artifacts carry a source_path: the backend
-  // classifier deliberately stores none for a COPY (a disposable file's
-  // snapshot has no live pointer), so a copied file's row shows as
-  // not-yet-added. Clicking it again is still safe — POST /api/artifacts
-  // de-dups on the source_path it was sent.
-  const artifactBySourcePath = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const a of libraryData?.artifacts || []) if (a.source_path) m.set(a.source_path, a.slug)
-    return m
-  }, [libraryData])
-  const promoteMut = useMutation({
-    mutationFn: async (path: string) => {
-      const kind = promotable.get(path) ?? kindForFilename(path)
-      if (!kind) throw new Error('unsupported file type')
-      // Read through the same endpoint (and cache-shape) the inline preview
-      // uses. The create endpoint does not read from disk — it stores the
-      // content it is given — so the bytes have to come from here.
-      const res = await fetch(fileReadUrl(path))
-      if (!res.ok) throw new Error('cannot read file')
-      // /api/file-read truncates very large files and says so in a header.
-      // Promoting a truncated read would persist the PREFIX as though it were
-      // the whole document -- and because a disposable file is COPIED, the
-      // original is not referenced, so the loss would be silent and permanent.
-      if (res.headers.get('X-Truncated') === 'true') throw new Error('file too large to add')
-      const content = await res.text()
-      // `source_path` is sent unconditionally and the SERVER decides copy vs
-      // link from it (a temp/Downloads/Desktop file is snapshotted, a file in a
-      // project is linked). The frontend deliberately does not classify.
-      // The session key is passed EXPLICITLY so the server can apply the
-      // restricted-session gate. Without it the request carried the shared
-      // `dashboard:ui` placeholder and an incognito session could persist a
-      // promoted file that its own restriction was supposed to refuse.
-      return await api.createArtifact({
-        name: path.split('/').pop() || path,
-        content,
-        kind,
-        source_path: path,
-        origin_session_key: slot || undefined,
-      }, slot ? `dashboard:${slot}` : undefined) as { slug: string }
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['artifacts'] })
-      qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
-      // Keeps the file editor's own per-path artifact state coherent, so its
-      // "already an artifact" controls agree with this list.
-      qc.invalidateQueries({ queryKey: ['artifact-by-source-path'] })
-    },
-  })
-  const promotingPath = promoteMut.isPending ? (promoteMut.variables as string) : null
-  const failedPath = promoteMut.isError ? (promoteMut.variables as string) : null
-
-  // Inline file preview: opening a file from this tab keeps it HERE (no new
-  // document tab) — the list is swapped for the file's content with a "Back to
-  // files" bar. A thin host of the shared MarkdownPanel editor (keyed by path);
-  // falls back to the tab opener only if no save handler was wired.
-  if (previewPathValue && onFileSave) {
-    return (
-      <FilePreview
-        key={previewPathValue}
-        path={previewPathValue}
-        slot={slot}
-        onBack={() => setPreviewPath(null)}
-        onFileSave={onFileSave}
-        onSubmitComments={onSubmitComments}
-        onFolderOpen={onFolderOpen}
-      />
-    )
-  }
-  // One editor per path: if this file is already open as a document tab, focus
-  // that tab instead of spawning a second (inline) editor for it.
-  const openInline = onFileSave
-    ? (p: string) => { if (openDocPaths?.has(p)) onFileOpen?.(p); else setPreviewPath(p) }
-    : onFileOpen
   // Hide links that already have a RICH panel of their own — the Changes tab's
   // `sources` and the Issues tab's `issues`. Keep every other link, including
   // cr-classified hosts (Bitbucket, self-hosted, code reviews) and
@@ -604,22 +323,18 @@ function FilesTab({
   const resourceLinks = dedupResourceLinks((navLinks || []).filter(l => !richUrls.has(resourceKey(l.url))))
 
   const q = query.trim().toLowerCase()
-  const filteredChanged = q
-    ? changed.filter(f => f.path.toLowerCase().includes(q))
-    : changed
   const filteredLinks = q
     ? resourceLinks.filter(l => (l.label || '').toLowerCase().includes(q) || l.url.toLowerCase().includes(q))
     : resourceLinks
 
-  const isEmpty = changed.length === 0 && resourceLinks.length === 0
-  const noMatches = !isEmpty && filteredChanged.length === 0 && filteredLinks.length === 0
+  const isEmpty = resourceLinks.length === 0
+  const noMatches = !isEmpty && filteredLinks.length === 0
   // Only offer the search box once the list is long enough that scanning it by
   // eye stops being the faster option — a short list needs no filter. The
   // `query` clause matters: the box must stay mounted while a query is active,
   // or a filter that shrinks the list below the threshold would unmount its own
   // input and keep filtering invisibly, with no way to clear it.
-  const showSearch = changed.length + resourceLinks.length > 5 || query !== ''
-
+  const showSearch = resourceLinks.length > 5 || query !== ''
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {showSearch && (
@@ -649,55 +364,25 @@ function FilesTab({
       )}
       <div className="flex-1 overflow-y-auto py-1.5">
         {isEmpty ? (
-          <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_files_changed_yet')}</div>
+          <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_links_yet')}</div>
         ) : noMatches ? (
           <div className="flex-1 flex items-center justify-center text-muted text-[13px] py-8">{i18nT('pages.chat.activityViewer.no_matches')}</div>
         ) : (
-          <>
-            {filteredChanged.length > 0 && (
-              <div className="px-3 mb-2">
-                <PanelSectionHeader
-                  label={i18nT('pages.chat.activityViewer.changed_files')}
-                  count={filteredChanged.length}
-                  className="mt-1 mb-0.5"
-                />
-                <div className="flex flex-col">
-                  {filteredChanged.map(f => (
-                    <FileRow
-                      key={f.path}
-                      f={f}
-                      onFileOpen={openInline}
-                      onFileRemove={onFileRemove}
-                      artifactSlug={artifactBySourcePath.get(f.path)}
-                      promotable={promotable.get(f.path) != null}
-                      onPromote={promoteMut.mutate}
-                      onArtifactOpen={onArtifactOpen}
-                      promoting={promotingPath === f.path}
-                      promoteBusy={promoteMut.isPending}
-                      promoteFailed={failedPath === f.path}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-            {filteredLinks.length > 0 && (
-              <div className="px-3 mb-2">
-                <PanelSectionHeader
-                  label={i18nT('pages.chat.activityViewer.resources')}
-                  count={filteredLinks.length}
-                  className="mt-1 mb-0.5"
-                  trailing={navResolving
-                    ? <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>
-                    : undefined}
-                />
-                <div className="flex flex-col">
-                  {filteredLinks.map((link, i) => (
-                    <ResourceRow key={i} link={link} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
+          <div className="px-3 mb-2">
+            <PanelSectionHeader
+              label={i18nT('pages.chat.activityViewer.resources')}
+              count={filteredLinks.length}
+              className="mt-1 mb-0.5"
+              trailing={navResolving
+                ? <span className="text-[10px] text-accent animate-pulse">{i18nT('pages.chat.activityViewer.resolving_2')}</span>
+                : undefined}
+            />
+            <div className="flex flex-col">
+              {filteredLinks.map((link, i) => (
+                <ResourceRow key={i} link={link} />
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -716,146 +401,12 @@ export function countDiffStats(diff: string): { added: number; removed: number }
   return { added, removed }
 }
 
-/* ── Changed-files list row ──────────────────────────────────────────────────
- * One touched file per full-width row: type-colored icon + filename (with the
- * parent directory as a dimmed subtitle for disambiguation) on the left, a
- * +N/-N diffstat on the right, and hover-revealed add-to-library and remove
- * controls. Reads as a scannable list instead of a wrapping pile of cramped
- * chips. */
-function FileRow({ f, onFileOpen, onFileRemove, artifactSlug, promotable, onPromote, onArtifactOpen, promoting, promoteBusy, promoteFailed }: {
-  f: TouchedFile
-  onFileOpen?: (p: string) => void
-  onFileRemove?: (p: string) => void
-  /** Slug of the artifact already backing this file, if there is one. */
-  artifactSlug?: string
-  /** Whether the artifact store can take this file (extension check). */
-  promotable?: boolean
-  onPromote?: (p: string) => void
-  onArtifactOpen?: (slug: string) => void
-  promoting?: boolean
-  /** True while ANY promotion is in flight. Dedup is resolved server-side on
-   *  source_path, so two concurrent POSTs can both pass the pre-create lookup
-   *  and mint duplicate records -- the lock has to be global, not per-row. */
-  promoteBusy?: boolean
-  promoteFailed?: boolean
-}) {
-  const name = f.path.split('/').pop() || f.path
-  const dir = f.path.slice(0, Math.max(0, f.path.length - name.length)).replace(/\/+$/, '')
-  const Icon = fileIcon(f.path)
-  const colorCls = colorForExt(f.path)
-  const { data } = useQuery({
-    queryKey: ['file-diff', f.path, f.lastWrite],
-    queryFn: () => api.fileDiff(f.path),
-    placeholderData: (prev) => prev,
-  })
-  const stats = data?.diff ? countDiffStats(data.diff) : null
-  // Artifact control, three mutually exclusive states:
-  //   • already in the library → an always-visible accent glyph that OPENS it
-  //     (never a second save — the row is the entry point for both)
-  //   • admissible but not there yet → a muted glyph revealed on row hover OR
-  //     keyboard focus, which adds it
-  //   • anything else → no control, because the store would not take the file
-  // `Component` is the library's own glyph (it identifies a row in the
-  // Artifacts tab). Safe on the right here because the left glyph is always a
-  // file icon from `fileIcon()` — File/FileCode/FileJson/FileText/Image/
-  // Paintbrush/Settings/Terminal — so the two can never be the same shape.
-  const promoted = !!artifactSlug
-  const artifactLabel = promoted
-    ? i18nT('pages.chat.activityViewer.file_artifact_open')
-    : promoteFailed
-      ? i18nT('pages.chat.activityViewer.file_artifact_add_failed')
-      : i18nT('pages.chat.activityViewer.file_artifact_add')
-  const artifactAria = promoted
-    ? i18nT('pages.chat.activityViewer.file_artifact_open_aria', { name })
-    : i18nT('pages.chat.activityViewer.file_artifact_add_aria', { name })
-  const artifactCls = 'shrink-0 p-1 rounded transition-all bg-transparent border-none cursor-pointer disabled:cursor-default '
-    + (promoted
-      ? 'text-accent'
-      : promoteFailed
-        ? 'text-danger'
-        : 'text-muted/50 hover:text-accent opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100')
-  const artifactGlyph = promoting
-    ? <LoaderIcon size={13} className="animate-spin" />
-    : <Component size={13} />
-  return (
-    <div
-      className="group flex items-center gap-2 px-2 py-1 rounded-md cursor-pointer hover:bg-bg-hover transition-colors"
-      onClick={() => onFileOpen?.(f.path)}
-      title={f.path}
-      role="button"
-      tabIndex={0}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onFileOpen?.(f.path) } }}
-    >
-      <Icon size={14} className={`shrink-0 ${colorCls}`} />
-      <span className="min-w-0 flex-1 flex flex-col leading-tight">
-        <span className="text-[12.5px] text-text truncate">{name}</span>
-        {dir && <span className="text-[10.5px] text-muted/80 truncate">{dir}</span>}
-      </span>
-      {stats && (stats.added > 0 || stats.removed > 0) && (
-        <span className="flex items-center gap-1.5 text-[11px] font-mono shrink-0 tabular-nums">
-          {stats.added > 0 && <span className="text-ok">+{stats.added}</span>}
-          {stats.removed > 0 && <span className="text-danger">-{stats.removed}</span>}
-        </span>
-      )}
-      {/* Both inner controls stop keydown as well as click: the row itself
-          handles Enter/Space to open the file, so without this, activating a
-          control from the keyboard would ALSO open the file underneath it. */}
-      {promoted && !onArtifactOpen ? (
-        // No panel host wired (this tab rendered outside a chat) — a plain link
-        // to the detail page keeps the row from being a dead click without
-        // needing a router hook here.
-        <a
-          href={`/artifacts/${encodeURIComponent(artifactSlug)}`}
-          data-testid={`file-artifact-${f.path}`}
-          className={`${artifactCls} no-underline inline-flex`}
-          title={artifactLabel}
-          aria-label={artifactAria}
-          onClick={e => e.stopPropagation()}
-          onKeyDown={e => e.stopPropagation()}
-        >
-          {artifactGlyph}
-        </a>
-      ) : (promoted || promotable) ? (
-        <button
-          type="button"
-          data-testid={`file-artifact-${f.path}`}
-          disabled={promoting || promoteBusy}
-          className={artifactCls}
-          title={artifactLabel}
-          aria-label={artifactAria}
-          onClick={e => {
-            e.stopPropagation()
-            if (promoted) onArtifactOpen?.(artifactSlug)
-            else onPromote?.(f.path)
-          }}
-          onKeyDown={e => e.stopPropagation()}
-        >
-          {artifactGlyph}
-        </button>
-      ) : null}
-      {onFileRemove && (
-        // Hover-revealed, but ALSO revealed on keyboard focus — otherwise a
-        // keyboard user tabs onto an invisible control.
-        <button
-          className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 text-muted/50 hover:text-danger transition-all bg-transparent border-none cursor-pointer"
-          onClick={e => { e.stopPropagation(); onFileRemove(f.path) }}
-          onKeyDown={e => e.stopPropagation()}
-          title={i18nT('pages.chat.activityViewer.remove')}
-          aria-label={i18nT('pages.chat.activityViewer.remove_file_from_list')}
-        >
-          <X size={13} />
-        </button>
-      )}
-    </div>
-  )
-}
-
 /* ── Resource-link list row ──────────────────────────────────────────────────
- * Shares FileRow's anatomy so the two sections read as one list: a fixed-width
- * type icon (pull-request glyph in accent for code reviews, a filled dot in ok
- * for provider issues, link glyph in muted otherwise), the link label, the host
- * as a dimmed subtitle, and a trailing external-link arrow in the same right
- * slot the file rows use for +N/-N. */
+ * One row of the Links tab, left to right: a fixed-width type icon (pull-request
+ * glyph in accent for code reviews, a filled dot in ok for provider issues, link
+ * glyph in muted otherwise), the link label, the host as a dimmed subtitle, and
+ * a trailing external-link arrow in the row's right slot. The whole row is the
+ * anchor, so any part of it opens the link in a new tab. */
 function ResourceRow({ link }: { link: ExtractedLink }) {
   const { Icon, colorCls } = link.type === 'cr'
     ? { Icon: GitPullRequest, colorCls: 'text-accent' }
@@ -876,8 +427,8 @@ function ResourceRow({ link }: { link: ExtractedLink }) {
       <Icon size={14} className={`shrink-0 ${colorCls}`} aria-hidden="true" />
       {/* The icon carries the type VISUALLY; this keeps a text alternative so
        *  the type is not conveyed by shape/colour alone (it would otherwise be
-       *  invisible to a screen reader). sr-only costs no layout, so the left
-       *  text edge stays aligned with the Changed-files rows. */}
+       *  invisible to a screen reader). sr-only costs no layout, so it does not
+       *  shift the label off the row's left text edge. */}
       <span className="sr-only">{typeLabel}</span>
       <span className="min-w-0 flex-1 flex flex-col leading-tight">
         <span className="text-[12.5px] text-text truncate">{link.label}</span>
@@ -949,7 +500,7 @@ const toRow = (a: Artifact): SessionArtifactRow => ({
 
 function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifactOpen?: (slug: string) => void }) {
   const qc = useQueryClient()
-  // Artifact rows have no filesystem path, so the Files tab's `onFileOpen` can't
+  // Artifact rows have no filesystem path, so the file-open path can't
   // serve them; `onArtifactOpen` is their twin and opens an artifact tab in this
   // same panel. It is optional because this tab also renders outside a chat (no
   // panel to open into), where the standalone detail page stays the target.
@@ -1177,18 +728,14 @@ function ArtifactListRow({ row, busy, onOpen, onSave }: {
   )
 }
 
-export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, files, onFileOpen, onFolderOpen, onArtifactOpen, onFileRemove, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, onFileSave, onSubmitComments, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, openDocPaths, previewPath, onPreviewPathChange, projectDir }: {
+export default function ActivityViewer({ subagents, toolLog, open, onToggle, slot, onFileOpen, onArtifactOpen, navLinks, navResolving, view, sources, selectedSourceUrl, onSelectSource, onReconcileSource, issues, selectedIssueUrl, onSelectIssue, onReconcileIssue, onAddToChat, pins, pinsLoading, onJumpToPin, onUnpin, slotTitle, chatMode, projectDir }: {
   subagents: Record<string, SubagentActivity>; toolLog: ToolActivity[]; open: boolean; onToggle: () => void; slot: string
-  files?: TouchedFile[]; onFileOpen?: (path: string) => void; onFolderOpen?: (p: string) => void; onArtifactOpen?: (slug: string) => void; onFileRemove?: (path: string) => void; onFilesClear?: (source: 'history' | 'tool') => void
+  onFileOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void
   projectDir?: string
   navLinks?: ExtractedLink[]; navResolving?: boolean
   sources?: PullRequestLink[]; selectedSourceUrl?: string; onSelectSource?: (url: string) => void; onReconcileSource?: (url: string) => void; onAddToChat?: (text: string) => void
   /** Issue links mentioned in this session, plus the Issues tab's own selection. */
   issues?: PullRequestLink[]; selectedIssueUrl?: string; onSelectIssue?: (url: string) => void; onReconcileIssue?: (url: string) => void
-  /** Save handler for the Files-tab inline file preview (opening a file keeps
-   *  it in the Files tab instead of spawning a document tab). */
-  onFileSave?: (filePath: string, content: string) => Promise<void>
-  onSubmitComments?: (message: string) => void
   /** Pinned messages for this session (Pins tab). Passed down rather than
    *  queried here so the jump stays with ChatPage, which owns the transcript
    *  and can page older history in when the target is out of the loaded window.
@@ -1199,41 +746,14 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   onUnpin?: (id: string) => void
   slotTitle?: string
   chatMode?: string
-  /** Absolute paths already open as `file:` document tabs. Enforces one editor
-   *  per path: opening such a path from the Files list routes to its existing
-   *  document tab instead of spawning a second (inline) editor for it. */
-  openDocPaths?: Set<string>
-  /** Files-tab inline preview path — lifted to ChatPage (survives panel
-   *  collapse and lets chat-link opens route to this editor). `onPreviewPathChange`
-   *  is the setter. */
-  previewPath?: string | null
-  onPreviewPathChange?: (path: string | null) => void
   /** When set, render ONLY this view and hide the internal SegmentedControl.
    *  Used by SidePanel, which owns the top-level tab strip. */
-  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'files' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary' | 'pins'
+  view?: 'changes' | 'issues' | 'subagents' | 'logs' | 'context' | 'links' | 'artifacts' | 'side' | 'workflows' | 'git' | 'summary' | 'pins'
 }) {
   const dispatch = useAppDispatch()
   const [, setSelected] = useState(0)
-  // Files-tab inline preview path. Controlled when ChatPage lifts it (via
-  // `previewPath`/`onPreviewPathChange`) — that keeps it alive across panel
-  // collapse and lets a chat-link open of the same file route back to THIS
-  // editor instead of a competing document tab (one editor per path). Falls
-  // back to internal state when unmanaged. `null` = show the file list.
-  const [localPreview, setLocalPreview] = useState<string | null>(null)
-  const controlledPreview = onPreviewPathChange !== undefined
-  const previewPathValue = controlledPreview ? (previewPath ?? null) : localPreview
-  const setPreviewPath = useCallback((p: string | null) => {
-    if (controlledPreview) onPreviewPathChange?.(p); else setLocalPreview(p)
-  }, [controlledPreview, onPreviewPathChange])
-  // The panel-level Escape-to-collapse handler (below) must defer to the inline
-  // editor when a file is open: Escape then returns to the list via
-  // MarkdownPanel's own guarded close (which prompts on unsaved edits) instead
-  // of collapsing the whole panel out from under the editor. A ref avoids
-  // re-registering the listener on every open/close.
-  const previewOpenRef = useRef(false)
-  previewOpenRef.current = previewPathValue != null
   const reduxTab = useAppSelector(s => s.chat.activityTab)
-  const [tab, setTab] = useState<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'files' : reduxTab)
+  const [tab, setTab] = useState<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'>(reduxTab === ('nav' as string) ? 'changes' : reduxTab)
   const hasSources = (sources?.length || 0) > 0
   const hasIssues = (issues?.length || 0) > 0
   const explicitTab = useRef(false)
@@ -1313,16 +833,12 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   // Subagent events are subscribed eagerly at WS connect time — no need to toggle here.
 
-  useEffect(() => { setTab(reduxTab === ('nav' as string) ? 'files' : reduxTab); explicitTab.current = true }, [reduxTab])
+  useEffect(() => { setTab(reduxTab === ('nav' as string) ? 'changes' : reduxTab); explicitTab.current = true }, [reduxTab])
 
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      // When an inline file is open, let MarkdownPanel's own Escape/close guard
-      // handle it (return to the list, prompting on unsaved edits) rather than
-      // collapsing the panel and unmounting the editor mid-edit.
-      if (previewOpenRef.current) return
       e.preventDefault(); onToggle()
     }
     const el = containerRef.current
@@ -1345,19 +861,20 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   // When a `view` prop is supplied, SidePanel owns the tab strip — render only
   // that view and skip the internal SegmentedControl.
   const requestedTab = view ?? tab
-  // In the internal SegmentedControl (`!view`) the Changes segment only exists
-  // when there are sources, so a stale `changes` selection with none left must
-  // fall back to Files. But under `view` mode Changes is a PINNED tab that is
-  // ALWAYS present — falling back there would render the touched-files list
-  // under a "Changes" header (confusing, and wrong when files were touched with
-  // no PR). Keep it on `changes` and let it render its own PR empty state,
-  // mirroring how the (unpinned) Issues view already owns its empty state.
-  const effectiveTab = requestedTab === 'changes' && !hasSources && !view ? 'files' : requestedTab
+  // The internal SegmentedControl lists a Changes segment only when there are
+  // sources, so a `changes` selection with none left falls back to Links — the
+  // segment that is always in the strip. The `!view` guard confines that to the
+  // internal strip: under `view` mode SidePanel owns the strip and Changes is a
+  // PINNED tab that is always present, so it stays on `changes` and renders its
+  // own PR empty state, mirroring how the (unpinned) Issues view owns its empty
+  // state. Every call site in the app passes `view`, so the internal strip — and
+  // this fallback with it — is reachable only without one.
+  const effectiveTab = requestedTab === 'changes' && !hasSources && !view ? 'links' : requestedTab
 
   const TABS: { key: typeof tab; label: string; icon: ReactNode; count?: number }[] = [
     ...(hasSources ? [{ key: 'changes' as const, label: i18nT('pages.chat.activityViewer.changes'), icon: <GitPullRequest size={13} />, count: sources!.length }] : []),
     ...(hasIssues ? [{ key: 'issues' as const, label: i18nT('pages.chat.activityViewer.issues'), icon: <CircleDot size={13} />, count: issues!.length }] : []),
-    { key: 'files', label: i18nT('pages.chat.activityViewer.files'), icon: <FileText size={13} />, count: files?.length || 0 },
+    { key: 'links', label: i18nT('pages.chat.activityViewer.links'), icon: <LinkIcon size={13} />, count: navLinks?.length || 0 },
     { key: 'artifacts', label: i18nT('pages.chat.activityViewer.artifacts'), icon: <Component size={13} /> },
     { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
     { key: 'workflows', label: i18nT('pages.chat.activityViewer.workflows'), icon: <Workflow size={13} />, count: wfRunningCount },
@@ -1535,24 +1052,13 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         </div>
       )}
 
-      {/* Files tab */}
-      {effectiveTab === 'files' && (
-        <FilesTab
-          files={files}
+      {/* Links tab */}
+      {effectiveTab === 'links' && (
+        <LinksTab
           sources={sources}
           issues={issues}
           navLinks={navLinks}
           navResolving={navResolving}
-          slot={slot}
-          onFileOpen={onFileOpen}
-          onArtifactOpen={onArtifactOpen}
-          onFileRemove={onFileRemove}
-          onFileSave={onFileSave}
-          onSubmitComments={onSubmitComments}
-          onFolderOpen={onFolderOpen}
-          openDocPaths={openDocPaths}
-          previewPathValue={previewPathValue}
-          setPreviewPath={setPreviewPath}
         />
       )}
 

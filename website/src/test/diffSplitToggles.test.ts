@@ -10,10 +10,11 @@
  * This is a class-string inversion, so neither tsc nor a render assertion on
  * the toggle's behaviour would catch a regression. Assert on the source.
  *
- * Two panels own a Monaco diff with its own split toggle — SidePanel (the Turn
- * Diff tab) and MarkdownPanel (the file viewer). Both are covered here: the
- * first fix landed in SidePanel only, and MarkdownPanel kept the inverted gate
- * for another day because nothing pinned it.
+ * SidePanel (the Turn Diff tab) owns a Pierre diff with its own split BUTTON, so
+ * the class-string gate below is the only thing that can catch an inversion
+ * there. MarkdownPanel's equivalent moved into the ⋯ menu as a checkbox row —
+ * its state is `aria-checked`, which a render assertion can read directly, so
+ * that half lives in MarkdownPanelCoverage.test.tsx instead.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
@@ -49,30 +50,13 @@ describe('SidePanel diff view controls', () => {
 describe('MarkdownPanel diff view controls', () => {
   const src = readFileSync(MARKDOWN_PANEL, 'utf8')
 
-  it('lights the split button up in split mode, not unified mode', () => {
-    const line = buttonLine(src, 'setDiffSplit', 'MarkdownPanel.tsx')
-    // barIconBtn(on) applies the active class when `on` is true.
-    expect(line).toContain('barIconBtn(diffSplit)')
-    expect(line).not.toContain('barIconBtn(!diffSplit)')
-  })
-
-  it('reports the same state to assistive tech as it paints', () => {
-    const line = buttonLine(src, 'setDiffSplit', 'MarkdownPanel.tsx')
-    expect(line).toContain('aria-pressed={diffSplit}')
-    expect(line).not.toContain('aria-pressed={!diffSplit}')
-  })
-
-  it('keeps renderSideBySide authoritative below Monaco 900px breakpoint', () => {
-    // Monaco's useInlineViewWhenSpaceIsLimited defaults to true and silently
-    // forces the inline view under renderSideBySideInlineBreakpoint (900px).
-    // This panel is always narrower than that, so without the opt-out the
-    // split toggle has no visible effect.
-    //
-    // Scope this to the options object, not the whole file: the prop's JSDoc
-    // names the same option, so a file-wide search would still pass after the
-    // option was deleted from the editor config.
-    const line = src.split('\n').find(l => l.includes('renderSideBySide: sideBySide'))
-    if (!line) throw new Error('no options line passing renderSideBySide found in MarkdownPanel.tsx')
-    expect(line).toContain('useInlineViewWhenSpaceIsLimited: false')
+  it('no longer carries a header split button to invert', () => {
+    // The control moved into the ⋯ menu as a `menuitemcheckbox` row, so its
+    // active state is `aria-checked` rather than a class string — asserted
+    // behaviourally in MarkdownPanelCoverage.test.tsx ("offers split/unified as
+    // a menu row only once a diff is on screen"), which beats a source grep.
+    // This asserts only that the button did not come back unnoticed.
+    expect(src).not.toContain('barIconBtn(diffSplit)')
+    expect(src).toContain('onToggleDiffSplit')
   })
 })

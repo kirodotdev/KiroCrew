@@ -611,7 +611,7 @@ interface ChatState {
    *  `workflow_run_event` WS broadcasts; consumed by WorkflowProgressBar. */
   workflowRuns: Record<string, WorkflowRunProgress>
   activityOpen: boolean
-  activityTab: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'
+  activityTab: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'
   /** Monotonic counter bumped ONLY by `openActivityToTab` — i.e. only when
    *  something deliberately asks for a view (a slash command, a sub-agent /
    *  workflow card, a keyboard shortcut). The side panel's tab strip owns which
@@ -642,7 +642,7 @@ interface ChatState {
    *  tool_call_ids are globally unique (ACP-issued), so a flat map is safe
    *  across slots. */
   mcpApps: Record<string, McpAppRenderPayload>
-  slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'; activityOpen?: boolean }>
+  slotActivity: Record<string, { toolLog: ToolActivity[]; subagents: Record<string, SubagentActivity>; activityTab?: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'; activityOpen?: boolean }>
   slotSide: Record<string, SideState>
   slotSideClosed: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
@@ -726,7 +726,7 @@ const initialState: ChatState = {
   toolLog: [],
   workflowRuns: {},
   activityOpen: false,
-  activityTab: 'files' as const,
+  activityTab: 'changes' as const,
   activityTabRequest: 0,
   revealRequest: null,
   revealNonce: 0,
@@ -1780,7 +1780,7 @@ const chatSlice = createSlice({
   initialState,
   reducers: {
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
-    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
+    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
     setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
       // Always create a fresh value so repeating the same refusal restarts the
@@ -2258,7 +2258,7 @@ const chatSlice = createSlice({
     setVoiceAudio(state, action: PayloadAction<string | null>) { state.voiceAudio = action.payload },
     toggleActivity(state) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null; persistActivityOpen(state.activeSlot, state.activityOpen) },
     openActivityPanel(state) { state.activityOpen = true; persistActivityOpen(state.activeSlot, true) },
-    openActivityToTab(state, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'files' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.activityTabRequest += 1; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
+    openActivityToTab(state, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.activityTabRequest += 1; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
     /** Tool details expand inline in the chat. This action signals the matching
      *  ToolCallLine pill to auto-expand and scroll into view. */
     openActivityToTool(state, action: PayloadAction<string>) { state.focusToolCallId = action.payload },
@@ -3388,9 +3388,12 @@ const chatSlice = createSlice({
         const cached = state.slotActivity[action.meta.arg]
         state.toolLog = cached?.toolLog ?? []
         state.subagents = cached?.subagents ?? {}
-        // Inline expansion replaces the old 'tools' tab; cached pre-migration
-        // values fall back to 'files'.
-        state.activityTab = (cached?.activityTab && cached.activityTab !== ('tools' as never) && cached.activityTab !== ('nav' as never)) ? cached.activityTab : 'files'
+        // Inline expansion replaced the old 'tools' tab, and 'files' is no
+        // longer one of this viewer's tabs (the file browser is its own pinned
+        // panel now, and this viewer hosts 'links' instead). Any of those
+        // legacy cached values fall back to 'changes'.
+        const legacyTab = (t: unknown) => t === 'tools' || t === 'nav' || t === 'files'
+        state.activityTab = (cached?.activityTab && !legacyTab(cached.activityTab)) ? cached.activityTab : 'changes'
         // Panel open/closed is per-chat; a chat we've never opened defaults to closed.
         state.activityOpen = cached?.activityOpen ?? false
         // Set activeSlot immediately so WS events for the new slot are accepted.
@@ -3629,7 +3632,7 @@ const chatSlice = createSlice({
         state.messages = []
         state.toolLog = []
         state.subagents = {}
-        state.activityTab = 'files'
+        state.activityTab = 'changes'
         // A brand-new chat starts with the side panel CLOSED, like every other
         // slot-entry path (switchSlot / resumeFromHistory read `?? false` for a
         // slot they have no cached bucket for). Without this the panel state of
@@ -3671,8 +3674,9 @@ const chatSlice = createSlice({
           const cached = state.slotActivity[action.payload.key]
           state.toolLog = cached?.toolLog ?? []
           state.subagents = cached?.subagents ?? {}
-          // Inline expansion replaces the old 'tools' tab; cached pre-migration values fall back to 'files'.
-          state.activityTab = (cached?.activityTab && cached.activityTab !== ('tools' as never) && cached.activityTab !== ('nav' as never)) ? cached.activityTab : 'files'
+          // Legacy cached 'tools'/'nav'/'files' values fall back to 'changes'
+          // (see switchSlot for why 'files' is no longer one of these tabs).
+          state.activityTab = (cached?.activityTab && !['tools', 'nav', 'files'].includes(cached.activityTab as string)) ? cached.activityTab : 'changes'
           state.activityOpen = cached?.activityOpen ?? false
           state.activeSlot = action.payload.key
           state.messages = mergePreservedPastes(state.messages, action.payload.messages)

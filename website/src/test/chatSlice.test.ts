@@ -1393,7 +1393,7 @@ describe('activity viewer reducers', () => {
     expect(reducer(requested, openActivityToTab('subagents')).activityTabRequest).toBe(2)
 
     const switched = reducer(requested, switchSlot.pending('req-1', 'slot-2'))
-    expect(switched.activityTab).toBe('files')
+    expect(switched.activityTab).toBe('changes')
     expect(switched.activityTabRequest).toBe(1)
     // Opening the panel without naming a view is not a request either.
     expect(reducer(switched, openActivityPanel()).activityTabRequest).toBe(1)

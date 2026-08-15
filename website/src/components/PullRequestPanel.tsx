@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { withUnifiedPatchHeaders } from './unifiedPatchHeaders'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -31,12 +32,8 @@ import {
   MAX_PULL_REQUEST_SOURCES,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
-import { parseUnifiedDiff } from '../utils/parseUnifiedDiff'
 import CopyBranchButton from './CopyBranchButton'
-import hljs from '../utils/hljs'
-import DOMPurify from 'dompurify'
-import { DIFF_BG, DIFF_NUM, DIFF_EDGE } from '../utils/diffUtils'
-import UnchangedSeparator from './UnchangedSeparator'
+import { PierrePatch } from '../pierre'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import { timeAgo } from '../utils/timeAgo'
@@ -374,14 +371,9 @@ function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   )
 }
 
-function diffLanguage(path: string): string | null {
-  const ext = path.split('.').pop()?.toLowerCase() || ''
-  return ext && hljs.getLanguage(ext) ? ext : null
-}
-
 /** Defer heavy subtree mounting until just after the drawer's slide-in
  * animation (120ms), so opening the panel animates with lightweight file
- * headers instead of stuttering on thousands of highlighted diff rows. */
+ * headers instead of the diff surface's first paint. */
 function useDeferredMount(delayMs = 140): boolean {
   const [ready, setReady] = useState(false)
   useEffect(() => {
@@ -393,43 +385,21 @@ function useDeferredMount(delayMs = 140): boolean {
 
 function DiffView({ patch, path }: { patch: string; path: string }) {
   const ready = useDeferredMount()
-  const rows = useMemo(() => parseUnifiedDiff(patch), [patch])
-  const language = useMemo(() => diffLanguage(path), [path])
-  // Per-line highlighting keyed by file extension. Lines are highlighted
-  // independently (multi-line constructs may reset), which matches the
-  // fidelity GitHub's own diff view accepts. hljs escapes the input, so
-  // its HTML output is safe to inject.
-  const highlighted = useMemo(() => {
-    if (!language || !ready) return null
-    return rows.map(row =>
-      row.kind === 'hunk-gap' ? '' : DOMPurify.sanitize(hljs.highlight(row.text, { language, ignoreIllegals: true }).value),
-    )
-  }, [rows, language, ready])
+  // The provider hands back a per-file patch body: hunks only, with no
+  // `diff --git` / `---` / `+++` headers. Pierre identifies a file from those
+  // headers, so synthesize them around the body.
+  const filePatch = useMemo(
+    () => withUnifiedPatchHeaders(path, patch),
+    [patch, path],
+  )
+  // ChangeRow already draws the file header (path, status, +/- counts), so the
+  // shared default (header off) is what we want; wrap because the drawer column
+  // is narrow.
+  const options = useMemo(() => ({ overflow: 'wrap' as const }), [])
   if (!ready) return <div className="px-3 py-3 text-[11px] text-muted">{i18nT('components.pullRequestPanel.loading_diff')}</div>
   return (
-    <div className="text-[11px] leading-5 font-mono">
-      {rows.map((row, index) => {
-        if (row.kind === 'hunk-gap') {
-          // Leading gap (diff starts mid-file): the gutter numbers already
-          // carry the position — render nothing.
-          if (index === 0) return null
-          if (row.hiddenCount <= 0) return <div key={index} className="border-t border-border/60" />
-          return <UnchangedSeparator key={index} count={row.hiddenCount} />
-        }
-        const tone = row.kind === 'add' ? DIFF_BG.add : row.kind === 'del' ? DIFF_BG.del : ''
-        const edge = row.kind === 'add' || row.kind === 'del' ? ` ${DIFF_EDGE[row.kind]}` : ''
-        const html = highlighted?.[index]
-        return (
-          <div key={index} className={`flex ${tone}${edge}`}>
-            <span className={`w-10 shrink-0 px-1 text-right select-none border-r border-border ${DIFF_NUM[row.kind]}`}>{(row.kind === 'del' ? row.oldLine : row.newLine) ?? ''}</span>
-            {html !== undefined && html !== '' ? (
-              <span className="hljs flex-1 min-w-0 whitespace-pre-wrap break-words px-2 !bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
-            ) : (
-              <span className="flex-1 min-w-0 whitespace-pre-wrap break-words px-2 text-text">{row.text}</span>
-            )}
-          </div>
-        )
-      })}
+    <div className="pierre-surface" data-testid="pr-diff-surface">
+      <PierrePatch patch={filePatch} options={options} />
     </div>
   )
 }

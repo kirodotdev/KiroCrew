@@ -466,8 +466,15 @@ HTMLCanvasElement.prototype.getContext = function (type: string) {
   if (type === '2d') {
     const noop = () => {}
     const store: Record<string, any> = {}
+    // `measureText` must answer a TextMetrics-shaped object, not undefined:
+    // Pierre's editor measures its monospace cell on mount
+    // (`Metrics.canvasMeasureTextWidth` -> `.width`) and a no-op return throws an
+    // UNHANDLED error after the test that mounted it has already passed, which
+    // fails the run without failing any test. Width is a plausible monospace
+    // approximation -- no assertion depends on the value, only on it existing.
+    const measureText = (text: string) => ({ width: String(text ?? '').length * 7 })
     return new Proxy(store, {
-      get: (_t, p) => (p in store ? store[p] : noop),
+      get: (_t, p) => (p === 'measureText' ? measureText : p in store ? store[p] : noop),
       set: (_t, p, v) => { store[p as string] = v; return true },
     }) as any
   }

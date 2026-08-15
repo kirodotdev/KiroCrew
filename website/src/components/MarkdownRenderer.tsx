@@ -44,7 +44,7 @@ import JiraLogo from './icons/JiraLogo'
 import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import DiffBlock from './DiffBlock'
-import MonacoCodeBlock from './MonacoCodeBlock'
+import EditableCodeBlock from './EditableCodeBlock'
 import { SmoothResize } from './SmoothResize'
 import type { ContentBlock } from '../types'
 
@@ -137,7 +137,7 @@ export function splitLineRef(s: string): { path: string; line?: number; endLine?
   const m = LINE_REF_RE.exec(s)
   if (!m) return { path: s }
   const line = Number(m[1])
-  // `:0` is not a line — Monaco and every editor number from 1 — so treat it as
+  // `:0` is not a line — every editor numbers from 1 — so treat it as
   // part of the name rather than clamping it to 1 and jumping somewhere the
   // text never named.
   if (!line) return { path: s }
@@ -2649,9 +2649,9 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
         <div className="my-2 p-3 bg-bg-elevated border border-border rounded-md text-muted text-[12px] italic animate-pulse">{i18nT('components.markdownRenderer.generating_diagram')}</div>
       )
     case 'code': {
-      const node = <MonacoCodeBlock code={block.content} lang={block.language} complete={block.complete} />
-      // Height-grow only — streaming code is a single highlighted innerHTML blob
-      // (no per-line nodes), so per-line content animation isn't applied here.
+      const node = <EditableCodeBlock code={block.content} lang={block.language} complete={block.complete} />
+      // Height-grow only — streaming code renders as one plain <pre> text node
+      // so per-line content animation isn't applied here.
       return smooth ? <SmoothResize enabled={!block.complete}>{node}</SmoothResize> : node
     }
     case 'widget':

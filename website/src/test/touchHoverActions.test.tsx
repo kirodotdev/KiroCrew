@@ -106,13 +106,17 @@ describe('DiffBlock header actions on touch devices', () => {
   const row = (container: HTMLElement) =>
     container.querySelector('[class*="group-hover/diff"]') as HTMLElement
 
-  it('reveals and enlarges the diff actions where the pointer cannot hover', () => {
+  // Pierre slots the header metadata after mount, so the actions row is absent
+  // from the first commit -- await it instead of reading a null node.
+  it('reveals and enlarges the diff actions where the pointer cannot hover', async () => {
     const { container } = render(<DiffBlock code={SIMPLE_DIFF} complete />)
+    await screen.findByTitle('Copy patch')
     expectRowTouchOverrides(row(container).className)
   })
 
-  it('keeps the diff actions hover-revealed for hover-capable pointers', () => {
+  it('keeps the diff actions hover-revealed for hover-capable pointers', async () => {
     const { container } = render(<DiffBlock code={SIMPLE_DIFF} complete />)
+    await screen.findByTitle('Copy patch')
     const cls = row(container).className
     expect(cls).toContain('opacity-0')
     expect(cls).toContain('group-hover/diff:opacity-100')

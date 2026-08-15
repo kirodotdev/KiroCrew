@@ -60,6 +60,33 @@ export default [
       // the module may contain ONLY paint data, so the filename IS the
       // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
       'src/components/folderColorPaint.ts',
+      // Pierre's shared render configuration: injected stylesheet text
+      // (`unsafeCSS` templates of selectors, lengths and `var(--…)` references),
+      // theme ids the library matches on, and an extension→grammar map. None of
+      // it is read as words. Same named-boundary idiom as `folderColorPaint.ts`
+      // above — the module may contain ONLY render config, and every Pierre
+      // surface that shows copy (DiffBlock, MarkdownPanel, FileBrowserRail)
+      // stays fully covered.
+      //
+      // Stated as a false-negative class, per this file's convention: user-visible
+      // copy added here will not be reported. Verified copy-free rather than
+      // assumed — it imports neither `i18nT` nor `useTranslation`.
+      'src/pierre/config.ts',
+      // Injected stylesheet text for the chat file-change chips: selectors,
+      // lengths and keyframes handed to the CSS parser, with the two layout
+      // numbers and the animation duration the rules interpolate. Extracted from
+      // `FileChangeChips.tsx` precisely so the component -- which does carry
+      // user-visible copy -- stays fully covered here.
+      //
+      // Stated as a false-negative class, per this file's convention: copy added
+      // to this module will not be reported. Keep it stylesheet-only; anything a
+      // person reads belongs in the component with `i18nT`.
+      'src/components/fileChangeChipsCss.ts',
+      // Synthesizes the `diff --git` / `---` / `+++` headers Pierre needs to
+      // identify a file in a bare patch body: git wire format handed to Pierre's
+      // parser, never read as words. Extracted from `PullRequestPanel.tsx` so that
+      // panel -- which does carry copy -- stays fully covered.
+      'src/components/unifiedPatchHeaders.ts',
       // Per-shell env-var export command builders for SettingRef's env popover:
       // every string is CLI syntax handed to a terminal (`export`, `$env:`,
       // `set`, `=1`), never user-visible copy — translating a fragment would
@@ -752,7 +779,10 @@ export default [
               // artifact of the sink, not a statement about the text.
               '\\berrors\\.push$',
               // Style and test helpers.
-              '^(css|cx|clsx|twMerge|cva)$',
+              // `cn` is this repo's own `twMerge(clsx(...))` wrapper (src/lib/utils.ts)
+              // and takes `ClassValue[]` -- the same category as the two helpers it
+              // composes, both already listed here. Copy cannot legitimately reach it.
+              '^(css|cx|clsx|twMerge|cva|cn)$',
               // Storage, telemetry and routing take machine keys.
               '(local|session)Storage\\.\\w+', 'navigate', 'track', 'emit',
               // KiroCrew's own telemetry shim (`src/rum.ts`). Its first argument is

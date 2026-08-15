@@ -1073,7 +1073,7 @@ describe('chatSlice thunks', () => {
     store.dispatch(sseToolActivity({ slot: 'front', tool: 'grep', kind: 'tool', purpose: '', input_preview: '' }))
 
     await store.dispatch(switchSlot('back'))
-    expect(chat(store).activityTab).toBe('files')
+    expect(chat(store).activityTab).toBe('changes')
     expect(chat(store).activityOpen).toBe(false)
     expect(chat(store).toolLog).toEqual([])
 

@@ -29,6 +29,7 @@ export const ROUND_TRIP = new Map([
   ['utils/cronUtils.tsx', 'wire shape read back by parseEveryFromSchedule in components/WeekGrid.tsx'],
   ['utils/pasteTokens.ts', 'token read back by PASTE_TOKEN_REGEX in the same file'],
   ['utils/tz.ts', 'UTC±HH:MM offset token, and en-US pins that derive cron day-of-week numbers'],
+  ['components/fileChangeChipsCss.ts', 'CSS animation durations parsed by the browser stylesheet parser, not read as text'],
 ])
 
 /** Measurement units this UI renders. Symbols only. */

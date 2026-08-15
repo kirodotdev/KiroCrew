@@ -3,7 +3,7 @@
  * /api/terminal/sessions config.
  *
  * The "Run in Terminal" button on shell code blocks is gated in
- * MonacoCodeBlock behind `useTerminalEnabled()`, which reads a module-level
+ * EditableCodeBlock behind `useTerminalEnabled()`, which reads a module-level
  * flag in terminalRegistry (`_enabled`, initialised to false). App is the ONE
  * place that flips that flag on, via:
  *
@@ -11,7 +11,7 @@
  *   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
  *
  * This wiring is easy to drop silently in an App.tsx rewrite: existing
- * MonacoCodeBlock / terminalRegistry tests exercise the gate GIVEN the flag --
+ * EditableCodeBlock / terminalRegistry tests exercise the gate GIVEN the flag --
  * none assert that App actually sets it, so such a regression slips through
  * green tests. These tests pin the App-to-registry contract directly so a
  * future App.tsx refactor can't silently drop it:

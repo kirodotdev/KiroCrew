@@ -1,5 +1,15 @@
 import type { ReactNode } from 'react'
-import { parseDiffLines, isDiffText, DIFF_BG, DIFF_FG } from '../utils/diffUtils'
+import { isDiffText } from '../utils/diffUtils'
+import { PierrePatch } from '../pierre'
+
+/** Compact defaults for inline tool-input previews: these render inside
+ *  dense activity rows and approval popups, so headers, gutters, and hunk
+ *  chrome are stripped and long lines wrap. */
+const INLINE_DIFF_OPTIONS = {
+  disableLineNumbers: true,
+  hunkSeparators: 'simple',
+  overflow: 'wrap',
+} as const
 
 /** Turn JSON string-escape whitespace (\n, \t, \r) into real characters so a
  *  multi-line command embedded in a JSON payload renders across lines in the
@@ -61,16 +71,12 @@ export function ToolInputText({ text, raw = false }: { text: string; raw?: boole
       return <>{parts}</>
     }
   }
-  // Diff highlighting — only if text contains diff markers
+  // Diff rendering — only if text contains diff markers
   if (isDiffText(text)) {
-    const lines = parseDiffLines(text)
     return (
-      <>
-        {lines.map((line, i) => {
-          if (line.type === 'meta') return null
-          return <div key={i} className={`${DIFF_BG[line.type]} ${DIFF_FG[line.type]}`}>{line.type === 'hunk' ? line.content : (line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ') + line.content}</div>
-        })}
-      </>
+      <div className="pierre-surface pierre-transparent">
+        <PierrePatch patch={text} options={INLINE_DIFF_OPTIONS} />
+      </div>
     )
   }
   // Default: plain text — inherit parent's color so the rendering stays

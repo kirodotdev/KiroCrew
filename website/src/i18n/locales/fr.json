@@ -3773,9 +3773,7 @@
         "typesetting_hints_one": "{{count}} remarque de composition",
         "typesetting_hints_other": "{{count}} remarques de composition"
       },
-      "editor": {
-        "loading_editor": "Chargement de l’éditeur…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "Supprimer {{file}}",
         "files": "Fichiers",
@@ -5071,7 +5069,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Les modifications mettent à jour l’aperçu pendant la saisie.",
       "editing_svg": "Modification du SVG",
-      "loading_editor": "Chargement de l'éditeur…",
       "svg_source_code": "Code source SVG"
     },
     "contextBar": {
@@ -5096,27 +5093,19 @@
       "close": "Fermer"
     },
     "diffBlock": {
-      "collapse": "▲ réduire",
-      "context_lines": "lignes de contexte",
       "copied": "Copié !",
       "copy_patch": "Copier le correctif",
-      "diff": "diff",
       "generating_diff": "génération du diff…",
-      "lines_hidden": "lignes masquées",
       "open": "Ouvrir",
       "open_in_side_panel": "Ouvrir {{path}} dans le panneau latéral",
       "split_view": "Vue divisée",
       "switch_to_split_view": "Passer à la vue divisée",
       "switch_to_unified_view": "Passer à la vue unifiée",
-      "unchanged_lines_many": "{{count}} lignes inchangées",
-      "unchanged_lines_one": "{{count}} ligne inchangée",
-      "unchanged_lines_other": "{{count}} lignes inchangées",
       "unified_view": "Vue unifiée"
     },
     "diffPanel": {
       "click_to_copy_path": "Cliquer pour copier le chemin",
-      "contents_identical": "Les contenus sont identiques",
-      "loading_diff": "Chargement du diff…"
+      "contents_identical": "Les contenus sont identiques"
     },
     "discoverySearchBar": {
       "clear_search": "Effacer la recherche",
@@ -5178,6 +5167,9 @@
       "video": "Vidéo : {{name}}"
     },
     "fileChangeChips": {
+      "additions_many": "{{count}} ajouts",
+      "additions_one": "{{count}} ajout",
+      "additions_other": "{{count}} ajouts",
       "artifact": "Artefact",
       "changed": "modifié",
       "file_many": "{{count}} fichiers",
@@ -5185,9 +5177,15 @@
       "file_other": "{{count}} fichiers",
       "more": "de plus",
       "no_changes": "aucun changement",
+      "open": "Ouvrir le fichier",
+      "open_in_side_panel": "Ouvrir {{path}} dans le panneau latéral",
+      "removals_many": "{{count}} suppressions",
+      "removals_one": "{{count}} suppression",
+      "removals_other": "{{count}} suppressions",
       "show": "Afficher",
       "show_less": "Afficher moins",
-      "this_document_is_tracked_as_a_session_artifact_n": "Ce document est suivi comme un artefact de session, pas comme une modification de fichier source"
+      "this_document_is_tracked_as_a_session_artifact_n": "Ce document est suivi comme un artefact de session, pas comme une modification de fichier source",
+      "toggle_diff": "Afficher ou masquer le diff de {{path}}"
     },
     "filePickerMenu": {
       "folder": "Dossier",
@@ -5570,7 +5568,6 @@
       "adding": "Ajout…",
       "adding_2": "Ajout...",
       "already_in_library": "Déjà dans la bibliothèque",
-      "autocomplete": "Saisie automatique",
       "cancel": "Annuler",
       "cancel_discard_unsaved_edits": "Annuler — abandonner les modifications non enregistrées",
       "cannot_read_file": "Impossible de lire le fichier",
@@ -5579,6 +5576,7 @@
       "click_to_copy_path": "Cliquer pour copier le chemin",
       "close_esc": "Fermer (Esc)",
       "close_find": "Fermer la recherche",
+      "collapse_unchanged": "Replier les parties inchangées",
       "copy_content": "Copier le contenu",
       "copy_path": "Copier le chemin",
       "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
@@ -5598,14 +5596,13 @@
       "in_knowledge_library": "Dans la bibliothèque de connaissances",
       "in_library": "Dans la bibliothèque",
       "line_numbers": "Numéros de ligne",
-      "loading_diff": "Chargement du diff…",
       "more_options": "Plus d'options",
       "next_enter": "Suivant (Enter)",
       "next_match": "Résultat suivant",
+      "no_changes_in_file": "Aucune modification dans ce fichier",
       "no_results": "Aucun résultat",
       "open_artifact": "Ouvrir l’artefact {{name}}",
       "open_as_artifact": "Ouvrir comme artefact",
-      "open_folder": "Ouvrir le dossier {{path}}",
       "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
       "open_in_finder": "Ouvrir dans le Finder",
       "open_with_default_app": "Ouvrir avec l’application par défaut",
@@ -5622,14 +5619,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Enregistrer ce fichier comme artefact (versionné, persistant, commentable)",
       "saving": "Enregistrement…",
       "select_any_text_to_add_inline_comments_then_subm": "Sélectionnez n'importe quel texte pour ajouter des commentaires en ligne, puis envoyez-les tous dans la conversation.",
+      "show_full_file": "Afficher le fichier complet",
       "show_in_file_manager": "Afficher dans le gestionnaire de fichiers",
       "snapshot_version": "Créer un instantané",
       "snapshotting": "Création de l’instantané…",
-      "switch_to_split_view": "Passer à la vue divisée",
-      "switch_to_unified_view": "Passer à la vue unifiée",
+      "split_view": "Vue divisée",
       "tip": "Astuce :",
-      "toggle_autocomplete": "Activer/désactiver la saisie automatique",
       "toggle_diff_view": "Activer/désactiver la vue diff",
+      "toggle_file_browser": "Basculer l'explorateur de fichiers",
       "toggle_line_numbers": "Afficher/masquer les numéros de ligne",
       "toggle_word_wrap": "Activer/désactiver le retour à la ligne",
       "tracking_description": "Suivi de {{path}}",
@@ -5767,9 +5764,7 @@
       "close_editor": "Fermer l'éditeur",
       "copied": "Copié !",
       "copy": "Copier",
-      "edit_code_block": "Modifier le bloc de code",
-      "edit_in_monaco_editor": "Modifier dans l'éditeur Monaco",
-      "loading_editor": "Chargement de l'éditeur…"
+      "edit_code_block": "Modifier le bloc de code"
     },
     "notifications": {
       "notifMeta": {
@@ -6814,14 +6809,15 @@
       "context": "Contexte",
       "diff": "{{name}} - Diff",
       "files": "Fichiers",
+      "git": "Git",
       "issues": "Issues",
+      "links": "Liens",
       "logs": "Journaux",
+      "pins": "Épinglés",
       "side": "Annexe",
       "subagents": "Sous-agents",
       "summary": "Résumé",
-      "workflows": "Workflows",
-      "git": "Git",
-      "pins": "Épinglés"
+      "workflows": "Workflows"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Tous les emplacements sont occupés",
@@ -7659,32 +7655,24 @@
         "artifacts_search_library": "Rechercher dans votre bibliothèque...",
         "artifacts_this_session": "Cette session",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Demandez-moi d'« utiliser un workflow dynamique pour … » — les exécutions lancées depuis ce chat apparaissent ici en direct.",
-        "back_to_files": "Retour aux fichiers",
         "cancel": "Annuler",
         "cancelled": "Annulé",
-        "changed_files": "Fichiers modifiés",
         "changes": "Modifications",
         "clear": "Effacer",
         "complete": "Terminé",
-        "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
         "dismiss_done_count": "Effacer les terminés ({{count}})",
         "error": "Erreur",
         "failed_click_to_retry": "Échec — cliquez pour réessayer",
-        "file_artifact_add": "Ajouter aux artefacts",
-        "file_artifact_add_aria": "Ajouter ce fichier à la bibliothèque d'artefacts",
-        "file_artifact_add_failed": "Ajout impossible — réessayez",
-        "file_artifact_open": "Ouvrir l'artefact",
-        "file_artifact_open_aria": "Ouvrir l'artefact de ce fichier",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "Fichier introuvable sur le disque. Il a peut-être été déplacé ou supprimé.",
-        "files": "Fichiers",
         "input": "Entrée",
         "issues": "Issues",
         "last_tool": "Dernier outil :",
+        "links": "Links",
         "load_output_from_disk": "Charger la sortie depuis le disque",
         "loading": "Chargement…",
+        "loading_workspace": "Chargement de l'espace de travail…",
         "logs": "Journaux",
-        "no_files_changed_yet": "Aucun fichier modifié pour l'instant",
         "no_issues_in_this_session_yet_mention_a_github_o": "Pas encore d’issues dans cette session. Mentionne un lien vers une issue GitHub ou GitLab et elle apparaîtra ici.",
+        "no_links_yet": "Pas encore de liens dans cette session. Mentionne une URL dans le chat et elle apparaîtra ici.",
         "no_matches": "Aucun résultat",
         "no_pull_requests_yet": "Aucune pull request dans cette session pour l'instant",
         "no_subagents_running": "Aucun sous-agent en cours",
@@ -7695,8 +7683,6 @@
         "pending_approval": "En attente d’approbation",
         "reject": "Refuser",
         "rejected": "Refusé",
-        "remove": "Supprimer",
-        "remove_file_from_list": "Retirer le fichier de la liste",
         "resolved": "Résolu",
         "resolving": "Résolution…",
         "resolving_2": "résolution...",
@@ -7704,11 +7690,10 @@
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
         "resources": "Ressources",
-        "retry": "Réessayer",
         "retry_failed_count": "Réessayer les échecs ({{count}})",
         "running": "En cours",
         "running_tool": "Outil en cours",
-        "search_files": "Rechercher par nom de fichier, dossier ou lien…",
+        "search_files": "Rechercher par étiquette ou URL…",
         "show_all_count": "Tout afficher ({{count}})",
         "side": "Annexe",
         "starting": "Démarrage…",
@@ -7718,11 +7703,11 @@
         "trusted": "De confiance",
         "trusted_base": "Base de confiance",
         "trusted_command": "Commande de confiance",
-        "unable_to_read_file": "Impossible de lire le fichier.",
-        "unable_to_read_this_file": "Impossible de lire ce fichier.",
         "waiting_for_output": "En attente de la sortie…",
         "waiting_to_start_queued_behind_the_concurrency_l": "en attente de démarrage — mis en file derrière la limite de concurrence",
-        "workflows": "Workflows"
+        "workflows": "Workflows",
+        "workspace_empty": "Cet espace de travail ne contient encore aucun fichier",
+        "workspace_truncated": "Espace de travail volumineux — seuls les 10 000 premiers fichiers sont affichés"
       },
       "assistantMessage": {
         "applied_to_tasks": "Appliqué aux tâches",
@@ -7797,6 +7782,7 @@
       "folderPanel": {
         "empty_folder": "Dossier vide",
         "loading": "Chargement…",
+        "no_changes": "Arbre de travail sans modifications",
         "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
         "open_in_finder": "Ouvrir dans le Finder",
         "parent_folder": "Dossier parent",
@@ -7909,10 +7895,16 @@
         "menu_context_desc": "Contexte ajouté pendant les tours de cette session",
         "menu_files": "Fichiers",
         "menu_files_desc": "Parcourir et modifier les fichiers",
+        "menu_git": "Git",
+        "menu_git_desc": "Branche, modifications et commits récents",
         "menu_issues": "Issues",
         "menu_issues_desc": "Issues mentionnées dans cette session",
+        "menu_links": "Liens",
+        "menu_links_desc": "URL référencées par cette conversation",
         "menu_logs": "Journaux",
         "menu_logs_desc": "Flux de journaux de la passerelle",
+        "menu_pins": "Épinglés",
+        "menu_pins_desc": "Messages que vous avez épinglés dans cette session",
         "menu_side": "Annexe",
         "menu_side_desc": "Chat parallèle, contexte partagé",
         "menu_subagents": "Sous-agents",
@@ -7931,11 +7923,7 @@
         "switch_to_split_view": "Passer en vue divisée",
         "switch_to_unified_view": "Passer en vue unifiée",
         "this_app_render_is_no_longer_available": "Ce rendu d'application n'est plus disponible. Exécutez à nouveau l'outil pour l'afficher.",
-        "turn_diff": "Diff du tour",
-        "menu_git": "Git",
-        "menu_git_desc": "Branche, modifications et commits récents",
-        "menu_pins": "Épinglés",
-        "menu_pins_desc": "Messages que vous avez épinglés dans cette session"
+        "turn_diff": "Diff du tour"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "Échec de l'arrêt, session réinitialisée",
@@ -8111,6 +8099,23 @@
         "updated_behind": "Mis à jour {{when}} — en retard sur la conversation",
         "where_it_stands": "Où cela en est",
         "you_asked_for": "Ce que vous avez demandé"
+      },
+      "fileBrowserRail": {
+        "all_files": "Tous les fichiers",
+        "changed": "Modifiés",
+        "close_search": "Fermer la recherche",
+        "filter_placeholder": "Filtrer les fichiers…",
+        "refresh": "Actualiser",
+        "resize": "Redimensionner l'explorateur",
+        "tree_mode": "Mode liste de fichiers"
+      },
+      "filesHome": {
+        "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",
+        "refresh": "Actualiser",
+        "reveal_in_finder": "Afficher dans le gestionnaire de fichiers",
+        "select_file_hint": "Sélectionnez un fichier dans l'arborescence pour l'ouvrir dans un nouvel onglet",
+        "title": "Fichiers",
+        "tree_error": "Impossible de charger l’arborescence des fichiers"
       }
     },
     "chatPage": {

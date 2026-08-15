@@ -4,14 +4,16 @@ import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
-import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
+import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
 import ActivityViewer from './ActivityViewer'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
-import MarkdownPanel from '../../components/MarkdownPanel'
+import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/MarkdownPanel'
 import ArtifactPanel from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
+import FilesHomePanel from './FilesHomePanel'
+import FileBrowserRail, { useTreeAvailable } from './FileBrowserRail'
 import WebPreviewPanel from '../../components/WebPreviewPanel'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
@@ -31,14 +33,13 @@ import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
 import { mcpAppKey } from '../../store/chatSlice'
 import McpAppFrame from '../../components/McpAppFrame'
-import type { TouchedFile } from '../../hooks/useTouchedFiles'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import type { ChatPin } from '../../api/pins'
 
 import { i18nT } from '../../i18n/t'
 const KIND_ICON: Record<TabKind, ReactNode> = {
-  changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <FileText size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
+  changes: <GitPullRequest size={16} />, issues: <CircleDot size={16} />, files: <Folders size={16} />, links: <LinkIcon size={16} />, artifacts: <Component size={16} />, subagents: <Bot size={16} />, workflows: <Workflow size={16} />,
   logs: <ScrollText size={16} />, context: <Layers size={16} />, side: <MessageSquare size={16} />, terminal: <TerminalSquare size={16} />, browser: <Globe size={16} />,
   summary: <ListTree size={16} />,
   pins: <Pin size={16} />,
@@ -66,6 +67,7 @@ export const NEW_MENU_LABEL_KEY: Record<ViewKind, string> = {
   changes: 'pages.chat.sidePanel.menu_changes',
   issues: 'pages.chat.sidePanel.menu_issues',
   files: 'pages.chat.sidePanel.menu_files',
+  links: 'pages.chat.sidePanel.menu_links',
   artifacts: 'pages.chat.sidePanel.menu_artifacts',
   subagents: 'pages.chat.sidePanel.menu_subagents',
   workflows: 'pages.chat.sidePanel.menu_workflows',
@@ -82,6 +84,7 @@ export const NEW_MENU_DESC_KEY: Record<ViewKind, string> = {
   changes: 'pages.chat.sidePanel.menu_changes_desc',
   issues: 'pages.chat.sidePanel.menu_issues_desc',
   files: 'pages.chat.sidePanel.menu_files_desc',
+  links: 'pages.chat.sidePanel.menu_links_desc',
   artifacts: 'pages.chat.sidePanel.menu_artifacts_desc',
   subagents: 'pages.chat.sidePanel.menu_subagents_desc',
   workflows: 'pages.chat.sidePanel.menu_workflows_desc',
@@ -126,7 +129,8 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[
       { kind: 'pins', icon: <Pin size={15} /> },
       { kind: 'changes', icon: <GitPullRequest size={15} /> },
       { kind: 'issues', icon: <CircleDot size={15} /> },
-      { kind: 'files', icon: <FileText size={15} /> },
+      { kind: 'files', icon: <Folders size={15} /> },
+      { kind: 'links', icon: <LinkIcon size={15} /> },
       { kind: 'artifacts', icon: <Component size={15} /> },
       { kind: 'subagents', icon: <Bot size={15} /> },
       { kind: 'workflows', icon: <Workflow size={15} /> },
@@ -151,7 +155,7 @@ const NEW_MENU_GROUPS: { id: string; items: { kind: ViewKind; icon: ReactNode }[
   },
 ]
 
-const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git', 'summary', 'pins'])
+const VIEW_KINDS = new Set<TabKind>(['changes', 'issues', 'links', 'files', 'artifacts', 'subagents', 'workflows', 'logs', 'context', 'side', 'git', 'summary', 'pins'])
 
 /** Views behind the Developer Mode consent gate (Settings > Developer) — the
  *  same gate the standalone Developer page uses. Both are raw instrumentation
@@ -196,14 +200,11 @@ export function newMenuSections(
 interface SidePanelProps {
   tabsCtl: ReturnType<typeof usePanelTabs>
   slot: string
-  files?: TouchedFile[]
-  onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number; endLine?: number }) => void
+  onFileOpen?: (path: string, opts?: { replaceId?: string; line?: number; endLine?: number; diffMode?: boolean; canReplace?: () => boolean }) => void
   /** Open an artifact as a panel tab (the artifact twin of onFileOpen).
    *  Threaded to the Artifacts tab so its rows open here instead of
    *  hard-navigating to the standalone detail page. */
   onArtifactOpen?: (slug: string) => void
-  onFileRemove?: (path: string) => void
-  onFilesClear?: (source: 'history' | 'tool') => void
   projectDir?: string
   navLinks?: ExtractedLink[]
   navResolving?: boolean
@@ -234,10 +235,6 @@ interface SidePanelProps {
   onFileSave: (filePath: string, content: string) => Promise<void>
   /** Close the whole panel (hides the side column). */
   onClose: () => void
-  /** Lifted Files-tab inline preview state (owned by ChatPage so it survives
-   *  panel collapse and coordinates with document-tab opens). */
-  inlinePreviewPath?: string | null
-  onInlinePreviewChange?: (path: string | null) => void
   /** Preview "focus" mode: when true the panel takes its maximum width (chat
    *  shrinks to its minimum), driven by the Web Preview tab's expand toggle. */
   expanded?: boolean
@@ -358,15 +355,15 @@ export function measureSidePanelReservedW(): number {
 }
 
 export default function SidePanel({
-  tabsCtl, slot, files, onFileOpen, onArtifactOpen, onFileRemove, onFilesClear,
+  tabsCtl, slot, onFileOpen, onArtifactOpen,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
   pins, pinsLoading, onJumpToPin, onUnpin,
   slotTitle, chatMode,
-  inlinePreviewPath, onInlinePreviewChange, expanded, fillWidth, canDockBottom = true,
+  expanded, fillWidth, canDockBottom = true,
 }: SidePanelProps) {
-  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned, openFolder } = tabsCtl
+  const { tabs, activeId, openView, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
   // EVERY app frame, every slot, rendered from one stable-keyed list below so a
   // chat switch cannot change a frame's React key and remount its iframe.
   const allAppTabs = useAllAppTabs()
@@ -412,9 +409,6 @@ export default function SidePanel({
   // Split the strip: pinned (fixed, non-closable) vs. dynamic (draggable).
   const pinnedTabs = useMemo(() => tabs.filter(t => (PINNED_VIEWS as string[]).includes(t.id)), [tabs])
   const dynamicTabs = useMemo(() => tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id)), [tabs])
-  // Paths already open as `file:` document tabs — passed to the Files view so
-  // opening such a path inline routes to its existing tab (one editor per path).
-  const openDocPaths = useMemo(() => new Set(tabs.filter(t => t.kind === 'file' && t.path).map(t => t.path as string)), [tabs])
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
   // working dir; every other menu item is a singleton view.
   const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
@@ -663,14 +657,14 @@ export default function SidePanel({
               <div className="grid grid-cols-2 gap-2.5 w-full">
               {menuItems.map(item => {
                 // Live badges from data already flowing into the panel — a
-                // quiet accent pill when non-zero, muted otherwise.
-                const badge = item.kind === 'files' && files && files.length > 0
-                  ? `${files.length} touched`
-                  : item.kind === 'subagents' && Object.values(subagents).some(s => s.status === 'running' || s.status === 'tool')
-                    ? `${Object.values(subagents).filter(s => s.status === 'running' || s.status === 'tool').length} running`
-                    : item.kind === 'logs' && toolLog.length > 0
-                      ? `${toolLog.length} calls`
-                      : null
+                // quiet accent pill when non-zero, muted otherwise. Files
+                // carries none: it browses the project tree rather than
+                // listing what this session touched, so there is no count.
+                const badge = item.kind === 'subagents' && Object.values(subagents).some(s => s.status === 'running' || s.status === 'tool')
+                  ? `${Object.values(subagents).filter(s => s.status === 'running' || s.status === 'tool').length} running`
+                  : item.kind === 'logs' && toolLog.length > 0
+                    ? `${toolLog.length} calls`
+                    : null
                 return (
                   <button
                     key={item.kind}
@@ -694,27 +688,33 @@ export default function SidePanel({
         )}
         {tabs.map(t => {
           const isActive = t.id === activeId
-          // Category views: mount only the active one. The Files tab hosts an
-          // inline file editor, but it does NOT need to stay mounted while
-          // inactive — an in-progress edit survives a tab switch via the
-          // module-level draft store, and which file is open inline is owned by
-          // ChatPage (both above the SidePanel subtree). Keeping it mounted-but-
-          // hidden would leave its global Escape handler live, letting an
-          // invisible editor swallow Escape and drop the draft; so unmount it.
-          // Cross-slot safety: the inline-preview path is reset by ChatPage when
-          // the active chat slot changes.
+          // Category views: mount only the active one. They hold no editable
+          // buffer, so unmounting an inactive one loses nothing, and it keeps
+          // exactly one panel-level Escape handler live at a time.
           // App tabs render from `allAppTabs` below (one stable key for every slot);
           // rendering them here too would mount the same iframe twice.
           if (t.kind === 'app') return null
+          // The pinned Files tab renders the file-browser home directly — it
+          // is not one of ActivityViewer's multiplexed session views.
+          if (t.kind === 'files') {
+            if (!isActive) return null
+            return (
+              <div key={t.id} className="absolute inset-0">
+                <FilesHomePanel
+                  projectDir={projectDir ?? ''}
+                  onFileOpen={(abs, diff) => onFileOpen?.(abs, { diffMode: diff })}
+                />
+              </div>
+            )
+          }
           if (VIEW_KINDS.has(t.kind)) {
             if (!isActive) return null
             return (
               <div key={t.id} className="absolute inset-0">
                 <ActivityViewer
-                  view={t.kind as 'changes' | 'issues' | 'files' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
+                  view={t.kind as 'changes' | 'issues' | 'links' | 'artifacts' | 'subagents' | 'workflows' | 'logs' | 'context' | 'side' | 'git' | 'summary' | 'pins'}
                   open onToggle={onClose} slot={slot}
                   subagents={subagents} toolLog={toolLog}
-                  files={files}
                   sources={sources}
                   selectedSourceUrl={selectedSourceUrl}
                   onSelectSource={onSelectSource}
@@ -724,20 +724,15 @@ export default function SidePanel({
                   onSelectIssue={onSelectIssue}
                   onReconcileIssue={onReconcileIssue}
                   onAddToChat={onAddSourceToChat}
-                  // The Files/Artifacts/Changes tabs are permanent (pinned).
-                  // Files opens its file inline (kept in the Files tab, with a
-                  // back button); the Artifacts tab opens document rows as file
-                  // tabs via onFileOpen and artifact rows as artifact tabs via
-                  // onArtifactOpen.
+                  // Of the pinned tabs, only Artifacts and Changes reach this
+                  // component — Files short-circuits to FilesHomePanel above.
+                  // Changes renders the session's pull-request sources; Artifacts
+                  // opens document rows as file tabs via onFileOpen and artifact
+                  // rows as artifact tabs via onArtifactOpen.
                   onFileOpen={onFileOpen}
-                  onFolderOpen={(p) => openFolder(p, slot)}
                   onArtifactOpen={onArtifactOpen}
-                  onFileRemove={onFileRemove} onFilesClear={onFilesClear}
-                  onFileSave={onFileSave} onSubmitComments={onSubmitComments}
                   pins={pins} pinsLoading={pinsLoading} onJumpToPin={onJumpToPin} onUnpin={onUnpin}
                   slotTitle={slotTitle} chatMode={chatMode}
-                  openDocPaths={openDocPaths}
-                  previewPath={inlinePreviewPath ?? null} onPreviewPathChange={onInlinePreviewChange}
                   projectDir={projectDir} navLinks={navLinks} navResolving={navResolving}
                 />
               </div>
@@ -756,7 +751,7 @@ export default function SidePanel({
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
-                onFolderOpen={(p) => openFolder(p, slot)}
+                projectDir={projectDir}
                 onSubmitComments={onSubmitComments}
                 onTerminalSendToChat={onAddSourceToChat}
                 diffLineNumbers={diffLineNumbers}
@@ -826,8 +821,75 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
   return <div className="h-full w-full overflow-auto"><McpAppFrame payload={payload} /></div>
 }
 
-function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onFolderOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+/**
+ * The one true file surface: MarkdownPanel (full-width header, viewer/editor
+ * body) with the file-browser rail docked on the right, under the header.
+ * Every file-open path — chat file chips, a diff tab's title, the pinned
+ * Files tab's tree, another file tab's tree — lands in a tab rendering this.
+ *
+ * Rail visibility is a single app-wide preference; the rail only renders at
+ * all when the chat has a project dir whose tree the backend serves.
+ */
+function FileTabBody({ tab, projectDir, onContentChange, onDiffModeChange, onFileSave, onFileOpen, onClose, onSubmitComments, onRevealConsumed }: {
+  tab: PanelTab
+  projectDir?: string
+  onContentChange: (c: string) => void
+  onDiffModeChange: (diffMode: boolean) => void
+  onFileSave: (fp: string, c: string) => Promise<void>
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  onClose: () => void
+  onSubmitComments?: (m: string) => void
+  onRevealConsumed: () => void
+}) {
+  const [railOpen, setRailOpen] = usePersistedBool('mc-files-rail-open', true)
+  const treeAvailable = useTreeAvailable(projectDir)
+  const railUsable = treeAvailable && !!projectDir && !!onFileOpen
+  // The rail re-targets this tab in place, so the panel's own dirty guard has to
+  // approve the navigation the way it approves a close.
+  const panelRef = useRef<MarkdownPanelHandle>(null)
+  return (
+    <MarkdownPanel
+      ref={panelRef}
+      embedded
+      filePath={tab.path || ''}
+      content={tab.content || ''}
+      onContentChange={onContentChange}
+      initialDiffMode={tab.diffMode}
+      onDiffModeChange={onDiffModeChange}
+      onSave={onFileSave}
+      onClose={onClose}
+      liveWatch
+      onSubmitComments={onSubmitComments}
+      revealLine={tab.revealLine}
+      onRevealConsumed={onRevealConsumed}
+      railOpen={railUsable && railOpen}
+      onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
+      browserRail={railUsable ? (
+        <FileBrowserRail
+          projectDir={projectDir}
+          selectedPath={tab.path || null}
+          // In-place navigation: a tree click RE-TARGETS this tab (replaceId)
+          // rather than spawning a sibling — only the pinned Files tab fans
+          // out into new tabs. Re-targeting discards the buffer, so it asks
+          // through the panel's dirty guard first, exactly as closing does.
+          // `canReplace` re-asks after the file read: the user can start typing
+          // during a slow load, and by then the up-front answer is stale.
+          onFileOpen={(abs, diff) => {
+            const nav = (stillClean?: () => boolean) =>
+              onFileOpen(abs, { diffMode: diff, replaceId: tab.id, canReplace: stillClean })
+            const panel = panelRef.current
+            if (panel) panel.requestNavigate(nav); else nav()
+          }}
+        />
+      ) : undefined}
+    />
+  )
+}
+
+function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
+  /** The chat's project directory — the file-browser rail's tree root. */
+  projectDir?: string
   onClose: () => void
   onContentChange: (c: string) => void
   onDiffModeChange: (diffMode: boolean) => void
@@ -837,9 +899,7 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string) => void
-  /** Open a directory as a folder tab — a file tab's breadcrumb segment click. */
-  onFolderOpen?: (p: string) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
   onSubmitComments?: (m: string) => void
   onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
@@ -850,20 +910,16 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   if (tab.kind === 'file') {
     return (
-      <MarkdownPanel
-        embedded
-        filePath={tab.path || ''}
-        content={tab.content || ''}
+      <FileTabBody
+        tab={tab}
+        projectDir={projectDir}
         onContentChange={onContentChange}
-        initialDiffMode={tab.diffMode}
         onDiffModeChange={onDiffModeChange}
-        onSave={onFileSave}
+        onFileSave={onFileSave}
+        onFileOpen={onFileOpen}
         onClose={onClose}
-        liveWatch
         onSubmitComments={onSubmitComments}
-        revealLine={tab.revealLine}
         onRevealConsumed={onRevealConsumed}
-        onOpenFolder={onFolderOpen}
       />
     )
   }

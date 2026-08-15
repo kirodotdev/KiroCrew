@@ -24,7 +24,6 @@ import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
 import DashboardBootstrap from './components/DashboardBootstrap'
 import 'katex/dist/katex.min.css'
-import 'monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css'
 import './index.css'
 import './styles/cli-mode.css'
 // Register shared modules for federated app bundles (must be before any app loads)
@@ -81,6 +80,14 @@ window.addEventListener('vite:preloadError', (event) => {
 if (import.meta.env.DEV) {
   import('react-dom').then(ReactDOM => import('@axe-core/react').then(axe => axe.default(React, ReactDOM, 1000)))
 }
+
+// Warm the Pierre code/diff renderer while the tab is idle: loading the chunk
+// creates the module-level highlight worker pool, so the first code surface a
+// user opens paints immediately instead of paying chunk + worker + grammar
+// startup on click.
+const idle: (cb: () => void) => void =
+  typeof requestIdleCallback === 'function' ? cb => requestIdleCallback(cb) : cb => setTimeout(cb, 2000)
+idle(() => { import('./pierre/PierreImpl').catch(() => { /* warmed on first use instead */ }) })
 
 const WorldsPopout = lazy(() => import('./pages/WorldsPopout'))
 

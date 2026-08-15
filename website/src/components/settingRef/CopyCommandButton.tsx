@@ -1,7 +1,7 @@
 /**
  * Inline copy button for CLI command text in SettingRef popovers.
  * Reuses the shared clipboard utility and follows the copy/check icon
- * pattern established by MonacoCodeBlock and DiffBlock.
+ * pattern established by DiffBlock.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Copy, X } from 'lucide-react'

@@ -3773,9 +3773,7 @@
         "typesetting_hints_one": "{{count}} aviso de composición",
         "typesetting_hints_other": "{{count}} avisos de composición"
       },
-      "editor": {
-        "loading_editor": "Cargando el editor…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "Eliminar {{file}}",
         "files": "Archivos",
@@ -5071,7 +5069,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "Los cambios actualizan la vista previa mientras escribes.",
       "editing_svg": "Editando SVG",
-      "loading_editor": "Cargando el editor…",
       "svg_source_code": "Código fuente SVG"
     },
     "contextBar": {
@@ -5096,27 +5093,19 @@
       "close": "Cerrar"
     },
     "diffBlock": {
-      "collapse": "▲ contraer",
-      "context_lines": "líneas de contexto",
       "copied": "¡Copiado!",
       "copy_patch": "Copiar el parche",
-      "diff": "diff",
       "generating_diff": "generando el diff…",
-      "lines_hidden": "líneas ocultas",
       "open": "Abrir",
       "open_in_side_panel": "Abrir {{path}} en el panel lateral",
       "split_view": "Vista dividida",
       "switch_to_split_view": "Cambiar a la vista dividida",
       "switch_to_unified_view": "Cambiar a la vista unificada",
-      "unchanged_lines_many": "{{count}} líneas sin cambios",
-      "unchanged_lines_one": "{{count}} línea sin cambios",
-      "unchanged_lines_other": "{{count}} líneas sin cambios",
       "unified_view": "Vista unificada"
     },
     "diffPanel": {
       "click_to_copy_path": "Haz clic para copiar la ruta",
-      "contents_identical": "Los contenidos son idénticos",
-      "loading_diff": "Cargando el diff…"
+      "contents_identical": "Los contenidos son idénticos"
     },
     "discoverySearchBar": {
       "clear_search": "Borrar la búsqueda",
@@ -5178,6 +5167,9 @@
       "video": "Video: {{name}}"
     },
     "fileChangeChips": {
+      "additions_many": "{{count}} adiciones",
+      "additions_one": "{{count}} adición",
+      "additions_other": "{{count}} adiciones",
       "artifact": "Artefacto",
       "changed": "cambiado",
       "file_many": "{{count}} archivos",
@@ -5185,9 +5177,15 @@
       "file_other": "{{count}} archivos",
       "more": "más",
       "no_changes": "sin cambios",
+      "open": "Abrir archivo",
+      "open_in_side_panel": "Abrir {{path}} en el panel lateral",
+      "removals_many": "{{count}} eliminaciones",
+      "removals_one": "{{count}} eliminación",
+      "removals_other": "{{count}} eliminaciones",
       "show": "Mostrar",
       "show_less": "Mostrar menos",
-      "this_document_is_tracked_as_a_session_artifact_n": "Este documento se registra como artefacto de la sesión, no como un cambio en un archivo fuente"
+      "this_document_is_tracked_as_a_session_artifact_n": "Este documento se registra como artefacto de la sesión, no como un cambio en un archivo fuente",
+      "toggle_diff": "Mostrar u ocultar el diff de {{path}}"
     },
     "filePickerMenu": {
       "folder": "Carpeta",
@@ -5570,7 +5568,6 @@
       "adding": "Añadiendo…",
       "adding_2": "Añadiendo…",
       "already_in_library": "Ya está en la Biblioteca",
-      "autocomplete": "Autocompletado",
       "cancel": "Cancelar",
       "cancel_discard_unsaved_edits": "Cancelar — descarta los cambios sin guardar",
       "cannot_read_file": "No se puede leer el archivo",
@@ -5579,6 +5576,7 @@
       "click_to_copy_path": "Haz clic para copiar la ruta",
       "close_esc": "Cerrar (Esc)",
       "close_find": "Cerrar la búsqueda",
+      "collapse_unchanged": "Contraer sin cambios",
       "copy_content": "Copiar el contenido",
       "copy_path": "Copiar la ruta",
       "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
@@ -5598,14 +5596,13 @@
       "in_knowledge_library": "En la Biblioteca de conocimiento",
       "in_library": "En la Biblioteca",
       "line_numbers": "Números de línea",
-      "loading_diff": "Cargando el diff…",
       "more_options": "Más opciones",
       "next_enter": "Siguiente (Enter)",
       "next_match": "Coincidencia siguiente",
+      "no_changes_in_file": "No hay cambios en este archivo",
       "no_results": "Sin resultados",
       "open_artifact": "Abrir el artefacto {{name}}",
       "open_as_artifact": "Abrir como artefacto",
-      "open_folder": "Abrir carpeta {{path}}",
       "open_in_file_explorer": "Abrir en el Explorador de archivos",
       "open_in_finder": "Abrir en Finder",
       "open_with_default_app": "Abrir con la aplicación predeterminada",
@@ -5622,14 +5619,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "Guarda este archivo como artefacto (con versiones, persistente y comentable)",
       "saving": "Guardando…",
       "select_any_text_to_add_inline_comments_then_subm": "Selecciona cualquier texto para añadir comentarios en línea y luego envíalos todos al chat.",
+      "show_full_file": "Mostrar archivo completo",
       "show_in_file_manager": "Mostrar en el gestor de archivos",
       "snapshot_version": "Crear versión de instantánea",
       "snapshotting": "Creando la instantánea…",
-      "switch_to_split_view": "Cambiar a la vista dividida",
-      "switch_to_unified_view": "Cambiar a la vista unificada",
+      "split_view": "Vista dividida",
       "tip": "Consejo:",
-      "toggle_autocomplete": "Activar o desactivar el autocompletado",
       "toggle_diff_view": "Activar o desactivar la vista de diff",
+      "toggle_file_browser": "Alternar explorador de archivos",
       "toggle_line_numbers": "Activar o desactivar los números de línea",
       "toggle_word_wrap": "Activar o desactivar el ajuste de línea",
       "tracking_description": "Siguiendo {{path}}",
@@ -5767,9 +5764,7 @@
       "close_editor": "Cerrar el editor",
       "copied": "¡Copiado!",
       "copy": "Copiar",
-      "edit_code_block": "Editar el bloque de código",
-      "edit_in_monaco_editor": "Editar en el editor Monaco",
-      "loading_editor": "Cargando el editor…"
+      "edit_code_block": "Editar el bloque de código"
     },
     "notifications": {
       "notifMeta": {
@@ -6814,14 +6809,15 @@
       "context": "Contexto",
       "diff": "{{name}} - Diff",
       "files": "Archivos",
+      "git": "Git",
       "issues": "Incidencias",
+      "links": "Enlaces",
       "logs": "Registros",
+      "pins": "Fijados",
       "side": "Lateral",
       "subagents": "Subagentes",
       "summary": "Resumen",
-      "workflows": "Flujos de trabajo",
-      "git": "Git",
-      "pins": "Fijados"
+      "workflows": "Flujos de trabajo"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "Todos los slots están ocupados",
@@ -7659,32 +7655,24 @@
         "artifacts_search_library": "Busca en tu biblioteca...",
         "artifacts_this_session": "Esta sesión",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "Pídeme que \"use un flujo de trabajo dinámico para …\" — las ejecuciones de este chat aparecen aquí en vivo.",
-        "back_to_files": "Volver a los archivos",
         "cancel": "Cancelar",
         "cancelled": "Cancelado",
-        "changed_files": "Archivos modificados",
         "changes": "Cambios",
         "clear": "Borrar",
         "complete": "Completado",
-        "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
         "dismiss_done_count": "Descartar completados ({{count}})",
         "error": "Error",
         "failed_click_to_retry": "Error — haz clic para reintentar",
-        "file_artifact_add": "Añadir a artefactos",
-        "file_artifact_add_aria": "Añadir este archivo a la biblioteca de artefactos",
-        "file_artifact_add_failed": "No se pudo añadir: inténtalo de nuevo",
-        "file_artifact_open": "Abrir artefacto",
-        "file_artifact_open_aria": "Abrir el artefacto de este archivo",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "No se encontró el archivo en el disco. Puede que se haya movido o eliminado.",
-        "files": "Archivos",
         "input": "Entrada",
         "issues": "Incidencias",
         "last_tool": "Última herramienta:",
+        "links": "Links",
         "load_output_from_disk": "Cargar la salida desde el disco",
         "loading": "Cargando…",
+        "loading_workspace": "Cargando el espacio de trabajo…",
         "logs": "Registros",
-        "no_files_changed_yet": "Aún no hay archivos modificados",
         "no_issues_in_this_session_yet_mention_a_github_o": "Todavía no hay issues en esta sesión. Menciona un enlace a un issue de GitHub o GitLab y aparecerá aquí.",
+        "no_links_yet": "Todavía no hay enlaces en esta sesión. Menciona una URL en el chat y aparecerá aquí.",
         "no_matches": "Sin coincidencias",
         "no_pull_requests_yet": "Aún no hay pull requests en esta sesión",
         "no_subagents_running": "No hay subagentes en ejecución",
@@ -7695,8 +7683,6 @@
         "pending_approval": "Aprobación pendiente",
         "reject": "Rechazar",
         "rejected": "Rechazado",
-        "remove": "Quitar",
-        "remove_file_from_list": "Quitar el archivo de la lista",
         "resolved": "Resuelto",
         "resolving": "Resolviendo…",
         "resolving_2": "resolviendo...",
@@ -7704,11 +7690,10 @@
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
         "resources": "Recursos",
-        "retry": "Reintentar",
         "retry_failed_count": "Reintentar los fallidos ({{count}})",
         "running": "En ejecución",
         "running_tool": "Herramienta en ejecución",
-        "search_files": "Buscar por nombre de archivo, carpeta o enlace…",
+        "search_files": "Buscar por etiqueta o URL…",
         "show_all_count": "Mostrar todo ({{count}})",
         "side": "Lateral",
         "starting": "Iniciando…",
@@ -7718,11 +7703,11 @@
         "trusted": "De confianza",
         "trusted_base": "Base de confianza",
         "trusted_command": "Comando de confianza",
-        "unable_to_read_file": "No se pudo leer el archivo.",
-        "unable_to_read_this_file": "No se pudo leer este archivo.",
         "waiting_for_output": "Esperando la salida…",
         "waiting_to_start_queued_behind_the_concurrency_l": "esperando para iniciar — en cola por el límite de concurrencia",
-        "workflows": "Flujos de trabajo"
+        "workflows": "Flujos de trabajo",
+        "workspace_empty": "Este espacio de trabajo aún no tiene archivos",
+        "workspace_truncated": "Espacio de trabajo grande: se muestran los primeros 10.000 archivos"
       },
       "assistantMessage": {
         "applied_to_tasks": "Aplicado a Tareas",
@@ -7797,6 +7782,7 @@
       "folderPanel": {
         "empty_folder": "Carpeta vacía",
         "loading": "Cargando…",
+        "no_changes": "Árbol de trabajo sin cambios",
         "open_in_file_explorer": "Abrir en el Explorador de archivos",
         "open_in_finder": "Abrir en Finder",
         "parent_folder": "Carpeta superior",
@@ -7909,10 +7895,16 @@
         "menu_context_desc": "Contexto agregado durante los turnos de esta sesión",
         "menu_files": "Archivos",
         "menu_files_desc": "Explorar y editar archivos",
+        "menu_git": "Git",
+        "menu_git_desc": "Rama, cambios y commits recientes",
         "menu_issues": "Incidencias",
         "menu_issues_desc": "Incidencias mencionadas en esta sesión",
+        "menu_links": "Enlaces",
+        "menu_links_desc": "URLs que este chat mencionó",
         "menu_logs": "Registros",
         "menu_logs_desc": "Flujo de registros del gateway",
+        "menu_pins": "Fijados",
+        "menu_pins_desc": "Mensajes que fijaste en esta sesión",
         "menu_side": "Lateral",
         "menu_side_desc": "Chat paralelo, contexto compartido",
         "menu_subagents": "Subagentes",
@@ -7931,11 +7923,7 @@
         "switch_to_split_view": "Cambiar a la vista dividida",
         "switch_to_unified_view": "Cambiar a la vista unificada",
         "this_app_render_is_no_longer_available": "Esta representación de la app ya no está disponible. Ejecuta la herramienta de nuevo para verla.",
-        "turn_diff": "Diff del turno",
-        "menu_git": "Git",
-        "menu_git_desc": "Rama, cambios y commits recientes",
-        "menu_pins": "Fijados",
-        "menu_pins_desc": "Mensajes que fijaste en esta sesión"
+        "turn_diff": "Diff del turno"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "No se pudo detener, sesión restablecida",
@@ -8111,6 +8099,23 @@
         "updated_behind": "Actualizado {{when}} — por detrás de la conversación",
         "where_it_stands": "Cómo va",
         "you_asked_for": "Lo que pediste"
+      },
+      "fileBrowserRail": {
+        "all_files": "Todos los archivos",
+        "changed": "Modificados",
+        "close_search": "Cerrar búsqueda",
+        "filter_placeholder": "Filtrar archivos…",
+        "refresh": "Actualizar",
+        "resize": "Cambiar tamaño del explorador",
+        "tree_mode": "Modo de lista de archivos"
+      },
+      "filesHome": {
+        "no_project_dir": "Este chat no tiene un directorio de proyecto",
+        "refresh": "Actualizar",
+        "reveal_in_finder": "Mostrar en el gestor de archivos",
+        "select_file_hint": "Selecciona un archivo del árbol para abrirlo en una nueva pestaña",
+        "title": "Archivos",
+        "tree_error": "No se pudo cargar el árbol de archivos"
       }
     },
     "chatPage": {

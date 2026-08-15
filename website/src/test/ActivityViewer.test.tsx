@@ -34,7 +34,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// MarkdownPanel pulls in Monaco + a large renderer tree; stub it so the
+// MarkdownPanel pulls in Pierre + a large renderer tree; stub it so the
 // Files-tab inline-preview test stays focused on the list↔file swap behavior.
 // forwardRef + requestClose mirror the real imperative handle so the preview's
 // "Back to files" button (which routes through the panel's guarded close) works
@@ -154,8 +154,7 @@ describe('ActivityViewer', () => {
     const store = configureStore({
       reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
     })
-    // Files tab is the default
-    store.dispatch(openActivityToTab('files'))
+    store.dispatch(openActivityToTab('links'))
     const prUrl = 'https://github.com/kirodotdev/KiroCrew/pull/42'
     render(
       <Provider store={store}>
@@ -182,549 +181,97 @@ describe('ActivityViewer', () => {
     expect(screen.queryByText('PR #42')).not.toBeInTheDocument()
   })
 
-  it('search filters both files and links, with a no-matches state', async () => {
+  it('search filters links, with a no-matches state', async () => {
     render(
       <ActivityViewer
         {...baseProps}
-        view="files"
-        // >5 total entries, so the search box clears its display threshold.
-        files={[
-          { path: '/proj/alpha.md', source: 'tool' },
-          { path: '/proj/beta.ts', source: 'tool' },
-          { path: '/proj/gamma.ts', source: 'tool' },
-          { path: '/proj/delta.ts', source: 'tool' },
-          { path: '/proj/epsilon.ts', source: 'tool' },
+        view="links"
+        // >5 entries, so the search box clears its display threshold.
+        navLinks={[
+          { url: 'https://example.com/alpha', type: 'other', label: 'Alpha link', msgIdx: 0 },
+          { url: 'https://example.com/beta', type: 'other', label: 'Beta link', msgIdx: 0 },
+          { url: 'https://example.com/gamma', type: 'other', label: 'Gamma link', msgIdx: 0 },
+          { url: 'https://example.com/delta', type: 'other', label: 'Delta link', msgIdx: 0 },
+          { url: 'https://example.com/epsilon', type: 'other', label: 'Epsilon link', msgIdx: 0 },
+          { url: 'https://example.com/zeta', type: 'other', label: 'Zeta link', msgIdx: 0 },
         ]}
-        navLinks={[{ url: 'https://example.com/alpha-notes', type: 'other', label: 'Alpha notes', msgIdx: 0 }]}
-        onFileOpen={vi.fn()}
       />,
       { wrapper },
     )
-    expect(screen.getByText('Changed files')).toBeInTheDocument()
     expect(screen.getByText('Resources')).toBeInTheDocument()
 
-    // Typing filters ACROSS both sections (path match + link label match).
-    const box = screen.getByLabelText('Search by file name, folder, or link…')
+    const box = screen.getByLabelText('Search by label or URL…')
     fireEvent.change(box, { target: { value: 'alpha' } })
-    expect(screen.getByText('alpha.md')).toBeInTheDocument()
-    expect(screen.getByText('Alpha notes')).toBeInTheDocument()
-    expect(screen.queryByText('beta.ts')).not.toBeInTheDocument()
+    expect(screen.getByText('Alpha link')).toBeInTheDocument()
+    expect(screen.queryByText('Beta link')).not.toBeInTheDocument()
 
     // A query matching nothing shows the no-matches state, not the empty state.
     fireEvent.change(box, { target: { value: 'zzz-no-such-thing' } })
     expect(screen.getByText('No matches')).toBeInTheDocument()
-    expect(screen.queryByText('No files changed yet')).not.toBeInTheDocument()
+    expect(screen.queryByText('No links yet')).not.toBeInTheDocument()
 
     // Clearing restores everything.
     fireEvent.change(box, { target: { value: '' } })
-    expect(screen.getByText('beta.ts')).toBeInTheDocument()
+    expect(screen.getByText('Beta link')).toBeInTheDocument()
   })
 
   it('keeps the search box mounted while a query is active, even below the threshold', async () => {
     render(
       <ActivityViewer
         {...baseProps}
-        view="files"
-        files={[
-          { path: '/proj/alpha.md', source: 'tool' },
-          { path: '/proj/beta.ts', source: 'tool' },
-          { path: '/proj/gamma.ts', source: 'tool' },
-          { path: '/proj/delta.ts', source: 'tool' },
-          { path: '/proj/epsilon.ts', source: 'tool' },
-          { path: '/proj/zeta.ts', source: 'tool' },
+        view="links"
+        navLinks={[
+          { url: 'https://example.com/alpha', type: 'other', label: 'Alpha link', msgIdx: 0 },
+          { url: 'https://example.com/beta', type: 'other', label: 'Beta link', msgIdx: 0 },
+          { url: 'https://example.com/gamma', type: 'other', label: 'Gamma link', msgIdx: 0 },
+          { url: 'https://example.com/delta', type: 'other', label: 'Delta link', msgIdx: 0 },
+          { url: 'https://example.com/epsilon', type: 'other', label: 'Epsilon link', msgIdx: 0 },
+          { url: 'https://example.com/zeta', type: 'other', label: 'Zeta link', msgIdx: 0 },
         ]}
-        onFileOpen={vi.fn()}
       />,
       { wrapper },
     )
-    const label = 'Search by file name, folder, or link…'
+    const label = 'Search by label or URL…'
     const box = screen.getByLabelText(label)
     // Filtering down to ONE match takes the visible count below the 5-entry
     // threshold. The box must NOT unmount — otherwise the stale query keeps
     // filtering with no input left to clear it, and the hidden rows read as lost.
     fireEvent.change(box, { target: { value: 'alpha' } })
     expect(screen.getByLabelText(label)).toBeInTheDocument()
-    expect(screen.getByText('alpha.md')).toBeInTheDocument()
-    expect(screen.queryByText('beta.ts')).not.toBeInTheDocument()
+    expect(screen.getByText('Alpha link')).toBeInTheDocument()
+    expect(screen.queryByText('Beta link')).not.toBeInTheDocument()
     // Clearing brings everything back.
     fireEvent.change(screen.getByLabelText(label), { target: { value: '' } })
-    expect(screen.getByText('beta.ts')).toBeInTheDocument()
+    expect(screen.getByText('Beta link')).toBeInTheDocument()
   })
 
   it('hides the search box for a short list (nothing to filter yet)', async () => {
     render(
       <ActivityViewer
         {...baseProps}
-        view="files"
-        files={[{ path: '/proj/alpha.md', source: 'tool' }]}
-        onFileOpen={vi.fn()}
+        view="links"
+        navLinks={[{ url: 'https://example.com/alpha', type: 'other', label: 'Alpha link', msgIdx: 0 }]}
       />,
       { wrapper },
     )
     // The list renders, but a 1-item list is faster to scan than to filter.
-    expect(screen.getByText('alpha.md')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Search by file name, folder, or link…')).not.toBeInTheDocument()
+    expect(screen.getByText('Alpha link')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Search by label or URL…')).not.toBeInTheDocument()
   })
 
-  it('Files tab opens a file inline with a back button, not a new tab', async () => {
-    const onFileOpen = vi.fn()
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'hello world', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[{ path: '/proj/a.md', source: 'tool' }]}
-          onFileOpen={onFileOpen}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-        />,
-        { wrapper },
-      )
-      // Starts on the list.
-      expect(screen.getByText('Changed files')).toBeInTheDocument()
 
-      // Clicking the file swaps the list for the inline preview — no tab opened.
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      expect(await screen.findByTestId('md-panel', {}, { timeout: 3000 })).toHaveTextContent('/proj/a.md::hello world')
-      expect(onFileOpen).not.toHaveBeenCalled()
-      expect(screen.queryByText('Changed files')).not.toBeInTheDocument()
 
-      // Back returns to the list.
-      fireEvent.click(screen.getByRole('button', { name: 'Back to files' }))
-      expect(screen.getByText('Changed files')).toBeInTheDocument()
-      expect(screen.queryByTestId('md-panel')).not.toBeInTheDocument()
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
-  it('preserves the open inline file across chat-slot switches (like a document tab)', async () => {
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'contents', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      const props = (slot: string) => ({
-        ...baseProps,
-        slot,
-        view: 'files' as const,
-        files: [{ path: '/proj/a.md', source: 'tool' as const }],
-        onFileOpen: vi.fn(),
-        onFileSave: vi.fn().mockResolvedValue(undefined),
-      })
-      const { rerender } = render(<ActivityViewer {...props('slot-A')} />, { wrapper })
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      expect(await screen.findByTestId('md-panel', {}, { timeout: 3000 })).toHaveTextContent('/proj/a.md')
-      // Switching chat slots keeps the open file mounted (not slot-scoped) — no
-      // discard, no remount — exactly like a persistent document-tab editor.
-      rerender(<ActivityViewer {...props('slot-B')} />)
-      expect(screen.getByTestId('md-panel')).toHaveTextContent('/proj/a.md')
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
-  it('shows a retryable error instead of an editable panel when the read fails', async () => {
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: false, status: 404, text: async () => 'ignored', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[{ path: '/proj/gone.md', source: 'tool' }]}
-          onFileOpen={vi.fn()}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-        />,
-        { wrapper },
-      )
-      fireEvent.click(screen.getByTitle('/proj/gone.md'))
-      // A failed read must NOT mount the editor (saving would overwrite the file
-      // with the placeholder) — it offers a retry instead.
-      expect(await screen.findByRole('button', { name: 'Retry' }, { timeout: 3000 })).toBeInTheDocument()
-      expect(screen.queryByTestId('md-panel')).not.toBeInTheDocument()
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
-  it('shows a retryable error (not an editor) when the read REJECTS at the network level', async () => {
-    const prevFetch = global.fetch
-    // fetch rejects (offline / DNS / abort) — the query would otherwise leave
-    // `data` undefined and fall through to an editor over an empty buffer.
-    global.fetch = vi.fn().mockRejectedValue(new Error('network down')) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[{ path: '/proj/a.md', source: 'tool' }]}
-          onFileOpen={vi.fn()}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-        />,
-        { wrapper },
-      )
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      expect(await screen.findByRole('button', { name: 'Retry' }, { timeout: 3000 })).toBeInTheDocument()
-      expect(screen.queryByTestId('md-panel')).not.toBeInTheDocument()
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
-  it('Escape collapses the panel on the list, but defers to the editor when a file is open', async () => {
-    const onToggle = vi.fn()
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'x', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          onToggle={onToggle}
-          view="files"
-          files={[{ path: '/proj/a.md', source: 'tool' }]}
-          onFileOpen={vi.fn()}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-        />,
-        { wrapper },
-      )
-      const region = screen.getByRole('region', { name: 'Activity' })
-      // On the list, Escape collapses the panel.
-      fireEvent.keyDown(region, { key: 'Escape' })
-      expect(onToggle).toHaveBeenCalledTimes(1)
-      // Open a file inline — now Escape must NOT collapse; it defers to the
-      // editor's own guarded close (which returns to the list / prompts).
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      await screen.findByTestId('md-panel', {}, { timeout: 3000 })
-      fireEvent.keyDown(region, { key: 'Escape' })
-      expect(onToggle).toHaveBeenCalledTimes(1) // unchanged — no collapse
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
-  it('refreshes the shared file-read cache on save so reopening shows saved content', async () => {
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'orig', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[{ path: '/proj/a.md', source: 'tool' }]}
-          onFileOpen={vi.fn()}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-        />,
-        { wrapper },
-      )
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      expect(await screen.findByTestId('md-panel', {}, { timeout: 3000 })).toHaveTextContent('/proj/a.md::orig')
-      // Save via the editor, then wait for the cache write.
-      fireEvent.click(screen.getByTestId('md-save'))
-      await waitFor(() => expect(screen.getByTestId('md-panel')).toBeInTheDocument())
-      await new Promise(r => setTimeout(r, 20))
-      // Back to the list, reopen — seeds from the REFRESHED cache (saved
-      // content), not the stale pre-save disk read.
-      fireEvent.click(screen.getByRole('button', { name: 'Back to files' }))
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      expect(await screen.findByTestId('md-panel', {}, { timeout: 3000 })).toHaveTextContent('/proj/a.md::SAVED')
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
-  it('preserves an in-progress inline edit across an unmount (store-backed draft)', async () => {
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'orig', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    const props = {
-      ...baseProps,
-      view: 'files' as const,
-      files: [{ path: '/proj/a.md', source: 'tool' as const }],
-      onFileOpen: vi.fn(),
-      onFileSave: vi.fn().mockResolvedValue(undefined),
-    }
-    try {
-      const { unmount } = render(<ActivityViewer {...props} />, { wrapper })
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      await screen.findByTestId('md-panel', {}, { timeout: 3000 })
-      fireEvent.click(screen.getByTestId('md-edit')) // edit -> draft in module store
-      // Unmount the whole panel (models close / auto-collapse) WITHOUT a guard.
-      unmount()
-      // Remount fresh and reopen the same file: the edit is recovered from the
-      // store-backed draft (survived the unmount), not re-seeded from disk.
-      render(<ActivityViewer {...props} />, { wrapper })
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      expect(await screen.findByTestId('md-panel', {}, { timeout: 3000 })).toHaveTextContent('/proj/a.md::EDITED')
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
-
-  it('routes to the existing document tab instead of a second inline editor (one per path)', async () => {
-    const onFileOpen = vi.fn()
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'x', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[{ path: '/proj/a.md', source: 'tool' }]}
-          onFileOpen={onFileOpen}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-          openDocPaths={new Set(['/proj/a.md'])}
-        />,
-        { wrapper },
-      )
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      // Already open as a document tab → focus that tab; no inline editor opens.
-      expect(onFileOpen).toHaveBeenCalledWith('/proj/a.md')
-      expect(screen.queryByTestId('md-panel')).not.toBeInTheDocument()
-      expect(screen.getByText('Changed files')).toBeInTheDocument()
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
-
-  it('drives the lifted preview state when controlled (onPreviewPathChange provided)', async () => {
-    const onPreviewPathChange = vi.fn()
-    const prevFetch = global.fetch
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true, status: 200, text: async () => 'x', json: async () => ({ runs: [] }),
-    }) as unknown as typeof fetch
-    try {
-      render(
-        <ActivityViewer
-          {...baseProps}
-          view="files"
-          files={[{ path: '/proj/a.md', source: 'tool' }]}
-          onFileOpen={vi.fn()}
-          onFileSave={vi.fn().mockResolvedValue(undefined)}
-          previewPath={null}
-          onPreviewPathChange={onPreviewPathChange}
-        />,
-        { wrapper },
-      )
-      fireEvent.click(screen.getByTitle('/proj/a.md'))
-      // Controlled: opening routes through the lifted setter (ChatPage owns the
-      // state and coordinates one-editor-per-path); it does NOT mount inline off
-      // internal state while the parent-controlled previewPath stays null.
-      expect(onPreviewPathChange).toHaveBeenCalledWith('/proj/a.md')
-      expect(screen.queryByTestId('md-panel')).not.toBeInTheDocument()
-    } finally {
-      global.fetch = prevFetch
-    }
-  })
 
   /* ── Files tab: add a file to the artifact library ─────────────────────────
    * The Artifacts tab lists artifact records only, so a plain file can no
    * longer reach the library by extension alone. The explicit way in lives on
    * the file row itself. */
-  describe('add to artifact library', () => {
-    const filesProps = { ...baseProps, view: 'files' as const, onFileOpen: vi.fn() }
-
-    /** Stub the file-read fetch the promote path uses to load the bytes. */
-    function withFileRead(text: string, ok = true, truncated = false) {
-      const prevFetch = global.fetch
-      global.fetch = vi.fn().mockResolvedValue({
-        ok, status: ok ? 200 : 500, text: async () => text, json: async () => ({ runs: [] }),
-        // /api/file-read signals a truncated read here; promotion must refuse
-        // it rather than persist the prefix as a whole document.
-        headers: { get: (h: string) => (h === 'X-Truncated' && truncated ? 'true' : null) },
-      }) as unknown as typeof fetch
-      return () => { global.fetch = prevFetch }
-    }
-
-    beforeEach(() => {
-      // No clearMocks in the vitest config, so calls accumulate across tests —
-      // the "never pulls the library" assertion below counts calls, so both
-      // spies are cleared here rather than only re-stubbed.
-      vi.mocked(api.artifacts).mockClear()
-      vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] } as never)
-      vi.mocked(api.createArtifact).mockClear()
-      vi.mocked(api.createArtifact).mockResolvedValue({ slug: 'notes-md', version: 1 } as never)
-    })
-
-    it('locks every promote control while one promotion is in flight', async () => {
-      // Dedup is resolved server-side on source_path, so two concurrent POSTs
-      // can both pass the pre-create lookup and mint duplicate records. The
-      // lock therefore has to be global, not scoped to the row being clicked.
-      const restore = withFileRead('# Notes')
-      let release: (v: unknown) => void = () => {}
-      vi.mocked(api.createArtifact).mockImplementation(
-        () => new Promise(res => { release = res }) as never,
-      )
-      try {
-        render(
-          <ActivityViewer
-            {...filesProps}
-            files={[{ path: '/proj/a.md', source: 'tool' }, { path: '/proj/b.md', source: 'tool' }]}
-          />,
-          { wrapper },
-        )
-        fireEvent.click(await screen.findByTestId('file-artifact-/proj/a.md'))
-        await waitFor(() => {
-          expect(screen.getByTestId('file-artifact-/proj/b.md')).toBeDisabled()
-        })
-        // A second click on the OTHER row must not start a second create.
-        fireEvent.click(screen.getByTestId('file-artifact-/proj/b.md'))
-        expect(api.createArtifact).toHaveBeenCalledTimes(1)
-        release({ slug: 'a-md', version: 1 })
-      } finally {
-        restore()
-      }
-    })
-
-    it('refuses to promote a truncated read instead of persisting the prefix', async () => {
-      // A file over the read limit comes back partial. Promoting it would store
-      // the prefix as though it were the whole document -- and a disposable file
-      // is COPIED, so nothing would point at the original and the loss would be
-      // silent and permanent.
-      const restore = withFileRead('# only the first half', true, true)
-      try {
-        render(
-          <ActivityViewer {...filesProps} files={[{ path: '/proj/huge.md', source: 'tool' }]} />,
-          { wrapper },
-        )
-        fireEvent.click(await screen.findByTestId('file-artifact-/proj/huge.md'))
-        await waitFor(() => {
-          expect(api.createArtifact).not.toHaveBeenCalled()
-        })
-      } finally {
-        restore()
-      }
-    })
-
-    it('adds a supported file to the library, sending the path for the server to classify', async () => {
-      const restore = withFileRead('# Notes')
-      try {
-        render(
-          <ActivityViewer {...filesProps} files={[{ path: '/proj/notes.md', source: 'tool' }]} />,
-          { wrapper },
-        )
-        const btn = await screen.findByTestId('file-artifact-/proj/notes.md')
-        // Revealed on row hover AND on keyboard focus — never hover-only.
-        expect(btn.className).toContain('group-hover:opacity-100')
-        expect(btn.className).toContain('group-focus-within:opacity-100')
-        fireEvent.click(btn)
-        await waitFor(() => {
-          // source_path travels; copy-vs-link is the SERVER's call, so the
-          // frontend sends the path and does not decide.
-          // The REAL session key is passed as the second argument so the
-          // server's restricted-session gate applies. With the transport's
-          // shared `dashboard:ui` placeholder an incognito session could
-          // persist a promoted file its restriction was meant to refuse.
-          expect(api.createArtifact).toHaveBeenCalledWith(
-            {
-              name: 'notes.md',
-              content: '# Notes',
-              kind: 'markdown',
-              source_path: '/proj/notes.md',
-              origin_session_key: 'test-slot',
-            },
-            'dashboard:test-slot',
-          )
-        })
-      } finally {
-        restore()
-      }
-    })
-
-    it('offers nothing on a file type the artifact store cannot render', async () => {
-      const restore = withFileRead('print(1)')
-      try {
-        render(
-          <ActivityViewer
-            {...filesProps}
-            files={[{ path: '/proj/main.py', source: 'tool' }, { path: '/proj/ok.md', source: 'tool' }]}
-          />,
-          { wrapper },
-        )
-        // The supported sibling proves the control renders at all here, so the
-        // .py row's absence is the extension gate and not a mount failure.
-        expect(await screen.findByTestId('file-artifact-/proj/ok.md')).toBeInTheDocument()
-        expect(screen.queryByTestId('file-artifact-/proj/main.py')).not.toBeInTheDocument()
-      } finally {
-        restore()
-      }
-    })
-
-    it('opens the existing artifact instead of saving a second one', async () => {
-      const restore = withFileRead('# Notes')
-      const onArtifactOpen = vi.fn()
-      try {
-        // A LINKED artifact carries source_path, which is the join this uses.
-        vi.mocked(api.artifacts).mockResolvedValue({
-          artifacts: [{ slug: 'notes-md', name: 'notes.md', kind: 'markdown', source_path: '/proj/notes.md' }],
-        } as never)
-        render(
-          <ActivityViewer
-            {...filesProps}
-            files={[{ path: '/proj/notes.md', source: 'tool' }]}
-            onArtifactOpen={onArtifactOpen}
-          />,
-          { wrapper },
-        )
-        const btn = await screen.findByTestId('file-artifact-/proj/notes.md')
-        // Accent, and NOT hover-gated — an already-added file says so at a glance.
-        await waitFor(() => { expect(btn.className).toContain('text-accent') })
-        expect(btn.className).not.toContain('opacity-0')
-        fireEvent.click(btn)
-        expect(onArtifactOpen).toHaveBeenCalledWith('notes-md')
-        // The whole point: no duplicate save.
-        expect(api.createArtifact).not.toHaveBeenCalled()
-      } finally {
-        restore()
-      }
-    })
-
-    it('never pulls the artifact library for a session that touched no addable file', async () => {
-      const restore = withFileRead('x')
-      try {
-        render(
-          <ActivityViewer {...filesProps} files={[{ path: '/proj/main.py', source: 'tool' }]} />,
-          { wrapper },
-        )
-        expect(await screen.findByText('Changed files')).toBeInTheDocument()
-        expect(api.artifacts).not.toHaveBeenCalled()
-      } finally {
-        restore()
-      }
-    })
-
-    it('marks the row when the add fails, leaving it retryable', async () => {
-      const restore = withFileRead('unreadable', false)
-      try {
-        render(
-          <ActivityViewer {...filesProps} files={[{ path: '/proj/notes.md', source: 'tool' }]} />,
-          { wrapper },
-        )
-        const btn = await screen.findByTestId('file-artifact-/proj/notes.md')
-        fireEvent.click(btn)
-        await waitFor(() => {
-          expect(screen.getByTestId('file-artifact-/proj/notes.md').className).toContain('text-danger')
-        })
-        expect(api.createArtifact).not.toHaveBeenCalled()
-        // Still a live control, not a dead-end.
-        expect(screen.getByTestId('file-artifact-/proj/notes.md')).toBeEnabled()
-      } finally {
-        restore()
-      }
-    })
-  })
 })
 
 // ── Artifacts tab: artifact records only ────────────────────────────────────
@@ -1194,18 +741,16 @@ describe('ActivityViewer — panel section headers', () => {
     vi.mocked(api.artifactSessionDocs).mockResolvedValue({ docs: [] })
   })
 
-  it('renders the Files tab groups through the shared header', () => {
+  it('renders the Links tab group through the shared header', () => {
     render(
       <ActivityViewer
         {...headerProps}
-        view="files"
-        files={[{ path: '/proj/a.md', source: 'tool' }]}
+        view="links"
         navLinks={[{ url: 'https://example.com/x', type: 'other', label: 'Notes', msgIdx: 0 }]}
-        onFileOpen={vi.fn()}
       />,
       { wrapper: panelWrapper },
     )
-    expect(sectionHeaders()).toEqual([['Changed files', '1'], ['Resources', '1']])
+    expect(sectionHeaders()).toEqual([['Resources', '1']])
   })
 
   it('renders the Artifacts tab groups through the shared header, count outside the label', async () => {

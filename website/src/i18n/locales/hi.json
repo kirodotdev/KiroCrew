@@ -3716,9 +3716,7 @@
         "typesetting_hints_one": "{{count}} टाइपसेटिंग सुझाव",
         "typesetting_hints_other": "{{count}} टाइपसेटिंग सुझाव"
       },
-      "editor": {
-        "loading_editor": "एडिटर लोड हो रहा है…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} हटाएँ",
         "files": "फ़ाइलें",
@@ -4996,7 +4994,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "आपके टाइप करते ही बदलाव पूर्वावलोकन में दिखाई देंगे।",
       "editing_svg": "SVG संपादित किया जा रहा है",
-      "loading_editor": "एडिटर लोड हो रहा है…",
       "svg_source_code": "SVG स्रोत कोड"
     },
     "contextBar": {
@@ -5021,26 +5018,19 @@
       "close": "बंद करें"
     },
     "diffBlock": {
-      "collapse": "▲ समेटें",
-      "context_lines": "संदर्भ पंक्तियाँ",
       "copied": "कॉपी हो गया!",
       "copy_patch": "पैच कॉपी करें",
-      "diff": "diff",
       "generating_diff": "डिफ़ बनाया जा रहा है…",
-      "lines_hidden": "पंक्तियाँ छिपी हैं",
       "open": "खोलें",
       "open_in_side_panel": "{{path}} को साइड पैनल में खोलो",
       "split_view": "स्प्लिट व्यू",
       "switch_to_split_view": "स्प्लिट व्यू पर जाएँ",
       "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ",
-      "unchanged_lines_one": "{{count}} अपरिवर्तित पंक्ति",
-      "unchanged_lines_other": "{{count}} अपरिवर्तित पंक्तियाँ",
       "unified_view": "यूनिफ़ाइड व्यू"
     },
     "diffPanel": {
       "click_to_copy_path": "पथ कॉपी करने के लिए क्लिक करें",
-      "contents_identical": "सामग्री समान है",
-      "loading_diff": "डिफ़ लोड हो रहा है…"
+      "contents_identical": "सामग्री समान है"
     },
     "discoverySearchBar": {
       "clear_search": "खोज साफ़ करें",
@@ -5101,15 +5091,22 @@
       "video": "वीडियो: {{name}}"
     },
     "fileChangeChips": {
+      "additions_one": "{{count}} जोड़ी गई पंक्ति",
+      "additions_other": "{{count}} जोड़ी गई पंक्तियाँ",
       "artifact": "आर्टिफ़ैक्ट",
       "changed": "बदली गई",
       "file_one": "{{count}} फ़ाइल",
       "file_other": "{{count}} फ़ाइलें",
       "more": "और",
       "no_changes": "कोई बदलाव नहीं",
+      "open": "फ़ाइल खोलें",
+      "open_in_side_panel": "{{path}} को साइड पैनल में खोलो",
+      "removals_one": "{{count}} हटाई गई पंक्ति",
+      "removals_other": "{{count}} हटाई गई पंक्तियाँ",
       "show": "दिखाएँ",
       "show_less": "कम दिखाएँ",
-      "this_document_is_tracked_as_a_session_artifact_n": "यह दस्तावेज़ सत्र आर्टिफ़ैक्ट के रूप में ट्रैक किया जाता है, सोर्स-फ़ाइल बदलाव के रूप में नहीं"
+      "this_document_is_tracked_as_a_session_artifact_n": "यह दस्तावेज़ सत्र आर्टिफ़ैक्ट के रूप में ट्रैक किया जाता है, सोर्स-फ़ाइल बदलाव के रूप में नहीं",
+      "toggle_diff": "{{path}} का डिफ़ दिखाएँ या छिपाएँ"
     },
     "filePickerMenu": {
       "folder": "फ़ोल्डर",
@@ -5489,7 +5486,6 @@
       "adding": "जोड़ा जा रहा है…",
       "adding_2": "जोड़ा जा रहा है...",
       "already_in_library": "पहले से लाइब्रेरी में",
-      "autocomplete": "ऑटोकम्प्लीट",
       "cancel": "रद्द करें",
       "cancel_discard_unsaved_edits": "रद्द करें — बिना सहेजे बदलाव छोड़ दें",
       "cannot_read_file": "फ़ाइल पढ़ी नहीं जा सकी",
@@ -5498,6 +5494,7 @@
       "click_to_copy_path": "पाथ कॉपी करने के लिए क्लिक करें",
       "close_esc": "बंद करें (Esc)",
       "close_find": "खोज बंद करें",
+      "collapse_unchanged": "अपरिवर्तित को समेटें",
       "copy_content": "सामग्री कॉपी करें",
       "copy_path": "पाथ कॉपी करें",
       "discard_unsaved_changes": "बिना सहेजे बदलाव छोड़ दें?",
@@ -5517,14 +5514,13 @@
       "in_knowledge_library": "ज्ञान लाइब्रेरी में",
       "in_library": "लाइब्रेरी में",
       "line_numbers": "पंक्ति संख्याएँ",
-      "loading_diff": "डिफ़ लोड हो रहा है…",
       "more_options": "अधिक विकल्प",
       "next_enter": "अगला (Enter)",
       "next_match": "अगला मैच",
+      "no_changes_in_file": "इस फ़ाइल में कोई बदलाव नहीं है",
       "no_results": "कोई परिणाम नहीं",
       "open_artifact": "आर्टिफ़ैक्ट {{name}} खोलो",
       "open_as_artifact": "आर्टिफ़ैक्ट के रूप में खोलें",
-      "open_folder": "फ़ोल्डर खोलें {{path}}",
       "open_in_file_explorer": "File Explorer में खोलें",
       "open_in_finder": "Finder में खोलें",
       "open_with_default_app": "डिफ़ॉल्ट ऐप में खोलो",
@@ -5541,14 +5537,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "इस फ़ाइल को आर्टिफ़ैक्ट के रूप में सहेजें (संस्करणबद्ध, स्थायी, टिप्पणी-योग्य)",
       "saving": "सहेजा जा रहा है…",
       "select_any_text_to_add_inline_comments_then_subm": "इनलाइन टिप्पणियाँ जोड़ने के लिए कोई भी टेक्स्ट चुनें, फिर उन सभी को चैट में भेजें।",
+      "show_full_file": "पूरी फ़ाइल दिखाएँ",
       "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
       "snapshot_version": "स्नैपशॉट संस्करण बनाएँ",
       "snapshotting": "स्नैपशॉट बन रहा है…",
-      "switch_to_split_view": "स्प्लिट व्यू पर जाएँ",
-      "switch_to_unified_view": "यूनिफ़ाइड व्यू पर जाएँ",
+      "split_view": "स्प्लिट व्यू",
       "tip": "सुझाव:",
-      "toggle_autocomplete": "ऑटोकम्प्लीट टॉगल करें",
       "toggle_diff_view": "डिफ़ व्यू टॉगल करें",
+      "toggle_file_browser": "फ़ाइल ब्राउज़र टॉगल करें",
       "toggle_line_numbers": "पंक्ति संख्याएँ टॉगल करें",
       "toggle_word_wrap": "वर्ड रैप टॉगल करें",
       "tracking_description": "{{path}} को ट्रैक किया जा रहा है",
@@ -5686,9 +5682,7 @@
       "close_editor": "एडिटर बंद करें",
       "copied": "कॉपी हो गया!",
       "copy": "कॉपी करें",
-      "edit_code_block": "कोड ब्लॉक संपादित करें",
-      "edit_in_monaco_editor": "Monaco एडिटर में संपादित करें",
-      "loading_editor": "एडिटर लोड हो रहा है…"
+      "edit_code_block": "कोड ब्लॉक संपादित करें"
     },
     "notifications": {
       "notifMeta": {
@@ -6726,14 +6720,15 @@
       "context": "संदर्भ",
       "diff": "{{name}} - डिफ़",
       "files": "फ़ाइलें",
+      "git": "Git",
       "issues": "इश्यू",
+      "links": "लिंक",
       "logs": "लॉग",
+      "pins": "पिन",
       "side": "साइड",
       "subagents": "सब-एजेंट",
       "summary": "सारांश",
-      "workflows": "वर्कफ़्लो",
-      "git": "Git",
-      "pins": "पिन"
+      "workflows": "वर्कफ़्लो"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "सभी स्लॉट भरे हुए हैं",
@@ -7559,32 +7554,24 @@
         "artifacts_search_library": "अपनी लाइब्रेरी खोजो...",
         "artifacts_this_session": "यह सत्र",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "मुझसे कहें \"डायनामिक वर्कफ़्लो का उपयोग करके …\" — इस चैट से चले रन यहाँ लाइव दिखेंगे।",
-        "back_to_files": "फ़ाइलों पर वापस",
         "cancel": "रद्द करें",
         "cancelled": "रद्द किया गया",
-        "changed_files": "बदली गई फ़ाइलें",
         "changes": "बदलाव",
         "clear": "साफ़ करें",
         "complete": "पूर्ण",
-        "discard_unsaved_changes": "बिना सहेजे बदलाव रद्द करें?",
         "dismiss_done_count": "पूर्ण को खारिज करें ({{count}})",
         "error": "त्रुटि",
         "failed_click_to_retry": "विफल — पुनः प्रयास के लिए क्लिक करें",
-        "file_artifact_add": "आर्टिफ़ैक्ट में जोड़ें",
-        "file_artifact_add_aria": "इस फ़ाइल को आर्टिफ़ैक्ट लाइब्रेरी में जोड़ें",
-        "file_artifact_add_failed": "जोड़ा नहीं जा सका — फिर से कोशिश करें",
-        "file_artifact_open": "आर्टिफ़ैक्ट खोलें",
-        "file_artifact_open_aria": "इस फ़ाइल का आर्टिफ़ैक्ट खोलें",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "फ़ाइल डिस्क पर नहीं मिली। उसे कहीं और ले जाया या हटा दिया गया हो सकता है।",
-        "files": "फ़ाइलें",
         "input": "इनपुट",
         "issues": "इश्यू",
         "last_tool": "अंतिम टूल:",
+        "links": "Links",
         "load_output_from_disk": "डिस्क से आउटपुट लोड करें",
         "loading": "लोड हो रहा है…",
+        "loading_workspace": "कार्यक्षेत्र लोड हो रहा है…",
         "logs": "लॉग",
-        "no_files_changed_yet": "अभी कोई फ़ाइल नहीं बदली",
         "no_issues_in_this_session_yet_mention_a_github_o": "इस सत्र में अभी कोई issue नहीं है। GitHub या GitLab के issue का लिंक बताओ और वह यहाँ दिखेगा।",
+        "no_links_yet": "इस सत्र में अभी कोई लिंक नहीं है। चैट में कोई URL बताओ और वह यहाँ दिखेगा।",
         "no_matches": "कोई मेल नहीं",
         "no_pull_requests_yet": "इस सत्र में अभी तक कोई पुल रिक्वेस्ट नहीं है",
         "no_subagents_running": "कोई सबएजेंट नहीं चल रहा",
@@ -7595,8 +7582,6 @@
         "pending_approval": "स्वीकृति लंबित",
         "reject": "अस्वीकार करें",
         "rejected": "अस्वीकृत",
-        "remove": "निकालें",
-        "remove_file_from_list": "सूची से फ़ाइल निकालें",
         "resolved": "हल हो गया",
         "resolving": "हल किया जा रहा है…",
         "resolving_2": "हल किया जा रहा है...",
@@ -7604,11 +7589,10 @@
         "resource_type_link": "Link",
         "resource_type_pr": "PR",
         "resources": "संसाधन",
-        "retry": "पुनः प्रयास",
         "retry_failed_count": "विफल को फिर से आज़माएँ ({{count}})",
         "running": "चल रहा है",
         "running_tool": "चल रहा टूल",
-        "search_files": "फ़ाइल नाम, फ़ोल्डर या लिंक से खोजें…",
+        "search_files": "लेबल या URL से खोजें…",
         "show_all_count": "सभी दिखाएँ ({{count}})",
         "side": "साइड",
         "starting": "शुरू हो रहा है…",
@@ -7618,11 +7602,11 @@
         "trusted": "विश्वसनीय",
         "trusted_base": "विश्वसनीय आधार",
         "trusted_command": "विश्वसनीय कमांड",
-        "unable_to_read_file": "फ़ाइल पढ़ी नहीं जा सकी।",
-        "unable_to_read_this_file": "यह फ़ाइल पढ़ी नहीं जा सकी।",
         "waiting_for_output": "आउटपुट की प्रतीक्षा…",
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में",
-        "workflows": "वर्कफ़्लो"
+        "workflows": "वर्कफ़्लो",
+        "workspace_empty": "इस कार्यक्षेत्र में अभी कोई फ़ाइल नहीं है",
+        "workspace_truncated": "बड़ा कार्यक्षेत्र — केवल पहली 10,000 फ़ाइलें दिखाई जा रही हैं"
       },
       "assistantMessage": {
         "applied_to_tasks": "कार्यों पर लागू",
@@ -7696,6 +7680,7 @@
       "folderPanel": {
         "empty_folder": "खाली फ़ोल्डर",
         "loading": "लोड हो रहा है…",
+        "no_changes": "कार्यक्षेत्र में कोई परिवर्तन नहीं",
         "open_in_file_explorer": "File Explorer में खोलें",
         "open_in_finder": "Finder में खोलें",
         "parent_folder": "पैरेंट फ़ोल्डर",
@@ -7807,10 +7792,16 @@
         "menu_context_desc": "इस सेशन के टर्न के दौरान जोड़ा गया संदर्भ",
         "menu_files": "फ़ाइलें",
         "menu_files_desc": "फ़ाइलें ब्राउज़ करें और संपादित करें",
+        "menu_git": "Git",
+        "menu_git_desc": "ब्रांच, परिवर्तन और हाल के कमिट",
         "menu_issues": "इश्यू",
         "menu_issues_desc": "इस सत्र में उल्लिखित इश्यू",
+        "menu_links": "लिंक",
+        "menu_links_desc": "इस चैट में संदर्भित URL",
         "menu_logs": "लॉग",
         "menu_logs_desc": "गेटवे लॉग स्ट्रीम",
+        "menu_pins": "पिन",
+        "menu_pins_desc": "इस सेशन में पिन किए गए संदेश",
         "menu_side": "साइड",
         "menu_side_desc": "समानांतर चैट, साझा कॉन्टेक्स्ट",
         "menu_subagents": "सब-एजेंट",
@@ -7829,11 +7820,7 @@
         "switch_to_split_view": "स्प्लिट व्यू पर स्विच करें",
         "switch_to_unified_view": "यूनिफ़ाइड व्यू पर स्विच करें",
         "this_app_render_is_no_longer_available": "यह ऐप रेंडर अब उपलब्ध नहीं है। इसे देखने के लिए टूल फिर से चलाएँ।",
-        "turn_diff": "टर्न डिफ़",
-        "menu_git": "Git",
-        "menu_git_desc": "ब्रांच, परिवर्तन और हाल के कमिट",
-        "menu_pins": "पिन",
-        "menu_pins_desc": "इस सेशन में पिन किए गए संदेश"
+        "turn_diff": "टर्न डिफ़"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "रोकना विफल, सत्र रीसेट",
@@ -8008,6 +7995,23 @@
         "updated_behind": "{{when}} अपडेट हुआ — बातचीत से पीछे",
         "where_it_stands": "अब स्थिति क्या है",
         "you_asked_for": "तुमने क्या कहा था"
+      },
+      "fileBrowserRail": {
+        "all_files": "सभी फ़ाइलें",
+        "changed": "बदली गई",
+        "close_search": "खोज बंद करें",
+        "filter_placeholder": "फ़ाइलें फ़िल्टर करें…",
+        "refresh": "रीफ़्रेश करें",
+        "resize": "फ़ाइल ब्राउज़र का आकार बदलें",
+        "tree_mode": "फ़ाइल सूची मोड"
+      },
+      "filesHome": {
+        "no_project_dir": "इस चैट के लिए कोई प्रोजेक्ट डायरेक्टरी सेट नहीं है",
+        "refresh": "रीफ़्रेश करें",
+        "reveal_in_finder": "फ़ाइल प्रबंधक में दिखाएँ",
+        "select_file_hint": "ट्री से फ़ाइल चुनें, वह नए टैब में खुलेगी",
+        "title": "फ़ाइलें",
+        "tree_error": "फ़ाइल ट्री लोड नहीं हो सका"
       }
     },
     "chatPage": {

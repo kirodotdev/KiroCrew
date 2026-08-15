@@ -1,8 +1,81 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import FileChangeChips, { type FileChangeEntry } from '../components/FileChangeChips'
+import FileChangeChips, { countLines, headerClickAction, type FileChangeEntry } from '../components/FileChangeChips'
 
 const change = (path: string, before: string, after: string) => ({ path, before, after })
+const rows = (c: HTMLElement) => c.querySelectorAll('[data-testid^="fcc-row-"]')
+
+/* The expanded style renders ONE Pierre diff per file, collapsed to Pierre's
+ * own native header. Two consequences for this suite:
+ *
+ *  - The filename, ±counts, diffstat cells, Open button and chevron all live
+ *    in Pierre's header (a shadow root, and its slot content is a prop of the
+ *    lazy Pierre chunk that never resolves under vitest) — so none of them are
+ *    assertable here. Row PRESENCE is, via `data-testid="fcc-row-<path>"`.
+ *  - The line counting that used to be read off the row is a pure exported
+ *    function, so it is tested directly instead of through the DOM.
+ *
+ * Header/metadata rendering is Playwright's job; see the note in the panel spec. */
+describe('countLines', () => {
+  it('counts pure additions', () => {
+    expect(countLines('a', 'a\nb\nc')).toEqual({ added: 2, removed: 0 })
+  })
+
+  it('counts pure removals', () => {
+    expect(countLines('a\nb\nc', 'a')).toEqual({ added: 0, removed: 2 })
+  })
+
+  it('reports a pure move as +N/-N, not 0/0', () => {
+    // LCS attributes a moved line to both sides; a multiset count would call
+    // this unchanged, which reads as "nothing happened" on a real reorder.
+    expect(countLines('a\nb', 'b\na')).toEqual({ added: 1, removed: 1 })
+  })
+
+  it('reports nothing when the content is identical', () => {
+    expect(countLines('same\ntext', 'same\ntext')).toEqual({ added: 0, removed: 0 })
+  })
+
+  it('counts a mixed edit', () => {
+    expect(countLines('one\ntwo\nthree', 'one\ntwo-edited\nthree\nfour')).toEqual({ added: 2, removed: 1 })
+  })
+
+  it('treats empty content as zero lines, not one phantom line', () => {
+    // ''.split('\n') is [''], which would mis-count a new file as +1/-1.
+    expect(countLines('a\nb', '')).toEqual({ added: 0, removed: 2 })
+    expect(countLines('', 'a')).toEqual({ added: 1, removed: 0 })
+  })
+
+  /* Past 1M LCS cells the counter drops to a multiset count to bound cost.
+   * That fallback is cheaper and measurably weaker, so these pin what it
+   * reports at that size — including the one case where it disagrees with
+   * LCS — rather than restating the expectations above. */
+  const numbered = (n: number) => Array.from({ length: n }, (_, i) => `line-${i}`)
+
+  it('counts adds and removes past the LCS cell cap', () => {
+    const before = numbered(1100)
+    const after = [...before.slice(0, 1095), 'new-a', 'new-b', 'new-c']
+    expect(before.length * after.length).toBeGreaterThan(1_000_000)
+    expect(countLines(before.join('\n'), after.join('\n'))).toEqual({ added: 3, removed: 5 })
+  })
+
+  it('under-reports a pure reorder past the cap, unlike the LCS path below it', () => {
+    const before = numbered(1200)
+    const reordered = [...before].reverse()
+    expect(before.length * reordered.length).toBeGreaterThan(1_000_000)
+    expect(countLines(before.join('\n'), reordered.join('\n'))).toEqual({ added: 0, removed: 0 })
+
+    // The same reorder under the cap runs through LCS, which does attribute it.
+    const small = numbered(40)
+    expect(countLines(small.join('\n'), [...small].reverse().join('\n')).added).toBeGreaterThan(0)
+  })
+
+  it('nets out duplicate lines past the cap instead of counting every occurrence', () => {
+    const before = [...numbered(1100), 'dup', 'dup', 'dup']
+    const after = [...numbered(1100), 'dup']
+    expect(before.length * after.length).toBeGreaterThan(1_000_000)
+    expect(countLines(before.join('\n'), after.join('\n'))).toEqual({ added: 0, removed: 2 })
+  })
+})
 
 describe('FileChangeChips', () => {
   it('renders nothing when fileChanges is empty', () => {
@@ -17,209 +90,146 @@ describe('FileChangeChips', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('renders one chip per file change', () => {
-    render(
-      <FileChangeChips
-        fileChanges={[
-          change('/a.ts', 'a', 'a\nb'),
-          change('/b.py', 'x', 'y'),
-        ]}
-      />
+  it('renders one row per file change', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/a.ts', 'a', 'a\nb'), change('/b.py', 'x', 'y')]} />,
     )
-    expect(screen.getByText('a.ts')).toBeInTheDocument()
-    expect(screen.getByText('b.py')).toBeInTheDocument()
+    expect(rows(container)).toHaveLength(2)
+    expect(container.querySelector('[data-testid="fcc-row-/a.ts"]')).toBeInTheDocument()
+    expect(container.querySelector('[data-testid="fcc-row-/b.py"]')).toBeInTheDocument()
   })
 
-  it('shows basename, not full path', () => {
-    render(<FileChangeChips fileChanges={[change('/abs/path/to/deep/file.ts', '', 'x')]} />)
-    expect(screen.getByText('file.ts')).toBeInTheDocument()
-    expect(screen.queryByText('/abs/path/to/deep/file.ts')).not.toBeInTheDocument()
-  })
-
-  it('LCS counts pure additions correctly', () => {
-    // before: 1 line, after: 3 lines (2 additions, 0 removals)
-    render(<FileChangeChips fileChanges={[change('/grow.ts', 'a', 'a\nb\nc')]} />)
-    expect(screen.getByText('+2')).toBeInTheDocument()
-    expect(screen.queryByText(/^-\d+$/)).not.toBeInTheDocument()
-  })
-
-  it('LCS counts pure removals correctly', () => {
-    render(<FileChangeChips fileChanges={[change('/shrink.ts', 'a\nb\nc', 'a')]} />)
-    expect(screen.getByText('-2')).toBeInTheDocument()
-    expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument()
-  })
-
-  it('LCS detects pure moves as +N/-N (not 0/0)', () => {
-    // Reordered lines: same multiset, but LCS sees them as add+remove.
-    render(<FileChangeChips fileChanges={[change('/move.rs', 'a\nb\nc', 'c\nb\na')]} />)
-    expect(screen.getByText('+2')).toBeInTheDocument()
-    expect(screen.getByText('-2')).toBeInTheDocument()
-  })
-
-  it('renders nothing for stats when before === after', () => {
-    const { container } = render(<FileChangeChips fileChanges={[change('/same.ts', 'x', 'x')]} />)
-    // The chip itself still renders, but no +N/-N text spans.
-    expect(container.querySelector('button')).toBeTruthy()
-    expect(container.textContent).not.toMatch(/[+-]\d/)
-  })
-
-  it('shows "no changes" caption in expanded row when before === after', () => {
-    render(<FileChangeChips fileChanges={[change('/same.ts', 'x', 'x')]} />)
-    expect(screen.getByText('no changes')).toBeInTheDocument()
-  })
-
-  it('shows "no changes" caption in minimal chip when before === after', () => {
-    render(<FileChangeChips fileChanges={[change('/noop.ts', 'same', 'same')]} style="minimal" />)
-    // The minimal chip renders the Stats component inside the button.
-    expect(screen.getByText('no changes')).toBeInTheDocument()
-  })
-
-  it('mixed add/remove on a real-ish edit', () => {
-    const before = 'line1\nline2\nline3'
-    const after = 'line1\nline2_modified\nline3\nline4'
-    render(<FileChangeChips fileChanges={[change('/mix.ts', before, after)]} />)
-    // line2 → line2_modified counts as +1/-1; line4 added → another +1.
-    expect(screen.getByText('+2')).toBeInTheDocument()
-    expect(screen.getByText('-1')).toBeInTheDocument()
-  })
-
-  it('clicking expanded chip calls onOpenDiff with (path, after, before)', () => {
-    const onOpenDiff = vi.fn()
-    render(
-      <FileChangeChips
-        fileChanges={[change('/click.ts', 'before-content', 'after-content')]}
-        onOpenDiff={onOpenDiff}
-      />
+  it('keys rows by path (no duplicate-key warnings)', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/x.ts', 'a', 'b'), change('/y.ts', 'a', 'b')]} />,
     )
-    fireEvent.click(screen.getByText('click.ts').closest('button')!)
-    expect(onOpenDiff).toHaveBeenCalledWith('/click.ts', 'after-content', 'before-content')
+    expect(rows(container)).toHaveLength(2)
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('same key'))
+    warn.mockRestore()
   })
 
-  it('clicking a chip does not throw when onOpenDiff is missing', () => {
-    render(<FileChangeChips fileChanges={[change('/click.ts', 'a', 'b')]} />)
-    // No throw means the optional-chained handler is safe.
-    expect(() => fireEvent.click(screen.getByText('click.ts').closest('button')!)).not.toThrow()
+  it('spells out the file count and aggregate totals in the card header', () => {
+    render(<FileChangeChips fileChanges={[change('/a.ts', 'a', 'a\nb'), change('/b.ts', 'a\nb', 'a')]} />)
+    expect(screen.getByText('2 files changed')).toBeInTheDocument()
+    // Singular forms, and no second ±pair on the right of the same row.
+    expect(screen.getByText('1 addition')).toBeInTheDocument()
+    expect(screen.getByText('1 removal')).toBeInTheDocument()
   })
 
-  it('minimal style hides filename in main chip but exposes hover label', () => {
+  it('pluralises the header totals and omits a side that is zero', () => {
+    render(<FileChangeChips fileChanges={[change('/new.ts', '', 'a\nb\nc')]} />)
+    expect(screen.getByText('3 additions')).toBeInTheDocument()
+    expect(screen.queryByText(/removal/)).not.toBeInTheDocument()
+  })
+
+  it('falls back to expanded for an unknown style value', () => {
+    // Defensive default in the renderer map covers stale localStorage values
+    // (e.g. legacy "tooltip"/"compact"/"full") until the migration runs.
     const { container } = render(
       <FileChangeChips
-        fileChanges={[change('/minimal.ts', 'a', 'a\nb')]}
-        style="minimal"
-      />
+        fileChanges={[change('/legacy.ts', 'a', 'a\nb')]}
+        // @ts-expect-error — intentional invalid style for the fallback path
+        style="tooltip"
+      />,
     )
-    // The chip button itself does NOT have the basename inside it.
+    expect(container.querySelector('[data-testid="fcc-row-/legacy.ts"]')).toBeInTheDocument()
+  })
+
+  it('caps long lists at 8 rows behind a "Show N more" toggle', () => {
+    const files = Array.from({ length: 11 }, (_, i) => change(`/f${i}.ts`, 'a', 'a\nb'))
+    const { container } = render(<FileChangeChips fileChanges={files} />)
+    expect(rows(container)).toHaveLength(8)
+    // Header still reports the TRUE total.
+    expect(screen.getByText('11 files changed')).toBeInTheDocument()
+    // Expand reveals the remainder…
+    fireEvent.click(screen.getByText('Show 3 more'))
+    expect(rows(container)).toHaveLength(11)
+    // …and collapses again.
+    fireEvent.click(screen.getByText('Show less'))
+    expect(rows(container)).toHaveLength(8)
+  })
+
+  it('does not cap lists at or below the threshold', () => {
+    const files = Array.from({ length: 8 }, (_, i) => change(`/s${i}.ts`, 'a', 'b'))
+    const { container } = render(<FileChangeChips fileChanges={files} />)
+    expect(screen.queryByText(/Show \d+ more/)).not.toBeInTheDocument()
+    expect(rows(container)).toHaveLength(8)
+  })
+
+  /* ── Header click routing. Pierre owns the header's inner nodes and its lazy
+   *   chunk never resolves under vitest, so the real `[data-title]` cannot be
+   *   clicked here — and a hand-stubbed `composedPath` does not survive React's
+   *   dispatch, which resolves the target from that same path. The rule is
+   *   therefore a pure function of the path and is tested as one; that the
+   *   'toggle' verdict visibly collapses the row is Playwright's job. */
+  const pathOf = (...sels: string[]) => sels.map(s => {
+    const el = document.createElement('div')
+    el.setAttribute(s, '')
+    return el
+  })
+
+  it('routes a click on Pierre’s filename node to opening the file', () => {
+    expect(headerClickAction(pathOf('data-title', 'data-diffs-header'))).toBe('open')
+  })
+
+  it('routes header whitespace to toggling, so the row has no dead zone', () => {
+    expect(headerClickAction(pathOf('data-diffs-header'))).toBe('toggle')
+  })
+
+  it('ignores clicks below the header, so selecting code never collapses it', () => {
+    expect(headerClickAction(pathOf('data-code'))).toBe('ignore')
+    expect(headerClickAction([])).toBe('ignore')
+  })
+
+  it('ignores a filename node that is not inside a header', () => {
+    // Order in the path is irrelevant, presence is what decides — but a title
+    // without a header is not a header click at all.
+    expect(headerClickAction(pathOf('data-title'))).toBe('ignore')
+  })
+
+  it('carries the full path as a tooltip so duplicate basenames stay distinguishable', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/src/a/index.ts', 'a', 'b'), change('/src/b/index.ts', 'a', 'b')]} />,
+    )
+    const titles = [...container.querySelectorAll('[data-testid^="fcc-row-"]')].map(r => r.getAttribute('title'))
+    expect(titles).toEqual(['/src/a/index.ts', '/src/b/index.ts'])
+  })
+
+  /* ── Minimal style: hand-rolled pills, no Pierre, so still fully assertable
+   *   here — and the one style that still routes clicks to `onOpenDiff`. */
+  it('minimal style hides the filename in the pill but exposes a hover label', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/minimal.ts', 'a', 'a\nb')]} style="minimal" />,
+    )
     const button = container.querySelector('button')
     expect(button?.textContent).not.toContain('minimal.ts')
-    // Hover label exists somewhere in the markup with the basename.
     expect(container.textContent).toContain('minimal.ts')
-    // Stats still rendered inside the button.
     expect(button?.textContent).toContain('+1')
   })
 
-  it('minimal style click also triggers onOpenDiff', () => {
+  it('minimal style shows a no-changes caption when before === after', () => {
+    render(<FileChangeChips fileChanges={[change('/same.ts', 'x', 'x')]} style="minimal" />)
+    expect(screen.getByText('no changes')).toBeInTheDocument()
+  })
+
+  it('minimal style click triggers onOpenDiff with (path, after, before)', () => {
     const onOpenDiff = vi.fn()
     const { container } = render(
       <FileChangeChips
         fileChanges={[change('/min-click.ts', 'a', 'b')]}
         style="minimal"
         onOpenDiff={onOpenDiff}
-      />
+      />,
     )
     fireEvent.click(container.querySelector('button')!)
     expect(onOpenDiff).toHaveBeenCalledWith('/min-click.ts', 'b', 'a')
   })
 
-  it('falls back to expanded for an unknown style value', () => {
-    // Defensive default in the renderer map covers stale localStorage values
-    // (e.g. legacy "tooltip"/"compact"/"full") until the migration runs.
-    render(
-      <FileChangeChips
-        fileChanges={[change('/legacy.ts', 'a', 'a\nb')]}
-        // @ts-expect-error — intentional invalid style for the fallback path
-        style="tooltip"
-      />
+  it('does not throw on a minimal click when onOpenDiff is missing', () => {
+    const { container } = render(
+      <FileChangeChips fileChanges={[change('/no-handler.ts', 'a', 'b')]} style="minimal" />,
     )
-    expect(screen.getByText('legacy.ts')).toBeInTheDocument()
-  })
-
-  it('handles empty after content (file fully cleared)', () => {
-    render(<FileChangeChips fileChanges={[change('/cleared.ts', 'a\nb', '')]} />)
-    // Empty-after is treated as 0 lines (not [''] phantom). Expect -2/+0.
-    expect(screen.getByText('-2')).toBeInTheDocument()
-    expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument()
-  })
-
-  it('handles empty before content as 0 lines (new file shows only +N)', () => {
-    // Empty before is treated as 0 lines so a 1-line new file shows just +1
-    // (not +1/-1, which ''.split('\n') == [''] would produce).
-    render(<FileChangeChips fileChanges={[change('/brand-new.ts', '', 'hello')]} />)
-    expect(screen.getByText('+1')).toBeInTheDocument()
-    expect(screen.queryByText(/^-\d+$/)).not.toBeInTheDocument()
-  })
-
-  it('keys chips by path (no duplicate-key warnings)', () => {
-    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {})
-    render(
-      <FileChangeChips
-        fileChanges={[
-          change('/a.ts', 'x', 'y'),
-          change('/b.ts', 'x', 'y'),
-          change('/c.ts', 'x', 'y'),
-        ]}
-      />
-    )
-    expect(consoleErr).not.toHaveBeenCalledWith(
-      expect.stringContaining('unique "key"'),
-    )
-    consoleErr.mockRestore()
-  })
-
-  it('badges rows whose path is in artifactPaths', () => {
-    render(
-      <FileChangeChips
-        fileChanges={[
-          change('/proj/src/code.ts', 'a', 'a\nb'),
-          change('/ws/kiro-pr-body.md', '', 'hello'),
-        ]}
-        artifactPaths={new Set(['/ws/kiro-pr-body.md'])}
-      />
-    )
-    // The artifact doc is badged; the source file is not.
-    const badges = screen.getAllByText('Artifact')
-    expect(badges).toHaveLength(1)
-    // Badge sits on the .md row, not the .ts row.
-    expect(badges[0].closest('button')).toHaveTextContent('kiro-pr-body.md')
-  })
-
-  it('renders no badges when artifactPaths is omitted', () => {
-    render(<FileChangeChips fileChanges={[change('/a.md', '', 'x')]} />)
-    expect(screen.queryByText('Artifact')).not.toBeInTheDocument()
-  })
-
-  it('caps long lists at 8 rows behind a "Show N more" toggle', () => {
-    const files = Array.from({ length: 11 }, (_, i) => change(`/f${i}.ts`, 'a', 'a\nb'))
-    render(<FileChangeChips fileChanges={files} />)
-    // First 8 shown; the rest hidden until expanded.
-    expect(screen.getByText('f0.ts')).toBeInTheDocument()
-    expect(screen.getByText('f7.ts')).toBeInTheDocument()
-    expect(screen.queryByText('f8.ts')).not.toBeInTheDocument()
-    expect(screen.queryByText('f10.ts')).not.toBeInTheDocument()
-    // Header still reports the TRUE total.
-    expect(screen.getByText('11 files changed')).toBeInTheDocument()
-    // Expand reveals the remainder…
-    fireEvent.click(screen.getByText('Show 3 more'))
-    expect(screen.getByText('f8.ts')).toBeInTheDocument()
-    expect(screen.getByText('f10.ts')).toBeInTheDocument()
-    // …and collapses again.
-    fireEvent.click(screen.getByText('Show less'))
-    expect(screen.queryByText('f10.ts')).not.toBeInTheDocument()
-  })
-
-  it('does not cap lists at or below the threshold', () => {
-    const files = Array.from({ length: 8 }, (_, i) => change(`/s${i}.ts`, 'a', 'b'))
-    render(<FileChangeChips fileChanges={files} />)
-    expect(screen.queryByText(/Show \d+ more/)).not.toBeInTheDocument()
-    expect(screen.getByText('s7.ts')).toBeInTheDocument()
+    expect(() => fireEvent.click(container.querySelector('button')!)).not.toThrow()
   })
 })

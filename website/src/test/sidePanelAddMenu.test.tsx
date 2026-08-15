@@ -145,7 +145,7 @@ describe('newMenuSections', () => {
     // Only that row goes — its group still carries the rest, so the group is not
     // dropped and nothing else is collateral.
     expect(kinds({ devMode: true, terminalEnabled: true, summaryEnabled: false })[0])
-      .toEqual(['pins', 'issues', 'subagents', 'workflows', 'git'])
+      .toEqual(['pins', 'issues', 'links', 'subagents', 'workflows', 'git'])
   })
 
   it('keeps each group id fixed however the gates fall', () => {
@@ -180,7 +180,7 @@ describe('newMenuSections', () => {
 
   it('groups by session output, workspaces, then diagnostics', () => {
     expect(kinds({ devMode: true, terminalEnabled: true })).toEqual([
-      ['summary', 'pins', 'issues', 'subagents', 'workflows', 'git'],
+      ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
       ['logs', 'context'],
     ])
@@ -199,12 +199,12 @@ describe('newMenuSections', () => {
     }
     // Both gates closed: diagnostics gone outright — two groups, not three with a hole.
     expect(kinds({ devMode: false, terminalEnabled: false })).toEqual([
-      ['summary', 'pins', 'issues', 'subagents', 'workflows', 'git'],
+      ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
     // Terminal enabled doesn't change menu (terminal moved to app-wide panel).
     expect(kinds({ devMode: false, terminalEnabled: true })).toEqual([
-      ['summary', 'pins', 'issues', 'subagents', 'workflows', 'git'],
+      ['summary', 'pins', 'issues', 'links', 'subagents', 'workflows', 'git'],
       ['side', 'browser'],
     ])
   })

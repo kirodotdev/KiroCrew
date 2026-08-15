@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { renderUserContent } from '../pages/ChatPage'
 
 const noop = () => {}
@@ -34,10 +34,13 @@ describe('renderUserContent — markdown rendering', () => {
     expect(items[0]).toHaveTextContent('item one')
   })
 
-  it('renders code blocks via markdown', () => {
+  it('renders code blocks via markdown', async () => {
     const { container } = render(<>{renderUserContent('```js\nconst x = 1\n```', undefined, noop)}</>)
-    expect(container.querySelector('pre')).toBeInTheDocument()
-    expect(container.querySelector('code')).toHaveTextContent('const x = 1')
+    const pre = container.querySelector('pre')
+    expect(pre).toBeInTheDocument()
+    // Pierre owns the block's internals and fills them after mount, so assert the
+    // rendered TEXT rather than a `<code>` element its markup does not emit.
+    await waitFor(() => expect(pre).toHaveTextContent('const x = 1'))
   })
 
   it('renders plain text without extra wrapping issues', () => {

@@ -19,7 +19,7 @@ const JSONL_EXTS = new Set(['.jsonl'])
 const HTML_EXTS = new Set(['.html', '.htm'])
 const PDF_EXTS = new Set(['.pdf'])
 // Excalidraw scene JSON. Without this the extension falls through to `code` and
-// the user gets a wall of raw element JSON in Monaco instead of the diagram.
+// the user gets a wall of raw element JSON in the code editor instead of the diagram.
 const EXCALIDRAW_EXTS = new Set(['.excalidraw'])
 // OOXML spreadsheets rendered inline by SheetViewer via /api/file-sheet
 // (server-side openpyxl parse). Legacy .xls (OLE compound) and ODF .ods stay

@@ -3659,9 +3659,7 @@
         "no_messages": "컴파일러가 보고한 내용이 없습니다.",
         "typesetting_hints_other": "조판 힌트 {{count}}건"
       },
-      "editor": {
-        "loading_editor": "에디터를 불러오는 중…"
-      },
+      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} 삭제",
         "files": "파일",
@@ -4921,7 +4919,6 @@
     "contentRenderer": {
       "changes_update_svg_preview_as_you_type": "입력하는 동안 변경 사항이 미리보기에 반영됩니다.",
       "editing_svg": "SVG 편집 중",
-      "loading_editor": "편집기를 불러오는 중…",
       "svg_source_code": "SVG 소스 코드"
     },
     "contextBar": {
@@ -4946,25 +4943,19 @@
       "close": "닫기"
     },
     "diffBlock": {
-      "collapse": "▲ 접기",
-      "context_lines": "컨텍스트 줄",
       "copied": "복사했습니다!",
       "copy_patch": "패치 복사",
-      "diff": "diff",
       "generating_diff": "diff 생성 중…",
-      "lines_hidden": "줄 숨김",
       "open": "열기",
       "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
       "split_view": "분할 보기",
       "switch_to_split_view": "분할 보기로 전환",
       "switch_to_unified_view": "통합 보기로 전환",
-      "unchanged_lines_other": "변경되지 않은 {{count}}줄",
       "unified_view": "통합 보기"
     },
     "diffPanel": {
       "click_to_copy_path": "클릭하여 경로 복사",
-      "contents_identical": "내용이 동일합니다",
-      "loading_diff": "diff를 불러오는 중…"
+      "contents_identical": "내용이 동일합니다"
     },
     "discoverySearchBar": {
       "clear_search": "검색 지우기",
@@ -5024,14 +5015,19 @@
       "video": "동영상: {{name}}"
     },
     "fileChangeChips": {
+      "additions_other": "추가 {{count}}건",
       "artifact": "아티팩트",
       "changed": "변경됨",
       "file_other": "파일 {{count}}개",
       "more": "더 보기",
       "no_changes": "변경 없음",
+      "open": "파일 열기",
+      "open_in_side_panel": "{{path}}을(를) 사이드 패널에서 열기",
+      "removals_other": "삭제 {{count}}건",
       "show": "표시",
       "show_less": "간략히 보기",
-      "this_document_is_tracked_as_a_session_artifact_n": "이 문서는 소스 파일 변경이 아니라 세션 아티팩트로 추적됩니다"
+      "this_document_is_tracked_as_a_session_artifact_n": "이 문서는 소스 파일 변경이 아니라 세션 아티팩트로 추적됩니다",
+      "toggle_diff": "{{path}}의 차이 표시 또는 숨기기"
     },
     "filePickerMenu": {
       "folder": "폴더",
@@ -5408,7 +5404,6 @@
       "adding": "추가하는 중…",
       "adding_2": "추가하는 중…",
       "already_in_library": "이미 라이브러리에 있음",
-      "autocomplete": "자동 완성",
       "cancel": "취소",
       "cancel_discard_unsaved_edits": "취소 — 저장하지 않은 편집 내용 삭제",
       "cannot_read_file": "파일을 읽을 수 없습니다",
@@ -5417,6 +5412,7 @@
       "click_to_copy_path": "클릭하여 경로 복사",
       "close_esc": "닫기 (Esc)",
       "close_find": "찾기 닫기",
+      "collapse_unchanged": "변경되지 않은 부분 접기",
       "copy_content": "콘텐츠 복사",
       "copy_path": "경로 복사",
       "discard_unsaved_changes": "저장하지 않은 변경 사항을 버리시겠습니까?",
@@ -5436,14 +5432,13 @@
       "in_knowledge_library": "지식 라이브러리에 있음",
       "in_library": "라이브러리에 있음",
       "line_numbers": "줄 번호",
-      "loading_diff": "차이를 불러오는 중…",
       "more_options": "옵션 더 보기",
       "next_enter": "다음 (Enter)",
       "next_match": "다음 일치 항목",
+      "no_changes_in_file": "이 파일에는 변경 사항이 없습니다",
       "no_results": "결과 없음",
       "open_artifact": "아티팩트 {{name}} 열기",
       "open_as_artifact": "아티팩트로 열기",
-      "open_folder": "폴더 {{path}} 열기",
       "open_in_file_explorer": "파일 탐색기에서 열기",
       "open_in_finder": "Finder에서 열기",
       "open_with_default_app": "기본 앱으로 열기",
@@ -5460,14 +5455,14 @@
       "save_this_file_as_an_artifact_versioned_persiste": "이 파일을 아티팩트로 저장합니다 (버전 관리·영구 보존·댓글 가능)",
       "saving": "저장하는 중…",
       "select_any_text_to_add_inline_comments_then_subm": "텍스트를 선택해 인라인 댓글을 추가한 뒤 한 번에 채팅으로 보내세요.",
+      "show_full_file": "전체 파일 보기",
       "show_in_file_manager": "파일 관리자에서 보기",
       "snapshot_version": "스냅샷 버전",
       "snapshotting": "스냅샷을 만드는 중…",
-      "switch_to_split_view": "분할 보기로 전환",
-      "switch_to_unified_view": "통합 보기로 전환",
+      "split_view": "분할 보기",
       "tip": "팁:",
-      "toggle_autocomplete": "자동 완성 전환",
       "toggle_diff_view": "차이 보기 전환",
+      "toggle_file_browser": "파일 브라우저 전환",
       "toggle_line_numbers": "줄 번호 전환",
       "toggle_word_wrap": "자동 줄 바꿈 전환",
       "tracking_description": "{{path}} 추적 중",
@@ -5605,9 +5600,7 @@
       "close_editor": "편집기 닫기",
       "copied": "복사했습니다!",
       "copy": "복사",
-      "edit_code_block": "코드 블록 편집",
-      "edit_in_monaco_editor": "Monaco 편집기에서 편집",
-      "loading_editor": "편집기를 불러오는 중…"
+      "edit_code_block": "코드 블록 편집"
     },
     "notifications": {
       "notifMeta": {
@@ -6638,14 +6631,15 @@
       "context": "컨텍스트",
       "diff": "{{name}} - 차이",
       "files": "파일",
+      "git": "Git",
       "issues": "이슈",
+      "links": "링크",
       "logs": "로그",
+      "pins": "핀",
       "side": "사이드",
       "subagents": "서브에이전트",
       "summary": "요약",
-      "workflows": "워크플로",
-      "git": "Git",
-      "pins": "핀"
+      "workflows": "워크플로"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "모든 슬롯이 사용 중입니다",
@@ -7459,32 +7453,24 @@
         "artifacts_search_library": "라이브러리 검색…",
         "artifacts_this_session": "이 세션",
         "ask_me_to_use_a_dynamic_workflow_to_runs_from_th": "‘동적 워크플로로 …해 줘’라고 요청하세요 — 이 채팅에서 시작된 실행이 여기에 실시간으로 표시됩니다.",
-        "back_to_files": "파일로 돌아가기",
         "cancel": "취소",
         "cancelled": "취소됨",
-        "changed_files": "변경된 파일",
         "changes": "변경 사항",
         "clear": "지우기",
         "complete": "완료",
-        "discard_unsaved_changes": "저장하지 않은 변경 사항을 버리시겠습니까?",
         "dismiss_done_count": "완료 항목 닫기({{count}})",
         "error": "오류",
         "failed_click_to_retry": "실패 — 클릭하면 재시도",
-        "file_artifact_add": "아티팩트에 추가",
-        "file_artifact_add_aria": "이 파일을 아티팩트 라이브러리에 추가",
-        "file_artifact_add_failed": "추가하지 못했습니다 — 다시 시도하세요",
-        "file_artifact_open": "아티팩트 열기",
-        "file_artifact_open_aria": "이 파일의 아티팩트 열기",
-        "file_not_found_on_disk_it_may_have_been_moved_or": "디스크에서 파일을 찾을 수 없습니다. 이동되었거나 삭제되었을 수 있습니다.",
-        "files": "파일",
         "input": "입력",
         "issues": "이슈",
         "last_tool": "마지막 도구:",
+        "links": "Links",
         "load_output_from_disk": "디스크에서 출력 불러오기",
         "loading": "불러오는 중…",
+        "loading_workspace": "워크스페이스 로드 중…",
         "logs": "로그",
-        "no_files_changed_yet": "아직 변경된 파일이 없습니다",
         "no_issues_in_this_session_yet_mention_a_github_o": "이 세션에는 아직 이슈가 없습니다. GitHub 또는 GitLab 이슈 링크를 언급하면 여기에 표시됩니다.",
+        "no_links_yet": "이 세션에는 아직 링크가 없습니다. 채팅에서 URL을 언급하면 여기에 표시됩니다.",
         "no_matches": "일치하는 항목 없음",
         "no_pull_requests_yet": "이 세션에는 아직 풀 리퀘스트가 없습니다",
         "no_subagents_running": "실행 중인 서브에이전트 없음",
@@ -7495,8 +7481,6 @@
         "pending_approval": "승인 대기 중",
         "reject": "거부",
         "rejected": "거부됨",
-        "remove": "삭제",
-        "remove_file_from_list": "목록에서 파일 삭제",
         "resolved": "해결됨",
         "resolving": "확인 중…",
         "resolving_2": "확인 중…",
@@ -7504,11 +7488,10 @@
         "resource_type_link": "링크",
         "resource_type_pr": "PR",
         "resources": "리소스",
-        "retry": "재시도",
         "retry_failed_count": "실패 재시도({{count}})",
         "running": "실행 중",
         "running_tool": "도구 실행 중",
-        "search_files": "파일 이름, 폴더 또는 링크로 검색…",
+        "search_files": "라벨 또는 URL로 검색…",
         "show_all_count": "전체 표시({{count}})",
         "side": "사이드",
         "starting": "시작 중…",
@@ -7518,11 +7501,11 @@
         "trusted": "신뢰됨",
         "trusted_base": "신뢰된 기본 명령",
         "trusted_command": "신뢰된 명령",
-        "unable_to_read_file": "파일을 읽을 수 없습니다.",
-        "unable_to_read_this_file": "이 파일을 읽을 수 없습니다.",
         "waiting_for_output": "출력 대기 중…",
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다",
-        "workflows": "워크플로"
+        "workflows": "워크플로",
+        "workspace_empty": "이 워크스페이스에는 아직 파일이 없습니다",
+        "workspace_truncated": "큰 워크스페이스 — 처음 10,000개 파일만 표시합니다"
       },
       "assistantMessage": {
         "applied_to_tasks": "작업에 적용됨",
@@ -7595,6 +7578,7 @@
       "folderPanel": {
         "empty_folder": "빈 폴더",
         "loading": "불러오는 중…",
+        "no_changes": "작업 트리에 변경 사항 없음",
         "open_in_file_explorer": "파일 탐색기에서 열기",
         "open_in_finder": "Finder에서 열기",
         "parent_folder": "상위 폴더",
@@ -7705,10 +7689,16 @@
         "menu_context_desc": "이 세션의 턴 동안 추가된 컨텍스트",
         "menu_files": "파일",
         "menu_files_desc": "파일 탐색 및 편집",
+        "menu_git": "Git",
+        "menu_git_desc": "브랜치·변경 사항·최근 커밋",
         "menu_issues": "이슈",
         "menu_issues_desc": "이 세션에서 언급된 이슈",
+        "menu_links": "링크",
+        "menu_links_desc": "이 채팅에서 참조한 URL",
         "menu_logs": "로그",
         "menu_logs_desc": "게이트웨이 로그 스트림",
+        "menu_pins": "핀",
+        "menu_pins_desc": "이 세션에서 핀으로 표시한 메시지",
         "menu_side": "사이드",
         "menu_side_desc": "컨텍스트를 공유하는 병렬 채팅",
         "menu_subagents": "서브에이전트",
@@ -7727,11 +7717,7 @@
         "switch_to_split_view": "분할 보기로 전환",
         "switch_to_unified_view": "통합 보기로 전환",
         "this_app_render_is_no_longer_available": "이 앱 렌더링은 더 이상 사용할 수 없습니다. 도구를 다시 실행해 확인하세요.",
-        "turn_diff": "턴 차이",
-        "menu_git": "Git",
-        "menu_git_desc": "브랜치·변경 사항·최근 커밋",
-        "menu_pins": "핀",
-        "menu_pins_desc": "이 세션에서 핀으로 표시한 메시지"
+        "turn_diff": "턴 차이"
       },
       "stopEventCard": {
         "stop_failed_session_reset": "중지에 실패하여 세션을 초기화했습니다",
@@ -7905,6 +7891,23 @@
         "updated_behind": "{{when}} 업데이트 — 대화보다 뒤처져 있음",
         "where_it_stands": "현재 상황",
         "you_asked_for": "요청한 내용"
+      },
+      "fileBrowserRail": {
+        "all_files": "모든 파일",
+        "changed": "변경됨",
+        "close_search": "검색 닫기",
+        "filter_placeholder": "파일 필터링…",
+        "refresh": "새로 고침",
+        "resize": "파일 브라우저 크기 조절",
+        "tree_mode": "파일 목록 모드"
+      },
+      "filesHome": {
+        "no_project_dir": "이 채팅에는 프로젝트 디렉터리가 설정되어 있지 않습니다",
+        "refresh": "새로 고침",
+        "reveal_in_finder": "파일 관리자에서 보기",
+        "select_file_hint": "트리에서 파일을 선택하면 새 탭에서 열립니다",
+        "title": "파일",
+        "tree_error": "파일 트리를 불러올 수 없습니다"
       }
     },
     "chatPage": {

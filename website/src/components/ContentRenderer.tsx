@@ -1,36 +1,24 @@
 /**
  * Shared content rendering primitives — used by both the file viewer
  * (`MarkdownPanel`) and the artifact detail page. Decouples the
- * type-dispatch + Monaco code editor from the file-specific chrome
+ * type-dispatch + Pierre code editor from the file-specific chrome
  * (overflow menu, save-to-disk, file watch) so artifact pages can render
  * markdown / text / json / svg without iframing them.
  *
  * Exports:
  *   - `ContentRenderer` — the type-dispatch body. Picks ImageViewer /
- *     CsvViewer / JsonViewer / HtmlViewer / PdfViewer / Monaco editor /
- *     MarkdownRenderer / hljs based on `fileType` + `editing`.
- *   - `CodeEditor` — Monaco-based editor for editable text content.
+ *     CsvViewer / JsonViewer / HtmlViewer / PdfViewer / PierreEditor /
+ *     MarkdownRenderer / PierreCode based on `fileType` + `editing`.
+ *   - `CodeEditor` — Pierre-based editor for editable text content.
  *   - `extOf`, `langFor`, `wrapCode`, `MD_EXTS` — shared helpers used by
  *     both consumers to compute `displayContent` / `isMarkdown` etc.
  */
-import { memo, lazy, Suspense, useMemo } from 'react'
-import DOMPurify from 'dompurify'
-import type { Monaco } from '@monaco-editor/react'
-import type { editor } from 'monaco-editor'
+import { memo, useCallback, useMemo, useRef } from 'react'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
-import { monacoLang, useIsDark } from './MonacoCodeBlock'
-import { kirocrewDark, kirocrewLight } from './monacoTheme'
+import { PierreCode, PierreEditor, type PierreEditorHandle } from '../pierre'
 
 import { i18nT } from '../i18n/t'
-// Route through ensureMonacoLocal() so Monaco loads from the locally-bundled
-// package instead of the default cdn.jsdelivr.net loader (blocked by CSP
-// connect-src). Mirrors DiffPanel/MarkdownPanel/MonacoCodeBlock.
-const MonacoEditor = lazy(async () => {
-  const { ensureMonacoLocal } = await import('../utils/monacoLocal')
-  await ensureMonacoLocal()
-  return import('@monaco-editor/react')
-})
 
 export const MD_EXTS = new Set(['.md', '.markdown', '.mdx', '.txt', ''])
 
@@ -55,81 +43,109 @@ export function langFor(ext: string): string {
   return map[ext] || 'plaintext'
 }
 
-let themesRegistered = false
-
-/** Monaco-based code editor for editable text content. */
+/** Pierre-based code editor for editable text content. */
 export function CodeEditor({
-  content, lang, lineNums, wordWrap, autocomplete, onChange, flush, onEditorMount,
+  content, lang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged,
 }: {
   content: string
   lang: string
   lineNums: boolean
   wordWrap: boolean
-  autocomplete: boolean
   onChange: (v: string) => void
+  /** Cmd/Ctrl+S inside the editor surface. */
+  onSave?: () => void
   /** Drop the rounded border box — the host surface (e.g. a side-panel tab
    *  body) provides the frame, so content runs edge-to-edge. */
   flush?: boolean
-  /**
-   * The editor instance and the monaco namespace, once mounted.
-   *
-   * The one escape hatch out of this component, so a host can reveal or
-   * decorate a line without owning the editor's configuration. Monaco is
-   * lazy-loaded, so this is also the readiness signal: there is no earlier
-   * point at which a caller could reach a model. Mirrors how
-   * `PapyrusEditor` reaches the same instance.
-   */
-  onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: Monaco) => void
+  /** Imperative reveal/focus handle — how a host jumps to a cited line. */
+  editorRef?: React.Ref<PierreEditorHandle>
+  filePath?: string
+  /** Live-diff editing: baseline contents to diff the buffer against while
+   *  typing (`null` = new file). `undefined` renders the plain editor. */
+  diffBase?: string | null
+  /** Live-diff surface: show unchanged regions instead of folding them. */
+  diffExpandUnchanged?: boolean
+  /** Split vs unified layout for the live-diff surface. */
+  diffSplit?: boolean
 }) {
-  const dark = useIsDark()
-  const monoFont = useMemo(
-    () => getComputedStyle(document.documentElement).getPropertyValue('--mono').trim() || 'monospace',
-    [],
+  // Pierre owns the buffer during an edit session: the file object is the
+  // session's INITIAL state, so it must not change identity on every parent
+  // re-render fed by our own onChange — that would restart the session per
+  // keystroke and drop the caret. Keyed by path/lang/mode; a diff-mode toggle
+  // deliberately restarts the session seeded from the CURRENT buffer so
+  // unsaved edits carry across the flip.
+  //
+  // EXTERNAL content changes are the exception: a `content` value this editor
+  // did not emit (Cancel restoring the on-disk text, refresh, a live-watch
+  // reload) must actually show up, so the session reseeds — the seed counter
+  // in the cacheKey remounts the editor on the new text (caret loss is
+  // correct there).
+  const initialRef = useRef<{ key: string; file: { name: string; contents: string; cacheKey: string } }>()
+  const lastEmittedRef = useRef<string | null>(null)
+  const lastContentRef = useRef<string | null>(null)
+  const seedRef = useRef(0)
+  const key = `${filePath ?? ''}:${lang}:${diffBase === undefined ? 'plain' : 'diff'}`
+  const seedFile = () => ({
+    key,
+    file: {
+      name: filePath?.split('/').pop() || `file.${lang}`,
+      contents: content,
+      cacheKey: `edit:${key}:${seedRef.current}`,
+    },
+  })
+  if (initialRef.current?.key !== key) {
+    initialRef.current = seedFile()
+  } else if (content !== lastContentRef.current) {
+    if (content === lastEmittedRef.current) {
+      // Our own edit echoing back through the parent. Consume the marker: it
+      // matches exactly ONE echo, so a LATER external change that happens to
+      // restore this same text (Cancel, refresh, live-watch reload) is still
+      // seen as external and still reseeds. Leaving it set made that case
+      // silently keep the stale buffer, and the next save wrote it back.
+      lastEmittedRef.current = null
+    } else {
+      // The prop changed to a value this editor did not emit — an external
+      // change. (Compared against the last RECEIVED prop, not the initial seed:
+      // Cancel restores the original text, which must still reseed.)
+      seedRef.current++
+      initialRef.current = seedFile()
+    }
+  }
+  lastContentRef.current = content
+  const handleChange = useCallback((v: string) => {
+    lastEmittedRef.current = v
+    onChange(v)
+  }, [onChange])
+  // Contents track the live buffer while the cacheKey stays pinned to the seed.
+  // The editor owns its TextDocument and only rebuilds it when name/lang/
+  // cacheKey change, so a fresh `contents` cannot disturb the caret — but the
+  // File render DOES size its rows from `contents`, and a frozen value leaves
+  // the row scaffolding one line short after an insert (the line below appears
+  // to vanish) or one long after a delete (the row below duplicates).
+  const liveFile = useMemo(
+    () => ({ ...initialRef.current!.file, contents: content }),
+    [content],
+  )
+  const options = useMemo(
+    () => ({
+      disableLineNumbers: !lineNums,
+      overflow: (wordWrap ? 'wrap' : 'scroll') as 'wrap' | 'scroll',
+    }),
+    [lineNums, wordWrap],
   )
   return (
     <div className={`w-full h-full overflow-hidden ${flush ? '' : 'border border-border rounded-md'}`}>
-      <Suspense fallback={<div className="p-3 text-muted text-[12px] animate-pulse">{i18nT('components.contentRenderer.loading_editor')}</div>}>
-        <MonacoEditor
-          height="100%"
-          language={monacoLang(lang)}
-          value={content}
-          onChange={v => onChange(v ?? '')}
-          onMount={onEditorMount}
-          beforeMount={(monaco) => {
-            if (!themesRegistered) {
-              monaco.editor.defineTheme('kirocrew-dark', kirocrewDark)
-              monaco.editor.defineTheme('kirocrew-light', kirocrewLight)
-              themesRegistered = true
-            }
-          }}
-          theme={dark ? 'kirocrew-dark' : 'kirocrew-light'}
-          options={{
-            minimap: { enabled: false },
-            scrollBeyondLastLine: false,
-            fontSize: 13,
-            fontFamily: monoFont,
-            lineNumbers: lineNums ? 'on' : 'off',
-            readOnly: false,
-            wordWrap: wordWrap ? 'on' : 'off',
-            quickSuggestions: autocomplete,
-            suggestOnTriggerCharacters: autocomplete,
-            wordBasedSuggestions: autocomplete ? 'currentDocument' : 'off',
-            parameterHints: { enabled: autocomplete },
-            automaticLayout: true,
-            padding: { top: 8, bottom: 8 },
-            hover: { enabled: true },
-            // No red error squiggles by default — the panel editor is for
-            // quick edits, not full IDE diagnostics.
-            renderValidationDecorations: 'off',
-            // No indent guide lines — visual noise in a quick-edit panel.
-            guides: { indentation: false },
-            // No sticky scroll (enclosing function pinned at the top).
-            stickyScroll: { enabled: false },
-            // No current-line highlight box.
-            renderLineHighlight: 'none',
-          }}
-        />
-      </Suspense>
+      <PierreEditor
+        key={initialRef.current.file.cacheKey}
+        ref={editorRef}
+        file={liveFile}
+        options={options}
+        onChange={handleChange}
+        onSave={onSave}
+        diffBase={diffBase}
+        diffSplit={diffSplit}
+        diffExpandUnchanged={diffExpandUnchanged}
+      />
     </div>
   )
 }
@@ -141,13 +157,13 @@ export function CodeEditor({
  *
  * Image and PDF rendering require a `filePath` because they fetch raw
  * bytes via `/api/file-raw?path=`. Markdown, csv, json, html, code, and
- * the Monaco editor work entirely from `content` and don't need a path.
+ * the Pierre editor work entirely from `content` and don't need a path.
  */
 export const ContentRenderer = memo(function ContentRenderer({
   isRichType, fileType, filePath, content, editing,
-  lang, lineNums, wordWrap, autocomplete, onChange,
-  previewRef, displayContent, isMarkdown, highlightedHtml,
-  gutterReadRef, markdownClassName, previewStyle, flush, onEditorMount,
+  lang, lineNums, wordWrap, onChange, onSave,
+  previewRef, displayContent, isMarkdown,
+  markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged,
 }: {
   isRichType: boolean
   fileType: string
@@ -158,22 +174,39 @@ export const ContentRenderer = memo(function ContentRenderer({
   lang: string
   lineNums: boolean
   wordWrap: boolean
-  autocomplete: boolean
   onChange: (v: string) => void
+  /** Cmd/Ctrl+S inside the editor surface. */
+  onSave?: () => void
   previewRef: React.RefObject<HTMLElement | null>
   displayContent: string
   isMarkdown: boolean
-  highlightedHtml: string
-  gutterReadRef?: React.RefObject<HTMLDivElement | null>
   markdownClassName?: string
   previewStyle?: React.CSSProperties
   /** Drop the rounded border boxes around the editor / code views — used when
    *  the host surface (side-panel tab body) already frames the content. */
   flush?: boolean
-  /** Forwarded to `CodeEditor` — only fires on the `editing` (Monaco) branch,
-   *  which is why a host that needs a line reveal forces source mode. */
-  onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: Monaco) => void
+  /** Imperative reveal/focus handle for the editing surface — how a host jumps
+   *  to a cited line (only live on the `editing` branch). */
+  editorRef?: React.Ref<PierreEditorHandle>
+  /** Live-diff editing baseline for the code-editor branch (`null` = new
+   *  file). `undefined` renders the plain editor. */
+  diffBase?: string | null
+  /** Live-diff surface: show unchanged regions instead of folding them. */
+  diffExpandUnchanged?: boolean
+  /** Split vs unified layout for the live-diff editing surface. */
+  diffSplit?: boolean
 }) {
+  const codeFile = useMemo(
+    () => ({ name: filePath?.split('/').pop() || `file.${lang}`, contents: content }),
+    [filePath, lang, content],
+  )
+  const codeOptions = useMemo(
+    () => ({
+      disableLineNumbers: !lineNums,
+      overflow: (wordWrap ? 'wrap' : 'scroll') as 'wrap' | 'scroll',
+    }),
+    [lineNums, wordWrap],
+  )
   const inner = (
     <>
       {isRichType && fileType === 'image' && filePath && <ImageViewer filePath={filePath} />}
@@ -219,10 +252,10 @@ export const ContentRenderer = memo(function ContentRenderer({
                     lang="xml"
                     lineNums={lineNums}
                     wordWrap={wordWrap}
-                    autocomplete={autocomplete}
                     onChange={onChange}
+                    onSave={onSave}
                     flush={flush}
-                    onEditorMount={onEditorMount}
+                    filePath={filePath}
                   />
                 </div>
               </section>
@@ -246,10 +279,14 @@ export const ContentRenderer = memo(function ContentRenderer({
           lang={lang}
           lineNums={lineNums}
           wordWrap={wordWrap}
-          autocomplete={autocomplete}
           onChange={onChange}
+          onSave={onSave}
           flush={flush}
-          onEditorMount={onEditorMount}
+          editorRef={editorRef}
+          filePath={filePath}
+          diffBase={diffBase}
+          diffSplit={diffSplit}
+          diffExpandUnchanged={diffExpandUnchanged}
         />
       )}
       {!isRichType && !editing && isMarkdown && (
@@ -260,22 +297,19 @@ export const ContentRenderer = memo(function ContentRenderer({
         </div>
       )}
       {!isRichType && !editing && !isMarkdown && (
-        <div className={`relative w-full h-full font-mono text-[13px] leading-[18px] overflow-hidden ${flush ? '' : 'border border-border rounded-md'}`}>
-          {lineNums && (
-            <div ref={gutterReadRef as React.RefObject<HTMLDivElement>} className="absolute left-0 top-0 bottom-0 w-[3em] text-right pr-2 pt-3 text-[13px] text-muted select-none overflow-hidden z-10 leading-[18px]" style={{ fontFamily: "Menlo, Monaco, 'Courier New', monospace" }}>
-              {Array.from({ length: content.split('\n').length }, (_, i) => <div key={i}>{i + 1}</div>)}
-            </div>
-          )}
-          {/* previewRef also lands here (not just on the markdown branch) so a
-              selection in a text/json/svg body has a root to map back to source:
-              a <pre>'s textContent equals the source exactly (highlighting only
-              wraps spans), so rendered-text offsets are source offsets. */}
-          <pre
-            ref={previewRef as React.RefObject<HTMLPreElement>}
-            className="absolute inset-0 p-3 m-0 overflow-auto whitespace-pre"
-            style={{ paddingLeft: lineNums ? 'calc(3em + 12px)' : undefined }}
-            onScroll={gutterReadRef ? (e => { if (gutterReadRef.current) gutterReadRef.current.scrollTop = (e.target as HTMLElement).scrollTop }) : undefined}
-            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(highlightedHtml) }}
+        <div
+          ref={previewRef as React.RefObject<HTMLDivElement>}
+          className={`relative w-full h-full overflow-hidden ${flush ? '' : 'border border-border rounded-md'}`}
+        >
+          {/* previewRef is a QUERY root only (TreeWalker / selection
+              containment for find and the comment flow), never scrolled, so it
+              sits on this box while Pierre owns the scroller — which is what
+              lets it window rows instead of rendering one per line. */}
+          <PierreCode
+            file={codeFile}
+            langHint={lang}
+            options={codeOptions}
+            scrollClassName="absolute inset-0 overflow-auto pierre-surface"
           />
         </div>
       )}

@@ -32,35 +32,6 @@ export function texFiles(files: string[]): string[] {
   return files.filter(f => f.toLowerCase().endsWith('.tex'))
 }
 
-/**
- * The Monaco language id for a project file.
- *
- * Monaco ships no LaTeX or BibTeX grammar, so `.tex` and `.bib` resolve to
- * `plaintext` rather than being highlighted as something they are not — a wrong
- * grammar is worse than none, because it mis-colours every backslash and brace
- * in the document. Papyrus instead registers a small LaTeX tokenizer of its own
- * (see `latexLanguage.ts`) and returns its id here; if that registration ever
- * fails, Monaco falls back to plaintext, which is the correct degradation.
- *
- * Only ids Monaco actually bundles are returned for the other extensions —
- * claiming an id Monaco does not have buys nothing over `plaintext`.
- */
-export const LATEX_LANGUAGE_ID = 'papyrus-latex'
-
-export function monacoLanguage(path: string): string {
-  const lower = path.toLowerCase()
-  if (lower.endsWith('.tex') || lower.endsWith('.sty') || lower.endsWith('.cls')) {
-    return LATEX_LANGUAGE_ID
-  }
-  if (lower.endsWith('.bib')) return LATEX_LANGUAGE_ID
-  if (lower.endsWith('.md')) return 'markdown'
-  if (lower.endsWith('.py')) return 'python'
-  if (lower.endsWith('.sh')) return 'shell'
-  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'yaml'
-  if (lower.endsWith('.json')) return 'json'
-  return 'plaintext'
-}
-
 /** One node of the file tree: a folder with children, or a leaf file. */
 export interface TreeNode {
   /** Display name — the last path segment. */

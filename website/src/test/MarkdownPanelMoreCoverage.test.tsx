@@ -11,23 +11,29 @@
  *   - the artifact-detail fetch falling back when `api.artifact` rejects,
  *   - the snapshot mutation's error path,
  *   - the discard-to-disk path when the host supplies no `onRefresh`,
- *   - the Monaco diff editor's `beforeMount` / `onMount` wiring (theme
- *     registration, edit forwarding, and the selection → comment hand-off),
+ *   - the diff surface's read-only/editable split: which component the panel
+ *     mounts for `diffMode` alone versus `diffMode + editing`, and what it hands
+ *     each of them,
  *   - the comment-highlight click → row flash, and the pointer miss,
- *   - fullscreen for a CODE file, where the overlay toolbar is the only route
- *     to preview mode and therefore to the hljs render.
+ *   - fullscreen for a CODE file, where the overlay carries the only copy of
+ *     the editor toolbar.
  *
  * `Highlight` / `CSS.highlights` are stubbed BEFORE the dynamic import because
- * MarkdownPanel captures both into module-level constants at load time. Monaco
- * is mocked, but unlike the sibling suites this mock DRIVES the editor
- * callbacks: the component's whole diff integration lives inside them, and a
- * stub that renders a bare div leaves every line of it unexecuted.
+ * MarkdownPanel captures both into module-level constants at load time.
+ *
+ * Pierre is stubbed rather than driven. Its predecessor's integration lived in
+ * `beforeMount`/`onMount` callbacks the panel supplied, so the old mock had to
+ * invoke them or leave that code unexecuted; Pierre inverts that — theme
+ * registration, diff navigation and selection all live INSIDE the shadow root
+ * it owns, and the panel's remaining side of the contract is which surface it
+ * mounts and which props it passes. That is what the stub exposes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useEffect } from 'react'
+import { forwardRef, useImperativeHandle } from 'react'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { PierreEditorHandle } from '../pierre'
 
 // ── CSS Custom Highlight API stub (must precede the dynamic import) ──────────
 const highlightRegistry = new Map<string, Range[]>()
@@ -45,76 +51,41 @@ vi.stubGlobal('CSS', {
   supports: () => false,
 })
 
-// ── Monaco diff editor stub that actually invokes the panel's callbacks ──────
-interface ModifiedStub {
-  onDidChangeModelContent: (cb: () => void) => { dispose: () => void }
-  onMouseUp: (cb: () => void) => { dispose: () => void }
-  getValue: () => string
-  getSelection: () => { isEmpty: () => boolean; getEndPosition: () => unknown } | null
-  getModel: () => { getValueInRange: () => string | undefined }
-  getScrolledVisiblePosition: () => { left: number; top: number; height: number } | null
-  getDomNode: () => HTMLElement | null
-  revealLineInCenter: (line: number) => void
-}
-interface EditorStub {
-  onDidUpdateDiff: (cb: () => void) => { dispose: () => void }
-  getLineChanges: () => { modifiedStartLineNumber: number }[]
-  getModifiedEditor: () => ModifiedStub
-}
-
-const monaco = {
-  defineTheme: vi.fn(),
-  revealLineInCenter: vi.fn(),
-  /** Value the modified editor reports — what an edit forwards to the owner. */
-  modifiedValue: 'edited inside monaco',
-  /** null = the mouse-up left no selection behind. */
-  selectionText: null as string | null,
-  updateDiff: undefined as undefined | (() => void),
-  contentChange: undefined as undefined | (() => void),
-  mouseUp: undefined as undefined | (() => void),
-}
-
-function makeEditorStub(): EditorStub {
-  const domNode = document.createElement('div')
-  const modified: ModifiedStub = {
-    onDidChangeModelContent: (cb) => { monaco.contentChange = cb; return { dispose: () => {} } },
-    onMouseUp: (cb) => { monaco.mouseUp = cb; return { dispose: () => {} } },
-    getValue: () => monaco.modifiedValue,
-    getSelection: () => (monaco.selectionText === null
-      ? null
-      : { isEmpty: () => false, getEndPosition: () => ({ lineNumber: 1, column: 1 }) }),
-    getModel: () => ({ getValueInRange: () => monaco.selectionText ?? undefined }),
-    getScrolledVisiblePosition: () => ({ left: 12, top: 20, height: 16 }),
-    getDomNode: () => domNode,
-    revealLineInCenter: monaco.revealLineInCenter,
-  }
-  return {
-    onDidUpdateDiff: (cb) => { monaco.updateDiff = cb; return { dispose: () => {} } },
-    getLineChanges: () => [{ modifiedStartLineNumber: 4 }],
-    getModifiedEditor: () => modified,
-  }
-}
-
-vi.mock('@monaco-editor/react', () => ({
-  default: ({ value }: { value?: string }) => <div data-testid="monaco" data-value={value} />,
-  DiffEditor: ({ beforeMount, onMount, modified }: {
-    beforeMount?: (m: { editor: { defineTheme: (n: string, t: unknown) => void } }) => void
-    onMount?: (e: EditorStub) => void
-    modified?: string
-  }) => {
-    useEffect(() => {
-      beforeMount?.({ editor: { defineTheme: monaco.defineTheme } })
-      onMount?.(makeEditorStub())
-      // The panel keeps the callbacks in refs, so re-running on every prop
-      // change would re-register listeners the component never disposes.
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only, mirrors Monaco's own contract
-    }, [])
-    return <div data-testid="monaco-diff" data-modified={modified} />
-  },
-  loader: { config: () => {} },
+// ── Pierre stubs that report the props the panel hands them ──────────────────
+// `data-diff-base` is the whole point of the editable-diff stub: `undefined`
+// renders the plain editor, a string renders the live-diff editing surface, and
+// the panel is what decides which.
+vi.mock('../pierre', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  PierreEditor: forwardRef<PierreEditorHandle, {
+    file: { contents: string }; diffBase?: string | null; diffSplit?: boolean
+    onChange: (v: string) => void
+  }>(function PierreEditorStub({ file, diffBase, diffSplit, onChange }, ref) {
+    useImperativeHandle(ref, () => ({ jumpToLine: () => {}, focus: () => {} }), [])
+    return (
+      <div
+        data-testid="pierre-editor"
+        data-value={file.contents}
+        data-diff-base={diffBase === undefined ? 'none' : String(diffBase)}
+        data-diff-split={String(!!diffSplit)}
+      >
+        <button
+          data-testid="pierre-editor-emit"
+          aria-label="emit an edit from the stubbed editor"
+          onClick={() => onChange('edited inside pierre')}
+        />
+      </div>
+    )
+  }),
+  PierreCode: ({ file }: { file: { contents: string } }) => (
+    <div data-testid="pierre-code" data-value={file.contents} />
+  ),
+  PierreFilePair: ({ oldFile, newFile }: {
+    oldFile: { contents: string } | null; newFile: { contents: string } | null
+  }) => (
+    <div data-testid="pierre-diff" data-old={oldFile?.contents ?? ''} data-new={newFile?.contents ?? ''} />
+  ),
 }))
-vi.mock('monaco-editor', () => ({}))
-vi.mock('../utils/monacoLocal', () => ({ ensureMonacoLocal: async () => {} }))
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => true) }))
 
@@ -185,11 +156,6 @@ beforeEach(() => {
   highlightRegistry.clear()
   localStorage.clear()
   document.getElementById('mc-comment-hl-style')?.remove()
-  monaco.modifiedValue = 'edited inside monaco'
-  monaco.selectionText = null
-  monaco.updateDiff = undefined
-  monaco.contentChange = undefined
-  monaco.mouseUp = undefined
   installFetch()
   // happy-dom has no scrollIntoView; the comment-row flash calls it directly.
   Object.defineProperty(Element.prototype, 'scrollIntoView', {
@@ -344,8 +310,8 @@ describe('MarkdownPanel — discard with no owner refresh', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onContentChange = vi.fn()
     fetchOpts.fileReadText = 'the version on disk'
+    // Cancel lives in the unsaved-changes banner, which is mode-independent.
     mountPanel({ content: 'edited body', savedBaseline: 'disk body', onContentChange })
-    fireEvent.click(screen.getByText('View Source'))
     fireEvent.click(screen.getByText('Cancel'))
     await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('the version on disk'))
     expect(fetch).toHaveBeenCalledWith('/api/file-read?path=%2Ftmp%2Fnotes.md')
@@ -396,7 +362,9 @@ describe('MarkdownPanel — comment highlight pointer handling', () => {
     await waitFor(() => expect(highlightRegistry.get('mc-comment')?.length).toBe(1))
     return {
       painted: highlightRegistry.get('mc-comment')![0],
-      scrollRoot: document.querySelector('.overflow-auto') as HTMLElement,
+      // The scroll container the panel binds its listeners to, reached through
+      // the markdown body so a Tailwind edit cannot silently unbind this.
+      scrollRoot: document.querySelector('.msg-content')!.parentElement as HTMLElement,
     }
   }
 
@@ -462,57 +430,64 @@ describe('MarkdownPanel — comment highlight pointer handling', () => {
   })
 })
 
-describe('MarkdownPanel — Monaco diff wiring', () => {
-  it('registers both editor themes exactly once and jumps to the first change', async () => {
-    mountPanel({ initialDiffMode: true })
-    await screen.findByTestId('monaco-diff')
-    const themes = monaco.defineTheme.mock.calls.map(([name]) => name)
-    expect(themes).toEqual(['kirocrew-dark', 'kirocrew-light'])
-
-    act(() => { monaco.updateDiff!() })
-    expect(monaco.revealLineInCenter).toHaveBeenCalledWith(4)
+/**
+ * The diff surface has two shapes, and the panel picks between them:
+ *
+ *   diff + preview  -> `PierreFilePair`, view-only. Nothing here can receive an
+ *                      edit, which is the property the old suite proved by
+ *                      firing Monaco's change event and asserting silence.
+ *   diff + source   -> the editor, seeded with `diffBase` so the buffer is
+ *                      diffed against HEAD while it is typed into.
+ *
+ * Everything else the old Monaco tests reached — theme registration, the jump to
+ * the first change, the selection→comment bridge — is now Pierre's own business
+ * inside its shadow root, and is asserted in Playwright rather than mocked back
+ * into existence here.
+ */
+describe('MarkdownPanel — diff surface wiring', () => {
+  it('renders the diff read-only in preview, with no editor to type into', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'from HEAD\n', status: 'clean' } as never)
+    mountPanel({ initialDiffMode: true, content: 'in the buffer\n' })
+    expect(await screen.findByTestId('pierre-diff')).toBeInTheDocument()
+    expect(screen.queryByTestId('pierre-editor')).toBeNull()
   })
 
-  it('forwards a Monaco edit to the owner only while the diff is editable', async () => {
-    const onContentChange = vi.fn()
-    mountPanel({ initialDiffMode: true, onContentChange })
-    await screen.findByTestId('monaco-diff')
-
-    // Preview-side diff is read-only: an edit event cannot reach the owner.
-    act(() => { monaco.contentChange!() })
-    expect(onContentChange).not.toHaveBeenCalled()
-
+  it('swaps the read-only diff for an editor diffed against HEAD in source mode', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'from HEAD\n', status: 'clean' } as never)
+    mountPanel({ initialDiffMode: true, content: 'in the buffer\n' })
+    await screen.findByTestId('pierre-diff')
     fireEvent.click(screen.getByText('View Source'))
-    act(() => { monaco.contentChange!() })
-    expect(onContentChange).toHaveBeenCalledWith('edited inside monaco')
+    const editor = await screen.findByTestId('pierre-editor')
+    expect(screen.queryByTestId('pierre-diff')).toBeNull()
+    // `diffBase` is what makes it the live-diff surface rather than the plain
+    // editor — an `undefined` here silently drops the whole diff-while-editing
+    // feature with no other visible symptom.
+    expect(editor).toHaveAttribute('data-diff-base', 'from HEAD\n')
+    expect(editor).toHaveAttribute('data-value', 'in the buffer\n')
   })
 
-  it('raises the comment popover from a diff-editor selection', async () => {
-    monaco.selectionText = '  const answer = 42  '
-    mountPanel({ initialDiffMode: true, onSubmitComments: vi.fn() })
-    await screen.findByTestId('monaco-diff')
-
-    // The panel debounces the selection read by 10ms so Monaco has committed it.
-    await act(async () => {
-      monaco.mouseUp!()
-      await new Promise(resolve => setTimeout(resolve, 30))
-    })
-    fireEvent.click(await screen.findByRole('button', { name: 'Comment' }))
-    // No DOM selection exists on the Monaco path, so the rect is used as-is.
-    expect(await screen.findByLabelText('Add a comment')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByLabelText('Close'))
-    await waitFor(() => expect(screen.queryByLabelText('Add a comment')).toBeNull())
+  it('forwards an edit made on the editable diff surface to the owner', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'from HEAD\n', status: 'clean' } as never)
+    const onContentChange = vi.fn()
+    mountPanel({ initialDiffMode: true, content: 'in the buffer\n', onContentChange })
+    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.click(await screen.findByTestId('pierre-editor-emit'))
+    expect(onContentChange).toHaveBeenCalledWith('edited inside pierre')
   })
 
-  it('leaves the selection alone when the mouse-up selected nothing', async () => {
-    mountPanel({ initialDiffMode: true, onSubmitComments: vi.fn() })
-    await screen.findByTestId('monaco-diff')
-    await act(async () => {
-      monaco.mouseUp!()
-      await new Promise(resolve => setTimeout(resolve, 30))
-    })
-    expect(screen.queryByRole('button', { name: 'Comment' })).toBeNull()
+  it('leaves the plain editor unseeded when the diff is off', async () => {
+    mountPanel({ content: 'in the buffer\n' })
+    fireEvent.click(screen.getByText('View Source'))
+    const editor = await screen.findByTestId('pierre-editor')
+    expect(editor).toHaveAttribute('data-diff-base', 'none')
+  })
+
+  it('shares the app-wide split/unified preference with the editable diff', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'from HEAD\n', status: 'clean' } as never)
+    localStorage.setItem('mc-diff-split', '0')
+    mountPanel({ initialDiffMode: true, content: 'in the buffer\n' })
+    fireEvent.click(screen.getByText('View Source'))
+    expect(await screen.findByTestId('pierre-editor')).toHaveAttribute('data-diff-split', 'false')
   })
 })
 
@@ -532,63 +507,40 @@ describe('MarkdownPanel — fullscreen for a code file', () => {
     ).toBeInTheDocument())
   })
 
-  it('is the only route from a code file to its highlighted preview', async () => {
-    // canPreview is markdown-only, so the side-panel header has no
-    // source/preview toggle for a .py file — the overlay toolbar carries one.
+  it('carries the editor toolbar for a code file, which the side panel does not', async () => {
+    // The side-panel header keeps only mode toggles; the overlay header is the
+    // one surface that still renders the editor controls inline.
     const dialog = await goFullscreen({ filePath: '/tmp/mod.py', content: 'value = 41 + 1\n' })
     expect(within(dialog).getByLabelText('Toggle word wrap')).toBeInTheDocument()
-    expect(within(dialog).getByLabelText('Toggle autocomplete')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('Toggle line numbers')).toBeInTheDocument()
-
-    fireEvent.click(within(dialog).getByText('Preview'))
-    // Out of the editor: the code is now rendered read-only and syntax-tokenised.
-    await waitFor(() => expect(within(dialog).getByText('Edit')).toBeInTheDocument())
-    const pre = dialog.querySelector('pre')
-    expect(pre).not.toBeNull()
-    // Only the tokenised spans are asserted: DOMPurify running on happy-dom
-    // drops the leading bare text node of a fragment, so `value =` is absent
-    // here while a real browser keeps it — an environment artifact, not the
-    // panel's behaviour.
-    expect(pre!.querySelector('.hljs-number')).not.toBeNull()
-    expect(pre!.textContent).toContain('41 + 1')
+    expect(within(dialog).getByLabelText('Toggle diff view')).toBeInTheDocument()
+    // A code file opens straight in the editor and has no preview to offer.
+    expect(within(dialog).getByTestId('pierre-editor')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Preview')).toBeNull()
   })
 
   it('persists the overlay editor toggles from the overlay itself', async () => {
     const dialog = await goFullscreen({ filePath: '/tmp/mod.py', content: 'value = 41 + 1\n' })
     fireEvent.click(within(dialog).getByLabelText('Toggle word wrap'))
-    fireEvent.click(within(dialog).getByLabelText('Toggle autocomplete'))
     fireEvent.click(within(dialog).getByLabelText('Toggle line numbers'))
     await waitFor(() => expect(localStorage.getItem('mc-file-wordwrap')).toBe('0'))
-    expect(localStorage.getItem('mc-file-autocomplete')).toBe('0')
     expect(localStorage.getItem('mc-file-linenums')).toBe('0')
   })
 
-  it('falls back to auto-detection for an extension with no registered grammar', async () => {
-    // langFor maps an unknown extension to `plaintext`, which this build never
-    // registers with highlight.js — so the explicit-language call throws and the
-    // auto-detecting pass has to render the file instead of it going blank.
-    const dialog = await goFullscreen({ filePath: '/tmp/gateway.log', content: 'READY on port 8080\n' })
+  it('flips a markdown file between preview and edit from the overlay toolbar', async () => {
+    // `canPreview` is markdown-only, so this Edit/Preview pair is the overlay's
+    // copy of the side-panel toggle rather than an extra route for code files.
+    const dialog = await goFullscreen({ content: '# Title\n\nalpha beta gamma\n' })
+    fireEvent.click(within(dialog).getByText('Edit'))
+    expect(await within(dialog).findByTestId('pierre-editor')).toBeInTheDocument()
     fireEvent.click(within(dialog).getByText('Preview'))
-    await waitFor(() => expect(within(dialog).getByText('Edit')).toBeInTheDocument())
-    const pre = dialog.querySelector('pre')
-    expect(pre).not.toBeNull()
-    expect(pre!.textContent).toContain('8080')
+    await waitFor(() => expect(within(dialog).queryByTestId('pierre-editor')).toBeNull())
   })
 
-  it('copies the path from the overlay footer', async () => {    const dialog = await goFullscreen({})
+  it('copies the path from the overlay footer', async () => {
+    const dialog = await goFullscreen({})
     fireEvent.click(within(dialog).getByTitle('Click to copy path'))
     expect(copyToClipboard).toHaveBeenCalledWith('/tmp/notes.md')
-  })
-
-  it('routes a diff-editor selection into the overlay comment toolbar', async () => {
-    monaco.selectionText = 'alpha beta'
-    await goFullscreen({ initialDiffMode: true, onSubmitComments: vi.fn() })
-    await screen.findByTestId('monaco-diff')
-    await act(async () => {
-      monaco.mouseUp!()
-      await new Promise(resolve => setTimeout(resolve, 30))
-    })
-    expect(await screen.findByRole('button', { name: 'Comment' })).toBeInTheDocument()
   })
 })
 
@@ -616,6 +568,15 @@ describe('MarkdownPanel — live file watch', () => {
     await waitFor(() => expect(streams.length).toBe(1))
     act(() => { streams[0].onmessage?.({ data: JSON.stringify({ content: 'rewritten on disk' }) }) })
     expect(onContentChange).toHaveBeenCalledWith('rewritten on disk')
+  })
+
+  it('does not watch a dirty buffer, which a disk push would clobber', async () => {
+    streams.length = 0
+    installEventSource()
+    const props = { ...panelProps({ content: 'edited body', savedBaseline: 'disk body' }), liveWatch: true }
+    render(<MarkdownPanel embedded {...props} />, { wrapper })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(streams.length).toBe(0)
   })
 })
 

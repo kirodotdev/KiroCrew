@@ -5,7 +5,7 @@
  *
  * - **No paper open** → `ProjectList`, which follows the standard page layout
  *   (`PageHeader` + `px-4 md:px-6 pb-8` container + `StatCard` row + `Card` sections).
- * - **A paper open** → a split-pane workspace: file tree, Monaco source pane and
+ * - **A paper open** → a split-pane workspace: file tree, Pierre source pane and
  *   diagnostics on the left; the rendered PDF on the right; an optional co-author
  *   chat panel beyond that. A paper and its PDF need the full viewport, so the
  *   editor is deliberately full-bleed and carries its own toolbar.
@@ -150,7 +150,7 @@ export default function PapyrusPage() {
   // DURING the save, which is exactly what has to be detected.
   const bufferRef = useRef('')
   // Re-entry guard for save-and-compile. In a ref so the Cmd+S handler passed to
-  // Monaco keeps a stable identity across compile cycles.
+  // The editor keeps a stable identity across compile cycles.
   const compilingRef = useRef(false)
 
   useEffect(() => { bufferFileRef.current = currentFile }, [currentFile])

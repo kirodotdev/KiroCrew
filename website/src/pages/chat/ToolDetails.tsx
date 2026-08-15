@@ -16,7 +16,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 import { Zap, Wrench } from 'lucide-react'
 import { ToolInputText } from '../../components/ToolInputText'
-import { HighlightedCode } from '../../components/CodeBlock'
+import { PierreCode } from '../../pierre'
+
+/** Compact single-value rendering inside the tool-details table: no gutter,
+ *  wrapped lines, transparent background so the row's own surface shows. */
+const CMD_CODE_OPTIONS = { disableLineNumbers: true, overflow: 'wrap' } as const
 
 import { i18nT } from '../../i18n/t'
 export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto, pending, ts, hasEntry, fmtTime, barColor, layoutId, compact, flush }: {
@@ -309,12 +313,16 @@ function JsonValue({ value, lang }: { value: unknown; lang?: string }): ReactNod
   if (typeof value === 'boolean') return <span style={{ color: 'var(--json-bool)' }}>{String(value)}</span>
   if (typeof value === 'number') return <span style={{ color: 'var(--json-num)' }}>{value}</span>
   if (typeof value === 'string') {
-    // Known command-bearing keys get worker-based bash syntax highlighting.
+    // Known command-bearing keys get Pierre-based syntax highlighting.
     if (lang) {
       return (
-        <pre className="m-0 whitespace-pre-wrap break-all">
-          <HighlightedCode code={value} lang={lang} className="bg-transparent" />
-        </pre>
+        <div className="pierre-surface pierre-transparent">
+          <PierreCode
+            file={{ name: `value.${lang}`, contents: value }}
+            langHint={lang}
+            options={CMD_CODE_OPTIONS}
+          />
+        </div>
       )
     }
     if (value.includes('\n')) {

@@ -145,6 +145,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_project_git,
     api_project_git_log,
     api_project_git_status,
+    api_project_tree,
     api_reveal_path,
     api_screenshot,
     api_slack_upload_file,

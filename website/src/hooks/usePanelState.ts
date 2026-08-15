@@ -31,7 +31,7 @@ export function usePanelState() {
   )
 }
 
-/** Side-panel state for the Monaco diff viewer triggered by file-change chips. */
+/** Side-panel state for the Pierre diff viewer triggered by file-change chips. */
 export function useDiffPanel() {
   const [isOpen, setIsOpen] = useState(false)
   const [filePath, setFilePath] = useState('')

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildTree, countDiagnostics, countWords, flattenTree, gitBranchLabel, isArtifact,
-  LATEX_LANGUAGE_ID, loadLastProject, loadSlot, monacoLanguage, pruneSlots, saveLastProject,
+  loadLastProject, loadSlot, pruneSlots, saveLastProject,
   saveSlot, SLOT_KEY_PREFIX, sourceFiles, texFiles,
 } from '../apps/papyrus/lib'
 import type { Diagnostic } from '../apps/papyrus/api'
@@ -41,27 +41,6 @@ describe('artifact filtering', () => {
     expect(texFiles(['main.tex', 'refs.bib', 'sections/intro.tex'])).toEqual([
       'main.tex', 'sections/intro.tex',
     ])
-  })
-})
-
-describe('monacoLanguage', () => {
-  it('routes .tex to the app-registered LaTeX grammar', () => {
-    // Monaco bundles no TeX grammar, so Papyrus registers its own; claiming a
-    // built-in id here would silently mis-highlight every backslash.
-    expect(monacoLanguage('main.tex')).toBe(LATEX_LANGUAGE_ID)
-    expect(monacoLanguage('acl.sty')).toBe(LATEX_LANGUAGE_ID)
-    expect(monacoLanguage('references.bib')).toBe(LATEX_LANGUAGE_ID)
-  })
-
-  it('uses a bundled grammar where one exists', () => {
-    expect(monacoLanguage('README.md')).toBe('markdown')
-    expect(monacoLanguage('build.sh')).toBe('shell')
-    expect(monacoLanguage('script.py')).toBe('python')
-  })
-
-  it('falls back to plaintext for an unknown extension', () => {
-    expect(monacoLanguage('notes.txt')).toBe('plaintext')
-    expect(monacoLanguage('LICENSE')).toBe('plaintext')
   })
 })
 
