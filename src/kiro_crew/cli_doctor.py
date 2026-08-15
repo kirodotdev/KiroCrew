@@ -912,14 +912,27 @@ def _doctor_headless_auth(issues: list[str]) -> None:
     snapshot, an operator who reaches the docs only after hitting the wall), and
     none of those orderings run ``service install`` again.
 
-    Gated on a service definition existing, which is what makes the claim true
-    rather than merely plausible. Without one the gateway runs in the foreground
-    and inherits this very shell, so the credential DOES reach it and warning
-    here would be a false positive on a working host.
+    Gated on a service definition existing, which is what keeps the report
+    plausible. Without one the gateway runs in the foreground and inherits this
+    very shell, so the credential DOES reach it and warning here would be a
+    false positive on a working host.
+
+    Advisory only (never appended to ``issues``, like the pod-session-bus and
+    memory-pressure probes): ``issues`` is doctor's exit-code channel, so an
+    entry here makes the verdict ❌ and exits non-zero — a claim this shell
+    cannot establish. ``service_environment()`` bakes ``HOME``, so a service on
+    a host that ran ``kiro-cli login`` before the key was exported resolves that
+    credential store and is healthy while the check still fires; and a unit path
+    proves a definition exists on disk, not that the unit is the gateway
+    currently serving, so a stopped unit beside a foreground ``kirocrew gateway``
+    also reads as broken. Reporting the exposure is right; failing doctor on a
+    host where sign-in works is the same contradiction-with-reality this
+    diagnostic exists to surface, one layer up.
 
     Best-effort like the probes around it: a failure to read the environment or
     the unit path must not fail ``doctor``, whose job is to report.
     """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     try:
         if service_controller.installed_unit_path() is None:
             return
@@ -931,11 +944,6 @@ def _doctor_headless_auth(issues: list[str]) -> None:
     print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
     for line in warning.splitlines():
         print(f"{_INDENT}{line.strip()}" if line.strip() else "")
-    issues.append(
-        "KIRO_API_KEY is set in this shell but absent from the crew .env, so the "
-        "installed service starts without it and the dashboard reports a "
-        "signed-out state"
-    )
 
 
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:

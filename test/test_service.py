@@ -3521,7 +3521,25 @@ class TestHeadlessApiKeyDoctorReport:
         out = capsys.readouterr().out
         assert "cannot see it" in out
         assert "Note: dropped key" in out
-        assert len(issues) == 1
+        assert issues == [], "the report is advisory; see the exit-code test below"
+
+    def test_the_report_cannot_make_doctor_exit_nonzero(self, monkeypatch, tmp_path):
+        """`issues` is the exit-code channel, and this gate cannot prove failure.
+
+        `_doctor` ends in `if issues: print("❌ Fix these issues: ..."); sys.exit(1)`,
+        so an entry here turns a host where sign-in works into a failed verdict:
+        `service_environment()` bakes `HOME`, so a service that has a
+        `kiro-cli login` credential store is healthy while this fires, and a unit
+        path only proves a definition exists on disk. Both halves are pinned --
+        the append being absent, and the `sys.exit(1)` it would have reached.
+        """
+        from kiro_crew import cli_doctor
+
+        source = inspect.getsource(cli_doctor._doctor_headless_auth)
+        assert "issues.append" not in source
+        assert "del issues" in source
+        assert self._warn(monkeypatch, tmp_path / "kirocrew.service") == []
+        assert "sys.exit(1)" in inspect.getsource(cli_doctor._doctor)
 
     def test_silent_when_no_service_is_installed(self, monkeypatch, capsys):
         """A foreground gateway inherits this shell, so there is nothing wrong."""
@@ -3640,6 +3658,20 @@ class TestHeadlessApiKeyWarning:
         assert self.API_KEY in warning
         assert str(dotenv) in warning, "the warning must name the file to edit"
         assert "kirocrew service restart" in warning
+
+    def test_the_signed_out_claim_is_qualified(self, monkeypatch, tmp_path):
+        """A login credential store under the baked `HOME` can still authenticate.
+
+        `service_environment()` bakes `HOME`, so a service on a host that ran
+        `kiro-cli login` before the key was exported is signed in even though the
+        key is dropped. The note must therefore not state the signed-out outcome
+        as certain: doctor treats this same predicate as advisory rather than a
+        failure precisely because it cannot rule that fall-back out.
+        """
+        self._dotenv(monkeypatch, tmp_path, "")
+        warning = common.headless_auth_warning({self.API_KEY: self.SECRET})
+        assert "signed-out state" in warning
+        assert "unless" in warning, "the outcome is conditional, not certain"
 
     def test_silent_when_dotenv_already_defines_the_key(self, monkeypatch, tmp_path):
         self._dotenv(monkeypatch, tmp_path, f"{self.API_KEY}=already-configured\n")

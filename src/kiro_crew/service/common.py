@@ -185,8 +185,10 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     GATEWAY's own environment. launchd and systemd start the service with a
     minimal, non-login environment, so a key exported in the shell that ran
     ``kirocrew service install`` is not there when the service starts: the probe
-    sees no credential, readiness latches ``authenticated=False``, and the
-    dashboard asks for a sign-in the operator has already done.
+    sees no credential, and unless a ``kiro-cli login`` credential store under
+    the baked ``HOME`` supplies one instead, readiness latches
+    ``authenticated=False`` and the dashboard asks for a sign-in the operator has
+    already done.
 
     The variable is deliberately NOT added to :func:`service_environment`. Both
     baked locations are readable by every local user — the systemd unit lives in
@@ -224,7 +226,8 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     )
     lines = [
         f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
-        "   inherit it, so the dashboard will report a signed-out state. Add it",
+        "   inherit it, so unless kiro-cli has a login credential store to fall",
+        "   back on, the dashboard will report a signed-out state. Add it",
         f"   to {dotenv} (0600) and restart the service:",
         "",
         f"     {remedy}",
