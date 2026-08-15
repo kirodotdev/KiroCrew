@@ -14,6 +14,62 @@ files / uploads / artifacts / URLs
    → local_knowledge_search (MCP) / dashboard Knowledge tab
 ```
 
+## Role & boundary
+
+The Knowledge Library is the agent's **precise-recall complement to memory** — it is defined as much by the two things it is *not*:
+
+- **Not memory.** The memory subsystem (see `memory-skills-hooks.md`) carries the small, distilled, always-on picture and is **injected into every prompt** by `ContextBuilder`; it is lossy by design (it dedups, decays, and paraphrases). The Knowledge Library instead holds the durable, **verbatim, cited** detail that memory can only approximate, and it is **pulled on demand**: the LLM reaches it only through the `local_knowledge_search` MCP tool, never as per-turn context injection (§4). Its job is to surface the exact chunk — with a citation back to source (§4, "Citation enrichment") — precisely when memory's recall is imprecise or absent.
+- **Not a workspace.** It is not scratch space for the current task's files or state; it is the durable, source-owned record that outlives any single task or session. A live project directory is *ingested* as a read-only `local_folder` source by `project_docs.py` (§2b), not adopted as a working set.
+
+This is the boundary the two automatic write paths (§2b) capture against: verbatim, long-tail durable detail that memory would only paraphrase belongs here; small, always-shaping, distilled knowledge belongs in memory; transient current-task state belongs in neither. How well the KB fills that role is measured against the criteria in "Success criteria" below.
+
+## Success criteria
+
+The Knowledge Library's job — surface the exact, cited chunk when memory's recall falls short — is judged on **two tiers**. No dedicated harness for either exists in-tree yet (see "What is measured today"); this section defines the target so a retrieval change (recency weighting, a reranker, content-typed TTL) can be judged against a fixed bar rather than by eye.
+
+### Tier 1 — intrinsic retrieval quality
+
+Against a **frozen golden set** of `(query → the chunk(s) that should answer it)`, does retrieval fetch the right chunk and rank it high? Definitions follow the IR / RAG canon:
+
+| Metric | Definition | Reads |
+|--------|------------|-------|
+| **recall@k** | `|relevant ∩ retrieved@k| / |relevant|` — fraction of relevant chunks that land in the top-k | coverage / completeness |
+| **precision@k** | `|relevant ∩ retrieved@k| / k` — fraction of the top-k that is relevant | signal-to-noise |
+| **MRR** | mean of `1 / rank_of_first_relevant` over queries | how early the first hit lands |
+| **nDCG@k** | graded relevance with a log-rank discount, normalized to the ideal ordering | rank quality when relevance is graded, not binary |
+| **hit@k** | binary: did *any* relevant chunk make the top-k | cheap "did retrieval work at all" gate |
+
+RAGAS names the rank-aware pair **context precision** / **context recall** (the latter needs a reference answer); they are the same two ideas applied to the retrieved context.
+
+### Tier 2 — extrinsic task-lift
+
+Does that recall change the outcome? Measured A/B — the same task set run with the KB **on** vs **off** (or vs a baseline), scored on **task success**, not retrieval position. Recall without task-lift means the KB retrieves the wrong thing well. This mirrors how mature agent harnesses gate on outcome rather than retrieval — GAIA2 (pass@1 against a write-action verifier), SWE-bench (fail-to-pass test execution), τ-bench (grounded end-state diff) — and π-Bench's practice of scoring "used the right context" as an axis distinct from "task completed." A companion generation check, **faithfulness** (fraction of the answer's claims actually supported by the retrieved chunk; RAGAS, reference-free), guards against a cited-but-unsupported answer.
+
+### Query classes the golden set must cover
+
+A clean teach→recall set overstates quality: memory/KB systems break on the *hard* classes. The set must enumerate them explicitly (taxonomy adapted from the LobsterAIAgent memory harness and LongMemEval):
+
+- **Clean-fact recall** — baseline single-hop lookup.
+- **Multi-hop** — the answer requires joining two or more chunks (the entity graph's reason to exist, §4).
+- **Time-bound / freshness** — a fact true only "as of" a date; the correct *version* must win.
+- **Correction** — a later chunk fixes an earlier stated fact; the corrected value must be surfaced.
+- **Contradiction** — two chunks conflict; retrieval must surface the conflict, not silently pick one.
+- **Retraction** — a withdrawn fact must stop being recalled.
+- **Reinforcement / corroboration** — repeated independent sources should raise confidence, not merely duplicate.
+- **Hypothetical-exclusion** — speculative or conditional statements must NOT return as settled fact.
+- **Abstention** — when the answer is genuinely absent, retrieval should return nothing above the score floor rather than a false near-match (LongMemEval scores this explicitly).
+- **Citation-fidelity** — the returned chunk must actually support the claim it is cited for (§4, "Citation enrichment").
+
+### What is measured today
+
+The code computes and floors a retrieval **score**, but no Tier-1/Tier-2 metric and none of the hard query classes above:
+
+- `HybridRetriever.search` fuses the keyword + graph + vector legs by RRF (`_rrf_fuse`, k=60; vector leg weighted `VECTOR_RRF_WEIGHT = 2.0`), tie-broken by `updated_at` recency — a secondary sort key, **not** a decay weight (`retrieval.py`, §4).
+- Results below `min_score = 0.012` are dropped by the tool caller (`mcp_tools/knowledge.py`), not inside the retriever.
+- `kirocrew eval` ships four scenarios (`smoke_test`, `memory_recall_basic`, `lesson_application`, `context_accumulation`) scored per-assertion (`contains` / `regex` / `judge`) with an optional 1–5 LLM judge (`eval/judge.py`, pass ≥ 3.0). All four are clean single-fact teach→recall or accumulate→summarize flows; none exercises correction / contradiction / retraction / time-bound / reinforcement / hypothetical, and none reports recall@k, MRR, or task-lift.
+
+The gap is therefore a **KB-scoped golden set over the query classes above, plus an A/B task-lift harness** — the precondition for tuning recency, adding a reranker, or content-typed TTL against evidence rather than intuition.
+
 ## Key Files
 
 | File | Responsibility |
