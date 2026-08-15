@@ -1125,18 +1125,20 @@ function ChatInput({
       if (el) { el.focus(); const n = el.value.length; el.setSelectionRange(n, n) }
     })
   }
-  // Warm the shared ['skills'] cache when the input gains focus so the first
+  // Warm the shared skills cache when the input gains focus so the first
   // `$` trigger renders the picker instantly (the fetch is the only latency).
   // prefetchQuery is a no-op if the cache is already fresh (staleTime), so it's
-  // cheap to call on every focus. Shares the key with SkillPickerMenu + SkillsTab.
+  // cheap to call on every focus. Shares the key with SkillPickerMenu (and,
+  // when agentless, SkillsTab) — must match SkillPickerMenu's own key
+  // (['skills', agentName] vs ['skills']) or the prefetch warms the wrong entry.
   const queryClient = useQueryClient()
   const prefetchSkills = useCallback(() => {
     queryClient.prefetchQuery({
-      queryKey: ['skills'],
-      queryFn: () => api.skills(),
+      queryKey: agentName ? ['skills', agentName] : ['skills'],
+      queryFn: () => api.skills(agentName),
       staleTime: 5 * 60 * 1000,
     })
-  }, [queryClient])
+  }, [queryClient, agentName])
   // Shared caret-relative token insertion for the @/$ pickers: replace the
   // sigil-token ending at the caret with `token`, commit, and restore the caret
   // just after it. One copy keeps the two onSelect handlers duplication-free.
@@ -2434,6 +2436,7 @@ function ChatInput({
         query={skillQuery}
         anchorRef={inputRef as React.RefObject<HTMLElement>}
         open={skillPickerOpen}
+        agent={agentName}
         onSelect={({ leaf }) => {
           // Token left literal — backend appends the skill body; the user still
           // sees their $token marker. Caret-relative replace via shared helper.

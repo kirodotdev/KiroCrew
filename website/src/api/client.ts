@@ -1830,7 +1830,13 @@ export const api = {
   prompts: () => fetch('/api/prompts').then(j),
   promptDetail: (name: string) => fetch('/api/prompts/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
   // Skills
-  skills: () => fetch('/api/skills').then(j),
+  // agent, when given, scopes the listing to that agent's own skill:// mapping.
+  skills: (agent?: string) => {
+    const p = new URLSearchParams()
+    if (agent) p.set('agent', agent)
+    const qs = p.toString()
+    return fetch('/api/skills' + (qs ? '?' + qs : '')).then(j)
+  },
   skill: (name: string) => fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
   /** List the file tree under a skill's directory.  The ``/-/`` separator
    *  disambiguates from a nested skill whose last segment is ``tree``. */
