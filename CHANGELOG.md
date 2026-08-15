@@ -4,6 +4,18 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **A folder knowledge source added from the dashboard can now be started.**
+  The row's `sync_status` was stored twice — as a table column and inside the
+  properties JSON — and the create path wrote `pending_confirmation` only into
+  the JSON, leaving the column at its `pending` default. The dashboard list
+  reads the column, so a freshly-added `local_folder` / `obsidian_vault` source
+  showed a Pause button instead of the Confirm button that starts the scan and
+  sat at "pending · 0 items · never synced" forever (the workaround was Pause
+  then Resume). Both insert paths (`add_source` and the auto-source path used
+  by drop-folder and project-docs sources) now derive the column from the
+  passed properties, and the store migration repairs already-divergent rows on
+  open, so existing stuck sources become startable without the workaround. (#3701)
+
 - **The Speech-to-Text settings page no longer offers to install Whisper when
   the provider is AWS Transcribe.** With `stt.provider = "transcribe"` the page
   showed an "Install Whisper" button (installing an engine Transcribe never

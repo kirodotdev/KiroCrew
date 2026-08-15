@@ -447,6 +447,33 @@ class KnowledgeStore:
         src_cols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)").fetchall()}
         if "sync_status" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN sync_status TEXT DEFAULT 'pending'")
+        # Repair rows whose column still holds the un-written 'pending' default
+        # while the properties JSON carries the intended state (rows inserted
+        # before the column was written on INSERT). The dashboard picks the
+        # row's control from the column, so a divergent row renders Pause
+        # instead of Confirm and the source cannot be started. Only 'pending'
+        # rows are candidates: any row a handler transitioned already had its
+        # column written, so a repaired value never overwrites a live state.
+        divergent = self.db.execute(
+            "SELECT id, properties FROM sources WHERE sync_status = 'pending'").fetchall()
+        for row in divergent:
+            try:
+                props = json.loads(row["properties"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(props, dict):
+                continue
+            json_status = props.get("sync_status")
+            if (isinstance(json_status, str) and json_status != "pending"
+                    and json_status in self._INITIAL_SYNC_STATUSES):
+                # Re-check the column in the UPDATE itself: a concurrent
+                # handler may have transitioned the row between the SELECT
+                # and this write, and its live state must win over the
+                # snapshot taken above.
+                self.db.execute(
+                    "UPDATE sources SET sync_status = ? "
+                    "WHERE id = ? AND sync_status = 'pending'",
+                    (json_status, row["id"]))
         if "summary_topic" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN summary_topic TEXT")
         if "summary_themes" not in src_cols:
@@ -989,9 +1016,10 @@ class KnowledgeStore:
             sid = str(uuid4())
             now = datetime.now().isoformat()
             self.db.execute(
-                "INSERT INTO sources (id, name, source_type, uri, properties, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (sid, name, source_type, uri, json.dumps(properties), now, now),
+                "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (sid, name, source_type, uri, json.dumps(properties),
+                 self._initial_sync_status(properties), now, now),
             )
             self.db.execute("COMMIT")
             return sid, True
@@ -1263,13 +1291,40 @@ class KnowledgeStore:
             (item_id, entity_id, context, now))
         self.db.commit()
 
+    # States a sources row may legitimately START in. Lifecycle states
+    # (syncing/synced/error/paused/missing) are written by handlers as
+    # transitions and are never valid at insert: persisting a caller-supplied
+    # 'syncing' would make the sync endpoint report a conflict forever for a
+    # source whose sync never started.
+    _INITIAL_SYNC_STATUSES = frozenset({"pending", "pending_confirmation", "active"})
+
+    @staticmethod
+    def _initial_sync_status(properties) -> str:
+        """The sync_status column value a new sources row starts with.
+
+        The dashboard reads the sync_status COLUMN (list_sources serves
+        SELECT s.*), while callers express the intended initial state inside
+        the properties JSON. Both insert paths persist the column from the
+        same value so a freshly-added source renders the control matching its
+        state: a column left at its 'pending' default while properties says
+        'pending_confirmation' hides the Confirm button that starts the scan.
+        Values outside the initial-state allowlist fall back to 'pending'.
+        """
+        if isinstance(properties, dict):
+            status = properties.get("sync_status")
+            if isinstance(status, str) and status in KnowledgeStore._INITIAL_SYNC_STATUSES:
+                return status
+        return "pending"
+
     def add_source(self, name, source_type, uri, **kwargs) -> str:
         sid = str(uuid4())
         now = datetime.now().isoformat()
+        properties = kwargs.get("properties", {})
         self.db.execute(
-            "INSERT INTO sources (id, name, source_type, uri, properties, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (sid, name, source_type, uri, json.dumps(kwargs.get("properties", {})), now, now))
+            "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (sid, name, source_type, uri, json.dumps(properties),
+             self._initial_sync_status(properties), now, now))
         self.db.commit()
         return sid
 

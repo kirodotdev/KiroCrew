@@ -75,6 +75,13 @@ class TestAddSourceFolder:
             data = await resp.json()
             assert data["status"] == "pending_confirmation"
             assert data["file_count"] == 1
+            # The dashboard picks the row's control from the sync_status COLUMN,
+            # not the properties JSON: only 'pending_confirmation' there renders
+            # the Confirm button that starts the scan. A column left at its
+            # 'pending' default makes the source unstartable.
+            row = store.db.execute(
+                "SELECT sync_status FROM sources WHERE id = ?", (data["id"],)).fetchone()
+            assert row["sync_status"] == "pending_confirmation"
 
     @pytest.mark.asyncio
     async def test_folder_sensitive_path_rejected(self, store, tmp_path):

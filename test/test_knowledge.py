@@ -9,6 +9,7 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
@@ -563,6 +564,106 @@ class TestKnowledgeStoreExtended:
         assert found is not None
         assert found["id"] == sid
         assert store.get_source_by_uri("/tmp/nope") is None
+
+    def test_add_source_persists_sync_status_column(self, store):
+        """The sync_status column and the properties JSON must agree on insert.
+
+        The dashboard reads the COLUMN to pick the row's control (the Confirm
+        button renders only for 'pending_confirmation'), so a column stuck at
+        the 'pending' default while properties carries 'pending_confirmation'
+        makes a folder source unstartable.
+        """
+        sid = store.add_source(
+            "vault", "local_folder", "/tmp/vault",
+            properties={"sync_status": "pending_confirmation"})
+        row = store.db.execute(
+            "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "pending_confirmation"
+        assert json.loads(row["properties"])["sync_status"] == "pending_confirmation"
+
+    def test_add_source_sync_status_defaults_to_pending(self, store):
+        """A caller that states no sync_status keeps the column's default."""
+        sid = store.add_source("f", "local_file", "/tmp/nostatus.md", properties={})
+        row = store.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "pending"
+
+    def test_add_source_rejects_non_initial_sync_status(self, store):
+        """A lifecycle state in properties never seeds the column.
+
+        The create endpoint passes request-body properties through, so a
+        caller-supplied 'syncing' would otherwise persist and make the sync
+        endpoint report a conflict forever for a source whose sync never
+        started. Only genuine initial states pass; the rest fall back to
+        'pending'.
+        """
+        for forged in ("syncing", "synced", "error", "paused", "missing", "garbage"):
+            sid = store.add_source(
+                "f", "local_file", f"/tmp/forged-{forged}.md",
+                properties={"sync_status": forged})
+            row = store.db.execute(
+                "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+            assert row["sync_status"] == "pending", forged
+
+    def test_auto_source_persists_sync_status_column(self, store):
+        """The auto-source insert path keeps the same column/JSON invariant.
+
+        Drop-folder and project-docs auto sources seed sync_status='active' in
+        properties; the column must match or the dashboard renders the stale
+        'pending' control for a source the watcher is actively scanning.
+        """
+        sid, created = store.create_auto_source_unless_dismissed(
+            "drop", "local_folder", "/tmp/auto-drop",
+            {"sync_status": "active", "auto_added": True})
+        assert created and sid is not None
+        row = store.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "active"
+
+    def test_migration_repairs_divergent_sync_status_rows(self, store, tmp_path):
+        """Reopening a store repairs rows whose column diverged from the JSON.
+
+        Rows inserted while the INSERT paths wrote only the properties JSON
+        have a column stuck at 'pending'; the migration copies the JSON state
+        over so those sources become startable. Rows a handler already
+        transitioned (non-'pending' column) are never touched.
+        """
+        divergent = str(uuid4())
+        live = str(uuid4())
+        agree = str(uuid4())
+        listprops = str(uuid4())
+        forged = str(uuid4())
+        now = datetime.now().isoformat()
+        for sid, column, props_json, uri in (
+            (divergent, "pending", json.dumps({"sync_status": "pending_confirmation"}), "/tmp/div"),
+            (live, "paused", json.dumps({"sync_status": "active"}), "/tmp/live"),
+            (agree, "pending", json.dumps({}), "/tmp/agree"),
+            # Imported/legacy rows can hold non-object JSON; the repair must
+            # skip them instead of crashing store initialization.
+            (listprops, "pending", "[]", "/tmp/listprops"),
+            # A lifecycle state in the JSON is never a valid initial state and
+            # must not be copied over (a forged 'syncing' would lock the sync
+            # endpoint into reporting a conflict).
+            (forged, "pending", json.dumps({"sync_status": "syncing"}), "/tmp/forged"),
+        ):
+            store.db.execute(
+                "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (sid, "s", "local_folder", uri, props_json, column, now, now))
+        store.db.commit()
+        store.close()
+
+        reopened = KnowledgeStore(str(tmp_path / "test.db"))
+        try:
+            rows = {r["id"]: r["sync_status"] for r in reopened.db.execute(
+                "SELECT id, sync_status FROM sources").fetchall()}
+            assert rows[divergent] == "pending_confirmation"
+            assert rows[live] == "paused"
+            assert rows[agree] == "pending"
+            assert rows[listprops] == "pending"
+            assert rows[forged] == "pending"
+        finally:
+            reopened.close()
 
     def test_update_source(self, store):
         sid = store.add_source("f", "local_file", "/tmp/f.md")

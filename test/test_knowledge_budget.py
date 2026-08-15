@@ -114,6 +114,7 @@ class TestMaxSourcesCap:
                 source_type TEXT,
                 uri TEXT UNIQUE,
                 properties TEXT,
+                sync_status TEXT DEFAULT 'pending',
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -136,6 +137,7 @@ class TestMaxSourcesCap:
         store.create_auto_source_unless_dismissed = (
             lambda *a, **kw: RealStore.create_auto_source_unless_dismissed(store, *a, **kw)
         )
+        store._initial_sync_status = RealStore._initial_sync_status
         return store
 
     def test_under_cap_allows_creation(self, tmp_path):
