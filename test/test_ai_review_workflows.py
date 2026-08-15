@@ -1512,12 +1512,22 @@ class TestDeploymentNeutralFramingParity:
     FIRST = "DO NOT REASON FROM AN ASSUMED USER COUNT"
     LAST = "speculative surface."
 
-    def _framing_block(self, workflow: str) -> str:
-        text = _workflow(workflow)
+    # The same framing now also lives in the two shared Opus prompts (issue
+    # #3484) and in the first-principles contract, which is its canonical
+    # source. Six copies is the real count; asserting on four would leave the
+    # two that #3451 skipped free to drift back.
+    PROMPTS = (
+        "first-principles.md",
+        "opus-discovery.md",
+        "opus-validate.md",
+    )
+
+    def _extract(self, text: str, source: str) -> str:
         lines = text.splitlines()
         start = next(
-            i for i, line in enumerate(lines) if self.FIRST in line
+            (i for i, line in enumerate(lines) if self.FIRST in line), None
         )
+        assert start is not None, f"{source} carries no deployment-neutral framing"
         end = next(
             i for i, line in enumerate(lines[start:], start)
             if line.strip().endswith(self.LAST)
@@ -1527,6 +1537,9 @@ class TestDeploymentNeutralFramingParity:
         return "\n".join(
             line[indent:] if line.strip() else "" for line in block
         )
+
+    def _framing_block(self, workflow: str) -> str:
+        return self._extract(_workflow(workflow), workflow)
 
     def test_all_four_lanes_carry_an_identical_framing_block(self):
         blocks = {name: self._framing_block(name) for name in self.LANES}
@@ -1538,8 +1551,36 @@ class TestDeploymentNeutralFramingParity:
                 "across all four reviewer lanes (issue #3451)"
             )
 
+    def test_shared_prompts_carry_the_same_framing_as_the_lanes(self):
+        """The Opus lanes read `.github/review-prompts/`, not a workflow-inline
+        prompt, so nothing above this covers them. Until #3484 they still
+        asserted the retired single-user premise, which is the cross-lane
+        contradiction #3451 removed -- pin all six copies to one block."""
+        reference = self._framing_block(self.LANES[0])
+        for name in self.PROMPTS:
+            block = self._extract(_prompt(name), name)
+            assert block == reference, (
+                f"{name} framing block drifted from {self.LANES[0]}; "
+                "the deployment-neutral framing must stay byte-identical "
+                "across every prompt that carries it (issues #3451, #3484)"
+            )
+
     def test_no_lane_reintroduces_the_single_user_premise(self):
         for name in self.LANES + ("ux-review.yml", "fork-ux-review.yml"):
             flat = _flat(_workflow(name))
             assert "Keep review proportional to that shape" not in flat, name
             assert "It is a single-user tool: every component" not in flat, name
+
+    def test_no_shared_prompt_reintroduces_the_single_user_premise(self):
+        # The framing QUOTES the banned argument ("It is a single-user tool, so
+        # this guard is unnecessary"), so a bare substring ban on those words
+        # would fire on the fix itself. Pin the phrases that only appear when
+        # the premise is ASSERTED -- including the two spellings these prompts
+        # actually used, which differ from the workflows'.
+        for name in ("opus-discovery.md", "opus-validate.md"):
+            flat = _flat(_prompt(name))
+            assert "It is a single-user tool: every component" not in flat, name
+            assert "the trust boundary is that OS user" not in flat, name
+            assert "a team deployment stays per-user" not in flat, name
+            assert "Keep the review proportional to that shape" not in flat, name
+            assert "Judge reachability against that shape" not in flat, name
