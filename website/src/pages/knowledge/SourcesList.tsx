@@ -39,7 +39,6 @@ export function SourceSpendDisplay({ spend }: { spend?: SourceSpend }) {
   const total = spend?.files_total ?? 0
   const remaining = spend?.estimated_llm_calls_remaining ?? 0
   if (!spend || (total === 0 && remaining === 0)) return null
-  const failed = spend.files_failed ?? 0
   const resolved = (spend.files_done ?? 0) + (spend.files_skipped ?? 0)
   return (
     <>
@@ -49,11 +48,6 @@ export function SourceSpendDisplay({ spend }: { spend?: SourceSpend }) {
           {i18nT('pages.knowledge.sourcesList.files_indexed', {
             done: fmtNumber(resolved), total: fmtNumber(total),
           })}
-        </span>
-      )}
-      {failed > 0 && (
-        <span className="text-[11px] text-danger whitespace-nowrap">
-          {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failed })}
         </span>
       )}
       {remaining > 0 && (
@@ -283,6 +277,13 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const [addRecursive, setAddRecursive] = useState(true)
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; uri: string; fileCount: number } | null>(null)
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
+  // The global staleTime is Infinity, so a reopened expanded view would serve the
+  // cached file list forever — potentially disagreeing with the row's live failed
+  // count after a later scan. Invalidate on open so the list refetches.
+  const toggleExpandedSource = (id: string, isExpanded: boolean) => {
+    if (!isExpanded) queryClient.invalidateQueries({ queryKey: ['source-files', id] })
+    setExpandedSource(isExpanded ? null : id)
+  }
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
 
@@ -513,6 +514,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           const isDeleting = deleteMutation.isPending && deleteMutation.variables === s.id
           const isFolderType = s.source_type === 'local_folder' || s.source_type === 'obsidian_vault'
           const isExpanded = expandedSource === s.id
+          const failedCount = s.spend?.files_failed ?? 0
           const isPaused = s.sync_status === 'paused'
           const isPending = s.sync_status === 'pending_confirmation'
           return (
@@ -521,7 +523,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
             <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
               <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
-                <button onClick={() => setExpandedSource(isExpanded ? null : s.id)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
+                <button onClick={() => toggleExpandedSource(s.id, isExpanded)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
                   aria-label={isExpanded ? i18nT('pages.knowledge.sourcesList.collapse_folder_details') : i18nT('pages.knowledge.sourcesList.expand_folder_details')}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
@@ -556,6 +558,29 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
                     : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
+                  {/* The count names a problem whose detail (which files, and why)
+                      lives in the row's expanded view, so on folder rows it is the
+                      way in rather than inert text. It lives on this meta line — a
+                      separated region with no other action controls — because the
+                      stats/action group to the right is already at the two-button
+                      cap. The dotted underline marks it as clickable at rest
+                      (title/hover never fire on touch); visible text IS the
+                      accessible name (WCAG 2.5.3), the what-it-does hint rides in
+                      title. Toggle, matching the chevron, so a second click is
+                      never dead. Rows without an expanded view keep a plain span. */}
+                  {failedCount > 0 && (
+                    isFolderType ? (
+                      <button type="button" onClick={() => toggleExpandedSource(s.id, isExpanded)}
+                        title={i18nT('pages.knowledge.sourcesList.show_failed_files')}
+                        className="text-[11px] text-danger whitespace-nowrap shrink-0 underline decoration-dotted underline-offset-2 hover:decoration-solid">
+                        {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failedCount })}
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-danger whitespace-nowrap shrink-0">
+                        {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failedCount })}
+                      </span>
+                    )
+                  )}
                 </div>
                 <SourceSummaryDisplay source={s} />
               </div>
@@ -570,6 +595,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : s.sync_status}</Badge>
               )}
               <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>
+              {/* The failed count renders on the identity meta line (the parent owns
+                  it for every row type) — this stats group shares its visual group
+                  with the row's action buttons, where a third button breaks the
+                  max-two-buttons-per-row rule. */}
               <SourceSpendDisplay spend={s.spend} />
               {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
               <StalenessIndicator lastSynced={s.last_synced} />
