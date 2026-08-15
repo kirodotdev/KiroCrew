@@ -648,6 +648,67 @@ class AcpPromptStats:
         """
         self.context_pct_unknown = False
 
+    @staticmethod
+    def sanitize_pct(value: object) -> float | None:
+        """Coerce a raw context-usage percentage to a real [0, 100] float.
+
+        Both the kiro-cli ``contextUsagePercentage`` and the KAS
+        ``usagePercentage`` fields feed this. Returns ``None`` for a missing or
+        unparseable value (the caller leaves the meter untouched). A malformed
+        number (NaN, ±inf, or a huge finite like 1e308) is clamped — NaN via its
+        self-inequality — so ``context_pct`` is always valid JSON and never
+        overflows the downstream ``round(win * pct / 100)``.
+        """
+        if value is None:
+            return None
+        try:
+            pct = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: a JSON integer beyond float range — malformed
+            # telemetry must degrade to "absent", never abort the active turn.
+            return None
+        return 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
+
+    def backfill_context_window(self, pct: float, model_id: str) -> None:
+        """Derive window/used tokens from the model registry when only a
+        percentage is available.
+
+        kiro-cli 2.10+ metadata and KAS ``context_usage`` both give a percentage
+        with no ``usage_update {used, size}``. Shared by the AcpClient and
+        AcpSessionHandle paths (previously two verbatim copies) so both report
+        the same context-meter token counts. No-op once a real usage_update has
+        set authoritative counts. ``model_id`` is the caller's resolved id (the
+        kiro-agent ``currentModelId``, else the user-picked alias). Resolves the
+        window through ``model_registry.model_window`` (kiro-list cache >
+        registry > heuristic) and only backfills a KNOWN window, leaving 0 for a
+        genuinely-unknown model so the frontend's own authoritative window drives
+        the meter. A real ``usage_update.size`` always wins. A surviving
+        ``context_window_tokens`` (e.g. kept across a compaction reset — the
+        model did not change) outranks the registry, since the served size can
+        differ from the static entry.
+        """
+        if self.context_tokens_from_usage:
+            return  # a real usage_update already set authoritative counts
+        win = self.context_window_tokens
+        if not win or win <= 0:
+            if not model_id:
+                return
+            # Deferred import: model_registry is a leaf module, but importing it
+            # at module scope would drag it into the very early types import.
+            from kiro_crew import model_registry
+
+            if not model_registry.has_known_window(model_id):
+                return
+            reg_win = model_registry.model_window(model_id)
+            if not reg_win or reg_win <= 0:
+                return
+            win = int(reg_win)
+            self.context_window_tokens = win
+        # sanitize_pct already clamps live telemetry, but a caller may pass a raw
+        # pct here; guard the multiply so a stray NaN/inf can never overflow.
+        safe_pct = 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
+        self.context_used_tokens = round(win * safe_pct / 100.0)
+
     def reset_after_compaction(self) -> None:
         """Drop the usage counts after a successful compaction.
 
