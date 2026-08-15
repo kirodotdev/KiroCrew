@@ -36,6 +36,7 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
 | `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement) |
 | `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
+| `messaging/split.py` | `split_markdown_safe` — the shared fence-safe markdown splitter (stdlib-only, pure). Prefix-stable so streaming callers can send sealed chunks and keep only the last as a live buffer |
 | `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation` |
 | `messaging/conversation.py` | `ConversationState` — per-conversation rotating *generation* bookkeeping (advanced by `/new` and idle/daily reset), seeded from the persisted session map |
 | `slack/transport.py` | Slack reference `MessagingTransport` (`SlackTransport`) over `SlackClientOps` |
@@ -128,9 +129,55 @@ Constructed with a `TransportCapabilities`. `dispatch(event)` routes each kind t
 - `on_compaction(context_usage_pct)`, `on_done(stop_reason="")` — abstract.
 - `on_steer_consumed(summary="")` — default no-op; Discord/Telegram seal the pre-steer segment and open the continuation with a native acknowledgement chip using the parsed summary, without receiving raw protocol text.
 
+### `SilentRenderer` — enforcing a dashboard channel disconnect
+
+A `Renderer` whose handlers are all no-ops, substituted for the real renderer when
+the conversation has been **disconnected** in the dashboard (see the pause markers
+in [session](session.md)). Disconnect means "stop talking to me there": the turn
+STILL RUNS and the inbound message still lands in the session, because the binding
+is retained and the dashboard is where that user is now working — only the writes
+back to the muted conversation are dropped, including the typing indicator.
+
+`dispatch.delivery_is_muted(sessions, session_key, channel_type)` is the single
+predicate; `conversation_is_muted(sessions, turn)` delegates to it for the shared
+pipeline. It resolves origin-vs-mirror from the turn itself (a channel-born
+session's key IS its conversation, so a turn arriving in that namespace is the
+origin; anything else came over a mirror/resume binding) and fails OPEN, matching
+the dashboard-side predicates — a muted conversation that stays noisy is a visible
+bug, a live conversation silently dead is worse.
+
+**Every inbound pipeline must consult it.** `drive_turn` does, but Discord and
+Telegram run their OWN copies of the turn loop, so each substitutes independently;
+a new channel that skips this ships a dashboard control with nothing behind it.
+Two contracts matter for the substitute: its `close` accepts `*args/**kwargs`
+because a channel may WIDEN that signature (Telegram passes `failure_reason`), and
+it must be the object that is **closed**, not merely the one streamed to — a
+concrete renderer's `close` posts an error placeholder when a turn produced no
+output, which a muted turn always did. It is also deliberately NOT published into a
+dispatcher's `_active_renderers`, which silences the mid-turn steer chip and keeps
+channel-local APIs (`note_steer`) off the shared class. Slack never reaches these
+pipelines — it drives its own gateway and is gated by `slack_mirror_is_paused`.
+
 ### `chunk_text(text, max_chars) -> list[str]`
 
 Pure helper Renderers use to honor `capabilities.max_message_chars`. Returns `[]` for empty input; a non-positive `max_chars` disables chunking (single chunk); otherwise splits into `max_chars`-sized pieces. Together with the `max_buttons` cap this is how a renderer *degrades* an over-cap message or choice set for a lower-capability channel.
+
+## Fence-safe splitting (`split.py`)
+
+`split_markdown_safe(text, limit, *, reserve=0) -> list[str]` is the shared markdown splitter every channel converges on. `chunk_text` above is blind fixed-width and the per-channel splitters (Discord's and Telegram's `_split_text`/`_split_markdown`, `slack/format.py::split_message`, the Webex and Weixin helpers) each carry their own fence handling, so a fix landed in one never reached the others. The module is stdlib-only and pure — no config objects, no modes.
+
+Its contract:
+
+- **Budget.** Every chunk is at most `limit - reserve` characters; `reserve` holds back capacity for a suffix the caller appends to each chunk. Empty text → `[]`. Text that already fits, a non-positive `limit`, and a `reserve` that consumes the whole budget → `[text]`. Lengths are Python `str` characters, not bytes or UTF-16 units. One documented exception: a logical line that admits no cut clean on both sides is placed **whole** rather than cut into a fabricated fence delimiter, whenever the **line itself** is no longer than `limit` — such a chunk holds that one line and nothing else. Eligibility measures the line alone, so the chunk adds its fence scaffolding (the reopener line, and the newline plus synthetic closer) on top and may pass `limit` by exactly that scaffolding; a chunk with no scaffolding to carry stays within `limit`. A bounded oversize is the accepted price of never fabricating a delimiter. Which placement a line takes is decided from the line and `limit` alone, before any budget arithmetic (remaining room, the reserved closer, what the chunk already holds) gets a say, so a cut without a clean boundary is reachable only for a line longer than `limit` — eligibility written as a guard along one arithmetic path is what made the ladder bypassable at budgets a fence's scaffolding consumes whole.
+- **Real fence grammar.** An opener is ≤3 spaces of indent plus a run of ≥3 backticks or tildes (a backtick fence's info string may not contain a backtick); a closer is a run of the SAME character at least as long with nothing else on the line. Fence content is **opaque**, so a ``` line inside a ````diff block is content — the backtick-parity counters in the per-channel splitters get exactly this wrong and invert their open/closed state for the rest of the message.
+- **Language-tag carry.** A cut inside a fence seals the chunk with a synthetic closer (same char, matching length) and reopens the next chunk with the original opener line, info string and indent included. The closer's cost is budgeted while inside a fence, so sealing can never push a chunk over — except after a whole-line placement, which deliberately does not reserve it (see Budget above).
+- **Prefix stability (the streaming contract).** Splitting is greedy left-to-right and every cut depends only on the text BEFORE it, so re-splitting a longer prefix of the same stream reproduces every chunk except the last one byte-for-byte. A streaming caller sends sealed chunks as they appear and keeps only the final chunk as a live buffer. This outranks cut-quality heuristics: a nicer cut point that has to peek at the line after the cut is not allowed.
+- **Cut preference.** Outside a fence: paragraph break if one sits at least halfway into the budget, else the last line break if it sits at least a quarter in, else a hard cut filling the budget (Discord's `limit//2` / `limit//4` ladder). Inside a fence: line boundaries only, hard-cutting a line only when it cannot fit a chunk at all. A hard cut splits one line across a chunk boundary, so **both** halves start a rendered line and the cut is pulled back until neither invents a fence: the prefix must leave the fence state untouched, and the remainder must not begin with indent or a fence character (judged by its first character alone — parsing a remainder that is still arriving would move an already-sealed cut). A fragment where every candidate lands inside a run admits no such cut, and the residue policy has two tiers: the line is placed **whole**, in a chunk holding it and nothing else, whenever the **line itself** is no longer than the caller's full `limit` — measured on the line alone, so the chunk carries its fence scaffolding on top of `limit` rather than cutting the line to make room (see Budget above); only a logical line longer than `limit`, undeliverable whole at any budget the caller allows, falls back to the widest prefix-clean cut, where the deferred remainder can still read as a delimiter. That last case is documented degradation in the same regime as an under-sized budget, and it now requires a single unbreakable line longer than the whole limit — not merely a no-clean-cut fragment that outgrew the current chunk, and not one whose fence scaffolding pushed the scaffolded sum over. The whole-line placement is reached by sealing the buffered chunk first, and that seal is keyed on cut cleanliness alone, never on the line's length: a seal driven by a line still arriving would move once the rest of it landed, rewriting a chunk already sent.
+- **Whitespace.** Leading whitespace is never stripped (stripping it silently re-indents split code). Trailing whitespace is trimmed only when sealing outside a fence, where it cannot be content.
+- **Tables.** A trailing pipe-bearing line is pushed to the next chunk when an earlier cut is nearby, which keeps a header row with its separator row; otherwise table lines are plain lines. Full table conversion stays with the per-channel renderers.
+- **Termination.** Pathological input — a single unbreakable 10k-char line, a 5000-backtick run, a budget too small to hold a line's own fence scaffolding — terminates, at worst emitting over-budget chunks rather than spinning. Whole-line placement seals progress by consuming the line; the dirty-cut fallback keeps a width of at least one character. The **final** chunk of an unclosed fence is left open on purpose: callers own final presentation, and a streaming caller still holds it as a live buffer.
+
+No call sites yet: the channels route onto it in follow-up changes, and `test/test_messaging_split.py` pins each contract item above.
 
 ## Layer 3 — session-key namespacing (`link.py`)
 
@@ -189,8 +236,16 @@ steer/queue/drain machinery, `telegram/transport_dispatch.py` and
 `discord/transport_dispatch.py`; both read the same
 `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and both implement the same three primitives
-(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`) with
-only the platform call names differing.
+(`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
+
+The **channel-neutral half of the queue receipt is shared**, not duplicated:
+`messaging/queue_receipt.py` owns the receipt registry, the lock, the three
+lifecycle transitions and the receipt body formatting. Each channel reaches it
+through a `ReceiptSurface` whose address is bound at construction, which is why
+the shared module never sees a `chat_id` / `channel_id` / forum thread and
+Telegram's forum routing stays entirely channel-local. `_handle_busy` and
+`_drain_queue` deliberately stay per-channel: they re-enter their own
+`handle_message` and own the per-channel `_active_renderers`.
 
 The remaining channels (Webex, WeCom, Teams, Weixin) implement `_handle_busy`
 as **steer-only**: they fold the message into the running turn and reply with a
@@ -211,8 +266,9 @@ the text stream at the exact fold point.
 
 Two preconditions gate the steer, and both matter:
 
-- `provider.supports_steer` (kiro-cli only; the dormant Claude backend seam has
-  no `_session/steer`). When false the message falls through to the queue path.
+- `provider.supports_steer` — membership in `ACP_BACKENDS_STEER`, since the
+  dormant Claude backend seam has no `_session/steer`. When false the message
+  falls through to the queue path.
 - `provider.has_active_turn()`, **not** `sessions.is_busy()`. `is_busy` stays
   true through post-turn bookkeeping (success record, turn persist, threshold
   notice, SEL audit, all await points), so it alone cannot distinguish a live
@@ -240,7 +296,7 @@ in place:
 ⏳ Queued (2): "what time is it" · "and the weather?"
 ```
 
-The first five items are listed verbatim (`_RECEIPT_MAX_ITEMS`), the rest
+The first five items are listed verbatim (`RECEIPT_MAX_ITEMS`), the rest
 collapse into `…and N more` so a large burst cannot blow the message cap.
 
 **The receipt is EDITED, never deleted.** At the end of the turn it flips to
@@ -249,8 +305,11 @@ Neither dispatcher calls a delete API on it. This is deliberate: the receipt is
 the durable record of what the user asked and how it was routed, so deleting it
 would erase the only evidence that a message was accepted at all.
 
-The enqueue and the receipt create/grow happen together under `_receipt_lock`,
-which the end-of-turn drain also takes across its dequeue plus flip. That is
+The enqueue and the receipt create/grow happen together under
+`ReceiptQueue.lock`, which the end-of-turn drain also takes across its dequeue
+plus flip. The lock is deliberately **caller-held** rather than acquired inside
+each transition (hence the `_locked` suffixes): moving the acquire inside would
+read tidier and silently reintroduce the orphaned-bubble race. That is
 what makes the two race-free: the drain sees either the message queued **with**
 its receipt or neither yet, never a half state that would orphan a bubble.
 `enqueue(..., force=False)` is a no-op once the semaphore is free, so if the
@@ -266,7 +325,7 @@ behind it** are re-enqueued so FIFO order stays exact, the receipt notes
 `+N deferred`, and the drain loops to pump the remainder. Messages arriving
 during the combined turn open a fresh receipt and drain after it.
 
-The combined turn itself runs outside `_receipt_lock`, and the drain replays via
+The combined turn itself runs outside `ReceiptQueue.lock`, and the drain replays via
 `handle_message(..., interpret_commands=False)`. Drained payloads therefore
 bypass both the command intercept and override parsing, so a queued `/new`
 reaches the model as literal text instead of executing on drain.
@@ -282,14 +341,21 @@ are also accepted for muscle-memory parity with Telegram, which uses `/` only.
 
 The prefix is recognized only when the original text is not itself a command,
 and the payload after it is **turn content, never a command**: `/queue /new`
-queues the literal text `/new`. A bare `/steer` or `/queue` with no body is
-treated as an ordinary message.
+queues the literal text `/new`.
+
+A bare `/steer` or `/queue` carrying no message body matches neither the command
+parser nor the override parser. **Telegram** answers it with the directive's
+usage, because the alternative is handing the literal string `/queue` to the
+model, which then answers it as chat text — indistinguishable, to the user, from
+the feature not existing. **Discord** still treats the bare token as an ordinary
+message; the two channels therefore diverge on this one case until the guard is
+ported.
 
 ### Hard cancel: `/stop`
 
 `/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
 turn, drops every queued message, and finalizes the receipt to `🛑 Cancelled`.
-`clear_queue` and the receipt finalize run together under `_receipt_lock`.
+`clear_queue` and the receipt finalize run together under `ReceiptQueue.lock`.
 
 **Cancel is cooperative before it is fatal.** The dispatchers call
 `provider.cancel(wait_ack_timeout=0)`, which writes an ACP `session/cancel`

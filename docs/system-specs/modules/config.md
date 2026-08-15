@@ -12,6 +12,14 @@ writing.
 
 The config module (`kiro_crew/config/loader.py`) loads runtime configuration from `~/.kiro/crew/config.json` using stdlib dataclasses with sensible defaults.
 
+A feature whose section spends tokens on the user's behalf defaults to off and
+documents its knobs in its own spec — `session_summary` is the current example
+(see [session-summary.md](session-summary.md)), following the shape
+`SkillsConfig` established: every field carries `_meta` label/help for the config
+surfaces, out-of-range values are clamped with a warning rather than raising, and
+a malformed section degrades to defaults so a hand-edited file cannot prevent the
+gateway from starting.
+
 ## Data Home Location & Migration
 
 KiroCrew's data root nests **under kiro-cli's own `~/.kiro/` base** so all
@@ -640,7 +648,7 @@ class AgentConfig:
     subagent_auto_max: int = 16    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
     subagent_max_turns: int = 100  # default per-subagent tool-call budget. Load-time clamped to [1, 200]
     subagent_result_ttl_secs: int = 3600  # seconds a delivered subagent's result.txt is retained before the reaper prunes it
-    chat_turn_timeout_secs: int = 7200  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 7200] and to the ACP prompt timeout
+    chat_turn_timeout_secs: int = 7200  # wall-clock ceiling for one chat turn. Load-time clamped to [300, 86400]; the ACP prompt wait follows it (resolve_prompt_timeout)
     tool_approval_timeout_secs: int = 600  # how long a chat turn waits for a human to answer a tool-approval prompt. Load-time clamped to [30, 7200] AND to 60s below chat_turn_timeout_secs
 
 @dataclass
@@ -841,7 +849,7 @@ just at the dashboard write gate. The ceilings are the single source of truth in
 | `SUBAGENT_AUTO_MAX_CEILING` | 64 | `agent.subagent_auto_max`, `agent.max_subagents` |
 | `SUBAGENT_MAX_TURNS_CEILING` | 200 | `agent.subagent_max_turns` |
 | `POOL_SIZE_MAX` | 10 | `session.pool_size` |
-| `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 7200 | `agent.chat_turn_timeout_secs` |
+| `CHAT_TURN_TIMEOUT_MIN` / `_MAX` | 300 / 86400 | `agent.chat_turn_timeout_secs` |
 | `TOOL_APPROVAL_TIMEOUT_MIN` / `_MAX` | 30 / 7200 | `agent.tool_approval_timeout_secs` |
 
 `_SECURITY_BOUNDED_FIELDS` lists each `(section, key, min, max)`; the mins match
@@ -909,18 +917,31 @@ Auto option writes `""` to clear a previous explicit choice. An explicit choice
 always outranks detection, so a user who selects English on a zh-CN machine is
 not re-detected back to Chinese on the next load.
 
+A cross-tab `storage` event is also an explicit user choice. Once one arrives,
+`LanguageProvider` refuses to adopt the older `/api/theme/boot` response that may
+still be in flight, so the UI, local mirror, and workspace write cannot diverge
+because of response ordering.
+
 The picker's Auto row is labelled plain **"Auto"**, not "Auto (follow browser)".
 The desktop app has no browser preference to follow — its locale comes from the
 OS — so naming the browser was wrong on that surface. The row annotates itself
 with the language Auto actually resolves to ("Auto — Deutsch"), which answers the
 question accurately on every surface.
 
-The backend validates **shape only** (`_LANGUAGE_TAG_RE`, a conservative BCP-47
-subset), not membership in the set of shipped catalogs. That keeps "which
-languages exist" a pure frontend data change: add `locales/<tag>.json`, register
-the picker entry in `SUPPORTED_LANGUAGES`, and add the static import plus
-`AUTHORED_CATALOGS` entry in `i18n/index.ts`. No backend edit is required; a
-well-formed tag with no catalog falls back to detection client-side.
+The backend's **write path** validates **shape only** (`_LANGUAGE_TAG_RE`, a
+conservative BCP-47 subset), not membership in the set of shipped catalogs — a
+well-formed tag with no catalog stays writable and falls back to detection
+client-side. The **agent-injection read path** additionally requires catalog
+membership: `context.ui_language_tag()` checks the tag against
+`context._UI_LANGUAGE_CATALOGS` (a mirror of the non-dev-only
+`SUPPORTED_LANGUAGES` entries) and treats a non-catalog tag exactly like
+`""`/Auto — no `[UI LANGUAGE]` steer is emitted, so the agent is never steered
+to a language the chrome cannot render (#1130). Adding a language is therefore
+the three frontend edits — add `locales/<tag>.json`, register the picker entry
+in `SUPPORTED_LANGUAGES`, and add the static import plus `AUTHORED_CATALOGS`
+entry in `i18n/index.ts` — **plus one mechanical backend entry** in
+`_UI_LANGUAGE_CATALOGS`, which the drift gate in
+`test/test_context_ui_language.py` names explicitly on failure.
 
 Shipped catalogs (ordered by global speaker count, which is also the picker
 order): `en`, `zh-CN`, `hi`, `es`, `fr`, `bn`, `pt`, `ru`, `de`, `ja`, `ko`, `it`. Right-to-left
@@ -948,7 +969,8 @@ above is what says whether it worked.
 
 #### The tag reaches the agent, too
 
-`context.py::_build_ui_language_section` injects the configured tag into session
+`context.py::_build_ui_language_section` injects the configured tag — after the
+catalog-membership gate described above — into session
 context as a `[UI LANGUAGE] <tag>` block (next to `[CURRENT AGENT]`/`[RUNTIME]`,
 and in `minimal_context` mode as well). It exists for one string: the tool-call
 purpose (`__tool_use_purpose`), which the dashboard paints as the tool-call pill
@@ -1131,6 +1153,19 @@ Returns the effective config for a channel:
 The `dashboard.url` field controls where the dashboard is reachable. From it, the system derives the port to bind on, the bind address (`0.0.0.0` for non-loopback hosts, `127.0.0.1` otherwise), and the allowed origins for CSRF/WebSocket checks. When omitted, defaults to `localhost:5476`.
 
 A **malformed** `dashboard.url` (e.g. an unterminated IPv6 literal `http://[::1` or a non-numeric port `http://host:notaport`) does **not** abort startup: `parse_dashboard_url` degrades to the defaults (`""` host, port `5476`) and logs a warning, so a single typo in the config can never take the gateway down on boot. `KIROCREW_PORT` still overrides the port regardless.
+
+Once the dashboard's TCP site is listening, the gateway **exports the
+actually-bound port as `KIROCREW_BOUND_PORT`** into its own environment, so
+every child it spawns (kiro-cli sessions and their MCP stdio servers) inherits
+the truth instead of re-deriving a guess from `dashboard.url` — a portless URL
+would otherwise collapse to the default port in the child even when the
+gateway is bound elsewhere (including `--port auto`, where the OS assigns the
+port and no config field ever names it). It is a **distinct variable from
+`KIROCREW_PORT`** on purpose: `KIROCREW_PORT` means operator intent and is
+persisted by `service_environment()` into unit files, while
+`KIROCREW_BOUND_PORT` is ephemeral observed truth that must never be frozen
+into persistent config. Clients read it via `port_resolution.resolve_client_port`,
+one precedence step below the operator override.
 
 ## Model Resolution Chain
 

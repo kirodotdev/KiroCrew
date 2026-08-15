@@ -160,6 +160,15 @@ class TestConversations:
         assert c["growth_pct_per_turn"] == 10.0
         assert c["turns_to_compaction"] == 3
 
+    def test_growth_counts_a_partial_final_turn_to_reach_compaction(self, store):
+        # 35% -> 85% over 6 turns = +10%/turn. The 5 remaining points still
+        # require one more completed turn; truncating 5 / 10 would report zero.
+        store([_row(slot="chat-1-1", credits=1.0, used=350_000 + 100_000 * i,
+                    age_days=1 - i * 0.1) for i in range(6)])
+        c = usage_mod.cost_breakdown(7)["conversations"][0]
+        assert c["growth_pct_per_turn"] == 10.0
+        assert c["turns_to_compaction"] == 1
+
     def test_the_slope_is_fitted_after_the_last_compaction_not_across_it(self, store):
         # Occupancy is a sawtooth, not a ramp. Six turns climbing 10%->60%, a
         # compaction back to 10%, then six more climbing 10%->60% at the same

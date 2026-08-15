@@ -292,7 +292,7 @@ export function SlackPanel() {
 
       {/* ── Required tokens ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.required')}>
-        <SettingsCard>
+        <SettingsCard index={1}>
           <SecretField
             key={`bot-${formKey}`}
             label={i18nT('pages.settings.slackPanel.slack_bot_token')}
@@ -326,7 +326,7 @@ export function SlackPanel() {
 
       {/* ── Identity & access ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.identity_access')}>
-        <SettingsCard>
+        <SettingsCard index={2}>
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.owner_slack_member_id')}
             description={i18nT('pages.settings.slackPanel.the_one_member_who_can_always_interact_with_the')}
@@ -349,7 +349,7 @@ export function SlackPanel() {
 
       {/* ── Behavior ── */}
       <SettingsSection title={i18nT('pages.settings.slackPanel.behavior')}>
-        <SettingsCard>
+        <SettingsCard index={3}>
           <SettingsInput
             label={i18nT('pages.settings.slackPanel.slash_command')}
             description={i18nT('pages.settings.slackPanel.trigger_word_for_the_slack_slash_command_without')}

@@ -80,3 +80,42 @@ describe('WorkflowRunCard rendering', () => {
     expect(store.getState().chat.activityTab).toBe('workflows')
   })
 })
+
+describe('WorkflowRunCard — opening from a background pane retargets the panel first', () => {
+  // Same rule as SubagentRunCard: the Workflows panel is mounted for
+  // `activeSlot`, which split view never moves with pane focus.
+  const msg = wfToolMsg()
+
+  it('activates the card\u2019s own session, then opens the Workflows tab', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: 'chat-9', workflowRuns: {},
+        // switchSlot.pending reads these; a partial state would throw instead.
+        slotHistory: [], slotMessages: {}, slotActivity: {}, messages: [], toolLog: [], subagents: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<WorkflowRunCard runId={RUN_ID} message={msg} slot="chat-1" />, { store })
+    fireEvent.click(screen.getByRole('button'))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(store.getState().chat.activityTab).toBe('workflows')
+  })
+
+  it('does not retarget when no slot is supplied (single chat draws only the active session)', () => {
+    const store = createTestStore({
+      chat: { activeSlot: 'chat-1', workflowRuns: {} } as unknown as ChatState,
+    })
+    renderWithProviders(<WorkflowRunCard runId={RUN_ID} message={msg} />, { store })
+    fireEvent.click(screen.getByRole('button'))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(store.getState().chat.activityTab).toBe('workflows')
+  })
+
+  it('keeps the affordance in a background pane rather than going quiet', () => {
+    const store = createTestStore({
+      chat: { activeSlot: 'chat-9', workflowRuns: {} } as unknown as ChatState,
+    })
+    renderWithProviders(<WorkflowRunCard runId={RUN_ID} message={msg} slot="chat-1" />, { store })
+    expect(screen.getByRole('button')).toBeTruthy()
+    expect(screen.getByText(new RegExp(RUN_ID))).toBeTruthy()
+  })
+})

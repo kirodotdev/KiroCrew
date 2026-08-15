@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import fnmatch
 import hashlib
@@ -10,17 +11,26 @@ import logging
 import os
 import re
 import shutil
+import stat
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from itertools import zip_longest
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
-from kiro_crew.hooks import safe_read_file, validate_file_path
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    safe_read_file,
+    safe_read_file_bytes_nolink,
+    validate_file_path,
+)
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -165,6 +175,39 @@ def _emit_pending_staged(payload: dict) -> None:
         fn(payload)
     except Exception:  # pragma: no cover - defensive
         logger.debug("pending-staged hook failed", exc_info=True)
+
+
+# Counterpart observer for candidates LEAVING the queue (approved, dismissed,
+# or TTL-pruned). Module-level for the same reason as the staged hook: any
+# loader instance can consume a candidate. The gateway registers a hook that
+# retires the candidate's bell-feed notification — without it, the "awaiting
+# review" row stays unread forever and its deep link lands on the
+# no-longer-awaiting-review banner.
+_PENDING_CONSUMED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_pending_consumed_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear, with ``None``) the pending-candidate consumed observer.
+
+    Called once at gateway boot. Idempotent — a later call replaces the hook.
+    """
+    global _PENDING_CONSUMED_HOOK
+    _PENDING_CONSUMED_HOOK = fn
+
+
+def _emit_pending_consumed(payload: dict) -> None:
+    """Invoke the pending-consumed hook, swallowing every failure.
+
+    Consumption has already succeeded on disk by the time this runs; a broken
+    observer must never turn a successful approve/dismiss into a failure.
+    """
+    fn = _PENDING_CONSUMED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("pending-consumed hook failed", exc_info=True)
 
 
 # Derived lifecycle states for auto-skills (not persisted — computed from
@@ -517,14 +560,527 @@ _RELOCATED_SKILLS: dict[str, str] = {
 }
 
 
+# Provenance marker written into every skill directory this sync installs.
+# A dotfile (never a SKILL.md field) so it can never render in skill listings:
+# the loader only reads SKILL.md, and dot-entries are pruned from discovery.
+# Its content is the full-tree fingerprint of the copy the sync wrote, which is
+# what later runs compare against before destroying the destination.
+_PROVENANCE_MARKER = ".builtin-skill-provenance"
+
+# Version prefix on the marker content ("<format>:<fingerprint>"). Bump this
+# whenever the fingerprint encoding changes (new entry kinds, mode bits, hash
+# input layout): a marker in any other format is unparseable rather than
+# comparable, so ``_recorded_fingerprint`` reports "no provenance" and the
+# sync falls back to the packaged-tree adoption comparison. Without the
+# version, an encoding change would make every recorded fingerprint mismatch
+# its own unchanged tree and quarantine every untouched builtin fleet-wide.
+_PROVENANCE_FORMAT = "2"
+
+# Ceilings on what one tree verification may cost. Fingerprinting runs at
+# gateway startup on the event loop, so both the read volume and the walk
+# length must stay bounded regardless of what a user placed in the skills dir;
+# a tree over either ceiling is treated as "cannot prove" (diverged), and the
+# safe direction for anything unprovable is preservation. Packaged builtin
+# skills are a few MB and a few dozen entries at most.
+_FINGERPRINT_MAX_BYTES = 32 * 1024 * 1024
+_FINGERPRINT_MAX_ENTRIES = 4096
+
+
+def _tree_entries(root: Path) -> Iterator[tuple[str, str, str]]:
+    """Yield ``(relative path, kind, detail)`` for the tree under *root*.
+
+    Deterministic order (sorted, top-down), lstat-based, and it never opens or
+    follows anything: symlinks yield their target text (``link``), regular
+    files their size (``file``), directories ``dir``, and FIFOs / devices /
+    sockets ``special`` — so a hostile or accidental special file can never
+    hang the walk. Entries that cannot be lstat'ed — and directories the walk
+    itself cannot list (``os.walk`` reports those through ``onerror`` instead
+    of raising) — yield ``unreadable``, which callers must treat as unequal to
+    everything (fail toward "diverged"). The provenance marker itself is
+    skipped: it records the fingerprint, so including it would make the
+    recorded value impossible to reproduce.
+    """
+    walk_errors: list[OSError] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=walk_errors.append):
+        rel_dir = Path(dirpath).relative_to(root)
+        dirnames.sort()
+        for dname in list(dirnames):
+            entry = Path(dirpath) / dname
+            rel = (rel_dir / dname).as_posix()
+            try:
+                mode = os.lstat(entry).st_mode
+            except OSError:
+                dirnames.remove(dname)
+                yield rel, "unreadable", ""
+                continue
+            if stat.S_ISLNK(mode) or is_link_or_junction(entry):
+                # os.walk(followlinks=False) does not descend POSIX symlinks,
+                # but a Windows junction lstats as a plain directory and WOULD
+                # be descended — into whatever tree it targets (e.g. a
+                # credential directory), enumerating paths outside the
+                # file-read gate. Classify both as links so a retargeted
+                # link/junction changes the fingerprint, and keep the walk
+                # out of the target either way.
+                dirnames.remove(dname)
+                try:
+                    yield rel, "link", os.readlink(entry)
+                except OSError:
+                    yield rel, "unreadable", ""
+            else:
+                # Permission bits, like file modes below: a chmod on an
+                # installed builtin's directory is a user customization and
+                # must diverge the tree instead of being silently reset by
+                # the next sync. copytree preserves directory modes, so a
+                # clean install still fingerprints equal to its package.
+                yield rel, "dir", f"{stat.S_IMODE(mode):o}"
+        for fname in sorted(filenames):
+            entry = Path(dirpath) / fname
+            rel = (rel_dir / fname).as_posix()
+            if rel == _PROVENANCE_MARKER:
+                continue
+            try:
+                st = os.lstat(entry)
+            except OSError:
+                yield rel, "unreadable", ""
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                try:
+                    yield rel, "link", os.readlink(entry)
+                except OSError:
+                    yield rel, "unreadable", ""
+            elif stat.S_ISREG(st.st_mode):
+                # Size AND permission bits: a mode-only customization (e.g.
+                # chmod +x on a builtin script) is a user edit and must
+                # diverge the tree. copytree preserves modes, so a clean
+                # install still fingerprints equal to its package.
+                yield rel, "file", f"{st.st_size}:{stat.S_IMODE(st.st_mode):o}"
+            else:
+                yield rel, "special", ""
+    for err in walk_errors:
+        # A directory the walk could not list may hold anything: surface it as
+        # an unreadable entry so no consumer can mistake the tree for empty,
+        # equal, or provable.
+        yield getattr(err, "filename", None) or "<walk-error>", "unreadable", ""
+
+
+def _trees_stat_equal(a: Path, b: Path) -> bool:
+    """Stat-level lazy tree comparison: bail at the first mismatching entry.
+
+    This is the cheap gate in front of content hashing on the startup path: a
+    diverged destination (the common case for an unmarked directory that is
+    not ours) costs directory listings and lstats up to the first difference,
+    never a file read. ``unreadable`` equals nothing, including itself, and a
+    pair of trees longer than the entry ceiling is unprovable (unequal) so the
+    walk itself stays bounded. The roots' own permission bits are compared
+    too: ``_tree_entries`` only yields children, and a chmod on the skill
+    directory itself is as much a user customization as one on any child.
+    """
+    try:
+        if stat.S_IMODE(os.lstat(a).st_mode) != stat.S_IMODE(os.lstat(b).st_mode):
+            return False
+    except OSError:
+        return False
+    entries = 0
+    for ea, eb in zip_longest(_tree_entries(a), _tree_entries(b)):
+        entries += 1
+        if entries > _FINGERPRINT_MAX_ENTRIES:
+            return False
+        if ea is None or eb is None or ea != eb or ea[1] == "unreadable":
+            return False
+    return True
+
+
+def _skill_tree_fingerprint(root: Path) -> str | None:
+    """Stable content hash of the whole skill tree under *root*.
+
+    Covers every entry ``_tree_entries`` yields — file bytes, symlink targets,
+    directory structure, special-file presence — so a destination differing
+    only by a user-added script, note, empty directory, or a file swapped for
+    a symlink fingerprints as diverged.
+
+    Returns None when the tree cannot be proven: a link-or-junction root, an
+    unreadable entry, more entries than ``_FINGERPRINT_MAX_ENTRIES``, or more
+    file content than ``_FINGERPRINT_MAX_BYTES``. None never equals a recorded
+    or computed fingerprint, so every unprovable tree is treated as diverged
+    and preserved. File bytes are read through
+    :func:`kiro_crew.hooks.safe_read_file_bytes_nolink` with the tree root as
+    containment: the descriptor-pinned check rejects symlinks, hardlinked
+    inodes, non-regular files, sensitive paths, and any resolved path outside
+    the root — so a component swapped between the walk and the open (or a
+    hardlink planted at a walked name) reads as unprovable instead of leaking
+    outside bytes (e.g. credentials) into the hash.
+    """
+    if is_link_or_junction(root):
+        return None
+    digest = hashlib.sha256()
+    # The root's own permission bits are part of the installed state: a chmod
+    # on the skill directory itself must diverge the fingerprint exactly like
+    # a chmod on any entry inside it.
+    try:
+        root_mode = stat.S_IMODE(os.lstat(root).st_mode)
+    except OSError:
+        return None
+    digest.update(f"root\0{root_mode:o}\0".encode("utf-8"))
+    budget = _FINGERPRINT_MAX_BYTES
+    entries = 0
+    for rel, kind, detail in _tree_entries(root):
+        if kind == "unreadable":
+            return None
+        entries += 1
+        if entries > _FINGERPRINT_MAX_ENTRIES:
+            return None
+        digest.update(f"{kind}\0{rel}\0{detail}\0".encode("utf-8", "surrogatepass"))
+        if kind != "file":
+            continue
+        try:
+            data = safe_read_file_bytes_nolink(
+                str(root / rel), within_root=str(root), max_bytes=budget
+            )
+        except FileTooLargeError:
+            # Over the remaining byte budget: the tree costs more to prove
+            # than the ceiling allows, so it is unprovable (preserved).
+            return None
+        if data is None:
+            return None
+        budget -= len(data)
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def _recorded_fingerprint(dest_dir: Path) -> str | None:
+    """Return the fingerprint the sync recorded in *dest_dir*, or None.
+
+    A link or junction at the marker path is not a marker (the sync writes
+    only regular files): it reads as "no provenance" (user-authored by
+    assumption) instead of being followed. ``O_NOFOLLOW`` enforces this
+    race-free on POSIX; Windows has no such flag, so the explicit
+    link-or-junction probe carries the check there. The fstat re-check keeps
+    a FIFO raced onto the path from blocking startup.
+    """
+    marker = dest_dir / _PROVENANCE_MARKER
+    if is_link_or_junction(marker):
+        return None
+    open_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(marker, open_flags)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, 4096)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    content = data.decode("utf-8", errors="replace").strip()
+    # Only the current format is comparable. An older (or newer, on
+    # downgrade) format encodes the fingerprint differently, so comparing it
+    # against a freshly computed value would misread every unchanged tree as
+    # diverged; treating it as "no provenance" routes those trees through the
+    # packaged-tree adoption comparison instead, which re-records ownership
+    # in the current format when the copy is verifiably unchanged.
+    prefix = _PROVENANCE_FORMAT + ":"
+    if not content.startswith(prefix):
+        return None
+    return content[len(prefix):] or None
+
+
+def _write_provenance_marker(dest_dir: Path, fingerprint: str) -> None:
+    """Record *fingerprint* as the sync-installed state of *dest_dir*.
+
+    ``atomic_write`` stages a unique temp file and renames it over the marker
+    path: the rename replaces whatever occupies that path (including a planted
+    symlink) rather than following it, so this write can never land outside
+    the skill directory. Best-effort: a failed write only means the next run
+    re-derives ownership against the packaged tree, so absence self-heals and
+    must never break skill loading.
+    """
+    try:
+        atomic_write(
+            dest_dir / _PROVENANCE_MARKER,
+            f"{_PROVENANCE_FORMAT}:{fingerprint}\n",
+        )
+    except OSError:
+        logger.warning(
+            "could not record builtin-skill provenance in %s", dest_dir, exc_info=True
+        )
+
+
+def _record_builtin_provenance(dest_dir: Path) -> None:
+    """Fingerprint the tree at *dest_dir* and record it as sync-installed."""
+    fingerprint = _skill_tree_fingerprint(dest_dir)
+    if fingerprint is None:
+        logger.warning(
+            "skill tree %s cannot be fingerprinted; leaving it unmarked", dest_dir
+        )
+        return
+    _write_provenance_marker(dest_dir, fingerprint)
+
+
+def _verified_unchanged_fingerprint(dest_dir: Path, src_dir: Path | None) -> str | None:
+    """Return *dest_dir*'s fingerprint iff it is verifiably an unchanged copy
+    this sync installed, else None.
+
+    Two ways to prove ownership:
+    - The recorded provenance fingerprint still matches the tree on disk.
+    - First-install migration rule: installs that predate provenance recording
+      carry no marker, and a naive "no marker means user-authored" rule would
+      freeze every already-installed builtin at its current version forever.
+      So an UNMARKED destination counts as builtin-owned exactly when it
+      matches the packaged tree (*src_dir*) byte-for-byte; anything that
+      genuinely differs — a user skill, a user-edited builtin, or a builtin
+      from an older package whose content has since changed — is user data by
+      assumption and is preserved. The stale-cleanup entries have no packaged
+      tree left to compare against (``src_dir`` is None), so for them an
+      unmarked directory is always user data.
+
+    A destination that is itself a link or junction is never owned: the sync
+    only ever creates real directories, and every verification primitive here
+    would otherwise read the link's TARGET tree.
+    """
+    if is_link_or_junction(dest_dir):
+        return None
+    recorded = _recorded_fingerprint(dest_dir)
+    if recorded is not None:
+        current = _skill_tree_fingerprint(dest_dir)
+        return current if current == recorded else None
+    if src_dir is None:
+        return None
+    if not _trees_stat_equal(dest_dir, src_dir):
+        return None
+    dest_fingerprint = _skill_tree_fingerprint(dest_dir)
+    if dest_fingerprint is None:
+        return None
+    if dest_fingerprint != _skill_tree_fingerprint(src_dir):
+        return None
+    return dest_fingerprint
+
+
+def _claim_dir_for_replacement(dest_dir: Path) -> Path | None:
+    """Atomically move *dest_dir* to a dot-prefixed sibling before verifying.
+
+    Verify-then-delete has a race: another process (an editor, a second
+    Kiro Crew instance syncing the same home) can swap the directory between
+    the fingerprint check and the rmtree, destroying a tree the check never
+    saw. Renaming first makes the claim atomic — whatever tree the caller
+    verifies is exactly the tree it then deletes, restores, or quarantines.
+    The claim name is dot-prefixed so a crash mid-resolution leaves the data
+    hidden from skill discovery but intact on disk. Returns None when the
+    claim itself fails; the caller must then leave the destination untouched.
+    """
+    claim = dest_dir.with_name(f".{dest_dir.name}.sync-claim")
+    counter = 2
+    while os.path.lexists(claim):
+        claim = dest_dir.with_name(f".{dest_dir.name}.sync-claim.{counter}")
+        counter += 1
+    try:
+        os.replace(dest_dir, claim)
+    except OSError:
+        logger.warning(
+            "could not claim skill dir %s for replacement; leaving it untouched",
+            dest_dir, exc_info=True,
+        )
+        return None
+    return claim
+
+
+def _tree_has_content(root: Path) -> bool:
+    """True when the tree holds anything worth preserving.
+
+    Only a COMPLETELY empty directory (zero entries — e.g. the placeholder an
+    app registration leaves behind) counts as content-free; quarantining those
+    would only mint junk backups on every update cycle. Any entry at all —
+    files, links, specials, unreadable entries, and nested subdirectories,
+    whose structure is itself user-made data — counts as content.
+    """
+    return any(True for _entry in _tree_entries(root))
+
+
+def _finalize_user_backup(claim: Path, dest_dir: Path) -> Path | None:
+    """Move a claimed, diverged tree to its ``.<name>.user-backup`` quarantine.
+
+    Follows the collision behavior of the ``SKILL.md.pre-relocation``
+    quarantine below: never overwrite an existing quarantine (``lexists``, so a
+    dangling symlink also counts as occupied), pick the first unused numbered
+    suffix.
+
+    The quarantine name is ALWAYS dot-prefixed: dot-entries are pruned from
+    skill discovery, so the single rename both preserves and deactivates the
+    tree. Nothing inside the moved tree is ever touched afterwards — an
+    earlier revision renamed ``backup / "SKILL.md"`` post-move, but that
+    resolves a path THROUGH the backup directory, and a concurrent writer
+    swapping the backup for a symlink between the two steps would redirect
+    the rename into the symlink's target tree, outside the skills directory.
+    One atomic rename of the claim itself has no such window, and a claim
+    that is itself a link or junction is equally safe: the rename moves the
+    link object, never its target.
+    """
+    stem = f".{dest_dir.name}.user-backup"
+    backup = dest_dir.with_name(stem)
+    counter = 2
+    while os.path.lexists(backup):
+        backup = dest_dir.with_name(f"{stem}.{counter}")
+        counter += 1
+    try:
+        os.replace(claim, backup)
+    except OSError:
+        logger.warning(
+            "could not move quarantined skill dir %s to %s; data preserved at "
+            "the claim path", claim, backup, exc_info=True,
+        )
+        return None
+    return backup
+
+
+def _remove_ignorable_dir(path: Path) -> bool:
+    """Remove a directory holding nothing worth preserving, race-free.
+
+    The only ignorable content is the provenance marker this sync wrote
+    (``_tree_entries`` excludes it, so ``_tree_has_content`` reports such a
+    directory content-free). A marker file is only ignorable when it VERIFIES:
+    its recorded fingerprint must parse and match the tree it sits in. A
+    user-made file that merely shares the marker name (a marker-only name
+    collision) fails that check — it is user bytes, so this returns False and
+    the caller quarantines the tree instead of deleting anything. The rmdir
+    is kernel-atomic: it succeeds only if the directory is STILL empty at
+    unlink time, so a file created through a lingering directory handle after
+    the emptiness check makes this return False instead of being lost.
+    Callers must preserve the tree on False.
+    """
+    marker = path / _PROVENANCE_MARKER
+    try:
+        if os.path.lexists(marker):
+            recorded = _recorded_fingerprint(path)
+            if recorded is None or recorded != _skill_tree_fingerprint(path):
+                return False
+            marker.unlink()
+        os.rmdir(path)
+    except OSError:
+        return False
+    return True
+
+
+def _dispose_superseded_slot(slot: Path, dest_dir: Path) -> bool:
+    """Free the retirement slot name, deleting only what is re-verified.
+
+    The occupant is CLAIMED first (atomic rename), so the tree that gets
+    re-verified is exactly the tree that gets deleted — without the claim,
+    a concurrent sync could park a fresh copy at the slot between this
+    process's verification and its rmtree and have it destroyed unverified
+    (this file's other destructive paths all follow the same claim-first
+    invariant, see ``_claim_dir_for_replacement``). An occupant that fails
+    re-verification carries bytes that landed after it was parked — the
+    exact data the retirement exists to protect — and is preserved as a
+    user backup instead of deleted.
+
+    Returns True when the slot name is free afterwards. Every failure path
+    keeps the occupant's bytes on disk (hidden at a dot-prefixed name at
+    worst).
+    """
+    if not os.path.lexists(slot):
+        return True
+    slot_claim = _claim_dir_for_replacement(slot)
+    if slot_claim is None:
+        return False
+    if is_link_or_junction(slot_claim):
+        # A link at the slot name is user-made; preserve without following.
+        _finalize_user_backup(slot_claim, dest_dir)
+    elif not _tree_has_content(slot_claim):
+        if not _remove_ignorable_dir(slot_claim):
+            _finalize_user_backup(slot_claim, dest_dir)
+    elif _verified_unchanged_fingerprint(slot_claim, None) is not None:
+        try:
+            shutil.rmtree(slot_claim)
+        except OSError:
+            logger.warning(
+                "could not remove epoch-old superseded skill copy %s; "
+                "preserving what remains", slot_claim, exc_info=True,
+            )
+            _finalize_user_backup(slot_claim, dest_dir)
+    else:
+        # Diverged since it was parked: late writes are user data.
+        backup = _finalize_user_backup(slot_claim, dest_dir)
+        logger.warning(
+            "superseded skill copy %s changed after it was parked; "
+            "preserved it at %s",
+            slot, backup if backup is not None else slot_claim,
+        )
+    # The claim rename itself freed the slot name; whatever became of the
+    # claimed occupant, its bytes are still on disk unless re-verified.
+    return True
+
+
+def _retire_verified_claim(
+    claim: Path, dest_dir: Path, verified_fingerprint: str | None
+) -> bool:
+    """Park a verified-unchanged claim at the hidden per-name retirement slot.
+
+    Deleting a verified claim immediately would still lose bytes written
+    through file descriptors that survived the claim rename: the fingerprint
+    ran before those writes landed, so verification cannot see them. Instead
+    the claim is parked at ``.<name>.superseded`` for one full sync cycle,
+    and only the slot's PREVIOUS occupant — quiescent since the last update —
+    is ever deleted, after being claimed and re-verified (see
+    ``_dispose_superseded_slot``). A late write that landed in the meantime
+    makes that re-check fail and the occupant is preserved as a user backup
+    instead of deleted. Retention is bounded by construction: at most one
+    hidden superseded copy per skill name; update-path slots rotate on the
+    next update, and the stale-cleanup pass disposes of its slots on the
+    following sweep.
+
+    Returns True when the claim ended up parked; False when the slot could
+    not be freed or the park itself failed, in which case the caller must
+    preserve the claim rather than delete it.
+    """
+    slot = dest_dir.with_name(f".{dest_dir.name}.superseded")
+    if not _dispose_superseded_slot(slot, dest_dir):
+        return False
+    try:
+        os.replace(claim, slot)
+    except OSError:
+        logger.warning(
+            "could not park verified skill copy %s at %s",
+            claim, slot, exc_info=True,
+        )
+        return False
+    # The parked tree must be re-verifiable next cycle. A claim proven by the
+    # first-install migration rule (matches the packaged tree, no marker yet)
+    # carries no marker of its own, so record the verified fingerprint now;
+    # the marker file itself is excluded from fingerprints, so writing it
+    # does not diverge the tree.
+    if verified_fingerprint is not None and _recorded_fingerprint(slot) is None:
+        _write_provenance_marker(slot, verified_fingerprint)
+    return True
+
+
 def _ensure_builtin_skills(base: Path) -> None:
-    """Sync built-in skills: copy new/updated, remove stale.
+    """Sync built-in skills: copy new/updated, remove known-stale ones.
 
     Supports nested directories (e.g. ``utils/tiny-url/SKILL.md``).
     Copies the entire skill directory (scripts, assets, etc.), not just SKILL.md.
-    Removes skills from *base* that no longer exist in any source.
+
+    Destruction is provenance-gated: a destination directory is only ever
+    removed (or replaced) when it is verifiably an unchanged copy this sync
+    installed (see ``_verified_unchanged_fingerprint``), and it is atomically
+    claimed before verification so the tree that gets verified is the tree
+    that gets destroyed. Anything else — a user skill whose name collides with
+    a builtin, a user-edited installed builtin, or a destination carrying
+    user-added files — is preserved: moved aside to a ``<name>.user-backup``
+    quarantine on update, or left alone entirely in the stale-cleanup pass.
+
+    Cost note: the gateway runs this in a worker thread (``asyncio.to_thread``
+    around ``SkillsLoader()``), and all verification work is bounded anyway:
+    the steady state (marker present, no update due) costs one small marker
+    read per skill; unmarked diverged directories cost a stat-level walk that
+    stops at the first mismatch; content hashing only runs on trees whose stat
+    manifest already matches a packaged skill, capped at
+    ``_FINGERPRINT_MAX_BYTES`` / ``_FINGERPRINT_MAX_ENTRIES``.
     """
-    # Collect all source skill names
     source_names: set[str] = set()
     for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
         if not src_root or not src_root.exists():
@@ -534,20 +1090,147 @@ def _ensure_builtin_skills(base: Path) -> None:
             src_dir = src_file.parent
             dest_dir = base / name
             dest_file = dest_dir / "SKILL.md"
-            if not dest_file.exists() or src_file.stat().st_mtime > dest_file.stat().st_mtime:
-                if dest_dir.exists():
-                    shutil.rmtree(dest_dir)
+            update_due = (
+                not dest_file.exists()
+                or src_file.stat().st_mtime > dest_file.stat().st_mtime
+            )
+            if not update_due:
+                # First-install migration adoption: an up-to-date destination
+                # with no marker is from a pre-provenance install. Record
+                # ownership NOW, while the installed package still matches it —
+                # waiting until the next content update would find the trees
+                # differing (new version vs old copy) and wrongly quarantine an
+                # untouched builtin. The verified fingerprint is recorded
+                # as-is rather than re-scanned, so files added concurrently
+                # after the comparison can never be blessed as builtin-owned.
+                if dest_dir.exists() and _recorded_fingerprint(dest_dir) is None:
+                    adopted = _verified_unchanged_fingerprint(dest_dir, src_dir)
+                    if adopted is not None:
+                        _write_provenance_marker(dest_dir, adopted)
+                continue
+            if dest_dir.exists() or is_link_or_junction(dest_dir):
+                claim = _claim_dir_for_replacement(dest_dir)
+                if claim is None:
+                    continue
+                verified: str | None = None
+                if not is_link_or_junction(claim):
+                    verified = _verified_unchanged_fingerprint(claim, src_dir)
+                if not is_link_or_junction(claim) and not _tree_has_content(claim):
+                    # A placeholder holding nothing but (at most) our own
+                    # provenance marker has no user bytes to preserve; the
+                    # kernel-atomic rmdir inside fails — and the tree is
+                    # preserved instead — if anything landed after the check.
+                    if not _remove_ignorable_dir(claim):
+                        backup = _finalize_user_backup(claim, dest_dir)
+                        logger.warning(
+                            "placeholder skill dir %s gained content before "
+                            "removal; preserved it at %s",
+                            dest_dir, backup if backup is not None else claim,
+                        )
+                elif verified is not None:
+                    if not _retire_verified_claim(claim, dest_dir, verified):
+                        # The retirement slot was unusable: preserve the
+                        # verified copy rather than delete it. Installing the
+                        # packaged version is still correct either way.
+                        backup = _finalize_user_backup(claim, dest_dir)
+                        logger.warning(
+                            "could not retire verified skill copy of %s; "
+                            "preserved it at %s",
+                            dest_dir, backup if backup is not None else claim,
+                        )
+                else:
+                    backup = _finalize_user_backup(claim, dest_dir)
+                    # A failed finalize leaves the data at the dot-prefixed
+                    # claim path (hidden but intact); installing the packaged
+                    # version is still correct either way.
+                    logger.warning(
+                        "Skill directory %s does not match the copy this sync "
+                        "installed (user-authored or locally edited); preserved "
+                        "it at %s before installing the packaged version",
+                        dest_dir, backup if backup is not None else claim,
+                    )
+            # Fingerprint the PACKAGED tree (immutable while this runs) and
+            # record that as the installed state: fingerprinting the freshly
+            # copied destination instead would bless any user write that lands
+            # during the hash as sync-owned, licensing its later deletion. The
+            # copy equals the source (the package ships only regular files and
+            # directories), so the source fingerprint is the copy's.
+            src_fingerprint = _skill_tree_fingerprint(src_dir)
+            try:
                 shutil.copytree(src_dir, dest_dir)
-                logger.info("Synced skill: %s", name)
+            except FileExistsError:
+                # Another process (gateway + CLI syncing the same home) won
+                # the install race after our claim; its copy of the same
+                # packaged skill is the destination now. Losing must not
+                # crash the sync.
+                logger.info("Skill %s installed concurrently elsewhere; keeping it", name)
+                continue
+            if src_fingerprint is not None:
+                _write_provenance_marker(dest_dir, src_fingerprint)
+            else:
+                logger.warning(
+                    "packaged skill tree %s cannot be fingerprinted; installed "
+                    "%s without provenance", src_dir, name,
+                )
+            logger.info("Synced skill: %s", name)
 
-    # Remove known stale builtin skills (replaced by MCP tools)
-    stale_builtins = {"learn", "subagent", "cron", "kirocrew-core"}
+    # Remove known stale builtin skills (replaced by MCP tools). A name a
+    # source STILL ships (e.g. a project-level skill named ``cron``) is not
+    # stale: sweeping it would delete on every startup what the loop above
+    # just installed. Removal is provenance-gated by the same rule as updates:
+    # only an unchanged copy this sync verifiably installed may be deleted by
+    # name. A directory with no recorded provenance is user-authored by
+    # assumption (a user skill named ``cron`` must survive every startup) and
+    # is left alone — its removal, if ever wanted, is a human decision.
+    # Deliberate consequence: installs that predate provenance recording keep
+    # their stale builtin dirs until a human removes them, because there is no
+    # packaged tree left to prove ownership against.
+    stale_builtins = {"learn", "subagent", "cron", "kirocrew-core"} - source_names
     if base.exists():
         for name in stale_builtins:
             stale = base / name
-            if stale.is_dir():
-                shutil.rmtree(stale)
-                logger.info("Removed stale builtin skill: %s", name)
+            # Unlike update-path slots (rotated by the next update), nothing
+            # ever ships for a stale name again, so its parked copy is
+            # disposed of here on the sweep AFTER the one that parked it —
+            # that is its full quiescent cycle. Ordered before the live-dir
+            # handling below, which can park a fresh copy this same run.
+            slot = base / f".{name}.superseded"
+            if not stale.is_dir() and os.path.lexists(slot):
+                _dispose_superseded_slot(slot, stale)
+            if is_link_or_junction(stale):
+                # The sync only ever creates real directories; a link here is
+                # user-made and its target must not even be read.
+                logger.debug("Leaving link %s in place: user-made", stale)
+                continue
+            if not stale.is_dir():
+                continue
+            if _recorded_fingerprint(stale) is None:
+                logger.debug(
+                    "Leaving %s in place: no recorded provenance, so treated as "
+                    "user-authored", stale,
+                )
+                continue
+            claim = _claim_dir_for_replacement(stale)
+            if claim is None:
+                continue
+            retired = False
+            stale_fp = _verified_unchanged_fingerprint(claim, None)
+            if stale_fp is not None:
+                retired = _retire_verified_claim(claim, stale, stale_fp)
+                if retired:
+                    logger.info("Retired stale builtin skill: %s", name)
+            if not retired:
+                # Diverged since the marker was recorded (user data), or the
+                # retirement slot was unusable: restore the tree to its
+                # original name; on failure it stays hidden but intact at the
+                # claim path.
+                try:
+                    os.replace(claim, stale)
+                except OSError:
+                    logger.warning(
+                        "could not restore %s from claim %s; data preserved "
+                        "there", stale, claim, exc_info=True,
+                    )
         for old_name, new_name in _RELOCATED_SKILLS.items():
             old_skill_md = base / old_name / "SKILL.md"
             if old_skill_md.is_file() and (base / new_name / "SKILL.md").exists():
@@ -607,7 +1290,21 @@ class SkillsLoader:
     ):
         self._dir = skills_path or skills_dir()
         if install_builtins:
-            _ensure_builtin_skills(self._dir)
+            # Never sync on a running event loop: the sync verifies user-owned
+            # trees (stat walks, capped content hashing) before it may replace
+            # them, so a loader built inside a dashboard/Slack handler would
+            # stall the loop and the liveness heartbeat. The gateway already
+            # syncs at startup in a worker thread; on-loop constructions just
+            # read the already-synced tree.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                _ensure_builtin_skills(self._dir)
+            else:
+                logger.debug(
+                    "Skipping builtin-skill sync on a running event loop; "
+                    "gateway startup owns the sync"
+                )
         # Cache: path → (mtime, parsed_frontmatter)
         self._fm_cache: dict[str, tuple[float, dict[str, str]]] = {}
         # TTL cache of the discovered (name, path) list — avoids an os.walk per
@@ -2526,6 +3223,9 @@ class SkillsLoader:
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
         # (i) Remove the pending candidate.
+        # Captured BEFORE the removal so a same-slug replacement staged after
+        # this instant keeps its notification (see approve_pending_skill).
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(src, ignore_errors=True)
         # (j) Audit the approved update.
         sel().log_tool_invocation(
@@ -2546,6 +3246,20 @@ class SkillsLoader:
         logger.info(
             "Approved pending update: %s (v%d -> v%d)", target_name, current_version, new_version
         )
+        # The candidate cleanup above ignores rmtree errors (e.g. a Windows
+        # file lock), so the candidate can survive in the pending queue even
+        # though the update went live. Only report it consumed when the
+        # directory is really gone — otherwise the queue still shows an
+        # actionable review and its notification must stay unread.
+        if not src.exists():
+            _emit_pending_consumed(
+                {
+                    "slug": slug,
+                    "outcome": "approved",
+                    "name": target_name,
+                    "consumed_at": consumed_at,
+                }
+            )
         return target_name
 
     def approve_pending_skill(self, slug: str) -> str | None:
@@ -2621,6 +3335,12 @@ class SkillsLoader:
             )
             return None
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # Cutoff for notification resolution, captured BEFORE the candidate
+        # leaves the pending queue: staging refuses to overwrite an existing
+        # candidate, so a same-slug replacement can only be staged after this
+        # instant — its notification carries a strictly later ``ts`` and must
+        # survive the resolve.
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         try:
             shutil.move(str(src), str(dest))
         except OSError:
@@ -2648,6 +3368,9 @@ class SkillsLoader:
                             pass
         self._invalidate_iter_cache()
         logger.info("Approved pending skill: %s", name)
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
+        )
         return name
 
     def dismiss_pending_skill(self, slug: str) -> bool:
@@ -2657,9 +3380,36 @@ class SkillsLoader:
         pdir = self._pending_root() / slug
         if not pdir.is_dir():
             return False
+        # Captured BEFORE the removal so a same-slug replacement staged after
+        # this instant keeps its notification (see approve_pending_skill).
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
         shutil.rmtree(pdir)
         logger.info("Dismissed pending skill: %s", slug)
+        _emit_pending_consumed(
+            {"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at}
+        )
         return True
+
+    def dismiss_all_pending(self) -> int:
+        """Delete all pending candidates. Returns count dismissed."""
+        pending = self.list_pending_skills()
+        count = 0
+        for entry in pending:
+            if self.dismiss_pending_skill(entry["slug"]):
+                count += 1
+        if count:
+            logger.info("Dismissed all %d pending skills", count)
+        return count
+
+    def dismiss_pending_slugs(self, slugs: list[str]) -> int:
+        """Delete only the specified pending candidates. Returns count dismissed."""
+        count = 0
+        for slug in slugs:
+            if self.dismiss_pending_skill(slug):
+                count += 1
+        if count:
+            logger.info("Dismissed %d of %d requested pending skills", count, len(slugs))
+        return count
 
     def prune_pending(self, ttl_days: int, *, now: float | None = None) -> int:
         """Remove pending candidates older than ``ttl_days``. Returns count pruned.
@@ -2695,6 +3445,17 @@ class SkillsLoader:
                     continue
                 result.append(name)
         return result
+
+    def sync_builtins(self) -> None:
+        """Run the builtin-skill sync for this loader's directory.
+
+        The explicit seam for callers that own an off-loop context (the
+        gateway runs this in a worker thread as a background task after the
+        dashboard socket binds). Construction-time sync skips itself on a
+        running event loop, so without this seam a loop-thread process would
+        have no way to sync at all.
+        """
+        _ensure_builtin_skills(self._dir)
 
     def get_triggered_skills(self, text: str) -> list[str]:
         """Return names of skills whose triggers match the given text.
@@ -3182,23 +3943,29 @@ class SkillsLoader:
         honoring it here meant the opt-in could never take effect. Ignoring
         indented lines also drops the junk keys a prose line like
         ``  Steps: do x`` used to invent.
+
+        A value that is a YAML block-scalar indicator (``>``, ``|``, with an
+        optional chomping ``-``/``+``) is resolved from the indented lines that
+        follow it: folded (``>``) folds single breaks to spaces while keeping
+        blank-line and more-indented structure, literal (``|``) preserves
+        newlines. Without this, the stored value would be the indicator
+        character itself and the real content — a multi-line ``description``
+        used for routing — would be dropped, leaving the skill unroutable.
+        That grammar is pinned as ``frontmatter.SKILL_LOADER``.
         """
         content = path.read_text(encoding="utf-8")
-        if not content.startswith("---"):
-            return {}
-        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-        if not match:
-            return {}
-        meta: dict[str, str] = {}
-        for line in match.group(1).split("\n"):
-            if ":" in line and not line[:1].isspace():
-                key, value = line.split(":", 1)
-                meta[key.strip()] = value.strip().strip("\"'")
-        return meta
+        return parse_frontmatter(content, SKILL_LOADER)
 
     @staticmethod
     def strip_frontmatter(content: str) -> str:
-        """Remove YAML frontmatter from markdown."""
+        """Remove YAML frontmatter from markdown.
+
+        A fence LOCATOR, not a field parser — deliberately outside
+        ``kiro_crew.frontmatter``. Its closer grammar is stricter than
+        ``_parse_frontmatter``'s (``---`` must be followed by a newline), so
+        a ``---junk`` closer parses fields yet strips nothing; editing either
+        grammar means revisiting the other.
+        """
         if content.startswith("---"):
             match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
             if match:

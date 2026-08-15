@@ -32,6 +32,7 @@ from kiro_crew.acp.client import (
     model_is_unusable,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
+from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
@@ -344,16 +345,37 @@ class AcpSessionProvider(LLMProvider):
         """Refresh activity timestamp on the runtime."""
         self._runtime._last_activity = time.monotonic()
 
-    def rekey(self, session_key: str, channel_id: str | None = None) -> None:
+    def rekey(
+        self,
+        session_key: str,
+        channel_id: str | None = None,
+        crew_agent: str = "",
+        watchdog: WatchdogSettings | None = None,
+    ) -> None:
         """Re-key for a different session on warm-pool claim (parity with
         AcpClient.rekey). session.py:1309 calls provider.client.rekey(...); when
         the pooled provider is kiro-shared, provider.client is THIS class, so a
         missing rekey() would AttributeError on claim. Stores the correlation
         keys and refreshes runtime activity so the just-claimed process is not
-        idle-reaped."""
+        idle-reaped.
+
+        ``crew_agent`` is the claiming session's canonical crew identity: the
+        pooled runtime was spawned before any crew claimed it, so both the
+        runtime default (future sessions, e.g. new_conversation) and the live
+        handle's watchdog snapshot are rebound here — the identity travels
+        with the session, not the pool key. Empty means "no crew" and rebinds
+        to the globals, so a recycled runtime never carries a previous crew's
+        windows. ``watchdog`` is the pre-resolved snapshot from the async
+        caller (resolved off-loop); None makes rebind load it synchronously."""
         self._session_key = session_key
         self._channel_id = channel_id
+        self._runtime._crew_agent = crew_agent
+        self._handle.rebind_watchdog(crew_agent, settings=watchdog)
         self._runtime._last_activity = time.monotonic()
+        # Parity with AcpClient.rekey: the handle's prompt stats describe the
+        # session this runtime served BEFORE the handoff; leaking them lets
+        # check_context_usage() compact the new, empty session (#2932).
+        self._handle.last_prompt_stats.reset_context_state()
         # Claim-push: re-target every MCP stub connection under the shared
         # runtime's PID to the claiming session (see AcpClient.rekey for the
         # rationale). Fire-and-forget; no-ops without a gateway socket.
@@ -385,8 +407,16 @@ class AcpSessionProvider(LLMProvider):
 
     @property
     def backend(self) -> str:
-        """ACP backend identifier. Always empty string for kiro-cli."""
-        return ""
+        """ACP backend identifier, delegated to the runtime that serves it.
+
+        Not a constant: this provider fronts whichever backend ``AcpRuntime``
+        spawned, and it replaces the placeholder ``AcpClient`` on
+        ``AcpProvider._client`` once startup completes — so it is the only
+        remaining place a consumer can read the backend back off a started
+        provider. Reporting kiro unconditionally would persist every KAS
+        session under the kiro label.
+        """
+        return self._runtime.acp_backend
 
     def has_active_turn(self) -> bool:
         """True if a prompt turn is currently in progress.

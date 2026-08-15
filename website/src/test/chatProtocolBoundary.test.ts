@@ -98,15 +98,21 @@ describe('the protocol surface apps import', () => {
     // instantiate the module, so an app importing it does not load. Two hand-written lists cannot
     // be kept in agreement by review alone.
     const stub = read(resolve(SRC, '..', 'public', 'vendor', 'kirocrew-app-sdk.mjs'))
-    const barrel = read(join(PROTOCOL, 'index.ts'))
-    // Value exports only — `export type` lines vanish at runtime and need no stub entry.
-    const values = [...barrel.matchAll(/^export \{([^}]+)\}/gm)]
-      .flatMap(m => m[1].split(','))
-      .map(s => s.trim())
-      .filter(Boolean)
-    expect(values.length).toBeGreaterThan(0)
+    // BOTH barrels: scoping this to the protocol barrel is what let four chat
+    // exports sit in the app surface with no stub entry, each one a load-time
+    // failure for any app that imported it.
+    const barrels = [read(join(PROTOCOL, 'index.ts')), read(join(SRC, 'app-sdk', 'index.ts'))]
+    // Value exports only — `export type` lines vanish at runtime and need no
+    // stub entry, and `export type {…}` must not be mistaken for a value block.
+    const values = barrels.flatMap(barrel => [
+      ...[...barrel.matchAll(/^export \{([^}]+)\}/gm)]
+        .flatMap(m => m[1].split(','))
+        .map(s => s.trim().replace(/^default as /, '')),
+      ...[...barrel.matchAll(/^export (?:async )?function (\w+)/gm)].map(m => m[1]),
+    ]).filter(Boolean)
+    expect(values.length).toBeGreaterThan(10)
     const missing = values.filter(name => !new RegExp(`\\b${name}\\b`).test(stub))
-    expect(missing, 'vendor stub must re-export every protocol value').toEqual([])
+    expect(missing, 'vendor stub must re-export every value the app surface exports').toEqual([])
   })
 
   it('parses correctly even after the shared regex has been left mid-string', async () => {

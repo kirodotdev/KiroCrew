@@ -79,6 +79,15 @@ function createOverlayFor(display) {
   win.setAcceptFirstMouse?.(true);
   // Refuse input by default; the renderer re-enables it over the sprite alone.
   win.setIgnoreMouseEvents(true, { forward: true });
+  // INVISIBLE TO SCREEN CAPTURE (macOS NSWindowSharingNone, Windows
+  // WDA_EXCLUDEFROMCAPTURE; no-op elsewhere). The overlay covers a whole display,
+  // so without this it is the topmost window at EVERY point on the screen: the
+  // macOS screenshot picker (Cmd+Shift+4 space / Cmd+Shift+5 window mode) offers
+  // the overlay instead of the app the user is pointing at, and a region capture
+  // or recording bakes the companion into the result. A decoration must not
+  // appear in the user's screenshots, screen recordings, or screen shares — the
+  // same reason computer use's cursor overlay sets NSWindowSharingNone.
+  win.setContentProtection(true);
   // Follow the user across spaces and over full-screen apps — a companion that
   // vanished when you switched desktops would not be company.
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });

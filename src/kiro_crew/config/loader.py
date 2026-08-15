@@ -20,13 +20,14 @@ import re as _re
 import stat as _stat
 import threading
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit as _urlsplit
 
-from kiro_crew import __version__, model_registry
+from kiro_crew import __version__, model_registry, platform_compat
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
 from kiro_crew.atomic_write import atomic_write
@@ -97,6 +98,8 @@ from kiro_crew.config.validation import (  # noqa: F401
 )
 from kiro_crew.config.validation import validate_config_data as _validate_config_data  # noqa: F401
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort, model_supports_effort
+from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
+from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_RECOVER_BACKOFF_MAX_SECS as _DEFAULT_BACKOFF_MAX
@@ -163,6 +166,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "knowledge",
         "heartbeat",
         "skills",
+        "session_summary",
         "telemetry",
         "snapshot_dir",
         "timezone",
@@ -184,6 +188,12 @@ CRED_MICROSOFT_APP_ID = "MICROSOFT_APP_ID"
 CRED_MICROSOFT_APP_PASSWORD = "MICROSOFT_APP_PASSWORD"
 CRED_MICROSOFT_APP_TENANT_ID = "MICROSOFT_APP_TENANT_ID"
 CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR flow
+# kiro-cli's OWN model credential. Unlike the gateway-owned channel tokens
+# above, its rightful consumer is the agent subprocess itself (and the whoami
+# identity probe), so it is deliberately NOT in sandbox._AGENT_DENIED_ENV_KEYS:
+# the spawn paths re-inject it from the .env file after the Docker entrypoint
+# scrubs it out of the gateway's /proc/<pid>/environ.
+CRED_KIRO_API_KEY = "KIRO_API_KEY"
 _CREDENTIAL_KEYS = (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
@@ -197,6 +207,7 @@ _CREDENTIAL_KEYS = (
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
     CRED_WEIXIN_TOKEN,
+    CRED_KIRO_API_KEY,
 )
 
 DEFAULT_MODEL = "auto"
@@ -384,6 +395,33 @@ def _safe_dict(value: object) -> dict:
     """Return *value* if it is a dict, else {}. Guards .items()/dict() in config
     parse against a non-dict config value (which would raise AttributeError)."""
     return value if isinstance(value, dict) else {}
+
+
+def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
+    """Which MCP servers are given a stub.
+
+    ``poolable_servers`` is the deprecated spelling and is consulted ONLY when
+    ``stub_servers`` is absent from the file. Key presence, not truthiness, is
+    the test: an operator who wrote ``stub_servers: []`` chose to stub nothing,
+    and silently falling back to a stale ``poolable_servers`` would re-stub
+    servers they had just cleared.
+
+    The migration reproduces the stub set the operator was ALREADY RUNNING, which
+    is why it is also conditional on ``enabled``. Before the stub became its own
+    per-server decision, the broker was gated on ``enabled`` alone, so a config
+    with ``enabled: false`` produced no broker, no overlay and no stub no matter
+    what ``poolable_servers`` held. Migrating that list unconditionally would
+    hand such an install a daemon and a stub process per server on upgrade —
+    inventing the very topology change this design exists to make optional. An
+    operator whose gateway was off keeps nothing running and opts in per server.
+    """
+    if "stub_servers" in mcp_gateway_data:
+        source = mcp_gateway_data.get("stub_servers")
+    elif _safe_bool(mcp_gateway_data.get("enabled", False), False):
+        source = mcp_gateway_data.get("poolable_servers")
+    else:
+        source = None
+    return [s for s in _safe_list(source) if isinstance(s, str) and s]
 
 
 def _safe_float(
@@ -664,6 +702,119 @@ def write_config_atomically(path: Path, data: dict, *, fsync: bool = False) -> N
     atomic_write(path, json.dumps(data, indent=2) + "\n", fsync=fsync, mode=mode)
 
 
+def update_config_locked(
+    path: Path | None = None,
+    *,
+    mutate: Callable[[dict], dict | None],
+    fsync: bool = False,
+    stamp_meta: bool = True,
+    on_corrupt: Literal["fail", "reset"] = "fail",
+) -> dict:
+    """Perform an atomic read-modify-write of a config file under an advisory lock.
+
+    The locked primitive for the converted config.json writers and the required
+    path for new config.json mutations.  Legacy writers that pre-date this
+    function (dashboard agents endpoint, updates.py, memory.py, security.py,
+    messaging.py, mcp.py, core.py STT) still use
+    :func:`write_config_atomically` directly and rely on the in-process asyncio
+    ``_get_config_lock()`` only.
+
+    Contract:
+
+    * **Isolation.** An advisory file lock is held for the entire
+      read-modify-write, so two concurrent callers are serialized: neither can
+      land between the other's read and write.
+    * **Sidecar lockfile.** The lock lives on ``<path>.lock``, NOT on the
+      config file's own fd.  ``write_config_atomically`` replaces the inode
+      (tmp + rename), so a lock taken on the config file's fd would not
+      serialize against the rename — a second opener after the rename gets a
+      NEW fd on the NEW inode and takes the lock instantly, defeating the
+      purpose.
+    * **Fail-closed read (default).** :func:`read_config_for_update` is used
+      inside the critical section; with ``on_corrupt="fail"`` (the default), an
+      unreadable or malformed config raises :class:`ConfigReadError`, aborts
+      the update, and the lockfile is released.  The existing file is never
+      overwritten with defaults.
+    * **Reset-on-corrupt (opt-in).** With ``on_corrupt="reset"``, a
+      :class:`ConfigReadError` inside the critical section is caught WHILE THE
+      LOCK IS STILL HELD and the *mutate* callback is invoked with ``{}``.
+      The caller's write therefore happens in the same lock hold as the read
+      attempt, closing any window for a concurrent writer to land between.
+      The resulting file is written with mode ``0o600`` (no existing mode to
+      preserve from a corrupt file).
+    * **Mode-preserving write.** :func:`write_config_atomically` preserves the
+      existing file's permission bits, so a tightened ``0600`` is not widened.
+    * **Cross-platform.** Locking goes through
+      :func:`platform_compat.file_lock`, which uses ``fcntl.flock`` on POSIX
+      and a bounded ``msvcrt.locking`` spin on Windows.
+    * **Symlink-safe.** The target path is resolved before locking, so a
+      symlinked config is updated in place (matching
+      ``write_config_atomically``'s behavior).
+
+    Parameters
+    ----------
+    path : Path | None
+        Config file path; defaults to :func:`config_path`.
+    mutate : (dict) -> dict | None
+        Called with the current config data (possibly ``{}`` for a new file).
+        Must return the updated dict to write, or ``None`` to skip the write
+        (useful when the mutate discovers no change is needed).
+    fsync : bool
+        Passed through to :func:`write_config_atomically`.
+    stamp_meta : bool
+        If True (default), stamps the ``meta`` block via
+        :func:`stamp_config_meta` before writing.
+    on_corrupt : "fail" | "reset"
+        Behavior when :func:`read_config_for_update` raises
+        :class:`ConfigReadError`.  ``"fail"`` (default) re-raises, aborting the
+        update.  ``"reset"`` catches the error inside the lock hold and invokes
+        *mutate* with ``{}``; the caller's write proceeds in the same critical
+        section so no concurrent writer can land between.
+
+    Returns
+    -------
+    dict
+        The final config dict (after mutation), whether or not a write occurred.
+
+    Raises
+    ------
+    ConfigReadError
+        If the existing config is unreadable or malformed and
+        ``on_corrupt="fail"``.
+    OSError
+        If the lockfile cannot be opened/created or the lock cannot be acquired.
+    """
+    p = path if path is not None else config_path()
+    # Resolve symlinks before locking (same logic as write_config_atomically)
+    # so the sidecar sits beside the ACTUAL file, not the symlink.
+    try:
+        if p.is_symlink():
+            p = p.resolve()
+    except OSError:
+        pass
+    lock_path = p.parent / (p.name + ".lock")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        with platform_compat.file_lock(fd, exclusive=True):
+            try:
+                data = read_config_for_update(p)
+            except ConfigReadError:
+                if on_corrupt == "fail":
+                    raise
+                # on_corrupt="reset": treat as empty inside the same lock hold.
+                data = {}
+            result = mutate(data)
+            if result is None:
+                return data
+            if stamp_meta:
+                result = stamp_config_meta(result)
+            write_config_atomically(p, result, fsync=fsync)
+            return result
+    finally:
+        os.close(fd)
+
+
 def stamp_config_meta(data: dict) -> dict:
     """Return *data* with a freshly stamped ``meta`` block in front.
 
@@ -689,6 +840,77 @@ def stamp_config_meta(data: dict) -> dict:
         },
         **{k: v for k, v in data.items() if k != "meta"},
     }
+
+
+def refresh_config_meta_stamp() -> bool:
+    """Re-stamp ``config.json``'s ``meta`` block when it names another build.
+
+    The stamp is only ever written as a side effect of a config write, so an
+    upgrade that never touches ``config.json`` leaves ``lastTouchedVersion``
+    naming the *previous* build indefinitely. That contradicts the field's
+    documented meaning ("the build that wrote the bytes now on disk") and
+    sends anyone debugging a version question chasing a build that is no
+    longer installed (#3102). Called once per gateway start, off the boot
+    path: a version check on one small file, a rewrite only when it differs.
+
+    Deliberately a plain field refresh, not a migration hook: the stamp is
+    replaced, every other key is preserved, and nothing else changes. When
+    the stored version already matches, the file is not rewritten at all
+    (no mtime churn, no ``lastTouchedAt`` bump).
+
+    The read-modify-write goes through :func:`update_config_locked` — the
+    required path for new ``config.json`` mutations — so the refresh holds
+    the sidecar advisory lock and can never revert a concurrent settings
+    write with its own earlier snapshot. Callers that run while the
+    dashboard serves requests must ALSO hold the in-process asyncio config
+    lock (``_get_config_lock``) around the call, because the legacy writers
+    serialize on that lock alone.
+
+    Best-effort by design — a stale stamp is a diagnostic blemish, never
+    worth failing a boot over. Returns ``True`` when a refresh was written,
+    ``False`` when nothing needed doing (absent/empty file, current stamp)
+    or the file could not be safely read (an unreadable/torn config must
+    never be replaced with a stamped-but-empty one).
+    """
+    path = config_path()
+    if not path.exists():
+        return False
+
+    wrote = False
+
+    def _stamp_if_stale(data: dict) -> dict | None:
+        nonlocal wrote
+        if not data:
+            # Absent or emptied between the exists() check and the lock hold:
+            # there is nothing to refresh, and writing would CREATE a config
+            # holding only a meta block.
+            return None
+        meta = data.get("meta")
+        stored = meta.get("lastTouchedVersion") if isinstance(meta, dict) else None
+        if stored == __version__:
+            return None  # current: skip the write entirely
+        wrote = True
+        return data  # update_config_locked stamps the meta block itself
+
+    try:
+        update_config_locked(path, mutate=_stamp_if_stale)
+    except ConfigReadError:
+        logger.debug(
+            "config meta stamp refresh skipped: %s unreadable; leaving it untouched",
+            path,
+            exc_info=True,
+        )
+        return False
+    except OSError:
+        logger.debug(
+            "config meta stamp refresh failed: could not lock or write %s",
+            path,
+            exc_info=True,
+        )
+        return False
+    if wrote:
+        _invalidate_config_cache()
+    return wrote
 
 
 def workspace_dir_for(workspace: str | None = None) -> Path:
@@ -742,6 +964,79 @@ def default_project_dir(workspace: str | None = None) -> str:
 
 def env_path() -> Path:
     return config_dir() / ".env"
+
+
+def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
+    """Best-effort read of one ``KEY=VALUE`` entry from the data home's ``.env``.
+
+    Same line format :meth:`KiroCrewConfig.load_credentials` parses (one pair
+    per line, ``#`` comments, no quotes required, last occurrence wins).
+    Returns ``""`` when the file is absent or unreadable — callers treat the
+    credential as unset rather than failing.
+
+    Blocking file IO: call via ``asyncio.to_thread`` from async paths.
+    """
+    ep = env_file if env_file is not None else env_path()
+    try:
+        text = ep.read_text()
+    except OSError:
+        return ""
+    value = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+            if k.strip() == key:
+                value = v.strip()
+    return value
+
+
+def inject_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str, str]:
+    """Ensure *env* carries kiro-cli's own model credential (``KIRO_API_KEY``).
+
+    The Docker entrypoint scrubs :data:`_CREDENTIAL_KEYS` out of the gateway's
+    process environment into the data home's ``.env`` (mode 600) so they never
+    reside in a long-lived ``/proc/<pid>/environ``. Every other credential is
+    consumed in-process from :meth:`KiroCrewConfig.load_credentials`, but this
+    one authenticates the kiro-cli CHILD, which reads it from its own
+    environment — so kiro-cli spawn paths call this to hand the child exactly
+    the one variable it owns, without re-widening the parent's environ. A value
+    already present in *env* wins (same precedence as ``load_credentials``);
+    outside Docker nothing changes because the variable is still inherited.
+
+    Mutates *env* in place and returns it for convenience. Blocking file IO:
+    call via ``asyncio.to_thread`` from async paths.
+    """
+    if not env.get(CRED_KIRO_API_KEY):
+        val = read_env_file_credential(CRED_KIRO_API_KEY)
+        if val:
+            env[CRED_KIRO_API_KEY] = val
+    return env
+
+
+def strip_kiro_cli_api_key(env: MutableMapping[str, str]) -> MutableMapping[str, str]:
+    """Remove kiro-cli's model credential from a foreign child's environment.
+
+    Counterpart to :func:`inject_kiro_cli_api_key` for the non-kiro-cli ACP
+    backends (the dormant Claude seam, KAS): the credential is kiro-cli's
+    alone, and it is deliberately NOT in ``sandbox._AGENT_DENIED_ENV_KEYS``, so
+    without this an inherited copy in the raw ``os.environ`` snapshot would
+    ride into a foreign agent process. Matches the platform env-key convention
+    (exact on POSIX, case-folded on Windows) so a differently-cased Windows
+    spelling cannot slip past. Mutates *env* in place and returns it.
+    """
+    matched = [
+        k for k in env if platform_compat.env_key_allowed(k, _KIRO_API_KEY_ONLY)
+    ]
+    for k in matched:
+        del env[k]
+    return env
+
+
+# Single-key allowlist for strip_kiro_cli_api_key's platform-aware matching.
+_KIRO_API_KEY_ONLY = frozenset({CRED_KIRO_API_KEY})
 
 
 def resolve_agent_config_path() -> Path:
@@ -870,6 +1165,31 @@ class AgentConfig:
     provider: str = field(
         default="acp",
         metadata=_meta("Provider", "LLM provider backend (KiroACP / kiro-cli).", enum=["acp"]),
+    )
+    mcp_registry_mode: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enterprise MCP Registry Mode",
+            "Set true when this Kiro account is governed by an enterprise MCP "
+            "registry (Kiro console -> Shared settings -> MCP Registry URL, which "
+            "applies to IAM Identity Center and API-key sign-ins). In registry "
+            "mode the client connects ONLY to mcpServers entries carrying "
+            "'type': \"registry\" that resolve to a catalog entry of the same "
+            "name, so Kiro Crew stamps that marker on the servers it manages. "
+            "Leave false on a personal account: with no registry configured the "
+            "filter inverts and registry-marked entries are the ones dropped. "
+            "The administrator must also allow-list kirocrew-core, kirocrew-cron "
+            "and kirocrew-computer in the registry by those exact names.",
+        ),
+    )
+    acp_backend: str = field(
+        default="",
+        metadata=_meta(
+            "ACP Backend",
+            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
+            "KAS runs chat but has no native subagent progress reporting yet.",
+            enum=["", "kas"],
+        ),
     )
     default_agent: str = field(
         default="",
@@ -1006,10 +1326,32 @@ class AgentConfig:
             "MCP Tool Search",
             "Load MCP tool specs on demand (search-and-call) instead of sending "
             "every tool definition each turn, keeping the context window clear "
-            "when many MCP servers are configured. kiro-cli backend only. When "
-            "enabled, Kiro Crew forces deferral always-on (minPct=0/minTokens=0) "
-            "via the per-session kiro settings overlay; disabling reverts to "
-            "sending full tool specs. No effect on an alternate ACP backend.",
+            "when many MCP servers are configured. kiro-cli backend only. "
+            "Deferral only starts once the specs cross tool_search_min_pct or "
+            "tool_search_min_tokens; disabling reverts to sending full tool "
+            "specs. No effect on an alternate ACP backend.",
+        ),
+    )
+    tool_search_min_pct: int = field(
+        default=5,
+        metadata=_meta(
+            "Tool Search threshold (% of context)",
+            "Start deferring MCP tool specs once they exceed this percentage of "
+            "the context window. Paired with tool_search_min_tokens — whichever "
+            "is crossed first wins. Below both thresholds every spec is sent "
+            "directly, so the agent never pays a tool_search round-trip for a "
+            "small tool set. 0 with tool_search_min_tokens 0 defers always. "
+            "Clamped to 0-100; matches the kiro-cli default.",
+        ),
+    )
+    tool_search_min_tokens: int = field(
+        default=50000,
+        metadata=_meta(
+            "Tool Search threshold (tokens)",
+            "Start deferring MCP tool specs once they exceed this many tokens. "
+            "Paired with tool_search_min_pct — whichever is crossed first wins. "
+            "0 with tool_search_min_pct 0 defers always. Matches the kiro-cli "
+            "default.",
         ),
     )
     session_sharing: bool = field(
@@ -1087,11 +1429,27 @@ class AgentConfig:
         metadata=_meta(
             "Chat Turn Timeout (secs)",
             "Wall-clock ceiling for one chat turn. This is a runaway backstop, "
-            "so it is clamped to 300s..7200s (2h) and can never be disabled. "
-            "Long babysit and monitoring turns approach the default, so hitting "
-            "it is no longer silent: the turn ends with a visible card naming "
-            "the limit. Values above the ACP transport's own prompt timeout are "
-            "clamped, because the transport bounds the turn first.",
+            "so it is clamped to 300s..86400s (24h) and can never be disabled. "
+            "Raise it above the 2h default for long unattended turns (full test "
+            "suites, long builds); the ACP transport's prompt wait follows it. "
+            "Hitting the ceiling is visible: the turn ends with a card naming "
+            "the limit. For work spanning days, prefer monitor/goal loops — "
+            "they end the turn between cycles and survive restarts.",
+        ),
+    )
+    session_start_timeout_secs: int = field(
+        default=90,
+        metadata=_meta(
+            "Session Start Timeout (secs)",
+            "Budget for ACP session/new and session/load on the shared "
+            "runtime. kiro-cli blocks the response while it initializes the "
+            "agent's MCP servers, so session start scales with server count "
+            "and per-server cold-start cost (sandboxed launchers, remote "
+            "servers, loaded hosts). Raise this when a large agent "
+            "legitimately needs longer than the 90s default. The floor is "
+            "the default itself: the budget must stay comfortably above the "
+            "backend's 30s OAuth authorization wait, so values below 90 are "
+            "clamped up.",
         ),
     )
     tool_approval_timeout_secs: int = field(
@@ -1466,6 +1824,18 @@ class MemoryConfig:
     embedding_dim: int = field(
         default=1024,
         metadata=_meta("Embedding Dimension", "Dimensionality of embedding vectors."),
+    )
+    embedding_threads: int = field(
+        default=4,
+        metadata=_meta(
+            "Embedding Threads",
+            "CPU threads llama.cpp may use per embedding call. Left unset, llama.cpp "
+            "sizes its batch pool from the host core count, so even a few-token embed "
+            "fans out across every core and competes with the rest of the gateway. "
+            "Embedding a short query does not need many threads; raise this only if "
+            "bulk re-embedding throughput matters more than interactive latency. "
+            "Clamped to the machine's core count.",
+        ),
     )
     embed_model_url: str = field(
         default="",
@@ -2263,11 +2633,43 @@ class DashboardConfig:
             "placeholder linking to it.",
         ),
     )
+    # Off by default because the panel's dismissal marker is keyed by slot and a
+    # new session inherits `dashboard.default_project`: with this on, every new
+    # chat in a git project opens the panel, which is not the once-per-project
+    # nudge the behaviour looks like. That reasoning is the flag's rationale, not
+    # something a user reading the setting needs, so it stays out of `help`.
+    auto_open_git_panel: bool = field(
+        default=False,
+        metadata=_meta(
+            "Auto-open Git in the side panel",
+            "Expand the chat's right side panel to its Git tab each time a session "
+            "starts in a project directory that is a git repository. The Git tab "
+            "itself is always created either way, so it is one click away.",
+        ),
+    )
     terminal: dict = field(
         default_factory=lambda: {"enabled": True},
         metadata=_meta(
             "Terminal",
             "Terminal panel configuration. Set enabled=false to hide the CLI panel in the dashboard.",
+            # Declared sub-keys become first-class schema entries
+            # (dashboard.terminal.<key>) so Settings controls can reference
+            # them by configKey. The field stays a plain dict — undeclared
+            # keys (max_sessions, completion.commands, cwd) remain valid via
+            # additionalProperties and round-trip untouched.
+            properties={
+                "shell": {
+                    "type": "string",
+                    "default": "",
+                    "x-meta": {
+                        "label": "Default shell",
+                        "help": (
+                            "Shell the built-in terminal launches — an absolute path or a "
+                            "command on PATH. Empty = the system default ($SHELL)."
+                        ),
+                    },
+                },
+            },
         ),
     )
     default_project: str = field(
@@ -2419,7 +2821,7 @@ class DashboardConfig:
         default="auto",
         metadata=_meta(
             "Tips Model",
-            "Model ID for tips generation. Defaults to \"auto\" so it inherits the "
+            'Model ID for tips generation. Defaults to "auto" so it inherits the '
             "account's governed model; a hardcoded id can be rejected on accounts "
             "or partitions that do not serve it.",
         ),
@@ -2498,6 +2900,30 @@ class KiroCrewAgentConfig:
     source: str = field(
         default="kirocrew",
         metadata=_meta("Source", "Agent origin: kirocrew or builtin."),
+    )
+    # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
+    # defaults (1h) are build-scale forbearance; an agent that never runs a long
+    # build (a pure-LLM reviewer, read-only git) can declare much lower windows
+    # here. 0 (the default) inherits the global value — mirrors the
+    # empty-inherits convention of ``model`` above.
+    watchdog_tool_stall_suspect_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Tool stall suspect override (s)",
+            "Per-agent override for watchdog.tool_stall_suspect_secs on sessions "
+            "running this agent. 0 inherits the global window (default 1h, tuned "
+            "for long builds). Set low (e.g. 900) for a pure-LLM agent whose "
+            "longest legitimate silent gap is minutes, not hours.",
+        ),
+    )
+    watchdog_tool_stall_hard_cap_secs: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Tool stall hard cap override (s)",
+            "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions "
+            "running this agent. 0 inherits the global cap (default 1h). Applies "
+            "ONLY to UNKNOWN verdicts — a WORKING session is never acted on.",
+        ),
     )
     telegram_account: str = field(
         default="",
@@ -2685,7 +3111,7 @@ class SkillsConfig:
         metadata=_meta(
             "Skill Judge Model",
             "Model used for the dedupe judge and the advisory pending review. "
-            "Defaults to \"auto\" to inherit the account's governed model; the "
+            'Defaults to "auto" to inherit the account\'s governed model; the '
             "value only gates whether the judge runs (any truthy value enables "
             "it) — the judge turn itself runs on the shared background session.",
         ),
@@ -2735,6 +3161,97 @@ class SkillsConfig:
         if self.pending_ttl_days < 1:
             logger.warning("pending_ttl_days %d < 1, using 1", self.pending_ttl_days)
             object.__setattr__(self, "pending_ttl_days", 1)
+
+
+@dataclass
+class SessionSummaryConfig:
+    """Intent-level session summaries shown in the chat right panel.
+
+    Summarizing spends tokens on a turn the user did not ask to pay for, so every
+    field defaults to off/conservative and the feature is inert until ``enabled``.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Session Summaries",
+            "When true, summarize each session by intent after a turn completes so "
+            "the chat right panel can show what the session is about, what has "
+            "happened, and what to do next. Costs tokens on turns that change the "
+            "session; an unchanged session is served from cache for free. Disabled "
+            "by default; enable in Settings.",
+        ),
+    )
+    min_user_turns: int = field(
+        default=2,
+        metadata=_meta(
+            "Minimum User Turns",
+            "Skip summarization until the session has at least this many user "
+            "messages (>=1). A one-exchange session has no intent structure worth "
+            "extracting, and the session title already covers it.",
+        ),
+    )
+    regenerate_after_turns: int = field(
+        default=1,
+        metadata=_meta(
+            "Regenerate Every N Turns",
+            "How many completed turns must pass before the summary is rebuilt "
+            "(>=1). 1 keeps the panel current at the cost of one pass per turn; "
+            "raise it to trade freshness for tokens. A cached summary whose "
+            "session has not changed is never rebuilt regardless of this value.",
+        ),
+    )
+    max_intents: int = field(
+        default=8,
+        metadata=_meta(
+            "Maximum Intents",
+            "Upper bound on intents kept per session (>=1). Beyond this the oldest "
+            "closed intents are dropped, since the panel collapses them anyway.",
+        ),
+    )
+    max_constraints: int = field(
+        default=5,
+        metadata=_meta(
+            "Maximum Project Notes",
+            "Upper bound on session-level operational notes -- the recurring facts "
+            "about how this project is run (>=0). Kept small on purpose: a long "
+            "list stops being read, and durable cross-session preferences belong "
+            "in lessons rather than here.",
+        ),
+    )
+    assistant_excerpt_chars: int = field(
+        default=400,
+        metadata=_meta(
+            "Assistant Excerpt Size",
+            "Characters kept from each end of an assistant message when building "
+            "the summarization input (>=80). User messages are always included in "
+            "full -- they carry intent and are small -- while assistant output is "
+            "excerpted because it holds the progress detail but dominates the "
+            "transcript.",
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        if self.min_user_turns < 1:
+            logger.warning("min_user_turns %d < 1, using 1", self.min_user_turns)
+            object.__setattr__(self, "min_user_turns", 1)
+        if self.regenerate_after_turns < 1:
+            logger.warning(
+                "regenerate_after_turns %d < 1, using 1", self.regenerate_after_turns
+            )
+            object.__setattr__(self, "regenerate_after_turns", 1)
+        if self.max_intents < 1:
+            logger.warning("max_intents %d < 1, using 1", self.max_intents)
+            object.__setattr__(self, "max_intents", 1)
+        if self.max_constraints < 0:
+            logger.warning("max_constraints %d < 0, using 0", self.max_constraints)
+            object.__setattr__(self, "max_constraints", 0)
+        if self.assistant_excerpt_chars < 80:
+            logger.warning(
+                "assistant_excerpt_chars %d < 80, using 80",
+                self.assistant_excerpt_chars,
+            )
+            object.__setattr__(self, "assistant_excerpt_chars", 80)
 
 
 @dataclass
@@ -2913,22 +3430,46 @@ SUBAGENT_AUTO_MAX_CEILING = 64  # agent.subagent_auto_max — concurrent subagen
 SUBAGENT_MAX_TURNS_CEILING = 200  # agent.subagent_max_turns — per-subagent turn budget
 POOL_SIZE_MAX = 10  # session.pool_size — pre-warmed process pool
 
-# agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The max
-# matches the ACP transport's own per-prompt timeout (acp/client.py
-# ``_DEFAULT_PROMPT_TIMEOUT``): above it the transport bounds the turn first, so
-# a larger value would advertise a limit the system does not honour. The floor
-# keeps a runaway backstop from being set so low it cuts ordinary work.
+# agent.chat_turn_timeout_secs — wall-clock ceiling for one chat turn. The ACP
+# transport's per-prompt wait follows this value (acp/client.py
+# ``resolve_prompt_timeout``, which adds a margin so the dashboard's visible
+# card fires before the transport cut), so the max is no longer pinned to the
+# transport's 2h default. It is bounded at 24h because the ceiling is a runaway
+# backstop, not a scheduler: a single prompt→response turn longer than a day is
+# pathological, and multi-day unattended operation belongs to the loop
+# mechanisms (monitor/goal loops, crons), which end the turn between cycles and
+# survive restarts — a marathon turn does not. The floor keeps the backstop
+# from being set so low it cuts ordinary work.
 CHAT_TURN_TIMEOUT_MIN = 300
-CHAT_TURN_TIMEOUT_MAX = 7200
+CHAT_TURN_TIMEOUT_MAX = 86400
+
+# agent.session_start_timeout_secs — budget for ACP session/new + session/load
+# on the shared runtime (acp/runtime.py ``_SESSION_NEW_TIMEOUT`` is the built-in
+# default). kiro-cli blocks the session/new response while it initializes the
+# session's MCP servers, so start time scales with the agent's server count and
+# per-server cold-start cost (observed: a 71-server agent with no pending OAuth
+# completes in ~14s; a 17-server agent behind a sandboxed per-server launcher on
+# a loaded host takes ~50s). The floor IS the default: the budget must stay
+# comfortably ABOVE the backend's 30s OAuth authorization wait (issue #2946) —
+# a lower value recreates the session-start race the dedicated budget exists to
+# prevent, so out-of-range values clamp UP to it. The max bounds a typo'd
+# value: a session start slower than 15 minutes is pathological and should
+# surface as a timeout, not wait forever.
+SESSION_START_TIMEOUT_MIN = 90
+SESSION_START_TIMEOUT_MAX = 900
 
 # agent.tool_approval_timeout_secs — how long a chat turn parks waiting for a
 # human to answer a tool-approval prompt. The floor keeps the window long enough
-# for a human who is actually present to reach the dashboard; the ceiling is the
-# turn ceiling, but the binding limit is the cross-field clamp in
+# for a human who is actually present to reach the dashboard. The max is pinned
+# at 7200 and deliberately DECOUPLED from CHAT_TURN_TIMEOUT_MAX (24h): the
+# approval suites hold their own flat 2h runtime window
+# (``DashboardState._APPROVAL_TIMEOUT``), so a larger configured window would
+# pass validation here and then silently never be honoured at runtime. The
+# binding limit below the static max is the cross-field clamp in
 # ``_clamp_security_bounds``, which pulls the window APPROVAL_TURN_MARGIN_SECS
 # under the configured turn ceiling.
 TOOL_APPROVAL_TIMEOUT_MIN = 30
-TOOL_APPROVAL_TIMEOUT_MAX = CHAT_TURN_TIMEOUT_MAX
+TOOL_APPROVAL_TIMEOUT_MAX = 7200
 
 # The turn ceiling assumed when config omits ``agent.chat_turn_timeout_secs``.
 # Read from the dataclass default so the two cannot drift apart.
@@ -2974,11 +3515,22 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
     (
         "agent",
+        "session_start_timeout_secs",
+        SESSION_START_TIMEOUT_MIN,
+        SESSION_START_TIMEOUT_MAX,
+    ),
+    (
+        "agent",
         "tool_approval_timeout_secs",
         TOOL_APPROVAL_TIMEOUT_MIN,
         TOOL_APPROVAL_TIMEOUT_MAX,
     ),
-    ("dashboard", "loop_stall_exit_after_secs", LOOP_STALL_EXIT_AFTER_MIN, LOOP_STALL_EXIT_AFTER_MAX),
+    (
+        "dashboard",
+        "loop_stall_exit_after_secs",
+        LOOP_STALL_EXIT_AFTER_MIN,
+        LOOP_STALL_EXIT_AFTER_MAX,
+    ),
     ("session", "pool_size", 0, POOL_SIZE_MAX),
 )
 
@@ -3295,6 +3847,41 @@ def _normalize_jail(value: object) -> str:
     return JAIL_MODE_AUTO
 
 
+def _normalize_acp_backend(value: object) -> str:
+    """Coerce a persisted ``agent.acp_backend`` to a selectable backend.
+
+    Anything not selectable — an unknown value, or a backend the code understands
+    but cannot yet serve a session with — normalizes to the default (kiro-cli)
+    with a warning rather than propagating: ``AcpProvider`` rejects an unknown
+    backend by raising, and a value that is merely incomplete would instead fail
+    on the operator's first message. Both must degrade to the working default at
+    startup, with the reason in the log.
+
+    The import is deferred because it cannot be done at module scope: reaching
+    ``kiro_crew.acp.types`` executes the ``kiro_crew.acp`` package init, which
+    imports the ACP client and runtime, which import this module — and this
+    module is imported first by the gateway and desktop entrypoints.
+    """
+    from kiro_crew.acp.types import (
+        ACP_BACKEND_KIRO,
+        ACP_BACKENDS_KNOWN,
+        ACP_BACKENDS_SELECTABLE,
+    )
+
+    if isinstance(value, str) and value in ACP_BACKENDS_SELECTABLE:
+        return value
+    if value not in (None, ""):
+        known_but_unusable = isinstance(value, str) and value in ACP_BACKENDS_KNOWN
+        logger.warning(
+            "Ignoring agent.acp_backend %r (%s); using the default backend. "
+            "Selectable values: %s",
+            value,
+            "not usable yet" if known_but_unusable else "unknown",
+            ", ".join(repr(b) for b in sorted(ACP_BACKENDS_SELECTABLE)),
+        )
+    return ACP_BACKEND_KIRO
+
+
 def _validate_activation(value: str) -> str:
     """Return *value* if it is a valid activation mode, else ``mention`` (deny-by-default)."""
     return value if value in _VALID_ACTIVATIONS else ACTIVATION_MENTION
@@ -3572,15 +4159,20 @@ class McpGatewayConfig:
     apps_enabled: bool = field(
         default=True,
         metadata=_meta(
-            "MCP Apps",
-            "Render interactive HTML returned by an MCP server (the MCP Apps "
-            "extension) in chat, and accept callbacks from it. Independent of "
-            "backend sharing: the broker starts for either, and callbacks are "
-            "routed by a stub that is interposed on every stdio server whether or "
-            "not its backend is shared. Either this or backend sharing starts the "
-            "broker; see docs/architecture/design-notes/mcp-stub-decoupling.md. "
-            "Default True — turning it off suppresses "
-            "server-authored UI and leaves sharing untouched.",
+            "MCP Apps (retired, opt-out still honoured)",
+            "RETIRED GOING FORWARD, but a stored `false` KEEPS ITS OPT-OUT. Nothing "
+            "writes this key any more and MCP Management does not surface it: MCP "
+            "Apps capability follows whether a server gets a stub, because the stub "
+            "is what carries the render and callback path, so a preference cannot "
+            "grant it. It can still WITHHOLD it — a released version treated "
+            "`false` here as a trustworthy opt-out, so an operator who turned MCP "
+            "Apps off stays off (tightest-wins: it beats KIROCREW_MCP_APPS=1, and an "
+            "unreadable config fails closed). Absent defaults True, so 'not "
+            "configured' is not an opt-out. To GET server-authored UI, turn on the "
+            "server's stub in MCP Management — and clear a stored `false` here if "
+            "you have one. The only other MCP Apps preference is where it renders "
+            "(dashboard.mcp_app_panel). "
+            "See docs/architecture/design-notes/mcp-stub-decoupling.md.",
         ),
     )
     forward_declared_env: bool = field(
@@ -3628,14 +4220,30 @@ class McpGatewayConfig:
             "concurrency, not this ceiling.",
         ),
     )
+    stub_servers: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Routed Servers",
+            "MCP server names given a stub. The stub interposes a "
+            "stub, which is what makes server-authored UI (MCP Apps) and backend "
+            "sharing possible for that server — so it is the one per-server "
+            "decision. Empty by default: an unstubbed server is launched by the "
+            "session itself, the same process topology as running without the "
+            "broker, and an empty list means no broker runs at all. Whether "
+            "stubbed servers SHARE one backend is the separate global switch "
+            "(mcp_gateway.enabled). Managed from MCP Management.",
+        ),
+    )
     poolable_servers: list[str] = field(
         default_factory=list,
         metadata=_meta(
-            "Poolable Servers",
-            "MCP server names allowed to share a pooled backend across sessions. "
-            "A stdio server is pooled when its name appears here OR its agent-JSON "
-            "entry sets poolable:true. Safe by default — non-listed servers run "
-            "per-session. Managed from Settings -> Shared MCP gateway.",
+            "Poolable Servers (deprecated)",
+            "DEPRECATED alias for stub_servers. Read only when stub_servers "
+            "is absent, so a config written before the stub became the per-server "
+            "decision keeps working: a server that was pooled already had a stub, "
+            "so migrating it to the stub set preserves its behaviour. There is no "
+            "per-server sharing switch any more — sharing is global over the "
+            "stub set.",
         ),
     )
     prewarm_count: int = field(
@@ -3683,9 +4291,9 @@ class InstancesConfig:
     since enabling it allows the gateway to open SSH ``-L`` forwards and relaxes
     the dashboard CSP ``frame-src`` for the active loopback tunnel ports.
 
-    The numeric tunables default to constants defined in
-    ``kiro_crew.instances.constants`` so the canonical default lives in one
-    place and cannot drift from this dataclass.
+    Numeric transport defaults and bounds live in
+    ``kiro_crew.instances.constants`` so their canonical values cannot drift
+    from this dataclass.
     """
 
     enabled: bool = field(
@@ -3727,6 +4335,20 @@ class InstancesConfig:
             "on a fast/local link where compression CPU outweighs the bandwidth win.",
         ),
     )
+    connect_timeout_secs: float | None = field(
+        default=None,
+        metadata=_meta(
+            "Connect Timeout (secs)",
+            "How long to wait for the local forward port to accept connections "
+            "before declaring a connect attempt failed. When unset, SSH uses "
+            "15s and SSM uses 25s. Fifteen seconds is sufficient for a direct "
+            "ssh TCP connect, but hosts behind a "
+            "ProxyCommand or jump host routinely need longer (the proxy handshake "
+            "runs before ssh begins the forward). Raise this if connecting a "
+            "remote instance times out while the same ssh forward succeeds by hand. "
+            "An explicit value applies to both transports. Clamped to [1, 120].",
+        ),
+    )
     max_recovery_attempts: int = field(
         default=_DEFAULT_MAX_RECOVERY,
         metadata=_meta(
@@ -3766,6 +4388,23 @@ class InstancesConfig:
                 _DEFAULT_TUNNEL_BASE_PORT,
             )
             object.__setattr__(self, "tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT)
+        if self.connect_timeout_secs is not None and self.connect_timeout_secs < 1.0:
+            logger.warning(
+                "instances.connect_timeout_secs %s < 1, using the transport default",
+                self.connect_timeout_secs,
+            )
+            object.__setattr__(self, "connect_timeout_secs", None)
+        elif (
+            self.connect_timeout_secs is not None
+            and self.connect_timeout_secs > _CONNECT_TIMEOUT_CEILING
+        ):
+            logger.warning(
+                "instances.connect_timeout_secs %s > %s, clamping to %s",
+                self.connect_timeout_secs,
+                _CONNECT_TIMEOUT_CEILING,
+                _CONNECT_TIMEOUT_CEILING,
+            )
+            object.__setattr__(self, "connect_timeout_secs", _CONNECT_TIMEOUT_CEILING)
         if self.max_recovery_attempts < 1:
             logger.warning(
                 "instances.max_recovery_attempts %d < 1, using %d",
@@ -4729,6 +5368,13 @@ class KiroCrewConfig:
         default_factory=SkillsConfig,
         metadata=_meta("Skills", "Skill loading and matching configuration."),
     )
+    session_summary: SessionSummaryConfig = field(
+        default_factory=SessionSummaryConfig,
+        metadata=_meta(
+            "Session Summary",
+            "Intent-level session summaries for the chat right panel. Off by default.",
+        ),
+    )
     telemetry: TelemetryConfig = field(
         default_factory=TelemetryConfig,
         metadata=_meta(
@@ -5061,6 +5707,7 @@ class KiroCrewConfig:
         instances_data = data.get("instances", {})
         if not isinstance(instances_data, dict):
             instances_data = {}
+        connect_timeout_raw = instances_data.get("connect_timeout_secs")
         mcp_gateway_data = data.get("mcp_gateway", {})
         if not isinstance(mcp_gateway_data, dict):
             mcp_gateway_data = {}
@@ -5078,6 +5725,9 @@ class KiroCrewConfig:
         skills_data = data.get("skills", {})
         if not isinstance(skills_data, dict):
             skills_data = {}
+        session_summary_data = data.get("session_summary", {})
+        if not isinstance(session_summary_data, dict):
+            session_summary_data = {}
         messaging_data = data.get("messaging", {})
         if not isinstance(messaging_data, dict):
             messaging_data = {}
@@ -5114,6 +5764,17 @@ class KiroCrewConfig:
                         description=entry.get("description", ""),
                         triggers=raw_triggers if isinstance(raw_triggers, str) else "",
                         source=entry.get("source", "kirocrew"),
+                        # Same guard family as model/triggers: config.json is
+                        # hand-editable, so a junk value must collapse to 0
+                        # (inherit the global window), never crash the load.
+                        # lo=0 keeps a negative override from arming an
+                        # instant-cancel window.
+                        watchdog_tool_stall_suspect_secs=_safe_float(
+                            entry.get("watchdog_tool_stall_suspect_secs", 0.0), 0.0, lo=0.0
+                        ),
+                        watchdog_tool_stall_hard_cap_secs=_safe_float(
+                            entry.get("watchdog_tool_stall_hard_cap_secs", 0.0), 0.0, lo=0.0
+                        ),
                         telegram_account=entry.get("telegram_account", ""),
                     )
 
@@ -5164,6 +5825,8 @@ class KiroCrewConfig:
                 role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
                 reasoning_effort=agent_data.get("reasoning_effort", ""),
                 provider=agent_data.get("provider", "acp"),
+                mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
+                acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
                 default_agent=agent_data.get("default_agent", ""),
                 sandbox=agent_data.get("sandbox", "auto"),
                 sandbox_allow_no_isolation=bool(
@@ -5186,6 +5849,10 @@ class KiroCrewConfig:
                 notify_override_expiry=agent_data.get("notify_override_expiry", True),
                 conductor_skill=agent_data.get("conductor_skill", False),
                 tool_search=bool(agent_data.get("tool_search", True)),
+                tool_search_min_pct=_safe_int(agent_data.get("tool_search_min_pct", 5), 5),
+                tool_search_min_tokens=_safe_int(
+                    agent_data.get("tool_search_min_tokens", 50000), 50000
+                ),
                 session_sharing=bool(agent_data.get("session_sharing", True)),
                 max_subagents=agent_data.get("max_subagents", 0),
                 subagent_mem_buffer_pct=_safe_int(
@@ -5196,6 +5863,12 @@ class KiroCrewConfig:
                     7200,
                     CHAT_TURN_TIMEOUT_MIN,
                     CHAT_TURN_TIMEOUT_MAX,
+                ),
+                session_start_timeout_secs=_safe_int(
+                    agent_data.get("session_start_timeout_secs", 90),
+                    90,
+                    SESSION_START_TIMEOUT_MIN,
+                    SESSION_START_TIMEOUT_MAX,
                 ),
                 tool_approval_timeout_secs=_safe_int(
                     agent_data.get("tool_approval_timeout_secs", 600),
@@ -5211,12 +5884,8 @@ class KiroCrewConfig:
                 subagent_spawn_stagger_secs=_safe_float(
                     agent_data.get("subagent_spawn_stagger_secs", 2.0), 2.0
                 ),
-                resource_pressure_gb=_safe_float(
-                    agent_data.get("resource_pressure_gb", 4.0), 4.0
-                ),
-                resource_critical_gb=_safe_float(
-                    agent_data.get("resource_critical_gb", 2.0), 2.0
-                ),
+                resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
+                resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
                 subagent_stall_idle_secs=_safe_int(
@@ -5332,6 +6001,7 @@ class KiroCrewConfig:
                     memory_data.get("embedding_provider", "llama_cpp")
                 ),
                 embedding_dim=memory_data.get("embedding_dim", 1024),
+                embedding_threads=_safe_int(memory_data.get("embedding_threads", 4), 4, 1, 256),
                 embed_model_url=memory_data.get("embed_model_url", ""),
                 embed_model_path=memory_data.get("embed_model_path", ""),
                 embed_model_id=memory_data.get("embed_model_id", ""),
@@ -5374,13 +6044,17 @@ class KiroCrewConfig:
                 ),
                 auto_add_documents=_read_auto_add_documents(knowledge_data),
                 auto_register_project_docs=bool(
-                    knowledge_data.get("auto_register_project_docs", False)),
+                    knowledge_data.get("auto_register_project_docs", False)
+                ),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("auto_ingest_chunk_budget", 150), 150),
+                    knowledge_data.get("auto_ingest_chunk_budget", 150), 150
+                ),
                 folder_ingest_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("folder_ingest_chunk_budget", 300), 300),
+                    knowledge_data.get("folder_ingest_chunk_budget", 300), 300
+                ),
                 dedup_every_n_sweeps=_safe_nonnegative_int(
-                    knowledge_data.get("dedup_every_n_sweeps", 12), 12),
+                    knowledge_data.get("dedup_every_n_sweeps", 12), 12
+                ),
                 doc_ingest_hosts=[
                     str(h)
                     for h in knowledge_data.get("doc_ingest_hosts", [])
@@ -5391,15 +6065,19 @@ class KiroCrewConfig:
                     knowledge_data.get("auto_discover_dirname", "knowledge-docs")
                 ).strip()[:128],
                 sweep_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("sweep_chunk_budget", 500), 500),
-                max_sources=_safe_nonnegative_int(
-                    knowledge_data.get("max_sources", 50), 50),
+                    knowledge_data.get("sweep_chunk_budget", 500), 500
+                ),
+                max_sources=_safe_nonnegative_int(knowledge_data.get("max_sources", 50), 50),
                 embed_rate_limit=_safe_nonnegative_int(
-                    knowledge_data.get("embed_rate_limit", 120), 120),
-                extraction_model=str(
-                    knowledge_data.get("extraction_model", "")).strip(),
-                extraction_pool_size=max(1, min(10, _safe_nonnegative_int(
-                    knowledge_data.get("extraction_pool_size", 3), 3))),
+                    knowledge_data.get("embed_rate_limit", 120), 120
+                ),
+                extraction_model=str(knowledge_data.get("extraction_model", "")).strip(),
+                extraction_pool_size=max(
+                    1,
+                    min(
+                        10, _safe_nonnegative_int(knowledge_data.get("extraction_pool_size", 3), 3)
+                    ),
+                ),
             ),
             telegram=TelegramConfig(
                 session_folder=_coerce_session_folder(telegram_data.get("session_folder")),
@@ -5553,6 +6231,7 @@ class KiroCrewConfig:
                 quick_send=dashboard_data.get("quick_send", False),
                 session_grid=dashboard_data.get("session_grid", False),
                 mcp_app_panel=dashboard_data.get("mcp_app_panel", False),
+                auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
                 widget_density=dashboard_data.get("widget_density", "more"),
                 verbosity=dashboard_data.get("verbosity", "default"),
                 link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
@@ -5748,6 +6427,7 @@ class KiroCrewConfig:
                 poolable_servers=[
                     s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
                 ],
+                stub_servers=_resolve_stub_servers(mcp_gateway_data),
                 prewarm_count=max(0, _safe_int(mcp_gateway_data.get("prewarm_count", 0), 0)),
                 read_buffer_limit_bytes=max(
                     1024,
@@ -5775,6 +6455,11 @@ class KiroCrewConfig:
                 ),
                 ssh_compression=bool(
                     instances_data.get("ssh_compression", _DEFAULT_SSH_COMPRESSION)
+                ),
+                connect_timeout_secs=(
+                    _safe_float(connect_timeout_raw, _DEFAULT_CONNECT_TIMEOUT)
+                    if connect_timeout_raw is not None
+                    else None
                 ),
                 max_recovery_attempts=_safe_int(
                     instances_data.get("max_recovery_attempts", _DEFAULT_MAX_RECOVERY),
@@ -5805,12 +6490,23 @@ class KiroCrewConfig:
                 archive_after_days=_safe_int(skills_data.get("archive_after_days", 90), 90),
                 pending_ttl_days=_safe_int(skills_data.get("pending_ttl_days", 30), 30),
                 generate_scripts=bool(skills_data.get("generate_scripts", True)),
-                judge_model=str(
-                    skills_data.get("judge_model", "auto") or "auto"
-                ),
+                judge_model=str(skills_data.get("judge_model", "auto") or "auto"),
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
                 ],
+            ),
+            session_summary=SessionSummaryConfig(
+                enabled=bool(session_summary_data.get("enabled", False)),
+                min_user_turns=_safe_int(
+                    session_summary_data.get("min_user_turns", 2), 2),
+                regenerate_after_turns=_safe_int(
+                    session_summary_data.get("regenerate_after_turns", 1), 1),
+                max_intents=_safe_int(
+                    session_summary_data.get("max_intents", 8), 8),
+                max_constraints=_safe_int(
+                    session_summary_data.get("max_constraints", 5), 5),
+                assistant_excerpt_chars=_safe_int(
+                    session_summary_data.get("assistant_excerpt_chars", 400), 400),
             ),
             slack_channels={
                 ch_id: ChannelConfig.from_dict(ch_data)
@@ -5917,6 +6613,7 @@ class KiroCrewConfig:
             "knowledge": asdict(self.knowledge),
             "heartbeat": asdict(self.heartbeat),
             "skills": asdict(self.skills),
+            "session_summary": asdict(self.session_summary),
             "telemetry": asdict(self.telemetry),
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,
@@ -6064,13 +6761,20 @@ class KiroCrewConfig:
         # EXCEPTION: when the Docker entrypoint has deliberately scrubbed
         # credentials from the process environ (setting _KIROCREW_CREDS_SCRUBBED=1),
         # re-injecting them here would leak into /proc/<pid>/environ — the exact
-        # attack surface the entrypoint closed. In that case, children that need
-        # credentials get them via their own .env read or via an explicit env=
-        # kwarg on Popen (the sandbox and ACP spawners already do this).
-        if not os.environ.get("_KIROCREW_CREDS_SCRUBBED"):
-            for k, v in creds.items():
-                if v:
-                    os.environ.setdefault(k, v)
+        # attack surface the entrypoint closed. The scrub covers only credential
+        # keys, so the skip is scoped to _CREDENTIAL_KEYS: every other .env entry
+        # (operator-added settings such as proxy or feature variables) still
+        # propagates so children behave identically in and out of Docker.
+        # Children that need the withheld credentials get them via their own
+        # .env read or via an explicit env= kwarg on Popen (the sandbox and ACP
+        # spawners already do this).
+        scrubbed = bool(os.environ.get("_KIROCREW_CREDS_SCRUBBED"))
+        for k, v in creds.items():
+            if not v:
+                continue
+            if scrubbed and k in _CREDENTIAL_KEYS:
+                continue
+            os.environ.setdefault(k, v)
 
         return creds
 
@@ -6091,20 +6795,23 @@ class KiroCrewConfig:
 
         sandbox = self.agent.sandbox
         tool_search = self.agent.tool_search
+        tool_search_min_pct = self.agent.tool_search_min_pct
+        tool_search_min_tokens = self.agent.tool_search_min_tokens
         # Global default effort for new sessions. A per-slot override always
         # wins; this only fills in when the slot carries none, so a session that
         # has never touched the effort control still starts at the user's
         # configured default instead of the provider/model default.
         default_effort = self.agent.reasoning_effort
 
-        # MCP gateway: resolve overlay + socket once when the stub layer is
-        # needed. The stub is the addressing layer MCP Apps routes callbacks
-        # through, so it is required whenever EITHER pooling or MCP Apps is on —
-        # with pooling off the stubs are still emitted, each connection just
-        # gets its own backend. None only when neither is on -> AcpClient falls
-        # through to per-session MCP with no gateway in the path at all.
+        # MCP gateway: resolve overlay + socket once, iff some server is stubbed
+        # through the gateway. Routing is what puts a stub in the path, and the
+        # stub is what carries both the render/callback path and any sharing —
+        # so an empty stub set means no stub, no daemon, and no gateway in the
+        # path at all (AcpClient falls through to per-session MCP). Sharing
+        # (``enabled``) is not consulted here: it decides how a stubbed server's
+        # backend is ACQUIRED, and on its own routes nothing.
         _gw = self.mcp_gateway
-        if _gw.enabled or _gw.apps_enabled:
+        if _gw.stub_servers:
             _gw_overlay = _gw.overlay_dir or str(default_overlay_dir())
             _gw_socket = _gw.socket_path or str(default_socket_path())
             _gw_settings = str(Path(_gw_overlay).parent / "settings" / "mcp.json")
@@ -6121,9 +6828,14 @@ class KiroCrewConfig:
             cwd: str | None = None,
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
+            crew_agent: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            # Canonical crew identity for the session (keys per-agent watchdog
+            # windows on the handle) — one shared resolution rule, see
+            # resolve_crew_identity.
+            crew_agent = resolve_crew_identity(self, agent, crew_agent)
             # Resolve the model, highest tier first:
             #   1. model_override — the caller's explicit pick. The dashboard
             #      passes the slot's own model, else the KiroCrew agent's
@@ -6181,12 +6893,16 @@ class KiroCrewConfig:
                 work_dir=wdir,
                 model=m,
                 agent=agent,
+                crew_agent=crew_agent,
                 sandbox_mode=sandbox,
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,
+                acp_backend=self.agent.acp_backend,
                 effort_per_model=_eff_per_model,
                 tool_search=tool_search,
+                tool_search_min_pct=tool_search_min_pct,
+                tool_search_min_tokens=tool_search_min_tokens,
                 mcp_gateway_overlay=_gw_overlay,
                 mcp_gateway_settings_mcp_json=_gw_settings,
                 mcp_gateway_socket=_gw_socket,
@@ -6399,19 +7115,19 @@ def publish_materialized_agents(names: Iterable[str]) -> None:
 def schedule_materialized_agents_refresh() -> None:
     """Refresh the snapshot from ANY context without blocking an event loop.
 
-    ``apps.bridges._register_agents`` is the writer that must trigger this, and it
-    runs on the loop for the dashboard paths: ``register_app`` documents that "it
-    is called on the event loop by the enable/update handlers", so clicking Enable
-    in the App Store reaches it with the loop live. Scanning inline there is the
-    same directory-walk-per-agent-file stall the neighbouring prune comment warns
-    about, so the scan is handed to the default executor and this returns
-    immediately. In a synchronous context (CLI, tests, the boot warm already on an
-    executor) it refreshes inline.
-
-    The offloaded refresh lands a few milliseconds later, so a turn dispatched in
-    that window sees the pre-enable snapshot and falls back for that one turn,
-    then self-heals — strictly better than the alternative of staying stale until
-    the next gateway boot. Never raises; the scan itself swallows its errors.
+    ``apps.bridges._register_agents`` is the writer that must trigger this. The
+    dashboard enable/update handlers dispatch ``register_app`` to an executor
+    thread, so from those paths this runs in a synchronous context (no running
+    loop) and refreshes inline — the scan is already off the loop, serialized
+    inside the awaited registration, so no stale-snapshot window exists there.
+    The same inline branch covers the CLI, tests, and the boot warm already on
+    an executor. For a caller that does hold a live loop, scanning inline would
+    be the same directory-walk-per-agent-file stall the neighbouring prune
+    comment warns about, so the scan is handed to the default executor and this
+    returns immediately; that offloaded refresh lands a few milliseconds later,
+    and a turn dispatched in that window sees the previous snapshot for one
+    turn, then self-heals — strictly better than staying stale until the next
+    gateway boot. Never raises; the scan itself swallows its errors.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -6559,6 +7275,35 @@ def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
     except Exception:  # noqa: BLE001 — a probe failure only costs a fallback
         logger.debug("Project agent probe failed for %r", agent_name, exc_info=True)
         return False
+
+
+def resolve_crew_identity(
+    config: "KiroCrewConfig", agent: str | None, crew_agent: str | None
+) -> str:
+    """Canonical Kiro Crew identity (a ``config.agents`` key) for a session.
+
+    One rule shared by every session-granting path (provider factory, warm-pool
+    claim) so cold starts and claims can never disagree. An explicit
+    ``crew_agent`` wins verbatim — including "" ("no crew"), which is how the
+    dashboard, the one kiro-name-passing surface, opts out of the fallback.
+    When absent, the surface convention documented on
+    :func:`_resolve_model_for_agent` applies: Slack threads, cron jobs and
+    spawned agents pass a CREW name as ``agent``, so crew-namespace membership
+    makes it canonical — a membership check on names the surface owns, not a
+    cross-namespace match.
+    """
+    if crew_agent is not None:
+        return crew_agent
+    if agent and agent in config.agents:
+        # DEBUG, not INFO: every Slack/cron session resolves here routinely.
+        # The line exists so a kiro-template name that collides with a crew
+        # key (which would silently inherit that crew's watchdog windows) is
+        # diagnosable from logs.
+        logger.debug(
+            "crew_agent %r resolved by crew-namespace fallback", agent
+        )
+        return agent
+    return ""
 
 
 def resolve_agent_bindings(

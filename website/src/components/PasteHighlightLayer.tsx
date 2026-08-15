@@ -32,7 +32,7 @@ const PasteHighlightLayer = forwardRef<HTMLDivElement, Props>(function PasteHigh
     nodes.push(
       // box-decoration-clone keeps the pill background intact if the token wraps
       // across two lines. Tight hug (no padding) so it never shifts text layout.
-      <span key={`c${i}`} className="rounded-md bg-accent-subtle box-decoration-clone">
+      <span key={`c${i}`} className="rounded-md bg-accent-subtle box-decoration-clone" data-paste-seq={r.block.seq}>
         {value.slice(r.start, r.end)}
       </span>,
     )

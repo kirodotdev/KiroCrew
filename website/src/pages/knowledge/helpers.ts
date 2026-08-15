@@ -45,7 +45,12 @@ export const STATUSES = ['active', 'archived']
 // Status the list view opens on. This is the default view, NOT user narrowing,
 // so the onboarding empty state treats this value as "no filter applied".
 export const DEFAULT_STATUS_FILTER = 'active'
-export const SUPPORTED_FORMATS = 'Markdown, Plain text, Code files (.py, .ts, .java, .go, .rs, etc.), HTML, JSON, YAML, CSV, DOCX'
+// Key, not copy — same shape as `FILTER_LABEL_KEY` in `pages/ChatSidebar.tsx`:
+// a module-level `i18nT()` call would resolve once at boot and never follow a
+// language switch, so the lookup happens where the list renders. The value it
+// resolves to is a DNT set of product names and file extensions, kept verbatim
+// in every locale catalog.
+export const SUPPORTED_FORMATS_KEY = 'pages.knowledge.helpers.supported_formats_list'
 
 /**
  * Onboarding copy for the Knowledge Library help dialog and empty state.
@@ -71,7 +76,7 @@ export const ONBOARDING = {
       i18nT('pages.knowledge.helpers.search_across_all_knowledge_filter_by_type_or_ex'),
       // The format list itself is a set of DNT product names and file
       // extensions, interpolated so only the sentence around it is translated.
-      i18nT('pages.knowledge.helpers.supported_formats', { formats: SUPPORTED_FORMATS }),
+      i18nT('pages.knowledge.helpers.supported_formats', { formats: i18nT(SUPPORTED_FORMATS_KEY) }),
     ]
   },
 }

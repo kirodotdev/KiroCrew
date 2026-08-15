@@ -17,9 +17,25 @@ import logging
 import re
 from pathlib import Path
 
+from kiro_crew.config.paths import kiro_home
+
 logger = logging.getLogger(__name__)
 
-_KIRO_MCP_JSON = Path.home() / ".kiro" / "settings" / "mcp.json"
+# Override hook + accessor, NOT a resolved constant (issue #874). Binding
+# `kiro_home()` at import time froze whichever home was active when this module
+# was first imported, so conftest's isolation fixture -- which runs after
+# collection has already imported it -- could not redirect it, and a test that
+# reached `clean_stale_managed_mcp()` without patching would rewrite the
+# operator's REAL mcp.json. Keeping the module-level name means the existing
+# `monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", tmp)` call sites still work.
+_KIRO_MCP_JSON: Path | None = None  # explicit override hook, None = live
+
+
+def _kiro_mcp_json() -> Path:
+    if _KIRO_MCP_JSON is not None:
+        return _KIRO_MCP_JSON
+    return kiro_home() / "settings" / "mcp.json"
+
 
 # Managed servers whose command is the kirocrew binary itself.
 # Only these are affected by install-method path changes.
@@ -35,6 +51,30 @@ PREDECESSOR_BIN_MCP_SERVERS = frozenset({"meshclaw-cron", "meshclaw-core"})
 # Every managed-binary server name KiroCrew is responsible for removing from
 # the user's global mcp.json (KiroCrew never legitimately writes these there).
 STALE_MANAGED_MCP_SERVERS = frozenset(KIROCREW_BIN_MCP_SERVERS) | PREDECESSOR_BIN_MCP_SERVERS
+
+
+# The argv token the deleted Playwright MCP proxy was registered with. An entry
+# still carrying it spawns `kirocrew mcp-playwright-proxy`, a subcommand this
+# release removed, so kiro-cli hits ModuleNotFoundError on EVERY session until
+# the entry goes. Browsing is gone either way (there is no proxy any more), so
+# the only question is whether the operator also gets a crash on every session.
+_DELETED_PROXY_ARGV_TOKEN = "mcp-playwright-proxy"
+
+
+def _invokes_deleted_playwright_proxy(spec: object) -> bool:
+    """True if a server spec launches the Playwright MCP proxy this release deleted.
+
+    Matched on the ARGV token, never on the server name. The canonical name was
+    ``playwright-mcp``, but that is also what an operator's OWN Playwright server
+    is called, and purging by name would delete a server Kiro Crew never wrote --
+    the same trap ``_invokes_meshclaw`` exists to avoid.
+    """
+    if not isinstance(spec, dict):
+        return False
+    args = spec.get("args", [])
+    if not isinstance(args, list):
+        return False
+    return any(isinstance(a, str) and a == _DELETED_PROXY_ARGV_TOKEN for a in args)
 
 
 def _invokes_meshclaw(spec: object) -> bool:
@@ -81,10 +121,10 @@ def clean_stale_managed_mcp() -> list[str]:
 
     Returns names of removed servers (empty list on no-op or error).
     """
-    if not _KIRO_MCP_JSON.is_file():
+    if not _kiro_mcp_json().is_file():
         return []
     try:
-        data = json.loads(_KIRO_MCP_JSON.read_text(encoding="utf-8"))
+        data = json.loads(_kiro_mcp_json().read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     servers = data.get("mcpServers", {})
@@ -93,16 +133,55 @@ def clean_stale_managed_mcp() -> list[str]:
     removed = sorted(
         name
         for name, spec in servers.items()
-        if name in STALE_MANAGED_MCP_SERVERS or _invokes_meshclaw(spec)
+        if name in STALE_MANAGED_MCP_SERVERS
+        or _invokes_meshclaw(spec)
+        or _invokes_deleted_playwright_proxy(spec)
     )
     if not removed:
         return []
     for name in removed:
         del servers[name]
     try:
-        _KIRO_MCP_JSON.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        _kiro_mcp_json().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         logger.info("Removed stale managed MCP entries from kiro mcp.json: %s", removed)
     except OSError:
         logger.debug("Could not clean kiro mcp.json", exc_info=True)
         return []
     return removed
+
+
+def purge_deleted_proxy_from_config(config: dict) -> list[str]:
+    """Drop any MCP server entry whose argv invokes the deleted Playwright proxy.
+
+    Runs on EVERY rebuild of the agent config (not behind the first-run
+    marker) because the entry can be re-injected from ~/.kiro/crew/mcp.json
+    by the merge passes that precede this call.  Matched by ARGV token, never
+    by server name, so an operator's own ``playwright-mcp`` server whose
+    command does not invoke the deleted subcommand is left untouched.
+
+    Mutates *config* in place.  Returns server names that were removed.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    to_remove = [
+        name for name, spec in servers.items()
+        if _invokes_deleted_playwright_proxy(spec)
+    ]
+    for name in to_remove:
+        del servers[name]
+    if to_remove:
+        # Also strip @refs from tools/allowedTools so kiro-cli does not try
+        # to mount a server that no longer exists in the map.
+        for key in ("tools", "allowedTools"):
+            lst = config.get(key)
+            if isinstance(lst, list):
+                for name in to_remove:
+                    ref = f"@{name}"
+                    while ref in lst:
+                        lst.remove(ref)
+        logger.info(
+            "Purged deleted-proxy MCP entries from agent config: %s",
+            to_remove,
+        )
+    return to_remove

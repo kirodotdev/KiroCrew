@@ -450,6 +450,8 @@ def _audit_governance_deny(session_key: str, tool_name: str, scope: str, decisio
     trail. Never raises (audit must not wedge the deny path).
     """
     try:
+        # Resolved from ``kiro_crew.sel`` at call time, not through the
+        # module-level binding, so a substituted SEL factory is observed.
         from kiro_crew.sel import sel
 
         sel().log_governance_decision(
@@ -1111,6 +1113,14 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Defaults: 30s for scripts, 300s for commands. "
                         "Set higher for long-running tasks.",
                     },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Per-wake execution budget in seconds "
+                        "(1..86400; the asyncio deadline for one run of this "
+                        "job, default 1800). Distinct from 'timeout', which "
+                        "bounds only script/command subprocesses. Raise it for "
+                        "agents whose single wake legitimately outgrows 30 min.",
+                    },
                 },
                 "required": ["name"],
             },
@@ -1126,6 +1136,20 @@ def _list_tools() -> list[dict[str, Any]]:
                     "message": {"type": "string", "description": "New message"},
                     "cron_expr": {"type": "string", "description": "New cron expression"},
                     "every": {"type": "integer", "description": "New interval in seconds (min 60)"},
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Script/command subprocess timeout in "
+                        "seconds (0..86400; 0 = defaults: 30s script, 300s "
+                        "command).",
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Per-wake execution budget in seconds "
+                        "(1..86400; the asyncio deadline for one run of this "
+                        "job, default 1800). Distinct from 'timeout', which "
+                        "bounds only script/command subprocesses. Raise it for "
+                        "jobs whose single run legitimately outgrows 30 min.",
+                    },
                     "agent": {"type": "string", "description": "New agent name"},
                     "channel": {"type": "string", "description": "New channel ID"},
                     "thread_ts": {
@@ -1543,6 +1567,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         hide_in_chat = args.get("hide_in_chat")
         strict_schedule = args.get("strict_schedule")
         timeout_val = args.get("timeout", 0)
+        timeout_secs_val = args.get("timeout_secs", 0)
         try:
             job = svc.add_job(
                 name=n,
@@ -1569,6 +1594,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 session_key=session_key,
                 minimal_context=minimal_context if isinstance(minimal_context, bool) else False,
                 timeout=timeout_val or 0,
+                timeout_secs=timeout_secs_val or 0,
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -1646,6 +1672,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["every_secs"] = args["every"]
         if "timeout" in args:
             kwargs["timeout"] = args["timeout"]
+        if "timeout_secs" in args:
+            kwargs["timeout_secs"] = args["timeout_secs"]
         if not kwargs:
             return "Error: no fields to update"
         try:

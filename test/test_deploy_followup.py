@@ -12,6 +12,18 @@ from kiro_crew.deploy import pricing
 _TPL_DIR = Path(h.__file__).parent / "skills" / "artifact-deploy" / "templates"
 
 
+def _deploy_handler_source() -> str:
+    """Source of the module holding the ``deploy_artifact`` MCP handler.
+
+    Resolved through the import rather than a hardcoded path so the handler can
+    move again without these source-text assertions silently passing against a
+    file that no longer contains the code.
+    """
+    from kiro_crew.mcp_tools import artifacts
+
+    return Path(str(artifacts.__file__).replace(".pyc", ".py")).read_text(encoding="utf-8")
+
+
 class TestFU1ReaperRemediation:
     def test_renders_exact_operator_command(self):
         cmd = h._reaper_remediation("personal", "us-west-2")
@@ -27,13 +39,11 @@ class TestFU1ReaperRemediation:
 
 class TestFU3EmptyCostHint:
     def test_save_response_warns_on_empty_estimates(self):
-        from kiro_crew import mcp_core
-        src = Path(mcp_core.__file__.replace(".pyc", ".py")).read_text(encoding="utf-8")
+        src = _deploy_handler_source()
         assert "webapp_metadata.cost.estimates is empty" in src
 
     def test_hint_condition_requires_webapp_kind(self):
-        from kiro_crew import mcp_core
-        src = Path(mcp_core.__file__.replace(".pyc", ".py")).read_text(encoding="utf-8")
+        src = _deploy_handler_source()
         gate = src.split("cost_hint = \"\"")[1].split("cost_hint = (")[0]
         assert 'kind == "webapp"' in gate
 

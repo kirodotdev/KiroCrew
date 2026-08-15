@@ -396,6 +396,13 @@ function initAutoUpdate(deps) {
   // When the in-app UI is wired (onUpdateState provided), it owns the prompt;
   // the native dialog stays as the fallback for headless / no-renderer cases.
   const uiDriven = typeof onUpdateState === "function";
+  // Last lifecycle payload handed to the UI. Pushed state dies with the
+  // renderer: the post-install-failure recovery path reloads the window, and a
+  // fresh mount that only ever LISTENS would render as if nothing happened --
+  // the failure card (and its Retry) silently vanish. getInfo() carries this
+  // back out so the renderer can replay it on mount, which keeps the boot path
+  // untouched (the renderer already requests the info payload).
+  let lastEmittedState = null;
   // Single channel resolver used for the feed AND everything reported to
   // the UI. Read the preference FRESH on every call: configureFeed() runs
   // per check, so a Settings channel switch takes effect on the next check
@@ -406,14 +413,25 @@ function initAutoUpdate(deps) {
   }
   function emit(state, extra = {}) {
     if (!uiDriven) return;
+    const payload = { state, channel: currentChannel(), version: app.getVersion(), ...extra };
+    // Remembered even when the push below throws: a renderer that missed the
+    // push is exactly the one the getInfo() replay exists to catch up.
+    lastEmittedState = payload;
     try {
-      onUpdateState({ state, channel: currentChannel(), version: app.getVersion(), ...extra });
+      onUpdateState(payload);
     } catch (err) {
       log.error("[update] onUpdateState threw", err);
     }
   }
   function getInfo() {
     const stamped = channelForVersion(app.getVersion());
+    // Observability for the replay path: without this line a replayed state is
+    // indistinguishable from a live emit in the log, so a report of "the
+    // failure card came back / didn't come back" has no evidence to read.
+    if (lastEmittedState) {
+      log.info(`[update] getInfo carrying replay seed: ${lastEmittedState.state}`
+        + (lastEmittedState.phase ? ` (phase ${lastEmittedState.phase})` : ""));
+    }
     return {
       version: app.getVersion(),
       channel: currentChannel(),
@@ -426,6 +444,8 @@ function initAutoUpdate(deps) {
       packaged: !!app.isPackaged,
       // Escape hatch for a failed install (see manualDownloadUrl).
       downloadUrl: manualDownloadUrl(currentChannel(), osPlatform, osArch),
+      // Replay seed for a freshly mounted renderer (see lastEmittedState).
+      lastState: lastEmittedState,
     };
   }
 

@@ -1,5 +1,7 @@
 /** Shared file-token utilities used by send() and renderUserContent(). */
 
+import { decodeLocalPath } from './urlTransform'
+
 export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
 /** Boundary-aware regex for @token matching. Prevents `@foo.ts` from matching inside `@foo.tsx`. */
@@ -214,13 +216,70 @@ export interface SendPayload {
   imgPaths: string[]
 }
 
+/** Windows path shapes the PRODUCER normalizes to forward slashes: drive
+ *  letters and UNC shares. Deliberately WIDER than the consumer-side
+ *  `WINDOWS_ABS_PATH_RE` (urlTransform.ts), and that asymmetry is the security
+ *  design, not drift: this regex only ever sees paths returned by our own
+ *  upload endpoint (trusted), while the consumer predicate classifies
+ *  attacker-authorable markdown `src` values and must never admit a
+ *  host-naming UNC shape. A UNC upload is emitted as `//host/share/…`, which
+ *  reaches the renderer as a scheme-less relative URL and is validated against
+ *  the gateway's trusted attachment roots server-side. */
+const WIN_PRODUCER_PATH_RE = /^(?:[A-Za-z]:|\\\\[^\\/]+)[\\/]/
+
+/** Markdown-safe destination for a local image path.
+ *
+ *  Raw paths break `![image](path)` in several ways (issue #3497):
+ *  - CommonMark treats `\` before ASCII punctuation as an escape, so
+ *    `C:\Users\me\.kiro\…` parses with `\.` collapsed to `.` — a mangled
+ *    path. Windows accepts `/` in every file API, so drive-letter and UNC
+ *    paths are emitted in forward-slash form (`\\host\share` → `//host/share`).
+ *  - Whitespace or `(`/`)` ends a plain destination, and `<`, `>`, `\`
+ *    terminate or escape inside CommonMark's `<…>` form.
+ *
+ *  The `<…>` wrap is also the PROVENANCE MARKER consumers key their decode
+ *  on: a destination is emitted either as a conservative passthrough-safe
+ *  subset (micromark leaves it byte-identical, decode is the identity) or
+ *  wrapped — with `%` escaped to `%25` and `\`, `<`, `>` backslash-escaped —
+ *  so exactly the wrapped form is percent-decoded after parsing. An unwrapped
+ *  destination outside the safe subset can only be pre-existing history,
+ *  which consumers must preserve verbatim (a legacy file literally named
+ *  `photo%20copy.png` must not decode to `photo copy.png`).
+ */
+export function mdImageDest(p: string): string {
+  const normalized = WIN_PRODUCER_PATH_RE.test(p) ? p.replace(/\\/g, '/') : p
+  if (/^[\w/.@:~-]*$/.test(normalized) && !normalized.includes('%')) return normalized
+  const escaped = normalized.replace(/%/g, '%25').replace(/[\\<>]/g, c => '\\' + c)
+  return `<${escaped}>`
+}
+
+/** Syntactic inverse of mdImageDest's `<…>` wrap: unwrap the angle brackets
+ *  and undo the `\`, `<`, `>` escapes. Does NOT percent-decode — use
+ *  mdImageDestToPath for the full inverse. */
+export function unwrapMdImageDest(dest: string): string {
+  const m = dest.match(/^<([\s\S]*)>$/)
+  return m ? m[1].replace(/\\([\\<>])/g, '$1') : dest
+}
+
+/** Full inverse of mdImageDest for consumers that read the RAW markdown
+ *  (pinned-prompt thumbnails, Mochi's sent-bubble parser): a `<…>`-wrapped
+ *  destination is producer-emitted, so unwrap and percent-decode it; an
+ *  unwrapped destination is either the passthrough-safe subset (decode is
+ *  the identity, so skipping it changes nothing) or pre-existing history
+ *  that must be preserved VERBATIM — a legacy file literally named
+ *  `photo%20copy.png` must not decode to `photo copy.png`. */
+export function mdImageDestToPath(dest: string): string {
+  if (!/^<[\s\S]*>$/.test(dest)) return dest
+  return decodeLocalPath(unwrapMdImageDest(dest))
+}
+
 export function prepareSendPayload(raw: string, pendingFiles: string[]): SendPayload {
   // All pending files (uploaded via button/drag-drop) are always included.
   // The @-token in text is used for display replacement, not as a gate.
   const files = [...new Set(pendingFiles)]
   const imgPaths = files.filter(p => IMG_EXT.test(p))
   const filePaths = files.filter(p => !IMG_EXT.test(p))
-  const imgMd = imgPaths.map(p => `![image](${p})`).join('\n')
+  const imgMd = imgPaths.map(p => `![image](${mdImageDest(p)})`).join('\n')
   const relMap = buildRelMap(files, raw)
 
   // Assign sequential indices to all non-image files, ordered by upload order.
@@ -320,6 +379,45 @@ export function dirFullPath(rel: string, project: string): string {
   if (/^([/\\]|[A-Za-z]:[/\\])/.test(trimmed) || !project) return trimmed || rel
   const sep = project.includes('\\') && !project.includes('/') ? '\\' : '/'
   return project.replace(/[/\\]+$/, '') + sep + trimmed
+}
+
+/** Splice `@rel/` folder tokens into composer text — the drop-a-folder
+ *  counterpart of the picker's applyPickedToken insertion, sharing the exact
+ *  token grammar chips and serialization already parse. Each rel gets the
+ *  trailing slash the picker's selectionFor guarantees, rels whose token is
+ *  already present in `value` are skipped (parseDirTokens dedupes chips, but
+ *  a duplicate token in the TEXT would still read twice), and the tokens are
+ *  inserted at `caret` — or appended when the caret is unknown (`null`), the
+ *  same append fallback the dictation splice uses for a never-touched
+ *  composer. Whitespace-padded on both sides so the token stays
+ *  boundary-checked per DIR_TOKEN_RE. Returns the new value, the caret
+ *  offset just past the inserted run, and `changed` — false when every rel
+ *  was a duplicate, so callers can skip state/caret updates entirely (arming
+ *  a caret restore against an unchanged value would leave it stale until an
+ *  unrelated edit fires it). */
+export function spliceDirTokens(
+  value: string,
+  caret: number | null,
+  rels: string[],
+): { value: string; caret: number; changed: boolean } {
+  const existing = new Set(parseDirTokens(value).map(t => t.rel))
+  const fresh: string[] = []
+  for (const raw of rels) {
+    // Match selectionFor in FilePickerMenu: append `/` unless the rel already
+    // ends in either separator, so a Windows path is not given a second one.
+    const rel = /[/\\]$/.test(raw) ? raw : raw + '/'
+    if (existing.has(rel) || fresh.includes(rel)) continue
+    fresh.push(rel)
+  }
+  const at = caret == null ? value.length : Math.max(0, Math.min(caret, value.length))
+  if (!fresh.length) return { value, caret: at, changed: false }
+  const before = value.slice(0, at)
+  const after = value.slice(at)
+  // Pad so the token sits on whitespace boundaries: a leading space when text
+  // precedes it, a trailing space always (the picker inserts `@rel/ ` too).
+  const lead = before && !/\s$/.test(before) ? ' ' : ''
+  const run = lead + fresh.map(r => `@${r}`).join(' ') + ' '
+  return { value: before + run + after, caret: before.length + run.length, changed: true }
 }
 
 /** Serialize folder tokens for the LLM: each `@rel/` becomes

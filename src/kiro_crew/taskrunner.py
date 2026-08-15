@@ -1054,6 +1054,8 @@ class TaskRunner:
         self._stall_cancelled_ids.discard(task_id)
         await self._apersist_runs()
         try:
+            # Resolved from ``kiro_crew.sel`` at call time, not through the
+            # module-level binding, so a substituted SEL factory is observed.
             from kiro_crew.sel import sel
 
             sel().log_tool_invocation(

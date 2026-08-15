@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -82,7 +82,13 @@ def inject_cron_result_to_dashboard(
     whatever snapshot an earlier run stored.
     """
     slot_name = f"cron-{job.id}"
-    slot = state.get_or_create_slot(name=slot_name, agent=job.agent_id or "")
+    slot = state.get_or_create_slot(
+        name=slot_name,
+        agent=job.agent_id or "",
+        # A cron result is the job's output, not something the person typed.
+        # A USER label would expose it to any app holding `slots:user`.
+        origin=SlotOrigin.CRON,
+    )
     safe_name, _ = redact_exfiltration_urls(job.name)
     safe_name, _ = redact_credentials(safe_name)
     slot.title = f"Cron: {safe_name}"

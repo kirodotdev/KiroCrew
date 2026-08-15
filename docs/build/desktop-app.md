@@ -123,6 +123,15 @@ x64 gate doubles as proof the bundle runs under Rosetta. In
 intentional there), and `extraResources` ships the `backend-dist/` directory
 wholesale so single- and dual-backend layouts both package.
 
+> **Renaming `backend-dist/` is load-bearing at runtime.** The backend detects
+> "am I the bundled interpreter?" via
+> `platform_compat.is_bundled_interpreter()`
+> (`BUNDLED_BACKEND_DIST_DIRNAME`), which is what stops `pip` from writing
+> into the signed bundle during app builds. `test/test_platform_compat.py`
+> pins that constant to both `extraResources` here and
+> `packaging/build-desktop.sh`, so a rename fails a test — update the constant
+> and the packaging layer in the same change.
+
 **Trade-off:** the DMG carries two full Python backend trees, so it is
 roughly **2× the size** of a per-arch DMG — expect ~350–400 MB. That is the
 price of one artifact + one update feed; a per-arch feed split was
@@ -191,12 +200,12 @@ bump one, bump the other and the root `version` fields in
 `packages[""].version`, NOT the dependency entries that coincidentally share a
 version), or `npm ci` will complain about a lock mismatch.
 
-> **npm registry pin (required):** both `website/.npmrc` *and*
-> `website/electron/.npmrc` pin `registry=https://registry.npmjs.org/`. The
-> electron pin is load-bearing — without it `npm ci` in `website/electron/`
-> inherits whatever registry the machine's global `~/.npmrc` sets and can fail
-> with an auth error on a non-public registry. Any new npm subproject needs its
-> own public-registry `.npmrc`.
+> **npm registry (system-configured):** the `.npmrc` files deliberately do NOT
+> pin a registry. `npm ci` inherits whatever registry the machine's `~/.npmrc`
+> or environment configures, so mirrors and private registries work for
+> builders who cannot reach `https://registry.npmjs.org/`. If your configured
+> registry lacks a public package or its auth token expired, fix your registry
+> config rather than adding a pin back.
 
 ## Build pipeline
 
@@ -319,6 +328,31 @@ handles terminate observed descendants without trusting recycled PIDs. Cleanup
 finishes before the gateway permits a retry.
 Hosting setup in the gateway provides one implementation and one UI for the
 desktop app, local browser, remote browser, Linux, and Windows.
+
+### Native window chrome
+
+The dashboard's 42px top bar is also the window titlebar on macOS and Windows.
+macOS insets the native traffic lights on the left. Windows uses Electron's
+title-bar overlay to retain native minimize/maximize/close controls on the right.
+The application menu rests as a compact hamburger on the left. Opening it shows
+the File submenu and expands File/Edit/View/Connection/Window/Help inline;
+hovering another label replaces the submenu without ending the menu session.
+Escape, an outside click, selecting a command, or moving focus to another window
+closes the popup and collapses the labels back to the hamburger. The menu surface
+uses the dashboard theme because native Windows popups capture window input and
+cannot support hover switching; a narrow IPC bridge keeps command execution and
+standard Electron roles in the main process.
+When a remote crew is connected, the instance switcher shares the same bounded
+left region as the menu: it is a single trigger naming the crew on screen (see
+InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant
+width whether the menu is collapsed to a hamburger or expanded to full labels.
+The centered command palette yields that region rather than the reverse — the
+correct priority while the menu is open is labels > instance status > an idle
+search affordance — and the palette remains reachable through its keyboard
+shortcut even while hidden.
+The command-palette trigger is positioned from the window midpoint rather than
+the remaining flex space, so asymmetric menu and status controls do not shift it.
+Linux retains the window manager's native frame and menu bar.
 
 ### `find-bin.js` — locating the binary
 
@@ -529,5 +563,5 @@ See [`website/electron/README.md`](../../website/electron/README.md) and
 
 ## See also
 
-- [install.md](../guides/install.md) — all three build/run methods and the Makefile targets
+- [install.md](../guides/install.md) — all three build/run methods and the build targets
 - [README](../README.md) — project overview and Quick Start

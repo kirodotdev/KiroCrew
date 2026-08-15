@@ -35,13 +35,14 @@ import re
 import shutil
 import sys
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps import install_receipt
+from kiro_crew.apps import install_receipt, official_catalog
 from kiro_crew.apps.admission import app_admission_denied, verified_signer
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import (
@@ -54,6 +55,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.official_catalog import load_official_catalog
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.sel import sel
 
@@ -848,15 +850,54 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+#: Keys a registry index row may contribute to a merged app-store row.
+#
+# An index row is UNTRUSTED content — an external registry's index is
+# user-supplied JSON — so the merge projects these names explicitly instead of
+# spreading the row. Spreading shipped every key an index chose to invent
+# straight to the browser, which both grew the payload with fields no consumer
+# reads and gave an index a channel for keys the client never validated.
+#
+# Each name here has a reader: ``name`` is identity; ``gitUrl`` / ``repo`` /
+# ``branch`` / ``subdirectory`` are the clone coordinates
+# (``_entry_git_url``, ``install_from_registry``); ``resources`` selects the
+# self-managed install path; ``detectInstalled`` is the pre-install probe;
+# ``managed`` is the legacy registry-only flag; ``featured`` is the Discover
+# spotlight flag (kept only on non-external rows by ``_apply_trust_fields``);
+# ``_registry`` is the server-attached source tag; ``_index_author`` is the
+# author snapshot ``_apply_trust_fields`` consumes for the verified mark.
+#
+# Display fields are deliberately ABSENT: they come from the fetched
+# ``app.json`` below, so an index cannot publish display copy for an app whose
+# manifest says otherwise. Install-status and trust fields are also absent —
+# ``_enrich_with_install_status`` and ``_apply_trust_fields`` run after this
+# and stamp them server-side.
+_REGISTRY_ROW_KEYS: frozenset[str] = frozenset(
+    {
+        "name",
+        "gitUrl",
+        "repo",
+        "branch",
+        "subdirectory",
+        "resources",
+        "detectInstalled",
+        "managed",
+        "featured",
+        "_registry",
+        "_index_author",
+    }
+)
+
+
 def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Merge app.json fields into a registry entry.
 
-    Registry-only fields (name, repo, branch, managed, detectInstalled)
-    are preserved from the entry. Everything else comes from app.json,
-    with the blob proxy URL pattern applied to image paths.
+    Registry-only fields (``_REGISTRY_ROW_KEYS``) are preserved from the entry.
+    Everything else comes from app.json, with the blob proxy URL pattern
+    applied to image paths.
     """
     repo = entry.get("repo", "")
-    result = dict(entry)  # start with registry fields
+    result = {k: v for k, v in entry.items() if k in _REGISTRY_ROW_KEYS}
 
     # Top-level display fields from app.json
     for key in (
@@ -894,10 +935,23 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
     if "platform" in manifest:
         result["platform"] = manifest["platform"]
 
-    # Icon — convert repo-relative path to blob proxy URL
+    # Icon — convert repo-relative path to blob proxy URL.
+    #
+    # Only ``iconPath`` (repo-relative) is honoured, never a manifest-declared
+    # ``iconUrl``: an index-fetched manifest is untrusted content, and copying an
+    # absolute URL out of it would let a third party point the store's <img> at
+    # any host it likes. Rewriting a repo-relative path keeps every icon fetch
+    # on our own proxy, which enforces the extension allowlist and the
+    # trusted-host gate.
     icon_path = manifest.get("iconPath", "")
     if icon_path and repo:
         result["iconUrl"] = f"/api/apps/blob?repo={repo}&path={icon_path}"
+    # Dark-appearance variant. Raster icons have fixed bytes, so an app that
+    # must read well on both backgrounds ships two files; first-party
+    # ``/app-assets/`` SVGs are inlined and repaint from theme tokens instead.
+    icon_path_dark = manifest.get("iconPathDark", "")
+    if icon_path_dark and repo:
+        result["iconUrlDark"] = f"/api/apps/blob?repo={repo}&path={icon_path_dark}"
     # Lucide fallback icon from manifest extra fields
     if manifest.get("icon"):
         result["icon"] = manifest["icon"]
@@ -973,6 +1027,38 @@ def _enrich_with_install_status(
     return entries
 
 
+#: Index-declared author spellings that name US, folded by ``_fold_author``.
+#
+# The product name is two words, so the bundled catalog and the official
+# published catalog both state ``Kiro Crew``; the historical bundled spelling
+# was the single token ``kirocrew``. Both are us, so both mint the mark.
+FIRST_PARTY_AUTHORS: frozenset[str] = frozenset(
+    {"kirocrew", "kiro crew"}  # brand-ok: folded values, lower-cased by contract
+)
+
+
+def _fold_author(value: object) -> str:
+    """Fold an author name for the first-party comparison.
+
+    NFKC maps fullwidth forms onto ASCII, category-``Cf`` code points (ZWSP,
+    soft hyphen, bidi marks) are dropped, and runs of whitespace collapse to a
+    single space. Without this, ``Ｋｉｒｏ Ｃｒｅｗ`` and ``kiro\u200bcrew``
+    read as us to a human but compare unequal, so an index row that legitimately
+    names us in a non-ASCII form would silently lose the mark.
+
+    Widening the match is safe HERE and only here: ``_apply_trust_fields``
+    short-circuits every ``_registry``-tagged row to ``verified: False`` before
+    consulting the author at all, so the folded comparison is only ever reached
+    for rows whose index we ship or sign. Do not reuse this to GRANT trust on a
+    path where untrusted content supplies the name.
+    """
+    if not isinstance(value, str):
+        return ""
+    folded = unicodedata.normalize("NFKC", value)
+    folded = "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+    return " ".join(folded.split()).lower()
+
+
 def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Stamp server-computed ``provenance`` and ``verified`` on every row.
 
@@ -992,11 +1078,26 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     - ``provenance``: ``"external"`` when ``_registry`` is set (the tag is
       applied server-side per configured registry and cannot be forged by
       index content); otherwise ``"builtin"`` when ``origin == "builtin"``,
-      else ``"core"`` (bundled ``app-registry.json`` or edition entry).
+      else ``"official"``.
+
+      ``"official"`` means "an app WE list", and the bundled
+      ``app-registry.json`` is one delivery of that list — the offline seed
+      that ships inside the wheel. It answers the same question the remote
+      signed catalog answers, so it gets the same value rather than a second
+      one: two provenance values for one claim would put a weaker integrity
+      guarantee (rides on the install artifact, cannot be revoked before the
+      next release) behind a label a client cannot tell apart from the
+      stronger one. The value names WHOSE list an app is on; how that list
+      reached the client is a separate axis, and belongs in a separate field
+      once there is more than one answer to record.
+
+      ``"core"`` was the previous spelling. Clients accept both during the
+      migration, so an older gateway's rows still label correctly.
     - ``verified``: ``True`` only when provenance is NOT ``"external"`` AND
       (``origin == "builtin"`` or the INDEX-declared author — snapshotted
       into ``_index_author`` by ``list_registry`` before the manifest merge
-      — is "kirocrew", case-insensitively). The badge asserts first-party
+      — names us after ``_fold_author`` (see ``FIRST_PARTY_AUTHORS``). The
+      badge asserts first-party
       provenance next to an Install button that runs setup code with
       gateway privileges, so it is never awardable from index-published
       trust keys or from the repo-fetched ``app.json``: a third-party core
@@ -1009,15 +1110,15 @@ def _apply_trust_fields(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     for entry in entries:
         index_author = entry.pop("_index_author", None)
-        author_lower = index_author.lower() if isinstance(index_author, str) else ""
+        folded_author = _fold_author(index_author)
         if entry.get("_registry"):
             entry["provenance"] = "external"
             entry["verified"] = False
             entry.pop("featured", None)
         else:
             builtin = entry.get("origin") == "builtin"
-            entry["provenance"] = "builtin" if builtin else "core"
-            entry["verified"] = builtin or author_lower == "kirocrew"
+            entry["provenance"] = "builtin" if builtin else "official"
+            entry["verified"] = builtin or folded_author in FIRST_PARTY_AUTHORS
     return entries
 
 
@@ -1307,6 +1408,51 @@ async def _fetch_external_registry_index(
             await asyncio.to_thread(shutil.rmtree, tmp_root, ignore_errors=True)
 
 
+def _apply_configured_branch(entries: list[dict[str, Any]], reg, *, warn: bool = False) -> None:
+    """Force the operator-configured registry branch onto same-repo entries.
+
+    The registry index is cloned and parsed from exactly ``reg.branch``, so a
+    same-repo entry declaring a different branch describes a state that does
+    not exist on the ref the operator asked for (e.g. a pre-merge entry
+    declaring ``main``); honouring it makes install clone a ref where the
+    app's subdirectory is missing. The declared value is index-controlled
+    (untrusted) content, while ``reg.branch`` already passed the branch regex
+    gate before the fetch, so the override also narrows what a registry index
+    can make the installer clone.
+
+    A cross-repo entry — one whose effective clone URL differs from the
+    configured registry repo — keeps its declaration: its branch names a ref
+    in ANOTHER repository, about which ``reg.branch`` carries no information.
+    The comparison is byte-identical string equality, matching the
+    owner-designated carve-out semantics (no normalization, no host-level
+    matching). A cross-repo entry with no usable declared branch still
+    inherits ``reg.branch`` (an explicit JSON ``null`` counts as absent, so
+    ``None`` can never flow to the clone coordinates).
+
+    Runs at fetch finalisation AND on every cache read that feeds a branch
+    consumer, so a cache written before the registry's branch config changed
+    (or by a version that honoured per-app declarations) cannot keep an
+    overridden branch alive until the next refresh. ``warn`` is set only on
+    the fetch path so a divergent declaration is logged once per refresh
+    rather than on every lookup.
+    """
+    for entry in entries:
+        declared_branch = entry.get("branch")
+        if _entry_git_url(entry) == reg.repo:
+            if warn and declared_branch is not None and declared_branch != reg.branch:
+                logger.warning(
+                    "External registry %s entry %r declares branch %r; using the "
+                    "configured registry branch %r",
+                    reg.name or reg.repo,
+                    entry.get("name"),
+                    declared_branch,
+                    reg.branch,
+                )
+            entry["branch"] = reg.branch
+        elif not declared_branch:
+            entry["branch"] = reg.branch
+
+
 async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None:
     """Fetch a registry's index, normalize entries, and write the cache.
 
@@ -1363,12 +1509,15 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
             continue
         valid_entries.append(entry)
     entries = valid_entries
-    # Ensure each entry has gitUrl/repo/branch set (for install_from_registry)
+    # Ensure each entry has gitUrl/repo set (for install_from_registry), then
+    # apply the operator-configured branch policy (see _apply_configured_branch:
+    # same-repo entries get reg.branch forced with a divergence warning;
+    # cross-repo entries keep their declaration).
     for entry in entries:
         entry.setdefault("gitUrl", reg.repo)
         entry.setdefault("repo", reg.repo)
-        entry.setdefault("branch", reg.branch)
         entry["_registry"] = name
+    _apply_configured_branch(entries, reg, warn=True)
     await asyncio.to_thread(_write_external_registry_cache, name, entries)
     return entries
 
@@ -1398,6 +1547,9 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         if cached is not None:
             for entry in cached:
                 entry["_registry"] = name
+            # Repair caches written before a branch-config change (or by a
+            # version that honoured per-app declarations) — see helper.
+            _apply_configured_branch(cached, reg)
             return cached
 
         # Fetch from repo (writes the cache on success).
@@ -1414,6 +1566,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
         if stale is not None:
             for entry in stale:
                 entry["_registry"] = name
+            _apply_configured_branch(stale, reg)
             return stale
         logger.warning("Failed to load external registry %s from %s", name, reg.repo)
         return []
@@ -1568,7 +1721,6 @@ async def list_registry() -> list[dict[str, Any]]:
 
     installed = await asyncio.to_thread(list_installed_apps)
     installed_map = {a["name"]: a for a in installed}
-
     # Snapshot the INDEX-declared author before the manifest merge below
     # overwrites ``author`` with the repo-fetched app.json value.
     # ``_apply_trust_fields`` derives ``verified`` from this snapshot only:
@@ -1618,6 +1770,31 @@ async def list_registry() -> list[dict[str, Any]]:
         except (asyncio.TimeoutError, OSError):
             pass  # detection failed, treat as not installed
 
+    # Overlay the official catalog's curated fields LAST among the content
+    # sources, so they win over a fetched manifest -- that is what curation
+    # means: the catalog is ours, the manifest belongs to the app. It runs BEFORE
+    # the trust stamp so `_apply_trust_fields` still derives `verified` from the
+    # index-declared author snapshot, which the overlay deliberately leaves
+    # alone while the document's signature is not yet checked.
+    #
+    # Annotate-only: every catalog entry names something already listed here.
+    # Adding installable entries needs the install path to accept a
+    # commit-pinned source first, so an entry matching no row is ignored.
+    # Containment, not defensiveness. This handler has no try/except above it, so
+    # anything escaping the catalog step is an HTTP 500 for the WHOLE store --
+    # and the catalog is an enhancement to a listing that is already complete
+    # without it. "Anything went wrong, render what we had" is therefore the
+    # correct semantics at this seam specifically, and a broad catch here is not
+    # hiding a defect from us: it logs with a traceback, and the module's own
+    # precise guards still run first. Three separate escape routes were found
+    # here by review, each individually narrower than this seam.
+    try:
+        catalog = await asyncio.to_thread(load_official_catalog)
+        if catalog:
+            official_catalog.annotate(entries, catalog)
+    except Exception:  # noqa: BLE001 - degrade to the seed, never 500 the store
+        logger.warning("ignoring the official catalog after a failure", exc_info=True)
+
     return _apply_trust_fields(
         _enrich_with_install_status(entries, installed_map, detected)
     )
@@ -1650,6 +1827,8 @@ def get_registry_app(name: str) -> dict[str, Any] | None:
         if cached:
             for entry in cached:
                 if entry.get("name") == name:
+                    # Repair a stale cache's branch before install reads it.
+                    _apply_configured_branch([entry], reg)
                     # Old cache files may predate persisted origin tags. Restore
                     # the authoritative discriminator at the lookup boundary so
                     # privacy gates never mistake a custom source for official.
@@ -1679,6 +1858,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
+                _apply_configured_branch([entry], reg)
                 candidates.append(entry)
     return candidates
 
@@ -1744,6 +1924,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
             cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
             for entry in cached or []:
                 if isinstance(entry, dict) and entry.get("repo") == repo:
+                    _apply_configured_branch([entry], reg)
                     return entry
     except Exception:  # fail open: branch resolution must never break blob serving
         logger.debug("_external_registry_app_by_repo: read failed", exc_info=True)
@@ -2677,7 +2858,21 @@ async def _clone_build_app_locked(
             "error": f"blocked by admission policy: {denied}",
         }
 
-    result = await _run_app_build(pkg_dir, app_name, log_lines)
+    # Build in the directory that actually HOLDS the package, not the clone root.
+    #
+    # A monorepo registry entry declares `subdirectory`, and historically it was
+    # joined only AFTER this build ran — so `_run_app_build` looked for
+    # pyproject.toml/package.json at the clone root, found none, logged "No build
+    # step detected — using source as-is", and returned ok=True having installed
+    # nothing. The app's own pyproject.toml was never seen. A silent success is
+    # the worst shape for this: `setup.onInstall` does get `cwd=app_source`, so
+    # an app could paper over it with a script, which is exactly how a bug like
+    # this stays hidden.
+    #
+    # `app_source` is already the containment-checked join of `subdirectory`
+    # under the clone root (the identity gate above fails closed on an escaping
+    # value), so it is safe to run the build command there.
+    result = await _run_app_build(app_source, app_name, log_lines)
     if result["ok"]:
         result["pkg_dir"] = pkg_dir
         # Surface the pre-clone checkout state so the caller's LATER gates
@@ -2759,16 +2954,56 @@ async def _run_app_build(
         or (build_dir / "setup.py").is_file()
         or (build_dir / "requirements.txt").is_file()
     ):
-        pip = shutil.which("pip") or shutil.which("pip3")
-        if pip:
-            if (build_dir / "requirements.txt").is_file() and not (
-                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
-            ):
-                build_cmds.append([pip, "install", "-r", "requirements.txt"])
-            else:
-                build_cmds.append([pip, "install", "."])
+        # `sys.executable -m pip`, NOT `shutil.which("pip")`.
+        #
+        # A Python app has to land in the interpreter that will IMPORT it — the one
+        # running this gateway. `which("pip")` resolves to whatever pip is first on
+        # PATH, which is routinely a different interpreter: `bin/kirocrew` execs
+        # `.venv/bin/kirocrew` WITHOUT putting the venv's `bin/` on PATH, and
+        # `service/common.py::service_path()` prepends `~/.local/bin` ahead of it. So the
+        # build pip was whatever the user happened to have.
+        #
+        # The failure is SILENT, which is why it survived. Measured on a host whose first
+        # pip was 3.7 and whose gateway venv was 3.12: with a version-incompatible pip the
+        # install failed loudly, but with a *compatible-but-different* pip (3.10) it
+        # reported "Successfully installed", the build step reported success, and the
+        # package landed in `~/.local/lib/python3.10/site-packages` — invisible to the
+        # gateway, with `ENABLE_USER_SITE = False` in a venv so there is no fallback. The
+        # app installs, the entry point never appears, and nothing anywhere says why.
+        #
+        # Our own packages only fail loudly because they declare `requires-python`; a
+        # third-party app without that constraint fails silently on EVERY mismatch.
+        #
+        # EXCEPTION: never run pip against the desktop app's bundled interpreter.
+        # The desktop build ships a python-build-standalone runtime inside the
+        # application bundle (`Resources/backend-dist/...`); on macOS that bundle is
+        # code-signed, so a pip install writing into its site-packages invalidates
+        # the signature and breaks subsequent launches/updates — and the write is
+        # discarded on every app update anyway. This is a LOUD failure, not a
+        # soft-skip: a Python app that declares a build step needs its packages
+        # importable by the gateway, and skipping the install while reporting
+        # success would recreate exactly the silent-broken-install shape this
+        # function is written to prevent. Detection lives in
+        # platform_compat.is_bundled_interpreter() — the single owner of the
+        # packaging-layout sentinel — so a bundler rename breaks its pinned test
+        # instead of silently un-matching an inline check here.
+        if platform_compat.is_bundled_interpreter():
+            return {
+                "ok": False,
+                "name": app_name,
+                "error": (
+                    "Python apps that require a build step are not supported in "
+                    "the desktop app: its bundled interpreter is inside the "
+                    "signed application bundle and cannot install packages"
+                ),
+            }
+        pip_cmd = [sys.executable, "-m", "pip"]
+        if (build_dir / "requirements.txt").is_file() and not (
+            (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+        ):
+            build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
         else:
-            log_lines.append("pip not found on PATH — skipping Python build step")
+            build_cmds.append([*pip_cmd, "install", "."])
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
@@ -3050,6 +3285,8 @@ async def install_from_registry(
             log_lines,
             branch=branch,
             index_originated=index_originated,
+            # Passed so the BUILD runs where the package is. The containment check
+            # below is still authoritative for choosing app.json's directory.
             subdirectory=subdirectory,
             entry_repo=repo,
         )

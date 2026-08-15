@@ -9,7 +9,7 @@ triggers: desktop, desktop app, native app, app window, on screen, click button,
 You have MCP tools that read and operate the **user's real applications** through
 the operating system's accessibility layer. This is not a browser: use it when the
 work lives in a desktop app (a spreadsheet, a PDF viewer, a native internal tool,
-a dialog box), and use the Playwright `browser_*` tools for web pages.
+a dialog box), and use `playwright-cli` (the `web-browse` skill) for web pages.
 
 Two things to internalise before your first call:
 

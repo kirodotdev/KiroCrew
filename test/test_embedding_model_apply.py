@@ -704,7 +704,7 @@ class TestCommitTimeGenerationCheck:
 
         src = inspect.getsource(VectorMemoryStore.write_lesson)
         sample = src.find("backfill_generation = self._space_generation")
-        embed = src.find("existing_emb = self._try_embed(existing_val)")
+        embed = src.find("existing_emb = self._try_embed(existing_val")
         assert -1 not in (sample, embed), "lazy-backfill sampling not found"
         assert sample < embed, (
             "the generation must be sampled BEFORE the embed, or a swap in the "

@@ -232,6 +232,37 @@ describe('OverflowMenu inventory (regression guard for #1083)', () => {
   })
 })
 
+/**
+ * The menu opens with real DOM focus on its first row (`useListboxKeyboard`,
+ * WAI-ARIA menu pattern), so whichever tint marks the focused row is on screen
+ * from the moment the menu appears — before the pointer has gone anywhere near
+ * it. That tint must therefore be scoped to `focus-visible`, which a
+ * script-moved focus only matches when a keypress moved it: a bare `focus:`
+ * tint is the same colour as `hover:`, leaving the first row lit for the whole
+ * time the menu is open and two rows lit as soon as the pointer picks another.
+ *
+ * Asserted across the whole inventory, not just the first row: the way this
+ * regresses is a new entry pasted from an existing one.
+ */
+describe('OverflowMenu roving-focus tint', () => {
+  const rows = () => Array.from(document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]'))
+
+  it('focuses the first row on open and tints rows only under :focus-visible', async () => {
+    render(
+      <OverflowMenu filePath="/tmp/notes.md" content="x" onRefresh={vi.fn()} onFullscreen={vi.fn()} />,
+      { wrapper },
+    )
+    fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
+    expect(rows()[0]).toHaveTextContent('Refresh')
+    // The hook moves focus in a 0ms timeout, so it lands after this tick.
+    await waitFor(() => expect(document.activeElement).toBe(rows()[0]))
+    for (const row of rows()) {
+      expect(row.className).toContain('focus-visible:bg-bg-hover')
+      expect(row.className).not.toMatch(/(^|\s)focus:bg-/)
+    }
+  })
+})
+
 describe('breadcrumbSegments', () => {
   it('shows the last three segments with the file last and non-navigable', () => {
     const crumbs = breadcrumbSegments('/home/user/project/src/app.ts')

@@ -362,6 +362,14 @@ describe('chat hand-off channel', () => {
     expect(delivered).toBe('half-typed question\n\n- Message: save failed')
   })
 
+  it('mergeIntoDraft leaves a draft untouched when there is nothing to append', () => {
+    // The composer merges whatever the server hands back, and an edited queue entry
+    // can be emptied to nothing. Appending then would grow a trailing paragraph break
+    // the user never typed, and submit it verbatim.
+    expect(mergeIntoDraft('half-typed', '')).toBe('half-typed')
+    expect(mergeIntoDraft('half-typed', '  \n ')).toBe('half-typed')
+  })
+
   it('mergeIntoDraft leaves an empty composer with just the prompt', () => {
     expect(mergeIntoDraft('', 'P')).toBe('P')
     expect(mergeIntoDraft(null, 'P')).toBe('P')

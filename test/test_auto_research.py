@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +72,20 @@ class TestPathValidation:
     def test_rejects_empty(self):
         assert not _validate_campaign_id("")
 
+    def test_worker_slot_key_contract(self):
+        from kiro_crew.apps.builtins.auto_research.session_keys import (
+            is_owned_research_slot,
+            is_research_slot_key,
+            research_slot_key,
+        )
+
+        assert research_slot_key("a1b2c3d4") == "research-a1b2c3d4"
+        assert is_research_slot_key("research-a1b2c3d4")
+        assert is_owned_research_slot("research-a1b2c3d4", "auto-research")
+        assert not is_owned_research_slot("research-a1b2c3d4", "")
+        assert not is_research_slot_key("research-notes")
+        assert not is_research_slot_key("research-a1b2c3d4-extra")
+
     def test_safe_dir_rejects_invalid(self, tmp_path: Path):
         with patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path):
             assert _safe_campaign_dir("../etc") is None
@@ -132,6 +148,73 @@ class TestValidation:
         )
         assert r["estimated_cycles"] == 40
         assert r["estimated_duration_min"] == 80
+
+    def test_model_allowed_in_agent_mode(self):
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "execution_mode": "agent",
+                "model": "test-model-x",
+            }
+        )
+        assert r["can_start"]
+
+    def test_model_rejected_in_workflow_mode(self):
+        # The workflow engine resolves its own models; a campaign-level pin
+        # would be silently ignored, so the create must be refused instead.
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "execution_mode": "workflow",
+                "model": "test-model-x",
+            }
+        )
+        assert not r["can_start"]
+        assert any("agent mode" in e for e in r["errors"])
+
+    def test_empty_model_fine_in_workflow_mode(self):
+        # '' / missing means "inherit" — valid in every mode.
+        for model in ("", "   ", None):
+            cfg = {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "execution_mode": "workflow",
+            }
+            if model is not None:
+                cfg["model"] = model
+            r = validate_campaign(cfg)
+            assert r["can_start"], f"model={model!r} should validate"
+
+    def test_non_string_model_rejected(self):
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "model": ["not", "a", "string"],
+            }
+        )
+        assert not r["can_start"]
+        assert any("string" in e for e in r["errors"])
+
+    def test_overlength_model_rejected_not_truncated(self):
+        # A sliced id would be a different string that is never served (silent
+        # fallback); the create must be refused with an error naming the cap.
+        from kiro_crew.apps.builtins.auto_research.handlers import _campaign_model
+
+        long_id = "m" * 200
+        r = validate_campaign(
+            {
+                "question": "A valid research question here ok",
+                "sources": ["web"],
+                "model": long_id,
+            }
+        )
+        assert not r["can_start"]
+        assert any("too long" in e for e in r["errors"])
+        # And the normalizer no longer slices: it returns the trimmed input.
+        assert _campaign_model({"model": f"  {long_id}  "}) == long_id
 
 
 class TestStagnation:
@@ -306,6 +389,22 @@ class TestCRUD:
         assert len(c["id"]) == 8
         assert c["status"] == "ready"
 
+    def test_model_stored_and_defaults_to_inherit(self):
+        # No pick -> '' (inherit); explicit pick stored verbatim (trimmed).
+        c1 = create_campaign(
+            {"question": "How do teams handle rate limiting?", "sources": ["web"]}
+        )
+        assert get_campaign(c1["id"])["model"] == ""
+        update_campaign_status(c1["id"], CampaignStatus.STOPPED)
+        c2 = create_campaign(
+            {
+                "question": "How do teams handle rate limiting?",
+                "sources": ["web"],
+                "model": "  test-model-x  ",
+            }
+        )
+        assert get_campaign(c2["id"])["model"] == "test-model-x"
+
     def test_update_running(self):
         c = create_campaign(
             {"question": "Research question about something here", "sources": ["web"]}
@@ -439,11 +538,12 @@ class TestStatusEnum:
 class TestStalledCampaignVerdict:
     """_stalled_campaign_verdict: not every idle deadline is a failure.
 
-    A worker that ends its run deliberately (writing worker_done.json before
-    autonudge_stop) or has a verified finding on disk finished — it didn't
-    stall. Only genuine silence (no verified finding, no done marker, or no
-    findings at all) may be stamped FAILED. Loop absence is deliberately NOT a
-    signal: the nudge fire path also removes loops for unreachable sessions.
+    A worker that ends its run deliberately (through the source-owned stop
+    tombstone, with worker_done.json as a fallback) or has a verified finding
+    on disk finished — it didn't stall. Only genuine silence (no verified
+    finding, no stop signal, or no findings at all) may be stamped FAILED. Loop
+    absence is deliberately NOT a signal: the nudge fire path also removes
+    loops for unreachable sessions.
     """
 
     CID = "a1b2c3d4"
@@ -483,6 +583,43 @@ class TestStalledCampaignVerdict:
         status, message = _stalled_campaign_verdict(self.CID, [f])
         assert status == CampaignStatus.STOPPED
         assert "preserved" in (message or "")
+
+    def test_stop_tombstone_is_preferred_over_worker_marker(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A source-owned tombstone is sufficient and short-circuits the
+        LLM-written marker fallback."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+
+        f = self._write_finding(
+            _isolate, 9, {"summary": "final synthesis", "verification": None}
+        )
+        monkeypatch.setattr(
+            h,
+            "_read_worker_done",
+            lambda _cid: pytest.fail("worker_done fallback must not run for a tombstone"),
+        )
+        status, message = h._stalled_campaign_verdict(
+            self.CID,
+            [f],
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        assert status == CampaignStatus.STOPPED
+        assert "preserved" in (message or "")
+
+    def test_stop_tombstone_without_readable_findings_stays_failed(self):
+        """A deterministic stop source must not claim findings were preserved
+        when the worker produced no readable result."""
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+
+        status, _ = _stalled_campaign_verdict(
+            self.CID,
+            [],
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        assert status == CampaignStatus.FAILED
 
     def test_no_marker_and_unverified_is_a_real_stall(self, _isolate: Path):
         """The exact case GPT review flagged: a worker session deleted mid-run
@@ -1072,6 +1209,192 @@ class TestHTTPHandlers:
                 assert not camp["error_message"]
 
     @pytest.mark.asyncio
+    async def test_action_prepares_resume_before_publishing_running(self, app, tmp_path: Path):
+        """Old stop evidence is removed before the watchdog can see RUNNING."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        observed = []
+
+        async def _prepare(cid: str) -> None:
+            observed.append(("prepare", get_campaign(cid)["status"]))
+            await asyncio.sleep(0)
+
+        async def _launch(_request, cid: str, *, prepared: bool = False) -> None:
+            observed.append(("launch", prepared, get_campaign(cid)["status"]))
+
+        with (
+            patch("kiro_crew.apps.builtins.auto_research.handlers.DB_PATH", tmp_path / "t.db"),
+            patch("kiro_crew.apps.builtins.auto_research.handlers.RESEARCH_DIR", tmp_path / "r"),
+            patch.object(h, "_prepare_loop_launch", side_effect=_prepare),
+            patch.object(h, "_launch_loop", side_effect=_launch),
+        ):
+            async with TestClient(TestServer(app)) as c:
+                cr = await c.post(
+                    "/api/apps/auto-research/campaigns",
+                    json={"question": "How do teams handle rate limiting?", "sources": ["web"]},
+                )
+                cid = (await cr.json())["id"]
+                update_campaign_status(cid, CampaignStatus.FAILED, error_message="stalled")
+                r = await c.patch(
+                    f"/api/apps/auto-research/campaigns/{cid}", json={"action": "resume"}
+                )
+
+        assert r.status == 200
+        assert observed == [
+            ("prepare", CampaignStatus.FAILED),
+            ("launch", True, CampaignStatus.RUNNING),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_resume_cannot_be_overwritten_by_slow_terminal_sidecar(
+        self, app, tmp_path: Path, monkeypatch
+    ):
+        """Terminal settlement finishes before Resume publishes its new run."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON, AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        state = MagicMock()
+        state.conversation_log = None
+        app["state"] = state
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: False)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        terminal_sidecar_started = threading.Event()
+        release_terminal_sidecar = threading.Event()
+        real_write_status = h.write_status
+
+        def _slow_terminal_sidecar(cid: str, status: str, **extra):
+            if status == CampaignStatus.STOPPED:
+                terminal_sidecar_started.set()
+                assert release_terminal_sidecar.wait(timeout=5)
+            real_write_status(cid, status, **extra)
+
+        monkeypatch.setattr(h, "write_status", _slow_terminal_sidecar)
+
+        try:
+            campaign = create_campaign(
+                {
+                    "question": "Research a sufficiently detailed question here",
+                    "sources": ["web"],
+                }
+            )
+            cid = campaign["id"]
+            update_campaign_status(cid, CampaignStatus.RUNNING)
+            observed_started_at = get_campaign(cid)["started_at"]
+            slot_key = f"research-{cid}"
+            slot = SimpleNamespace(key=slot_key)
+            state.get_or_create_slot.return_value = slot
+            old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
+            await svc.update(
+                old_loop.id,
+                active=False,
+                stopped_reason=AUTONUDGE_STOP_REASON,
+            )
+
+            settlement = asyncio.create_task(
+                h._settle_campaign_from_watchdog(
+                    cid,
+                    [],
+                    {},
+                    {},
+                    observed_started_at=observed_started_at,
+                    stopped_reason=AUTONUDGE_STOP_REASON,
+                )
+            )
+            assert await asyncio.to_thread(terminal_sidecar_started.wait, 5)
+
+            async with TestClient(TestServer(app)) as client:
+                resume = asyncio.create_task(
+                    client.patch(
+                        f"/api/apps/auto-research/campaigns/{cid}",
+                        json={"action": "resume"},
+                    )
+                )
+                for _ in range(10):
+                    await asyncio.sleep(0)
+                assert not resume.done()
+
+                release_terminal_sidecar.set()
+                await settlement
+                response = await resume
+                assert response.status == 200
+
+            assert get_campaign(cid)["status"] == CampaignStatus.RUNNING
+            status_payload = json.loads((h._campaign_dir(cid) / "status.json").read_text())
+            assert status_payload["status"] == CampaignStatus.RUNNING
+            replacement = svc.get_by_slot(slot_key)
+            assert replacement is not None
+            assert replacement.id != old_loop.id
+        finally:
+            release_terminal_sidecar.set()
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_stale_settlement_skips_replacement_run_effects(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A watchdog observation cannot settle a later run generation."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        old_started_at = get_campaign(cid)["started_at"]
+        update_campaign_status(cid, CampaignStatus.STOPPED)
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        assert get_campaign(cid)["started_at"] != old_started_at
+
+        svc = AutoNudgeService(base_dir=_isolate / "autonudge")
+        await svc.start()
+        replacement = await svc.add(
+            slot_key=f"research-{cid}",
+            message="replacement run",
+            idle_secs=60,
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        verdict = MagicMock(side_effect=AssertionError("stale run was classified"))
+        monkeypatch.setattr(h, "_stalled_campaign_verdict", verdict)
+        events = []
+        monkeypatch.setattr(h, "_emit_sse", events.append)
+        last_counts = {cid: 1}
+        last_ts = {cid: 2.0}
+
+        try:
+            await h._settle_campaign_from_watchdog(
+                cid,
+                [],
+                last_counts,
+                last_ts,
+                observed_started_at=old_started_at,
+            )
+
+            assert get_campaign(cid)["status"] == CampaignStatus.RUNNING
+            assert svc.get_by_slot(f"research-{cid}") is replacement
+            assert last_counts == {cid: 1}
+            assert last_ts == {cid: 2.0}
+            assert events == []
+            verdict.assert_not_called()
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
     async def test_action_unknown(self, app, tmp_path: Path):
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1578,6 +1901,29 @@ class TestRedactCampaignFields:
 
 class TestLoopLaunch:
     @pytest.mark.asyncio
+    async def test_launch_clears_tombstone_before_slow_marker_cleanup(self, monkeypatch):
+        """A crash after settlement but before loop removal must not let the
+        previous run's source tombstone stop a resumed run again."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+
+        order = []
+        svc = MagicMock()
+        svc.get_by_slot.return_value = SimpleNamespace(
+            id="stale-stop",
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        svc.remove = AsyncMock(side_effect=lambda _loop_id: order.append("tombstone"))
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "_clear_worker_done_marker", lambda _cid: order.append("marker"))
+
+        await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")
+
+        svc.remove.assert_awaited_once_with("stale-stop")
+        assert order == ["tombstone", "marker"]
+
+    @pytest.mark.asyncio
     async def test_launch_arms_autonudge(self, monkeypatch):
         from kiro_crew.apps.builtins.auto_research import handlers as h
 
@@ -1597,6 +1943,49 @@ class TestLoopLaunch:
         assert state.get_or_create_slot.call_args.kwargs["agent"] == "kirocrew-research"
         # Worker slot is auto-approved so the loop doesn't stall on tool prompts.
         assert state.get_or_create_slot.return_value._trust is True
+
+    @pytest.mark.asyncio
+    async def test_launch_pins_campaign_model_on_slot(self, monkeypatch):
+        # The campaign's explicit model pick must reach the worker slot both at
+        # creation (get_or_create_slot kwarg) and on resume (explicit re-pin:
+        # the factory only applies kwargs when it CREATES the slot).
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {
+                "question": "Research question about something here",
+                "sources": ["web"],
+                "model": "test-model-x",
+            }
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = MagicMock()
+        slot = SimpleNamespace(key=f"research-{c['id']}", model="stale-previous-model")
+        state.get_or_create_slot.return_value = slot
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert state.get_or_create_slot.call_args.kwargs["model"] == "test-model-x"
+        assert slot.model == "test-model-x"
+
+    @pytest.mark.asyncio
+    async def test_launch_defaults_to_inherit_model(self, monkeypatch):
+        # No explicit pick -> '' is threaded through, meaning the slot inherits
+        # the research agent's / backend's default resolution.
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        c = create_campaign(
+            {"question": "Research question about something here", "sources": ["web"]}
+        )
+        svc = MagicMock()
+        svc.add = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        state = MagicMock()
+        slot = SimpleNamespace(key=f"research-{c['id']}")
+        state.get_or_create_slot.return_value = slot
+        await h._launch_loop(SimpleNamespace(app={"state": state}), c["id"])
+        assert state.get_or_create_slot.call_args.kwargs["model"] == ""
+        assert slot.model == ""
 
     @pytest.mark.asyncio
     async def test_launch_sets_slot_title_from_campaign_name(self, monkeypatch):
@@ -1737,13 +2126,13 @@ class TestSuspendResearchLoopsWhileDisabled:
 
         svc = MagicMock()
         svc.update = AsyncMock()
-        research_loop = SimpleNamespace(id="loopR", slot_key="research-c1", active=True)
+        research_loop = SimpleNamespace(id="loopR", slot_key="research-a1b2c3d4", active=True)
         other_loop = SimpleNamespace(id="loopX", slot_key="chat:main", active=True)
         svc.list_all.return_value = [research_loop, other_loop]
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
 
         research_slot = SimpleNamespace(_trust=True)
-        state = SimpleNamespace(_slots={"research-c1": research_slot})
+        state = SimpleNamespace(_slots={"research-a1b2c3d4": research_slot})
 
         await h._suspend_research_loops_while_disabled(state)
 
@@ -1759,10 +2148,10 @@ class TestSuspendResearchLoopsWhileDisabled:
         svc = MagicMock()
         svc.update = AsyncMock()
         svc.list_all.return_value = [
-            SimpleNamespace(id="loopR", slot_key="research-c1", active=False)
+            SimpleNamespace(id="loopR", slot_key="research-a1b2c3d4", active=False)
         ]
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
-        state = SimpleNamespace(_slots={"research-c1": SimpleNamespace(_trust=False)})
+        state = SimpleNamespace(_slots={"research-a1b2c3d4": SimpleNamespace(_trust=False)})
 
         await h._suspend_research_loops_while_disabled(state)
 
@@ -1812,6 +2201,567 @@ class TestUnresponsiveDeadline:
         assert _unresponsive_deadline(60) == _FIRST_CYCLE_GRACE_SECS
         # Large idle scales above the floor.
         assert _unresponsive_deadline(400) == 800
+
+
+class TestWatchdogStopTombstone:
+    @pytest.mark.asyncio
+    async def test_terminal_status_persistence_runs_off_event_loop(self, monkeypatch):
+        """SQLite/sidecar persistence cannot block the watchdog's event loop."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        persisted_off_loop = False
+
+        def _persist(_cid, _status, **_kwargs):
+            nonlocal persisted_off_loop
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                persisted_off_loop = True
+            else:
+                pytest.fail("campaign status persistence ran on the event loop")
+
+        monkeypatch.setattr(h, "update_campaign_status", _persist)
+        monkeypatch.setattr(h, "_campaign_run_is_current", lambda _cid, _started: True)
+        monkeypatch.setattr(h, "_stop_loop", AsyncMock())
+        monkeypatch.setattr(h, "_emit_sse", lambda _event: None)
+
+        last_counts = {"a1b2c3d4": 1}
+        last_ts = {"a1b2c3d4": 1.0}
+        await h._settle_campaign_from_watchdog(
+            "a1b2c3d4",
+            [],
+            last_counts,
+            last_ts,
+            observed_started_at=1.0,
+        )
+
+        assert persisted_off_loop
+        assert last_counts == {}
+        assert last_ts == {}
+
+    @pytest.mark.asyncio
+    async def test_cancellation_waits_for_persisted_loop_removal(self, tmp_path, monkeypatch):
+        """Shutdown cannot split terminal status from durable loop cleanup."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        cid = "a1b2c3d4"
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key=f"research-{cid}", message="watch", idle_secs=60)
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        status_write_started = threading.Event()
+        release_status_write = threading.Event()
+
+        def _persist(_cid, _status, **_kwargs):
+            status_write_started.set()
+            assert release_status_write.wait(timeout=5)
+
+        monkeypatch.setattr(h, "update_campaign_status", _persist)
+        monkeypatch.setattr(h, "_campaign_run_is_current", lambda _cid, _started: True)
+        task = asyncio.create_task(
+            h._settle_campaign_from_watchdog(
+                cid, [], {}, {}, observed_started_at=1.0
+            )
+        )
+        assert await asyncio.to_thread(status_write_started.wait, 5)
+
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_status_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert svc.get_by_slot(f"research-{cid}") is None
+        assert loop.id not in svc._timers
+        svc.stop()
+
+        restored = AutoNudgeService(base_dir=tmp_path)
+        await restored.start()
+        assert restored.get_by_slot(f"research-{cid}") is None
+        restored.stop()
+
+    @pytest.mark.asyncio
+    async def test_slow_settlement_cannot_remove_resumed_replacement(
+        self, tmp_path, monkeypatch
+    ):
+        """Terminal cleanup is bound to the loop that produced the signal.
+
+        Once terminal status is visible, Resume may replace the old slot-bound
+        loop while settlement is still finishing its persistence work. Cleanup
+        must not re-resolve the slot and remove that replacement.
+        """
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        cid = "a1b2c3d4"
+        slot_key = f"research-{cid}"
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        status_write_started = threading.Event()
+        release_status_write = threading.Event()
+
+        def _persist(_cid, _status, **_kwargs):
+            status_write_started.set()
+            assert release_status_write.wait(timeout=5)
+
+        monkeypatch.setattr(h, "update_campaign_status", _persist)
+        monkeypatch.setattr(h, "_campaign_run_is_current", lambda _cid, _started: True)
+        monkeypatch.setattr(h, "_emit_sse", lambda _event: None)
+
+        settlement = asyncio.create_task(
+            h._settle_campaign_from_watchdog(
+                cid, [], {}, {}, observed_started_at=1.0
+            )
+        )
+        assert await asyncio.to_thread(status_write_started.wait, 5)
+
+        replacement = await svc.add(
+            slot_key=slot_key,
+            message="resumed run",
+            idle_secs=60,
+        )
+        assert replacement.id != old_loop.id
+        release_status_write.set()
+        await settlement
+
+        assert svc.get_by_slot(slot_key) is replacement
+        svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_propagates_after_status_write_failure(self, tmp_path, monkeypatch):
+        """A failed status write cannot swallow watchdog shutdown."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        cid = "a1b2c3d4"
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        loop = await svc.add(slot_key=f"research-{cid}", message="watch", idle_secs=60)
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        status_write_started = threading.Event()
+        release_status_write = threading.Event()
+
+        def _persist(_cid, _status, **_kwargs):
+            status_write_started.set()
+            assert release_status_write.wait(timeout=5)
+            raise OSError("status store unavailable")
+
+        monkeypatch.setattr(h, "update_campaign_status", _persist)
+        monkeypatch.setattr(h, "_campaign_run_is_current", lambda _cid, _started: True)
+        task = asyncio.create_task(
+            h._settle_campaign_from_watchdog(
+                cid, [], {}, {}, observed_started_at=1.0
+            )
+        )
+        assert await asyncio.to_thread(status_write_started.wait, 5)
+
+        task.cancel()
+        release_status_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+
+        # A non-terminal campaign keeps its loop so restart can retry settling.
+        assert svc.get_by_slot(f"research-{cid}") is loop
+        svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_partial_terminal_persistence_still_removes_durable_loop(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A terminal SQLite commit cannot retain a restartable loop."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        observed_started_at = get_campaign(cid)["started_at"]
+
+        store = _isolate / "autonudge"
+        svc = AutoNudgeService(base_dir=store)
+        await svc.start()
+        loop = await svc.add(
+            slot_key=f"research-{cid}",
+            message="watch",
+            idle_secs=60,
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        real_write_status = h.write_status
+
+        def _fail_terminal_sidecar(campaign_id: str, status: str, **kwargs):
+            if status == CampaignStatus.STOPPED:
+                raise OSError("status sidecar unavailable")
+            real_write_status(campaign_id, status, **kwargs)
+
+        monkeypatch.setattr(h, "write_status", _fail_terminal_sidecar)
+        events = []
+        monkeypatch.setattr(h, "_emit_sse", events.append)
+        last_counts = {cid: 0}
+        last_ts = {cid: 1.0}
+
+        with pytest.raises(OSError, match="status sidecar unavailable"):
+            await h._settle_campaign_from_watchdog(
+                cid,
+                [],
+                last_counts,
+                last_ts,
+                observed_started_at=observed_started_at,
+            )
+
+        assert get_campaign(cid)["status"] == CampaignStatus.STOPPED
+        status_payload = json.loads((h._campaign_dir(cid) / "status.json").read_text())
+        assert status_payload["status"] == CampaignStatus.RUNNING
+        assert svc.get_by_slot(f"research-{cid}") is None
+        assert loop.id not in svc._timers
+        assert last_counts == {}
+        assert last_ts == {}
+        assert events == []
+        svc.stop()
+
+        restored = AutoNudgeService(base_dir=store)
+        await restored.start()
+        assert restored.get_by_slot(f"research-{cid}") is None
+        restored.stop()
+
+    @pytest.mark.asyncio
+    async def test_transient_terminal_loop_removal_is_retried(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A transient final store failure is retried to durable removal."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        observed_started_at = get_campaign(cid)["started_at"]
+
+        store = _isolate / "autonudge"
+        svc = AutoNudgeService(base_dir=store)
+        await svc.start()
+        await svc.add(
+            slot_key=f"research-{cid}",
+            message="watch",
+            idle_secs=60,
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        real_write_state = svc._write_state
+        removal_failed = False
+
+        def _fail_first_removal(payload: dict) -> None:
+            nonlocal removal_failed
+            if not payload["loops"] and not removal_failed:
+                removal_failed = True
+                raise OSError("autonudge store unavailable")
+            real_write_state(payload)
+
+        monkeypatch.setattr(svc, "_write_state", _fail_first_removal)
+
+        await h._settle_campaign_from_watchdog(
+            cid,
+            [],
+            {cid: 0},
+            {cid: 1.0},
+            observed_started_at=observed_started_at,
+        )
+
+        assert removal_failed
+        assert get_campaign(cid)["status"] == CampaignStatus.STOPPED
+        assert svc.get_by_slot(f"research-{cid}") is None
+        svc.stop()
+
+        restored = AutoNudgeService(base_dir=store)
+        await restored.start()
+        assert restored.get_by_slot(f"research-{cid}") is None
+        restored.stop()
+
+    @pytest.mark.asyncio
+    async def test_exhausted_terminal_loop_removal_stays_inactive_after_restart(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A terminal cleanup failure cannot leave restartable persisted work."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        observed_started_at = get_campaign(cid)["started_at"]
+
+        store = _isolate / "autonudge"
+        svc = AutoNudgeService(base_dir=store)
+        await svc.start()
+        loop = await svc.add(
+            slot_key=f"research-{cid}",
+            message="watch",
+            idle_secs=60,
+        )
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(
+            h,
+            "_stalled_campaign_verdict",
+            lambda _cid, _files, *, stopped_reason="": (CampaignStatus.STOPPED, None),
+        )
+
+        real_write_state = svc._write_state
+        removal_attempts = 0
+
+        def _fail_every_removal(payload: dict) -> None:
+            nonlocal removal_attempts
+            if not payload["loops"]:
+                removal_attempts += 1
+                raise OSError("autonudge store unavailable")
+            real_write_state(payload)
+
+        monkeypatch.setattr(svc, "_write_state", _fail_every_removal)
+
+        last_counts = {cid: 0}
+        last_ts = {cid: 1.0}
+        with pytest.raises(OSError, match="autonudge store unavailable"):
+            await h._settle_campaign_from_watchdog(
+                cid,
+                [],
+                last_counts,
+                last_ts,
+                observed_started_at=observed_started_at,
+            )
+
+        assert removal_attempts == h._TERMINAL_LOOP_REMOVAL_ATTEMPTS
+        assert get_campaign(cid)["status"] == CampaignStatus.STOPPED
+        assert svc.get_by_slot(f"research-{cid}") is None
+        assert last_counts == {}
+        assert last_ts == {}
+        svc.stop()
+
+        restored = AutoNudgeService(base_dir=store)
+        await restored.start()
+        restored_loop = restored.get_by_slot(f"research-{cid}")
+        assert restored_loop is not None
+        assert restored_loop.id == loop.id
+        assert restored_loop.active is False
+        assert restored_loop.id not in restored._timers
+        restored.stop()
+
+    @pytest.mark.asyncio
+    async def test_new_run_defers_stale_tombstone_without_rearming(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A resume gets one poll for launch to remove prior-run stop evidence."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        findings.joinpath("cycle_001.json").write_text(
+            json.dumps({"summary": "prior run synthesis", "verification": None})
+        )
+
+        stale_loop = SimpleNamespace(
+            id="stale-stop",
+            slot_key=f"research-{cid}",
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        svc = MagicMock()
+        # _launch_loop removes the stale record between the first and second
+        # watchdog polls in the production race this test models.
+        svc.get_by_slot.side_effect = [stale_loop, None]
+        svc.update = AsyncMock()
+        svc.remove = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+
+        sleep_calls = 0
+
+        async def _run_two_polls(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 2:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(h.asyncio, "sleep", _run_two_polls)
+        slot = SimpleNamespace(_trust=True, running=False)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+
+        await h._watchdog_loop({"state": state})
+
+        assert get_campaign(cid)["status"] == CampaignStatus.RUNNING
+        svc.update.assert_not_awaited()
+        svc.remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_settles_on_first_safe_poll_without_rearming(
+        self, _isolate: Path, monkeypatch
+    ):
+        """A stop tombstone waits for the worker turn, then outranks expiry
+        handling instead of being revived like an app-disable pause."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AUTONUDGE_STOP_REASON
+
+        campaign = create_campaign(
+            {
+                "question": "Research a sufficiently detailed question here",
+                "sources": ["web"],
+            }
+        )
+        cid = campaign["id"]
+        update_campaign_status(cid, CampaignStatus.RUNNING)
+        db = h._get_db()
+        db.execute(
+            "UPDATE campaigns SET started_at=? WHERE id=?",
+            (time.time() - h._TRUST_TTL_SECS - 1, cid),
+        )
+        db.commit()
+        db.close()
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
+        findings.joinpath("cycle_001.json").write_text(
+            json.dumps({"summary": "final synthesis", "verification": None})
+        )
+
+        loop = SimpleNamespace(
+            id="loop-stop",
+            slot_key=f"research-{cid}",
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON,
+        )
+        svc = MagicMock()
+        svc.get_by_slot.return_value = loop
+        svc.update = AsyncMock()
+        svc.remove = AsyncMock()
+        monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+        monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+
+        sleep_calls = 0
+        slot = SimpleNamespace(_trust=True, running=True)
+        events: list[dict] = []
+        advance_threads: list[int] = []
+
+        def _advance_exploration_off_loop(campaign_id):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                advance_threads.append(threading.get_ident())
+            else:
+                pytest.fail("final-cycle bookkeeping ran on the event loop")
+            assert campaign_id == cid
+
+        async def _finish_worker_then_stop(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 2:
+                findings.joinpath("cycle_002.json").write_text(
+                    json.dumps({"summary": "last worker-turn synthesis", "verification": None})
+                )
+                slot.running = False
+            elif sleep_calls > 2:
+                raise asyncio.CancelledError
+
+        async def _remove_after_turn(_loop_id):
+            assert slot.running is False
+
+        svc.remove.side_effect = _remove_after_turn
+        monkeypatch.setattr(h.asyncio, "sleep", _finish_worker_then_stop)
+        monkeypatch.setattr(h, "_emit_sse", events.append)
+        monkeypatch.setattr(h, "_advance_exploration", _advance_exploration_off_loop)
+        original_list_cycle_files = h._list_cycle_files
+        scan_threads: list[int] = []
+
+        def _list_cycle_files_off_loop(campaign_id):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                scan_threads.append(threading.get_ident())
+            else:
+                pytest.fail("tombstone finding scan ran on the event loop")
+            return original_list_cycle_files(campaign_id)
+
+        monkeypatch.setattr(h, "_list_cycle_files", _list_cycle_files_off_loop)
+        state = SimpleNamespace(_slots={f"research-{cid}": slot})
+
+        await h._watchdog_loop({"state": state})
+
+        settled = get_campaign(cid)
+        assert settled["status"] == CampaignStatus.STOPPED
+        assert settled["total_cycles"] == 2
+        assert events == [
+            {
+                "type": "new_finding",
+                "campaign_id": cid,
+                "finding": {
+                    "summary": "last worker-turn synthesis",
+                    "verification": None,
+                },
+            },
+            {"type": "stopped", "campaign_id": cid},
+        ]
+        assert len(advance_threads) == 1
+        assert len(scan_threads) == 2
+        svc.update.assert_not_awaited()
+        svc.remove.assert_awaited_once_with(loop.id)
 
 
 # --- auto_approve (unattended) persistence ---
@@ -2018,6 +2968,7 @@ class TestForkAndGrillTreeHTTP:
                 "sub_questions": [],
                 "sources": ["web"],
                 "max_cycles": 5,
+                "model": "test-model-x",  # parent created with an explicit pick
             }
         )
         pid = parent["id"]
@@ -2042,6 +2993,7 @@ class TestForkAndGrillTreeHTTP:
         row = h.get_campaign(child_id)
         assert row is not None and row["parent_id"] == pid
         assert row["name"].startswith("Forked: ")
+        assert row["model"] == "test-model-x"  # fork continues on the parent's pick
         assert (h._campaign_dir(child_id) / "parent_findings.md").read_text(encoding="utf-8") == (
             "# Parent findings\nsome evidence"
         )

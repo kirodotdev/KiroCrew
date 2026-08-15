@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2 } from 'lucide-react'
+import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, TestTubeDiagonal } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { ContentSkeleton } from '../components/ui'
 import { LogViewer } from './LogsPage'
@@ -7,15 +7,14 @@ import SystemPage from './SystemPage'
 import TelemetryPanel from './TelemetryPanel'
 import SessionArchive from './SessionArchive'
 import LocalStorageDebug from './LocalStorageDebug'
-import { SharedMcpGatewayToggle } from './settings/SharedMcpGatewayToggle'
-import { McpPoolableServers } from './settings/McpPoolableServers'
+import { McpManagement } from './settings/McpManagement'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
-import { PreviewSurfacesCard } from './developer/PreviewSurfacesCard'
+import { FeaturePreviewsTab } from './developer/FeaturePreviewsTab'
 
 /**
  * Lazy: MemoryGraphTab is the only eager owner of the sigma/graphology stack
  * (vendor-graph, ~180 KB gzip), which a static import keeps in the entry
- * modulepreload set for every page load even though this tab is one of eight on
+ * modulepreload set for every page load even though this tab is one of nine on
  * an internals-only route. Deferred behind `lazy()`, the chunk is fetched when
  * the Memory tab is first opened.
  */
@@ -39,6 +38,7 @@ function buildTabs() {
     { key: 'mcp-pool', label: i18nT('pages.developerPage.tabs.mcpPool.label'), icon: <Network size={16} />, description: i18nT('pages.developerPage.tabs.mcpPool.description') },
     { key: 'memory', label: i18nT('pages.developerPage.tabs.memory.label'), icon: <Brain size={16} />, description: i18nT('pages.developerPage.tabs.memory.description') },
     { key: 'config', label: i18nT('pages.developerPage.tabs.config.label'), icon: <FileCode2 size={16} />, description: i18nT('pages.developerPage.tabs.config.description') },
+    { key: 'feature-previews', label: i18nT('pages.developerPage.tabs.featurePreviews.label'), icon: <TestTubeDiagonal size={16} />, description: i18nT('pages.developerPage.tabs.featurePreviews.description') },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} />, description: i18nT('pages.developerPage.tabs.archive.description') },
   ]
 }
@@ -52,12 +52,7 @@ export default function DeveloperPage() {
         {tab === 'system' && <SystemPage embedded />}
         {tab === 'telemetry' && <TelemetryPanel />}
         {tab === 'storage' && <LocalStorageDebug />}
-        {tab === 'mcp-pool' && (
-          <>
-            <SharedMcpGatewayToggle />
-            <McpPoolableServers />
-          </>
-        )}
+        {tab === 'mcp-pool' && <McpManagement />}
         {tab === 'memory' && (
           <>
             {/* The memory GRAPH visualizer is an internals view. The
@@ -71,11 +66,11 @@ export default function DeveloperPage() {
         )}
         {tab === 'config' && (
           <>
-            <PreviewSurfacesCard />
             <KiroCrewCfgTab />
             <AgentCfgTab />
           </>
         )}
+        {tab === 'feature-previews' && <FeaturePreviewsTab />}
         {tab === 'archive' && <SessionArchive />}
       </>}
     </SidePanelLayout>

@@ -223,7 +223,7 @@ export function TeamsPanel() {
 
       {/* ── Bot setup steps ── */}
       <SettingsSection title={i18nT('pages.settings.teamsPanel.connect_the_azure_bot')}>
-        <SettingsCard>
+        <SettingsCard index={1}>
           <ol className="text-[13px] text-text m-0 pl-5 space-y-1.5 list-decimal">
             <li>
               {i18nT('pages.settings.teamsPanel.expose_this_gateway_over')} <strong>{i18nT('pages.settings.teamsPanel.public_https')}</strong> {i18nT('pages.settings.teamsPanel.tunnel_or_reverse_proxy_see_the_note_above_note')}
@@ -258,7 +258,7 @@ export function TeamsPanel() {
 
       {/* ── Required credentials ── */}
       <SettingsSection title={i18nT('pages.settings.teamsPanel.required')}>
-        <SettingsCard>
+        <SettingsCard index={2}>
           <label htmlFor="teams-app-id" className="flex flex-col gap-1.5 py-1.5 text-[13px] font-semibold text-text">
             {i18nT('pages.settings.teamsPanel.app_client_id')}
             <input
@@ -305,7 +305,7 @@ export function TeamsPanel() {
 
       {/* ── Access ── */}
       <SettingsSection title={i18nT('pages.settings.teamsPanel.access')}>
-        <SettingsCard>
+        <SettingsCard index={3}>
           <SettingsToggle
             label={i18nT('pages.settings.teamsPanel.enable_teams_channel')}
             description={i18nT('pages.settings.teamsPanel.start_the_channel_at_gateway_boot_when_the_app_i')}

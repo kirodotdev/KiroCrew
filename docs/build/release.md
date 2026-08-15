@@ -18,7 +18,7 @@ macOS signing mechanics and notary-credential rotation live in
 |---------|---------|---------------|
 | `nightly` | `nightly.yml`: cron `0 6 * * *` (06:00 UTC) plus manual dispatch, from `main` HEAD | `<base>-nightly.<YYYYMMDD>t<HHMMSS>` |
 | `insider` | `release.yml`: push of a prerelease tag (`v0.2.0-rc.1`) | `<x.y.z>-rc.N` |
-| `stable` | `release.yml`: push of a bare semver tag (`v0.2.0`) | `<x.y.z>` |
+| `stable` | `release.yml`: push of a bare semver tag (`v0.2.0`) on a recorded candidate's commit; the run verifies and promotes that candidate's exact bytes, never rebuilding | Release identity `<x.y.z>`; artifacts retain the selected candidate's embedded `<x.y.z>rcN` version |
 
 The channel name is a literal path segment everywhere (`cli/insider/...`,
 `feed/insider/...`, the `:insider` image tag), so there is no name-to-prefix
@@ -33,6 +33,38 @@ deciding to promote, and merging back are human steps the pipeline knows nothing
 about, which is why there is no cut/promote/rollback workflow (see "Deliberately
 not built").
 
+## Stable promotion: exact tested bytes, never a rebuild
+
+Stable must ship the bytes insiders actually validated, not a same-commit
+rebuild that hopes for reproducibility. The mechanism:
+
+- **A successful prerelease run records the candidate.** After every publish
+  lane succeeds, `record-promotion` assembles the exact wheel/sdist, AppImage,
+  notarized zip/DMG, and the attested OCI manifest digest into a
+  `stable-promotion-<x.y.z>` GitHub artifact (90-day retention) whose manifest
+  (`scripts/release_promotion.py create`) carries per-file SHA-256/SHA-512/size
+  plus the source SHA, tag, run id, and versions.
+- **A bare `vX.Y.Z` tag resolves and verifies that record.** The
+  `resolve-promotion` job finds the newest **successful** same-commit,
+  same-base-version prerelease run, verifies the artifact ZIP against GitHub's
+  API-recorded digest, safely extracts it, and verifies every manifest field
+  and file digest (`scripts/release_promotion.py verify`). Only then do the
+  publish lanes move stable pointers/tags to those bytes. The stable run never
+  invokes the build workflows, CDSigner, Apple notarization, or the OCI
+  builder.
+- **Everything fails closed.** A missing, expired, ambiguous, or
+  digest-mismatched record aborts the promotion: cut and validate a fresh RC
+  rather than rebuilding stable.
+- **Promoted binaries retain the candidate's embedded version** (see "Version
+  stamping"), because rewriting embedded metadata would produce bytes users
+  never baked and invalidate the recorded digests and macOS signatures. The
+  bare git tag, GitHub Release, and stable channel are the final release
+  identity. pip users selecting a promoted (prerelease-versioned) wheel by
+  version must allow prereleases; the stable channel feed remains
+  channel-sticky.
+- **Hot patches follow the same rule**: at least one recorded RC before the
+  bare patch tag.
+
 ## Workflows in the release path
 
 Every one of these exists on `main`. Two trigger workflows call the same set of
@@ -43,7 +75,7 @@ concurrency group, and their version derivation.
 | Workflow | Kind | Role |
 |---|---|---|
 | `nightly.yml` | trigger (schedule + dispatch) | Derives the date stamp, then calls everything below. `concurrency: nightly-build` with `cancel-in-progress: true`. |
-| `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag, calls everything below, then creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
+| `release.yml` | trigger (`push` on `v*` tags) | Derives version + channel + wheel version from the tag. A prerelease tag builds, publishes to insider, and records the immutable promotion bundle; a bare tag verifies that same-commit bundle and promotes the exact files/OCI digest to stable without building. Then creates the GitHub Release. `concurrency: release-publish` with `cancel-in-progress: false` (queued). |
 | `dependency-vulnerability.yml` | reusable gate | `scripts/check_npm_audit.py`. Runs first; every build job needs it. |
 | `build-wheel.yml` | reusable build | Stamps the PEP 440 version into `pyproject.toml` and `__init__.py`, stamps the distribution channel, builds the frontend and stages it into the package, then `python -m build`. Uploads artifact `cli-wheel` (wheel + sdist). Credential-free. |
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` (AppImage) via `packaging/build-desktop.sh`. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. |
@@ -264,7 +296,14 @@ and why the base must stay a bare `X.Y.Z`.
 |---------|------------------------|---------------------|
 | nightly | `0.2.0-nightly.20260708t061155` | `0.2.0.dev20260708061155` |
 | insider | `0.2.0-rc.1` | `0.2.0rc1` |
-| stable | `0.2.0` | `0.2.0` |
+| stable | retains the promoted candidate's stamp (`0.2.0-rc.N`) | retains `0.2.0rcN` |
+
+A bare stable tag does not stamp or build: it verifies the selected candidate's
+recorded manifest and reuses its embedded version and byte digests unchanged,
+because re-stamping would change (and invalidate) the tested, signed bytes. The
+bare `X.Y.Z` names the git tag, the GitHub Release, and the stable channel
+paths — the release identity — while the artifacts keep the candidate's
+embedded prerelease version.
 
 Two stamps exist because the consumers disagree: Squirrel and electron-builder
 need semver, the wheel needs PEP 440. `nightly.yml` reads the clock **once** and

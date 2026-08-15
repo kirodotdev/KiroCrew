@@ -16,7 +16,7 @@ interface Props {
   onAuthorChange: (v: string) => void
   onDescriptionChange: (v: string) => void
   onFlipXChange: (v: boolean) => void
-  tt: (key: any, vars?: Record<string, string>) => string
+  tt: (key: string, vars?: Record<string, string>) => string
 }
 
 const S = {
@@ -45,21 +45,21 @@ export const PackInfoHeader: React.FC<Props> = ({
     <div style={S.row}>
       <div style={S.group}>
         <span style={S.label}>{i18nT('apps.crewCompanion.editor.name')}</span>
-        <input style={S.input} value={name} onChange={e => onNameChange(e.target.value)} placeholder={i18nT('apps.crewCompanion.editor.namePlaceholder')} />
+        <input style={S.input} value={name} onChange={e => onNameChange(e.target.value)} placeholder={i18nT('apps.crewCompanion.editor.namePlaceholder')} aria-label={i18nT('apps.crewCompanion.editor.name')} />
       </div>
       <div style={S.group}>
         <span style={S.label}>{i18nT('apps.crewCompanion.editor.author')}</span>
-        <input style={S.input} value={author} onChange={e => onAuthorChange(e.target.value)} placeholder={i18nT('apps.crewCompanion.editor.authorPlaceholder')} />
+        <input style={S.input} value={author} onChange={e => onAuthorChange(e.target.value)} placeholder={i18nT('apps.crewCompanion.editor.authorPlaceholder')} aria-label={i18nT('apps.crewCompanion.editor.author')} />
       </div>
     </div>
     <div style={{ marginBottom: 6 }}>
       <span style={S.label}>{i18nT('apps.crewCompanion.editor.description')}</span>
-      <input style={S.input} value={description} onChange={e => onDescriptionChange(e.target.value)} placeholder={i18nT('apps.crewCompanion.editor.descPlaceholder')} />
+      <input style={S.input} value={description} onChange={e => onDescriptionChange(e.target.value)} placeholder={i18nT('apps.crewCompanion.editor.descPlaceholder')} aria-label={i18nT('apps.crewCompanion.editor.description')} />
     </div>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
       <span style={{ fontSize: 12, color: 'var(--text)' }}>{i18nT('apps.crewCompanion.editor.flipX')}</span>
       <div
-            role="switch" aria-checked={flipX} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onFlipXChange(!flipX) } }}
+            role="switch" aria-checked={flipX} aria-label={i18nT('apps.crewCompanion.editor.flipX')} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onFlipXChange(!flipX) } }}
         onClick={() => onFlipXChange(!flipX)}
         style={{
           width: 34, height: 20, borderRadius: 10, cursor: 'pointer',

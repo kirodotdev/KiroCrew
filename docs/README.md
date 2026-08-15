@@ -17,8 +17,10 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [build/](build/README.md) | Packaging, signing, and releasing. |
 | [ci/](ci/README.md) | Everything that gates a pull request. |
 | [app-kit/](app-kit/README.md) | Building apps that run inside Kiro Crew (third-party developer docs). |
+| [design/](design/README.md) | Proposals for changes agreed before they are built. |
 | [system-specs/](system-specs/README.md) | Change-control contracts. The doc a code change MUST update in the same commit. |
 | [request-for-change/](request-for-change/README.md) | Proposals and decision records for large or contested changes. |
+| [blog/](blog/README.md) | Essays on direction and design philosophy. Arguments, not contracts. |
 | [reference/](reference/README.md) | Upstream documentation we mirror but do not author. |
 | [task-specs/](task-specs/README.md) | Archived per-task specs. Not current context. |
 

@@ -913,10 +913,31 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
   })
 
   it('surfaces a save failure that is not a disk conflict', async () => {
-    await mountDirty()
-    api.saveNote.mockRejectedValueOnce(new Error('no space left on device'))
-    await userEvent.click(screen.getByRole('button', { name: 'Sync' }))
+    await mountWithNote()
+    await userEvent.click(screen.getByRole('button', { name: 'Markdown source' }))
 
+    // The edit's autosave debounce must be armed on FAKE timers: on real ones
+    // the 1000ms debounce raced the Sync click, and when it fired first its
+    // flushSave consumed the single staged rejection — runSync's setError(null)
+    // then erased the very alert this test waits on. With the debounce pending
+    // on a clock that never advances, only the Sync path can consume it.
+    vi.useFakeTimers()
+    fireEvent.change(rawEditor(), { target: { value: '# Hello\n\nedited in the buffer' } })
+    api.saveNote.mockRejectedValueOnce(new Error('no space left on device'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sync' }))
+    // Drain the microtask chain (runSync → flushSave → rejection) without
+    // reaching SAVE_DEBOUNCE_MS, then hand the clock back for the DOM wait.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    vi.useRealTimers()
+
+    // The alert's presence IS the proof the Sync path consumed the rejection:
+    // had the debounced autosave consumed it instead, runSync's setError(null)
+    // would have erased the banner before this query could see it. A saveNote
+    // call-count assertion would NOT be a stronger pin — earlier tests in this
+    // file leave real 1000ms debounce timers running past their own teardown,
+    // and one landing here inflates the shared mock's count nondeterministically.
     const alert = await screen.findByRole('alert', { timeout: 5_000 })
     expect(alert.textContent).toContain('no space left on device')
   })

@@ -1,6 +1,7 @@
-import { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
+import React, { createContext, useContext, memo, useEffect, useMemo, useRef, useId, useCallback, useState } from 'react'
 import Clickable from './Clickable'
-import { Paperclip, X, Download, Plus, Minus, Search, Folder } from 'lucide-react'
+import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
+import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -32,7 +33,7 @@ import { api } from '../api/client'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { fileIcon } from '../utils/fileIcons'
-import { urlTransform, ALLOWED_PROTOCOLS } from '../utils/urlTransform'
+import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
@@ -178,6 +179,14 @@ export const CompactImagesCtx = createContext<boolean>(false)
  * Stable within a message, so re-renders and streaming do not re-request.
  */
 export const ImageVersionCtx = createContext<string | null>(null)
+
+/** The exact markdown string handed to ReactMarkdown, so components can map a
+ *  node's source position back to the original text. ImgWithFallback uses it
+ *  to see whether an image destination was `<…>`-wrapped — micromark strips
+ *  the wrap and percent-encodes BOTH forms identically, so the parsed url
+ *  alone cannot distinguish producer-encoded content from a legacy raw path
+ *  that happens to contain `%XX` (which must be preserved verbatim). */
+export const MdSourceCtx = createContext<string | null>(null)
 
 /**
  * Per-consumer override for rendered markdown LINKS.
@@ -331,6 +340,7 @@ function initMermaid(mermaid: MermaidApi): void {
 
 import { CodeBlock } from './CodeBlock'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
+import DiagramLightbox from './DiagramLightbox'
 
 /** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
  *  rendered element. Used in every MD_COMPONENTS override; returns an
@@ -345,6 +355,11 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const id = useId().replace(/:/g, '_')
   const renderedRef = useRef('')
+  // Rendered SVG markup, kept for the enlarge viewer. Empty until a successful
+  // render and reset on failure, so the enlarge affordance only ever exists
+  // for (and targets) the diagram currently on screen.
+  const [svg, setSvg] = useState('')
+  const [enlarged, setEnlarged] = useState(false)
 
   useEffect(() => {
     if (!ref.current || renderedRef.current === code) return
@@ -360,6 +375,7 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       range.selectNodeContents(ref.current)
       range.deleteContents()
       ref.current.appendChild(range.createContextualFragment(svg))
+      setSvg(svg)
     }).catch(() => {
       if (!ref.current) return
       const pre = document.createElement('pre')
@@ -367,10 +383,37 @@ const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
       pre.textContent = code
       ref.current.textContent = ''
       ref.current.appendChild(pre)
+      setSvg('')
+      setEnlarged(false)
     })
   }, [code, id])
 
-  return <div ref={ref} className="my-3 flex justify-center overflow-x-auto min-h-[60px]" />
+  return (
+    <div className="relative group my-3">
+      {/* Pointer convenience: clicking the rendered diagram opens the viewer.
+          Keyboard and AT users reach the same viewer through the real button
+          below — the same pairing the image lightbox uses (clickable <img>,
+          focusable controls elsewhere). */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events */}
+      <figure
+        className={`m-0 ${svg ? 'cursor-zoom-in' : ''}`}
+        onClick={svg ? () => setEnlarged(true) : undefined}
+      >
+        <div ref={ref} className="flex justify-center overflow-x-auto min-h-[60px]" />
+      </figure>
+      {svg && (
+        <button
+          aria-label={i18nT('components.diagramLightbox.enlarge_diagram')}
+          title={i18nT('components.diagramLightbox.enlarge_diagram')}
+          className={`absolute top-1.5 right-1.5 p-1.5 rounded-md bg-bg-elevated/90 border border-border text-muted hover:text-text opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition-opacity cursor-pointer ${HOVER_NONE_ACTION_BTN_CLS}`}
+          onClick={() => setEnlarged(true)}
+        >
+          <Maximize2 className="lucide-inline" aria-hidden="true" />
+        </button>
+      )}
+      {enlarged && svg && <DiagramLightbox svg={svg} onClose={() => setEnlarged(false)} />}
+    </div>
+  )
 })
 
 /** Generate a URL-safe slug from heading children (handles nested elements) */
@@ -816,7 +859,7 @@ const MD_COMPONENTS: Components = {
  *  in via .replaceWith(), so it never mutates DOM React owns — which could
  *  otherwise trigger "removeChild on Node" reconciliation crashes. */
 function ImgWithFallback({
-  node: _node,
+  node,
   src,
   alt,
   ...props
@@ -826,16 +869,35 @@ function ImgWithFallback({
   const basePath = useContext(BasePathCtx)
   const compact = useContext(CompactImagesCtx)
   const version = useContext(ImageVersionCtx)
+  const source = useContext(MdSourceCtx)
   if (!src) return null
-  const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.')
+  // A Windows drive/UNC path (`C:/…` — urlTransform passes it through for
+  // image src) is as local as a POSIX `/…` path and must route to
+  // /api/file-raw the same way; it must NOT take the basePath-relative branch
+  // below, which is only for genuinely relative paths (issue #3497).
+  const isWinAbs = WINDOWS_ABS_PATH_RE.test(src)
+  const isLocal = src.startsWith('/') || src.startsWith('~') || src.startsWith('.') || isWinAbs
     || (basePath && !src.startsWith('http'))
   let url: string
   if (isLocal) {
-    if (basePath && !src.startsWith('/') && !src.startsWith('~')) {
-      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + src
+    // micromark percent-encodes destinations in BOTH forms, so wrap-ness is
+    // recovered from the source text at this node's position: only a
+    // `<…>`-wrapped destination is producer-emitted (mdImageDest) and safe to
+    // decode back to the on-disk path. An unwrapped one is legacy content —
+    // a file literally named `photo%20copy.png` must stay verbatim, exactly
+    // as it resolved before destinations were ever encoded. decodeLocalPath
+    // keeps the raw form on malformed sequences and on decoded control
+    // characters (a `%00` NUL would crash the backend's realpath).
+    const start = node?.position?.start?.offset
+    const end = node?.position?.end?.offset
+    const wrapped = source != null && start != null && end != null
+      && /\]\(\s*</.test(source.slice(start, end))
+    const localPath = wrapped ? decodeLocalPath(src) : src
+    if (basePath && !src.startsWith('/') && !src.startsWith('~') && !isWinAbs) {
+      const resolved = basePath.replace(/\/[^/]*$/, '') + '/' + localPath
       url = `/api/file-raw?path=${encodeURIComponent(resolved)}`
     } else {
-      url = `/api/file-raw?path=${encodeURIComponent(src)}`
+      url = `/api/file-raw?path=${encodeURIComponent(localPath)}`
     }
     // See ImageVersionCtx: without this every impression of a rewritten file
     // shares one cache entry and a new message renders the previous bytes. The
@@ -1165,7 +1227,110 @@ const REMARK_PLUGINS: PluggableList = [
   remarkCjkFriendlyGfmStrikethrough,
   [remarkMath, { singleDollarTextMath: false }],
 ]
-const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex]
+
+/**
+ * HTML block-level elements that cannot legally nest inside `<p>`. When
+ * `rehype-raw` parses raw HTML embedded in markdown, it may produce a HAST tree
+ * with a block element inside a `<p>` (e.g. `<p><div>…</div></p>`). The
+ * browser's HTML parser auto-corrects this by closing the `<p>` before the
+ * block element, moving the block out — but React's VDOM still thinks the block
+ * is inside the `<p>`. On the next reconciliation React tries to `removeChild`
+ * from `<p>`, the node is no longer there, and we get:
+ *   "Failed to execute 'removeChild' on 'Node': The node to be removed is not
+ *    a child of this node."
+ *
+ * This plugin mirrors the browser's correction at the HAST level so React's
+ * tree matches reality from the first render.
+ */
+const BLOCK_ELEMENTS = new Set([
+  'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'dd',
+  'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'li',
+  'main', 'nav', 'ol', 'p', 'pre', 'section', 'table', 'ul',
+])
+
+function rehypeUnwrapBlocks() {
+  return (tree: HastRoot) => {
+    const walk = (parent: HastRoot | HastElement) => {
+      if (!parent.children) return
+      for (let i = 0; i < parent.children.length; i++) {
+        const child = parent.children[i]
+        if (child.type === 'element') walk(child)
+      }
+      // Only `<p>` elements need unwrapping (that's the only element the
+      // browser auto-closes when it encounters a block child).
+      if (parent.type !== 'element' || parent.tagName !== 'p') return
+      const hasBlock = parent.children.some(
+        c => c.type === 'element' && BLOCK_ELEMENTS.has(c.tagName),
+      )
+      if (!hasBlock) return
+
+      // Split: children before a block go into a <p>, the block becomes a
+      // sibling, children after go into the next iteration's bucket. We
+      // rebuild the parent's slot in-place by replacing it in the grandparent.
+      // Since we're walking depth-first and only mutate the CURRENT parent's
+      // children list at the grandparent level, we handle this by returning
+      // replacement nodes and letting the outer walk splice them.
+      const replacement: RootContent[] = []
+      let bucket: RootContent[] = []
+      const flushBucket = () => {
+        // Only emit a <p> wrapper if the bucket has non-whitespace content.
+        const hasContent = bucket.some(n =>
+          n.type === 'element' || (n.type === 'text' && n.value.trim()),
+        )
+        if (hasContent) {
+          replacement.push({
+            type: 'element',
+            tagName: 'p',
+            properties: { ...(parent as HastElement).properties },
+            children: bucket as HastElement['children'],
+            // Preserve source position so rehypeSourcepos can stamp
+            // data-sourcepos on the synthesized wrappers (needed for
+            // inline-comment anchoring).
+            position: (parent as HastElement).position,
+          })
+        }
+        bucket = []
+      }
+      for (const child of parent.children) {
+        if (child.type === 'element' && BLOCK_ELEMENTS.has(child.tagName)) {
+          flushBucket()
+          replacement.push(child as RootContent)
+        } else {
+          bucket.push(child as RootContent)
+        }
+      }
+      flushBucket()
+      // Stash the replacement so the caller can splice it.
+      ;(parent as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement = replacement
+    }
+
+    // Two-pass: first walk marks <p> elements that need splitting, then we
+    // splice replacements into their parents top-down. A single pass that
+    // mutates children while iterating would skip indices.
+    const splice = (node: HastRoot | HastElement) => {
+      if (!node.children) return
+      let i = 0
+      while (i < node.children.length) {
+        const child = node.children[i]
+        if (child.type === 'element') splice(child)
+        const rep = (child as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement
+        if (rep) {
+          delete (child as HastElement & { _unwrapReplacement?: RootContent[] })._unwrapReplacement
+          ;(node.children as RootContent[]).splice(i, 1, ...rep)
+          i += rep.length
+        } else {
+          i++
+        }
+      }
+    }
+
+    walk(tree)
+    splice(tree)
+  }
+}
+
+const REHYPE_PLUGINS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex]
 
 // Matches one source line break plus any leading tabs/spaces, so a trailing
 // space before the break doesn't survive as its own text node. Mirrors the
@@ -1240,7 +1405,7 @@ function rehypeSourcepos() {
     walk(tree)
   }
 }
-const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeSanitize, rehypeKatex, rehypeSourcepos]
+const REHYPE_PLUGINS_WITH_SOURCEPOS: PluggableList = [[rehypeRaw, { passThrough: ['math', 'inlineMath'] }], rehypeUnwrapBlocks, rehypeSanitize, rehypeKatex, rehypeSourcepos]
 // NOTE: remark plugin config is shared via REMARK_PLUGINS above (singleDollarTextMath:
 // false). The sourcepos variant only differs in the rehype chain.
 
@@ -1507,15 +1672,23 @@ function rehypeStreamingCaret() {
 // real code renders with literal backticks. One missing space corrupts the
 // rest of the message.
 //
+// The same swallow takes the CLOSING `**` of a bold-wrapped URL, the shape
+// `**https://…**（revision 1）` that CJK prose writes with no space between the
+// emphasis and the punctuation after it. GFM trims a TRAILING `*`, so this only
+// breaks when a non-space follows: the `**` stops being a delimiter, the opening
+// `**` renders as two literal asterisks, and every later `**` in the paragraph
+// re-pairs against the wrong partner.
+//
 // This has to be fixed at the SOURCE level, not on the mdast: re-splitting the
 // link node after the fact cannot restore the code-span pairing, because the
 // pairing is decided while micromark tokenizes the whole paragraph. So force
 // the boundary before parsing by re-emitting the URL head as an angle autolink
 // `<url>`, which has an explicit end and renders identically.
 //
-// The cut is EVIDENCE-BASED, not character-based — see cjkCutIndex. CJK
-// punctuation reaches real URLs raw (`…/wiki/苹果（公司）`), so cutting on the
-// character alone would break links that render correctly today.
+// The cut is EVIDENCE-BASED, not character-based — see cjkCutIndex and
+// strongDelimCutIndex. CJK punctuation reaches real URLs raw
+// (`…/wiki/苹果（公司）`), so cutting on the character alone would break links
+// that render correctly today.
 //
 // Which regions are off-limits is read off remark's OWN parse (see
 // autolinkLiteralSpans) rather than a hand-rolled scanner: only a real GFM
@@ -1547,6 +1720,28 @@ const CJK_SENTENCE_ENDERS = '\u3002\uff0e\uff01\uff1f\u2026\uff61'
 // is also the character whose loss does the real damage: the run eats an opening
 // code-span delimiter and every later backtick pairing in the paragraph shifts.
 const MD_ACTIVE_RE = /`/
+
+// Strong-emphasis delimiters. A single `*` or `_` is NOT included: both are legal
+// in a URL and common in query strings (`?q=foo，*test`, `?a=b_c`), so an unpaired
+// one before the URL is too weak to act on. A DOUBLED delimiter carries the
+// structural evidence instead — see strongDelimCutIndex.
+const STRONG_DELIMS = ['**', '__']
+const STRONG_DELIM_RE = /\*\*|__/
+
+// CommonMark's character classes for delimiter flanking. Unicode-aware on
+// purpose: the text this runs on is CJK prose, where the neighbour of a `**` is
+// routinely a fullwidth punctuation mark (`：`, `）`) that ASCII classes miss —
+// and misclassifying a neighbour flips whether a run can open emphasis.
+const UNICODE_WS_RE = /[\s\p{Zs}]/u
+const UNICODE_PUNCT_RE = /[\p{P}\p{S}]/u
+/**
+ * East Asian WIDE or FULLWIDTH characters — ideographs, kana, hangul, and the
+ * fullwidth forms that carry CJK punctuation (`：（），。`). Ambiguous-width marks
+ * (`·`, `…`, curly quotes) are deliberately absent: the renderer's amendment
+ * treats those as ordinary punctuation, so this class must too.
+ */
+const CJK_WIDE_RE =
+  /[\u1100-\u115f\u2e80-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]|[\u{20000}-\u{3fffd}]/u
 
 // Where a bare URL may START, and the run GFM's tokenizer would take from there
 // (everything up to ASCII whitespace or `<`). Only needed for a SECOND URL
@@ -1718,6 +1913,222 @@ function cjkCutIndex(run: string, prefix: string): number {
   return -1
 }
 
+/**
+ * Whether a delimiter run with `before`/`after` as its neighbours can OPEN
+ * and/or CLOSE emphasis, per CommonMark's flanking rules. Callers pass `' '` for
+ * start/end of line, which the spec treats as whitespace.
+ *
+ * This is the load-bearing distinction: a textual count of `**`/`__` cannot tell
+ * a real delimiter from a run GFM renders literally. An intraword `__`
+ * (`report__final.pdf`) can neither open nor close, and a `**` with whitespace on
+ * both sides (`a ** b`) is not flanking at all — treating either as a delimiter
+ * truncates a URL that renders correctly today.
+ */
+function flankingFor(
+  before: string,
+  after: string,
+  ch: string,
+): { canOpen: boolean; canClose: boolean } {
+  const wsBefore = UNICODE_WS_RE.test(before)
+  const wsAfter = UNICODE_WS_RE.test(after)
+  // The CJK-friendly amendment that `remark-cjk-friendly` implements — and this
+  // pass must measure the SAME grammar the renderer runs — classifies a wide or
+  // fullwidth character as CJK rather than as punctuation, so CJK punctuation no
+  // longer blocks emphasis, and admits a CJK neighbour where CommonMark admits
+  // only whitespace or punctuation. Without this, `**中文。**` reads as two
+  // openers here while the renderer pairs it as one closed strong.
+  const cjkBefore = CJK_WIDE_RE.test(before)
+  const cjkAfter = CJK_WIDE_RE.test(after)
+  const punctBefore = UNICODE_PUNCT_RE.test(before) && !cjkBefore
+  const punctAfter = UNICODE_PUNCT_RE.test(after) && !cjkAfter
+  const leftFlanking = !wsAfter && (!punctAfter || wsBefore || punctBefore || cjkBefore)
+  const rightFlanking = !wsBefore && (!punctBefore || wsAfter || punctAfter || cjkAfter)
+  // `_` additionally cannot do intraword emphasis; `*` can. That extra condition tests
+  // punct-or-whitespace in the RAW sense, where CJK punctuation counts — the amendment
+  // above excludes wide characters from the punctuation class used for FLANKING only.
+  // Reusing the amended class here would leave a fullwidth `：` reading as neither
+  // punctuation nor whitespace, so `：__url__` would look intraword and open nothing.
+  if (ch === '_') {
+    const rawBefore = wsBefore || UNICODE_PUNCT_RE.test(before)
+    const rawAfter = wsAfter || UNICODE_PUNCT_RE.test(after)
+    return {
+      canOpen: leftFlanking && (!rightFlanking || rawBefore),
+      canClose: rightFlanking && (!leftFlanking || rawAfter),
+    }
+  }
+  return { canOpen: leftFlanking, canClose: rightFlanking }
+}
+
+/** Flanking for the run at `[start, end)` of `line`. */
+function delimFlanking(
+  line: string,
+  start: number,
+  end: number,
+  ch: string,
+): { canOpen: boolean; canClose: boolean } {
+  return flankingFor(
+    start > 0 ? line[start - 1] : ' ',
+    end < line.length ? line[end] : ' ',
+    ch,
+  )
+}
+
+/**
+ * Whether the character at `at` is backslash-escaped, i.e. preceded by an ODD
+ * number of backslashes. `\**` is a literal asterisk followed by a lone `*` and
+ * cannot be a strong delimiter, while `\\**` escapes the backslash itself and
+ * leaves the `**` intact. Parity is what tells those apart.
+ */
+function isEscapedAt(line: string, at: number): boolean {
+  let n = 0
+  while (at - n - 1 >= 0 && line[at - n - 1] === '\\') n++
+  return n % 2 === 1
+}
+
+/**
+ * Whether the delimiter run `line[at, end)` sits between two ordinary word
+ * characters — neither side whitespace, punctuation, nor CJK. Start of line and
+ * end of line count as whitespace, so they are never intraword.
+ */
+function isIntrawordAt(line: string, at: number, end: number): boolean {
+  const before = at > 0 ? line[at - 1] : ' '
+  const after = end < line.length ? line[end] : ' '
+  const plain = (c: string) =>
+    !UNICODE_WS_RE.test(c) && !UNICODE_PUNCT_RE.test(c) && !CJK_WIDE_RE.test(c)
+  return plain(before) && plain(after)
+}
+
+/**
+ * Whether `line[0, upTo)` leaves a strong-emphasis opener OPEN — i.e. the author
+ * was still inside a `**`/`__` when the URL started.
+ *
+ * CommonMark consumes delimiter CHARACTERS, not whole runs, so this counts
+ * characters: an unambiguous opener adds its length, an unambiguous closer takes
+ * back up to that many, and a strong opener is open when at least two characters
+ * are still unmatched. Counting runs instead would call `**foo*` a pending strong
+ * opener, when the lone `*` has in fact eaten one of the two and CommonMark renders
+ * `*<em>foo</em>` — no strong opener survives to wrap the URL.
+ *
+ * A run that could be either an opener or a closer (`a**b`) makes the whole line
+ * inconclusive, because a count that guesses can be wrong in both directions. A run
+ * GFM would render literally — an intraword `__`, or a `**` with whitespace on both
+ * sides — is not flanking at all and contributes nothing, which is why a lone `*`
+ * used as prose (`2 * 3 = 6`) does not disturb the count.
+ */
+function hasPendingStrongOpener(line: string, upTo: number, delim: string): boolean {
+  const ch = delim[0]
+  let open = 0
+  let i = 0
+  while (i < upTo) {
+    if (line[i] !== ch) {
+      i++
+      continue
+    }
+    let end = i
+    while (end < line.length && line[end] === ch) end++
+    if (end > upTo) break
+    // An escaped first character is a literal, so the delimiter run effectively
+    // starts one character later: `\**` carries no delimiter at all, `\***` carries
+    // one. Flanking is then measured from that later start, whose left neighbour is
+    // the literal asterisk — punctuation, which is what it renders as.
+    const from = isEscapedAt(line, i) ? i + 1 : i
+    if (end > from) {
+      const { canOpen, canClose } = delimFlanking(line, from, end, ch)
+      // An INTRAWORD run — a word character on both sides, no whitespace, no
+      // punctuation, no CJK — is the shape every counter-example to this rule has
+      // used (`report__final.pdf`, `?q=foo**-bar`). CommonMark lets `*` pair there,
+      // but the renderer leaves such a line literal, so claiming to know the pairing
+      // is how a working URL gets truncated. Treat the line as inconclusive.
+      if (canOpen && canClose && isIntrawordAt(line, from, end)) return false
+      // A run that can do both otherwise is the ordinary shape in CJK prose (`：**`,
+      // `。**`). The renderer resolves it the way a delimiter stack does: close an
+      // opener when one is waiting, otherwise open.
+      if (canClose && open >= delim.length) open -= Math.min(end - from, open)
+      else if (canOpen) open += end - from
+    }
+    i = end
+  }
+  return open >= delim.length
+}
+
+/**
+ * Index in `run` of a strong-emphasis delimiter the author wrote to CLOSE an
+ * opener that sits before the URL, or -1 when there is none.
+ *
+ * This evidence is structural rather than lexical: it does not claim to know
+ * where the URL ended, it observes that the current reading is one no author
+ * writes — a delimiter PAIR wrapping the URL, whose closing half GFM has
+ * swallowed into the href. Leaving it there costs the emphasis its delimiter, so
+ * the opener degrades to two literal asterisks and every later `**` in the
+ * paragraph re-pairs against the wrong partner.
+ *
+ * BOTH ends must be real, and both are judged against the text the author wrote:
+ * the prefix must leave an opener open (hasPendingStrongOpener) AND the candidate
+ * inside the run must itself be a legitimate closer. Checking only the opener is
+ * not enough — `__See https://example.com/a__b for details__` opens a real `__`
+ * and then hits an INTRAWORD `__` in the path, which closes nothing, so cutting
+ * there truncates a correct link and the emphasis stays open anyway.
+ *
+ * The candidate must also be followed by CJK PUNCTUATION — the same class the two
+ * rules above already act on. Flanking cannot carry this: in `?q=foo**-bar` the
+ * `**` has a word character before it and punctuation after it, which is exactly
+ * the shape of a real closer before punctuation, and a candidate followed by a
+ * fullwidth mark is right-flanking by construction (a run holds no whitespace, and
+ * the mark itself is punctuation), so a closer check on it can never refuse
+ * anything. The requirement is deliberately narrower than "any non-ASCII": an
+ * ideograph is legal mid-path (`?q=a**中文`), so treating one as a boundary would
+ * truncate a working URL.
+ *
+ * Consequences worth knowing, both accepted:
+ *  - An all-ASCII paragraph is never cut, and neither is `**url**已合并` (an
+ *    ideograph, not punctuation, follows the delimiter). This pass carries `Cjk` in
+ *    its name; the shape it is for is `**url**（…` / `**url**，…`.
+ *  - A URL whose path genuinely carries a fullwidth mark straight after a `**`
+ *    (`…/wiki/苹果**（公司）`) would be cut short. That is the SAME residual risk
+ *    rules 1 and 2 already accept, on the same character class.
+ *
+ * A trailing delimiter never reaches here: GFM trims a trailing `*`/`_` off the
+ * autolink literal, so `**https://x.com/a**` — which renders correctly today —
+ * yields a node whose source stops at `a`, with no delimiter inside the run.
+ */
+function strongDelimCutIndex(run: string, prefix: string, suffix: string): number {
+  // Flanking is decided by a delimiter's NEIGHBOURS, so the prefix alone is not
+  // enough context: the character after a prefix-terminal `**` is the URL's
+  // first character.
+  const line = prefix + run
+  let best = -1
+  for (const delim of STRONG_DELIMS) {
+    if (!hasPendingStrongOpener(line, prefix.length, delim)) continue
+    // If the prose after the URL still has a delimiter available to close that
+    // opener, the author's pair spans the URL and the `**` inside it is part of the
+    // URL. Cutting there would truncate the href AND orphan the real closer.
+    if (hasUnmatchedCloserAfter(suffix, delim)) continue
+    for (let at = run.indexOf(delim); at > 0; at = run.indexOf(delim, at + 1)) {
+      // An escaped delimiter closes nothing, so it is no evidence of a boundary.
+      // Skipping rather than adjusting is enough here: the next iteration starts one
+      // character later, which is exactly the run `\***` leaves behind.
+      if (isEscapedAt(line, prefix.length + at)) continue
+      const after = at + delim.length < run.length ? run[at + delim.length] : ' '
+      if (!CJK_PUNCT_RE.test(after)) continue
+      if (best < 0 || at < best) best = at
+      break
+    }
+  }
+  return best
+}
+
+/**
+ * The earliest boundary any evidence rule can prove, or -1. Rules are
+ * independent: each one alone is enough, and the shortest URL among them is the
+ * conservative choice.
+ */
+function earliestCut(run: string, prefix: string, suffix: string): number {
+  const cuts = [cjkCutIndex(run, prefix), strongDelimCutIndex(run, prefix, suffix)].filter(
+    (i) => i > 0,
+  )
+  return cuts.length > 0 ? Math.min(...cuts) : -1
+}
+
 function isAutolinkableHost(head: string): boolean {
   const m = AUTOLINKABLE_HOST_RE.exec(head)
   if (!m) return false
@@ -1764,17 +2175,66 @@ function prosePrefix(content: string, nonProse: Uint8Array, at: number): string 
   return out
 }
 
+/** `prosePrefix`'s mirror: the prose from `at` to the end of that line. */
+function proseSuffix(content: string, nonProse: Uint8Array, at: number): string {
+  let lineEnd = content.indexOf('\n', at)
+  if (lineEnd < 0) lineEnd = content.length
+  let out = ''
+  for (let i = at; i < lineEnd; i++) out += nonProse[i] ? ' ' : content[i]
+  return out
+}
+
 /**
- * Close a bare `http(s)://` run where CJK punctuation shows the URL has ended,
- * by re-emitting its head as an angle autolink. Returns `content` unchanged when
- * there is no such evidence.
+ * Whether the prose AFTER the URL still offers a delimiter that could close the
+ * opener waiting from before it — i.e. the author's pair is `**prose … prose**`
+ * and the `**` inside the URL is part of the URL.
+ *
+ * Parity is the whole point, and it is what makes this usable where a plain
+ * "is there another `**` later" test is not: in
+ * `已建好：**url**（revision 1），说明见 **文档**。` the two trailing delimiters pair
+ * with EACH OTHER, so none is left over for the opener, and the boundary inside
+ * the run really is the only reading that closes it. In `**See url**（x） for
+ * details**` the single trailing delimiter has no partner, so it is the closer and
+ * the run's `**` belongs to the URL.
+ */
+function hasUnmatchedCloserAfter(suffix: string, delim: string): boolean {
+  const ch = delim[0]
+  let open = 0
+  let i = 0
+  while (i < suffix.length) {
+    if (suffix[i] !== ch) {
+      i++
+      continue
+    }
+    let end = i
+    while (end < suffix.length && suffix[end] === ch) end++
+    const from = isEscapedAt(suffix, i) ? i + 1 : i
+    if (end - from >= delim.length) {
+      const { canOpen, canClose } = delimFlanking(suffix, from, end, ch)
+      // Nothing local is waiting, so a closer here can only be closing the opener
+      // that sits before the URL.
+      if (canClose && open < delim.length) return true
+      if (canClose) open -= Math.min(end - from, open)
+      else if (canOpen) open += end - from
+    }
+    i = end
+  }
+  return false
+}
+
+/**
+ * Close a bare `http(s)://` run whose boundary is provable — CJK punctuation
+ * that could not be part of the URL, or a strong-emphasis delimiter swallowed
+ * out of the surrounding markup — by re-emitting its head as an angle autolink.
+ * Returns `content` unchanged when there is no such evidence.
  *
  * NOT safe to run when `data-sourcepos` is in play: it inserts two characters
  * per fixed URL, which shifts every later column on that line and would
  * mis-anchor an inline comment. Callers gate on that (see MarkdownBlock).
  */
 export function fixCjkAutolinkBoundaries(content: string): string {
-  if (!content.includes('://') || !CJK_PUNCT_RE.test(content)) return content
+  if (!content.includes('://')) return content
+  if (!CJK_PUNCT_RE.test(content) && !STRONG_DELIM_RE.test(content)) return content
   const { literals, nonProse } = autolinkLiteralSpans(content)
   const inserts: Array<[number, string]> = []
   for (const [start, end] of literals) {
@@ -1788,7 +2248,11 @@ export function fixCjkAutolinkBoundaries(content: string): string {
       const at = start + m.index
       if (at < consumedTo) continue
       const run = URL_RUN_AT_RE.exec(content.slice(at, end))?.[0] ?? ''
-      const cut = cjkCutIndex(run, prosePrefix(content, nonProse, at))
+      const cut = earliestCut(
+        run,
+        prosePrefix(content, nonProse, at),
+        proseSuffix(content, nonProse, at + run.length),
+      )
       if (cut < 0) {
         // The whole run is one URL — mask it, so a bracket in its query string
         // cannot pose as prose context for a later URL.
@@ -1999,9 +2463,11 @@ const MarkdownBlock = memo(function MarkdownBlock({ content, sourcePos, startLin
   const fenced = fixCodeFences(clean)
   const prepared = sourcePos ? fenced : fixCjkAutolinkBoundaries(fenced)
   const md = (
-    <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
-      {prepared}
-    </ReactMarkdown>
+    <MdSourceCtx.Provider value={prepared}>
+      <ReactMarkdown remarkPlugins={softBreaks ? REMARK_PLUGINS_WITH_BREAKS : REMARK_PLUGINS} rehypePlugins={rehypePlugins} urlTransform={urlTransform} components={MD_COMPONENTS}>
+        {prepared}
+      </ReactMarkdown>
+    </MdSourceCtx.Provider>
   )
   const body = sourcePos ? <div data-block-start={startLine ?? 1}>{md}</div> : md
   // The provider carries no DOM node, so sourcepos / lightbox scoping upstream

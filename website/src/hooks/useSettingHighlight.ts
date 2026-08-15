@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+import { i18nT } from '../i18n/t'
 
 /**
  * Legacy highlight-id migrations. Registry ids are `<tab>.<kebab-label>`, so
@@ -49,9 +50,10 @@ export const SETTINGS_DEFAULT_MODEL_ID = 'chat.fallback-model'
 /**
  * useSettingHighlight — deep-link + highlight hook for Settings.
  *
- * Reads `?highlight=<id>` from the URL, resolves the id to a label via
- * SETTINGS_REGISTRY, finds the element by `data-setting-label`, scrolls it
- * into view, applies a temporary 2s ring flash, then strips the param.
+ * Reads `?highlight=<id>` from the URL, resolves the id to the label rendered
+ * in the active locale via SETTINGS_REGISTRY, finds the element by
+ * `data-setting-label`, scrolls it into view, applies a temporary 2s ring
+ * flash, then strips the param.
  *
  * Also accepts `?highlight=key:<configKey>` — first tries direct DOM lookup
  * via `data-setting-key` attribute (zero round-trip); falls back to resolving
@@ -129,7 +131,8 @@ export function useSettingHighlight(): void {
     const timer = setTimeout(() => {
       // Use querySelectorAll to handle duplicate labels within a tab.
       // entry.occurrence (1-based) identifies which DOM match to highlight.
-      const matches = document.querySelectorAll(`[data-setting-label="${CSS.escape(entry.label)}"]`)
+      const renderedLabel = entry.labelKey ? i18nT(entry.labelKey) : entry.label
+      const matches = document.querySelectorAll(`[data-setting-label="${CSS.escape(renderedLabel)}"]`)
       const el = matches[entry.occurrence - 1] ?? matches[0]
       if (el) {
         el.scrollIntoView({ block: 'center', behavior: 'smooth' })

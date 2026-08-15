@@ -209,6 +209,13 @@ class TestRedactCredentials:
     # the intended token (the redaction test is unchanged). The split keeps any
     # single source literal from being a complete provider token, so GitHub
     # push-protection / secret scanners don't flag these synthetic fixtures.
+    #
+    # The explicit ``ids=`` labels exist for the same reason one level up:
+    # without them pytest derives each test ID from the REASSEMBLED value, and
+    # the full key-shaped string then lands verbatim in every derived artifact
+    # (.test_durations, junit XML, CI logs). Push protection rejects any branch
+    # carrying such an artifact — that is what kept the Update Test Durations
+    # workflow from ever landing its PR. Keep these labels secret-shape-free.
     @pytest.mark.parametrize(
         "secret",
         [
@@ -228,6 +235,22 @@ class TestRedactCredentials:
             "dop_v1_" "abcdefghijklmnopqrstuvwxyz1234567890abcdefghijklmnopqrst",  # DigitalOcean
             "GOCSPX-" "abcdefghijklmnopqrstuvwx",  # Google OAuth
         ],
+        ids=[
+            "github-classic-pat",
+            "github-oauth",
+            "github-fine-grained-pat",
+            "gitlab-pat",
+            "stripe-live",
+            "stripe-test",
+            "stripe-restricted",
+            "sendgrid",
+            "openai-project",
+            "anthropic",
+            "npm-token",
+            "pypi-token",
+            "digitalocean",
+            "google-oauth",
+        ],
     )
     def test_redacts_third_party_credentials(self, secret: str) -> None:
         text = f"KEY={secret}"
@@ -245,6 +268,9 @@ class TestRedactCredentials:
             "sk_live_" "51HG7aBcDeFgHiJkLmNoPqRsTuVwXyZ",  # Stripe live
             "xoxb-" "1234567890-abcdefghijklmnop",  # Slack bot token
         ],
+        # Safe display labels: pytest would otherwise derive the ID from the
+        # reassembled token — see the note on the parametrize above.
+        ids=["github-classic-pat", "anthropic", "openai-project", "stripe-live", "slack-bot"],
     )
     def test_warning_does_not_leak_secret_prefix(self, secret: str) -> None:
         """The warnings list must carry NO secret bytes — only length metadata.
@@ -3666,6 +3692,186 @@ class TestIsSensitiveBashCommand:
         # A benign host that resolves elsewhere must not be flagged as IMDS.
         assert _check_imds_access("curl http://93.184.216.34/") is None
         assert canonicalize_ip("8.8.8.8") == "8.8.8.8"
+
+
+class TestWindowsPathShapes:
+    """Native Windows path spellings must be recognized as path-like so the
+    normalizer pass routes them through is_sensitive_path() -- on Windows
+    hosts the fence targets are os.sep-joined, and a backslash spelling that
+    never reaches the check would leave every fenced dir shell-reachable.
+    Recognition is limited lexically to the drive/share holding Path.home():
+    every fenced target lives under home, and a foreign-drive token would only
+    feed realpath a disconnected mapped drive or dead UNC host (a synchronous
+    network stall on the permission gate)."""
+
+    def test_home_drive_paths_are_path_like(self) -> None:
+        from unittest.mock import patch
+
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert security._is_path_like("C:\\Users\\u\\.aws\\credentials")
+            assert security._is_path_like("c:/Users/u/.aws/credentials")
+
+    def test_foreign_drive_and_unc_are_not_probed(self, monkeypatch) -> None:
+        # A pure-backslash token on another drive/share gains no NEW
+        # recognition; treating it as path-like would only cost a realpath
+        # probe of a possibly-dead network target.
+        from unittest.mock import patch
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert not security._is_path_like("Z:\\stale\\mapped\\drive")
+            assert not security._is_path_like("\\\\dead-server\\share\\x")
+
+    def test_cross_drive_forward_slash_token_stays_path_like(self) -> None:
+        # KIROCREW_HOME may legitimately live on another drive, and its
+        # keystone leaves are re-anchored there. A forward-slash spelling was
+        # path-like via the generic "/" branch before drive shapes were
+        # recognized -- the foreign-drive check must FALL THROUGH to it, not
+        # intercept it, or the governance ceiling on that drive becomes
+        # shell-reachable.
+        from unittest.mock import patch
+
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert security._is_path_like("D:/kirocrew/security_policy.json")
+
+    def test_kirocrew_home_drive_anchors_backslash_recognition(self, monkeypatch) -> None:
+        # A BACKSLASH spelling under a cross-drive KIROCREW_HOME must also be
+        # recognized: the keystone leaves are re-anchored under that root, so
+        # its drive is an anchor alongside the user home's.
+        from unittest.mock import patch
+
+        monkeypatch.setenv("KIROCREW_HOME", "D:\\crew")
+        with patch.object(security.Path, "home", return_value=Path("C:\\Users\\u")):
+            assert security._is_path_like("D:\\crew\\security_policy.json")
+            # Drives matching NEITHER root stay unrecognized (no realpath probe).
+            assert not security._is_path_like("Z:\\stale\\mapped\\drive")
+
+    def test_unc_home_share_is_path_like(self, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        with patch.object(
+            security.Path, "home", return_value=Path("\\\\srv\\homes\\u")
+        ):
+            assert security._is_path_like("\\\\srv\\homes\\u\\.aws\\credentials")
+            assert not security._is_path_like("\\\\other\\share\\x")
+            # A share that merely extends the name past the segment boundary
+            # is a DIFFERENT share -- probing it would realpath a possibly
+            # dead SMB target.
+            assert not security._is_path_like("\\\\srv\\homes-dead\\share\\x")
+
+    def test_backslash_relative_is_path_like(self) -> None:
+        assert security._is_path_like(".\\x\\y")
+        assert security._is_path_like("..\\x\\y")
+
+    def test_drive_shapes_are_inert_on_posix_homes(self, monkeypatch) -> None:
+        # With a POSIX home and no drive-lettered KIROCREW_HOME, no anchor
+        # root has a drive, so drive/UNC tokens are not path-like at all --
+        # no behavior change for POSIX workflows. (KIROCREW_HOME must be
+        # cleared: on Windows CI it is a drive-lettered path and a legitimate
+        # anchor root.)
+        from unittest.mock import patch
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        with patch.object(security.Path, "home", return_value=Path("/home/u")):
+            assert not security._is_path_like("C:\\Users\\u\\.aws\\credentials")
+            assert not security._is_path_like("\\\\server\\share\\x")
+
+    def test_non_path_tokens_stay_non_path_like(self) -> None:
+        # ``key:value`` option tokens and URLs must not become path-like --
+        # the drive-letter form requires a separator right after the colon.
+        assert not security._is_path_like("key:value")
+        assert not security._is_path_like("C:no-separator")
+        assert not security._is_path_like("https://x.example/a")
+
+    def test_native_spelling_is_blocked_in_raw_text_on_any_host(self) -> None:
+        # The raw regex pass sees the command BEFORE tokenization, so it is
+        # the only layer that can catch an embedded interpreter script or a
+        # quoted native spelling -- and it is host-independent, so these must
+        # block everywhere, not just on Windows runners.
+        cmds = [
+            "python -c \"open(r'C:\\Users\\u\\AppData\\Roaming\\kiro-cli\\data.sqlite3','w')\"",
+            "python -c \"open(r'C:\\Users\\u\\.aws\\credentials')\"",
+            "type 'C:\\Users\\u\\.ssh\\id_rsa'",
+            "cat '%USERPROFILE%\\.aws\\credentials'",
+            "type '\\\\srv\\homes\\u\\.ssh\\id_rsa'",
+            "type 'C:/Users/u/.aws/credentials'",
+            # PowerShell spelling of the profile variable.
+            "Get-Content '$env:USERPROFILE\\.aws\\credentials'",
+            # cmd.exe expansion-modifier spelling.
+            "type '%USERPROFILE:~0%\\.ssh\\id_rsa'",
+            # Braced PowerShell spelling.
+            "Get-Content '${env:USERPROFILE}\\.aws\\credentials'",
+            # HOMEDRIVE+HOMEPATH concatenation is the same home by definition.
+            'Get-Content "$env:HOMEDRIVE$env:HOMEPATH\\AppData\\Roaming\\kiro-cli\\data.sqlite3"',
+            "type '%HOMEDRIVE%%HOMEPATH%\\.ssh\\id_rsa'",
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_appdata_alias_of_fenced_store_is_blocked(self) -> None:
+        # %APPDATA% points INTO AppData\Roaming, so this spelling names the
+        # store without the AppData\Roaming text the home-anchored branch
+        # matches on -- it needs its own alias branch.
+        cmds = [
+            'del "%APPDATA%\\kiro-cli\\data.sqlite3"',
+            "type '%APPDATA%\\amazon-q\\data.sqlite3'",
+            "cat '%APPDATA%/kiro-cli/data.sqlite3'",
+            'del "$env:APPDATA\\kiro-cli\\data.sqlite3"',
+            # Single-dot segments are canonical-equivalent to their absence.
+            'cmd /c copy /Y evil.sqlite "%APPDATA%\\.\\kiro-cli\\data.sqlite3"',
+            # cmd.exe expansion modifiers resolve to the same location.
+            'cmd /c copy "%APPDATA:~0%\\kiro-cli\\data.sqlite3" .\\loot.db',
+            # Braced PowerShell spelling.
+            'del "${env:APPDATA}\\kiro-cli\\data.sqlite3"',
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+        # Other %APPDATA% content stays allowed.
+        assert is_sensitive_bash_command('type "%APPDATA%\\SomeApp\\config.json"') is None
+
+    def test_backslash_relative_traversal_is_blocked(self) -> None:
+        assert is_sensitive_bash_command("type ..\\..\\.aws\\credentials") is not None
+        assert (
+            is_sensitive_bash_command(
+                "type ..\\..\\AppData\\Roaming\\kiro-cli\\data.sqlite3"
+            )
+            is not None
+        )
+        # The POSIX spelling keeps matching through the widened alternation.
+        assert is_sensitive_bash_command("dd if=../../.aws/credentials") is not None
+
+    def test_benign_native_spellings_stay_allowed(self) -> None:
+        assert is_sensitive_bash_command("type 'C:\\Users\\u\\project\\readme.md'") is None
+        assert (
+            is_sensitive_bash_command("python -c \"open(r'C:\\temp\\x.txt')\"") is None
+        )
+
+    def test_down_up_traversal_reentry_is_blocked(self) -> None:
+        # A same-level excursion (X\..) is a canonical no-op, so a spelling
+        # that re-enters the fenced location still names it.
+        cmds = [
+            (
+                "python -c \"open(r'C:\\Users\\u\\AppData\\Roaming\\..\\Roaming"
+                "\\kiro-cli\\data.sqlite3','w')\""
+            ),
+            "type 'C:\\Users\\u\\.aws\\..\\.aws\\credentials'",
+            'del "%APPDATA%\\..\\Roaming\\kiro-cli\\data.sqlite3"',
+        ]
+        for cmd in cmds:
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason="fence targets are os.sep-joined; the match is only real on Windows",
+    )
+    def test_backslash_spelling_of_fenced_dirs_is_blocked_on_windows(self) -> None:
+        # Single quotes keep the backslashes literal through POSIX shlex, so
+        # the token reaches is_sensitive_path() in its native spelling.
+        home = str(Path.home())
+        for fenced in (".aws\\credentials", "AppData\\Roaming\\kiro-cli\\data.sqlite3"):
+            cmd = f"type '{home}\\{fenced}'"
+            assert is_sensitive_bash_command(cmd) is not None, cmd
 
 
 class TestDeniedCommandsKeystone:

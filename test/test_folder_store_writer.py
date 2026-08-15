@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from typing import Any
 
@@ -451,3 +452,21 @@ class TestSlotCreateFolderAssignment:
 
         # The failed move must not have unfiled the conversation.
         assert state._slots["myslot"].folder_id == "home"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="asserts POSIX mode bits")
+def test_the_folder_store_still_publishes_owner_only(dashboard_state: Any) -> None:
+    """The folder store must land at 0o600, not at the umask default.
+
+    The hand-rolled writer this replaced created its temp with
+    ``tempfile.mkstemp`` and never widened it, so folders.json published at
+    0o600. ``atomic_write`` falls back to ``_get_default_mode()``, normally
+    0o644, when the caller passes no mode. The explicit ``mode=0o600`` is the
+    whole defence against widening these four files, and nothing else in the
+    suite would catch its removal, so it gets a guard rather than a comment.
+    """
+    asyncio.run(dashboard_state.mutate_folders(_append("a")))
+
+    path = config_dir() / dashboard_state._FOLDERS_FILE
+    assert path.exists(), "the folder store must have been written"
+    assert path.stat().st_mode & 0o777 == 0o600

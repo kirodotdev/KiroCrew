@@ -26,13 +26,15 @@ from kiro_crew.config.loader import (
     ACTIVATION_REVIEW,
     ConfigReadError,
     config_path,
-    read_config_for_update,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.dashboard.chat_utils import (
     forget_slack_options_for_thread,
+    options_control_is_stale,
+    run_config_write,
     slack_options_owner_keys_snapshot,
+    slack_options_slot,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
@@ -65,11 +67,14 @@ from kiro_crew.slack.handler import (
     set_tracking_channels,
 )
 from kiro_crew.slack.outbound import (
+    PostedOptions,
     claim_options_answer,
+    decode_options_token,
+    expire_options,
+    mark_options_terminal,
     options_edit_lock,
     release_options_answer,
     settle_options_answer,
-    track_answer_routing,
 )
 from kiro_crew.slack.renderer import (
     TOOL_APPROVE_ACTION_PREFIX,
@@ -77,6 +82,7 @@ from kiro_crew.slack.renderer import (
     TOOL_TRUST_ACTION_PREFIX,
     SlackApprovalDecider,
 )
+from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -118,6 +124,28 @@ def init(orchestrator: GatewayOrchestrator) -> None:
     fwd_cb = _get_forward_callback()
     if fwd_cb:
         register_view_handler(fwd_cb, _handle_shortcut_submission)
+
+
+def _probe_tracked_channel_scope(channel_ids: set[str]) -> None:
+    """Fire a deferred history-readability probe for newly tracked channels.
+
+    A private channel tracked under a Slack install that predates the
+    ``groups:history`` scope delivers no message events and nothing logs —
+    the probe (see :mod:`kiro_crew.slack.scope_probe`) turns that silent-dead
+    state into a warning + dashboard notification. Fire-and-forget so the
+    interaction ack is never delayed by a Slack API round-trip.
+    """
+    if not channel_ids or not _orch or _orch.slack is None:
+        return
+    t = asyncio.create_task(
+        warn_unreadable_tracked_channels(
+            _orch.slack,
+            channel_ids,
+            notify=_orch.dashboard_state.notify if _orch.dashboard_state else None,
+        )
+    )
+    _orch._handler_tasks.add(t)
+    t.add_done_callback(_orch._handler_tasks.discard)
 
 
 # ---------------------------------------------------------------------------
@@ -191,32 +219,34 @@ async def _handle_config_submission(payload: dict) -> None:
     chan_vals = values.get("channels_block", {}).get("mc_config_channels", {})
     new_channels = set(chan_vals.get("selected_channels") or [])
 
-    # Read BEFORE mutating runtime state. Fail closed on an unreadable config:
-    # writing back a {} baseline would drop every other setting the user has.
-    # Order matters — applying the in-memory change first would make a refused
-    # save look like it took effect, then silently revert on restart.
+    # Persist through the locked read-modify-write BEFORE mutating runtime
+    # state. Fail closed on an unreadable config: writing back a {} baseline
+    # would drop every other setting the user has. Order matters — applying
+    # the in-memory change first would make a refused save look like it took
+    # effect, then silently revert on restart. The sidecar lock keeps a
+    # concurrent config writer (dashboard PATCH, CLI, boot-time meta refresh)
+    # from being reverted by this write's stale snapshot, and vice versa.
     cp = config_path()
+
+    def _apply(data: dict) -> dict:
+        slack_cfg = data.setdefault("slack", {})
+        slack_cfg["tracking_channels"] = [{"channel_id": cid} for cid in sorted(new_channels)]
+        return data
+
     try:
-        data = read_config_for_update(cp)
+        await run_config_write(update_config_locked, cp, mutate=_apply)
     except ConfigReadError:
         logger.exception("Refusing to persist config from modal: config unreadable")
         return
-
-    slack_cfg = data.setdefault("slack", {})
-    slack_cfg["tracking_channels"] = [{"channel_id": cid} for cid in sorted(new_channels)]
-
-    # Persist FIRST, then mutate runtime state. A failed write (disk full,
-    # permissions) must not leave live state ahead of what is on disk — that
-    # silently reverts on the next restart.
-    try:
-        write_config_atomically(cp, data)
     except OSError:
         logger.exception("Failed to persist config from modal")
         return
 
     if _orch:
+        added = new_channels - _orch._tracking_channels
         _orch._tracking_channels = new_channels
         set_tracking_channels(new_channels)
+        _probe_tracked_channel_scope(added)
 
     logger.info("Config updated via modal: channels=%d", len(new_channels))
     sel().log_api_access(
@@ -259,8 +289,6 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
 
     updated = False
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 resp = await sess.post(
@@ -709,8 +737,6 @@ async def dispatch(payload: dict) -> None:
         url = action.get("value", "")
         response_url = payload.get("response_url", "")
         if response_url and url:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
@@ -795,8 +821,6 @@ async def dispatch(payload: dict) -> None:
             )
             response_url = payload.get("response_url", "")
             if response_url and response_url.startswith("https://hooks.slack.com/"):
-                import aiohttp
-
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
                         response_url,
@@ -819,8 +843,6 @@ async def dispatch(payload: dict) -> None:
         # Replace the button with confirmation
         response_url = payload.get("response_url", "")
         if response_url and response_url.startswith("https://hooks.slack.com/"):
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
@@ -977,22 +999,22 @@ async def dispatch(payload: dict) -> None:
             sess_key = SlackApprovalDecider.session_for(approval_key)
             add_trusted_session(sess_key, _orch.sessions if _orch else None)
         resolved = SlackApprovalDecider.resolve_global(approval_key, approved)
-        if resolved:
-            label = (
-                "🔓 Trusted this session — tools auto-approved"
-                if is_trust
-                else ("✅ Approved" if approved else "🚫 Denied")
-            )
-        else:
+        if not resolved:
             label = "⏱ This approval already expired."
+            outcome = "expired"
+        elif is_trust:
+            label = "🔓 Trusted this session — tools auto-approved"
+            outcome = "trusted"
+        elif approved:
+            label = "✅ Approved"
+            outcome = "approved"
+        else:
+            label = "🚫 Denied"
+            outcome = "denied"
         sel().log_api_access(
             caller=user_id,
             operation="slack.transport_tool_approval",
-            outcome=(
-                ("trusted" if is_trust else ("approved" if approved else "denied"))
-                if resolved
-                else "expired"
-            ),
+            outcome=outcome,
             source="slack",
             resources=f"approval_key={approval_key}",
         )
@@ -1048,7 +1070,7 @@ async def _handle_ch_activation(payload: dict, action: dict) -> None:
 
     from kiro_crew.slack.handler import _persist_channel_config
 
-    _persist_channel_config(cid, activation=new_mode)
+    await run_config_write(_persist_channel_config, cid, activation=new_mode)
     if _orch:
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -1076,7 +1098,7 @@ async def _handle_ch_agent(payload: dict, action: dict) -> None:
 
     from kiro_crew.slack.handler import _persist_channel_config
 
-    _persist_channel_config(cid, agent=new_agent)
+    await run_config_write(_persist_channel_config, cid, agent=new_agent)
     if _orch:
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -1104,7 +1126,7 @@ async def _handle_ch_remove(payload: dict, action: dict) -> None:
 
     _orch._tracking_channels.discard(cid)
     set_tracking_channels(_orch._tracking_channels)
-    persist_tracking_channel(cid, remove=True)
+    await run_config_write(persist_tracking_channel, cid, remove=True)
     logger.info("Channel %s removed from tracking", cid)
     sel().log_api_access(
         caller=caller,
@@ -1132,7 +1154,8 @@ async def _handle_ch_add(payload: dict, action: dict) -> None:
 
     _orch._tracking_channels.add(cid)
     set_tracking_channels(_orch._tracking_channels)
-    persist_tracking_channel(cid)
+    _probe_tracked_channel_scope({cid})
+    await run_config_write(persist_tracking_channel, cid)
     logger.info("Channel %s added to tracking", cid)
     sel().log_api_access(
         caller=caller,
@@ -1168,18 +1191,12 @@ async def _handle_voice_config_submission(payload: dict) -> None:
     def _txt(block_id: str, action_id: str) -> str:
         return (values.get(block_id, {}).get(action_id, {}).get("value") or "").strip()
 
-    # Read BEFORE mutating the live voice config. Fail closed on an unreadable
-    # config: writing back a {} baseline would drop every other setting. Order
-    # matters — mutating `_vc` first would let rejected settings drive live TTS
-    # until the next restart, even though the save was refused.
+    # Compute the new values WITHOUT touching the live config yet. Fail closed
+    # on an unreadable config: writing back a {} baseline would drop every
+    # other setting. Order matters — mutating `_vc` first would let rejected
+    # settings drive live TTS until the next restart, even though the save was
+    # refused.
     cp = config_path()
-    try:
-        data = read_config_for_update(cp)
-    except ConfigReadError:
-        logger.exception("Refusing to persist voice settings: config unreadable")
-        return
-
-    # Compute the new values WITHOUT touching the live config yet.
     tts_block = values.get("tts_enabled_block", {}).get("mc_voice_tts_enabled", {})
     selected = {o.get("value") for o in tts_block.get("selected_options", [])}
     enabled = "enabled" in selected
@@ -1191,20 +1208,26 @@ async def _handle_voice_config_submission(payload: dict) -> None:
     aws_profile = _txt("profile_block", "mc_voice_profile")
     region = _txt("region_block", "mc_voice_region")
 
-    vr = data.setdefault("voice_reply", {})
-    vr["enabled"] = enabled
-    vr["auto_speak"] = auto_speak
-    vr["voice_id"] = voice
-    vr["engine"] = engine
-    vr["rate"] = rate
-    vr["pitch"] = pitch
-    vr["aws_profile"] = aws_profile
-    vr["region"] = region
+    def _apply(data: dict) -> dict:
+        vr = data.setdefault("voice_reply", {})
+        vr["enabled"] = enabled
+        vr["auto_speak"] = auto_speak
+        vr["voice_id"] = voice
+        vr["engine"] = engine
+        vr["rate"] = rate
+        vr["pitch"] = pitch
+        vr["aws_profile"] = aws_profile
+        vr["region"] = region
+        return data
 
-    # Persist FIRST, then apply to the live config. A failed write must not leave
-    # rejected settings driving live TTS until the next restart.
+    # Persist FIRST (locked read-modify-write), then apply to the live config.
+    # A failed write must not leave rejected settings driving live TTS until
+    # the next restart.
     try:
-        write_config_atomically(cp, data)
+        await run_config_write(update_config_locked, cp, mutate=_apply)
+    except ConfigReadError:
+        logger.exception("Refusing to persist voice settings: config unreadable")
+        return
     except OSError:
         logger.exception("Failed to persist voice config from modal")
         return
@@ -1426,6 +1449,101 @@ async def _import_thread_to_slot(slack: Any, ds: Any, channel: str, thread_ts: s
     return slot
 
 
+def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
+    """The ``block_id`` Slack echoed back for the clicked OPTIONS control.
+
+    Checked in three places because the two click paths deliver it differently: a
+    button click carries it on the action, and the multi-select block also keys
+    ``state.values``, which is recoverable even from a click that omitted it.
+    """
+    if action:
+        bid = action.get("block_id")
+        if isinstance(bid, str) and bid:
+            return bid
+    for entry in payload.get("actions") or []:
+        bid = entry.get("block_id") if isinstance(entry, dict) else None
+        if isinstance(bid, str) and bid:
+            return bid
+    values = (payload.get("state") or {}).get("values") or {}
+    for block_id, vals in values.items():
+        if isinstance(vals, dict) and OPTIONS_CHECKBOXES_ACTION in vals and isinstance(block_id, str):
+            return block_id
+    return None
+
+
+def _options_choices_from_payload(blocks: list) -> list[str]:
+    """The choices shown on a posted control, read back off its own blocks.
+
+    Recovering them from the message the user clicked is what lets a stale click
+    be struck through without the gateway having kept a record of the control --
+    which is the point: a record held in memory is exactly what a restart loses.
+    """
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        for el in block.get("elements") or []:
+            if not isinstance(el, dict):
+                continue
+            action_id = el.get("action_id", "")
+            if action_id == OPTIONS_CHECKBOXES_ACTION:
+                return [
+                    (o.get("text") or {}).get("text") or o.get("value") or ""
+                    for o in el.get("options") or []
+                    if isinstance(o, dict)
+                ]
+            if action_id.startswith(OPTIONS_ACTION_PREFIX):
+                return [
+                    e.get("value") or ""
+                    for b in blocks
+                    if isinstance(b, dict)
+                    for e in b.get("elements") or []
+                    if isinstance(e, dict)
+                    and e.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
+                ]
+    return []
+
+
+async def _refuse_stale_options(channel: str, msg_ts: str, payload: dict) -> None:
+    """Strike a superseded control through and answer nothing.
+
+    Correctness is already settled by the time this runs -- the caller returned
+    without dispatching -- so the edit here is presentation only and its failure
+    is swallowed. An un-struck control is untidy, not unsafe: the next click on it
+    is judged by the same rule and refused again.
+
+    Runs under the message's edit lock and takes the answer claim, because a
+    concurrent click that was ACCEPTED renders the user's selection into this same
+    message. Editing without the lock could overwrite that selection with a
+    strike-through, destroying a legitimate answer to satisfy a stale one.
+    """
+    if not (_orch and _orch.slack):
+        return
+    blocks = (payload.get("message") or {}).get("blocks") or []
+    async with options_edit_lock(channel, msg_ts):
+        if not claim_options_answer(channel, msg_ts):
+            # An accepted click already holds the claim and has rendered its
+            # selection. Leave the message exactly as that click left it.
+            return
+        mark_options_terminal(channel, msg_ts)
+        try:
+            await expire_options(
+                _orch.slack,
+                PostedOptions(
+                    channel=channel,
+                    ts=msg_ts,
+                    choices=tuple(_options_choices_from_payload(blocks)),
+                    blocks=tuple(blocks),
+                ),
+            )
+        except Exception:
+            logger.debug(
+                "could not strike through the stale OPTIONS control %s/%s",
+                channel,
+                msg_ts,
+                exc_info=True,
+            )
+
+
 async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> None:
     """User clicked Send on multi-select OPTIONS checkboxes."""
     if not (_orch and _orch.slack):
@@ -1445,6 +1563,26 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             outcome="denied",
             metadata={"user_id": user_id, "reason": "not_allowed_user"},
         )
+        return
+
+    # One rule, checked before any work: does this control still belong to the
+    # question the conversation is actually on? Judged from the token in the
+    # message plus the transcript on disk, so it holds across a restart -- and it
+    # is the ONLY thing standing between a superseded button and a dispatched
+    # answer, since nothing retires controls ahead of time any more.
+    if await options_control_is_stale(
+        _orch.dashboard_state if _orch else None, _options_block_id(payload), thread_ts
+    ):
+        sel().log_tool_invocation(
+            session_key=thread_ts,
+            agent="kirocrew",
+            source="slack",
+            tool_name="options_submit",
+            tool_kind="interaction",
+            outcome="denied",
+            metadata={"reason": "superseded_control", "channel": channel},
+        )
+        await _refuse_stale_options(channel, msg_ts, payload)
         return
 
     # Read checkbox state from the payload's state.values
@@ -1540,6 +1678,26 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
         # during the edit would move the thread to another session, so resolving
         # after the fact names the NEW owner and leaves the previous owner's record
         # in place -- and that session's next turn would edit over this selection.
+        # Pin the conversation that ASKED, read from the control's own token --
+        # NOT whoever owns the thread now. The two diverge in exactly the case
+        # the pin exists to survive: after a handover, resolving from the thread
+        # names the new owner and would deliver this answer to a conversation
+        # that never asked the question.
+        #
+        # A pinned None is meaningful: it says the asker holds no slot (a native
+        # Slack or cron conversation), so a thread linked after acceptance cannot
+        # capture the answer either. An untokened control -- one posted before
+        # this shipped -- pins nothing and keeps today's resolution, matching the
+        # rest of the rule, which honours what it cannot judge.
+        _asker = decode_options_token(_options_block_id(payload))
+        _asker_key = _asker[0] if _asker else None
+        _pinned_slot = (
+            slack_options_slot(_orch.dashboard_state, _asker_key)
+            if (_asker_key and _orch and _orch.dashboard_state)
+            else None
+        )
+        _pinned_slot_name = getattr(_pinned_slot, "key", None)
+        _route_pinned = _asker_key is not None
         _owner_keys = slack_options_owner_keys_snapshot(
             _orch.dashboard_state if _orch else None, thread_ts
         )
@@ -1632,12 +1790,11 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            target_slot_name=_pinned_slot_name,
+            route_pinned=_route_pinned,
+            asker_key=_asker_key,
         )
     )
-    # The record is already forgotten, so until this task has found its session
-    # the thread's reverse index is the only thing pointing the answer at the
-    # right conversation. Hold the unlink off until then.
-    track_answer_routing(thread_ts, t)
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
     sel().log_tool_invocation(
@@ -1742,6 +1899,15 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
         if el.get("action_id", "").startswith(OPTIONS_ACTION_PREFIX)
     ]
 
+    # The same rule the multi-select path applies, on the same token. A control
+    # posted before this build carries no token and is honoured, so an upgrade
+    # does not strand buttons that are still legitimately answerable.
+    if await options_control_is_stale(
+        _orch.dashboard_state if _orch else None, _options_block_id(payload, action), thread_ts
+    ):
+        await _refuse_stale_options(channel, msg_ts, payload)
+        return
+
     # Redact LLM-generated content before any external use
     choice, _ = redact_exfiltration_urls(choice)
     choice, _ = redact_credentials(choice)
@@ -1766,6 +1932,26 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             return
         # Owner keys BEFORE the edit -- a relink landing during it would move the
         # thread, and forgetting against the new owner orphans the old record.
+        # Pin the conversation that ASKED, read from the control's own token --
+        # NOT whoever owns the thread now. The two diverge in exactly the case
+        # the pin exists to survive: after a handover, resolving from the thread
+        # names the new owner and would deliver this answer to a conversation
+        # that never asked the question.
+        #
+        # A pinned None is meaningful: it says the asker holds no slot (a native
+        # Slack or cron conversation), so a thread linked after acceptance cannot
+        # capture the answer either. An untokened control -- one posted before
+        # this shipped -- pins nothing and keeps today's resolution, matching the
+        # rest of the rule, which honours what it cannot judge.
+        _asker = decode_options_token(_options_block_id(payload, action))
+        _asker_key = _asker[0] if _asker else None
+        _pinned_slot = (
+            slack_options_slot(_orch.dashboard_state, _asker_key)
+            if (_asker_key and _orch and _orch.dashboard_state)
+            else None
+        )
+        _pinned_slot_name = getattr(_pinned_slot, "key", None)
+        _route_pinned = _asker_key is not None
         _owner_keys = slack_options_owner_keys_snapshot(
             _orch.dashboard_state if _orch else None, thread_ts
         )
@@ -1855,12 +2041,11 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             consolidator=_orch.consolidator,
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
+            target_slot_name=_pinned_slot_name,
+            route_pinned=_route_pinned,
+            asker_key=_asker_key,
         )
     )
-    # Same reason as the multi-select submit path: the record is already gone, so
-    # the reverse index is all that points this answer at the right conversation
-    # until the task resolves it. Hold the unlink off until then.
-    track_answer_routing(thread_ts, t)
     _orch._handler_tasks.add(t)
     t.add_done_callback(_orch._handler_tasks.discard)
 
@@ -1917,7 +2102,9 @@ async def _handle_allowlist(
             return
         _orch._allowed_users.add(new_user_id)
         set_allowed_users(_orch._allowed_users)
-        persist_allowed_user(new_user_id, name=display_name)
+        await run_config_write(
+            persist_allowed_user, new_user_id, name=display_name
+        )
         sel().log_api_access(
             caller=approver_id,
             operation="slack.allowlist.approve",
@@ -1946,7 +2133,7 @@ async def _handle_allowlist(
         # Remove from in-memory set and persisted config
         _orch._allowed_users.discard(new_user_id)
         set_allowed_users(_orch._allowed_users)
-        persist_allowed_user(new_user_id, remove=True)
+        await run_config_write(persist_allowed_user, new_user_id, remove=True)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.allowlist.deny",
@@ -1994,7 +2181,10 @@ async def _handle_track_channel(
             return
         _orch._tracking_channels.add(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
-        persist_tracking_channel(target_channel_id, name=channel_name)
+        _probe_tracked_channel_scope({target_channel_id})
+        await run_config_write(
+            persist_tracking_channel, target_channel_id, name=channel_name
+        )
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.approve",
@@ -2011,7 +2201,9 @@ async def _handle_track_channel(
         # Remove from in-memory set and persisted config
         _orch._tracking_channels.discard(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
-        persist_tracking_channel(target_channel_id, remove=True)
+        await run_config_write(
+            persist_tracking_channel, target_channel_id, remove=True
+        )
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.deny",
@@ -2049,7 +2241,7 @@ async def _handle_agent_select(
 
     if agent_name.lower() in ("off", "default"):
         try:
-            _set_default_agent("")
+            await run_config_write(_set_default_agent, "")
         except ValueError:
             return
         label = "🔄 Reset to default agent."
@@ -2058,7 +2250,7 @@ async def _handle_agent_select(
         if not resolved:
             return
         try:
-            _set_default_agent(resolved)
+            await run_config_write(_set_default_agent, resolved)
         except ValueError:
             return
         label = f"🔄 Switched to agent: *{resolved}*"
@@ -2067,8 +2259,6 @@ async def _handle_agent_select(
 
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2090,6 +2280,8 @@ async def _handle_users_select(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Handle multi_users_select — update allowlist."""
+    # Imported at call time on purpose: tests patch ``handler.is_owner`` to drive
+    # the non-owner rejection, and only a call-time rebind observes that patch.
     from kiro_crew.slack.handler import is_owner, set_allowed_users
 
     if not is_owner(user_id):
@@ -2097,23 +2289,24 @@ async def _handle_users_select(
 
     new_users = set(action.get("selected_users") or [])
 
-    # Read BEFORE mutating runtime state. Fail closed on an unreadable config:
-    # writing back a {} baseline would drop every other setting. Order matters —
-    # applying the in-memory change first would make a refused save look applied,
-    # then silently revert on restart.
+    # Persist through the locked read-modify-write BEFORE mutating runtime
+    # state. Fail closed on an unreadable config: writing back a {} baseline
+    # would drop every other setting. Order matters — applying the in-memory
+    # change first would make a refused save look applied, then silently
+    # revert on restart.
     cp = config_path()
+
+    def _apply(data: dict) -> dict:
+        data.setdefault("slack", {})["allowed_users"] = [
+            {"slack_id": uid} for uid in sorted(new_users)
+        ]
+        return data
+
     try:
-        data = read_config_for_update(cp)
+        await run_config_write(update_config_locked, cp, mutate=_apply)
     except ConfigReadError:
         logger.exception("Refusing to persist users from select: config unreadable")
         return
-
-    data.setdefault("slack", {})["allowed_users"] = [{"slack_id": uid} for uid in sorted(new_users)]
-
-    # Persist FIRST, then mutate runtime state (a failed write must not leave
-    # live state ahead of disk — it silently reverts on restart).
-    try:
-        write_config_atomically(cp, data)
     except OSError:
         logger.exception("Failed to persist users from select")
         return
@@ -2136,6 +2329,8 @@ async def _handle_channels_select(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Handle multi_channels_select — update tracked channels."""
+    # Imported at call time on purpose: tests patch ``handler.is_owner`` to drive
+    # the non-owner rejection, and only a call-time rebind observes that patch.
     from kiro_crew.slack.handler import is_owner, set_tracking_channels
 
     if not is_owner(user_id):
@@ -2146,26 +2341,29 @@ async def _handle_channels_select(
     # Read BEFORE mutating runtime state (see the users-select handler above for
     # why the order is load-bearing).
     cp = config_path()
+
+    def _apply(data: dict) -> dict:
+        data.setdefault("slack", {})["tracking_channels"] = [
+            {"channel_id": cid} for cid in sorted(new_channels)
+        ]
+        return data
+
+    # Persist FIRST (locked read-modify-write), then mutate runtime state
+    # (see the users-select handler).
     try:
-        data = read_config_for_update(cp)
+        await run_config_write(update_config_locked, cp, mutate=_apply)
     except ConfigReadError:
         logger.exception("Refusing to persist channels from select: config unreadable")
         return
-
-    data.setdefault("slack", {})["tracking_channels"] = [
-        {"channel_id": cid} for cid in sorted(new_channels)
-    ]
-
-    # Persist FIRST, then mutate runtime state (see the users-select handler).
-    try:
-        write_config_atomically(cp, data)
     except OSError:
         logger.exception("Failed to persist channels from select")
         return
 
     if _orch:
+        added = new_channels - _orch._tracking_channels
         _orch._tracking_channels = new_channels
         set_tracking_channels(new_channels)
+        _probe_tracked_channel_scope(added)
 
     logger.info("Tracked channels updated via select: %d channels", len(new_channels))
     sel().log_api_access(
@@ -2211,8 +2409,6 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
         async def _update_ephemeral(blocks: list[dict], text: str) -> None:
             if response_url:
-                import aiohttp
-
                 try:
                     async with aiohttp.ClientSession() as sess:
                         await sess.post(
@@ -2258,8 +2454,6 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
         response_url = payload.get("response_url", "")
         label = "Nothing running."
         if response_url:
-            import aiohttp
-
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
@@ -2279,8 +2473,6 @@ async def _handle_stop_cancel(payload: dict, channel: str, msg_ts: str) -> None:
     """Delete the ephemeral stop confirmation message on cancel."""
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2330,8 +2522,6 @@ async def _handle_stop_kill_now(
         from kiro_crew.slack.blocks import build_stop_failed_blocks
 
         if response_url:
-            import aiohttp
-
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
@@ -2376,7 +2566,7 @@ async def _handle_allowlist_remove(
 
     _orch._allowed_users.discard(target_id)
     set_allowed_users(_orch._allowed_users)
-    persist_allowed_user(target_id, remove=True)
+    await run_config_write(persist_allowed_user, target_id, remove=True)
 
     from kiro_crew.slack.blocks import allowlist_list_block
 
@@ -2387,8 +2577,6 @@ async def _handle_allowlist_remove(
 
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2417,7 +2605,7 @@ async def _handle_channel_remove(
 
     _orch._tracking_channels.discard(target_id)
     set_tracking_channels(_orch._tracking_channels)
-    persist_tracking_channel(target_id, remove=True)
+    await run_config_write(persist_tracking_channel, target_id, remove=True)
 
     from kiro_crew.slack.blocks import channel_list_block
 
@@ -2428,8 +2616,6 @@ async def _handle_channel_remove(
 
     response_url = payload.get("response_url", "")
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
@@ -2456,8 +2642,6 @@ async def _handle_session_resume(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Show choice buttons for how to resume a session."""
-    import json
-
     if not is_owner(user_id):
         logger.warning("session_resume rejected: non-owner %s", user_id)
         sel().log_api_access(
@@ -2581,8 +2765,6 @@ async def _handle_resume_choice(
     mode: str,
 ) -> None:
     """Dispatch session resume to thread or DM based on user choice."""
-    import json
-
     if not is_owner(user_id):
         logger.warning("resume_choice rejected: non-owner %s", user_id)
         sel().log_api_access(
@@ -2630,8 +2812,6 @@ async def _handle_resume_choice(
             label = f"\U0001f9f5 Already active: <{link}|Go to conversation>"
             response_url = payload.get("response_url", "")
             if response_url:
-                import aiohttp
-
                 try:
                     async with aiohttp.ClientSession() as sess:
                         await sess.post(
@@ -2713,7 +2893,11 @@ async def _handle_resume_choice(
             if not jsonl.exists() and not stem.startswith("dashboard_"):
                 jsonl = sess_dir / f"dashboard_{stem}.jsonl"
             if jsonl.exists():
-                lines = jsonl.read_text(encoding="utf-8").splitlines()
+                # Whole-transcript read, bounded only by conversation length
+                # (multi-MB for long sessions) — off-loop so it cannot stall
+                # the event loop and its watchdog heartbeat.
+                raw = await asyncio.to_thread(jsonl.read_text, encoding="utf-8")
+                lines = raw.splitlines()
                 msgs: list[tuple[str, str]] = []
                 for ln in lines:
                     try:
@@ -2744,8 +2928,6 @@ async def _handle_resume_choice(
         # Update the choice message
         response_url = payload.get("response_url", "")
         if response_url:
-            import aiohttp
-
             try:
                 async with aiohttp.ClientSession() as sess:
                     await sess.post(
@@ -2806,8 +2988,6 @@ async def _handle_session_end(
     response_url = payload.get("response_url", "")
     label = f"🛑 Session `{session_id[:12]}…` ended."
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"replace_original": True, "text": label})
@@ -2922,8 +3102,6 @@ async def _handle_session_new(
     response_url = payload.get("response_url", "")
     label = "✨ New session created."
     if response_url:
-        import aiohttp
-
         try:
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"replace_original": False, "text": label})
@@ -3011,8 +3189,6 @@ async def _post_review_auth_error(response_url: str) -> None:
     if not response_url:
         return
     try:
-        import aiohttp
-
         async with aiohttp.ClientSession() as sess:
             await sess.post(
                 response_url,
@@ -3076,8 +3252,6 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -3129,8 +3303,6 @@ async def _handle_review_edit(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -3174,8 +3346,6 @@ async def _handle_review_cancel(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:
@@ -3280,8 +3450,6 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
     response_url = payload.get("response_url", "")
     if response_url:
         try:
-            import aiohttp
-
             async with aiohttp.ClientSession() as sess:
                 await sess.post(response_url, json={"delete_original": True})
         except Exception:

@@ -82,6 +82,37 @@ const wave = [
   '  → /home/user/.kiro/crew/subagents/d5c3b210/result.txt',
 ].join('\n')
 
+// The gateway now stamps the header facts onto meta.subagentCompletion at
+// composition time (#1792); the card reads meta and the prose regexes are a
+// legacy fallback. These fixtures carry the meta the way production does, so the
+// shots exercise the real meta path in the built SPA, not the fallback.
+const singleMeta = {
+  subagentCompletion: {
+    kind: 'single',
+    agentId: '53e3e5eb',
+    agentName: 'kirocrew',
+    outcome: 'ok',
+    task: 'Add TWO short UI labels to the GERMAN (de) catalog',
+    note: '',
+  },
+}
+const failedMeta = {
+  subagentCompletion: {
+    kind: 'single',
+    agentId: '7654e2b3',
+    agentName: 'kirocrew',
+    outcome: 'failed',
+    task: 'Add TWO short UI labels to the FRENCH (fr) catalog',
+    note: '',
+  },
+}
+const chunkMeta = {
+  subagentCompletion: { kind: 'batch', final: false, chunk: 1, chunks: 2, delivered: 10, total: 18, running: 8 },
+}
+const waveMeta = {
+  subagentCompletion: { kind: 'batch', final: true, chunk: 2, chunks: 2, ok: 16, failed: 1, stopped: 1, total: 18 },
+}
+
 const detail = {
   running: false,
   has_more: false,
@@ -91,11 +122,11 @@ const detail = {
   messages: [
     { role: 'user', ts: t - 900, content: 'Translate the two new copy-command labels into every locale.' },
     { role: 'assistant', ts: t - 890, content: 'Spawned 18 sub-agents, one per locale. Waiting for results.' },
-    { role: 'subagent', ts: t - 700, content: single },
+    { role: 'subagent', ts: t - 700, content: single, meta: singleMeta },
     { role: 'assistant', ts: t - 690, content: 'German is in. Waiting on the rest of the wave.' },
-    { role: 'subagent', ts: t - 600, content: failed },
-    { role: 'subagent', ts: t - 500, content: chunk },
-    { role: 'subagent', ts: t - 300, content: wave },
+    { role: 'subagent', ts: t - 600, content: failed, meta: failedMeta },
+    { role: 'subagent', ts: t - 500, content: chunk, meta: chunkMeta },
+    { role: 'subagent', ts: t - 300, content: wave, meta: waveMeta },
     { role: 'assistant', ts: t - 290, content: 'All ten locales are updated. One French run needs a retry and the Russian one was stopped.' },
   ],
 }

@@ -57,6 +57,16 @@ class SkillsShProvider:
         self._config = config or SkillsShConfig()
 
     @property
+    def api_base(self) -> str:
+        """The registry base URL this provider fetches from.
+
+        Public because the platform ``discovery`` policy allowlists a registry by
+        URL rather than by name: the name is a self-chosen label, while the base
+        URL is what determines where skill content comes from.
+        """
+        return self._config.api_base
+
+    @property
     def name(self) -> str:
         return "skillsh"
 
@@ -83,9 +93,7 @@ class SkillsShProvider:
         # {"skills": null} yields a non-list -> items[:limit] raises TypeError.
         # Either way ProviderRegistry.search would swallow it and silently zero
         # ALL skillsh results. Coerce anything that isn't a list to [] instead.
-        raw_items = data if isinstance(data, list) else (
-            data.get("skills") if isinstance(data, dict) else None
-        )
+        raw_items = data.get("skills") if isinstance(data, dict) else data
         items: list[Any] = raw_items if isinstance(raw_items, list) else []
         results: list[SkillSearchResult] = []
         for item in items[:limit]:

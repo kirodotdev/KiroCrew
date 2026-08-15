@@ -9,6 +9,7 @@ import ssl
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,6 +120,22 @@ class TestMapResponse:
         assert out["bonus_used"] == 386.34
         assert out["bonus_limit"] == 500.0
         assert out["bonus_label"] == "Free Trial"
+        assert out["bonus_credits"] == [
+            {"name": "Free Trial", "used": 386.34, "total": 500.0}
+        ]
+
+    def test_extracts_multiple_bounded_bonus_pools(self):
+        data = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 41.0, "usageLimit": 1000.0},
+            {"resourceType": "WELCOME_BONUS", "title": "Welcome bonus",
+             "currentUsage": 500.0, "usageLimit": 500.0},
+            {"resourceType": "PROMO", "displayName": "Community grant",
+             "currentUsage": 185.84, "usageLimit": 2000.0},
+        ]}
+        assert api._map_response(data)["bonus_credits"] == [
+            {"name": "Welcome bonus", "used": 500.0, "total": 500.0},
+            {"name": "Community grant", "used": 185.84, "total": 2000.0},
+        ]
 
     def test_ignores_non_bonus_secondary_breakdown(self):
         # A TOKEN quota alongside CREDIT must NOT be mistaken for a bonus pool.
@@ -391,6 +408,71 @@ class TestLoadBearerToken:
              patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
              patch.object(api, "_OTHER_SQLITE_DBS", ()):
             assert api._load_bearer_token() == "idp-tok"
+
+
+class TestWindowsCliStore:
+    """kiro-cli on Windows keeps the same auth store under ``%APPDATA%\\kiro-cli``
+    (``~/AppData/Roaming/kiro-cli`` by default).
+
+    Absent from ``_CLI_SQLITE_DBS``, a Windows host's only candidate was the
+    JSON SSO cache (``from_cli_store=False``), which can never satisfy the
+    provenance path -- so whenever the ARN anchor also failed, every candidate
+    was rejected and the credit pill silently disappeared.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_arn_cache(self):
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+        yield
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+
+    def test_windows_store_is_a_default_candidate(self):
+        # The FIXED default Roaming location, not %APPDATA%-resolved: the
+        # sensitive-path fence that makes membership a trust claim is
+        # home-anchored at exactly this path, so an APPDATA-resolved location
+        # either equals it or falls outside the fence and must not be trusted.
+        expected = Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        assert expected in api._CLI_SQLITE_DBS
+
+    def test_windows_store_token_is_trusted_without_arn(self, tmp_path):
+        # End-to-end: a token read out of a Windows-layout store carries
+        # from_cli_store=True, so the provenance path accepts it when whoami
+        # reports no profile ARN -- exactly the case that failed with "all 1
+        # candidate credential(s) failed" before the store was a candidate.
+        db = tmp_path / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        db.parent.mkdir(parents=True)
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:odic:token",
+             json.dumps({"access_token": "win-tok", "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+
+        usage_body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 7.0, "usageLimit": 100.0}]}
+
+        def fake_post(token, target, payload):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            return _resp(200, usage_body)
+
+        with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
+             patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()), \
+             patch.object(api, "_post", side_effect=fake_post):
+            cands = api._candidate_tokens()
+            assert [c.token for c in cands] == ["win-tok"]
+            assert cands[0].from_cli_store is True
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out is not None
+        assert out["credits_used"] == 7.0
 
 
 class TestPostSecurityControls:
@@ -1010,7 +1092,7 @@ class TestTokenStoreSensitivePath:
 
         from kiro_crew.security import is_sensitive_path
         home = Path.home()
-        for base in (".local/share", "Library/Application Support"):
+        for base in (".local/share", "Library/Application Support", "AppData/Roaming"):
             for app in ("kiro-cli", "amazon-q"):
                 # The DB and its WAL/SHM/journal sidecars must all be sensitive.
                 assert is_sensitive_path(str(home / base / app / "data.sqlite3"))

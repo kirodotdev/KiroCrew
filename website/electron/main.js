@@ -30,8 +30,16 @@ const { stopGatewayGracefully: _stopGatewayGracefully, forceStopPort, classifyPo
 const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("./gateway-wait");
 const { describeSandboxProfileNeed } = require("./sandbox-profile");
 const { sanitizeWindowState, captureWindowState } = require("./window-state");
+const {
+  DEFAULT_GLOBAL_HOTKEY,
+  createSummonHandler,
+  bindGlobalHotkey,
+  unregisterGlobalHotkey,
+  currentGlobalHotkey,
+  setGlobalHotkeyLogger,
+} = require("./global-hotkey");
 const { createLivenessMonitor } = require("./gateway-liveness");
-const { chooseRecoveryStrategy, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
+const { chooseRecoveryStrategy, classifyAdoptedGateway, waitForServiceRebind, waitForProcessExit } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
@@ -67,6 +75,14 @@ function readInternalSecret() {
   return "";
 }
 const { buildMenuTemplate } = require("./app-menu");
+const { serializeMenuItems, executeMenuItem } = require("./windows-menu-model");
+const {
+  paintTitleBarOverlay,
+  paintAllTitleBarOverlays,
+  SYMBOL_DARK: WINDOWS_TITLEBAR_SYMBOL_DARK,
+  SYMBOL_LIGHT: WINDOWS_TITLEBAR_SYMBOL_LIGHT,
+  OVERLAY_BACKGROUND: WINDOWS_TITLEBAR_BACKGROUND,
+} = require("./windows-titlebar");
 
 // ── Persistent settings for remote tunnel mode ──
 
@@ -79,6 +95,8 @@ const {
 
 const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = require("./host-config");
 
+const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
+
 const store = new Store({
   defaults: {
     remoteHost: "",                        // LEGACY — migrated to remoteHosts
@@ -86,11 +104,23 @@ const store = new Store({
     remoteHosts: {},                       // { [port]: { host, binPath, remotePort?, remotePath? } }
     sshTimeoutMs: 20000,
     windowState: null,                     // persisted main-window geometry (see window-state.js)
+    globalHotkey: null,                    // system-wide summon accelerator: null = platform default, "" = disabled, string = custom (see global-hotkey.js)
     lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow build stamp; "insider"|"stable" = user opt-in (Settings > About)
+    runLocalGateway: true,                 // false = act as a pure client; never start a gateway on this machine
+    linuxFrameless: null,                  // Linux window chrome: true = frameless, false = native frame, null = follow the desktop environment (see linux-frame.js)
   },
 });
+
+// Read ONCE at launch, because the setting takes effect on the next launch.
+// startGateway() is also the recovery path for a gateway that died mid-session,
+// so re-reading the store there would let a flip made minutes ago refuse to
+// replace a gateway this session is still using — stranding the user with no
+// backend and no way back short of a relaunch. The error dialog's
+// "turn it on and retry" action is the one thing that may change this, since
+// that IS the user asking for a gateway right now.
+let runLocalGateway = isLocalGatewayEnabled(store);
 
 // The PRE-SPAWN read home (see home-dir.js for the full contract): whichever
 // directory's config.json governs this launch under the backend's migration
@@ -135,7 +165,27 @@ const HEALTH_URL = `${BACKEND_URL}/api/status`;
 const POLL_INTERVAL_MS = 500;
 const MAX_WAIT_MS = 30_000; // 30s max wait for backend
 const IS_MAC = process.platform === "darwin";
-const IS_WIN = process.platform === "win32";
+const IS_WINDOWS = process.platform === "win32";
+const IS_WIN = IS_WINDOWS;
+const WINDOWS_TITLEBAR_MENU_IDS = new Set([
+  "file-menu",
+  "edit-menu",
+  "view-menu",
+  "connection-menu",
+  "window-menu",
+  "help-menu",
+]);
+const IS_LINUX = process.platform === "linux";
+// Whether Linux windows drop the native frame so the dashboard's 42px header
+// can double as the title bar (as on macOS/Windows) instead of stacking under
+// the WM's own decoration. Decided ONCE at launch from the desktop
+// environment plus the operator override, because every window in the process
+// must agree (see linux-frame.js for the full contract).
+const { decideLinuxFrame, applyWindowControl } = require("./linux-frame");
+const LINUX_FRAME_DECISION = IS_LINUX
+  ? decideLinuxFrame({ env: process.env, override: store.get("linuxFrameless") })
+  : null;
+const LINUX_FRAMELESS = !!(LINUX_FRAME_DECISION && LINUX_FRAME_DECISION.frameless);
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
@@ -146,10 +196,12 @@ function currentThemeAccent() {
 
 
 // The dashboard view fills the whole content area on all platforms. On macOS
-// the window is frameless (titleBarStyle:"hidden") and the dashboard's own
-// 42px header doubles as the title bar: an injected drag region makes it
-// draggable and the native traffic lights are inset into it (see
-// positionTrafficLights).
+// and Windows the dashboard's own 42px header doubles as the title bar. macOS
+// insets native traffic lights; Windows overlays its native caption controls
+// and renders application-menu triggers inside the header. On Linux the window
+// is frameless (frame:false) on desktops that prefer client-side decorations —
+// same injected drag region, with an injected caption-control cluster instead
+// of native controls (see linux-frame.js).
 
 const { validateRemoteSettings } = require("./validation");
 const { attachContextMenu } = require("./context-menu");
@@ -196,34 +248,42 @@ if (!app.requestSingleInstanceLock()) {
 let mainWindow = null;
 let tray = null;
 let gatewayProcess = null;
-// True only when WE spawned the bundled backend on this flavor's port. False on
-// the reuse path — i.e. a gateway was already answering when we booted, which is
-// exactly the remote-tunnel setup (localhost:<port> is an SSH forward to a
-// remote gateway) and also the "dev ran `kirocrew gateway` in a terminal" case.
-// Recovery must NEVER kill or respawn a gateway we did not spawn: the port-holder
-// is someone else's process (our SSH tunnel, a manual gateway), and the correct
-// fix on a dropped tunnel is to re-probe and reconnect once it heals, not to
-// force-stop the port or spawn a (nonexistent, in remote mode) local backend.
-let weSpawnedGateway = false;
-// True only on the reuse path when the port-holder was POSITIVELY identified as
-// a local same-family Kiro Crew process (same-family /api/health + a "kirocrew"
-// or "service" LISTEN owner). Distinguishes "we adopted a local gateway" from
-// "we connected to a tunnel / external gateway" for recovery: an adopted local
-// gateway that dies will never come back on its own, so recovery must wait
-// BOUNDED and then respawn — never the indefinite tunnel-heal wait, which
-// leaves the shell dead until the user manually relaunches.
+// How the gateway on this flavor's port was obtained — ONE mutually-exclusive
+// state (previously three module-level booleans that encoded it redundantly and
+// could drift out of sync). Vocabulary + the recovery-strategy mapping live in
+// gateway-recovery.js (chooseRecoveryStrategy / classifyAdoptedGateway); assign
+// at exactly one place per outcome.
+//   "none"           — no gateway yet, or the reuse path could NOT positively
+//                      identify the port-holder as a local Kiro Crew process
+//                      (remote SSH tunnel, manual/external gateway, probe
+//                      failure). Recovery must NEVER kill or respawn it: the
+//                      port-holder is someone else's process, and the correct
+//                      fix on a dropped tunnel is to re-probe and reconnect
+//                      once it heals, not to force-stop the port or spawn a
+//                      (nonexistent, in remote mode) local backend.
+//   "spawned"        — WE spawned the bundled backend on this flavor's port;
+//                      recovery may kill + respawn it.
+//   "reused-local"   — reuse path, holder POSITIVELY identified as a local
+//                      same-family Kiro Crew process (same-family /api/health
+//                      + a "kirocrew" LISTEN owner). An adopted local gateway
+//                      that dies will never come back on its own, so recovery
+//                      must wait BOUNDED and then respawn — never the
+//                      indefinite tunnel-heal wait, which leaves the shell
+//                      dead until the user manually relaunches.
+//   "reused-service" — like "reused-local", but the holder was SERVICE-
+//                      classified (PPID = init: a real launchd/systemd unit —
+//                      or an orphan, which reparents to init and is
+//                      indistinguishable at classify time). If that gateway
+//                      later releases the port, a real service manager may be
+//                      about to respawn it, so recovery must offer a bounded
+//                      rebind grace before spawning locally — spawning
+//                      immediately races the manager for the bind and one side
+//                      dies with EADDRINUSE.
 // KNOWN RESIDUAL (Windows): classifyPortOwner cannot positively identify
-// owners there (no lsof/ps), so this flag never sets and an adopted draining
-// gateway still falls into the indefinite "reconnect" wait — deliberately
-// conservative until the Windows-native owner probe lands.
-let reusedLocalGateway = false;
-// True when the adopted holder was specifically SERVICE-classified (PPID = init:
-// a real launchd/systemd unit — or an orphan, which reparents to init and is
-// indistinguishable at classify time). If that gateway later releases the port,
-// a real service manager may be about to respawn it, so recovery must offer a
-// bounded rebind grace before spawning locally — spawning immediately races the
-// manager for the bind and one side dies with EADDRINUSE.
-let reusedServiceGateway = false;
+// owners there (no lsof/ps), so the reused-* states never set and an adopted
+// draining gateway still falls into the indefinite "reconnect" wait —
+// deliberately conservative until the Windows-native owner probe lands.
+let gatewayOwnership = "none";
 // Post-handoff backend liveness monitor (primary window only). Detects a wedged
 // gateway — alive TCP socket, frozen event loop — that the spawn 'exit' watcher
 // can't, since the process never exits. See gateway-liveness.js.
@@ -491,15 +551,13 @@ async function resolveGatewayConflict(rebindDepth = 0) {
       adoptedDraining = true;
     }
     glog(`reusing existing gateway on :${PORT} (${decision.reason}) — bundled backend NOT spawned`);
-    weSpawnedGateway = false; // reuse path — recovery must not kill/respawn a gateway we don't own
-    // A same-family gateway held by a local Kiro Crew process is OURS in spirit
+    // Reuse path — recovery must not kill/respawn a gateway we don't own. A
+    // same-family gateway held by a local Kiro Crew process is OURS in spirit
     // even though we didn't spawn it: if it dies, no tunnel will resurrect it,
     // so recovery may respawn after a bounded wait. Anything less positively
     // identified (tunnel, no visible owner, probe failure) keeps the
-    // never-respawn external classification.
-    reusedLocalGateway = decision.reason === "same-family"
-      && (localOwner === "kirocrew" || localOwner === "service");
-    reusedServiceGateway = reusedLocalGateway && localOwner === "service";
+    // never-respawn external classification ("none").
+    gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner });
     // A gateway we adopted mid-drain is not a success to celebrate: recovery
     // may immediately retract it. Keep the status neutral for that case.
     sendStatus(adoptedDraining ? "Connecting to the existing gateway…" : "Gateway already running ✓");
@@ -608,6 +666,25 @@ function startGateway() {
   glog(`launch: port=${PORT} home=${KIROCREW_HOME} packaged=${app.isPackaged} resourcesPath=${process.resourcesPath || "(none)"} log=${gatewayLogPath()}`);
   sendStatus("Checking if gateway is running…");
   return new Promise((resolve) => {
+    // Both branches below funnel through here, so the client-only choice cannot
+    // be honoured on one path and ignored on the other. A takeover reaches it
+    // too: quitting the other channel's app frees the port on this machine, and
+    // that is not a request to run a gateway here.
+    //
+    // With nothing to spawn there is no exit code and no log to wait for, so the
+    // reason is reported as a fail-fast failure rather than left to time out.
+    // The error dialog's Retry re-enters this function, which is what makes
+    // "bring the connection up, then retry" work without a relaunch.
+    const spawnUnlessClientOnly = () => {
+      if (runLocalGateway) {
+        spawnGateway(resolve);
+        return;
+      }
+      glog(`no gateway on :${PORT} and local gateway is off — not starting one`);
+      sendStatus("No gateway is answering…");
+      gatewayStartFailure = { disabled: true, port: PORT };
+      resolve(false);
+    };
     checkBackend()
       .then(async () => {
         // A gateway is already listening on this port. Same-family, dev, and
@@ -621,10 +698,10 @@ function startGateway() {
           resolve(false);
           return;
         }
-        spawnGateway(resolve);
+        spawnUnlessClientOnly();
       })
       .catch(() => {
-        spawnGateway(resolve);
+        spawnUnlessClientOnly();
       });
   });
 }
@@ -776,9 +853,10 @@ function spawnGateway(resolve) {
           },
         });
         gatewayProcess = child;
-        weSpawnedGateway = true; // we own this child — recovery may kill+respawn it
-        reusedLocalGateway = false; // ownership transitioned: no longer on an adopted gateway
-        reusedServiceGateway = false; // ditto — stale service classification must not outlive the adoption
+        // We own this child — recovery may kill+respawn it. Ownership
+        // transitioned: any stale adopted/service classification must not
+        // outlive the spawn.
+        gatewayOwnership = "spawned";
         // The child inherits its own dup of the fd; close our copy so it doesn't leak.
         if (typeof childOut === "number") { try { fs.closeSync(childOut); } catch { /* ignore */ } }
 
@@ -1021,6 +1099,9 @@ function syncNativeTheme(view, win) {
       mode = parsed.mode || "";
     } catch { return; }
     nativeTheme.themeSource = resolveThemeSource(pref, mode);
+    if (mode === "dark" || mode === "light") {
+      updateWindowsTitleBarOverlay(win, mode);
+    }
   }).catch(() => {});
 }
 
@@ -1097,6 +1178,11 @@ function setupWindowContents(win, backendUrl) {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // The SPA reserves header space for the injected Linux caption controls
+      // only when the window is actually frameless -- a runtime decision
+      // (desktop environment + override), not a platform constant, so it is
+      // carried to the preload explicitly (read back via process.argv there).
+      additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
     },
   });
   view.setBackgroundColor("#00000000");
@@ -1353,6 +1439,15 @@ function setupWindowContents(win, backendUrl) {
     fetchFn: (url, init) => fetch(url, init),
     getGatewayUrl: () => win._mcBackendUrl,
     getSecret: () => readInternalSecret(),
+    // The idle host-presence heartbeat must fire ONLY when the gateway is truly
+    // on this machine. A loopback URL is necessary but NOT sufficient: a REMOTE
+    // gateway reached over a tunnel also presents as localhost, so additionally
+    // require that no remote host is configured for THIS window's port (each
+    // window has its own `port` from its backendUrl; the module-global PORT is
+    // only the primary window's, so a secondary remote window would otherwise
+    // read the wrong config and leak the local secret over its tunnel).
+    isGatewayLocal: () =>
+      isLoopbackUrl(win._mcBackendUrl) && !getRemoteHostConfig(store, port)?.host,
     // Panels that exist PLUS sessions that may host one on demand. Reporting a
     // key is what registers it with the gateway's command bus, so a declared-but-
     // unmounted session must appear here or its first navigate can never arrive.
@@ -1444,12 +1539,16 @@ function setupWindowContents(win, backendUrl) {
 
   attachContextMenu(view.webContents);
 
-  // Keep the native traffic lights centered in the zoom-scaled header row.
+  // Keep native window controls centered in the zoom-scaled header row.
   // "zoom-changed" covers pinch / ctrl+wheel gestures; the View-menu zoom
   // items call positionTrafficLights explicitly (see zoomItem in the menu).
   if (IS_MAC) {
     positionTrafficLights(win);
     view.webContents.on("zoom-changed", () => setTimeout(() => positionTrafficLights(win), 0));
+  }
+  if (IS_WINDOWS) {
+    updateWindowsTitleBarOverlay(win);
+    view.webContents.on("zoom-changed", () => setTimeout(() => updateWindowsTitleBarOverlay(win), 0));
   }
 
   // The frameless macOS window emits system-context-menu for the drag region;
@@ -1469,17 +1568,19 @@ function setupWindowContents(win, backendUrl) {
   view.webContents.on("page-title-updated", (e) => { e.preventDefault(); applyTitle(); });
 
   view.webContents.on("did-finish-load", () => {
-    // macOS + Windows + Linux (non-native-frame): the frameless window needs
-    // an injected drag region so the dashboard header can move the window.
-    // On macOS titleBarStyle:"hidden" makes the whole window frameless; on
-    // Windows titleBarOverlay provides caption controls but no drag area.
+    // Frameless platforms need an injected drag region so the dashboard
+    // header can move the window. On macOS titleBarStyle:"hidden" makes the
+    // whole window frameless; on Windows titleBarOverlay provides caption
+    // controls but no drag area; on Linux frame:false (when the desktop
+    // environment prefers client-side decorations) removes the WM-provided
+    // drag surface entirely, so without this bar the window is undraggable.
     // The drag bar is pointer-events:none so clicks pass through to the SPA;
     // interactive controls are marked no-drag so they remain clickable.
-    if (IS_MAC || IS_WIN) {
+    if (IS_MAC || IS_WIN || LINUX_FRAMELESS) {
       view.webContents.insertCSS(`
         #electron-drag-bar {
           position: fixed;
-          top: 0; left: 0; right: ${IS_WIN ? '138px' : '0'};
+          top: 0; left: 0; right: ${IS_WIN ? '138px' : LINUX_FRAMELESS ? '108px' : '0'};
           height: 42px;
           -webkit-app-region: drag;
           z-index: 99999;
@@ -1497,6 +1598,106 @@ function setupWindowContents(win, backendUrl) {
           document.body.prepend(bar);
         }
       `);
+    }
+    // Frameless Linux has no OS-painted caption controls (macOS keeps traffic
+    // lights, Windows keeps titleBarOverlay), so inject a minimal
+    // minimize / maximize / close cluster into the header's top-right corner.
+    // Same injection mechanism as the drag bar; actions round-trip through the
+    // preload's windowControl bridge to applyWindowControl in this process.
+    // The 108px drag-bar inset above keeps the drag region from covering it.
+    if (LINUX_FRAMELESS) {
+      view.webContents.insertCSS(`
+        #electron-linux-controls {
+          position: fixed;
+          top: 0; right: 0;
+          height: 42px;
+          display: flex;
+          align-items: stretch;
+          z-index: 100000;
+          -webkit-app-region: no-drag;
+        }
+        #electron-linux-controls button {
+          position: relative;
+          width: 36px;
+          border: 0;
+          background: transparent;
+          color: var(--text, #e2e8f0);
+          opacity: 0.55;
+          cursor: default;
+          -webkit-app-region: no-drag;
+        }
+        #electron-linux-controls button:hover { opacity: 1; background: rgba(128,128,128,0.18); }
+        #electron-linux-controls button.close:hover { background: #e81123; color: #fff; }
+        /* The control marks are CSS-drawn (borders/pseudo-elements), not font
+           glyphs: U+2013/U+25A1/U+2715 render at inconsistent sizes or as
+           tofu boxes depending on the distro's font set. */
+        #electron-linux-controls button::before {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          transform: translate(-50%, -50%);
+        }
+        #electron-linux-controls button.minimize::before {
+          width: 10px; height: 0;
+          border-top: 1px solid currentColor;
+        }
+        #electron-linux-controls button.maximize::before {
+          width: 9px; height: 9px;
+          border: 1px solid currentColor;
+        }
+        /* Maximized: the "restore" mark — two offset squares. */
+        #electron-linux-controls.is-maximized button.maximize::before {
+          width: 7px; height: 7px;
+          transform: translate(-70%, -30%);
+        }
+        #electron-linux-controls.is-maximized button.maximize::after {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          width: 7px; height: 7px;
+          transform: translate(-30%, -70%);
+          border: 1px solid currentColor;
+          border-bottom: 0;
+          border-left: 0;
+        }
+        #electron-linux-controls button.close::before {
+          width: 12px; height: 0;
+          border-top: 1px solid currentColor;
+          transform: translate(-50%, -50%) rotate(45deg);
+        }
+        #electron-linux-controls button.close::after {
+          content: "";
+          position: absolute;
+          top: 50%; left: 50%;
+          width: 12px; height: 0;
+          border-top: 1px solid currentColor;
+          transform: translate(-50%, -50%) rotate(-45deg);
+        }
+      `);
+      view.webContents.executeJavaScript(`
+        if (!document.getElementById('electron-linux-controls')) {
+          const wrap = document.createElement('div');
+          wrap.id = 'electron-linux-controls';
+          const mk = (cls, label, action) => {
+            const b = document.createElement('button');
+            b.className = cls;
+            b.setAttribute('aria-label', label);
+            // Caption controls are window chrome, not page content: native
+            // caption buttons are never in the tab order, so keep these out
+            // of it too (WM shortcuts cover keyboard users).
+            b.tabIndex = -1;
+            b.addEventListener('click', () => window.kirocrew?.windowControl?.(action));
+            return b;
+          };
+          wrap.append(
+            mk('minimize', 'Minimize', 'minimize'),
+            mk('maximize', 'Maximize', 'maximize-toggle'),
+            mk('close', 'Close', 'close'),
+          );
+          document.body.prepend(wrap);
+        }
+      `);
+      syncLinuxMaximizeState(win, view);
     }
     // Sync window background to theme color (visible in tab bar padding area)
     view.webContents.executeJavaScript(
@@ -1538,6 +1739,16 @@ function setupWindowContents(win, backendUrl) {
 // factor: the header's on-screen height is 42 * zoomFactor, so both the x
 // inset and the vertical centering scale with it.
 const HEADER_CSS_PX = 42;
+
+// Repaint one window's Windows caption-control overlay for the resolved theme.
+// The painting itself (guards, zoom scaling, and the swallow of the framed
+// windows Electron throws on) lives in ./windows-titlebar so it is unit
+// testable without an Electron runtime.
+function updateWindowsTitleBarOverlay(win, mode) {
+  if (!IS_WINDOWS) return;
+  const resolvedMode = mode || (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  paintTitleBarOverlay(win, resolvedMode, HEADER_CSS_PX);
+}
 // Visible AppKit traffic-light control height (fixed; does not scale with zoom).
 const TRAFFIC_LIGHT_NATIVE_H = 12;
 // AppKit anchors the button GROUP a few px below the naive top inset, so the
@@ -1576,6 +1787,38 @@ function windowForWebContents(wc) {
   return null;
 }
 
+// Keep the injected Linux caption cluster's maximize button in sync with the
+// window's real state: the native control it replaces flips between a
+// "maximize" and a "restore" mark, and screen-reader users get the matching
+// verb. Renderer-side the state is just a class on the cluster (the restore
+// mark is CSS-drawn off `.is-maximized` — see the insertCSS block in
+// setupWindowContents). Fire-and-forget: a mid-teardown window rejects the
+// executeJavaScript promise, which is fine to drop.
+function syncLinuxMaximizeState(win, view) {
+  const push = () => {
+    if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+    const maxed = win.isMaximized();
+    view.webContents.executeJavaScript(`
+      {
+        const wrap = document.getElementById('electron-linux-controls');
+        if (wrap) {
+          wrap.classList.toggle('is-maximized', ${maxed});
+          const b = wrap.querySelector('button.maximize');
+          if (b) b.setAttribute('aria-label', ${maxed} ? 'Restore' : 'Maximize');
+        }
+      }
+    `).catch(() => {});
+  };
+  // Called from did-finish-load, which re-fires on every reload: register the
+  // window listeners once and only re-push the current state afterwards.
+  if (!win._mcLinuxMaximizeSyncArmed) {
+    win._mcLinuxMaximizeSyncArmed = true;
+    win.on("maximize", push);
+    win.on("unmaximize", push);
+  }
+  push();
+}
+
 // Persist the main window's state (geometry + fullscreen + Keep on Top) to the
 // store. Module-level so both createWindow()'s geometry listeners and the View
 // menu's Keep on Top toggle can trigger a save. No-op while mainWindow is
@@ -1610,15 +1853,28 @@ function createWindow() {
   // macOS: titleBarStyle:"hidden" + native traffic lights inset into it.
   // Windows: titleBarStyle:"hidden" + titleBarOverlay puts native caption
   //   controls (minimize/maximize/close) in an overlay strip synced to theme.
-  // Linux: Electron ignores titleBarStyle, so it keeps the native frame.
+  // Linux: frame:false on desktops that expect client-side decorations,
+  //   native frame elsewhere (see linux-frame.js). titleBarStyle is ignored
+  //   by Electron on Linux, so the explicit frame flag is the mechanism.
   if (IS_MAC) opts.titleBarStyle = "hidden";
-  if (IS_WIN) {
+  if (IS_WINDOWS) {
     opts.titleBarStyle = "hidden";
+    opts.autoHideMenuBar = true;
     opts.titleBarOverlay = {
-      color: nativeTheme.shouldUseDarkColors ? "#0f1117" : "#f8fafc",
-      symbolColor: nativeTheme.shouldUseDarkColors ? "#e2e8f0" : "#1e293b",
-      height: 42,
+      color: WINDOWS_TITLEBAR_BACKGROUND,
+      symbolColor: nativeTheme.shouldUseDarkColors
+        ? WINDOWS_TITLEBAR_SYMBOL_DARK
+        : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
+      height: HEADER_CSS_PX,
     };
+  }
+  if (LINUX_FRAMELESS) {
+    opts.frame = false;
+    // A visible menu bar under a frameless window re-creates the stacked-bars
+    // problem (#3606); removing it entirely would take the app menu — and with
+    // it the discoverable path to windowing actions — away. Auto-hide keeps it
+    // out of the resting chrome while Alt still reveals it.
+    opts.autoHideMenuBar = true;
   }
   // Window + taskbar icon (Windows only): running unpackaged (`electron .`)
   // otherwise shows the default Electron icon. macOS takes its icon from the
@@ -1646,6 +1902,9 @@ function createWindow() {
     opts.y = state.y;
   }
   mainWindow = new BaseWindow(opts);
+  if (IS_WINDOWS && typeof mainWindow.setMenuBarVisibility === "function") {
+    mainWindow.setMenuBarVisibility(false);
+  }
 
   setupWindowContents(mainWindow, BACKEND_URL);
 
@@ -1696,8 +1955,32 @@ function createTray() {
   const nightly = identityFamily(app.getVersion()) === "nightly";
   const iconFile = nightly && fs.existsSync(path.join(__dirname, "icon-nightly.png"))
     ? "icon-nightly.png" : "icon.png";
-  const iconPath = path.join(__dirname, iconFile);
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 18, height: 18 });
+  let icon;
+  const templatePath = path.join(__dirname, "trayTemplate.png");
+  if (IS_MAC && fs.existsSync(templatePath)) {
+    // macOS menu-bar icons are template images: a monochrome (black +
+    // alpha) glyph the system recolors for light/dark/tinted menu bars.
+    // Passing the full-colour icon here renders it as-is, which clashes
+    // with neighbouring status items and loses contrast on tinted bars.
+    // The asset ships at 18px with an @2x retina variant that
+    // createFromPath picks up via the DPI-suffix convention, so no
+    // resize. setTemplateImage is explicit even though the *Template
+    // filename convention already implies it. The stable and nightly
+    // glyphs share one silhouette (the channels differ only in field
+    // colour), so a single template asset serves both; channel identity
+    // stays on the Dock icon and app.name.
+    icon = nativeImage.createFromPath(templatePath);
+    icon.setTemplateImage(true);
+  } else {
+    // Other platforms render tray icons literally, so keep the
+    // channel-aware full-colour icon (nightly identity stays visible).
+    // Reaching here on macOS means the template asset did not ship;
+    // the menu bar silently regresses to the colour icon, so leave a
+    // signal for whoever debugs the packaging.
+    if (IS_MAC) console.warn("tray: trayTemplate.png missing, falling back to colour icon");
+    icon = nativeImage.createFromPath(path.join(__dirname, iconFile))
+      .resize({ width: 18, height: 18 });
+  }
   tray = new Tray(icon);
   tray.setToolTip(app.name);
   // Each connection opens as its own window on every platform (native window
@@ -1854,7 +2137,7 @@ function fadeLoadingScreen(wc, timeoutMs = 8000) {
  * @returns {Promise<'retry'|'force-retry'|'reveal'|'quit'>}
  */
 function showGatewayErrorDialog(parentWin, opts) {
-  const { title, message, logTail, logPath, portConflict, noRetry = false } = opts;
+  const { title, message, logTail, logPath, portConflict, noRetry = false, localGatewayOff = false } = opts;
   return new Promise((resolve) => {
     const dark = nativeTheme.shouldUseDarkColors;
     const hasParent = parentWin && !parentWin.isDestroyed();
@@ -1876,6 +2159,13 @@ function showGatewayErrorDialog(parentWin, opts) {
     // "Retry" button it would ignore contradicts the dialog's own message.
     const primaryAction = noRetry ? "quit" : (portConflict ? "force-retry" : "retry");
     const primaryLabel = noRetry ? "Quit" : (portConflict ? "Force-stop &amp; Retry" : "Retry");
+    // A client-only install whose remote is unreachable needs an in-app way to
+    // change its mind: Settings lives inside the dashboard, which a gateway has
+    // to serve, so the page holding the switch is exactly what it cannot reach.
+    // Retry stays primary because restoring the remote is the likelier fix.
+    const enableButton = (localGatewayOff && !noRetry)
+      ? `<button class="cancel" onclick="act('enable-retry')">Start Local Gateway</button>`
+      : "";
     const fg = dark ? "#e2e8f0" : "#1e293b";
     const muted = dark ? "#94a3b8" : "#64748b";
     const html = `<!DOCTYPE html><html><head><style>
@@ -1902,6 +2192,7 @@ function showGatewayErrorDialog(parentWin, opts) {
       <pre class="log">${esc(logTail || "(launch log is empty)")}</pre>
       <div class="row">
         <button class="ok" onclick="act('${primaryAction}')">${primaryLabel}</button>
+        ${enableButton}
         <button class="cancel" onclick="act('reveal')">Reveal Log</button>
         ${noRetry ? "" : `<button class="cancel" onclick="act('quit')">Quit</button>`}
       </div>
@@ -2032,7 +2323,7 @@ async function recoverWedgedGateway(win) {
   // fell through to showUnrecoverableGatewayError, which QUIT the app on any
   // button (that was the "crash on Retry"). Instead: leave the tunnel alone and
   // re-probe until it heals, then reconnect.
-  const strategy = chooseRecoveryStrategy({ weSpawnedGateway, reusedLocalGateway });
+  const strategy = chooseRecoveryStrategy({ gatewayOwnership });
   if (strategy === "reconnect") {
     glog("liveness: backend unresponsive on a gateway we did not spawn (remote tunnel / external gateway) — waiting for it to recover instead of killing the port");
     if (!win || win.isDestroyed() || isQuitting) return;
@@ -2166,7 +2457,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
     return showUnrecoverableGatewayError(win, PORT, "held");
   }
   if (!win || win.isDestroyed() || isQuitting) return;
-  if (reusedServiceGateway) {
+  if (gatewayOwnership === "reused-service") {
     // The dead gateway was SERVICE-classified: a real launchd/systemd unit is
     // (or may be) about to respawn it, and spawning immediately races that
     // rebind for the port. Orphans classify as service too but nothing rebinds
@@ -2189,8 +2480,7 @@ async function reconnectOrRespawnAdoptedGateway(win) {
       const readiness = await fetchGatewayReadiness();
       if (decision.action === "reuse" && readiness !== "shutting-down") {
         glog(`liveness: service manager re-bound :${PORT} (owner=${owner}, reason=${decision.reason}, readiness=${readiness}) — reconnecting to the restarted gateway`);
-        reusedLocalGateway = decision.reason === "same-family" && (owner === "kirocrew" || owner === "service");
-        reusedServiceGateway = reusedLocalGateway && owner === "service";
+        gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner: owner });
         gatewayStartFailure = null;
         return showLoadingThenConnect(win, BACKEND_URL);
       }
@@ -2364,10 +2654,25 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // recoverable case: the spawn dies with "address already in use" and a plain
     // retry can't help (the holder is still there). Detect it and offer to
     // force-stop the stuck KiroCrew process. Only meaningful for OUR own port.
-    const portConflict = failedToStart && backendUrl === BACKEND_URL && isPortInUse(logTail);
+    // Nothing was spawned in the client-only case, so it is classified before
+    // the port-conflict probe — see classifyStartFailure for why the log tail
+    // cannot be trusted to mean "a holder exists right now".
+    const failureKind = classifyStartFailure({
+      failedToStart,
+      failure: err.failure,
+      isOwnPort: backendUrl === BACKEND_URL,
+      portInUseInLog: isPortInUse(logTail),
+    });
+    const localGatewayOff = failureKind === "client-only";
+    const portConflict = failureKind === "port-conflict";
 
     let title, message;
-    if (portConflict) {
+    if (localGatewayOff) {
+      // Nothing failed here — the app was told not to start a gateway and the
+      // port is silent. "Failed to start" would send the user hunting a crash.
+      title = `Kiro Crew — no gateway on port ${PORT}`;
+      message = err.message;
+    } else if (portConflict) {
       title = `Kiro Crew — port ${PORT} already in use`;
       message = `Another Kiro Crew gateway is already using port ${PORT} (it may be wedged). `
         + `Force-stop it and retry, or quit. From a terminal you can also run: `
@@ -2384,12 +2689,20 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
     // Loop so "Reveal Log" can re-show the dialog after opening Finder.
     for (;;) {
       const action = await showGatewayErrorDialog(win, {
-        title, message, logTail, logPath, portConflict, port: PORT,
+        title, message, logTail, logPath, portConflict, port: PORT, localGatewayOff,
       });
       if (win.isDestroyed()) return;
       if (action === "reveal") {
         try { shell.showItemInFolder(logPath); } catch { /* best effort */ }
         continue; // re-show the dialog
+      }
+      if (action === "enable-retry") {
+        // The user is asking for a gateway now, from the one surface they can
+        // still reach. Persist it so the next launch agrees, and lift this
+        // session's snapshot so the retry below actually spawns.
+        setLocalGatewayEnabled(store, true);
+        runLocalGateway = true;
+        glog("local gateway turned back on from the error dialog");
       }
       if (action === "force-retry") {
         let freed = true;
@@ -2403,7 +2716,7 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
           return showUnrecoverableGatewayError(win, PORT);
         }
       }
-      if (action === "retry" || action === "force-retry") {
+      if (action === "retry" || action === "force-retry" || action === "enable-retry") {
         gatewayStartFailure = null; // let the retry genuinely re-probe
         // If our own spawned gateway is confirmed gone (or we just force-stopped
         // the port holder), respawn before re-waiting. For a timeout (child may
@@ -2475,18 +2788,28 @@ async function openNewConnectionWindow() {
     };
     // Same platform-conditional chrome as the main window (see createWindow):
     // frameless + inset traffic lights on macOS, titleBarOverlay on Windows,
-    // native frame elsewhere (Linux).
+    // frame:false on CSD-preferring Linux desktops, native frame elsewhere.
     if (IS_MAC) connOpts.titleBarStyle = "hidden";
-    if (IS_WIN) {
+    if (IS_MAC) connOpts.trafficLightPosition = trafficLightPositionForZoom(1);
+    if (IS_WINDOWS) {
       connOpts.titleBarStyle = "hidden";
+      connOpts.autoHideMenuBar = true;
       connOpts.titleBarOverlay = {
-        color: nativeTheme.shouldUseDarkColors ? "#0f1117" : "#f8fafc",
-        symbolColor: nativeTheme.shouldUseDarkColors ? "#e2e8f0" : "#1e293b",
-        height: 42,
+        color: WINDOWS_TITLEBAR_BACKGROUND,
+        symbolColor: nativeTheme.shouldUseDarkColors
+          ? WINDOWS_TITLEBAR_SYMBOL_DARK
+          : WINDOWS_TITLEBAR_SYMBOL_LIGHT,
+        height: HEADER_CSS_PX,
       };
     }
-    if (IS_MAC) connOpts.trafficLightPosition = trafficLightPositionForZoom(1);
+    if (LINUX_FRAMELESS) {
+      connOpts.frame = false;
+      connOpts.autoHideMenuBar = true; // same rationale as createWindow
+    }
     const connWin = new BaseWindow(connOpts);
+    if (IS_WINDOWS && typeof connWin.setMenuBarVisibility === "function") {
+      connWin.setMenuBarVisibility(false);
+    }
 
     setupWindowContents(connWin, backendUrl);
 
@@ -2644,6 +2967,12 @@ process.on("unhandledRejection", (reason) => {
 });
 
 app.whenReady().then(async () => {
+  // The frame decision's `reason` exists for support bundles: "why does my
+  // window (not) have a native frame" is answerable from the gateway log
+  // without asking the user for their desktop environment.
+  if (LINUX_FRAME_DECISION) {
+    glog(`linux frame decision: frameless=${LINUX_FRAME_DECISION.frameless} reason=${LINUX_FRAME_DECISION.reason}`);
+  }
   // Debug-only per-process metrics recorder. No-ops unless KIROCREW_DEBUG is set,
   // so a normal install pays nothing; when on, it writes a bounded rolling
   // artifact next to the gateway log for `kirocrew desktop metrics` to read.
@@ -2764,12 +3093,69 @@ app.whenReady().then(async () => {
   );
   Menu.setApplicationMenu(appMenu);
 
+  // Windows renders the menu surface in the custom titlebar so pointer hover
+  // can switch between top-level menus. Native Menu.popup() captures input on
+  // Windows and prevents that Zed-style interaction. Commands still execute
+  // through Electron's MenuItems, preserving roles and accelerator behavior.
+  ipcMain.handle("app-menu:items", (event, id) => {
+    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id)) return [];
+    const item = appMenu.getMenuItemById(id);
+    const win = windowForWebContents(event.sender);
+    if (!item || !item.submenu || !win || win.isDestroyed()) return [];
+    return serializeMenuItems(item.submenu);
+  });
+
+  ipcMain.on("app-menu:execute", (event, id, index) => {
+    if (!IS_WINDOWS || !WINDOWS_TITLEBAR_MENU_IDS.has(id) || !Number.isInteger(index)) return;
+    const topLevelItem = appMenu.getMenuItemById(id);
+    const win = windowForWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    // `event.sender`, not `event`: role items dispatch off the third click
+    // argument as a WebContents (`webContentsMethod(focusedWebContents)`), and
+    // the titlebar menu can only be clicked while its own renderer has focus,
+    // so the sender IS the focused WebContents the native menu would resolve.
+    executeMenuItem(topLevelItem, index, win, event.sender);
+  });
+
   // DevTools gate: renderer sends dev-mode state, we toggle menu visibility.
   ipcMain.on("dev-mode-changed", (_event, enabled) => {
     const menu = Menu.getApplicationMenu();
     const item = menu && menu.getMenuItemById("devtools-toggle");
     if (item) item.visible = !!enabled;
   });
+
+  // System-wide summon hotkey: shows + focuses the dashboard from anywhere,
+  // launching a window when none exists. The handler and IPC surface are set
+  // up here; the actual registration happens after the boot path's
+  // createWindow() below, so a keypress cannot race window creation and
+  // produce two windows. Torn down on will-quit; the binding persists in the
+  // store (`globalHotkey`) so the user can rebind or disable it via the
+  // config file (Connection > Open Config File). A stored value that cannot be
+  // bound falls back to the default; a default that another app already owns
+  // degrades to no hotkey — logged, never fatal (see global-hotkey.js).
+  setGlobalHotkeyLogger(glog);
+  const summonDashboard = createSummonHandler({
+    // The focused dashboard window when there is one, else the main window,
+    // else ANY surviving dashboard window (`_mcView` marks the windows that
+    // host a dashboard — see focusedDashboardWindow above). The main window is
+    // hidden, not destroyed, on close, so createWindow() is a last resort.
+    getWindow: () =>
+      [BaseWindow.getFocusedWindow(), mainWindow, ...BaseWindow.getAllWindows()].find(
+        (w) => w && !w.isDestroyed() && w._mcView
+      ) || null,
+    createWindow: () => createWindow(),
+    // A global shortcut fires while ANOTHER app is frontmost; on macOS the
+    // window rises without keyboard focus unless the app steals activation.
+    focusApp: () => {
+      if (IS_MAC) app.focus({ steal: true });
+    },
+  });
+  // The shortcuts UI reads what is ACTUALLY bound (registration can degrade
+  // to the default or to nothing), so it never advertises a dead chord.
+  ipcMain.handle("global-hotkey:get", () => ({
+    accelerator: currentGlobalHotkey(),
+    default: DEFAULT_GLOBAL_HOTKEY,
+  }));
 
   // The renderer reports the user's resolved theme accent whenever it changes
   // (see useTheme.tsx). Persist a validated hex so the NEXT launch's boot splash
@@ -2778,6 +3164,19 @@ app.whenReady().then(async () => {
     if (typeof hex === "string" && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) {
       store.set("themeAccent", hex);
     }
+  });
+
+  // Caption controls for the frameless Linux window (see the injected
+  // #electron-linux-controls cluster in setupWindowContents). Resolved from
+  // the SENDER's own window -- never a broadcast -- so a connection window's
+  // close button cannot touch the main window. Actions outside the
+  // applyWindowControl allowlist are no-ops. Gated on LINUX_FRAMELESS: on
+  // framed windows the native controls own these verbs, and no button that
+  // sends this message is ever injected there.
+  ipcMain.on("window-control", (event, action) => {
+    if (!LINUX_FRAMELESS) return;
+    const win = windowForWebContents(event.sender);
+    if (win) applyWindowControl(win, action);
   });
 
   // The renderer reports its dark/light mode PREFERENCE whenever it changes (see
@@ -2791,21 +3190,20 @@ app.whenReady().then(async () => {
     }
   });
 
-  // Windows titleBarOverlay color sync: when the resolved dark/light mode
-  // changes, update the overlay background and symbol colors to match. The
-  // renderer sends the resolved mode ("dark" | "light") after any theme change.
+  // Windows titleBarOverlay symbol sync: when the resolved dark/light mode
+  // changes, repaint every window's caption glyphs to match. The renderer sends
+  // the resolved mode ("dark" | "light") after any theme change. Shares
+  // ./windows-titlebar with the load/focus path (syncNativeTheme) so every
+  // window converges on the same transparent, zoom-aware overlay instead of two
+  // handlers racing with different colors — and the loop CONTINUES past the
+  // framed modal windows Electron throws on, so a theme switch with a dialog
+  // open cannot leave the windows behind it painted for the old theme.
   ipcMain.on("titlebar-overlay-theme", (_event, mode) => {
-    if (!IS_WIN) return;
-    const dark = mode === "dark";
-    const color = dark ? "#0f1117" : "#f8fafc";
-    const symbolColor = dark ? "#e2e8f0" : "#1e293b";
-    for (const win of BaseWindow.getAllWindows()) {
-      try {
-        if (typeof win.setTitleBarOverlay === "function") {
-          win.setTitleBarOverlay({ color, symbolColor, height: 42 });
-        }
-      } catch { /* window mid-teardown */ }
-    }
+    if (!IS_WINDOWS) return;
+    const resolvedMode = mode === "dark" || mode === "light"
+      ? mode
+      : (nativeTheme.shouldUseDarkColors ? "dark" : "light");
+    paintAllTitleBarOverlays(BaseWindow.getAllWindows(), resolvedMode, HEADER_CSS_PX);
   });
 
   // Dock/taskbar badge (RFC notification bus Phase 4): renderer pushes its
@@ -2815,6 +3213,15 @@ app.whenReady().then(async () => {
   ipcMain.on("badge:set", (_event, count) => {
     app.setBadgeCount(clampBadgeCount(count));
   });
+
+  // Local-gateway switch for Settings > Developer. The choice lives in the
+  // app's own electron-store config, which page JS cannot reach, so the
+  // renderer round-trips through these handlers. Both resolve with the stored
+  // value so the toggle renders what was actually written. Reading it at launch
+  // (startGateway) rather than here is what gives the setting its next-launch
+  // semantics: flipping it never touches the gateway currently running.
+  ipcMain.handle("local-gateway:get", () => isLocalGatewayEnabled(store));
+  ipcMain.handle("local-gateway:set", (_event, enabled) => setLocalGatewayEnabled(store, enabled));
 
   // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
   // A renderer cannot touch Chromium's per-origin zoom itself, so it
@@ -2907,6 +3314,12 @@ app.whenReady().then(async () => {
     if (!set || !id) return { ok: false };
     if (tracked) set.add(id);
     else set.delete(id);
+    // The tracked-slot set just changed. Nudge the agent command channel to
+    // re-read it NOW so a freshly declared key is polled (and thus registered on
+    // the gateway bus) within submit's brief wait window, instead of only after
+    // the current long-poll ends (up to ~25s) -- the cold-start race that
+    // dropped a fresh session's first navigate to the Playwright mirror.
+    if (owner._mcAgentChannel) owner._mcAgentChannel.poke();
     return { ok: true };
   });
   ipcMain.handle("browser:set-agent-act", async (event, panelId, enabled) => {
@@ -3028,6 +3441,11 @@ app.whenReady().then(async () => {
 
   createTray();
   const win = createWindow();
+  // Bind the summon hotkey only now that the main window exists: registering
+  // earlier would let a keypress during boot race createWindow() and open a
+  // second window. Still within app ready — the OS-level chord works from the
+  // first frame the user can see.
+  bindGlobalHotkey(store.get("globalHotkey"), summonDashboard);
 
   // Wired BEFORE the awaited gateway boot ON PURPOSE. preload.js exposes
   // window.updateAPI unconditionally, so Settings > About renders a live Check
@@ -3163,7 +3581,7 @@ app.whenReady().then(async () => {
   // be answering before we ask it whether Mochi is on, and the pet page is
   // loaded from the gateway origin. Best-effort -- a failure here must never
   // block the dashboard, so everything is inside a catch that only logs.
-  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog });
+  initMochi({ backendUrl: BACKEND_URL, fetchLocalToken, glog, getMainWindow: () => mainWindow });
   // Same shape and the same best-effort contract: the companion's windows follow
   // the app's enabled state, and a failure here must never block the dashboard.
   try {
@@ -3184,6 +3602,12 @@ app.on("before-quit", () => {
   shutdownMochi();
   try { shutdownCrewCompanion(); } catch { /* best effort */ }
   stopGateway();
+});
+
+// Release ONLY our own summon accelerator (never unregisterAll — Mochi's
+// shortcuts are torn down by its own quit path above).
+app.on("will-quit", () => {
+  unregisterGlobalHotkey();
 });
 
 app.on("window-all-closed", () => {

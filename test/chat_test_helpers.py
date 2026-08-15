@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
@@ -9,6 +10,21 @@ from aiohttp import web
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+
+def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
+    """Deterministically advance a transcript's mtime past *sig*.
+
+    Two consecutive filesystem writes can land inside one timestamp tick
+    (~15.6 ms on Windows), leaving the second write with an mtime identical
+    to the first -- a staged "transcript moved on" then has not moved on at
+    all, and any staleness assertion keyed on the mtime signature becomes a
+    coin flip (#2981, same class as #2449). Pinning the mtime makes the test
+    exercise the signature COMPARISON rather than the platform's clock
+    resolution (testing-conventions.md § Determinism).
+    """
+    path = log._path(key)
+    os.utime(path, (sig + 1, sig + 1))
 
 
 class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):

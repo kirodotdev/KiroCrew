@@ -6,6 +6,7 @@ persona injection, and other helpers used across chat_*.py modules.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -14,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
@@ -33,12 +34,23 @@ from kiro_crew.dashboard.state import (
     _normalize_slot_key,
     parse_cls_meta,
 )
+from kiro_crew.history import transcript_sort_key
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    oauth_url_contains_credential,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import SecurityEvent, sel
 from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
-from kiro_crew.slack.outbound import expire_options, mark_options_terminal, options_edit_lock
+from kiro_crew.slack.outbound import (
+    decode_options_token,
+    encode_options_token,
+    expire_options,
+    mark_options_terminal,
+    options_edit_lock,
+)
 from kiro_crew.validation import (
     MAX_TOOL_NAME_LEN,
     THEME_CONSENT_SHA_RE,
@@ -46,6 +58,31 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def run_config_write(fn, /, *args, **kwargs):
+    """Run a blocking ``config.json`` writer under BOTH config locks.
+
+    Every ``config.json`` read-modify-write must serialize against two writer
+    generations at once: the sidecar advisory flock that ``update_config_locked``
+    takes (covering CLI / boot-refresh / other-process writers), and the
+    loop-side :func:`_get_config_lock` asyncio lock that the dashboard's legacy
+    handlers still rely on *alone* (bare ``read_config_for_update`` +
+    ``write_config_atomically`` — e.g. the memory-settings PUT). A writer that
+    holds only one of the two can interleave with the other family and silently
+    revert its settings from a stale snapshot.
+
+    This helper is the one async entry point that holds both: the asyncio lock
+    is acquired on the event loop, then ``fn`` (a sync callable that itself
+    routes through ``update_config_locked``) runs in a worker thread so the
+    flock wait never blocks the loop. Mirrors the boot-time meta-stamp refresh
+    in ``server.py``, which established the pattern.
+    """
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # lazy: import cycle
+
+    async with _get_config_lock():
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
 
 # Per-turn compaction-failure backoff. See
 # _broadcast_compaction_result for the full rationale. Kept small: this is a
@@ -590,36 +627,6 @@ def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | N
         return None
 
 
-def slack_options_turn_counter(state: DashboardState | None, session_key: str) -> int | None:
-    """*session_key*'s monotonic turn counter, or None if it cannot be read.
-
-    Tells "a turn happened" from "a turn is running", which
-    ``SessionManager.is_busy`` cannot: a turn that starts and finishes inside a
-    single await window reports idle at both ends. ``_ChatSlot.total_messages``
-    is a lifetime count that survives the slot's trim cap, so it moves for a turn
-    that came and went.
-
-    Lives here, beside the resolver it depends on, because more than one Slack
-    posting path needs it and a second copy would drift from this one.
-
-    Returns None on any failure. This feeds best-effort OPTIONS cleanup and must
-    never abort the turn that triggered it; a None on either side of a comparison
-    simply reads as "no observed change".
-
-    Only comparable against itself: two counters read from DIFFERENT sessions say
-    nothing about each other, so a caller whose owner may have changed has to
-    treat that change as supersession instead of comparing.
-    """
-    try:
-        if state is None:
-            return None
-        slot = slack_options_slot(state, session_key)
-        return None if slot is None else int(slot.total_messages)
-    except Exception:
-        logger.debug("Could not read the turn counter for OPTIONS bookkeeping", exc_info=True)
-        return None
-
-
 def slack_options_linked_slot(state: DashboardState | None, thread_ts: str) -> _ChatSlot | None:
     """The dashboard slot that owns *thread_ts*, if a session mirrors into it.
 
@@ -846,6 +853,96 @@ def slack_options_owner_keys_snapshot(
     return tuple(slack_options_session_keys(state, thread_ts))
 
 
+def mint_options_token(
+    state: DashboardState | None,
+    asker_key: str,
+    row_ts: str | None = None,
+) -> str | None:
+    """The staleness token to post with a control asked by *asker_key*.
+
+    Pairs the asking conversation with how far it had got when the question was
+    asked.
+
+    *asker_key* is supplied by the caller rather than resolved from the thread.
+    The caller knows which session ran the turn; resolving the thread's owner here
+    would name whoever owns it at MINT time, and a link landing between the turn
+    starting and its footer going out would stamp the control with a conversation
+    that never asked the question.
+
+    *row_ts* likewise comes from the caller when it already holds the value. That
+    keeps this free of I/O: reading the tail off disk takes the transcript's
+    cross-process flock, so on a contended session it is not a bounded cost and
+    has no business on the event loop. Passing the row the caller already has in
+    memory is the same value -- a replayed row preserves its ``ts`` verbatim.
+
+    Falls back to a disk read only when the caller has nothing, and that path is
+    BLOCKING: run it in a thread. ``None`` means the control posts untokened,
+    which the check reads as "cannot prove staleness" and honours.
+    """
+    try:
+        if not asker_key:
+            return None
+        if not row_ts:
+            log = getattr(state, "conversation_log", None)
+            if log is None:
+                return None
+            row_ts = log.last_row_ts(asker_key)
+        if not row_ts:
+            return None
+        return encode_options_token(asker_key, row_ts)
+    except Exception:
+        logger.debug("Could not mint an OPTIONS staleness token", exc_info=True)
+        return None
+
+
+async def options_control_is_stale(
+    state: DashboardState | None, block_id: str | None, thread_ts: str
+) -> bool:
+    """Whether the control carrying *block_id* is answering a superseded question.
+
+    The whole check: the token says which conversation asked and where that
+    conversation stood at the time; the transcript on disk says where it stands
+    now. A conversation that has moved on has superseded its own question.
+
+    Nothing in gateway memory takes part, which is what makes this survive a
+    restart -- the token is in the Slack message and the comparand is a persisted
+    transcript row, so neither half is lost when the process dies. The counter a
+    previous design compared against could NOT be used here: it is rebuilt from a
+    windowed replay of the transcript on startup, so it climbs back through values
+    it has already issued and reads a pre-restart token as current.
+
+    ABSTAINS to False -- honour the click -- whenever staleness cannot be PROVEN:
+    no token, a token this build cannot parse, an unreadable transcript, or an
+    unparseable timestamp. Refusing a legitimate answer is worse than accepting a
+    late one, and a control posted before this check existed carries no token at
+    all.
+    """
+    token = decode_options_token(block_id)
+    if token is None:
+        return False
+    asker_key, minted_ts = token
+    try:
+        # ONE comparison: has the conversation that ASKED moved on?
+        #
+        # Deliberately no ownership check. It would answer the wrong question now
+        # that an accepted click carries its destination: the answer reaches the
+        # conversation that asked it whatever the thread's ownership has since
+        # done, so a thread changing hands does not make a still-pending question
+        # unanswerable -- and refusing on that basis would reject a click the user
+        # was legitimately shown. Handover is not supersession; only the asker's
+        # own transcript advancing is.
+        log = getattr(state, "conversation_log", None)
+        if log is None:
+            return False
+        current_ts = await asyncio.to_thread(log.last_row_ts, asker_key)
+        if not current_ts:
+            return False
+        return transcript_sort_key(current_ts) > transcript_sort_key(minted_ts)
+    except Exception:
+        logger.debug("Could not judge whether an OPTIONS control is stale", exc_info=True)
+        return False
+
+
 def forget_slack_options_for_thread(
     state: DashboardState | None,
     thread_ts: str,
@@ -955,6 +1052,81 @@ async def expire_slack_options(
             session_key,
             tuple(p for p in options_records(state, session_key) if p not in settled),
         )
+
+
+def slack_mirror_is_paused(state: Any, session_key: str) -> bool:
+    """True when a turn must NOT be mirrored to the session's linked thread.
+
+    A pause retains the thread binding, so every inbound resolver still sees the
+    link and a reply still reaches the session that owns the thread. This is the
+    one predicate that tells outbound egress apart from that: consult it before
+    SENDING, never before routing. Gating a routing decision on it would fork a
+    new session out of a reply the user expected to continue this one.
+
+    Scope is deliberately turn mirroring — the user echo, its tool stream, the
+    assistant reply, an auth-required error and the linked approval prompt.
+    Deliveries that merely reuse the thread as an ADDRESS (a cron result, a
+    subagent completion, a requested file, an auto-nudge tick) are NOT gated: an
+    absent link makes those fall back to the owner's DM, and one of them deletes
+    the auto-nudge loop outright, so treating paused as no-link there would
+    reroute messages the user asked for and destroy a live monitor.
+
+    The channel compaction notice is also not gated, and belongs with the
+    address-based deliveries above rather than with turn output: it reports that
+    the session's own history was compacted, which stays true whether or not the
+    conversation is currently connected. (An earlier version of this note claimed
+    it "cannot reach a paused link" because an origin had no disconnect control.
+    Origin rows now DO carry one, so that reasoning is void — the exclusion
+    stands on the delivery's kind, not on the row's affordances.)
+
+    Strict ``is True`` rather than truthiness, and fails OPEN: ``sessions`` is a
+    bare ``MagicMock`` across much of the suite and returns a truthy child for
+    any unstubbed accessor, so truthiness here would silence every linked thread
+    in the test suite. Failing open leaves a muted thread noisy at worst; failing
+    closed would make a live thread silently dead.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        return sessions.is_slack_paused(session_key) is True
+    except Exception:
+        logger.debug("slack pause lookup failed for %s", session_key, exc_info=True)
+        return False
+
+
+def mirror_is_paused(state: Any, session_key: str, *, origin: bool = False) -> bool:
+    """True when a turn must NOT be mirrored to one of the session's non-Slack deliveries.
+
+    The channel-neutral twin of :func:`slack_mirror_is_paused`, and what a
+    dashboard disconnect suppresses for a non-Slack channel.
+
+    ``origin`` names WHICH delivery is being asked about, because a session can
+    hold two at once — the conversation it was born in and an explicit mirror —
+    and they mute independently. Callers that resolve a single outbound target
+    pass the flag matching the row the user acted on; see
+    :meth:`SessionMap.set_mirror_paused`.
+
+    The scope is narrower than Slack's because the hazard Slack has does not
+    exist here: no cron result, subagent completion, requested file or auto-nudge
+    tick reads a mirror binding at all — those address a channel explicitly — so
+    gating this cannot reroute a delivery to the owner's DM or destroy a monitor
+    loop. It covers the two sites that carry turn output: the user echo and the
+    assistant reply.
+
+    Same ``is True`` / fail-open contract as the Slack gate, for the same
+    MagicMock reason. A muted binding must stay visible to
+    ``find_mirror_sessions``, to the resume-conflict check and to both clear
+    paths, or in-channel ``!unlink`` and conflict detection break.
+    """
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        return sessions.is_mirror_paused(session_key, origin=origin) is True
+    except Exception:
+        logger.debug("mirror pause lookup failed for %s", session_key, exc_info=True)
+        return False
 
 
 _INCOGNITO_PREFIX = (
@@ -1124,13 +1296,10 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 #      consent URL never carries credential patterns; presence of
                 #      one means it's tampered/bogus.
                 #
-                # The generic EXFIL heuristic is deliberately NOT applied, matching
-                # `_oauth_url_contains_credential` (chat_runner.py), whose docstring
-                # says it omits the long-query heuristic because that heuristic
-                # "would reject every real OAuth URL". test/oauth_url_corpus.py is
-                # the contract: real provider URLs routinely exceed 200 query chars
-                # and carry a 43-char base64url `code_challenge`, so the exfil
-                # heuristic fires on all of them.
+                # The exfiltration gate is parameter-aware: standard high-entropy
+                # OAuth values are exempt only at exact code-owned endpoints, while
+                # fixed/encoded credentials, heavy percent encoding, and unknown
+                # params remain fail-closed.
                 #
                 # This function runs on the EMIT path (_prepare_messages), which
                 # serves the slot-detail endpoint that the frontend refetches on
@@ -1142,8 +1311,7 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
                 # aligned is what prevents that.
                 lower = v.lower()
                 safe_scheme = lower.startswith("https://") or lower.startswith("http://")
-                _, hit_cred = redact_credentials(v)
-                out[k] = v if (safe_scheme and not hit_cred) else ""
+                out[k] = v if (safe_scheme and not oauth_url_contains_credential(v)) else ""
             else:
                 out[k] = _redact_value(v)
         return out

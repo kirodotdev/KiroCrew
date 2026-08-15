@@ -172,6 +172,18 @@ export function PreferencesTab() {
         </Btn>
       </form>
 
+      {/* Stated at the point of interaction, not only on the App Store card:
+          the advisor cannot read this store, so a preference typed here does
+          not reach it until the user says it in the conversation. Given the
+          same weight as the form above it -- as a muted footnote it read as
+          fine print next to an affordance that looks fully functional. */}
+      <p
+        role="note"
+        className="text-sm px-3 py-2 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text)] leading-relaxed"
+      >
+        {i18nT('apps.personalShopper.preferencesTab.the_advisor_cannot_read_this_list_paste_what_ma')}
+      </p>
+
       {preferences.length === 0 && (
         <EmptyState
           icon={<Tag size={28} />}
@@ -215,6 +227,7 @@ export function PreferencesTab() {
                     onDelete={() => deletePrefMutation.mutate(p.id)}
                     onUpdate={invalidate}
                     groupNames={groupNames}
+                    groups={groups}
                     sectionGroupId={group.id}
                   />
                 ))}
@@ -238,6 +251,7 @@ export function PreferencesTab() {
                 onDelete={() => deletePrefMutation.mutate(p.id)}
                 onUpdate={invalidate}
                 groupNames={groupNames}
+                groups={groups}
               />
             ))}
           </div>
@@ -288,6 +302,46 @@ export function PreferencesTab() {
   )
 }
 
+// ── Row-scoped tag reassignment ──
+
+/**
+ * The tag a row's selector represents: the group section it is rendered under.
+ *
+ * A multi-group preference is rendered once per group it belongs to, so the
+ * row's identity is its SECTION, not `tags[0]`. Seeding from `tags[0]` made the
+ * editor under heading "B" open preselected to "A" and edit a membership the
+ * user could not see.
+ */
+export function rowTagFor(prefTags: string[], sectionGroupId?: string): string {
+  return sectionGroupId ?? prefTags[0] ?? ''
+}
+
+/**
+ * Tags to PUT when a row's group selector moves from `openedWith` to `editGroup`.
+ *
+ * Rules, each one a defect this replaced:
+ * - Replace `openedWith` IN PLACE and keep every other tag. The store treats the
+ *   array as authoritative, so omitting a tag deletes that membership.
+ * - An empty `editGroup` removes only this row's membership.
+ * - Deduplicate: the user can pick a group the preference already belongs to,
+ *   which would otherwise persist a duplicate tag and render duplicate-key rows.
+ * - `openedWith === ''` means the row was ungrouped, so the pick is an addition.
+ */
+export function nextTagsForRowEdit(
+  prefTags: string[],
+  openedWith: string,
+  editGroup: string,
+): string[] {
+  const next = openedWith
+    ? prefTags.flatMap((t) =>
+        t === openedWith ? (editGroup ? [editGroup] : []) : [t],
+      )
+    : editGroup
+      ? [...prefTags, editGroup]
+      : [...prefTags]
+  return Array.from(new Set(next))
+}
+
 // ── Preference Row ──
 
 function PreferenceRow({
@@ -295,6 +349,7 @@ function PreferenceRow({
   onDelete,
   onUpdate,
   groupNames,
+  groups,
   sectionGroupId,
 }: {
   pref: Preference
@@ -303,26 +358,71 @@ function PreferenceRow({
   /** Group id -> display name. Tag ids are opaque, so without this the row
    *  renders meaningless hex where the group's name belongs. */
   groupNames: Map<string, string>
+  /** All groups — needed for the reassignment selector. */
+  groups: Group[]
   /** The group whose section this row is rendered in, if any. Its own pill is
    *  pure restatement of the heading directly above it. */
   sectionGroupId?: string
 }) {
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(pref.text)
+  const rowTag = rowTagFor(pref.tags, sectionGroupId)
+  const [editGroup, setEditGroup] = useState(rowTag)
+  // What the selector held when THIS form opened, used as the change baseline
+  // rather than live `pref.tags` (which a refetch moves underneath an open form).
+  const [openedWith, setOpenedWith] = useState(rowTag)
+
+  // Reassignment is offered ONLY for a preference in at most one group.
+  //
+  // Two structural problems make a single-select unsafe for a multi-group
+  // preference: it cannot represent more than one membership, and the PUT
+  // replaces the whole tags array computed from a CACHED read — so two rows of
+  // the same preference (it renders once per section) can each send an
+  // authoritative array and overwrite the other's reassignment. Narrowing the
+  // affordance removes the precondition instead of layering guards on it: a
+  // preference with <= 1 tag renders in exactly one section, so a second
+  // concurrent row for it cannot exist.
+  //
+  // This costs nothing today — the add form sends at most one tag and this
+  // editor never grows the count, so a multi-group preference is only reachable
+  // through the API. Such a preference shows its memberships read-only rather
+  // than risking a silent lost update. Editing them needs an add/remove-tag
+  // endpoint the server can merge, tracked as follow-up.
+  const canReassign = pref.tags.length <= 1
+
+  const startEditing = () => {
+    setEditText(pref.text)
+    setEditGroup(rowTag)
+    setOpenedWith(rowTag)
+    setEditing(true)
+  }
 
   const updateMutation = useMutation({
-    mutationFn: (text: string) => updatePreference(pref.id, { text }),
+    mutationFn: (data: { text?: string; tags?: string[] }) => updatePreference(pref.id, data),
     onSuccess: () => { setEditing(false); onUpdate() },
   })
 
   if (editing) {
+    const nextTags = nextTagsForRowEdit(pref.tags, openedWith, editGroup)
+    const textChanged = editText.trim() !== pref.text
+    // `canReassign` also gates the payload, so a multi-group preference can
+    // never ship a tags array even if a selector were rendered by mistake.
+    const groupChanged = canReassign && editGroup !== openedWith
+    const changed = textChanged || groupChanged
     return (
       <form
         className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--accent)]"
         onSubmit={(e) => {
           e.preventDefault()
-          if (editText.trim() && editText !== pref.text) {
-            updateMutation.mutate(editText.trim())
+          if (editText.trim() && changed) {
+            // Omit `tags` unless the USER moved the selector in this form. The
+            // backend treats a missing `tags` as "leave them alone", so a
+            // text-only edit cannot disturb a grouping a sibling row changed.
+            updateMutation.mutate(
+              groupChanged
+                ? { text: editText.trim(), tags: nextTags }
+                : { text: editText.trim() },
+            )
           } else {
             setEditing(false)
           }
@@ -335,7 +435,17 @@ function PreferenceRow({
           autoFocus
           onKeyDown={(e) => { if (e.key === 'Escape') setEditing(false) }}
         />
-        <Btn type="submit">{i18nT('apps.personalShopper.preferencesTab.save')}</Btn>
+        {canReassign && groups.length > 0 && (
+          <SimpleSelect
+            options={groups.map((g) => g.id)}
+            optionLabels={groups.map((g) => g.name)}
+            value={editGroup}
+            onChange={setEditGroup}
+            clearLabel={i18nT('apps.personalShopper.preferencesTab.no_group')}
+            aria-label={i18nT('apps.personalShopper.preferencesTab.assign_to_group')}
+          />
+        )}
+        <Btn type="submit" disabled={!editText.trim() || !changed}>{i18nT('apps.personalShopper.preferencesTab.save')}</Btn>
         <button
           type="button"
           onClick={() => setEditing(false)}
@@ -364,7 +474,7 @@ function PreferenceRow({
         ))}
       <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
         <button
-          onClick={() => setEditing(true)}
+          onClick={startEditing}
           className="text-[var(--muted)] hover:text-[var(--accent)]"
           title={i18nT('apps.personalShopper.preferencesTab.edit')}
           aria-label={i18nT('apps.personalShopper.preferencesTab.edit_named_preference', { text: pref.text })}

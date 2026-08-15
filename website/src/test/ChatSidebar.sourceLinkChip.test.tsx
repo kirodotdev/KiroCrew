@@ -325,3 +325,92 @@ describe('ChatSidebar – terminal PR chips suppress CI', () => {
     expect(glyph!.className.baseVal ?? glyph!.className).not.toMatch(/animate/)
   })
 })
+
+/**
+ * A chip whose branch cannot merge must not read as "ready".
+ *
+ * The green check answers "did the checks pass", which a conflicted pull request
+ * can satisfy while being unmergeable — so a chip gated on the rollup alone reads
+ * "ready" on work that needs a rebase. The merge pair the backend already ships
+ * (`mergeable` / `mergeStateStatus`, owner-gated like `ci`) is what settles it.
+ *
+ * These cases pin the PRECEDENCE, which is the whole design: exactly one glyph
+ * renders, and a failed rollup outranks a conflict — with both blockers live the
+ * worse outcome is the one worth showing.
+ */
+describe('ChatSidebar – conflicted PR chips', () => {
+  const url = (n: number) => `https://github.com/kirodotdev/KiroCrew/pull/${n}`
+
+  /** One chip carrying exactly the merge/CI combination under test. */
+  function chipRows(link: Record<string, unknown>): ChatSlot[] {
+    return [
+      { key: 's1', title: 'Other', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z' },
+      {
+        key: 's2', title: 'PR', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
+        source_links: [{ provider: 'github', number: 700, url: url(700), state: 'open', ...link }],
+        source_links_total: 1,
+      },
+    ] as unknown as ChatSlot[]
+  }
+
+  const glyph = (label: string) => chip(url(700)).querySelector(`[aria-label="${label}"]`)
+
+  it.each([
+    // GitHub settles the two fields independently, so either one alone is a real
+    // conflict answer: a poll can land `dirty` while `mergeable` is still unknown.
+    ['both merge fields', { mergeable: 'conflicting', mergeStateStatus: 'dirty' }],
+    ['mergeable alone', { mergeable: 'conflicting' }],
+    ['mergeStateStatus alone', { mergeable: 'unknown', mergeStateStatus: 'dirty' }],
+  ])('replaces the passing check with a conflict glyph — %s', (_case, merge) => {
+    renderSidebar({ rows: chipRows({ ci: 'passed', ...merge }) })
+    expect(glyph('Merge conflicts')).not.toBeNull()
+    // The defect itself: a green check on a branch that cannot land.
+    expect(glyph('Checks passed')).toBeNull()
+  })
+
+  it('shows the failed rollup, not the conflict, when both are live', () => {
+    renderSidebar({ rows: chipRows({ ci: 'failed', mergeable: 'conflicting', mergeStateStatus: 'dirty' }) })
+    expect(glyph('Checks failed')).not.toBeNull()
+    expect(glyph('Merge conflicts')).toBeNull()
+  })
+
+  it('outranks a pending rollup', () => {
+    // Pending is not a verdict; a settled conflict is.
+    renderSidebar({ rows: chipRows({ ci: 'running', mergeable: 'conflicting' }) })
+    expect(glyph('Merge conflicts')).not.toBeNull()
+    expect(glyph('Checks running')).toBeNull()
+  })
+
+  it('renders on a chip with no rollup at all', () => {
+    // The backend records the merge pair independently of `ci` (each field lands
+    // only once the provider settles it), so a conflict can arrive before any
+    // rollup does. That chip carried no status glyph, which is the same thing it
+    // showed while genuinely mergeable.
+    renderSidebar({ rows: chipRows({ mergeable: 'conflicting', mergeStateStatus: 'dirty' }) })
+    expect(glyph('Merge conflicts')).not.toBeNull()
+  })
+
+  it.each([
+    // Positive control: proves the fixture and selector work, so the negative
+    // cases below are not passing because nothing rendered.
+    ['a clean branch', { mergeable: 'mergeable', mergeStateStatus: 'clean' }],
+    // `blocked` is the normal state of every open PR on a repo with required
+    // reviews — flagging it would decorate the whole session list and mean nothing.
+    ['a branch blocked on required reviews', { mergeable: 'mergeable', mergeStateStatus: 'blocked' }],
+    // A branch merely behind base still merges; only conflicts are flagged here.
+    ['a behind-base branch', { mergeable: 'mergeable', mergeStateStatus: 'behind' }],
+    // Non-owner clients and payloads predating the merge pair send neither field.
+    ['a payload with no merge fields', {}],
+  ])('keeps the passing check on %s', (_case, merge) => {
+    renderSidebar({ rows: chipRows({ ci: 'passed', ...merge }) })
+    expect(glyph('Checks passed')).not.toBeNull()
+    expect(glyph('Merge conflicts')).toBeNull()
+  })
+
+  it.each(['merged', 'closed'])('suppresses the conflict glyph on a %s chip', (state) => {
+    // Terminal states share the CI gate: the providers stop answering the merge
+    // pair, so a carried-forward value must not outlive the lifecycle glyph.
+    renderSidebar({ rows: chipRows({ state, ci: 'passed', mergeable: 'conflicting', mergeStateStatus: 'dirty' }) })
+    expect(glyph('Merge conflicts')).toBeNull()
+  })
+})

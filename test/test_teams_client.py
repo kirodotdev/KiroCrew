@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+import kiro_crew.teams.client as teams_client_mod
 from kiro_crew.teams.client import (
     JwtValidator,
     TeamsAuthError,
@@ -277,10 +278,17 @@ class TestInboundWebhook:
 
 
 class _FakeResp:
-    def __init__(self, status: int = 200, json_data: Any = None, text_data: str = "") -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        json_data: Any = None,
+        text_data: str = "",
+        headers: dict | None = None,
+    ) -> None:
         self.status = status
         self._json = json_data if json_data is not None else {}
         self._text = text_data
+        self.headers = headers or {}
 
     async def __aenter__(self) -> "_FakeResp":
         return self
@@ -370,3 +378,89 @@ class TestOutbound:
         c = TeamsClient(app_id=_APP_ID, app_password="pw")
         mid = await c.send_message("conv-1", "hi", "")
         assert mid is None
+
+    @pytest.mark.asyncio
+    async def test_429_is_retried_once_honoring_retry_after(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mirrors the Discord/Telegram/Webex clients' _api(): a rate-limited
+        outbound send must not be dropped on the first 429 -- the Bot
+        Framework Connector API enforces per-bot rate limits and returns 429
+        on excess traffic, and TeamsRenderer.on_done stops at the first
+        failed chunk of a multi-chunk answer, so an un-retried 429 here used
+        to silently truncate the user's answer."""
+        slept: list[float] = []
+
+        async def _fake_sleep(delay: float, *a: Any, **k: Any) -> None:
+            slept.append(delay)
+
+        monkeypatch.setattr(teams_client_mod.asyncio, "sleep", _fake_sleep)
+
+        c = TeamsClient(app_id=_APP_ID, app_password="pw")
+        c._token = "tok"
+        c._token_expiry = time.monotonic() + 999
+        c._session = _FakeSession(
+            [
+                _FakeResp(status=429, headers={"Retry-After": "2.5"}),
+                _FakeResp(json_data={"id": "activity-retried"}),
+            ]
+        )
+        mid = await c.send_message("conv-1", "hi", "https://smba.example.com/")
+        assert mid == "activity-retried"
+        assert slept == [2.5]
+        assert len(c._session.calls) == 2  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_persistent_429_still_fails_after_one_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuine outage/persistent throttle must still surface as a
+        failure once the single-retry budget is exhausted -- this is a
+        bounded retry, not a mask."""
+
+        async def _fake_sleep(delay: float, *a: Any, **k: Any) -> None:
+            pass
+
+        monkeypatch.setattr(teams_client_mod.asyncio, "sleep", _fake_sleep)
+        c = TeamsClient(app_id=_APP_ID, app_password="pw")
+        c._token = "tok"
+        c._token_expiry = time.monotonic() + 999
+        states: list[tuple[bool, str]] = []
+        c.on_state_change = lambda ok, err: states.append((ok, err))
+        c._session = _FakeSession(
+            [
+                _FakeResp(status=429, headers={"Retry-After": "1"}),
+                _FakeResp(status=429, headers={"Retry-After": "1"}),
+            ]
+        )
+        mid = await c.send_message("conv-1", "hi", "https://smba.example.com/")
+        assert mid is None
+        assert states and states[-1][0] is False
+        assert len(c._session.calls) == 2  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_retry_after_is_clamped_and_defaulted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def _fake_sleep(delay: float, *a: Any, **k: Any) -> None:
+            slept.append(delay)
+
+        monkeypatch.setattr(teams_client_mod.asyncio, "sleep", _fake_sleep)
+
+        cases = [
+            ({}, 1.0),  # header absent -> the "1" string default
+            ({"Retry-After": "not-a-number"}, 1.0),  # unparsable -> default
+            ({"Retry-After": "0.01"}, 0.5),  # below floor -> clamped up
+            ({"Retry-After": "900"}, 10.0),  # above ceiling -> clamped down
+        ]
+        for headers, expected in cases:
+            c = TeamsClient(app_id=_APP_ID, app_password="pw")
+            c._token = "tok"
+            c._token_expiry = time.monotonic() + 999
+            c._session = _FakeSession(
+                [_FakeResp(status=429, headers=headers), _FakeResp(json_data={"id": "x"})]
+            )
+            await c.send_message("conv-1", "hi", "https://smba.example.com/")
+            assert slept[-1] == expected, f"{headers} -> expected {expected}, got {slept[-1]}"

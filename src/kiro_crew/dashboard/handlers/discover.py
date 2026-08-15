@@ -18,6 +18,7 @@ import shutil
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers._shared import _get_skills
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry
@@ -81,11 +82,23 @@ def _build_registry() -> ProviderRegistry:
 
     Called once at handler setup time. Providers check their own
     availability dynamically (config flags, auth state, etc.).
+
+    A provider the composed ``discovery`` policy refuses is never registered, so a
+    managed deployment that must source installable content only from its own
+    registry sees no rows from it and has no install path left to gate. The public
+    default admits everything.
     """
     registry = ProviderRegistry()
 
-    # skills.sh — always registered, enabled by default (public API, no auth)
-    registry.register(SkillsShProvider(SkillsShConfig(enabled=True)))
+    # skills.sh — public API, no auth. Registered unless the discovery policy
+    # refuses it. The provider is asked for its OWN name and base URL rather than
+    # passing literals, so an allowlist is written against the same identity the
+    # provider reports everywhere else.
+    from kiro_crew.dashboard.handlers._shared import admits_registry
+
+    skillsh = SkillsShProvider(SkillsShConfig(enabled=True))
+    if admits_registry("skill", skillsh.name, skillsh.api_base):
+        registry.register(skillsh)
 
     # PromptFarm — registered but availability depends on config. The existing
     # /api/skills/-/remote endpoint remains for backward compat; the discover
@@ -139,7 +152,7 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     if not query:
         return web.json_response({"results": [], "providers": []})
 
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
 
     # Mark installed skills so the UI can show an "Installed" badge.
     # list_skills() walks the skills directory synchronously -- offload it.
@@ -275,7 +288,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {"error": "Both 'provider' and 'skill_id' are required"}, status=400
         )
 
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None or not provider.is_available():
         return web.json_response(
@@ -448,14 +461,22 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     logger.warning("Skipping symlink parent in bundle: %s", rel_path)
                     continue
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(file_content, encoding="utf-8")
+                # newline="" disables platform newline translation: with the
+                # default, Windows rewrites \n to \r\n (and CRLF content to
+                # \r\r\n), so the installed file would parse differently from
+                # the preview. The loader's read_text normalizes on read, so
+                # preserving the provider's bytes keeps preview == installed
+                # on every platform.
+                file_path.write_text(file_content, encoding="utf-8", newline="")
                 written += 1
             # Ensure SKILL.md exists (loader requires it for discovery).
             # If only AGENTS.md was provided, copy it as SKILL.md.
             if not (skill_dir / "SKILL.md").exists() and (skill_dir / "AGENTS.md").exists():
+                # newline="" on read and write keeps the copy byte-faithful.
+                with (skill_dir / "AGENTS.md").open("r", encoding="utf-8", newline="") as src:
+                    agents_content = src.read()
                 (skill_dir / "SKILL.md").write_text(
-                    (skill_dir / "AGENTS.md").read_text(encoding="utf-8"),
-                    encoding="utf-8",
+                    agents_content, encoding="utf-8", newline=""
                 )
             return written
 
@@ -537,7 +558,7 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
             {"error": "Both 'provider' and 'id' are required"}, status=400
         )
 
-    registry = _get_registry()
+    registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None or not provider.is_available():
         return web.json_response(
@@ -558,7 +579,12 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
             if bundle:
                 files = [p for p, _ in bundle]
                 skill_md = next((c for p, c in bundle if p == "SKILL.md"), None)
-                content = skill_md or next(
+                # Install copies AGENTS.md to SKILL.md when the bundle lacks
+                # one, so prefer AGENTS.md over any other markdown here —
+                # otherwise the preview would parse a different file (e.g. a
+                # first-listed README.md) than the installed skill.
+                agents_md = next((c for p, c in bundle if p == "AGENTS.md"), None)
+                content = skill_md or agents_md or next(
                     (c for p, c in bundle if p.endswith(".md")), None
                 )
         if content is None:
@@ -587,8 +613,13 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
         )
         return web.json_response(_empty)
 
-    # Parse YAML frontmatter to extract description
-    meta = _parse_frontmatter(content)
+    # Parse the frontmatter with the same grammar the skills loader applies
+    # after install, so the preview description matches the installed one.
+    # The loader reads via Path.read_text, whose universal-newline mode
+    # collapses CRLF/CR to LF before parsing — mirror that here, since
+    # provider content arrives verbatim (e.g. a Windows-authored bundle).
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    meta = parse_frontmatter(normalized, SKILL_LOADER)
     _sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
         tool_name="preview_skill_from_provider",
@@ -611,19 +642,3 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
         "files": [_redact_external(f) for f in files[:200]],
         "file_count": len(files),
     })
-
-
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter key-value pairs from a SKILL.md."""
-    if not content.startswith("---"):
-        return {}
-    end = content.find("\n---", 3)
-    if end == -1:
-        return {}
-    frontmatter = content[4:end]
-    result: dict = {}
-    for line in frontmatter.split("\n"):
-        if ":" in line and not line.startswith(" "):
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result

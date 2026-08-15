@@ -39,7 +39,14 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
 export function SendBtn({ children, onClick, disabled, style, className, ...rest }: { children: React.ReactNode } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>) {
   return (
     <button
-      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:opacity-30 disabled:cursor-not-allowed transition-all font-body", className)}
+      // `min-h-9`, not `h-9`. A fixed height around inline content clips the
+      // label instead of growing for it: at a narrow width a two-line label
+      // needs ~40px and `h-9` gives it 36, so 12px of text is cut off — and the
+      // labels here are translated into 12 languages, so the width at which one
+      // wraps is not the one it was designed at. Growing leaves the row's
+      // heights uneven, which is the lesser defect: uneven is legible, clipped
+      // is not.
+      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:opacity-30 disabled:cursor-not-allowed transition-all font-body", className)}
       onClick={onClick}
       disabled={disabled}
       style={style}
@@ -338,8 +345,8 @@ export function PanelSectionHeader({ label, count, trailing, className }: {
 
 export function PageHeader({ title, subtitle, actions }: { title: React.ReactNode; subtitle?: string; actions?: React.ReactNode }) {
   return (
-    <div className="flex items-end justify-between gap-4 px-6 pt-2 pb-3" data-testid="page-header">
-      <div>
+    <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2 px-6 pt-2 pb-3" data-testid="page-header">
+      <div className="min-w-0">
         <div className="text-2xl font-bold tracking-tight text-text-strong" data-testid="page-title">{title}</div>
         {subtitle && <div className="text-muted text-sm mt-1" data-testid="page-subtitle">{subtitle}</div>}
       </div>

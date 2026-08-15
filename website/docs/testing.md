@@ -85,12 +85,79 @@ match when you are debugging a CI-only failure: see
 - **jscpd** duplication check: copy-pasted code fails the build.
 - Coverage is emitted as cobertura XML from `test:website`.
 - `npx tsc -b` and eslint run as their own blocking steps.
+- Coverage runs use at most two fork workers with a 3072 MB old-space ceiling
+  per worker. The cap leaves room for the Vitest coordinator, coverage maps,
+  happy-dom state, and the operating system on a standard hosted runner.
 
 Backend-side test determinism and suite-speed rules (they apply to the same CI run)
 are in
 [../../docs/system-specs/common/testing-conventions.md](../../docs/system-specs/common/testing-conventions.md).
 The short version holds here too: never fix a flake with a rerun, a longer timeout,
 or a weakened assertion. Poll for the condition you actually care about.
+
+## Determinism: establish the state you assert on
+
+Every CI-only failure this suite has produced so far reduces to one mistake: **the
+test asserted against a state it did not establish**, and got away with it locally
+because the component happened to be slower than the assertion. The shard runs four
+workers under coverage, so "happened to be" stops holding. Two concrete shapes to
+recognize — both have shipped as red shards.
+
+**A mounted element is not a settled state.** `findBy*` proves a node rendered, not
+that the async work behind it finished. A component that renders against a fallback
+prop mounts *before* the effect that sets the real value, so its query has not even
+been issued yet:
+
+```tsx
+// WRONG: the editor renders against `mainFile` before the open-main effect sets
+// `currentFile`, so the read query is still disabled — `mockClear` clears nothing
+// and the mount-time read lands afterwards, credited to the click.
+await screen.findByLabelText('editor')
+api.readFile.mockClear()
+await user.click(fileRow)
+expect(api.readFile).not.toHaveBeenCalled()
+
+// RIGHT: wait for the thing the assertion is actually about.
+await screen.findByLabelText('editor')
+await waitFor(() => expect(api.readFile).toHaveBeenCalled())
+api.readFile.mockClear()
+```
+
+Put that wait in the file's shared `…Ready()` helper rather than in the one test
+that tripped over it: the barrier is wrong for every test using it, and the next
+one to notice will be another red shard.
+
+**A default DOM value the component overwrites is not a fixture.** If production
+code writes `scrollTop`, `value`, or `open` on a timer or in an effect, a test that
+relies on the initial value is racing it — and losing the race is silent, because
+the state just reads as "already correct" and the branch under test never runs:
+
+```tsx
+// WRONG: the panel re-pins the scroller on 50/150/300ms timers after history
+// lands. Once one has fired, this scroll reads as "already at the bottom" and the
+// pill never renders — a `findByRole` timeout with no hint why.
+fireEvent.scroll(scroller)
+
+// STILL WRONG: a plain write is itself racing the same timers — one that runs
+// after it puts the value right back.
+scroller.scrollTop = 0
+fireEvent.scroll(scroller)
+
+// RIGHT: park it with an own accessor, so every read reports the parked value
+// and the component's own writes are swallowed. The setter must exist: a
+// getter-only property makes the component's strict-mode write throw instead.
+Object.defineProperty(scroller, 'scrollTop', {
+  configurable: true, get: () => 500, set: () => {},
+})
+fireEvent.scroll(scroller)
+```
+
+**Reproduce before you fix.** Both examples above were confirmed by *forcing* the
+race locally — an `await new Promise(r => setTimeout(r, 400))` before the assertion,
+or a `mockImplementation` that resolves on a timer — which turns a CI-only flake
+into a deterministic local failure. Keep the forced delay in place while you verify
+the fix, then remove it: a fix that only passes once the delay is gone has not been
+shown to fix anything.
 
 ## Manual procedures
 

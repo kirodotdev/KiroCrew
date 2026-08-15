@@ -135,8 +135,8 @@ function ChannelsSection() {
   return (
     <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
       <div className="text-[12px] text-muted -mt-1 mb-2">{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}</div>
-      {sources.map(source => (
-        <SettingsCard key={source}>
+      {sources.map((source, i) => (
+        <SettingsCard key={source} index={i}>
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
             {source === 'system' ? <MonitorCog className="lucide-inline" /> : <Blocks className="lucide-inline" />}
             {source}
@@ -224,6 +224,12 @@ export function NotificationsPanel() {
 
   return (
     <>
+      {/* ChannelsSection resolves its sources from a fetch, so its cards mount
+          in a later commit than the two static cards below: each group runs its
+          own stagger ladder from its own mount paint. Continuing one ladder
+          across the boundary would be wrong in the common case — delays are
+          relative to element mount, so the static cards would wait
+          sources.length steps on nothing while the fetch is still in flight. */}
       <ChannelsSection />
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.sound')}>
         <SettingsCard>
@@ -251,7 +257,7 @@ export function NotificationsPanel() {
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.per_category_sounds')}>
-        <SettingsCard>
+        <SettingsCard index={1}>
           {CATEGORY_ROWS.map(cat => {
             const hasOverride = cat !== 'all' && settings.perCategory[cat] !== undefined
             const effective: SoundPreset = cat === 'all'

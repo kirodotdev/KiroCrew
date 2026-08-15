@@ -583,6 +583,14 @@ function PendingSkillsPanel() {
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
     },
   })
+  const dismissAll = useMutation({
+    mutationFn: () => api.dismissAllPendingSkills(pending.map(p => p.slug)),
+    onSuccess: () => {
+      setReviewSlug(null)
+      qc.removeQueries({ queryKey: ['skills-pending-detail'] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+    },
+  })
   // Only claim a deep-linked candidate is gone once the queue has actually been
   // read -- `pending` is [] while the first fetch is in flight, which would
   // otherwise flash the notice on every deep link.
@@ -600,6 +608,7 @@ function PendingSkillsPanel() {
         <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
           {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
           <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
+          <Btn danger className="ml-auto text-[11px]" onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: pending.length }))) dismissAll.mutate() }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
         </h4>
       )}
       {pending.length > 0 && (

@@ -874,6 +874,7 @@ function Companion() {
       stopped = true
       window.clearInterval(t)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only: starts poll loop once, deps are stable refs/callbacks
   }, [])
 
 

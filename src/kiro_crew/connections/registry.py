@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, Iterable, TypedDict, cast
 from urllib.parse import urlsplit
+
+from yarl import URL
 
 
 class SmokeFixture(TypedDict):
@@ -19,11 +22,29 @@ class SmokeFixture(TypedDict):
 
 
 class L0Expectations(TypedDict):
-    """OAuth discovery properties asserted by the account-free L0 probe."""
+    """OAuth discovery properties asserted by the account-free L0 probe.
 
-    authorization_server_origin: str
+    ``authorization_server`` is the provider's issuer identifier in FULL, not
+    just its origin. RFC 8414 §2 makes the issuer an identity compared by exact
+    string, and several providers put a path in it (Stripe advertises
+    ``https://access.stripe.com/mcp``), so storing only the origin would let a
+    tenant or realm substitution -- ``/tenant-a`` answering for ``/tenant-b`` --
+    pass the check.
+
+    ``verified_on`` says when ``l0_probe --record`` last captured these values
+    from the live provider, and it is a REFRESH MARKER, not the provenance
+    guarantee. A date in a file is self-attested: nothing stops a human typing
+    one. What actually guarantees the baseline is the nightly probe, which
+    re-derives every value from the live provider and trips the drift gate when
+    the file disagrees. The date exists so a baseline nobody has re-derived in
+    months gets noticed (see ``L0_VERIFICATION_WARN_AGE_DAYS``), not so it can
+    be trusted on its own.
+    """
+
+    authorization_server: str
     dcr: bool
     pkce: bool
+    verified_on: str
 
 
 class _RequiredProviderFields(TypedDict):
@@ -77,13 +98,34 @@ class RegistryValidationError(ValueError):
     """Raised when the committed provider registry is malformed."""
 
 
-_REGISTRY_PATH = Path(__file__).with_name("registry.json")
+# Public so the baseline recorder (kiro_crew.connections.l0_record) rewrites the
+# same file the loader reads, instead of re-deriving the path and diverging.
+REGISTRY_PATH = Path(__file__).with_name("registry.json")
 _SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Name suffixes that can only mean "somewhere on this network". Matched as plain
+# strings against the DIALLED host (see canonical_host), so no resolver is
+# involved and no IDNA spelling can slip past them.
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa")
 # How long a revoke-link verification stays trustworthy. Providers move these
 # settings pages between redesigns, so a visible card carries a re-check
 # deadline rather than a one-time claim.
 REVOKE_VERIFICATION_MAX_AGE_DAYS = 180
+# The L0 baseline needs re-deriving on its own schedule: a provider can change
+# its authorization server or drop DCR, and an expectation nobody has re-derived
+# in months describes a provider that may no longer exist.
+#
+# Two tiers, because the remedy needs live network and CI does not have it. The
+# refresh is `python -m kiro_crew.connections.l0_probe --record` run by a human
+# on a networked machine, then committed -- the nightly CANNOT do it (it is
+# deliberately read-only, see .github/workflows/connections-l0.yml), so a single
+# hard threshold would eventually fail every PR in the repo on a timer nobody
+# reset. Instead the WARN tier surfaces the need with 30 days of lead time and
+# the nightly goes red on it every night, where the signal reaches someone who
+# can act; only a visible provider's baseline hard-fails the PR suite, and only
+# after that lead time has been ignored.
+L0_VERIFICATION_WARN_AGE_DAYS = 60
+L0_VERIFICATION_MAX_AGE_DAYS = 90
 _PROVIDER_FIELDS = {
     "name",
     "slug",
@@ -101,7 +143,7 @@ _PROVIDER_FIELDS = {
     "revoke_verified_note",
 }
 _SMOKE_FIXTURE_FIELDS = {"tool", "args"}
-_L0_EXPECTATION_FIELDS = {"authorization_server_origin", "dcr", "pkce"}
+_L0_EXPECTATION_FIELDS = {"authorization_server", "dcr", "pkce", "verified_on"}
 # Optional because only non-DCR providers need a pre-registered OAuth client.
 # See Provider.client_id: GitHub is the sole intended consumer and stays unset
 # until the Kiro app is registered, so absence must remain a valid entry shape.
@@ -110,6 +152,121 @@ _OPTIONAL_PROVIDER_FIELDS = {"client_id", "revoke_manual_path"}
 
 def _validation_error(index: int, message: str) -> RegistryValidationError:
     return RegistryValidationError(f"provider at index {index}: {message}")
+
+
+def utc_today() -> date:
+    """Today in UTC.
+
+    Every date in ``l0_expectations`` is stamped in UTC by the recorder, so every
+    comparison against one must also be UTC. Using the LOCAL date here made a
+    fresh baseline invalid for anyone west of UTC: ``--record`` writes UTC's date,
+    which is tomorrow from a UTC-8 machine's point of view, and the future-date
+    guard rejected it until local midnight caught up.
+    """
+
+    return datetime.now(timezone.utc).date()
+
+
+def _iso_date(value: object, index: int, field: str) -> date:
+    """Require a real calendar date, not just the shape of one."""
+
+    if not isinstance(value, str) or not _ISO_DATE_PATTERN.fullmatch(value):
+        raise _validation_error(index, f"{field} must be a YYYY-MM-DD date")
+    try:
+        # Shape alone would accept 2026-02-31; the staleness gates compare this
+        # to a real date, so reject anything that is not one.
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise _validation_error(index, f"{field} must be a YYYY-MM-DD date") from error
+
+
+def _normalized(host: str | None) -> str | None:
+    """Fold the two differences we deliberately ignore: case and a trailing dot.
+
+    Applied to BOTH sides of every host comparison, so it cannot hide a codec
+    difference. ``localhost.`` and ``localhost`` are the same name to DNS, and
+    treating them as different strings is exactly how a suffix check gets
+    bypassed.
+    """
+
+    if not host:
+        return None
+    return host.rstrip(".").lower() or None
+
+
+def canonical_host(hostname: str | None) -> str | None:
+    """Return the host aiohttp will actually DIAL, or ``None`` if unusable.
+
+    Derived FROM yarl rather than re-implemented, because a check on any other
+    spelling of the host is not a check on the request. aiohttp resolves
+    ``req.url.raw_host`` (connector.py), so building a URL and reading that field
+    back makes the vetted bytes and the dialled bytes the same bytes BY
+    CONSTRUCTION -- whatever yarl's codec does today or after an upgrade.
+
+    Re-implementing it is not merely redundant, it was wrong. The stdlib ``idna``
+    codec is IDNA2003; yarl prefers IDNA2008/UTS-46 via the ``idna`` package.
+    They disagree on deviation characters, and the disagreement is exploitable in
+    both directions: ``faß.de`` reads as ``fass.de`` to the stdlib while yarl
+    dials ``xn--fa-hia.de``, a Greek final sigma maps to a different A-label
+    entirely, and a ZWJ label the stdlib happily encodes makes yarl refuse the
+    URL outright. Verified against the pinned yarl 1.24.5 / idna 3.18.
+
+    ``None`` means "cannot be vetted, so must not be fetched": an empty host, a
+    host yarl itself rejects, or one carrying authority punctuation. That last
+    check matters because yarl would otherwise silently REINTERPRET a bare string
+    -- it reads ``user@evil.com`` as userinfo plus host, and ``evil.com:8443`` as
+    host plus port -- so a caller passing something that is not purely a host
+    would get a canonical form that is not about the host it thought it passed.
+    """
+
+    if not hostname:
+        return None
+    candidate = hostname.strip()
+    if not candidate or any(char in candidate for char in " \t\r\n/@?#"):
+        return None
+    if ":" in candidate:
+        # A colon in a host is either an IPv6 literal or authority punctuation.
+        # urlsplit().hostname hands IPv6 back unbracketed and yarl needs the
+        # brackets, but bracketing anything else would make yarl accept the whole
+        # string as one opaque host -- so only a real literal takes this path.
+        literal = candidate.strip("[]")
+        try:
+            ipaddress.ip_address(literal)
+        except ValueError:
+            return None
+        candidate = f"[{literal}]"
+    try:
+        dialed = URL(f"https://{candidate}/").raw_host
+    except (ValueError, UnicodeError):
+        return None
+    return _normalized(dialed)
+
+
+def is_local_host(hostname: str | None) -> bool:
+    """Whether ``hostname`` is an IP literal or a name that cannot be a provider.
+
+    Runs on the host that will be DIALLED (see :func:`canonical_host`), so an
+    IDNA homoglyph cannot smuggle a loopback address past it. DNS-free on
+    purpose: this decides whether a URL may be fetched at all, and a check that
+    resolved the name would be both slower and racy -- the answer can change
+    between the check and the request that follows it.
+
+    Every IP LITERAL is refused, not just the private ranges. That is stricter
+    than an SSRF range check and simpler to defend: no real provider publishes an
+    issuer as an IP, and a reviewer reading the registry cannot tell a benign
+    literal from an internal one at a glance.
+    """
+
+    host = canonical_host(hostname)
+    if host is None:
+        return True
+    if host == "localhost" or host.endswith(_LOCAL_HOST_SUFFIXES):
+        return True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _validate_provider(raw: object, index: int) -> Provider:
@@ -140,15 +297,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
     if not isinstance(raw["revoke_verified_note"], str) or not raw["revoke_verified_note"].strip():
         raise _validation_error(index, "revoke_verified_note must be a non-empty string")
 
-    verified_on = raw["revoke_verified_on"]
-    if not isinstance(verified_on, str) or not _ISO_DATE_PATTERN.fullmatch(verified_on):
-        raise _validation_error(index, "revoke_verified_on must be a YYYY-MM-DD date")
-    try:
-        # Shape alone would accept 2026-02-31; the staleness test compares this
-        # to a real date, so reject anything that is not one.
-        date.fromisoformat(verified_on)
-    except ValueError as error:
-        raise _validation_error(index, "revoke_verified_on must be a YYYY-MM-DD date") from error
+    _iso_date(raw["revoke_verified_on"], index, "revoke_verified_on")
 
     slug = cast(str, raw["slug"])
     if not _SLUG_PATTERN.fullmatch(slug):
@@ -182,34 +331,53 @@ def _validate_provider(raw: object, index: int) -> Provider:
     if not isinstance(expectations, dict) or set(expectations) != _L0_EXPECTATION_FIELDS:
         raise _validation_error(
             index,
-            "l0_expectations must contain exactly authorization_server_origin, dcr, and pkce",
+            "l0_expectations must contain exactly authorization_server, dcr, "
+            "pkce, and verified_on",
         )
     for field in ("dcr", "pkce"):
         if not isinstance(expectations[field], bool):
             raise _validation_error(index, f"l0_expectations.{field} must be a boolean")
-    authorization_origin = expectations["authorization_server_origin"]
-    if not isinstance(authorization_origin, str):
+    captured_on = _iso_date(
+        expectations["verified_on"], index, "l0_expectations.verified_on"
+    )
+    # A future stamp would push the entry past every freshness tier forever,
+    # which is the one way a hand-typed date could evade being noticed. Compared
+    # in UTC because that is what the recorder stamps -- see utc_today.
+    if captured_on > utc_today():
+        raise _validation_error(index, "l0_expectations.verified_on must not be in the future")
+
+    # The issuer is the ONE URL the recorder is allowed to fetch (see
+    # l0_record: an advertised issuer that differs is reported, never followed),
+    # so its shape is a security boundary, not just a data check. A literal IP
+    # is refused outright: a reviewer cannot tell 10.0.0.5 from a legitimate
+    # host at a glance, and no real provider publishes one.
+    authorization_server = expectations["authorization_server"]
+    if not isinstance(authorization_server, str):
         raise _validation_error(
-            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+            index, "l0_expectations.authorization_server must be an HTTPS URL"
         )
     try:
-        authorization_parts = urlsplit(authorization_origin)
+        authorization_parts = urlsplit(authorization_server)
         authorization_parts.port
     except ValueError as error:
         raise _validation_error(
-            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+            index, "l0_expectations.authorization_server must be an HTTPS URL"
         ) from error
     if (
         authorization_parts.scheme != "https"
         or authorization_parts.hostname is None
         or authorization_parts.username is not None
         or authorization_parts.password is not None
-        or authorization_parts.path not in ("", "/")
         or authorization_parts.query
         or authorization_parts.fragment
     ):
         raise _validation_error(
-            index, "l0_expectations.authorization_server_origin must be an HTTPS origin"
+            index, "l0_expectations.authorization_server must be an HTTPS URL"
+        )
+    if is_local_host(authorization_parts.hostname):
+        raise _validation_error(
+            index,
+            "l0_expectations.authorization_server must not be an IP literal or a local host",
         )
 
     for field in ("launch_gate_passed", "vendor_approval_pending"):
@@ -229,7 +397,7 @@ def _validate_provider(raw: object, index: int) -> Provider:
     return cast(Provider, raw)
 
 
-def _load_registry(path: Path = _REGISTRY_PATH) -> tuple[Provider, ...]:
+def _load_registry(path: Path = REGISTRY_PATH) -> tuple[Provider, ...]:
     try:
         with path.open(encoding="utf-8") as registry_file:
             raw_registry = json.load(registry_file)
@@ -307,3 +475,22 @@ def get_tier(n: int) -> list[Provider]:
     if isinstance(n, bool) or n not in (1, 2, 3):
         raise ValueError("tier must be 1, 2, or 3")
     return [_copy_provider(provider) for provider in _PROVIDERS if provider["tier"] == n]
+
+
+def stale_l0_baselines(
+    providers: Iterable[Provider], *, as_of: date, max_age_days: int
+) -> dict[str, str]:
+    """Return slug -> ``verified_on`` for baselines older than ``max_age_days``.
+
+    Pure and scope-agnostic: WHICH providers to hold to a given age is the
+    caller's decision, which is what lets the same age arithmetic serve both
+    freshness tiers -- a warning over every entry, and a hard failure over only
+    the visible ones. A baseline exactly ``max_age_days`` old is still fresh.
+    """
+
+    oldest_allowed = as_of - timedelta(days=max_age_days)
+    return {
+        provider["slug"]: provider["l0_expectations"]["verified_on"]
+        for provider in providers
+        if date.fromisoformat(provider["l0_expectations"]["verified_on"]) < oldest_allowed
+    }

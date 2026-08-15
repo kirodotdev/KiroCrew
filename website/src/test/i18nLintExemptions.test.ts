@@ -175,6 +175,64 @@ describe('paths, routes and URLs are exempt', () => {
   })
 })
 
+describe('Tailwind arbitrary-variant clusters are exempt', () => {
+  it('stays quiet on the touch-target override clusters', async () => {
+    // Real site: HOVER_NONE_ACTIONS_ROW_CLS / HOVER_NONE_ACTION_BTN_CLS in
+    // utils/touchActions.ts — ALL-CAPS module constants, so `i18n-strict`
+    // looks inside them, and the general class shape cannot admit them (its
+    // char class forbids `@`, `&` and `_`).
+    expect(await lint(
+      "export const PROBE = ['[@media(hover:none)]:opacity-100 [@media(hover:none)]:flex-wrap [@media(hover:none)]:[&_button]:p-2.5 [@media(hover:none)]:[&_svg]:h-5 [@media(hover:none)]:[&_svg]:w-5']",
+    )).toEqual([])
+    expect(await lint(
+      "export const PROBE = ['[@media(hover:none)]:opacity-100 [@media(hover:none)]:p-2.5']",
+    )).toEqual([])
+  })
+
+  it('still reports a cluster that smuggles a plain word', async () => {
+    // Every token must match end to end — prose alongside a variant token is
+    // still copy.
+    expect(await lint(
+      "export const PROBE = ['[@media(hover:none)]:opacity-100 saved']",
+    )).toHaveLength(1)
+  })
+
+  it('still reports prose that merely mentions a media query', async () => {
+    expect(await lint(
+      "export const PROBE = ['Enable [@media(hover:none)] support now']",
+    )).toHaveLength(1)
+  })
+})
+
+describe('CSS selector lists are exempt', () => {
+  it('stays quiet on a list mixing type and attribute selectors', async () => {
+    // Real site: `INTERACTIVE_SEL` in lib/dragGaps.ts, handed to
+    // `header.querySelectorAll`. Translating it would stop the drag-gap
+    // measurement finding any control, which silently widens a drag region over
+    // a button and swallows its clicks.
+    expect(await lint(
+      `export const PROBE = ['a,button,input,select,textarea,[role="button"],[tabindex]']`,
+    )).toEqual([])
+  })
+
+  it('stays quiet on an all-bracketed list', async () => {
+    // The narrower form this shape grew out of; it must keep matching.
+    expect(await lint(`export const PROBE = ['[role="dialog"],[data-x]']`)).toEqual([])
+  })
+
+  it('still reports comma-joined words with no bracket', async () => {
+    // The bracket requirement is the whole tightness argument: without it this
+    // entry would become a general "lowercase words joined by commas" exemption.
+    expect(await lint(`export const PROBE = ['save,delete']`)).toHaveLength(1)
+  })
+
+  it('still reports a sentence that merely contains a bracket', async () => {
+    // Every member must match end to end, and a prose member carries spaces.
+    const messages = await lint(`export const PROBE = ['Select an item [optional]']`)
+    expect(messages).toHaveLength(1)
+  })
+})
+
 describe('string comparison is a position exemption', () => {
   it('stays quiet on a literal compared with startsWith', async () => {
     // The argument is the value being compared AGAINST, so the call cannot

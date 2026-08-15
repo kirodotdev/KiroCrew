@@ -53,6 +53,7 @@ from kiro_crew.embeddings import (
     resolve_custom_model,
     verify_vendored_libs,
 )
+from kiro_crew.kiro_cli import mcp_governance_may_apply
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
 from kiro_crew.platform import (
@@ -64,6 +65,8 @@ from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
 from kiro_crew.sel import sel
 from kiro_crew.service import apparmor
+from kiro_crew.service import common as common_service
+from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as service_linux
 from kiro_crew.session_pid_sig import signing_health
 from kiro_crew.transcribe import _find_whisper, ensure_ffmpeg_in_path
@@ -271,6 +274,105 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
             for line in detail.splitlines():
                 print(f"      {line}")
         issues.append(f"{ref} probe")
+
+
+# Non-secret rows kiro-cli writes when the signed-in identity came from IAM
+# Identity Center. Presence is the signal; the values (a start URL and a region)
+# are never read into a message, and no token key is touched.
+def _doctor_mcp_governance(agent_path: Path, issues: list[str]) -> None:
+    """Render the `MCP Governance` section of `kirocrew doctor`.
+
+    Speaks up in two situations: governance can reach this identity (Identity
+    Center or an API key), where an administrator's registry may be in force, and
+    the registry declaration or its markers are present on an identity governance
+    CANNOT reach, which is the inverse failure and just as silent. Stays quiet on
+    an ordinary personal install, where a governance warning would be pure noise.
+
+    This exists because the section above cannot detect either failure.
+    Governance is enforced inside kiro-cli when it assembles a session: it drops
+    every ``mcpServers`` entry whose registry marker does not match the account's
+    access mode. Kiro Crew's own handshake probe spawns each server directly and
+    therefore still reports it healthy, so an affected host reads green here
+    while `spawn_run`, `cron_add` and `learn_add` are absent from every session.
+    """
+    try:
+        declared = KiroCrewConfig.load().agent.mcp_registry_mode
+    except Exception:
+        logger.debug("config load failed in governance check", exc_info=True)
+        declared = False
+
+    try:
+        spec = json.loads(agent_path.read_text(encoding="utf-8"))
+        servers = spec.get("mcpServers") or {}
+    except Exception:
+        servers = {}
+    if not isinstance(servers, dict):
+        # `or {}` only replaces a FALSY value, so a string or list here survives
+        # and the membership walk below would raise, aborting the whole doctor
+        # run — on exactly the malformed spec someone is running doctor to find.
+        servers = {}
+
+    marked = sorted(
+        name
+        for name in _MANAGED_MCPS
+        if isinstance(servers.get(name), dict) and servers[name].get("type") == "registry"
+    )
+    names = ", ".join(sorted(_MANAGED_MCPS))
+    governed_capable = mcp_governance_may_apply()
+
+    # Nothing to say: an identity governance cannot reach, with no registry
+    # declaration and no leftover markers, is the ordinary case.
+    if not governed_capable and not declared and not marked:
+        return
+
+    print("\nMCP Governance (enterprise):")
+
+    if not governed_capable:
+        # The inverse filter. Outside registry mode a MARKED entry is the one the
+        # client drops, so this state breaks the same servers, equally silently —
+        # reachable by copying the guide onto a personal account, or by leaving an
+        # enterprise account with the declaration still set. Safe to assert only
+        # because neither governance-capable signal is present: no Identity Center
+        # rows AND no API key, which leaves Builder ID or social sign-in.
+        print("  identity: not Identity Center or API key — an admin MCP registry cannot apply")
+        if declared:
+            print(
+                "  ❌ registry mode is declared, so kiro-cli treats these servers as "
+                "registry-provided and drops them on an ungoverned account"
+            )
+        else:
+            print("  ❌ registry markers are present on the spec without the declaration")
+        print(f"      affected: {', '.join(marked) if marked else names}")
+        print("      fix:  kirocrew config set agent.mcp_registry_mode false")
+        issues.append("MCP registry mode on non-IDC account")
+        return
+
+    print("  identity: Identity Center or API key — an admin MCP registry can apply")
+    if declared:
+        print(f"  registry mode: on — {len(marked)}/{len(_MANAGED_MCPS)} managed servers marked")
+        if len(marked) < len(_MANAGED_MCPS):
+            print("  ❌ markers missing — re-run `kirocrew setup --agent-only`")
+            issues.append("MCP registry markers")
+            return
+        # Deliberately not a success line. Whether the administrator actually
+        # allow-listed these names is not knowable locally, so claiming green
+        # here would repeat the overstatement this section exists to correct.
+        print("  cannot verify the registry itself — that lives with your administrator")
+        print(f"      these names must be allow-listed, exactly: {names}")
+        print(
+            "      if tools are still missing in sessions, the account may no longer be "
+            "registry-governed — try `kirocrew config set agent.mcp_registry_mode false`"
+        )
+        return
+
+    print("  registry mode: off")
+    print(
+        "  ⚠️  If MCP tools are missing in sessions while probing OK above, your "
+        "administrator has configured an MCP Registry URL. In that mode kiro-cli "
+        "connects only to servers marked 'type': \"registry\"."
+    )
+    print("      Declare it:  kirocrew config set agent.mcp_registry_mode true")
+    print(f"      Then have your admin allow-list, by these exact names: {names}")
 
 
 def _doctor_data_home() -> None:
@@ -649,6 +751,125 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         print("               taking running pods with it. " f"Fix: loginctl enable-linger {user}")
 
 
+# Where SwapTotal is read from. A module attribute (not inlined) so tests can
+# point it at a fabricated meminfo file.
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+# Userspace OOM killers doctor knows how to detect, in probe order:
+# systemd-oomd ships with systemd (the common case), earlyoom is the usual
+# add-on daemon.
+_OOM_KILLER_UNITS = ("systemd-oomd", "earlyoom")
+
+
+def _swap_total_kib() -> int | None:
+    """``SwapTotal`` from ``/proc/meminfo`` in KiB, ``None`` when unreadable.
+
+    Read from procfs directly rather than shelling out to ``free``/``swapon``:
+    the file is world-readable and parsing it cannot hang or prompt.
+    """
+    try:
+        text = _PROC_MEMINFO.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in text.splitlines():
+        if line.startswith("SwapTotal:"):
+            parts = line.split()
+            try:
+                return int(parts[1])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def _detect_userspace_oom_killer() -> str | bool | None:
+    """Which userspace OOM killer is active, if any.
+
+    Returns the unit name (``"systemd-oomd"`` / ``"earlyoom"``) when one is
+    active, ``False`` when every probe completed and none is active, and
+    ``None`` when it cannot be determined (no ``systemctl``, probe timeout or
+    failure) so the caller reports "unknown" rather than guessing. ``True`` is
+    never returned — the truthy arm carries the unit name.
+
+    Non-privileged and bounded: ``systemctl is-active`` needs no root and each
+    probe is capped at 5s, so this can never hang the doctor.
+    """
+    systemctl = platform_compat.trusted_system_bin("systemctl")
+    if systemctl is None:
+        return None
+    determined = True
+    for unit in _OOM_KILLER_UNITS:
+        try:
+            res = subprocess.run(
+                [systemctl, "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            determined = False
+            continue
+        if res.returncode == 0 and res.stdout.strip() == "active":
+            return unit
+    return False if determined else None
+
+
+def _doctor_memory_pressure(issues: list[str]) -> None:
+    """Report whether the host can degrade gracefully under memory pressure.
+
+    A Linux host with zero swap and no userspace OOM killer has no pressure
+    release valve: sustained memory pressure evicts file-backed pages (running
+    code included) faster than they re-fault in, and the host livelocks —
+    unresponsive for minutes, sometimes until a power cycle — before the kernel
+    OOM killer's conservative heuristics fire. Either protection alone (swap to
+    absorb the spike, or earlyoom/systemd-oomd to kill a hog early) prevents
+    the freeze, so this warns only when BOTH are absent. When detection is
+    inconclusive it reports "unknown" instead of warning.
+
+    Advisory only (never appended to ``issues``): swap sizing and OOM-killer
+    policy are host configuration the user owns — doctor reports the exposure,
+    it does not fail the install over it. Linux-only: the freeze mode and both
+    detection sources are Linux-specific.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nMemory Pressure")
+    if not sys.platform.startswith("linux"):
+        print(
+            f"  freeze risk: ⏹ not applicable ({sys.platform} — the swap/OOM-killer "
+            "check reads Linux procfs)"
+        )
+        return
+
+    swap_kib = _swap_total_kib()
+    if swap_kib is None:
+        print("  swap:        ⚠️  could not read SwapTotal from /proc/meminfo — check skipped")
+        return
+    if swap_kib > 0:
+        print(f"  swap:        ✅ {swap_kib / 1048576:.1f} GiB configured")
+    else:
+        print("  swap:        ⏹ none (SwapTotal = 0)")
+
+    killer = _detect_userspace_oom_killer()
+    if isinstance(killer, str):
+        print(f"  oom killer:  ✅ {killer} active")
+    elif killer is False:
+        print("  oom killer:  ⏹ none active (checked: " + ", ".join(_OOM_KILLER_UNITS) + ")")
+    else:
+        print("  oom killer:  ⏹ could not determine (no systemctl, or the probe failed)")
+
+    if swap_kib > 0 or isinstance(killer, str):
+        return
+    if killer is None:
+        # Uncertain detection must not warn — a container or non-systemd host
+        # may run a killer doctor cannot see.
+        print("  freeze risk: ⏹ unknown — no swap, and OOM-killer detection was inconclusive")
+        return
+    print("  freeze risk: ⚠️  host can freeze under sustained memory pressure")
+    print("               With no swap and no userspace OOM killer, memory pressure")
+    print("               thrashes file-backed pages and the host can livelock before")
+    print("               the kernel OOM killer intervenes.")
+    print("               Fix: add swap, enable systemd-oomd, or install earlyoom.")
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -677,6 +898,52 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
         print(f"  model url:   ❌ unreachable ({exc}) {safe}")
         print("               Check network connectivity; the background download will")
         print("               keep retrying with backoff on every gateway boot.")
+
+
+def _doctor_headless_auth(issues: list[str]) -> None:
+    """Report an API-key credential the INSTALLED service cannot see.
+
+    This is the one place the contradiction is visible in a single output: the
+    ``kiro login`` line above runs ``whoami`` with the inherited environment and
+    reports signed in, while the dashboard's readiness gate reads the gateway's
+    own environment and reports signed out. Install-time is too early to be the
+    only report — the symptom surfaces when the service is ALREADY installed (a
+    key added to a shell profile afterwards, a host re-provisioned from a
+    snapshot, an operator who reaches the docs only after hitting the wall), and
+    none of those orderings run ``service install`` again.
+
+    Gated on a service definition existing, which is what keeps the report
+    plausible. Without one the gateway runs in the foreground and inherits this
+    very shell, so the credential DOES reach it and warning here would be a
+    false positive on a working host.
+
+    Advisory only (never appended to ``issues``, like the pod-session-bus and
+    memory-pressure probes): ``issues`` is doctor's exit-code channel, so an
+    entry here makes the verdict ❌ and exits non-zero — a claim this shell
+    cannot establish. ``service_environment()`` bakes ``HOME``, so a service on
+    a host that ran ``kiro-cli login`` before the key was exported resolves that
+    credential store and is healthy while the check still fires; and a unit path
+    proves a definition exists on disk, not that the unit is the gateway
+    currently serving, so a stopped unit beside a foreground ``kirocrew gateway``
+    also reads as broken. Reporting the exposure is right; failing doctor on a
+    host where sign-in works is the same contradiction-with-reality this
+    diagnostic exists to surface, one layer up.
+
+    Best-effort like the probes around it: a failure to read the environment or
+    the unit path must not fail ``doctor``, whose job is to report.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    try:
+        if service_controller.installed_unit_path() is None:
+            return
+        warning = common_service.headless_auth_warning()
+    except Exception:
+        return
+    if not warning:
+        return
+    print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
+    for line in warning.splitlines():
+        print(f"{_INDENT}{line.strip()}" if line.strip() else "")
 
 
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
@@ -792,6 +1059,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 print("  kiro login:  ⏹ not logged in (run: kiro-cli login)")
         except Exception:
             print("  kiro login:  ⚠️  could not check")
+        _doctor_headless_auth(issues)
     else:
         print("  kiro-cli:    ⏭  not found (the agent backend)")
         print("               Install kiro-cli per its docs, then: kiro-cli login")
@@ -925,10 +1193,16 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # so this verdict is the context for any probe failure they report.
     _doctor_sandbox(issues)
 
+    # ── Memory pressure preparedness (swap / userspace OOM killer) ──
+    _doctor_memory_pressure(issues)
+
     # ── MCP Tools ──
     print("\nMCP Tools")
     if agent_path.exists():
         _doctor_mcp_tools(agent_path, issues)
+        # After the probe, deliberately: the probe reporting green is the exact
+        # condition this section exists to explain.
+        _doctor_mcp_governance(agent_path, issues)
 
     # ── Python Runtime ──
     print("\nRuntime")

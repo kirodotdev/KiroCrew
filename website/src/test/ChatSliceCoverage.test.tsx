@@ -16,6 +16,8 @@ import chatReducer, {
   appendQueuedMessage,
   appendSlotMessage,
   captureStatelessCard,
+  capturePendingAskId,
+  shouldResolveAskOnSend,
   clearFolderSuggestion,
   clearFollowupCard,
   clearQuestionCard,
@@ -165,6 +167,48 @@ describe('chatSlice exported helpers', () => {
     expect(captureStatelessCard(stateless, 'absent')).toBeNull()
     const unminted = { s: { slot: 's', questions: [] } }
     expect(captureStatelessCard(unminted, 's')).toBeNull()
+  })
+
+  // The mirror capture for blocking cards, which the send path resolves over the
+  // network because an agent is parked on the request.
+  it('captures a blocking card ask_id but never a stateless one', () => {
+    const blocking = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7' } }
+    expect(capturePendingAskId(blocking, 's')).toBe('ask-1')
+    const stateless = { s: { slot: 's', questions: [], cardId: 'card-7' } }
+    expect(capturePendingAskId(stateless, 's')).toBeNull()
+    expect(capturePendingAskId(blocking, 'absent')).toBeNull()
+    expect(capturePendingAskId(undefined, 's')).toBeNull()
+    expect(capturePendingAskId(blocking, null)).toBeNull()
+    for (const bad of POISON) expect(capturePendingAskId(blocking, bad)).toBeNull()
+  })
+
+  // Resolving the card unmounts it, and a typed custom answer or a pending option
+  // selection lives only in the component — the same work-in-progress invariant
+  // the stateless path keeps.
+  it('declines to capture a blocking card that holds an answer in progress', () => {
+    const drafting = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7', draftActive: true } }
+    expect(capturePendingAskId(drafting, 's')).toBeNull()
+    const settled = { s: { slot: 's', ask_id: 'ask-1', questions: [], cardId: 'card-7', draftActive: false } }
+    expect(capturePendingAskId(settled, 's')).toBe('ask-1')
+  })
+
+  // A queued acceptance MUST resolve the blocking card: the queue cannot pop
+  // until the turn ends, and the turn cannot end while the agent is blocked on
+  // the card, so waiting for queue_pop would hold both for the whole window.
+  it('resolves a blocking card on an accepted send, queued included', () => {
+    expect(shouldResolveAskOnSend({ ok: true }, 'ask-1')).toBe(true)
+    expect(shouldResolveAskOnSend({ ok: true, queued: true }, 'ask-1')).toBe(true)
+    expect(shouldResolveAskOnSend({ queued: true }, 'ask-1')).toBe(true)
+  })
+
+  it('leaves the card alone when the send was rejected or no card was pending', () => {
+    // Rejected send: the card is the user's only way to answer, and the session
+    // never moved on.
+    expect(shouldResolveAskOnSend({ ok: false }, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend({}, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend(null, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend(undefined, 'ask-1')).toBe(false)
+    expect(shouldResolveAskOnSend({ ok: true }, null)).toBe(false)
   })
 
   it('reports no observed queue-edit broadcast for an untouched card', () => {
@@ -360,8 +404,8 @@ describe('chatSlice background-slot frames (applyNonActiveFrame)', () => {
   it('reconciles a background user echo rather than duplicating the optimistic bubble', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('front'))
-    store.dispatch(appendSlotMessage({ slot: 'back', message: { role: 'user', content: 'ping' } as ChatMessage }))
-    store.dispatch(sseChatMessage({ slot: 'back', role: 'user', content: 'ping', ts: '2026-01-01T00:00:00Z' }))
+    store.dispatch(appendSlotMessage({ slot: 'back', message: { role: 'user', content: 'ping', meta: { sendId: 's-bg-1' } } as ChatMessage }))
+    store.dispatch(sseChatMessage({ slot: 'back', role: 'user', content: 'ping', ts: '2026-01-01T00:00:00Z', meta: { mid: 'm-echo-1', sendId: 's-bg-1' } }))
     expect(chat(store).slotMessages.back).toHaveLength(1)
     expect(chat(store).slotMessages.back[0].ts).toBe('2026-01-01T00:00:00Z')
   })
@@ -479,6 +523,31 @@ describe('chatSlice question cards', () => {
     expect(chat(store).pendingQuestions.b).toBeDefined()
     store.dispatch(resolveQuestionCard({ ask_id: 'ask-unknown' }))
     expect(chat(store).pendingQuestions.b).toBeDefined()
+  })
+
+  it('spares a half-typed stateless answer when the server retires the record', () => {
+    // A nudge on a monitored session retires the record while the user is still
+    // typing. The typed text lives only in the card's component state, so
+    // unmounting it here would discard the answer — the same invariant the frame
+    // applier keeps. A blocking ask is different: its future is already settled.
+    const store = makeStore()
+    store.dispatch(setQuestionCard({ slot: 'front', card_id: 'card-live', questions: [{ question: 'q', options: [] }] }))
+    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(resolveQuestionCard({ card_id: 'card-live' }))
+    expect(chat(store).pendingQuestions.front).toBeDefined()
+
+    // Once the draft is gone the same retirement clears it.
+    store.dispatch(setQuestionDraft({ slot: 'front', active: false }))
+    store.dispatch(resolveQuestionCard({ card_id: 'card-live' }))
+    expect(chat(store).pendingQuestions.front).toBeUndefined()
+  })
+
+  it('clears a blocking card even mid-draft, since its ask is already settled', () => {
+    const store = makeStore()
+    store.dispatch(setQuestionCard({ slot: 'front', ask_id: 'ask-9', questions: [{ question: 'q', options: [] }] }))
+    store.dispatch(setQuestionDraft({ slot: 'front', active: true }))
+    store.dispatch(resolveQuestionCard({ ask_id: 'ask-9' }))
+    expect(chat(store).pendingQuestions.front).toBeUndefined()
   })
 
   it('retires a stale stateless card on the next turn but spares a half-typed answer', () => {
@@ -1088,6 +1157,60 @@ describe('chatSlice thunks', () => {
     expect(apiMock.chatSlots).toHaveBeenCalled()
     // The optimistic navigation still happened: no peer session to fall back to.
     expect(chat(store).activeSlot).toBeNull()
+  })
+
+  // The dismissed tab must not wait on an unrelated conversation's transcript.
+  // The peer's history fetch is unbounded, so awaiting it before the removal
+  // pins the close control for as long as that load takes; only the state
+  // transitions are ordered, and `switchSlot.pending` completes those
+  // synchronously.
+  it('removes the dismissed slot before the peer history fetch resolves', async () => {
+    let releasePeer: (v: unknown) => void = () => {}
+    const peerFetch = new Promise(resolve => { releasePeer = resolve })
+    apiMock.chatSlotDetail.mockReturnValue(peerFetch)
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const pending = store.dispatch(deleteSlot('doomed'))
+    // Let the thunk run up to its first real suspension point.
+    await Promise.resolve()
+
+    // The peer's transcript is still in flight...
+    expect(apiMock.chatSlotDetail).toHaveBeenCalledWith('peer')
+    // ...yet the tab is already gone and focus already moved.
+    expect(root(store).dashboard.slots.map(s => s.key)).not.toContain('doomed')
+    expect(chat(store).activeSlot).toBe('peer')
+
+    releasePeer({ messages: [], running: false })
+    await pending
+    expect(chat(store).activeSlot).toBe('peer')
+  })
+
+  // The thunk still owns the navigation it started: a caller that awaits the
+  // dismissal reads the store afterwards, so resolution must mean the peer
+  // settled, not merely that the DELETE returned.
+  it('does not resolve the dismissal until the peer navigation settles', async () => {
+    let releasePeer: (v: unknown) => void = () => {}
+    const peerFetch = new Promise(resolve => { releasePeer = resolve })
+    apiMock.chatSlotDetail.mockReturnValue(peerFetch)
+    apiMock.deleteChatSlot.mockResolvedValue({})
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    let settled = false
+    const pending = store.dispatch(deleteSlot('doomed')).then(r => { settled = true; return r })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    releasePeer({ messages: [{ role: 'user', content: 'peer history' }], running: false })
+    const outcome = await pending
+    expect(settled).toBe(true)
+    expect(outcome.type).toBe('chat/deleteSlot/fulfilled')
+    expect(chat(store).slotLoading).toBe(false)
   })
 
   it('evicts every per-slot cache once a delete succeeds', async () => {

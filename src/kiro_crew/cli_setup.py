@@ -14,12 +14,6 @@ from zoneinfo import ZoneInfo
 
 from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
-from kiro_crew.browser.setup import (
-    browser_mode_enabled,
-    generate_playwright_config,
-    refresh_storage_state,
-    register_playwright_proxy,
-)
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
 from kiro_crew.conductor_skill import generate_conductor_skill
 from kiro_crew.config import KiroCrewConfig
@@ -370,28 +364,6 @@ def _setup_impl(
     _maybe_setup_dashboard_url()
 
     _maybe_setup_custom_domain()
-
-    # ── Browser (Playwright MCP) ──
-    # Browser Mode is a deliberate, durably-persisted capability the user turns
-    # on from Settings -> Browser (registration = authorization now that there is
-    # no per-message marker). The wizard does NOT auto-register it: doing so would
-    # mount the browser_* tools for an agent whose owner never enabled Browser
-    # Mode. We only refresh the storage state if it is already set up.
-    print("\n── Browser (Playwright MCP) ──")
-    if browser_mode_enabled():
-        try:
-            generate_playwright_config()
-            refresh_storage_state()
-            _, status = register_playwright_proxy()
-            if status == "kept-user-entry":
-                print("  Kept your existing playwright-mcp entry in mcp.json (left untouched)")
-            else:
-                print("  Browser Mode is on — proxy registered in mcp.json")
-        except Exception:
-            pass  # Non-fatal: browser still works without pre-loaded cookies
-    else:
-        print("  Browser Mode is off. Turn it on in Settings -> Browser to let the")
-        print("  agent operate a browser; it downloads Playwright and wires the proxy.")
 
     # 6. Desktop app (macOS only)
     if platform.system() == "Darwin":

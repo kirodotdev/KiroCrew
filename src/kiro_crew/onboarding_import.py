@@ -38,6 +38,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.embeddings import make_sync_embed_fn
+from kiro_crew.frontmatter import BLOCK_SCALAR_INDICATORS, ONBOARDING_IMPORT, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -70,6 +71,22 @@ class _NoAliasSafeLoader(yaml.SafeLoader):
                 None, None, "found alias, which is not allowed", event.start_mark
             )
         return super().compose_node(parent, index)
+
+
+def _load_no_alias_yaml(text: str) -> Any:
+    """Parse ONE YAML document with :class:`_NoAliasSafeLoader`.
+
+    Driving the loader instance is what ``yaml.load`` does with an explicit
+    ``Loader=``, so the parse is identical — but the SafeLoader subclass is the
+    only construction path here, with no ``yaml.load`` call whose safety a
+    reader (or a scanner keyed on the call name) has to infer from the
+    ``Loader=`` argument.
+    """
+    loader = _NoAliasSafeLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 SOURCE_IDS = ("codex", "claude_code", "meshclaw", "openclaw", "hermes")
@@ -894,7 +911,7 @@ def _read_simple_yaml(path: Path, anchor: Path, scan: _Scan) -> dict[str, Any]:
     if text is None:
         return {}
     try:
-        result = yaml.load(text, Loader=_NoAliasSafeLoader)
+        result = _load_no_alias_yaml(text)
     except (yaml.YAMLError, RecursionError, ValueError):
         scan.diagnostic("settings", "invalid_config")
         return {}
@@ -1196,8 +1213,15 @@ def _skill_package(
             return None
         if path.name == "SKILL.md":
             metadata, _ = _frontmatter(text)
-            always = metadata.get("always", "").casefold() in {"1", "true", "yes"}
-            if always or "triggers" in metadata:
+            # ``_frontmatter`` maps ANY ``key:`` line (indented prose included,
+            # last write wins) and stops at an indented ``---``, while the
+            # loader honors only column-0 keys and closes only at a column-0
+            # ``---`` — so its collapsed map must not decide activation.
+            # ``_column0_activation_declared`` mirrors the loader's region and
+            # key rules; the ``triggers`` presence check on the map is kept as
+            # an extra conservative layer (an indented mention only ever makes
+            # the gate stricter).
+            if _column0_activation_declared(text) or "triggers" in metadata:
                 scan.diagnostic(
                     "skills",
                     "automatic_activation_excluded",
@@ -1701,7 +1725,10 @@ def _schedule_from_record(record: Any, scan: _Scan) -> dict[str, Any] | None:
             scan.diagnostic("schedules", "ambiguous_schedule_trigger", unsupported=True)
             return None
         family = next(iter(trigger_families))
-        expected_kind = "cron" if family == "cron" else "at" if family == "at" else "every"
+        # Exactly one family here (guarded above), drawn from the three literals
+        # added while scanning the schedule dict. The cron store spells the
+        # interval family "every".
+        expected_kind = {"cron": "cron", "at": "at", "interval": "every"}[family]
         allowed_kinds = {
             "cron": {"cron"},
             "interval": {"every", "interval"},
@@ -1864,21 +1891,52 @@ def _add_hermes_json_schedules(
 
 
 def _frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Split frontmatter for the import screen (``frontmatter.ONBOARDING_IMPORT``).
+
+    Deliberately lenient on the opener and on indented keys — narrowing what
+    this map reads would weaken the diagnostics built on it. Its grammar
+    diverges from the loader's (indented prose can overwrite a real value,
+    and the closer must be an exact ``---`` line, not a ``---`` prefix), so
+    the activation DECISION does not ride on this map alone:
+    ``_column0_activation_declared`` mirrors the loader's region and key
+    rules separately.
+    """
+    return split_frontmatter(text, ONBOARDING_IMPORT)
+
+
+def _column0_activation_declared(text: str) -> bool:
+    """True if any column-0 auto-activation declaration is in the frontmatter.
+
+    The activation decision must mirror what ``SkillsLoader._parse_frontmatter``
+    can conclude after install, not ``_frontmatter``'s collapsed map (where an
+    indented prose line like ``  always: false`` overwrites the real value, and
+    an indented ``---`` inside a block scalar truncates the scan). Region and
+    key rules therefore match the loader exactly: the frontmatter closes at the
+    first line that STARTS with ``---`` (the loader's ``\\n---`` regex), and
+    only column-0 keys count. A column-0 ``always`` activates on a truthy plain
+    value or a bare block-scalar indicator (fail-closed: this parser cannot see
+    the continuation lines the loader resolves); a column-0 ``triggers`` key
+    activates by presence. ANY activating declaration rejects — stricter than
+    the loader's last-wins on duplicate keys, which only ever diverges in the
+    conservative direction.
+    """
     if not text.startswith("---"):
-        return {}, text
-    lines = text.splitlines()
-    metadata: dict[str, str] = {}
-    end = 0
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() == "---":
-            end = index
+        return False
+    for line in text.splitlines()[1:]:
+        if line.startswith("---"):
             break
-        if ":" in line:
-            key, value = line.split(":", 1)
-            metadata[key.strip()] = value.strip().strip("\"'")
-    if not end:
-        return {}, text
-    return metadata, "\n".join(lines[end + 1 :]).strip()
+        if ":" not in line or line[:1].isspace():
+            continue
+        key, raw = line.split(":", 1)
+        key = key.strip()
+        if key == "triggers":
+            return True
+        if key != "always":
+            continue
+        value = raw.strip().strip("\"'").casefold()
+        if value in {"1", "true", "yes"} or value in BLOCK_SCALAR_INDICATORS:
+            return True
+    return False
 
 
 def _parse_configs(
@@ -3462,11 +3520,12 @@ def _write_workspace(
 
     canonical = str(workspace)
     for existing in workspaces.values():
-        existing_dir = (
-            existing.get("dir")
-            if isinstance(existing, dict)
-            else existing if isinstance(existing, str) else None
-        )
+        if isinstance(existing, dict):
+            existing_dir = existing.get("dir")
+        elif isinstance(existing, str):
+            existing_dir = existing
+        else:
+            existing_dir = None
         if not isinstance(existing_dir, str):
             continue
         try:

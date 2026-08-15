@@ -7,12 +7,53 @@
  * window (see trafficLightPositionForZoom in electron/main.js — x=16,
  * vertically centered in the 42px header, rescaled on zoom). The header gets
  * a left inset clearing them via the `.mac-electron` rule in index.css.
+ *
+ * On Linux the shell goes frameless (frame:false) on desktops that prefer
+ * client-side decorations (see electron/linux-frame.js); the header still
+ * doubles as the title bar via an injected drag region, but there are no
+ * traffic lights and no caption overlay, so the header needs NO inset —
+ * neither `.mac-electron` nor `.win-electron` applies, which is the correct
+ * zero-inset layout, locked in by App.linuxElectron.test.tsx.
  */
-const mc = (window as { kirocrew?: { isElectron?: boolean; platform?: string } }).kirocrew
+const mc = (window as { kirocrew?: { isElectron?: boolean; platform?: string; linuxFrameless?: boolean } }).kirocrew
 
 export const isElectron = !!mc?.isElectron
 export const isMacElectron = isElectron && mc?.platform === 'darwin'
 export const isWinElectron = isElectron && mc?.platform === 'win32'
+/**
+ * True when this window is a FRAMELESS Linux window. Unlike the platform
+ * consts above this is a runtime decision (desktop environment + operator
+ * override) made in electron/linux-frame.js and carried through the preload —
+ * a framed Linux window keeps its native controls and needs no header inset.
+ */
+export const isLinuxFramelessElectron = isElectron && mc?.platform === 'linux' && !!mc?.linuxFrameless
+
+/**
+ * Width reserved on the right of the header for the injected Linux caption
+ * controls (three 36px buttons — see #electron-linux-controls in
+ * electron/main.js). Mirrors WIN_CAPTION_OVERLAY_WIDTH below; keep in sync
+ * with the `.linux-electron` rule in index.css and the drag-bar inset in
+ * electron/main.js.
+ */
+export const LINUX_CAPTION_CONTROLS_WIDTH = 108
+
+/**
+ * Absolute filesystem path for a File the OS handed us (drag-drop), via the
+ * desktop shell's preload bridge (webUtils.getPathForFile). Returns '' in a
+ * plain browser — pages cannot see real paths there — so callers must treat a
+ * falsy result as "no path available" and keep their browser behaviour.
+ *
+ * Read lazily (not via the module-load `mc` capture above) so tests can stub
+ * `window.kirocrew` per-case without import-order coupling.
+ */
+export function pathForFile(file: File): string {
+  const k = (window as { kirocrew?: { getPathForFile?: (f: File) => string } }).kirocrew
+  try {
+    return k?.getPathForFile?.(file) || ''
+  } catch {
+    return ''
+  }
+}
 
 /** Header left inset clearing the traffic lights: 16px inset + ~52px button group + 16px gap. */
 export const TRAFFIC_LIGHT_INSET_PX = 84

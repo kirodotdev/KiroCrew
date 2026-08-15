@@ -8,6 +8,7 @@ catalog, the pure ``compute_effective_denied`` resolver, the dual-tier
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -507,19 +508,42 @@ class TestIsDeniedReDoSResistance:
     #: separating linear from quadratic (4.0) and from anything exponential.
     _MAX_DOUBLING_RATIO = 3.0
 
-    def _elapsed(self, command: str) -> float:
-        """CPU time, not wall-clock — the property under test is algorithmic complexity.
+    @staticmethod
+    def _cpu_cost(fn: Callable[[], object]) -> float:
+        """CPU consumed by THIS thread while ``fn`` runs — the cost chokepoint.
 
-        Wall-clock measures this process's work PLUS however long the OS gave the core to
-        someone else, so on a loaded CI runner (four xdist workers over two vCPUs) a scan that
-        burns ~2s of CPU can report >5s elapsed and fail a test whose subject never regressed.
-        ``process_time`` counts only CPU consumed by this process, which is exactly what a
-        backtracking blow-up inflates: measured 1:1 against wall-clock when idle (2.228s vs
-        2.230s), and a genuinely catastrophic pattern burns CPU rather than waiting.
+        ``thread_time`` is the one clock that isolates the subject's own work: wall-clock
+        adds however long the OS gave the core to other processes, and ``process_time``
+        adds CPU burned by OTHER THREADS of this process, so a concurrent in-process burst
+        wider than one sampling window lands in some samples and not others and perturbs
+        any comparison built on them. ``is_denied`` is single-threaded pure-regex work, so
+        per-thread CPU is its complete cost, and a genuinely catastrophic pattern inflates
+        it just the same (measured 1:1 against wall-clock when idle: 2.228s vs 2.230s).
         """
-        start = time.process_time()
-        is_denied(command)
-        return time.process_time() - start
+        start = time.thread_time()
+        fn()
+        return time.thread_time() - start
+
+    def _elapsed(self, command: str) -> float:
+        """CPU time of one ``is_denied`` scan — see ``_cpu_cost`` for the clock choice."""
+        return self._cpu_cost(lambda: is_denied(command))
+
+    def test_elapsed_routes_through_the_cpu_cost_chokepoint(self, monkeypatch):
+        # Every timing sample in this class must go through ``_cpu_cost`` — a raw
+        # clock read in ``_elapsed`` would silently re-open the burst-perturbation
+        # channel while every behavioral test stays green.
+        calls: list[object] = []
+
+        def fake_cpu_cost(fn: Callable[[], object]) -> float:
+            calls.append(fn)
+            fn()
+            return 0.123
+
+        monkeypatch.setattr(
+            TestIsDeniedReDoSResistance, "_cpu_cost", staticmethod(fake_cpu_cost)
+        )
+        assert self._elapsed("git status") == 0.123
+        assert len(calls) == 1
 
     def _doubling_ratio(self, build: Callable[[int], str], n: int) -> float:
         """CPU cost at ``2n`` divided by cost at ``n`` — the shape, not the magnitude.
@@ -538,6 +562,59 @@ class TestIsDeniedReDoSResistance:
         # Guard a degenerate denominator: if the small case is unmeasurable the ratio is
         # meaningless, so report a passing value rather than dividing by ~0.
         return double / best if best > 1e-6 else 1.0
+
+    def test_cpu_cost_is_immune_to_other_threads_where_process_time_is_not(self):
+        """The measurement clock must not see other threads' CPU.
+
+        The ratio tests in this class compare CPU-cost samples taken at different
+        times, so any clock that can be inflated by a concurrent in-process CPU burst
+        (another worker thread, GC) turns one-sided bursts into false ratio failures.
+        This pins the invariant with a synthetic workload whose true cost is fixed by
+        construction: spin until this thread has consumed a set amount of CPU, while
+        burst threads saturate the process. ``_cpu_cost`` must report the true cost;
+        the process-wide clock demonstrably cannot, which is why ``_cpu_cost`` exists.
+        """
+        true_cost = 0.05
+
+        def burn() -> None:
+            end = time.thread_time() + true_cost
+            while time.thread_time() < end:
+                pass
+
+        stop = threading.Event()
+
+        def spin() -> None:
+            while not stop.is_set():
+                for _ in range(1000):
+                    pass
+
+        spinners = [threading.Thread(target=spin, daemon=True) for _ in range(2)]
+        for thread in spinners:
+            thread.start()
+        try:
+            for _ in range(5):
+                process_start = time.process_time()
+                measured = self._cpu_cost(burn)
+                process_delta = time.process_time() - process_start
+                assert measured < true_cost * 2.0, (
+                    f"_cpu_cost reported {measured:.3f}s for {true_cost}s of own-thread "
+                    "work — the clock is seeing other threads' CPU"
+                )
+                # The control: the process-wide clock DOES absorb the burst (it
+                # accumulates the spinners' CPU during their GIL timeslices), so a
+                # clean _cpu_cost reading above is discriminating, not vacuous.
+                assert process_delta > measured, (
+                    "process_time did not exceed thread_time under a 2-spinner burst — "
+                    "the burst harness is not generating in-process noise"
+                )
+        finally:
+            stop.set()
+            for thread in spinners:
+                thread.join(timeout=5.0)
+            assert not any(thread.is_alive() for thread in spinners), (
+                "burst spinner failed to stop — it would poison every later "
+                "process-wide timing in this worker"
+            )
 
     def test_git_prefixed_flag_spam_returns_fast(self):
         # The historical regression input: whitespace/flag spam after ``git``.

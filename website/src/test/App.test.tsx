@@ -1,11 +1,15 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { afterAll, describe, it, expect, vi } from 'vitest'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import App, { calculateTopbarSearchLayout } from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
 import SegmentedControl from '../components/SegmentedControl'
+import { ApiError } from '../api/client'
 import { safeSetItem } from '../utils/safeStorage'
+
+/** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
+const REAL_FAILURE = 'invalid agent name'
 
 // Mock all page components to isolate routing
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -26,7 +30,7 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     status: vi.fn().mockResolvedValue({ uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 }),
-    sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 3044, credits_covered: 3044, credits_overage: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04' } }),
+    sessionsUsage: vi.fn().mockResolvedValue({ usage: { credits_used: 3044, credits_covered: 3044, credits_overage: 0, credits_plan: 10000, resets: '2026-07-01', plan: 'KIRO POWER', cost_usd: 0, overage_rate: '0.04', bonus_credits: [{ name: 'Launch bonus', used: 250, total: 1000, days_left: 30 }], email: 'owner@example.com', account_type: 'Social' } }),
     listApps: vi.fn().mockResolvedValue([]),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
@@ -178,6 +182,19 @@ describe('App routing', () => {
       return api
     }
 
+    afterAll(async () => {
+      // Restore the default fully-onboarded mock so subsequent describe blocks
+      // don't inherit a first-run state that renders the Privacy chapter.
+      const { api } = await import('../api/client')
+      vi.mocked(api.themeBoot).mockResolvedValue({
+        mode: '',
+        color: '',
+        onboarded: true,
+        import_onboarded: true,
+        privacy_acked: true,
+      } as never)
+    })
+
     it('opens after Import setup and gates the Customize chapter', async () => {
       await freshFirstRun()
       // Nothing to import: the import chapter completes itself, and Privacy is
@@ -322,6 +339,16 @@ describe('App routing', () => {
   it('renders chat page at /chat', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+  })
+
+  it('sizes the app shell in dvh so mobile browser chrome cannot cover the bottom row', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    // happy-dom does no layout, so the utility pair itself is pinned: h-dvh
+    // tracks the visible viewport where dvh is supported, h-screen (100vh,
+    // which extends under collapsible mobile browser UI) is the fallback.
+    const shell = screen.getByTestId('dashboard-shell').closest('.h-screen')
+    expect(shell).not.toBeNull()
+    expect(shell!.className).toContain('supports-[height:100dvh]:h-dvh')
   })
 
   it('redirects /agents to the Agent Capabilities panel', () => {
@@ -692,9 +719,63 @@ describe('App routing', () => {
   })
 
   it('reserves the larger topbar cluster before showing the centered search', () => {
-    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, visible: true })
-    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, visible: true })
-    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, visible: false })
+    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, width: 360, visible: true })
+    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, width: 483, visible: true })
+    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, width: 240, visible: false })
+  })
+
+  it('caps the centered search at the measured gutter instead of a fixed third of the viewport', () => {
+    // Regression: `visible` is only a floor gate (does 240px still fit?), while
+    // the overlay rendered at a fixed 33.3333vw - 40px. Between those two
+    // numbers sits an overlap band where the gate says "show it" and the box is
+    // nonetheless wider than the space the actions cluster leaves, so it ran
+    // underneath the metrics capsule. Measured at 1400x820 with a 552px-reach
+    // capsule the overlay used to run 77px under it. A wide actions cluster
+    // must shrink the overlay, not be covered by it.
+    const wide = calculateTopbarSearchLayout(12, 460, 1300)
+    expect(wide.visible).toBe(true)
+    expect(wide.width).toBe(1300 - wide.gutter * 2)            // clamped to the gutter
+    expect(wide.width).toBeLessThan(Math.round(1300 / 3) - 40) // ...below the old fixed third
+    // A narrow actions cluster leaves the third of the viewport untouched.
+    expect(calculateTopbarSearchLayout(12, 180, 1300).width).toBe(Math.round(1300 / 3) - 40)
+  })
+
+  it('keeps a real gap between the centered search and the clusters that bound it', () => {
+    // The gutter is built from how far each cluster REACHES in from its side of
+    // the viewport, not its bare width. Measuring width alone ignored the
+    // header's own px-3 padding, so the whole TOPBAR_SEARCH_GAP was swallowed
+    // and the overlay's border ended up flush against the capsule (measured:
+    // 0px clearance). With reaches as inputs the clearance is the full gap.
+    const viewport = 1500
+    const actionsReach = 500                     // viewport - actions.left
+    const { width, visible } = calculateTopbarSearchLayout(12, actionsReach, viewport)
+    expect(visible).toBe(true)
+    // The overlay is centered, so its right edge sits at (viewport + width) / 2.
+    const clearance = (viewport - actionsReach) - (viewport + width) / 2
+    expect(clearance).toBeGreaterThanOrEqual(12)
+  })
+
+  it('measures the topbar clusters even when the brand cluster is empty', () => {
+    // Regression: the brand cluster is legitimately 0-wide on a single-instance
+    // desktop (the brand lives in the sidebar and InstanceTabBar renders
+    // nothing without a remote instance), but `update` bailed on
+    // `brandWidth <= 0`. The measurement therefore never ran in the common
+    // case, the state stayed frozen on its optimistic initial value, and the
+    // overlay kept its full width no matter how wide the capsule grew.
+    const rect = (left: number, width: number) => ({ width, height: 40, top: 0, left, right: left + width, bottom: 40, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
+    // jsdom viewport is 1024 wide. Actions cluster reaches 370px in from the
+    // right (left edge at 654), the brand cluster is empty at the px-3 edge.
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: Element) { return this.classList.contains('ml-auto') ? rect(654, 370) : rect(12, 0) })
+    try {
+      renderWithProviders(<App />, { route: '/chat' })
+      const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
+      // gutter = 370 + 12 = 382, so the overlay is capped at 1024 - 764 = 260px,
+      // below the unclamped 301px a fixed third of the viewport would have given.
+      expect(trigger.style.width).toBe('260px')
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
@@ -990,6 +1071,68 @@ describe('onCycleAgent keyboard shortcut', () => {
     })
     expect(api.chatSlotAgent).not.toHaveBeenCalled()
   })
+
+  it.each([
+    ['forward', 'A', 'KeyA', 'reviewer'],
+    ['backward', 'Z', 'KeyZ', 'oracle'],
+  ])('surfaces an agent-switch API failure when cycling %s', async (_direction, key, code, expectedAgent) => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, REAL_FAILURE, JSON.stringify({ error: REAL_FAILURE })),
+    )
+    store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: true, agent: 'kirocrew' }] })
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+    renderWithProviders(<App />, { route: '/chat' })
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key, code, altKey: true, shiftKey: true, bubbles: true }))
+    })
+
+    expect(api.chatSlotAgent).toHaveBeenCalledWith('slot-1', expectedAgent)
+    const noticeText = await screen.findByText(
+      REAL_FAILURE,
+    )
+    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(
+      REAL_FAILURE,
+    )).not.toBeInTheDocument()
+  })
+
+  it('restarts the six-second expiry after a repeated failure', async () => {
+    const { api } = await import('../api/client')
+    const { store } = await import('../store')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const failure = new ApiError(400, REAL_FAILURE, JSON.stringify({ error: REAL_FAILURE }))
+      ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValue(failure)
+      store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: true, agent: 'kirocrew' }] })
+      store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
+      renderWithProviders(<App />, { route: '/chat' })
+
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
+        await Promise.resolve()
+      })
+      const copy = REAL_FAILURE
+      expect(screen.getByText(copy)).toBeInTheDocument()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
+        await Promise.resolve()
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+      expect(screen.getByText(copy)).toBeInTheDocument()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(4500) })
+      expect(screen.queryByText(copy)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+      ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    }
+  })
 })
 
 describe('onCycleAgent edge cases', () => {
@@ -1229,7 +1372,7 @@ describe('Kiro credits pill', () => {
   it('renders used/limit and percentage once loaded', async () => {
     renderWithProviders(<App />, { route: '/chat' })
     // default mock: 3044 total used of 10000 = 30%
-    const pill = await screen.findByTitle(/Kiro credits: 3,044 \/ 10,000 \(30%\)/)
+    const pill = await screen.findByTitle('Kiro credit usage')
     expect(pill).toBeInTheDocument()
   })
 
@@ -1240,15 +1383,21 @@ describe('Kiro credits pill', () => {
     } as never)
     renderWithProviders(<App />, { route: '/chat' })
     // credits_used=10500 total / 10000 plan = 105% (500 over plan)
-    expect(await screen.findByTitle(/Kiro credits: 10,500 \/ 10,000 \(105%\)/)).toBeInTheDocument()
+    expect(await screen.findByTitle('Kiro credit usage')).toBeInTheDocument()
   })
 
   it('opens a details modal with breakdown rows when clicked', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro credits: 3,044/)
+    const pill = await screen.findByTitle('Kiro credit usage')
     fireEvent.click(pill)
+    expect(await screen.findByRole('dialog', { name: 'Kiro Account' })).toBeInTheDocument()
+    expect(await screen.findByText('owner@example.com')).toBeInTheDocument()
+    expect(screen.getByText(/Signed in with Social login/)).toBeInTheDocument()
     expect(await screen.findByText('KIRO POWER')).toBeInTheDocument()
-    expect(screen.getByText('2026-07-01')).toBeInTheDocument()
+    expect(screen.getByText(/Resets/)).toBeInTheDocument()
+    expect(screen.getByText(/Remaining credit balance: 6,956/)).toBeInTheDocument()
+    expect(screen.getByText('Launch bonus')).toBeInTheDocument()
+    expect(screen.getByText(/Remaining credit balance: 750/)).toBeInTheDocument()
     expect(screen.getByText('Overage used')).toBeInTheDocument()
     expect(screen.getByText(/across chat, agents, MCP/)).toBeInTheDocument()
   })
@@ -1269,12 +1418,7 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const loadingPill = await screen.findByTitle(/Kiro credit usage/)
     fireEvent.click(loadingPill)
-    const loadingMsg = await screen.findByText(/Checking usage/)
-    expect(loadingMsg).toBeInTheDocument()
-    // The whole message is wrapped in one <span> so the flex row renders it as
-    // flowing prose instead of fragmenting each text run into its own column.
-    expect(loadingMsg.tagName).toBe('SPAN')
-    expect(loadingMsg.querySelector('code')?.textContent).toBe('kiro-cli /usage')
+    expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
   })
 
   it('defaults covered/overage to 0 and renders sub-1000 values without K suffix', async () => {
@@ -1282,7 +1426,7 @@ describe('Kiro credits pill — edge cases', () => {
     // only credits_plan present -> credits_used falls back to 0
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 500 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro credits: 0 \/ 500 \(0%\)/)
+    const pill = await screen.findByTitle('Kiro credit usage')
     expect(pill).toHaveTextContent('0/500') // sub-1000 -> no "K" formatting
     fireEvent.click(pill)
     expect(await screen.findByText('0 credits')).toBeInTheDocument() // Overage used row
@@ -1292,7 +1436,7 @@ describe('Kiro credits pill — edge cases', () => {
     const { api } = await import('../api/client')
     vi.mocked(api.sessionsUsage).mockResolvedValueOnce({ usage: { credits_plan: 0, credits_covered: 0 } } as never)
     renderWithProviders(<App />, { route: '/chat' })
-    expect(await screen.findByTitle(/Kiro credits: 0 \/ 0 \(0%\)/)).toBeInTheDocument()
+    expect(await screen.findByTitle('Kiro credit usage')).toBeInTheDocument()
   })
 
   it('falls back to an empty object when the response has no usage key', async () => {
@@ -1305,11 +1449,16 @@ describe('Kiro credits pill — edge cases', () => {
 
   it('closes the modal on Escape', async () => {
     renderWithProviders(<App />, { route: '/chat' })
-    const pill = await screen.findByTitle(/Kiro credits: 3,044/)
+    const pill = await screen.findByTitle('Kiro credit usage')
+    // Focus the pill first, as a real click does: focus restore is `Modal`'s
+    // generic behaviour (it returns focus to whatever was focused when the
+    // dialog opened), not a per-call-site `ref.focus()` in App.
+    pill.focus()
     fireEvent.click(pill)
     expect(await screen.findByText('Overage used')).toBeInTheDocument()
     act(() => { fireEvent.keyDown(window, { key: 'Escape' }) })
     await waitFor(() => expect(screen.queryByText('Overage used')).not.toBeInTheDocument())
+    await waitFor(() => expect(pill).toHaveFocus())
   })
 
   it('hides the pill entirely when usage is unavailable (non-Kiro provider)', async () => {
@@ -1318,7 +1467,7 @@ describe('Kiro credits pill — edge cases', () => {
     vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: { available: false } } as never)
     renderWithProviders(<App />, { route: '/chat' })
     await waitFor(() => expect(screen.queryByTitle(/Kiro credit usage/)).not.toBeInTheDocument())
-    expect(screen.queryByTitle(/Kiro credits:/)).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Kiro credit usage')).not.toBeInTheDocument()
   })
 
   it('auto-closes the modal if usage resolves to unavailable while it is open', async () => {
@@ -1328,9 +1477,9 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const pill = await screen.findByTitle(/Kiro credit usage/)
     fireEvent.click(pill)
-    expect(await screen.findByText(/Checking usage/)).toBeInTheDocument()
+    expect(await screen.findByLabelText('Checking credit usage')).toBeInTheDocument()
     await act(async () => { resolveUsage({ usage: { available: false } }); await Promise.resolve() })
-    await waitFor(() => expect(screen.queryByText(/Checking usage/)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument())
   })
 
   it('never renders NaN when credit fields arrive non-finite', async () => {
@@ -1339,7 +1488,7 @@ describe('Kiro credits pill — edge cases', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Non-finite plan is rejected by the Number.isFinite guard, so the loaded
     // pill (which would otherwise show "NaN / NaN") never appears.
-    await waitFor(() => expect(screen.queryByTitle(/Kiro credits:/)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByTitle('Kiro credit usage')).not.toBeInTheDocument())
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
   })
 })

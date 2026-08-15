@@ -1231,6 +1231,15 @@ html:lang(ko) {
   /* TESTING: disabled to check scroll bug */
   /* :focus-visible{outline:2px solid var(--accent);outline-offset:2px} */
   @media(prefers-reduced-motion:reduce){*:not([data-virtuoso-scroller] *),*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important}}
+  /* The rule above zeroes animation-DURATION but not animation-DELAY, and
+     `animate-rise` uses fill-mode `backwards` — so a stagger-delayed card
+     (Overview stat tiles, Settings cards) would sit fully invisible for its
+     whole delay when the user asked for no motion. Zero the delay for the
+     rise entrance specifically; `!important` is required to beat the inline
+     `animationDelay` the stagger ladder sets. Deliberately NOT global:
+     mc-line-reveal (below) documents that it relies on delays surviving
+     reduced motion. */
+  @media(prefers-reduced-motion:reduce){.animate-rise{animation-delay:0s !important}}
   ::selection{background:var(--accent-subtle);color:var(--text-strong)}
   .bg-accent::selection{background:rgba(255,255,255,.25);color:white}
   ::-webkit-scrollbar{width:6px;height:6px}
@@ -1276,8 +1285,13 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Streaming highlight (shimmer sweep on trailing words) ── */
 .streaming-glow{background:linear-gradient(90deg,transparent 0%,var(--accent-glow) 40%,var(--accent-glow) 100%);border-radius:2px;padding:0 8px 0 2px;margin:0 -2px;position:relative;overflow:hidden}
-.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);background-size:250% 100%;animation:stream-sweep 2.5s ease-in-out infinite;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
-@keyframes stream-sweep{0%{background-position:150% 0}100%{background-position:-50% 0}}
+/* Animates transform (compositable) rather than background-position, which repaints every
+   frame. The layer stays the size of the box: the gradient is transparent across its outer
+   quarters, so a 25% translate never carries anything visible past the box edge and no
+   clipping is needed -- which matters because this is an inline span that can wrap.
+   `alternate` reverses each cycle so the loop has no restart jump. */
+.streaming-glow::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(90deg,transparent 25%,color-mix(in srgb,var(--accent) 50%,transparent) 50%,transparent 75%);will-change:transform;animation:stream-sweep 2.5s ease-in-out infinite alternate;-webkit-mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%);mask:linear-gradient(90deg,transparent 0%,black 40%,black 100%)}
+@keyframes stream-sweep{0%{transform:translateX(-25%)}100%{transform:translateX(25%)}}
 
 /* ── Streaming caret ──
    Blinking cursor appended after a streaming assistant message. Rendered
@@ -1557,9 +1571,38 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* ── Frameless Electron window (Windows) ──
    titleBarOverlay places native caption controls (min/max/close) in a 138px
    overlay strip at the top-right of the window. Inset the header's right side
-   so interactive elements (bell, settings, actions) stay clear of the overlay.
-   Keep 138px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
-.win-electron header.topbar-glass{padding-right:142px}
+   so interactive elements (bell, settings, actions) stay clear of the overlay,
+   and mark the header as a drag region so the integrated menu row still moves
+   the window — with an explicit no-drag opt-out for every interactive control,
+   including the titlebar app-menu triggers below.
+   Keep 142px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
+.win-electron header.topbar-glass{
+  padding-right:142px;
+  -webkit-app-region:drag;
+}
+.win-electron header.topbar-glass button,
+.win-electron header.topbar-glass a,
+.win-electron header.topbar-glass input,
+.win-electron header.topbar-glass [role="button"],
+.win-electron .win-titlebar-menu{
+  -webkit-app-region:no-drag;
+}
+.win-titlebar-menu-item{
+  border:0;
+  background:transparent;
+  font-family:inherit;
+  cursor:default;
+  transition:background-color .12s ease,color .12s ease;
+}
+
+/* ── Frameless Electron window (Linux) ──
+   The main process injects a caption-control cluster (min/max/close, three
+   36px buttons) at the window's top-right (#electron-linux-controls in
+   electron/main.js). Inset the header's right side so interactive elements
+   stay clear of it. Keep 108px in sync with LINUX_CAPTION_CONTROLS_WIDTH in
+   src/lib/electron.ts. Applied only when the window is actually frameless
+   (runtime decision — see isLinuxFramelessElectron). */
+.linux-electron header.topbar-glass{padding-right:112px}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
    the `.mac-electron` rule never applies. The parent relays whether it is a
@@ -1575,6 +1618,16 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    chips are clickable, hoverable, and drag-reorderable. Ignored in browsers. */
 .side-panel-strip,.side-panel-strip *{-webkit-app-region:no-drag}
 
+/* Draggable title-bar strips laid over a remote-instance pane. The pane is a
+   cross-origin iframe, so the host's injected #electron-drag-bar can't reach
+   into it and the blanket marks the whole iframe no-drag — the pane's header
+   can't move the window. InstancesViewport renders these strips (positioned by
+   the gaps the pane reports) AFTER the iframe, so they re-add a drag region in
+   the pane header's control-free gaps. pointer-events:none so the strip never
+   intercepts a click; app-region drag is honored regardless. Ignored in
+   browsers (no native window). */
+.host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
+
 /* Scrollbar-free scroll container (used by the side panel tab strip — the
    strip scrolls horizontally but a visible scrollbar under the chips reads
    as clutter). Referenced before Tailwind ever defined it; real rules here. */
@@ -1588,6 +1641,14 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
+
+/* ── Follow-up option chip width cap ──
+   An option label is a full user-voice instruction and can run to hundreds of
+   characters. Capped at roughly half the default composer width so at least
+   two options stay side by side and no single chip owns the whole strip; the
+   label itself clamps to two lines. Lives here because the same value is
+   applied to both the chip button and its split-button wrapper. */
+.followup-chip{max-width:min(100%,26rem)}
 
 /* ── Skeleton shimmer placeholder ── */
 .skeleton{
@@ -1629,6 +1690,19 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
 .session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted)}
+/* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
+   briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
+   background, because the revealed row is usually the active one and already
+   carries the accent-subtle background. No transition declared here on
+   purpose: the row's own Tailwind transition-all animates outline-color, and
+   declaring any transition longhand/shorthand at this higher specificity
+   would strip transition-all while the flash is up, making hover styles snap
+   on exactly the row the reveal highlighted. The fade is a color transition
+   (not an animation), so the global reduced-motion animation kill-switch
+   above leaves the confirmation visible. JS removes the classes after the
+   fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
+.session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
+.session-row.session-reveal-flash-fade{outline-color:transparent}
 .session-row.session-colored{position:relative}
 .session-row.session-colored::before{
   content:"";

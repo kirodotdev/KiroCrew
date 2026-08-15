@@ -260,6 +260,12 @@ class TestTemplate:
         text = ec2.load_template()
         assert "KIROCREW_REQUIRE_FRONTEND=1" in text
 
+    def test_bootstrap_installs_voice_extra_before_gateway_boot(self):
+        # Remote instances need the Transcribe SDK in their venv before the
+        # gateway imports boto3. Keep both the first attempt and retry aligned.
+        text = ec2.load_template()
+        assert text.count("bash install.sh --voice") == 2
+
     def test_instance_enforces_imdsv2(self):
         text = ec2.load_template()
         assert "MetadataOptions" in text
@@ -460,7 +466,10 @@ class TestBuildDeployArgv:
 
 class TestDeployDryRun:
     def test_dry_run_returns_argv_without_aws(self, monkeypatch):
+        import kiro_crew.cloud.source as source_mod
+
         # If run_aws is called during a dry run, fail loudly.
+        monkeypatch.setattr(source_mod, "find_repo_root", lambda: object())
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
         r = ec2.deploy(
             tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1", dry_run=True
@@ -495,6 +504,16 @@ class TestDeployDryRun:
             ship_source=False,
             dry_run=True,
         )
+        assert not any(a.startswith("SourceBucket=") for a in r.argv)
+
+    def test_dry_run_defaults_to_public_clone_without_checkout(self, monkeypatch):
+        import kiro_crew.cloud.source as source_mod
+
+        monkeypatch.setattr(source_mod, "find_repo_root", lambda: None)
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
+
+        r = ec2.deploy(tag="t1", tier=sizes.default_tier(), dry_run=True)
+
         assert not any(a.startswith("SourceBucket=") for a in r.argv)
 
 

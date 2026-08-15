@@ -35,6 +35,18 @@ vi.mock('../api/client', () => ({
   },
 }))
 
+// The wizard's model picker reads the advertised list via useAvailableModels.
+// Mock the hook module (same pattern as IssueRadarCrewEditor.test.tsx): the
+// real hook fetches through the provider context, which this harness does not
+// stand up. Non-vendor test ids only.
+vi.mock('../hooks/useAvailableModels', () => ({
+  useAvailableModels: () => [
+    { name: 'auto', description: '' },
+    { name: 'test-model-x', description: 'Test model X' },
+    { name: 'test-model-y', description: 'Test model Y' },
+  ],
+}))
+
 import { api } from '../api/client'
 import ResearchLabPage from '../apps/auto-research/ResearchLabPage'
 
@@ -372,10 +384,67 @@ describe('ResearchLabPage', () => {
 
     await user.click(screen.getByRole('button', { name: /Start Campaign/i }))
     await waitFor(() => expect(vi.mocked(api.researchCreate)).toHaveBeenCalled())
-    expect(vi.mocked(api.researchCreate).mock.calls[0][0]).toMatchObject({ success_criteria: 'Build passes', auto_approve: true, idle_secs: 30 })
+    // model: '' = no explicit pick — the worker inherits the default resolution.
+    expect(vi.mocked(api.researchCreate).mock.calls[0][0]).toMatchObject({ success_criteria: 'Build passes', auto_approve: true, idle_secs: 30, model: '' })
     await waitFor(() =>
       expect(vi.mocked(api.researchAction)).toHaveBeenCalledWith('cccc3333', 'start'),
     )
+  })
+
+  it('wizard model picker: lists advertised models and sends the explicit pick', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([])
+    vi.mocked(api.researchValidate).mockResolvedValue({
+      can_start: true, errors: [], warnings: [],
+      estimated_cycles: 30, estimated_duration_min: 60,
+    })
+    vi.mocked(api.researchCreate).mockResolvedValue({ id: 'dddd4444' })
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/Run autonomous research/i)).toBeInTheDocument())
+    await user.click(screen.getAllByRole('button', { name: /New Campaign/i })[0])
+    const ta = await screen.findByPlaceholderText(/How do other teams/i)
+    await user.type(ta, 'How do other teams handle API rate limiting in production?')
+    await user.click(screen.getByRole('button', { name: /Next/i }))
+    // Step 1 — the model picker is a themed Radix select (same pattern as the
+    // idle picker above): open the trigger, then click the advertised option.
+    fireEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+    expect(await screen.findByRole('option', { name: 'test-model-y' })).toBeInTheDocument()
+    // 'auto' is filtered: it would sit next to the "Default (inherit)" row as a
+    // second default with different mechanics (explicit pin vs inherit).
+    expect(screen.queryByRole('option', { name: 'auto' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'test-model-x' }))
+    await user.click(screen.getByRole('button', { name: /Next/i }))
+    await waitFor(() => expect(screen.getByText(/All checks passed/i)).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /Start Campaign/i }))
+    await waitFor(() => expect(vi.mocked(api.researchCreate)).toHaveBeenCalled())
+    expect(vi.mocked(api.researchCreate).mock.calls[0][0]).toMatchObject({ model: 'test-model-x' })
+  })
+
+  it('wizard clears an explicit model pick when switching to workflow mode', async () => {
+    vi.mocked(api.researchCampaigns).mockResolvedValue([])
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByText(/Run autonomous research/i)).toBeInTheDocument())
+    await user.click(screen.getAllByRole('button', { name: /New Campaign/i })[0])
+    const ta = await screen.findByPlaceholderText(/How do other teams/i)
+    await user.type(ta, 'How do other teams handle API rate limiting in production?')
+    await user.click(screen.getByRole('button', { name: /Next/i }))
+    // Pick a model in agent mode…
+    fireEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'test-model-x' }))
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveTextContent('test-model-x')
+    // …then switch to workflow on step 0: the pick must be cleared in the
+    // control itself (visible discard), not silently dropped at submit.
+    await user.click(screen.getByRole('button', { name: /Back/i }))
+    await user.click(screen.getByRole('button', { name: /Dynamic workflow/i }))
+    await user.click(screen.getByRole('button', { name: /Next/i }))
+    // Picker is hidden in workflow mode…
+    expect(screen.queryByRole('combobox', { name: 'Model' })).not.toBeInTheDocument()
+    // …and switching back shows the cleared (inherit) state, not the old pick.
+    await user.click(screen.getByRole('button', { name: /Back/i }))
+    await user.click(screen.getByRole('button', { name: /^Agent/i }))
+    await user.click(screen.getByRole('button', { name: /Next/i }))
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveTextContent('Default (inherit)')
   })
 
   it('wizard surfaces validation errors and disables Start', async () => {

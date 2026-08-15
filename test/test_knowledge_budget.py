@@ -10,9 +10,8 @@ Covers:
 """
 import asyncio
 import sqlite3
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from kiro_crew.config.loader import KnowledgeConfig
 
@@ -65,10 +64,21 @@ class TestEmbedRateLimiter:
     def test_high_rate_does_not_block(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
         limiter = EmbedRateLimiter(rate_limit=10000)
-        start = time.monotonic()
-        asyncio.run(limiter.acquire())
-        elapsed = time.monotonic() - start
-        assert elapsed < 0.1
+        tokens_before = limiter._tokens
+        # "Does not block" means the sleeping slow path is never reached:
+        # patch asyncio.sleep and assert it was never awaited (a wall-clock
+        # bound here would only measure asyncio.run() setup cost, which flakes
+        # under CI load). Note: ingestion.py does a plain `import asyncio`, so
+        # this rebinds asyncio.sleep process-wide for the duration of the
+        # block; asyncio.run() internals never call asyncio.sleep, and the
+        # patch is reverted on exit.
+        fake_sleep = AsyncMock()
+        with patch("kiro_crew.knowledge.ingestion.asyncio.sleep", fake_sleep):
+            asyncio.run(limiter.acquire())
+        fake_sleep.assert_not_awaited()
+        # The fast path must still consume exactly one token, proving
+        # acquire() did real work rather than returning early.
+        assert limiter._tokens == tokens_before - 1.0
 
     def test_rate_limit_setter_resets_bucket(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
@@ -104,6 +114,7 @@ class TestMaxSourcesCap:
                 source_type TEXT,
                 uri TEXT UNIQUE,
                 properties TEXT,
+                sync_status TEXT DEFAULT 'pending',
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -126,6 +137,7 @@ class TestMaxSourcesCap:
         store.create_auto_source_unless_dismissed = (
             lambda *a, **kw: RealStore.create_auto_source_unless_dismissed(store, *a, **kw)
         )
+        store._initial_sync_status = RealStore._initial_sync_status
         return store
 
     def test_under_cap_allows_creation(self, tmp_path):

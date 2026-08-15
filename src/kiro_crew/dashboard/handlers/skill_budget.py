@@ -143,9 +143,10 @@ def _compute_budget(
                     if alias_entry is not None:
                         total_hits += alias_entry[0]
                         latest_seen = max(latest_seen, alias_entry[1])
-                deliveries = total_hits if total_hits > 0 else (
-                    0 if (own_entry is not None or alias_keys) else None
-                )
+                # This branch already established that the skill IS tracked, so a
+                # zero total reads as "tracked, never delivered" (0) rather than
+                # "untracked" (None, set in the else branch below).
+                deliveries = max(total_hits, 0)
                 # idle_days: days since last_seen
                 if latest_seen > 0:
                     idle_days = (now - latest_seen) / 86400.0

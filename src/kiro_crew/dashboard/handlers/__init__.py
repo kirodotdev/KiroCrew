@@ -50,7 +50,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: E402, F401
     _get_memory,
     _get_skills,
     _is_restricted_session,
-    _resolve_aim_skill_path,
+    _resolve_package_skill_path,
 )
 
 # ── Agents (extracted to handlers/agents.py) ──
@@ -88,7 +88,11 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
 )
 
 # ── Connections OAuth relay (handlers/connections.py) ──
-from kiro_crew.dashboard.handlers.connections import api_mcp_oauth_relay  # noqa: E402, F401
+from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
+    api_connections_mint,
+    api_connections_mint_state,
+    api_mcp_oauth_relay,
+)
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
     api_cron_batch_delete,
@@ -136,6 +140,8 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_outbox_list,
     api_outbox_notify,
     api_project_git,
+    api_project_git_log,
+    api_project_git_status,
     api_reveal_path,
     api_screenshot,
     api_slack_upload_file,
@@ -177,11 +183,10 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     _sync_mcp_to_agent,
     api_mcp_active,
     api_mcp_apply,
-    api_mcp_gateway_apps_enable,
     api_mcp_gateway_enable,
     api_mcp_gateway_metrics,
     api_mcp_gateway_servers,
-    api_mcp_gateway_set_poolable,
+    api_mcp_gateway_set_stub,
     api_mcp_gateway_status,
     api_mcp_global_scopes,
     api_mcp_probe,
@@ -231,15 +236,12 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     _redact,
     _resolve_session_target,
     _sanitize_blocks,
-    api_browser_auth_retry,
-    api_browser_command,
-    api_browser_command_drain,
-    api_browser_command_result,
-    api_browser_config_get,
-    api_browser_config_save,
-    api_browser_event,
-    api_browser_frame,
-    api_browser_pump_audit,
+    api_browser_engine_install,
+    api_browser_install_get,
+    api_browser_install_start,
+    api_browser_token_put,
+    api_browser_view_get,
+    api_browser_view_start,
     api_delete_message,
     api_discord_config_get,
     api_discord_config_save,
@@ -298,6 +300,7 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     api_skills,
     api_skills_create,
     api_skills_pending,
+    api_skills_pending_dismiss_all,
 )
 
 # ── Sessions (extracted to handlers/sessions.py) ──

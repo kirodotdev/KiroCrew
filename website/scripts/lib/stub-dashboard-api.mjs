@@ -28,6 +28,7 @@ export const json = (route, body, status = 200) => route.fulfill({
  *   slots?: unknown[],
  *   theme?: string,
  *   botName?: string,
+ *   preserveStorage?: boolean,
  *   extra?: (path: string, route: import('playwright').Route) => unknown,
  * }} opts
  */
@@ -36,6 +37,7 @@ export async function stubDashboardApi(page, opts = {}) {
     folders = [],
     slots = [],
     theme = 'dark',
+    preserveStorage = false,
     // The backend's own default (`api_branding`: `cfg.dashboard.bot_name or
     // "Kiro Crew"`). It must stay TWO WORDS: the nav brand row accents the last
     // word only, and the composer placeholder interpolates the whole name — so
@@ -91,11 +93,11 @@ export async function stubDashboardApi(page, opts = {}) {
     return json(route, objectish ? {} : [])
   })
 
-  await page.addInitScript(([themeMode]) => {
-    localStorage.clear()
+  await page.addInitScript(([themeMode, keepStorage]) => {
+    if (!keepStorage) localStorage.clear()
     localStorage.setItem('mc-theme', themeMode)
     localStorage.setItem('mc-onboarded', '1')
-  }, [theme])
+  }, [theme, preserveStorage])
 }
 
 /** Surface page errors + console errors on stdout so a broken capture is obvious. */

@@ -15,7 +15,7 @@ There are **two independent paths** to create a Slack app. Pick one, and do not 
 | Path | Steps | Best for |
 |------|-------|----------|
 | **[Path A: Manifest](#path-a-create-via-manifest-recommended)** (recommended) | 6 steps | Most users; auto-configures all scopes, events, and permissions in one shot |
-| **[Path B: Manual](#path-b-manual-setup)** | 10 steps | If you need to customize scopes or understand each setting individually |
+| **[Path B: Manual](#path-b-manual-setup)** | 11 steps | If you need to customize scopes or understand each setting individually |
 
 Both paths require a Slack workspace where you can install apps (see [Prerequisites](#prerequisites)).
 
@@ -139,36 +139,53 @@ Go to **Features → OAuth & Permissions → Bot Token Scopes** and add:
 | `chat:write` | Send, update, and delete messages |
 | `channels:history` | Read channel messages (for @mentions) |
 | `channels:read` | List public channels (the channel picker) and read channel metadata |
-| `groups:read` | Same, for private channels the bot is in |
+| `groups:history` | Read messages and thread replies in private channels the bot is in |
+| `groups:read` | List private channels the bot is in and read their metadata |
 | `im:history` | Read DM history |
 | `im:read` | View DM metadata |
 | `im:write` | Open DMs |
 | `reactions:write` | Add and remove emoji reactions |
 | `files:read` | Read uploaded files |
 | `files:write` | Upload screenshots |
+| `users:read` | Profile lookups (`users.info`) resolve a sender's real name. Without it the lookup fails and is caught: the display name falls back to the matching `slack.allowed_users` entry, then to the raw Slack member ID |
 | `commands` | Slash commands |
 
-Two scopes are deliberately **not** in the shipped manifest, so Path B should
-leave them out unless you want the extra behavior:
+The `emoji:read` bot scope is deliberately **not** in the shipped manifest.
+Add it only if you want custom workspace emojis to appear in the emoji picker.
 
-| Scope | What adding it buys |
-|-------|---------------------|
-| `emoji:read` | Custom workspace emojis appear in the emoji picker |
-| `users:read` | Profile lookups (`users.info`) resolve a sender's real name. Without it those calls fail and are caught: the display name falls back to the matching `slack.allowed_users` entry, then to the raw Slack member ID |
+> **Upgrading an existing app?** Adding a scope to the manifest does not
+> retroactively grant it: Slack only grants new scopes when the app is
+> **reinstalled** to the workspace. After adding scopes (or importing an
+> updated manifest), go to **Settings → Install App → Reinstall to Workspace**
+> and copy the new Bot Token.
 
-### Step 4. Subscribe to Events
+### Step 4. Add User Scopes
+
+Under **User Token Scopes**, add:
+
+`channels:history`, `channels:read`, `groups:history`, `groups:read`,
+`im:history`, `im:read`, `mpim:history`, `mpim:read`, `search:read`, and
+`users:read`.
+
+These scopes belong to the installing user's `xoxp-...` token. The Kiro Crew
+gateway itself uses the bot token; the user token is for a separately configured
+Slack MCP/search integration that lets an agent search Slack as that user. Store
+and configure that token only in the integration that consumes it.
+
+### Step 5. Subscribe to Events
 
 1. **Features → Event Subscriptions** → Toggle **ON**
 2. Under **Subscribe to bot events**, add all of these:
    - `message.im`
    - `message.channels`
+   - `message.groups`
    - `app_mention`
    - `app_home_opened`
    - `file_change`
    - `member_joined_channel`
 3. Click **Save Changes**
 
-### Step 5. Add Slash Commands
+### Step 6. Add Slash Commands
 
 **Features → Slash Commands** → **Create New Command**:
 
@@ -190,7 +207,7 @@ The command name you choose here must match the `slack.command` value in `~/.kir
 
 When creating the command, check **Escape channels, users, and links sent to your app** so mentions resolve to `<@U1234|user>` format.
 
-### Step 6. Enable Interactivity
+### Step 7. Enable Interactivity
 
 **Features → Interactivity & Shortcuts** → Toggle **ON**
 
@@ -199,7 +216,7 @@ buttons work, including tool approval (approve / trust / reject), the
 multiple-choice option buttons, the cron and subagent acknowledge buttons, and
 the session Resume / End buttons.
 
-### Step 7. Enable App Home
+### Step 8. Enable App Home
 
 **Features → App Home**:
 
@@ -207,20 +224,24 @@ the session Resume / End buttons.
 - Enable **Chat Tab**
 - Check **"Allow users to send Slash commands and messages from the chat tab"**
 
-### Step 8. Install to Workspace & Get Bot Token
+### Step 9. Install to Workspace & Get Bot Token
 
 1. **Features → OAuth & Permissions** → **Install to Workspace** → Approve
 2. Copy the `xoxb-...` token. This is your **Bot Token**
 
 > **"Install App" button greyed out?** Use **Features → OAuth & Permissions → Install to Workspace** instead (known Slack UI bug).
 
-### Step 9. Configure Kiro Crew
+### Step 10. Configure Kiro Crew
 
 Same as [Path A, Step 5](#step-5-configure-kirocrew).
 
-### Step 10. Verify & Run
+### Step 11. Verify & Run
 
 Same as [Path A, Step 6](#step-6-verify--run).
+
+If you add scopes to an existing app, reinstall it from **OAuth &
+Permissions** before testing. Slack does not grant newly declared scopes to
+tokens from an older installation.
 
 ---
 
@@ -505,4 +526,3 @@ to end just one browser's session, sign out in that browser
 - [Slack API Docs](https://api.slack.com/)
 - [Slack Socket Mode](https://api.slack.com/apis/socket-mode)
 - [Create a free Slack workspace](https://slack.com/get-started)
-

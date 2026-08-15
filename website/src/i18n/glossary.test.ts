@@ -21,8 +21,8 @@ import { CATALOGS as RUNTIME_CATALOGS } from './index'
 import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from './languages'
 import glossary from './glossary.json'
 
-// 2 genuine drops remain (zh-CN onboarding, de genitive `Kiros`).
-const DNT_BASELINE = 2
+// 1 genuine drop remains (zh-CN onboarding).
+const DNT_BASELINE = 1
 
 const GENERATED = new Set(SUPPORTED_LANGUAGES.filter((l) => l.devOnly).map((l) => l.code))
 

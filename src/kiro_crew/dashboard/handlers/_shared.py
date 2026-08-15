@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from aiohttp import web
 
@@ -80,6 +80,117 @@ async def read_bounded_json(
             {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
         )
     return body, None
+
+
+def _audit_admission(surface: str, resource: str, allowed: bool, error: str = "") -> None:
+    """Record an external-access verdict in the security event log.
+
+    BOTH outcomes are logged, not just denials. An admission is the security-
+    relevant event here: "this deployment queried a public registry" and "this
+    deployment provisioned cloud infrastructure" are exactly what an operator who
+    restricted these surfaces needs to be able to prove afterwards, and a log that
+    only carries denials cannot answer whether the permitted path was ever taken.
+
+    Raises on failure — deliberately NOT best-effort, unlike most SEL call sites.
+    An access grant that cannot be recorded is an unaccountable grant, so the
+    caller converts a failed audit into a denial rather than proceeding unlogged.
+
+    ``critical=True`` is what makes that possible. The default path QUEUES the
+    event and swallows a write failure internally, so an exception handler around
+    this call would never fire and the "fail closed" claim would be empty; the
+    critical path writes synchronously and raises on a filesystem failure.
+    """
+    from kiro_crew.sel import sel as _sel  # circular import: sel imports config
+
+    _sel().log_api_access(
+        caller="system",
+        operation=f"external_access:{surface}",
+        outcome="allowed" if allowed else "denied",
+        source="agent",
+        resources=resource,
+        error=error,
+        critical=True,
+    )
+
+
+def _admits(surface: str, resource: str, probe: "Callable[[], bool]") -> bool:
+    """Ask the composed policy one admission question, audited either way.
+
+    Denies on a transient adapter failure rather than admitting. The only way to
+    reach that fallback is for a COMPOSED policy to raise — a managed deployment
+    whose intent was to restrict something — so admitting there would hand back
+    the exact access the operator disabled. The public default cannot raise, so an
+    ordinary install is unaffected, and ``PlatformCompositionError`` still
+    propagates per the CPP fail-closed invariant.
+
+    A FAILED AUDIT ALSO DENIES. If the verdict cannot be written to the security
+    event log — an unwritable or corrupt SEL key — then proceeding would grant
+    external access with no accountability record, which is the one thing this
+    seam exists to make provable. Denying is the conservative direction: the
+    operator loses a registry browser or a deploy button and gets a logged error,
+    rather than silently gaining unaudited egress.
+
+    SYNCHRONOUS BY DESIGN, and callers on the event loop must run it in a worker
+    thread. SEL initialization can shell out (``icacls`` on a fresh Windows
+    gateway), so calling this inline from a coroutine would stall every request.
+    """
+    from kiro_crew.platform.context import safe_context_call
+
+    failed: list[str] = []
+
+    def _fallback() -> bool:
+        failed.append("policy_error")
+        return False
+
+    allowed = safe_context_call(
+        probe,
+        fallback_factory=_fallback,
+        log_message=f"external-access check failed for {surface} {resource!r}; denying",
+    )
+    try:
+        _audit_admission(surface, resource, allowed, error="policy_error" if failed else "")
+    except Exception:
+        logger.error(
+            "external-access verdict for %s %r could not be audited; denying",
+            surface,
+            resource,
+            exc_info=True,
+        )
+        return False
+    return allowed
+
+
+def admits_registry(kind: str, name: str, api_base: str) -> bool:
+    """Whether the composed platform admits an external discovery registry.
+
+    The single call point for the registry half of the ``external_access`` seam, so
+    both catalogs ask the question identically instead of each re-deriving the
+    fail-closed idiom — the reason ``safe_context_call`` is centralized is that a
+    hand-rolled ``except Exception`` at a call site silently swallows
+    ``PlatformCompositionError``.
+    """
+    from kiro_crew.platform.context import current_context
+
+    return _admits(
+        f"registry:{kind}",
+        api_base,
+        lambda: current_context().external_access.admits_registry(kind, name, api_base),
+    )
+
+
+def admits_cloud_deployment(target: str = "aws") -> bool:
+    """Whether the composed platform admits provisioning in a cloud account.
+
+    Consulted by the deploy surface: a denied deployment reports itself disabled
+    and refuses every mutating request.
+    """
+    from kiro_crew.platform.context import current_context
+
+    return _admits(
+        "cloud_deployment",
+        target,
+        lambda: current_context().external_access.admits_cloud_deployment(target),
+    )
 
 
 def _capability_manager() -> "CapabilityManager":
@@ -177,19 +288,145 @@ def _edition_skill_roots() -> list[Path]:
     return [Path(r) for r in roots]
 
 
-def _resolve_aim_skill_path(name: str) -> Path | None:
-    """Find SKILL.md for an edition-contributed skill by leaf name.
+def _canonical_skill_roots() -> list[Path]:
+    """Skill roots the CORE owns and keys under its own prefixes.
 
-    Iterates the edition skill roots (``McpToolingProvider.extra_skills()``)
-    instead of globbing an edition home-dir tree directly. Within each root a
-    skill lives at
-    either ``<root>/<pkg>/<name>/SKILL.md`` or ``<root>/<name>/SKILL.md``; the
-    first match (roots in seam order) wins.
+    ``extra_skills()`` legitimately advertises some of these — the data home and
+    ``~/.kiro/skills`` — so the loader indexes them. They must not ALSO be
+    searched or keyed as ``package/``, or one file gets two identities and a
+    ``package/<name>`` request can be answered with the user's own editable skill.
+
+    State-free on purpose, so every consumer gets the exclusion by default;
+    ``<project>/.kiro/skills`` needs a chat slot and is added by the caller that
+    has one.
     """
+    out: list[Path] = [Path.home() / ".kiro" / "skills", skills_dir()]
+    try:
+        # ``resolve()``, not just ``expanduser()``: a RELATIVE extra_paths entry
+        # would otherwise key the catalog by a relative root, and the persisted
+        # ``skill://`` URI would then resolve against whatever cwd the next
+        # kiro-cli session starts in — silently loading a different skill, or
+        # none. A skill root must be a stable absolute location.
+        out.extend(
+            Path(p).expanduser().resolve() for p in KiroCrewConfig.load().skills.extra_paths
+        )
+    except Exception:
+        logger.debug("failed to load extra skill paths from config", exc_info=True)
+    return out
+
+
+def _resolved_set(paths: Iterable[Path]) -> set[Path]:
+    """Resolved forms of *paths*, skipping any that cannot be resolved.
+
+    ``Path.resolve()`` raises ``RuntimeError`` (not ``OSError``) on a symlink
+    loop, so both are caught: an unresolvable root simply does not participate in
+    identity comparisons.
+    """
+    out: set[Path] = set()
+    for p in paths:
+        try:
+            out.add(p.resolve())
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+def _edition_package_roots(canonical: set[Path] | None = None) -> list[Path]:
+    """Edition roots that are genuinely ``package/`` territory.
+
+    The single source of truth for "which advertised roots are package roots",
+    shared by key enumeration and path resolution — if those two disagree, the
+    catalog offers a key the resolver refuses, or worse resolves to a file the
+    catalog never listed.
+
+    An unresolvable root is KEPT: it cannot be compared for identity, and
+    dropping it would silently remove a root that is otherwise served.
+    """
+    owned = set(canonical) if canonical is not None else _resolved_set(_canonical_skill_roots())
+    out: list[Path] = []
     for root in _edition_skill_roots():
-        for pattern in (f"*/{name}/SKILL.md", f"{name}/SKILL.md"):
-            for p in root.glob(pattern):
-                return p
+        try:
+            resolved = root.resolve()
+        except (OSError, RuntimeError):
+            out.append(root)
+            continue
+        if resolved in owned:
+            continue
+        owned.add(resolved)
+        out.append(root)
+    return out
+
+
+def _dedupe_resolved(paths: list[Path]) -> list[Path]:
+    """Collapse paths that resolve to the same file, preserving order.
+
+    One skill is routinely reachable through two roots — an edition may advertise
+    both a directory and a symlink into it — and that is NOT an ambiguity. Only
+    distinct FILES are.
+
+    ``Path.resolve()`` raises ``RuntimeError`` (not ``OSError``) on a symlink
+    loop, and a looping ``SKILL.md`` is yielded by ``glob`` because a literal
+    pattern matches the dirent without following it. Catching only ``OSError``
+    would turn that into a 500 on a browser-triggered request, so an
+    unresolvable path is skipped instead: it cannot be read anyway.
+    """
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for p in paths:
+        try:
+            key = p.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -> Path | None:
+    """Find SKILL.md for an edition-contributed skill by its key remainder.
+
+    Searched over the ``package/`` territory of the edition skill roots
+    (:func:`_edition_package_roots`) — NOT every advertised root. A root the core
+    already keys as ``kiro-user/`` or unprefixed is excluded, so a
+    ``package/<name>`` request can never be answered with the user's own editable
+    skill; *canonical* lets a caller that knows the active project add
+    ``<project>/.kiro/skills`` to that exclusion.
+
+    Two layouts are supported, in precedence order:
+
+    1. ``<root>/<name>/SKILL.md`` — *name* is the path relative to the root, which
+       is how a row keyed ``package/<rel>`` addresses its file.
+    2. ``<root>/<pkg>/<name>/SKILL.md`` — *name* is a leaf under some package
+       directory, for an edition that keys rows by leaf.
+
+    An exact relative-path hit wins over a nested leaf hit. Within a tier, two
+    DISTINCT files matching is a genuine ambiguity — the same relative path
+    bundled by two packages, which this key grammar cannot tell apart — so it
+    returns ``None`` and logs instead of picking one. Serving an arbitrary one of
+    the two looks completely successful and shows the wrong skill's content,
+    which is the failure mode worth being loud about.
+    """
+    exact: list[Path] = []
+    nested: list[Path] = []
+    for root in _edition_package_roots(canonical):
+        exact.extend(root.glob(f"{name}/SKILL.md"))
+        nested.extend(root.glob(f"*/{name}/SKILL.md"))
+    for tier, label in ((exact, "relative path"), (nested, "leaf name")):
+        candidates = _dedupe_resolved(tier)
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            logger.warning(
+                "edition skill %r matches %d distinct files by %s (%s); refusing "
+                "to guess — the package/<path> key cannot address more than one",
+                name,
+                len(candidates),
+                label,
+                ", ".join(sorted(str(p) for p in candidates)),
+            )
+            return None
     return None
 
 
@@ -596,7 +833,7 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
     Accepts the same nested-name scheme used by the existing skill API:
     - ``foo`` → ``~/.kiro/crew/skills/foo``
     - ``utils/tiny-url`` → ``~/.kiro/crew/skills/utils/tiny-url``
-    - ``package/<skill>`` → resolved via _resolve_aim_skill_path() lookup
+    - ``package/<skill>`` → resolved via _resolve_package_skill_path() lookup
     - ``kiro-user/<skill>`` → ``~/.kiro/skills/<skill>``
     - ``kiro-workspace/<skill>`` → ``<project>/.kiro/skills/<skill>``
 
@@ -620,9 +857,15 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
             return None
         root = proj / ".kiro" / "skills"
     elif name.startswith("package/"):
-        # Locate via existing helper (sync version).
-        aim_name = name[len("package/") :]
-        path = _resolve_aim_skill_path(aim_name)
+        # Locate via existing helper (sync version). The active project's
+        # ``.kiro/skills`` joins the canonical exclusion here because this caller
+        # is the one that knows the chat slot.
+        pkg_rel = name[len("package/") :]
+        canonical = _resolved_set(_canonical_skill_roots())
+        proj = active_project_dir(state, session_key)
+        if proj is not None:
+            canonical |= _resolved_set([proj / ".kiro" / "skills"])
+        path = _resolve_package_skill_path(pkg_rel, canonical)
         if not path:
             return None
         candidate = path.parent
@@ -632,7 +875,7 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
             resolved = candidate.resolve(strict=True)
         except OSError:
             return None
-        # Re-check the *resolved* target — a symlink within the AIM path could
+        # Re-check the *resolved* target — a symlink within the package path could
         # point at a sensitive location that the unresolved check missed
         # (consistent with the kirocrew/kiro branches below).
         if is_sensitive_path(str(resolved)):
@@ -680,7 +923,7 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         return None
     # Containment + symlink policy.  Skills can be nested under category
     # directories (``utils/multi-badger`` → ``<root>/utils/multi-badger``),
-    # and a skill directory itself may be a symlink (AIM ``--local`` installs
+    # and a skill directory itself may be a symlink (an edition may install
     # symlink ``~/.kiro/skills/<name>`` to ``~/.agents/skills/<name>``).  We
     # therefore require the candidate's *parent* directory to resolve to a
     # location at or under the trusted root — which permits the leaf to be a
@@ -728,20 +971,13 @@ def _skill_key_roots(state: DashboardState, session_key: str = "") -> list[tuple
     proj = active_project_dir(state, session_key)
     if proj is not None:
         out.append(("kiro-workspace/", proj / ".kiro" / "skills"))
-    out.append(("", skills_dir()))
-    try:
-        # ``resolve()``, not just ``expanduser()``: a RELATIVE extra_paths entry
-        # would otherwise key the catalog by a relative root, and the persisted
-        # ``skill://`` URI would then resolve against whatever cwd the next
-        # kiro-cli session starts in — silently loading a different skill, or
-        # none. A skill root must be a stable absolute location.
-        out.extend(
-            ("", Path(p).expanduser().resolve())
-            for p in KiroCrewConfig.load().skills.extra_paths
-        )
-    except Exception:
-        logger.debug("failed to load extra skill paths from config", exc_info=True)
-    out.extend(("package/", r) for r in _edition_skill_roots())
+    out.extend(("", root) for root in _canonical_skill_roots()[1:])
+    # ``package/`` covers only the edition roots the core does not already key
+    # above — via the same helper the resolver uses, so enumeration and
+    # resolution cannot drift apart. A key the catalog offers must be one the
+    # resolver accepts, and vice versa.
+    canonical = _resolved_set(root for _prefix, root in out)
+    out.extend(("package/", root) for root in _edition_package_roots(canonical))
     return out
 
 
@@ -763,7 +999,7 @@ def _collect_skills_under(
 
     Containment mirrors :func:`_resolve_skill_root`: a candidate's *parent* must
     resolve at or under the trusted root, which permits the skill directory
-    itself to be a symlink (AIM ``--local`` installs symlink
+    itself to be a symlink (an edition may install a skill by symlinking
     ``~/.kiro/skills/<name>`` to elsewhere) while still rejecting a symlinked
     *intermediate* directory that would let ``a/b`` escape the tree. Sensitive
     paths are rejected before and after symlink resolution.

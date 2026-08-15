@@ -84,8 +84,8 @@ def build_claim_frame(pid: int, session_key: str, channel_id: Optional[str]) -> 
         "caller": {
             "session_key": session_key,
             "session_type": classify_session_type(session_key),
-            "principal_id": os.environ.get("KIROCREW_PRINCIPAL")
-            or os.environ.get("USER")
+            "principal_id": os.environ.get("USER")
+            or os.environ.get("USERNAME")
             or "",
             "channel_id": channel_id or "",
         },

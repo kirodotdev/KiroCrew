@@ -14,7 +14,6 @@ because tomllib is 3.11+.
 import importlib.util
 import json
 import os
-import pathlib
 import re
 import sys
 from pathlib import Path
@@ -158,30 +157,23 @@ def test_opus_profile_model_matches_the_ci_workflow():
 def test_charter_budgets_match_the_ci_workflows():
     """The budget numbers restated in SKILL.md must match the workflows.
 
-    The charter hand-copies CI's budget ("≤5 BLOCKING, ≤6 advisory FINDING").
-    That copy is exactly what drifted before -- the skill still claimed ≤2
-    BLOCKING long after CI moved to 5 -- so pin the numbers rather than trusting
-    prose to be kept in sync. Parses the authoritative BUDGET lines out of both
-    review workflows and asserts the charter quotes them.
+    The charter hand-copies CI's budgets. That copy is exactly what drifted
+    before -- the skill still claimed ≤2 BLOCKING long after CI moved to 5 --
+    so pin the wording rather than trusting prose to be kept in sync. The Opus
+    lane still carries a numeric cap; the GPT lane's budget is report-ALL (a
+    numeric cap encouraged staging discoveries across review rounds), so its
+    charter must NOT restate a numeric cap.
     """
     skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-
-    def _budget(source: pathlib.Path) -> str:
-        text = source.read_text(encoding="utf-8")
-        # The two lanes word the cap differently because they own their own
-        # contracts: the GPT lane keeps a "BUDGET:" heading inline, the Opus
-        # lane states it as a sentence in its validation prompt.
-        match = re.search(r"(?:BUDGET: at most|At most) (\d+) BLOCKING", text)
-        assert match, f"no BLOCKING budget in {source.name}"
-        return match.group(1)
 
     # The Opus lane's budgets live with the contract that applies them -- the
     # validation prompt -- not in the workflow that merely invokes it.
     opus_contract = REPO_ROOT / ".github" / "review-prompts" / "opus-validate.md"
-    opus_blocking = _budget(opus_contract)
-    gpt_blocking = _budget(REPO_ROOT / ".github" / "workflows" / "codex-review.yml")
-
     claude = opus_contract.read_text(encoding="utf-8")
+    opus_match = re.search(r"At most (\d+) BLOCKING", claude)
+    assert opus_match, f"no BLOCKING budget in {opus_contract.name}"
+    opus_blocking = opus_match.group(1)
+
     advisory_match = re.search(r"At most (\d+) advisory FINDING", claude)
     assert advisory_match, f"no advisory-FINDING budget in {opus_contract.name}"
     opus_advisory = advisory_match.group(1)
@@ -192,8 +184,22 @@ def test_charter_budgets_match_the_ci_workflows():
         "the opus charter's budget no longer matches claude-review.yml "
         f"({opus_blocking} BLOCKING / {opus_advisory} advisory)"
     )
-    assert f"≤{gpt_blocking} BLOCKING" in skill, (
-        f"the gpt charter's budget no longer matches codex-review.yml ({gpt_blocking})"
+
+    gpt_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "codex-review.yml"
+    ).read_text(encoding="utf-8")
+    assert "BUDGET: report ALL findings that genuinely meet WHAT BLOCKS" in gpt_workflow, (
+        "codex-review.yml's BUDGET is expected to be report-ALL; if a numeric "
+        "cap returned, restore the numeric charter assertions here"
+    )
+    assert re.search(r"BUDGET: at most \d+ BLOCKING", gpt_workflow) is None
+    assert "report-ALL" in skill, (
+        "the gpt charter's budget no longer matches codex-review.yml "
+        "(expected the report-ALL wording)"
+    )
+    assert re.search(r"≤\d+ BLOCKING\*\* budget", skill) is None, (
+        "the gpt charter still restates a numeric BLOCKING cap that "
+        "codex-review.yml no longer has"
     )
 
 
@@ -287,6 +293,9 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         "python": "covered by the scripts/ scan and the pytest gate",
         "python3": "covered by the scripts/ scan and the pytest gate",
         "unshare": "namespace wrapper around the pytest gate",
+        # Diagnostic only: the blob-reconcile step in frontend-coverage-merge
+        # always exits 0 and never changes a job verdict, so it is not a gate.
+        "node": "runs the diagnostic frontend-blob-reconcile step, which never gates",
     }
     tools = set(re.findall(r"(?m)^\s*run: ([a-z][a-z0-9_-]+) ", run_text))
     tool_missing = sorted(

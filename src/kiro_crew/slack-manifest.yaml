@@ -38,19 +38,33 @@ oauth_config:
       - commands
       - files:read
       - files:write
+      - groups:history
       - groups:read
       - im:history
       - im:read
       - im:write
       - reactions:write
+      - users:read
       # Optional: uncomment for custom workspace emojis in Secretary emoji picker
       # - emoji:read
+    user:
+      - channels:history
+      - channels:read
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - mpim:history
+      - mpim:read
+      - search:read
+      - users:read
 
 settings:
   event_subscriptions:
     bot_events:
       - message.im
       - message.channels
+      - message.groups
       - app_mention
       - app_home_opened
       - file_change

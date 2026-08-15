@@ -57,12 +57,22 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
 
 /* ── Select ── */
 
-/** Shared field wrapper: label + optional hint + optional description */
-function SettingsField({ label, description, hint, configKey, children }: { label: string; description?: string; hint?: string; configKey?: string; children: React.ReactNode }) {
+/** Shared field wrapper: label + optional hint + optional description.
+ *
+ * `controlId` is the id of the labelable control rendered inside `children`.
+ * When provided, the caption renders as `<label htmlFor>` so the visible text
+ * becomes the control's programmatic name (unlocking screen-reader
+ * announcement and `getByLabelText` in tests). Without it the caption stays a
+ * `<span>` — a `<label>` with a dangling `htmlFor`, or one wrapping a group of
+ * buttons (SettingsStepper / SettingsButtonGroup), would be wrong. Optional so
+ * the wrappers without a single labelable control keep compiling unchanged. */
+function SettingsField({ label, description, hint, configKey, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; controlId?: string; children: React.ReactNode }) {
   return (
     <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
-        <span className="text-[13px] font-semibold text-text">{label}</span>
+        {controlId
+          ? <label htmlFor={controlId} className="text-[13px] font-semibold text-text">{label}</label>
+          : <span className="text-[13px] font-semibold text-text">{label}</span>}
         {hint && <InfoTip text={hint} />}
       </div>
       {description && <div className="text-[12px] text-muted">{description}</div>}
@@ -88,9 +98,15 @@ interface SettingsSelectProps {
 }
 
 export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey }: SettingsSelectProps) {
+  // Per-instance id pairing the caption's htmlFor with the select trigger, so
+  // the visible caption is the control's programmatic label. The aria-label
+  // below stays as a fallback: it wins the accessible-name computation and
+  // carries the same string, so nothing double-announces.
+  const controlId = React.useId()
   return (
-    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} controlId={controlId}>
       <SimpleSelect
+        id={controlId}
         options={options}
         optionLabels={optionLabels}
         value={value}
@@ -113,6 +129,11 @@ interface SettingsInputProps {
   value: string
   onChange: (value: string) => void
   onBlur?: () => void
+  /** Key handler on the control itself. Needed by panels that commit on blur and
+   *  have no Save button (WeChat), where Enter must commit the value the way it
+   *  would in a form — a `<div>` wrapper cannot carry that without becoming an
+   *  interactive static element. */
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>
   placeholder?: string
   type?: 'text' | 'number'
   min?: number
@@ -125,14 +146,23 @@ interface SettingsInputProps {
   configKey?: string
 }
 
-export function SettingsInput({ label, description, hint, value, onChange, onBlur, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
+export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
+  // Per-instance id pairing the caption's htmlFor with the control. This is
+  // what gives the single-line branch an accessible name by DEFAULT: it used
+  // to render aria-label={ariaLabel} with ariaLabel undefined unless a caller
+  // duplicated the caption, leaving the input nameless to screen readers.
+  // An explicit aria-label still wins the name computation, so deliberate
+  // overrides keep working.
+  const controlId = React.useId()
   return (
-    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} controlId={controlId}>
       {multiline ? (
         <textarea
+          id={controlId}
           value={value}
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           disabled={disabled}
           rows={3}
@@ -141,10 +171,12 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
         />
       ) : (
         <Input
+          id={controlId}
           type={type}
           value={value}
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           min={min}
           max={max}
@@ -186,9 +218,34 @@ export function SettingsSection({ title, badge, children }: SettingsSectionProps
 
 /* ── Settings Card (thin wrapper around Card with vertical gap) ── */
 
-export function SettingsCard({ children }: { children: React.ReactNode }) {
+/**
+ * Delay step between successive settings cards' entrance animations, in ms.
+ * Matches the stat-tile stagger ladder on the Overview page (`delay={i * 60}`
+ * in `pages/OverviewPage.tsx`) so every Settings section rises with the same
+ * rhythm as Overview.
+ */
+export const SETTINGS_CARD_STAGGER_MS = 60
+
+export function SettingsCard({ index, children }: {
+  /**
+   * Ordinal of this card within its panel (0-based). Maps onto the shared
+   * entrance-stagger ladder: the card's `animate-rise` entrance is delayed by
+   * `index * SETTINGS_CARD_STAGGER_MS`. Omit (or pass 0) for the first card —
+   * it rises immediately, exactly as before this prop existed. Purely
+   * presentational; gaps in the sequence (from conditionally hidden cards)
+   * are harmless. Under `prefers-reduced-motion` the delay is zeroed by the
+   * `.animate-rise` rule in `index.css` (the global reduced-motion rule only
+   * zeroes duration, and `backwards` fill would otherwise hold the card
+   * invisible for its whole delay).
+   */
+  index?: number
+  children: React.ReactNode
+}) {
   return (
-    <div className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all">
+    <div
+      className="card-glow border border-border bg-card rounded-lg p-5 mb-4 animate-rise shadow-sm transition-all"
+      style={index ? { animationDelay: `${index * SETTINGS_CARD_STAGGER_MS}ms` } : undefined}
+    >
       <div className="flex flex-col gap-1">
         {children}
       </div>

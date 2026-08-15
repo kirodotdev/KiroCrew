@@ -75,6 +75,35 @@ _SUBPROCESS_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # child tree taskkill /T-reapable. Add DETACHED_PROCESS to the flags for a
 # fully detached, console-less child (e.g. the gateway respawn).
 
+# ── Desktop-app bundled interpreter detection ──
+#: Directory name the desktop build stages the bundled python-build-standalone
+#: runtime under (``Resources/backend-dist/…`` inside the app bundle). The
+#: authoritative spellings live in the packaging layer — electron-builder's
+#: ``extraResources`` mapping in ``website/electron/package.json`` and the
+#: staging steps in ``packaging/build-desktop.sh`` — and this constant MUST
+#: match them: ``test_platform_compat.py`` pins the two together so a packaging
+#: rename breaks a test instead of a runtime guarantee.
+BUNDLED_BACKEND_DIST_DIRNAME: str = "backend-dist"
+
+
+def is_bundled_interpreter() -> bool:
+    """Return True when this process runs on the desktop app's bundled interpreter.
+
+    Contract: the desktop build ships a python-build-standalone runtime inside
+    the application bundle, always under a ``backend-dist`` path component
+    (see :data:`BUNDLED_BACKEND_DIST_DIRNAME`). On macOS that bundle is
+    code-signed, so anything that would write into the interpreter's tree —
+    most notably ``pip install`` into its site-packages — invalidates the
+    signature and breaks subsequent launches/updates, and the write is
+    discarded on every app update anyway. Callers use this predicate to refuse
+    such writes loudly.
+
+    This is the ONE place the packaging layout's directory name is interpreted
+    at runtime; never re-inline the sentinel at a call site.
+    """
+    return BUNDLED_BACKEND_DIST_DIRNAME in Path(sys.executable).resolve().parts
+
+
 # ── macOS TCC-protected home subdirectories ──
 # macOS gates these home subdirectories behind TCC (Transparency, Consent and
 # Control). The FIRST read of any one of them by a given app triggers a modal
@@ -1032,6 +1061,142 @@ def trusted_system_bin(name: str) -> str | None:
     return None
 
 
+def trusted_system_path() -> str | None:
+    """A ``PATH`` value containing only the trusted system directories.
+
+    Pinning a spawned binary is not always enough: some launchers are shell
+    scripts that dispatch to helpers of their own through ``PATH``, and
+    ``xdg-open`` is the one that matters here — it reaches for ``gio``,
+    ``gvfs-open``, ``exo-open`` or ``kde-open``. Handing such a process the
+    gateway's inherited ``PATH`` would reopen at one remove exactly the hole
+    :func:`trusted_system_bin` closes, so callers replace ``PATH`` with this and
+    leave the rest of the environment alone (``DISPLAY``,
+    ``DBUS_SESSION_BUS_ADDRESS`` and ``XDG_*`` are what let a launcher reach the
+    running desktop session).
+
+    ``None`` on Windows, where helpers live beside their install rather than
+    being resolved from a colon-separated search path.
+    """
+
+    if IS_WINDOWS:
+        return None
+    return os.pathsep.join(_TRUSTED_SYSTEM_BIN_DIRS)
+
+
+def reveal_in_file_manager(target: str) -> bool:
+    """Show *target* in the host's file manager. ``True`` if a launcher started.
+
+    Off macOS the **containing folder** is opened, never the target itself, and
+    unconditionally so: ``explorer.exe <file>`` launches the file's *associated
+    application* — the execution sink this capability exists to avoid — and making
+    the rule structural means a caller handing over a request-derived path cannot
+    reach it, with no filesystem probe of that path needed to decide. It also
+    matches what this endpoint already did before the launcher moved here. macOS is
+    the exception that needs no derivation: ``open -R`` reveals its argument and
+    never opens it.
+
+    This lives beside :func:`trusted_system_bin` rather than in the dashboard
+    handler that wants it, because three separate rules meet on the ``Popen``
+    lines below and only this location satisfies all of them:
+
+    * The launcher must be an ABSOLUTE path, never a bare ``open`` / ``xdg-open``
+      argv name: a gateway's ``PATH`` can lead with an agent-writable directory,
+      so a bare name lets a planted shim run on a click the user initiated.
+    * Those absolute paths are POSIX path literals, which the cross-platform
+      portability gate rejects everywhere except this module — the module it
+      excludes precisely because such literals have to live somewhere.
+    * The command position must be a literal at the call site, with the
+      caller-supplied target as a later element of that same literal list.
+      Hoisting either into a variable makes the whole command line read as
+      user-controlled to the SAST passes.
+
+    A launcher that is absent (or present and refusing to run — AppLocker, a
+    revoked exec bit, an exhausted process table) returns ``False`` so the caller
+    can degrade rather than fail the request.
+    """
+
+    env = _reveal_env()
+    try:
+        if sys.platform == "darwin":
+            if not os.path.isfile("/usr/bin/open"):
+                return False
+            subprocess.Popen(["/usr/bin/open", "-R", target], env=env)
+            return True
+        # Everything else opens the CONTAINING FOLDER, never the target itself —
+        # `explorer.exe <file>` would launch the file's associated application, the
+        # execution sink this capability exists to avoid. Unconditional, so no
+        # filesystem probe of a caller-supplied path is needed to decide, and so a
+        # caller cannot reach the sink by handing over a file.
+        folder = os.path.dirname(target)
+        if not folder:
+            return False
+        if IS_WINDOWS:
+            # A literal, so the command position stays constant. The conventional
+            # location is not universal, so an image that keeps Windows elsewhere
+            # reads as "no file manager here" rather than spawning something else.
+            if not os.path.isfile(r"C:\Windows\explorer.exe"):
+                return False
+            subprocess.Popen([r"C:\Windows\explorer.exe", folder], env=env)
+            return True
+        if not os.path.isfile("/usr/bin/xdg-open"):
+            return False
+        subprocess.Popen(["/usr/bin/xdg-open", folder], env=env)
+        return True
+    except OSError:
+        logger.warning(
+            "file manager did not start for %s; caller should degrade", target,
+            exc_info=True)
+        return False
+
+
+def open_with_default_app(target: str) -> bool:
+    """Launch *target* with its associated application. ``True`` if it started.
+
+    Separate from :func:`reveal_in_file_manager` because it is the opposite
+    intent — this one deliberately RUNS what the path points at — and because
+    Windows is refused outright: there, launching by association is reached
+    through the shell rather than an argv the caller can inspect, and the path
+    typically arrives from a request. POSIX keeps it: ``open`` / ``xdg-open`` hand
+    the file to the desktop's handler without a shell in between.
+    """
+
+    if IS_WINDOWS:
+        return False
+    env = _reveal_env()
+    try:
+        if sys.platform == "darwin":
+            if not os.path.isfile("/usr/bin/open"):
+                return False
+            subprocess.Popen(["/usr/bin/open", target], env=env)
+            return True
+        if not os.path.isfile("/usr/bin/xdg-open"):
+            return False
+        subprocess.Popen(["/usr/bin/xdg-open", target], env=env)
+        return True
+    except OSError:
+        logger.warning(
+            "default application did not start for %s; caller should degrade",
+            target, exc_info=True)
+        return False
+
+
+def _reveal_env() -> dict[str, str]:
+    """The gateway environment with ``PATH`` pinned to trusted system directories.
+
+    Pinning the launcher binary is not enough on its own: ``xdg-open`` is a shell
+    script that dispatches to whichever helper it finds on ``PATH`` — ``gio``,
+    ``gvfs-open``, ``exo-open``, ``kde-open``. Only ``PATH`` is replaced, because
+    the rest of the environment is what lets a launcher reach the running desktop
+    session (``DISPLAY``, ``DBUS_SESSION_BUS_ADDRESS``, ``XDG_*``).
+    """
+
+    env = dict(os.environ)
+    pinned = trusted_system_path()
+    if pinned is not None:
+        env["PATH"] = pinned
+    return env
+
+
 def tool_outside_trusted_dirs(name: str) -> str | None:
     """Where ``PATH`` finds *name* when :func:`trusted_system_bin` declined it.
 
@@ -1744,7 +1909,7 @@ def process_owner_uid(pid: int) -> int | None:
     must decide what to do with ``None`` explicitly rather than assume a match.
 
     Used to confirm that a pid a client is about to trust belongs to the calling
-    user (see ``cli_server._gateway_owns_port``), which is what makes pid
+    user (see ``port_resolution._gateway_owns_port``), which is what makes pid
     recycling into a *foreign* user's process non-exploitable.
     """
     try:

@@ -13,7 +13,7 @@
  * localStorage, the panel opening on a tap and NOT on a drag, and the reactions the
  * session socket drives.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { waitFor, fireEvent } from '@testing-library/react'
 
 import { PENDING_PATH, PRESENCE_PATH } from '../apps/crew-companion/constants'
@@ -498,7 +498,25 @@ describe('pointer and keyboard on the companion', () => {
   })
 
   it('holds the panel open from the PRESS and releases it on mouseup', async () => {
+    /*
+     * The release path is a window-level `mouseup` listener registered in a
+     * passive effect (pet.tsx), while `mountPet` only awaits the DOM commit
+     * (`.cc-pet` present). Under CI load the one-shot `mouseUp` below could fire
+     * before React flushed that effect, the event was lost, and the final
+     * `waitFor` timed out (issue #2925). React flushes a commit's passive
+     * effects synchronously and without yielding, so once `waitFor` observes
+     * any `mouseup` registration from the mount commit, that whole pass — which
+     * includes the release listener (pet.tsx, alongside useDrag.ts and
+     * useMouseForward.ts) — has already run: a state-based wait, not a
+     * wall-clock one. An exact registration count cannot be asserted here
+     * because useMouseForward re-registers on its dep changes.
+     */
+    const addSpy = vi.spyOn(window, 'addEventListener')
+    onTestFinished(() => addSpy.mockRestore())
     await mountPet()
+    await waitFor(() =>
+      expect(addSpy.mock.calls.some(([type]) => type === 'mouseup')).toBe(true),
+    )
     fireEvent.mouseDown(petEl(), { clientX: 340, clientY: 240, button: 0 })
     expect(api.panelHold).toHaveBeenCalledWith(true)
     fireEvent.mouseUp(window)

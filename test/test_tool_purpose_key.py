@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.acp._dispatch import extract_tool_purpose, is_tool_purpose_key
-from kiro_crew.acp.types import TOOL_PURPOSE_KEYS
+from kiro_crew.acp._dispatch import extract_tool_purpose, is_tool_purpose_key, parse_session_update
+from kiro_crew.acp.types import EVENT_TOOL_CALL_UPDATE, TOOL_PURPOSE_KEYS
 
 
 @pytest.mark.parametrize("key", list(TOOL_PURPOSE_KEYS))
@@ -108,3 +108,75 @@ def test_non_string_keys_are_tolerated() -> None:
     """A JSON payload cannot produce them, but an internal caller could."""
     assert not is_tool_purpose_key(42)
     assert extract_tool_purpose({42: "nope", "__purpose": "yes"}) == "yes"
+
+
+# ── the purpose must survive the second-phase refinement ──
+
+
+def _refinement_events(update: dict) -> list:
+    """Dispatch a ``tool_call_update`` and return its refinement events."""
+    events = parse_session_update(update)
+    return [e for e in events if e.kind == EVENT_TOOL_CALL_UPDATE]
+
+
+def test_refinement_carries_the_purpose_from_its_raw_input() -> None:
+    """A refinement's ``rawInput`` is the COMPLETE params object, so it holds the
+    reserved argument. Dropping it here loses the purpose entirely on any backend
+    whose initial ``tool_call`` streams an empty ``rawInput``, and makes a
+    consumer that falls back on an empty purpose paint the raw command instead."""
+    (event,) = _refinement_events(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-1",
+            "title": "ls /tmp",
+            "kind": "execute",
+            "rawInput": {"command": "ls /tmp", "__tool_use_purpose": "List the temp dir"},
+        }
+    )
+    assert event.tool_purpose == "List the temp dir"
+
+
+def test_refinement_reads_a_paraphrased_spelling_too() -> None:
+    """Same shape match as the initial ``tool_call`` — one rule, both phases."""
+    (event,) = _refinement_events(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-2",
+            "rawInput": {"command": "gh pr view", "__woohoo_purpose": "Check the PR"},
+        }
+    )
+    assert event.tool_purpose == "Check the PR"
+
+
+def test_refinement_without_a_purpose_reports_empty() -> None:
+    """Consumers read an empty purpose as "keep what the initial tool_call
+    supplied", so a kind-only refinement must not invent one."""
+    (event,) = _refinement_events(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-3",
+            "kind": "execute",
+        }
+    )
+    assert event.tool_purpose == ""
+
+
+def test_refinement_purpose_is_redacted() -> None:
+    """LLM-influenced text reaching the dashboard is scrubbed on every path.
+
+    Asserts the value is POPULATED as well as scrubbed: an empty purpose would
+    satisfy a bare "no credential in it" check, so the presence of the line has
+    to be part of the failing condition."""
+    (event,) = _refinement_events(
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-4",
+            "rawInput": {
+                "command": "aws s3 ls",
+                "__tool_use_purpose": "Use AKIAIOSFODNN7EXAMPLE to list buckets",
+            },
+        }
+    )
+    assert event.tool_purpose.startswith("Use ")
+    assert event.tool_purpose.endswith("to list buckets")
+    assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_purpose

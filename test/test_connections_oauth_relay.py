@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
+from socket import SO_LINGER, SOL_SOCKET
 from unittest.mock import MagicMock
 
 import pytest
@@ -180,3 +182,164 @@ async def test_relay_sends_bracketed_ipv6_host_header(monkeypatch):
         await relay_client.close()
         callback_server.close()
         await callback_server.wait_closed()
+
+
+async def _post_relay(port: int) -> tuple[int, dict]:
+    """Drive the relay endpoint against a loopback port and return (status, body)."""
+    relay_app = web.Application()
+    relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    relay_client = TestClient(TestServer(relay_app))
+    await relay_client.start_server()
+    try:
+        response = await relay_client.post(
+            "/api/mcp/oauth/relay",
+            json={"server": "notion", "redirect_url": f"http://127.0.0.1:{port}/?code=one-time"},
+        )
+        return response.status, await response.json()
+    finally:
+        await relay_client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_port_nothing_is_bound_to_is_reported_as_an_expired_approval(monkeypatch):
+    """A refused dial means the code is unredeemable, not that the paste was wrong.
+
+    The loopback listener and the PKCE verifier are created by the process that
+    minted the authorize URL and die with it, so a port the kernel reports as
+    unbound proves the approval is spent. Answering with the delivery-failure
+    message sends the user back to re-paste an address that cannot ever work.
+    """
+    listener = await asyncio.start_server(lambda _r, _w: None, "127.0.0.1", 0)
+    port = int(listener.sockets[0].getsockname()[1])
+    listener.close()
+    await listener.wait_closed()
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+
+    status, body = await _post_relay(port)
+
+    assert status == 409
+    assert body["code"] == "approval_superseded"
+    audit.log_api_access.assert_called_once_with(
+        caller="dashboard",
+        operation="mcp_oauth_callback_relay",
+        outcome="denied",
+        resources="notion",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_listener_that_accepts_but_never_answers_stays_a_delivery_failure(monkeypatch):
+    """Accepting the connection proves the listener is there, so it is not expired.
+
+    Only a refused dial may reach the expired-approval verdict. A slow or wedged
+    listener that already accepted still holds the verifier, so calling its
+    approval spent would discard a redeemable one.
+    """
+    accepted: list[asyncio.StreamWriter] = []
+
+    async def accept_and_stall(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        accepted.append(writer)
+        await asyncio.Event().wait()
+
+    listener = await asyncio.start_server(accept_and_stall, "127.0.0.1", 0)
+    port = int(listener.sockets[0].getsockname()[1])
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+    # The read bound is what this exercises; shorten it so the test is not paced
+    # by the production 5s deadline.
+    real_wait_for = asyncio.wait_for
+
+    async def quick_wait_for(awaitable, timeout):  # type: ignore[no-untyped-def]
+        return await real_wait_for(awaitable, 0.25 if timeout == 5 else timeout)
+
+    monkeypatch.setattr(connections.asyncio, "wait_for", quick_wait_for)
+
+    try:
+        status, body = await _post_relay(port)
+    finally:
+        for writer in accepted:
+            writer.close()
+        listener.close()
+        await listener.wait_closed()
+
+    assert accepted, "the listener never accepted, so this is not the case under test"
+    assert status == 502
+    assert body["code"] == "oauth_callback_unreachable"
+    assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_listener_that_resets_mid_exchange_stays_a_delivery_failure(monkeypatch):
+    """A reset after accept is a transport failure against a listener that exists."""
+
+    async def accept_and_reset(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        socket = writer.get_extra_info("socket")
+        if socket is not None:
+            socket.setsockopt(SOL_SOCKET, SO_LINGER, struct.pack("ii", 1, 0))
+        writer.close()
+
+    listener = await asyncio.start_server(accept_and_reset, "127.0.0.1", 0)
+    port = int(listener.sockets[0].getsockname()[1])
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+
+    try:
+        status, body = await _post_relay(port)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+
+    assert status == 502
+    assert body["code"] == "oauth_callback_unreachable"
+    assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_non_http_responder_stays_a_delivery_failure(monkeypatch):
+    """Something answered, just not in HTTP — a live port, so not an expired approval."""
+
+    async def garble(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"NOT-HTTP hello\r\n")
+        await writer.drain()
+        writer.close()
+
+    listener = await asyncio.start_server(garble, "127.0.0.1", 0)
+    port = int(listener.sockets[0].getsockname()[1])
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+
+    try:
+        status, body = await _post_relay(port)
+    finally:
+        listener.close()
+        await listener.wait_closed()
+
+    assert status == 502
+    assert body["code"] == "oauth_callback_unreachable"
+    assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_live_listener_that_rejects_the_code_stays_a_delivery_failure(monkeypatch):
+    """A 4xx from the listener proves it is alive, so it keeps the 502 verdict."""
+
+    async def callback(_request: web.Request) -> web.Response:
+        return web.Response(status=400)
+
+    callback_app = web.Application()
+    callback_app.router.add_get("/", callback)
+    callback_server = TestServer(callback_app, host="127.0.0.1")
+    await callback_server.start_server()
+    audit = MagicMock()
+    monkeypatch.setattr(connections, "sel", lambda: audit)
+
+    try:
+        status, body = await _post_relay(int(callback_server.port or 0))
+    finally:
+        await callback_server.close()
+
+    assert status == 502
+    assert body["code"] == "oauth_callback_rejected"
+    assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"

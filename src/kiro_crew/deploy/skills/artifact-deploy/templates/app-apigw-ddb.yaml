@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   KiroCrew One-Click Deploy - per-app STATEFUL backend (API Gateway HTTP API ->
-  Lambda -> DynamoDB). Guardrail-safe (Lambda invoked only by API Gateway; no
-  world-accessible Function URL). The Lambda role is least-privilege: CloudWatch
-  Logs + CRUD on ONLY its own table. One stack per slug.
+  Lambda -> DynamoDB). The Lambda is invoked only by API Gateway (scoped resource
+  policy), never through a world-accessible Function URL. The Lambda role is
+  least-privilege: CloudWatch Logs + CRUD on ONLY its own table. One stack per
+  slug.
 
 Parameters:
   Slug:

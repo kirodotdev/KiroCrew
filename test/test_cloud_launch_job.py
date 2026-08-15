@@ -380,7 +380,6 @@ class TestRealEngineGatewayPort:
         monkeypatch.setattr(le.ec2, "deploy", lambda **kw: (
             seen.update(kw) or SimpleNamespace(instance_id="i-0abc")))
         monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
-        monkeypatch.setattr(le.source_mod, "find_repo_root", lambda: None)
         monkeypatch.setattr(
             le.connect_mod, "register_instance",
             lambda iid, **kw: seen.update({"reg": kw}) or "inst-1",
@@ -439,45 +438,46 @@ class TestRealEngineGatewayPort:
         assert seen["dashboard_port"] == 5600
 
 
-class TestRealEngineProvisionSourceMode:
-    """One-click setup must work from a wheel/app install. `source.repo_root()` fails
-    closed there by design (it must never tar up site-packages), so leaving
-    ship_source at its default made provisioning raise for every user who did not
-    install from git."""
+class TestRealEnginePreflight:
+    """The credentials gate that runs immediately before `provision`.
 
-    def _deploy_spy(self, monkeypatch):
+    `iam.reachability_check` reports failure in-band rather than raising, so a
+    preflight that only inspected `reachable` truthily — or that let an
+    unreachable account through — would surface as a confusing mid-provision
+    CloudFormation error instead of "your AWS credentials did not resolve".
+    """
+
+    def _engine(self, monkeypatch, reach):
         from kiro_crew.cloud import launch_engine as le
 
-        seen = {}
+        monkeypatch.setattr(le.iam, "reachability_check", lambda profile, region: reach)
+        return le.RealLaunchEngine()
 
-        def _fake_deploy(**kw):
-            seen.update(kw)
-            return SimpleNamespace(instance_id="i-0abc")
+    def test_a_reachable_account_passes(self, monkeypatch):
+        engine = self._engine(monkeypatch, {"reachable": True})
+        assert engine.preflight("default", "us-east-1") is None
 
-        monkeypatch.setattr(le.ec2, "deploy", _fake_deploy)
-        monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
-        return le, seen
+    def test_an_unreachable_account_raises_with_the_reported_detail(self, monkeypatch):
+        from kiro_crew.cloud.aws import AWSError
 
-    def test_without_a_checkout_it_clones_instead_of_failing(self, monkeypatch):
-        le, seen = self._deploy_spy(monkeypatch)
-        monkeypatch.setattr(le.source_mod, "find_repo_root", lambda: None)
-
-        got = le.RealLaunchEngine().provision(
-            tag="kc-1", size_key="balanced", profile="", region="us-east-1"
+        engine = self._engine(
+            monkeypatch, {"reachable": False, "detail": "ExpiredToken: session expired"}
         )
+        with pytest.raises(AWSError, match="ExpiredToken: session expired"):
+            engine.preflight("default", "us-east-1")
 
-        assert got == "i-0abc"
-        assert seen["ship_source"] is False
+    def test_it_falls_back_to_note_then_to_a_generic_reason(self, monkeypatch):
+        """`detail` is not guaranteed: the probe reports some failures as `note`,
+        and a bare `{"reachable": False}` must still name a cause."""
+        from kiro_crew.cloud.aws import AWSError
 
-    def test_with_a_checkout_it_still_ships_local_source(self, monkeypatch, tmp_path):
-        le, seen = self._deploy_spy(monkeypatch)
-        monkeypatch.setattr(le.source_mod, "find_repo_root", lambda: tmp_path)
+        engine = self._engine(monkeypatch, {"reachable": False, "note": "no such profile"})
+        with pytest.raises(AWSError, match="no such profile"):
+            engine.preflight("default", "us-east-1")
 
-        le.RealLaunchEngine().provision(
-            tag="kc-1", size_key="balanced", profile="", region="us-east-1"
-        )
-
-        assert seen["ship_source"] is True
+        engine = self._engine(monkeypatch, {"reachable": False})
+        with pytest.raises(AWSError, match="AWS credentials did not resolve"):
+            engine.preflight("default", "us-east-1")
 
 
 class TestRealEngineRegistration:

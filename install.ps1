@@ -1,11 +1,18 @@
 # ======================================================================
 #  KiroCrew — Windows setup (cloud mode)
 # ======================================================================
-#  KiroCrew's backend (kiro-cli) runs on macOS/Linux only, so on Windows
-#  KiroCrew runs on an EC2 Linux instance in YOUR OWN AWS account and this
-#  machine is the thin client. This script only ensures the client
-#  prerequisites — Python, the AWS CLI, and the SSM Session Manager plugin —
-#  then hands off to the Python launcher wizard (`kirocrew cloud launch`).
+#  This is the CLOUD path: Kiro Crew runs on an EC2 Linux instance in YOUR OWN
+#  AWS account and this machine is the thin client. Use it when you want the
+#  gateway always-on and off your laptop.
+#
+#  It is NOT the only Windows option. Kiro Crew also builds and runs natively
+#  on Windows from source (`.\make.ps1 build`, then `kirocrew gateway`) — see
+#  docs/guides/windows-install.md, which is the supported default and covers
+#  the per-feature limits.
+#
+#  This script only ensures the client prerequisites — Python, the AWS CLI,
+#  and the SSM Session Manager plugin — then hands off to the Python launcher
+#  wizard (`kirocrew cloud launch`).
 #
 #  It NEVER stores AWS credentials: the aws CLI resolves them from your
 #  configured profile/SSO.
@@ -47,6 +54,7 @@ function Ensure-WingetOrChoco {
 Write-Host ""
 Write-Host "  KiroCrew — Windows setup (cloud mode)" -ForegroundColor Magenta
 Write-Host "  Runs KiroCrew on your own AWS EC2; this PC is the client." -ForegroundColor DarkGray
+Write-Host "  For a native local install instead: .\make.ps1 build" -ForegroundColor DarkGray
 $arch = Get-RealArch
 Write-Info "Detected architecture: $arch"
 

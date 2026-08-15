@@ -8,6 +8,7 @@ import pytest
 
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.acp.runtime import AcpRuntimeDead
+from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import AcpEvent, AcpPromptStats
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
@@ -37,12 +38,17 @@ def _make_handle(
     return handle
 
 
-def _make_runtime(alive: bool = True) -> MagicMock:
-    """Create a mock AcpRuntime."""
+def _make_runtime(alive: bool = True, acp_backend: str = "") -> MagicMock:
+    """Create a mock AcpRuntime.
+
+    ``acp_backend`` mirrors the real constructor's default (kiro), because the
+    provider's ``backend`` delegates to it rather than returning a constant.
+    """
     runtime = MagicMock()
     runtime.is_alive.return_value = alive
     runtime._process = MagicMock(returncode=None if alive else 1)
     runtime._last_activity = 0.0
+    runtime.acp_backend = acp_backend
     return runtime
 
 
@@ -413,11 +419,24 @@ class TestAcpSessionProviderClientCompat:
     """Tests for the AcpClient-compatible API surface."""
 
     def test_backend_is_empty_for_kiro(self):
-        """backend property returns empty string (kiro, not claude)."""
+        """backend reports empty string for a kiro runtime (not claude)."""
         handle = _make_handle()
         runtime = _make_runtime()
         provider = AcpSessionProvider(handle, runtime)
         assert provider.backend == ""
+
+    def test_backend_reports_the_runtimes_backend(self):
+        """Delegated, not constant.
+
+        This provider replaces the placeholder AcpClient on
+        ``AcpProvider._client`` once startup finishes, so it is the only place
+        a started provider's backend can still be read. Returning kiro
+        unconditionally would persist every KAS session under the kiro label.
+        """
+        handle = _make_handle()
+        runtime = _make_runtime(acp_backend="kas")
+        provider = AcpSessionProvider(handle, runtime)
+        assert provider.backend == "kas"
 
     def test_has_active_turn(self):
         """has_active_turn is a METHOD (parity with AcpClient) delegating to
@@ -651,6 +670,42 @@ class TestAcpSessionProviderRound4Parity:
         assert provider._session_key == "dashboard:slot9"
         assert provider._channel_id == "chan-7"
         assert runtime._last_activity > 0.0
+
+    def test_rekey_rebinds_watchdog_to_claiming_crew(self):
+        """The claiming session's canonical crew identity travels with the
+        claim: rekey rebinds the live handle's watchdog snapshot AND updates
+        the runtime default so later sessions (new_conversation) inherit the
+        claimed crew, not the pool's spawn state."""
+        handle = _make_handle()
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+        wd = WatchdogSettings(tool_stall_suspect_secs=123.0)
+        provider.rekey("dashboard:slot9", "chan-7", crew_agent="pr-reviewer", watchdog=wd)
+        handle.rebind_watchdog.assert_called_once_with("pr-reviewer", settings=wd)
+        assert runtime._crew_agent == "pr-reviewer"
+        # An identity-less claim still rebinds (to the globals): a recycled
+        # runtime must not carry a previous crew's windows. Without a
+        # pre-resolved snapshot the rebind loads synchronously (settings=None).
+        provider.rekey("dashboard:slot3", None)
+        handle.rebind_watchdog.assert_called_with("", settings=None)
+        assert runtime._crew_agent == ""
+
+    def test_rekey_resets_context_state(self):
+        """#2932 -- the handoff must drop the previous session's context state
+        (mirror of AcpClient.rekey): _make_handle seeds pct=42/5000/200000, so
+        a leak here would hand those numbers to the claiming session and let
+        check_context_usage compact its empty conversation."""
+        handle = _make_handle()
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+        assert handle.last_prompt_stats.context_pct == 42.0  # seeded stale state
+        provider.rekey("dashboard:slot9", "chan-7")
+        stats = handle.last_prompt_stats
+        assert stats.context_pct == 0.0
+        assert stats.context_used_tokens == 0
+        assert stats.context_window_tokens == 0
+        assert stats.context_tokens_from_usage is False
+        assert stats.context_pct_unknown is False
 
     def test_agent_reads_from_runtime(self):
         """#5 -- session.py session-info introspection reads

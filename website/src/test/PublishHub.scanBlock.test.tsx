@@ -89,6 +89,10 @@ describe('PublishHub 409 scan-blocked flow', () => {
     })
 
     fireEvent.click(screen.getByText('Override & Publish Anyway'))
+    // #3599: the commit now happens through the blocking acknowledgment.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
 
     await waitFor(() => {
       expect(screen.getByText('Published!')).toBeDefined()
@@ -245,6 +249,10 @@ describe('PublishHub ttl_hours payload (F3 R11)', () => {
     })
 
     fireEvent.click(screen.getByText('Confirm & Publish'))
+    // #3599: the commit now happens through the blocking acknowledgment.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
 
     await waitFor(() => {
       expect(screen.getByText('Published!')).toBeDefined()

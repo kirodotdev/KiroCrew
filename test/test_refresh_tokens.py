@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -516,6 +517,39 @@ def test_tr_u_17_persistence_file_mode_0600(tmp_path: Path):
     )
     # Mode is 0o600 (owner read+write only)
     assert state_file.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="injects the failure via platform_compat.os.chmod, which only "
+    "restrict_to_owner's POSIX branch calls (Windows shells out to icacls)",
+)
+def test_a_failed_lockdown_still_persists_the_reuse_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A lockdown failure must not cost us the consumed-jti record.
+
+    _persist passes restrict_on_error="warn" deliberately. Letting the OSError
+    propagate would hit _persist's own outer OSError handler, which logs and
+    returns WITHOUT writing -- so a read-only filesystem would silently drop the
+    record and reuse detection would fail to fire for that jti after a restart
+    (RFC-6819 5.2.2.3). A state file another local user can read is the lesser
+    harm, so the write proceeds and warns.
+    """
+    state_file = tmp_path / "rt.json"
+    mgr = RefreshStateManager(state_path=state_file)
+
+    def _boom(*a, **kw):
+        raise OSError("chmod denied (read-only filesystem)")
+
+    monkeypatch.setattr("kiro_crew.platform_compat.os.chmod", _boom)
+    mgr.mark_consumed(
+        "jti1", chain_id="c1", exp=time.time() + 86400, ip="1.2.3.4", replacement="{}"
+    )
+
+    # Published despite the failed lockdown, and the record survives a reload.
+    assert state_file.exists()
+    assert RefreshStateManager(state_path=state_file).is_consumed("jti1") is True
 
 
 def test_tr_i_17_corrupted_state_file_starts_empty(tmp_path: Path):

@@ -185,7 +185,7 @@ class TestWorkspaceDispatch:
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
-            unittest.mock.patch("kiro_crew.cli._handle_workspace") as mock_handler,
+            unittest.mock.patch("kiro_crew.cli_commands._handle_workspace") as mock_handler,
         ):
             main()
         mock_handler.assert_called_once()

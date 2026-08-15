@@ -2255,7 +2255,9 @@ class TestTheInvokeCallIsNeverProxied:
             for key in self.PROXY_ENV_KEYS:
                 monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
-            monkeypatch.setattr(mcp_computer, "_API", f"http://127.0.0.1:{gateway_port}")
+            monkeypatch.setattr(
+                mcp_computer, "_api_base", lambda: f"http://127.0.0.1:{gateway_port}"
+            )
             monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: self.CANARY)
 
             decoded = mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})
@@ -2287,7 +2289,9 @@ class TestTheInvokeCallIsNeverProxied:
                 monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
             monkeypatch.setenv("no_proxy", "localhost")
-            monkeypatch.setattr(mcp_computer, "_API", f"http://127.0.0.1:{gateway_port}")
+            monkeypatch.setattr(
+                mcp_computer, "_api_base", lambda: f"http://127.0.0.1:{gateway_port}"
+            )
             monkeypatch.setattr(mcp_computer, "_internal_secret", lambda: self.CANARY)
 
             mcp_computer._invoke("dashboard:main", TOOL_LIST_APPS, {})

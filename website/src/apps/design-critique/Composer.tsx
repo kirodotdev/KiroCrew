@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
 import { Upload, Plus, X, ChevronLeft, ChevronRight, PencilRuler } from 'lucide-react'
-import { KIND_LABEL } from './constants'
+import { KIND_LABEL, kindLabel } from './constants'
 import { detectKind, recognise } from './utils'
 import { S } from './styles'
 import type { Blocked, StagedItem } from './types'
@@ -36,8 +36,8 @@ export default function Composer(p: Props) {
   const canStart = !busy && (staged.length > 0 || !!refText.trim())
   const det = detectKind(refText)
   const startLabel = staged.length > 1
-    ? 'Critique this flow · ' + staged.length + ' screens'
-    : staged.length === 1 ? 'Critique this screen'
+    ? i18nT('apps.designCritique.composer.critique_this_flow_count_screens', { count: staged.length })
+    : staged.length === 1 ? i18nT('apps.designCritique.composer.critique_this_screen')
     : refText.trim() ? 'Critique ' + (KIND_LABEL[(det || {}).kind as string] || 'this') : 'Critique'
 
   // What did they paste? Worked out live so we can say it back before they commit.
@@ -140,9 +140,9 @@ export default function Composer(p: Props) {
         </button>
         {recog ? (
           <p style={{ ...S.cardHint, color: recog.ok ? 'var(--muted)' : 'var(--error, #e5484d)' }}>
-            <b style={{ color: recog.ok ? 'var(--text)' : 'inherit' }}>{recog.ok ? (KIND_LABEL[(det || {}).kind as string] || '') : 'Unrecognised'}</b>
+            <b style={{ color: recog.ok ? 'var(--text)' : 'inherit' }}>{recog.ok ? kindLabel((det || {}).kind as string) : i18nT('apps.designCritique.composer.unrecognised')}</b>
             {recog.ok ? ' · ' : ' — '}
-            {recog.text.replace(/^[^—]*— /, '')}
+            {recog.text}
           </p>
         ) : null}
         <p style={S.cardHint}>{recog

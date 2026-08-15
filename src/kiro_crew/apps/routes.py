@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import yarl
 from aiohttp import web
 
 from kiro_crew.apps.backend import (
@@ -32,6 +33,7 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
 )
 from kiro_crew.apps.bridges import (
+    RegistrationResult,
     deregister_app,
     deregister_app_crons_from_service,
     register_app,
@@ -70,6 +72,7 @@ from kiro_crew.apps.manager import (
     update_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
+from kiro_crew.apps.official_editorial import load_category_order, load_sections
 from kiro_crew.apps.registry import (
     _git_url_host,
     get_registry_app_by_repo,
@@ -87,6 +90,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 from kiro_crew.sel import sel
 
@@ -196,7 +200,10 @@ async def _notify_builtin_service(request: web.Request, name: str) -> str | None
 
 async def handle_list_apps(request: web.Request) -> web.Response:
     """GET /api/apps — list all installed apps."""
-    apps = list_apps()
+    # list_apps() walks the apps dir and reads two files per installed app, and
+    # this endpoint re-runs it on every dashboard refresh — so the walk goes off
+    # the loop (its cost scales with installed app count).
+    apps = await asyncio.to_thread(list_apps)
     # Enrich with backend process status
     procs = {p["app_name"]: p for p in list_app_processes()}
     for app in apps:
@@ -303,9 +310,87 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     Returns enabled apps' publish providers plus the core deploy provider (folded
     from the former deploy_web app), each with a ``configured`` flag. Built-in
     providers (the internal registry) are registered frontend-side and are not returned here.
+
+    The core deploy row is omitted when EITHER control closes the public-web
+    path, and the two are independent:
+
+    * the platform's ``external_access`` policy withholds cloud deployment; or
+    * the publish-governance chokepoint denies its destination id (governance
+      ceiling ∩ ``publish.allowed_destinations``), so an operator who has closed
+      the path never sees the button.
+
+    Because this list is what the Publish panel renders, that single omission is
+    also what makes the panel correct — a deployment that registers only an
+    internal destination shows only that one, with no frontend change. Omission is
+    presentation only: ``/api/deploy/deploy`` consults the same chokepoint itself,
+    because a filtered list is not a control.
+
+    On EITHER closed path, rows carrying ``DEPLOY_WEB_PROVIDER_ID`` are dropped
+    from the app-declared list too — the platform withhold and the governance
+    denial share one closed path for exactly this reason.
+    ``collect_publish_providers`` validates
+    a declared *endpoint* (it must sit under the app's own namespace) but not the
+    declared *id*, so an enabled app may publish a row under the core
+    destination's id — and ``PublishHub`` routes a click at
+    ``selected.app.endpoint``, which this chokepoint does not cover. Serving that
+    row after the operator closed the destination would hand back the path they
+    closed.
+
+    On the PERMITTED path such a row is left alone. An app shadowing this id is
+    pre-existing, reachable behaviour that ``test_publish_providers`` documents
+    (its fixture app declares this very id and the test asserts the APP's endpoint
+    is the one resolved for it, first-match order). Whether the core provider
+    should own the id outright is a behaviour change worth making on its own
+    merits, not a side effect of closing a denial hole.
     """
-    providers = collect_publish_providers(list_apps())
-    # Core deploy provider (always present, regardless of any app install state)
+    # Both the apps-dir walk (list_apps) and the per-provider configured-state
+    # probe (_provider_is_configured reads each app's persisted config file)
+    # touch disk, so the whole collection runs off the loop — same shape as the
+    # deploy registry read below.
+    providers = await asyncio.to_thread(lambda: collect_publish_providers(list_apps()))
+    # Two independent controls can close this destination, and BOTH must land on
+    # the same closed path — an early return for one of them is how a closed
+    # destination stays reachable (an app-declared row carrying the core id
+    # publishes at its OWN endpoint, which this chokepoint does not cover).
+    # circular import: apps.routes is imported by the dashboard handler layer, so
+    # reaching back into it must be a function-local downward import.
+    from kiro_crew.dashboard.handlers._shared import admits_cloud_deployment
+
+    # Gate 1 — platform: advertising a destination whose every mutating route
+    # refuses is worse than not advertising it. In a worker thread with the
+    # registry read below: the admission path can initialize the SEL audit log,
+    # which shells out on a fresh Windows gateway.
+    admits_cloud = await asyncio.to_thread(admits_cloud_deployment, "aws")
+
+    # Gate 2 — operator: governance ceiling ∩ publish.allowed_destinations. Only
+    # consulted when gate 1 admits, because the row is dropped either way and this
+    # one reads policy + config off disk. A PlatformCompositionError propagates —
+    # fail-closed CPP, same as every other publish surface.
+    deploy_denied = None
+    if admits_cloud:
+        deploy_denied = await asyncio.to_thread(
+            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+        )
+
+    if not admits_cloud or deploy_denied:
+        reason = deploy_denied or "the platform withholds cloud deployment"
+        logger.info(
+            "publish provider %r omitted from the registry: %s",
+            DEPLOY_WEB_PROVIDER_ID,
+            reason,
+        )
+        for squatter in [p for p in providers if p.get("id") == DEPLOY_WEB_PROVIDER_ID]:
+            logger.warning(
+                "app %r declares the closed publish destination id %r — dropping its "
+                "row too, or the operator's shutdown would be undone by an install",
+                squatter.get("app", "?"),
+                DEPLOY_WEB_PROVIDER_ID,
+            )
+        return web.json_response({
+            "providers": [
+                p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID
+            ],
+        })
     try:
         from kiro_crew.deploy import profiles as _deploy_profiles
 
@@ -316,7 +401,7 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
         configured = False
     providers.append(
         {
-            "id": "deploy-web-aws",
+            "id": DEPLOY_WEB_PROVIDER_ID,
             "label": "Publish to public web (your AWS)",
             "icon": "Globe",
             "endpoint": "/api/deploy/deploy",
@@ -373,6 +458,29 @@ async def _start_backend_after_install(name: str) -> None:
         logger.warning("Backend auto-start after install failed for app %s", name, exc_info=True)
 
 
+async def _register_app_off_loop(name: str) -> RegistrationResult:
+    """Run ``register_app`` on the subprocess executor, off the event loop.
+
+    ``register_app`` / ``deregister_app`` do real filesystem work under
+    ``KIROCREW_HOME`` — manifest reads, skill-dir symlink walks, agent JSON
+    writes, and ``mcp.json`` read + atomic write.  On a stalled filesystem
+    (e.g. a dead network mount) those calls block in the kernel; run on the
+    loop they freeze every task including the liveness heartbeat until the
+    stall watchdog kills the gateway.  Same offload pattern as ``install_app``
+    and ``start_app_backend`` on these handlers.
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), register_app, name
+    )
+
+
+async def _deregister_app_off_loop(name: str) -> RegistrationResult:
+    """Run ``deregister_app`` off the event loop (see ``_register_app_off_loop``)."""
+    return await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), deregister_app, name
+    )
+
+
 async def handle_install_app(request: web.Request) -> web.Response:
     """POST /api/apps/install — install an app from a local path."""
     try:
@@ -426,7 +534,7 @@ async def handle_install_app(request: web.Request) -> web.Response:
         invalidate_app_secret_cache(result.name)
 
         # Auto-register resources
-        reg = register_app(result.name)
+        reg = await _register_app_off_loop(result.name)
         # Spawn the backend now so the app is reachable without a gateway reboot
         # (see _start_backend_after_install). No-op for backend-less apps.
         await _start_backend_after_install(result.name)
@@ -485,12 +593,12 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 )
                 return web.json_response(reg_install, status=400)
             # Install succeeded — now safe to swap resources
-            deregister_app(name)
+            await _deregister_app_off_loop(name)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
             if info.get("enabled"):
-                reg_result = register_app(name)
+                reg_result = await _register_app_off_loop(name)
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
@@ -513,7 +621,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
     # (The registry branch above locks inside install_from_registry.)
     async with app_lifecycle_lock(name):
         # Deregister old resources before update
-        deregister_app(name)
+        await _deregister_app_off_loop(name)
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), stop_app_backend, name
         )
@@ -526,7 +634,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         )
         if not up_result.ok:
             # Re-register old resources on failure
-            register_app(name)
+            await _register_app_off_loop(name)
             if info.get("enabled"):
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
@@ -543,7 +651,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # Re-register with new manifest if app was enabled
         up_reg = None
         if info.get("enabled"):
-            up_reg = register_app(name)
+            up_reg = await _register_app_off_loop(name)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
@@ -732,29 +840,28 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     except Exception:
         pass
 
-    # Per-app lifecycle lock, WIDENED to wrap the ENTIRE uninstall sequence:
+    # Per-app lifecycle lock, wrapping the ENTIRE uninstall sequence:
     # cron-cleanup precondition → onUninstall script → backend stop →
-    # deregistration → dependency cleanup → file removal. Previously the lock
-    # was taken only AFTER the onUninstall script had already run. It is now
-    # taken FIRST, deliberately, because:
+    # deregistration → dependency cleanup → file removal. The lock is taken
+    # FIRST, deliberately, because:
     #   (a) the cron-cleanup precondition below must be able to abort BEFORE
     #       any destructive action (see its comment), which requires it — and
     #       therefore the lock — to precede the onUninstall script; and
     #   (b) the onUninstall script may itself be destructive (it can wipe app
     #       data), so holding the lock across it stops a racing enable/update
     #       of the same app from starting a backend mid-teardown.
-    # Cost: a concurrent same-app lifecycle op now waits up to the onUninstall
+    # Cost: a concurrent same-app lifecycle op waits up to the onUninstall
     # timeout — acceptable, since those ops genuinely conflict and the lock is
     # per-app (other apps are unaffected).
     async with app_lifecycle_lock(name):
         # Step 0: the execution grant must be removable before anything is
         # destroyed. A grant is keyed on the app NAME alone, so one left behind
         # admits a DIFFERENT app later installed under this name — code execution
-        # with no consent prompt. That check used to live inside uninstall_app
-        # (Step 5), which made it unreachable as an abort: by then the cron
-        # manifest, the onUninstall script, the backend and the dependencies had
-        # all already been torn down, so the refusal stranded a half-removed app
-        # and every retry re-ran the non-idempotent script. Asking here keeps the
+        # with no consent prompt. Checking it inside uninstall_app (Step 5)
+        # instead would make it unreachable as an abort: by then the cron
+        # manifest, the onUninstall script, the backend and the dependencies have
+        # all already been torn down, so the refusal strands a half-removed app
+        # and every retry re-runs the non-idempotent script. Asking here keeps the
         # refusal free and the retry safe, exactly like the cron precondition.
         # Offloaded: the precondition reads config.json and config.local.json from
         # disk, and this is an async handler — the same reason `uninstall_app` below
@@ -899,7 +1006,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
-            deregister_app(name)
+            await _deregister_app_off_loop(name)
 
         # Step 4: Clean dependencies (atomic classify + ledger update)
         cleaned_deps: list[str] = []
@@ -1070,7 +1177,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
 
         # Register resources if gateway-managed
         if resources == "gateway":
-            reg = register_app(name)
+            reg = await _register_app_off_loop(name)
             backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
@@ -1138,7 +1245,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                     await asyncio.get_running_loop().run_in_executor(
                         subprocess_executor(), stop_app_backend, name
                     )
-                    deregister_app(name)
+                    await _deregister_app_off_loop(name)
                 disable_app(name)
                 sel().log_api_access(
                     caller="dashboard",
@@ -1241,11 +1348,11 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     # resources — must not interleave with a concurrent install/update/
     # uninstall/enable of the same app.
     async with app_lifecycle_lock(name):
-        # `onDisable` is NOT run here any more: it moved INTO
-        # `teardown_app_runtime` below, so that revoking an app's execution grant
-        # runs it too. It used to be handler-only, which made revoke weaker than
-        # disable — see the ordering rationale in apps/teardown.py. Running it here
-        # as well would run the app's script twice per disable.
+        # `onDisable` is NOT run here: it runs inside `teardown_app_runtime`
+        # below, so that revoking an app's execution grant runs it too. Keeping it
+        # handler-only would make revoke weaker than disable — see the ordering
+        # rationale in apps/teardown.py. Running it here as well would run the
+        # app's script twice per disable.
         #
         # Invoke Python lifecycle hooks, stop the backend PROCESS, and deregister
         # resources through the ONE shared teardown that revoking an app's
@@ -1280,8 +1387,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         module_name = name.replace("-", "_")
         if module_name in BUILTIN_NAMES:
             try:
-                mod = importlib.import_module(
-                    f"kiro_crew.apps.builtins.{module_name}")
+                mod = importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):
                     mod.on_disable(request.app)
             except Exception as exc:
@@ -1407,10 +1513,27 @@ async def handle_open_app(request: web.Request) -> web.Response:
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
     apps = await list_registry()
+    # Published rail order and layout ride along on the response the store already
+    # makes, rather than endpoints the page would have to wait on separately. Off
+    # the event loop: the first call after a cache expiry does network I/O. Both
+    # are presentation, so a failure degrades to the client's own defaults and
+    # must never 500 the store -- the same contract the catalog annotation keeps.
+    try:
+        category_order = await asyncio.to_thread(load_category_order)
+    except Exception:  # noqa: BLE001 - presentation is never worth a failed store
+        logger.warning("ignoring the editorial category order", exc_info=True)
+        category_order = []
+    try:
+        sections = await asyncio.to_thread(load_sections)
+    except Exception:  # noqa: BLE001 - same contract as the order above
+        logger.warning("ignoring the editorial sections", exc_info=True)
+        sections = []
     return web.json_response(
         {
             "apps": apps,
             "serverPlatform": get_server_platform(),
+            "categoryOrder": category_order,
+            "editorialSections": sections,
         }
     )
 
@@ -1464,7 +1587,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             return web.json_response(result, status=400)
 
         # Auto-register resources
-        reg = register_app(result["name"])
+        reg = await _register_app_off_loop(result["name"])
         # Spawn the backend now so apps with a server are reachable immediately —
         # without this the backend only starts on the next gateway reboot (via
         # start_enabled_app_backends), leaving the app's UI with "no reachable
@@ -1557,7 +1680,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         async with app_lifecycle_lock(name):
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                reg = register_app(r["name"])
+                reg = await _register_app_off_loop(r["name"])
                 # Spawn the backend immediately (see handle_registry_install) so
                 # the app is reachable without a gateway reboot. No-op for
                 # backend-less apps.
@@ -1756,8 +1879,8 @@ async def handle_app_ui_file(request: web.Request) -> web.Response:
     # revalidate each load. FileResponse answers conditional requests
     # (If-Modified-Since / If-None-Match from its Last-Modified/ETag) with a
     # body-less 304, so unchanged files stay cheap while app updates are picked
-    # up on a plain refresh. The previous public,max-age=3600 served every
-    # app's UI stale for up to an hour after an update.
+    # up on a plain refresh. A long ``public,max-age=...`` instead would serve an
+    # app's UI stale for that whole window after an update.
     from kiro_crew.apps.dev_mode import is_dev_mode_cached
 
     cache = "no-store" if is_dev_mode_cached(name) else "no-cache"
@@ -2298,13 +2421,15 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=502,
         )
 
-    # Build target URL — preserve the `/api/` prefix from the route so the
-    # backend sees its own `/api/...` routes without needing any path-
-    # rewriting middleware.  The route captures `path` after `/api/`, so we
-    # explicitly re-add `/api/` here.
-    target = f"{backend_url}/api/{path}"
-    if request.query_string:
-        target += f"?{request.query_string}"
+    # Build target URL — preserve the exact wire encoding of path and query
+    # params so the gateway's HMAC signature matches what the backend sees on
+    # self.path. `request.query_string` is DECODED by aiohttp, so signing it causes
+    # HMAC verification to fail closed (401) whenever query parameters contain
+    # percent-encodable characters like spaces, non-ASCII, or '+'.
+    raw_qs = request.rel_url.raw_query_string
+    target_path = f"/api/{path}" + (f"?{raw_qs}" if raw_qs else "")
+    target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
+    wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
     headers: dict[str, str] = {}
@@ -2331,10 +2456,7 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             )
         ts = str(int(time.time()))
         body_hash = hashlib.sha256(body or b"").hexdigest()
-        msg = f"{ts}:{request.method}:/api/{path}"
-        if request.query_string:
-            msg += f"?{request.query_string}"
-        msg += f":{body_hash}"
+        msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
         sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
         headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
     except OSError as exc:
@@ -2353,7 +2475,7 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         try:
             async with session.request(
                 method=request.method,
-                url=target,
+                url=target_url,
                 headers=headers,
                 data=body,
                 timeout=timeout,

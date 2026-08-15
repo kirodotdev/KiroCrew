@@ -80,7 +80,7 @@ class TestScaffold:
 
         import argparse
 
-        from kiro_crew.cli import _handle_app
+        from kiro_crew.cli_commands import _handle_app
         ns = argparse.Namespace(app_action="init", name="cli-scaffolded", dir=str(tmp_path), backend=False)
         _handle_app(ns)
         captured = capsys.readouterr()

@@ -63,6 +63,8 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_reasoning_effort,
     api_chat_slot_resume,
     api_chat_slot_stop,
+    api_chat_slot_summary,
+    api_chat_slot_summary_generate,
     api_chat_slot_workspace,
     api_chat_slots,
     api_chat_slots_cleanup,
@@ -72,6 +74,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,
     api_chat_slot_mirror_link,
+    api_chat_slot_mirror_pause,
     api_chat_slot_mirror_unlink,
 )
 from kiro_crew.dashboard.chat_nav import (  # noqa: F401
@@ -116,6 +119,7 @@ from kiro_crew.dashboard.chat_runner import (  # noqa: F401
 from kiro_crew.dashboard.chat_slack import (  # noqa: F401
     api_chat_slot_handoff,
     api_chat_slot_slack_link,
+    api_chat_slot_slack_pause,
     api_chat_slot_slack_unlink,
     api_handoff_channels,
     api_slack_channels,

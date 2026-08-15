@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
+    CAPABILITY,
     MODE_ALLOW,
     MODE_DENY,
     SCOPE_CATALOG,
@@ -1414,3 +1415,142 @@ class TestPolicyShowReporting:
     def test_show_no_policy_unchanged(self, capsys):
         out = self._show(capsys, None)
         assert "No enterprise security policy is active" in out
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Capability omission — the settled contract
+# ──────────────────────────────────────────────────────────────────────────
+def _capability_scopes() -> list[str]:
+    return [name for name, spec in SCOPE_CATALOG.items() if spec.kind == CAPABILITY]
+
+
+class TestCapabilityOmissionIsUngoverned:
+    """An unnamed capability is UNGOVERNED and therefore PERMITTED. On purpose.
+
+    This class exists because the opposite is an inviting mistake. Several
+    ``SCOPE_CATALOG`` comments once described ``capability_default`` as applying
+    when a policy "governs ``capabilities.*`` but omits" a row, which does not
+    match the code. The tempting fix is to make the code match the comments by
+    filling unnamed rows with their registered defaults.
+
+    That fix was implemented, measured, and rejected. Three reasons, recorded here
+    so the next person does not repeat it:
+
+    1. It breaks the model's central invariant. Omission means
+       ungoverned-and-permitted for `mcp`, `tools`, `commands`, `filesystem.*` and
+       `network.egress`; making `capabilities` the one archetype that infers a
+       value is a per-control special case in an evaluator whose stated contract
+       is that it dispatches on archetype and never on scope name.
+    2. It requires a namespace-specific branch in ``_parse_controls``, whose
+       documented contract is that a newly ``register_scope``'d family parses with
+       NO loader edit. A companion's own capability family would not get the same
+       treatment, so the behaviour would not even be uniform.
+    3. It destroys an audit signal. ``Decision.layer == "default"`` means "nothing
+       governed this", which is what operators are told to alert on to find
+       missing controls. A row filled from a catalog default resolves at
+       ``layer="policy"`` and so becomes indistinguishable from one a human
+       actually wrote.
+
+    The real defect was documentation, and the protection is
+    ``kirocrew policy validate`` reporting a partially-governed block.
+    """
+
+    def test_unnamed_capability_is_permitted_and_reads_as_ungoverned(self):
+        ceiling = parse_policy(_policy_body(capabilities={"script_hooks": {"enabled": False}}))
+        for scope in _capability_scopes():
+            if scope == "capabilities.script_hooks":
+                continue
+            decision = resolve(ceiling, None, scope, "")
+            assert decision.permitted, f"{scope} must be permitted by omission"
+            # Load-bearing: `default` is the audit signal for "nobody governed
+            # this". A filled-in row would report `policy` and hide the gap.
+            assert decision.layer == "default", f"{scope} must read as ungoverned"
+
+    def test_named_row_is_still_governed(self):
+        ceiling = parse_policy(_policy_body(capabilities={"script_hooks": {"enabled": False}}))
+        decision = resolve(ceiling, None, "capabilities.script_hooks", "")
+        assert not decision.permitted
+        assert decision.layer == "policy"
+
+    def test_omission_behaves_identically_across_archetypes(self):
+        """The consistency argument, asserted rather than assumed."""
+        ceiling = parse_policy(_policy_body(capabilities={"cron": {"enabled": False}}))
+        for scope, item in (
+            ("mcp", "@anything/tool"),
+            ("tools", "anything"),
+            ("commands", "echo hi"),
+            ("filesystem.read", "/etc/hosts"),
+            ("network.egress", "example.com"),
+            ("capabilities.messaging", ""),
+        ):
+            decision = resolve(ceiling, None, scope, item)
+            assert decision.permitted, f"unnamed {scope} must permit"
+            assert decision.layer == "default", f"unnamed {scope} must read as ungoverned"
+
+    def test_no_capabilities_block_leaves_every_capability_ungoverned(self):
+        ceiling = parse_policy(_policy_body(commands={"mode": MODE_DENY, "deny": ["nc *"]}))
+        for scope in _capability_scopes():
+            assert resolve(ceiling, None, scope, "").permitted
+
+    def test_present_key_without_enabled_uses_the_registered_default(self):
+        """The case ``capability_default`` DOES cover — and the only one.
+
+        Naming a capability to configure its inner scopes, without saying whether
+        it is on, resolves to the registered default: off for the exfil surfaces,
+        on for the benign ones.
+        """
+        ceiling = parse_policy(
+            _policy_body(
+                capabilities={
+                    "publish": {"scopes": {"destinations": {"mode": MODE_ALLOW, "allow": ["x"]}}},
+                    "spawn": {"scopes": {"agents": {"mode": MODE_ALLOW, "allow": ["a"]}}},
+                }
+            )
+        )
+        assert not resolve(ceiling, None, "capabilities.publish", "").permitted
+        assert SCOPE_CATALOG["capabilities.publish"].capability_default is False
+        assert resolve(ceiling, None, "capabilities.spawn", "").permitted
+        assert SCOPE_CATALOG["capabilities.spawn"].capability_default is True
+
+
+class TestValidateReportsUngovernedCapabilities:
+    """`kirocrew policy validate` must surface a partially-governed block.
+
+    Since omission cannot deny, the only protection against an author believing
+    otherwise is telling them which rows they left open.
+    """
+
+    def _validate(self, capsys, ceiling):
+        import argparse
+        from unittest.mock import patch
+
+        from kiro_crew import cli_commands
+
+        args = argparse.Namespace(policy_action="validate")
+        with patch(
+            "kiro_crew.platform.context.current_context",
+            return_value=type("Ctx", (), {"governance": ceiling})(),
+        ):
+            cli_commands._policy(args)
+        return capsys.readouterr().out
+
+    def test_partial_block_lists_the_ungoverned_rows(self, capsys):
+        ceiling = parse_policy(_policy_body(capabilities={"script_hooks": {"enabled": False}}))
+        out = self._validate(capsys, ceiling)
+        assert "UNGOVERNED" in out
+        assert "Omission does not deny" in out
+        assert "capabilities.cron" in out
+        # The row the author DID name must not be reported as a gap.
+        assert "capabilities.script_hooks\n" not in out.split("UNGOVERNED", 1)[1]
+
+    def test_fully_enumerated_block_reports_no_gap(self, capsys):
+        body = {scope.split(".", 1)[1]: {"enabled": True} for scope in _capability_scopes()}
+        out = self._validate(capsys, parse_policy(_policy_body(capabilities=body)))
+        assert "UNGOVERNED" not in out
+        assert "✅ valid" in out
+
+    def test_policy_that_never_mentions_capabilities_reports_no_gap(self, capsys):
+        """Silence about capabilities entirely is not a partial statement."""
+        ceiling = parse_policy(_policy_body(commands={"mode": MODE_DENY, "deny": ["nc *"]}))
+        out = self._validate(capsys, ceiling)
+        assert "UNGOVERNED" not in out

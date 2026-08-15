@@ -105,6 +105,28 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "Browser CLI install failures",
+        "browser_cli/install.py",
+        "The stderr of a failed `npm install -g @playwright/cli` / browser download, "
+        "which reaches TWO surfaces: a `logger.warning` line (durable, and pasted "
+        "into bug reports via `kirocrew logs`) and the Settings > Browser error card. "
+        "npm quotes the command's own environment back on failure, so the text can "
+        "carry a registry `_authToken`, an inline-credential proxy URL, or a "
+        "`*_TOKEN=` echo -- shapes the shared credential family does NOT match, so "
+        "this sink adds its own npm patterns on top of the shared two-pass and "
+        "redacts at the source rather than at either boundary.",
+    ),
+    (
+        "Session intent summaries",
+        "session_summary.py",
+        "Intent-summary payloads persisted to the `.intents` sidecar and served by "
+        "`GET /api/chat/slots/{slot}/summary`. The payload is model output derived "
+        "from transcript text, so a secret or beacon URL pasted into the chat can be "
+        "reproduced inside it; `normalize_payload` runs the whole nested payload "
+        "through the credential + exfiltration-URL chain before the write, because "
+        "the sidecar is durable and read straight back to the panel.",
+    ),
+    (
         "Session storage inventory",
         "dashboard/handlers/session_storage.py",
         "A session's title and its first message, served by "
@@ -348,6 +370,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "to the browser.",
     ),
     (
+        "Session detach notice",
+        "dashboard/state.py",
+        "The notice sent to a channel whose session-resume binding was cleared — a "
+        "separate egress boundary from the browser payload, and its session title is "
+        "user-controlled, so the rendered notice is re-scanned through the shared "
+        "display_safe sink before it reaches the transport.",
+    ),
+    (
         "Channel session surfacing",
         "dashboard/channel_slots.py",
         "Titles and hydrated transcript of a Slack/Discord/Teams conversation as it is "
@@ -438,6 +468,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "Workflow injections",
         "dashboard/workflow_inject.py",
         "Workflow progress summaries injected back into a session.",
+    ),
+    (
+        "Crew Mode delivery",
+        "crew_chat.py",
+        "Every crew-slot post (`_post`): forwarded subagent summaries/errors, "
+        "decision-agent questions, and topic-meta renders — all LLM-authored — "
+        "written to the transcript, broadcast over WS, and persisted to the "
+        "conversation log.",
     ),
     (
         "Onboarding import",
@@ -576,6 +614,27 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "The file-card JSON pushed over the chat WebSocket is redacted before "
         "broadcast. (This module's other redact() calls are upload GATES — they "
         "abort a send when redaction would alter the content — not egress.)",
+    ),
+    (
+        "MCP custom server specs",
+        "dashboard/handlers/mcp_custom.py",
+        "Editable MCP server specs returned by the dashboard HTTP API to the browser. "
+        "Configured header values receive credential redaction only before they cross "
+        "that boundary.",
+    ),
+    (
+        "MCP probe results",
+        "dashboard/handlers/mcp.py",
+        "Cached MCP probe results returned by the dashboard HTTP API to the browser. "
+        "Configured header values and reflected credentials in probe errors receive "
+        "redaction before they cross that boundary.",
+    ),
+    (
+        "MCP server metadata",
+        "mcp_discovery.py",
+        "McpServerInfo.to_dict() is the serialization boundary for every dashboard "
+        "MCP listing; header values and reflected credentials in probe errors are "
+        "redacted there before the payload leaves the backend.",
     ),
     (
         "MCP app tool results",
@@ -784,7 +843,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/discover.py",
         "dashboard/handlers/hooks.py",
         "dashboard/handlers/knowledge.py",
-        "dashboard/handlers/mcp.py",
         "dashboard/handlers/memory.py",
         "dashboard/handlers/optimizer.py",
         "dashboard/handlers/prompts.py",
@@ -802,8 +860,22 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "knowledge/ingestion.py",
         "mcp_core.py",
         "mcp_cron.py",
-        "mcp_discovery.py",
         "mcp_gateway/backend.py",
+        # The kirocrew-core tool handlers, moved out of mcp_core.py into their
+        # domain modules. Same classification as mcp_core.py above for the same
+        # reason: a tool result's user-visible surface is a registered sink
+        # downstream, and these redact before returning to it. `learn.py` is
+        # absent because it calls no redactor -- the allowlist is checked for
+        # stale entries too.
+        "mcp_tools/apps.py",
+        "mcp_tools/artifacts.py",
+        "mcp_tools/control.py",
+        "mcp_tools/knowledge.py",
+        "mcp_tools/messaging.py",
+        "mcp_tools/sessions.py",
+        "mcp_tools/skills.py",
+        "mcp_tools/spawn.py",
+        "mcp_tools/workflows.py",
         "workflows/agent_exec.py",
         "workflows/agent_pool.py",
         "workflows/runner.py",
@@ -854,7 +926,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.
-        "browser/setup.py",
         "cli_doctor.py",
         "cloud/connect.py",
         "cloud/login.py",

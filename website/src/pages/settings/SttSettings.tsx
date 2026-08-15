@@ -32,7 +32,6 @@ interface SttConfig {
   model: string
   mlx_model?: string
   available: boolean
-  docker_mode: boolean
   streaming?: boolean
   endpointing?: boolean
   dictation_panel?: boolean
@@ -48,6 +47,9 @@ interface SttConfig {
   install_detail: string
   install_error: string
   prereqs: string[]
+  transcribe_unsupported?: boolean
+  bundled_interpreter?: boolean
+  ffmpeg_missing?: boolean
 }
 
 /**
@@ -69,7 +71,6 @@ const STEP_LABEL_KEY: Record<string, string> = {
   installing_ffmpeg: 'pages.settings.sttSettings.step_installing_ffmpeg',
   installing_whisper: 'pages.settings.sttSettings.step_installing_whisper',
   installing_mlx: 'pages.settings.sttSettings.step_installing_mlx',
-  pulling: 'pages.settings.sttSettings.step_pulling',
   done: 'pages.settings.sttSettings.step_done',
   error: 'pages.settings.sttSettings.step_error',
 }
@@ -264,10 +265,13 @@ function PushToTalkConfig() {
 /**
  * Speech-to-Text settings in the standard settings style, so the Voice page
  * reads consistently. Covers enable, status,
- * provider, model/MLX model, streaming, language, Transcribe AWS creds, runtime,
- * and the local-install flow (Whisper / MLX / Docker image).
+ * provider, model/MLX model, streaming, language, Transcribe AWS creds, and
+ * the local-install flow (Whisper / MLX).
  */
-export default function SttSettings() {
+export default function SttSettings({ cardIndex }: {
+  /** Ordinal of this component's card in the hosting panel's stagger ladder. */
+  cardIndex?: number
+} = {}) {
   const qc = useQueryClient()
   const [err, setErr] = useState('')
   const [localProfile, setLocalProfile] = useState('')
@@ -348,7 +352,10 @@ export default function SttSettings() {
 
   const stt = sttQ.data
   if (!stt) return (
-    <SettingsCard>
+    // Same ordinal as the loaded card below: the success render replaces this
+    // skeleton at the same position, and a differing delay would hold the
+    // already-loaded content blank for the delay after the swap.
+    <SettingsCard index={cardIndex}>
       <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
     </SettingsCard>
   )
@@ -394,7 +401,7 @@ export default function SttSettings() {
           </span>
         </div>
       )}
-      <SettingsCard>
+      <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 
         <InfoRow label={i18nT('pages.settings.sttSettings.status')}>
@@ -451,19 +458,46 @@ export default function SttSettings() {
           </>
         )}
 
-        <InfoRow label={i18nT('pages.settings.sttSettings.runtime')}>
-          <span className="text-[13px] font-mono text-muted">{stt.docker_mode ? i18nT('pages.settings.sttSettings.docker') : i18nT('pages.settings.sttSettings.native')}</span>
-        </InfoRow>
-
+        {/* No Runtime row: the `/api/config/stt` response has no `docker_mode`
+            field — STT has no Docker runtime, so there is nothing to display. */}
         {!stt.available && (
           <div className="mt-2">
+            {isTranscribe && stt.transcribe_unsupported && (
+              // No install channel can make the `voice` extra importable in
+              // this gateway's interpreter — say so instead of showing an
+              // empty panel or a command that errors. The desktop app gets
+              // its own copy: "run the gateway from a different Python
+              // environment" is not actionable for an app bundle, so it names
+              // the real remedy (a pip-installed gateway) instead.
+              <div className="mb-3 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
+                <p className="text-sm text-text">
+                  {stt.bundled_interpreter
+                    ? i18nT('pages.settings.sttSettings.the_desktop_app_can_t_add_transcribe_support_ins')
+                    : i18nT('pages.settings.sttSettings.this_gateway_s_python_can_t_install_extra_packag')}
+                </p>
+              </div>
+            )}
             {stt.prereqs?.length > 0 && !installing && (
               <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-3 animate-rise">
                 <p className="text-sm text-text font-medium mb-2">{i18nT('pages.settings.sttSettings.run_these_commands_in_your_terminal_first')}</p>
                 {stt.prereqs.map((cmd, i) => (
                   <code key={i} className="block bg-bg-elevated rounded px-3 py-1.5 text-[13px] font-mono text-accent mb-1 select-all">{cmd}</code>
                 ))}
-                <p className="text-muted text-[13px] mt-2">{i18nT('pages.settings.sttSettings.then_click_install_below')}</p>
+                {/* Transcribe has no Install button below (its requirement is
+                    the `voice` extra, whose import is retried only on a fresh
+                    process), so the trailer names the real next step instead of
+                    a button that is not there. The restart hint is tied to the
+                    pip command: an ffmpeg-only list needs no restart, since the
+                    PATH probe re-runs on every settings read — and for
+                    Transcribe it gets no trailer at all, because the Install
+                    button the default trailer points at is hidden. */}
+                {isTranscribe ? (
+                  stt.prereqs.some(c => c.includes('kirocrew[voice]')) && (
+                    <p className="text-muted text-[13px] mt-2">{i18nT('pages.settings.sttSettings.then_restart_the_gateway_so_it_can_import_the_ne')}</p>
+                  )
+                ) : (
+                  <p className="text-muted text-[13px] mt-2">{i18nT('pages.settings.sttSettings.then_click_install_below')}</p>
+                )}
               </div>
             )}
             {installing ? (
@@ -475,27 +509,41 @@ export default function SttSettings() {
                 {stt.install_detail && <p className="text-muted text-[13px] font-mono truncate">{stt.install_detail}</p>}
                 <div className="mt-2 h-1.5 bg-border rounded-full overflow-hidden">
                   <div className="h-full bg-accent rounded-full transition-all duration-500 animate-pulse"
-                    style={{ width: stt.install_step === 'checking' ? '10%' : stt.install_step === 'installing_xcode' ? '15%' : stt.install_step === 'installing_brew' ? '25%' : stt.install_step === 'installing_python' ? '35%' : stt.install_step === 'installing_ffmpeg' ? '50%' : stt.install_step === 'installing_whisper' || stt.install_step === 'pulling' ? '70%' : '5%' }} />
+                    style={{ width: stt.install_step === 'checking' ? '10%' : stt.install_step === 'installing_xcode' ? '15%' : stt.install_step === 'installing_brew' ? '25%' : stt.install_step === 'installing_python' ? '35%' : stt.install_step === 'installing_ffmpeg' ? '50%' : stt.install_step === 'installing_whisper' ? '70%' : '5%' }} />
                 </div>
               </div>
-            ) : (
+            ) : !isTranscribe && (
+              // Hidden for Transcribe: the button installs a local Whisper
+              // runtime, which cannot change Transcribe's availability — its
+              // requirement is the `voice` extra surfaced in the prereq block
+              // above, and the backend rejects the install for this provider.
               <>
                 <Btn onClick={() => installMut.mutate()}>
-                  {stt.docker_mode
-                    ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.pull_docker_image')}</>
-                    : provider === 'mlx'
-                      ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_mlx_whisper')}</>
-                      : <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_whisper')}</>}
+                  {provider === 'mlx'
+                    ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_mlx_whisper')}</>
+                    : <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_whisper')}</>}
                 </Btn>
                 <p className="text-muted text-[13px] mt-2">
-                  {stt.docker_mode
-                    ? i18nT('pages.settings.sttSettings.pulls_python_3_11_slim_for_docker_based_transcri')
-                    : provider === 'mlx'
-                      ? i18nT('pages.settings.sttSettings.installs_mlx_whisper_via_pipx_ffmpeg_apple_silic')
-                      : i18nT('pages.settings.sttSettings.installs_openai_whisper_ffmpeg_uses_system_pytho')}
+                  {provider === 'mlx'
+                    ? i18nT('pages.settings.sttSettings.installs_mlx_whisper_via_pipx_ffmpeg_apple_silic')
+                    : i18nT('pages.settings.sttSettings.installs_openai_whisper_ffmpeg_uses_system_pytho')}
                 </p>
               </>
             )}
+          </div>
+        )}
+
+        {/* Rendered even when Status reads "ready", for every provider: the
+            availability checks treat ffmpeg as optional (it only affects
+            transcoding the browser's recordings), so a missing ffmpeg would
+            otherwise surface only as a silent dictation failure. `prereqs`
+            carries the platform install command(s) for exactly this state. */}
+        {stt.available && !!stt.ffmpeg_missing && stt.prereqs?.length > 0 && (
+          <div className="mt-2 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
+            <p className="text-sm text-text font-medium mb-2">{i18nT('pages.settings.sttSettings.ffmpeg_is_missing_voice_recordings_from_the_brow')}</p>
+            {stt.prereqs.map((cmd, i) => (
+              <code key={i} className="block bg-bg-elevated rounded px-3 py-1.5 text-[13px] font-mono text-accent mb-1 select-all">{cmd}</code>
+            ))}
           </div>
         )}
       </SettingsCard>

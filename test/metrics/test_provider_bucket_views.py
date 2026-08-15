@@ -33,8 +33,8 @@ from kiro_crew.metrics.provider import (
 )
 
 _SRC = Path(provider_mod.__file__).resolve().parent.parent
-# Histogram instrument names are the `.duration` metrics; counters end in
-# `.count` / `.acquire` and carry no bounds.
+# Histogram instrument names are the `.duration` metrics (all ms); counters
+# end in `.count` / `.acquire` / `.action` / `.outcome` and carry no bounds.
 _NAME_RE = re.compile(r'"(kirocrew\.[a-z0-9_.]*\.duration)"')
 
 

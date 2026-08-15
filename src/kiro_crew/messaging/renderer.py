@@ -115,16 +115,25 @@ def _default_redactor(text: str) -> str:
     return out
 
 
-def _display_safe(choice: str) -> str:
-    """Redact *choice* against what the platform will SHOW, then defang mentions.
+def display_safe(text: str) -> str:
+    """Redact *text* against what the platform will SHOW, then defang mentions.
+
+    The shared outbound display sink: every surface that renders untrusted text
+    into a channel message goes through here, so one text cannot be sanitized two
+    ways. Used by this module's overflow list and by the dashboard's channel
+    notices.
 
     Order matters. Redaction runs FIRST, on the canonical display form, because
     the ZWSP insertion below is itself a transformation applied after the scan
     -- exactly the class of reassembly hazard the display redactor exists to
     close, and inserting the ZWSP first could split a key so the regex stops
     matching it while the platform still renders it whole.
+
+    The defang covers both mention grammars because the callers are
+    channel-neutral: ``@`` for Discord/Telegram users and ``@everyone``, ``<!``
+    for Slack's ``<!channel>``.
     """
-    safe, _ = redact_for_display(choice or "", _default_redactor)
+    safe, _ = redact_for_display(text or "", _default_redactor)
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
@@ -155,7 +164,7 @@ def format_overflow(overflow: list[str], start: int) -> str:
       breaks slack broadcast ranges (``<!channel>``, ``<!here>``,
       ``<!everyone>``).
     """
-    return "\n".join(f"{start + i + 1}. {_display_safe(c)}" for i, c in enumerate(overflow))
+    return "\n".join(f"{start + i + 1}. {display_safe(c)}" for i, c in enumerate(overflow))
 
 
 def apply_options_cap(
@@ -173,8 +182,8 @@ def apply_options_cap(
     * ``len(choices) <= max_buttons`` — byte-identical pass-through.
     * overflow — the first ``max_buttons`` choices are kept for the widget;
       the remainder is appended to ``body`` as a numbered text list
-      (numbering continues after the widget slots). Previously overflow was
-      silently dropped: the user never learned those choices existed.
+      (numbering continues after the widget slots) rather than dropped, so
+      the user still learns those choices exist.
     * ``max_buttons <= 0`` — returns ``(body, [])``; zero-widget channels
       own their trailer handling (today: strip).
     """
@@ -184,7 +193,12 @@ def apply_options_cap(
     if not overflow:
         return body, kept
     lines = format_overflow(overflow, start=len(kept))
-    sep = "\n\n" if body and not body.endswith("\n") else "\n" if body else ""
+    if not body:
+        sep = ""
+    elif body.endswith("\n"):
+        sep = "\n"
+    else:
+        sep = "\n\n"
     return f"{body}{sep}{lines}", kept
 
 
@@ -198,6 +212,30 @@ class Renderer(ABC):
 
     async def on_turn_start(self) -> None:
         """Called once before the provider stream begins. Default no-op."""
+        return None
+
+    async def close(self) -> None:
+        """Release whatever the renderer opened for this turn. Default no-op.
+
+        Declared here because the shared pipeline's ``finally`` awaits it
+        (``messaging/dispatch.py``) — before this existed, that await reached
+        through an ``Any`` for a method the contract never mentioned, so a
+        channel could change its signature without anything noticing. Telegram
+        did: its override takes an extra optional ``failure_reason``, which is a
+        legal widening of this contract and stays a channel-local concern until
+        the pipeline has a reason to carry one.
+
+        Two rules for implementers:
+
+        * It runs in a ``finally`` and is BEST-EFFORT. A caller must never let a
+          failure here skip the session release — see the guard in
+          ``drive_turn``, and note that the semaphore is keyed by SESSION, so a
+          lost release wedges every later message in that conversation rather
+          than only this turn.
+        * It must tolerate being called when the turn never really started
+          (``get_or_create`` can raise before the semaphore is held), so
+          finalizing a placeholder that does not exist is not an error.
+        """
         return None
 
     @abstractmethod
@@ -261,3 +299,72 @@ class Renderer(ABC):
             await self.on_steer_consumed(event.text)
         else:
             raise ValueError(f"unknown output event kind: {event.kind!r}")
+
+
+class SilentRenderer(Renderer):
+    """Renders nothing. The enforcement half of a dashboard channel disconnect.
+
+    Disconnecting a channel means "stop talking to me there". Slack enforces that
+    on its own dedicated streaming mirror, via the ``slack_mirror_is_paused``
+    gates in the dashboard turn loop. Every OTHER channel drives its turns
+    through the shared inbound pipeline instead, where the reply is written by
+    the channel's own :class:`Renderer` — a path the dashboard never touches. So
+    a stored pause for a non-Slack conversation had nothing to gate, and a
+    disconnected channel kept answering as if it were still connected.
+
+    ``dispatch.drive_turn`` substitutes this for the real renderer when the
+    conversation is disconnected. The turn STILL RUNS and the inbound message
+    still lands in the session: the binding is retained by design, and the
+    dashboard is where that user is now working. Only the writes back to the
+    muted conversation are dropped. ``on_turn_start`` and ``close`` inherit the
+    base no-ops, so no typing indicator is ever opened and there is nothing to
+    finalize.
+
+    ``on_prompt_choice`` is dropped like the rest, matching the Slack gate that
+    withholds the linked approval prompt from a disconnected thread: the
+    dashboard renders the same prompt, and soliciting a decision in the
+    conversation the user just left would ask where they are no longer looking.
+    """
+
+    def __init__(self, capabilities: Any = None, channel_type: str = "") -> None:
+        # Typed loosely and defaulted, unlike the base: this is a SUBSTITUTE built
+        # from whatever renderer the channel supplied, and it must not fail to
+        # substitute because that object lacks `capabilities`. Nothing here reads
+        # the value -- every handler is a no-op -- so it is only carried so the
+        # object still satisfies the base contract for anyone who inspects it.
+        super().__init__(capabilities)
+        self.channel_type = channel_type
+
+    async def close(self, *args: Any, **kwargs: Any) -> None:
+        """Tolerate a channel's WIDENED close signature.
+
+        The base declares a no-arg ``close``, but widening it is legal and
+        Telegram does exactly that (``close(failure_reason=...)``) -- and its
+        ``finally`` calls it that way unconditionally. Since this class stands in
+        for whatever renderer the channel built, a strict signature here would
+        turn a disconnected Telegram turn into a ``TypeError`` in a ``finally``.
+        There is nothing to finalize either way: nothing was ever opened.
+        """
+        return None
+
+    async def on_text_chunk(self, text: str) -> None:
+        return None
+
+    async def on_thinking(self, text: str) -> None:
+        return None
+
+    async def on_tool_call(
+        self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
+    ) -> None:
+        return None
+
+    async def on_prompt_choice(
+        self, options: list[dict[str, Any]], request_id: str | int
+    ) -> None:
+        return None
+
+    async def on_compaction(self, context_usage_pct: float) -> None:
+        return None
+
+    async def on_done(self, stop_reason: str = "") -> None:
+        return None

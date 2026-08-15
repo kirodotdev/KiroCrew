@@ -166,7 +166,7 @@ class TestChunkingOffLoop:
 
     @pytest.mark.asyncio
     async def test_store_entities_runs_off_the_event_loop(self, pipeline):
-        """Mesh-3029: the per-chunk _store_entities pass (O(entities) find_entity
+        """The per-chunk _store_entities pass (O(entities) find_entity
         scans + per-entity commit/graph mutation) runs via asyncio.to_thread, not
         inline on the loop where it stalled past the 25s loop-stall watchdog."""
         loop_thread = threading.get_ident()
@@ -183,7 +183,7 @@ class TestChunkingOffLoop:
 
     @pytest.mark.asyncio
     async def test_maybe_dedup_runs_off_the_event_loop(self, pipeline):
-        """Mesh-3029: the end-of-ingest _maybe_dedup (dedup_document -> merge_entities
+        """The end-of-ingest _maybe_dedup (dedup_document -> merge_entities
         -> _load_graph full rebuild) runs via asyncio.to_thread, not on the loop."""
         loop_thread = threading.get_ident()
         seen: list[int] = []

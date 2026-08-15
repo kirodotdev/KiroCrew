@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleDashed,
   ExternalLink,
+  KeyRound,
   Link2,
   Loader2,
   RotateCw,
@@ -13,7 +14,7 @@ import {
   Unplug,
   X,
 } from 'lucide-react'
-import { api } from '../../api/client'
+import { api, type ConnectionMintState } from '../../api/client'
 import { useAppSelector } from '../../store'
 import type { ChatMessage, McpApplyChange, McpServer } from '../../types'
 import { fmtDate } from '../../i18n/format'
@@ -26,10 +27,15 @@ import {
   type ConnectionProvider,
 } from './registry'
 
+/** Mint poll cadence. A cold mint takes seconds, so this is tuned to surface the
+ *  URL promptly without spinning on a request that mostly answers `minting`. */
+const MINT_POLL_MS = 2_000
+
 export type ConnectionCardState =
   | 'not-connected'
   | 'waiting-for-approval'
   | 'connected'
+  | 'not-verified'
   | 'needs-attention'
 
 type ConnectionAction = 'connect' | 'disconnect' | 'relay' | 'test'
@@ -44,6 +50,8 @@ export type OAuthState = {
   oauthUrl: string
   error: string
   timestamp: number
+  /** The URL was minted on demand, so no browser tab was ever opened for it. */
+  minted?: boolean
 }
 
 const PROVIDER_TONES: Record<string, string> = {
@@ -90,6 +98,11 @@ export interface PendingConnect {
    *  fencing against a *snapshot of them* stays within one clock domain —
    *  never compare them to the browser's own wall clock. */
   sinceTs: number
+  /** The row token this tab's own POST returned, when it returned one. The mint
+   *  table is keyed by slug, so a sibling tab connecting the same provider
+   *  REPLACES the row -- without this, a tab reads the sibling's terminal state as
+   *  the verdict on its own attempt and clears a wait it should still be holding. */
+  token?: string
 }
 
 /** A banner no newer than the snapshot taken at click time belongs to a prior
@@ -101,6 +114,111 @@ export function effectiveOAuth(
 ): OAuthState | undefined {
   if (oauth && pending && oauth.timestamp <= pending.sinceTs) return undefined
   return oauth
+}
+
+/** Fold a minted approval URL into the card's OAuth view.
+ *
+ * Applied AFTER `effectiveOAuth`, so a minted URL never passes through the
+ * banner staleness fence: a mint is started by the click being served, so it is
+ * current by construction and carries no gateway banner timestamp to compare
+ * against. A URL is taken only from a `waiting` mint — every other state either
+ * has no URL or holds one that can no longer be redeemed.
+ *
+ * A chat banner that already carries a URL wins: it is the same consent request,
+ * and preferring one source keeps the rendered link stable across polls.
+ */
+/** What a mint state means for the card, given how the entry got there.
+ *
+ *  The full table — every mint state against both entry situations — so the card
+ *  implements a decision rather than accumulating one branch per review round:
+ *
+ *  | mint state | entry           | wait  | probe | error | uninstall |
+ *  |------------|-----------------|-------|-------|-------|-----------|
+ *  | absent     | either          | keep  |  no   |  no   |    no     |
+ *  | minting    | either          | keep  |  no   |  no   |    no     |
+ *  | waiting    | either          | keep  |  no   |  no   |    no     |
+ *  | granted    | either          | clear | YES   |  no   |    no     |
+ *  | failed     | new-this-flow   | clear |  no   | YES   |    no     |
+ *  | failed     | pre-existing    | clear |  no   | YES   |    no     |
+ *  | expired    | any             | clear |  no   |  no   |
+ *
+ *  No terminal state deletes configuration. An expired mint clears this tab's
+ *  wait and leaves the entry in place, so the card shows needs-attention and the
+ *  user retries with Connect or removes it with Disconnect. Deleting an entry on
+ *  a timeout meant racing a sibling tab for the same slug-keyed row, and no
+ *  amount of token fencing makes an automatic delete worth that: config removal
+ *  is a decision the user makes explicitly.
+ *
+ *  Two rows carry the reasoning:
+ *  - `granted` must PROBE. The card's cached status predates consent, so without
+ *    a fresh read it keeps showing the pre-consent error after authorization
+ *    succeeded.
+ *  - `failed` keeps the entry on purpose. Something went wrong rather than timed
+ *    out, so the error surface plus a retryable entry beats silently undoing the
+ *    install.
+ */
+export type MintOutcome = {
+  clearWait: boolean
+  probe: boolean
+  error: boolean
+}
+
+const MINT_WAIT_HELD: MintOutcome = {
+  clearWait: false, probe: false, error: false,
+}
+
+
+/** Whether a row is the one THIS tab's POST started. Unknown on either side reads
+ *  as ours: a row with no token predates the fence, and a pending wait with no
+ *  token means the POST answered without one -- neither is a sibling's. */
+function mintRowIsOurs(
+  mint: ConnectionMintState | undefined,
+  pending: PendingConnect | undefined,
+): boolean {
+  if (!mint?.token || !pending?.token) return true
+  return mint.token === pending.token
+}
+
+export function mintOutcome(
+  mint: ConnectionMintState | undefined,
+  pending?: PendingConnect,
+): MintOutcome {
+  // A row carrying a DIFFERENT token is a sibling tab's, not this tab's. Clear the
+  // wait -- the mint table is keyed by slug, so this tab's row was REPLACED and no
+  // verdict for its own attempt is ever coming, and holding would spin forever --
+  // but claim nothing from the sibling's outcome: no probe, no error. This is the
+  // client half of the fence the backend applies; neither is sufficient alone,
+  // because the client cannot see a supersede that lands after it reads, and the
+  // server cannot see which tab is asking.
+  if (!mintRowIsOurs(mint, pending)) return { clearWait: true, probe: false, error: false }
+  switch (mint?.state) {
+    case 'granted':
+      return { clearWait: true, probe: true, error: false }
+    case 'failed':
+      return { clearWait: true, probe: false, error: true }
+    case 'expired':
+      return { clearWait: true, probe: false, error: false }
+    default:
+      return MINT_WAIT_HELD
+  }
+}
+
+
+export function withMintedUrl(
+  oauth: OAuthState | undefined,
+  mint: ConnectionMintState | undefined,
+): OAuthState | undefined {
+  const minted = mint?.state === 'waiting' ? (mint.oauth_url || '') : ''
+  if (!minted || oauth?.oauthUrl) return oauth
+  return {
+    completed: false,
+    failed: false,
+    error: '',
+    timestamp: 0,
+    ...(oauth ?? {}),
+    oauthUrl: minted,
+    minted: true,
+  }
 }
 
 /** Only a cancelled *new* connect uninstalls the entry it just created;
@@ -129,6 +247,18 @@ export function connectionStateFor(
   if (oauth?.failed) return 'needs-attention'
   if (oauth?.completed || server.status === 'ok') return 'connected'
   if (locallyWaiting || oauth?.oauthUrl) return 'waiting-for-approval'
+  // The status probe carries no OAuth token — kiro-cli owns token custody and
+  // Kiro Crew stores no credential — so a remote OAuth server answers it with 401
+  // and the gateway reports `needs_auth`. Two very different situations produce
+  // that identical answer: a server nobody has authorized, and a server
+  // authorized OUTSIDE the dashboard, which the runtime calls fine and which
+  // raised no `mcp_oauth` banner here. `needs_auth` is therefore honest about
+  // the PROBE (it needs authorization to see this server) and would be a claim
+  // we cannot support if restated as a fact about the server — which is why the
+  // state is named for what we know rather than for what the user must do. It
+  // must reach neither the error card (#1853) nor the spinner below, which would
+  // imply a grant is in flight.
+  if (server.status === 'needs_auth') return 'not-verified'
   if (server.status === 'error' || server.status === 'disabled') return 'needs-attention'
   return 'waiting-for-approval'
 }
@@ -224,6 +354,14 @@ function ConnectionCard({
       icon: <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />,
       tone: 'bg-ok-subtle text-ok',
     },
+    // Warn tone, not the error tone: an unverifiable state is not a failure. The
+    // icon is static on purpose — a spinner would claim a grant is in flight
+    // when nothing is pending.
+    'not-verified': {
+      label: t('pages.connectionsPage.not_verified'),
+      icon: <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-warn-subtle text-warn',
+    },
     'needs-attention': {
       label: t('pages.connectionsPage.needs_attention'),
       icon: <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />,
@@ -290,7 +428,13 @@ function ConnectionCard({
         {state === 'waiting-for-approval' && (
           <div className="space-y-3">
             <div className="text-[13px] font-medium text-text-strong">
-              {t('pages.connectionsPage.finish_approving_in_browser')}
+              {/* A minted URL opened no tab, so "finish approving in your browser"
+                  would point the user at a window that does not exist. Existing
+                  keys only -- the fuller copy rewrite needs a 14-locale pass and
+                  rides with the connections-copy slice. */}
+              {t(oauth?.minted
+                ? 'pages.connectionsPage.waiting_for_approval'
+                : 'pages.connectionsPage.finish_approving_in_browser')}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {approvalUrl ? (
@@ -348,6 +492,21 @@ function ConnectionCard({
                   {t('pages.connectionsPage.invalid_return_address')}
                 </p>
               )}
+            </div>
+          </div>
+        )}
+
+        {state === 'not-verified' && (
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn-subtle p-2.5 text-[12px] text-text">
+              <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
+              <span>{t('pages.connectionsPage.not_verified_help', { provider: provider.name })}</span>
+            </div>
+            <div className="flex justify-end">
+              <Btn primary onClick={() => void onReconnect()} disabled={!!busy}>
+                {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />}
+                {busy === 'connect' ? t('pages.connectionsPage.connecting') : t('pages.connectionsPage.authorize')}
+              </Btn>
             </div>
           </div>
         )}
@@ -461,24 +620,81 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     refetchInterval: activeTab === 'services' && Object.values(locallyWaiting).some(Boolean) ? 5_000 : false,
   })
 
+  // Minted approval URLs, keyed by slug. Fetched only while a connect is pending:
+  // outside that window nothing is minting and the endpoint would answer `idle`.
+  const waitingSlugs = useMemo(
+    () => Object.keys(locallyWaiting).sort(),
+    [locallyWaiting],
+  )
+  const { data: mintByServer = {} } = useQuery<Record<string, ConnectionMintState>>({
+    queryKey: ['connections-mint', waitingSlugs],
+    queryFn: async () => {
+      const states = await Promise.all(
+        waitingSlugs.map(slug => api.connectionsMintState(slug).catch(() => undefined)),
+      )
+      const next: Record<string, ConnectionMintState> = {}
+      for (const state of states) if (state) next[state.slug] = state
+      return next
+    },
+    enabled: waitingSlugs.length > 0,
+    refetchInterval: MINT_POLL_MS,
+    // A mint row is only valid for the attempt that produced it. Cached across an
+    // inactive window it would be replayed on the next Connect for the same
+    // provider, flashing a previous attempt's URL that no listener can redeem.
+    gcTime: 0,
+  })
+
   useEffect(() => {
-    setLocallyWaiting(current => {
-      let changed = false
-      const next = { ...current }
-      for (const provider of CONNECTION_PROVIDERS) {
-        const pending = current[provider.slug]
-        if (!pending) continue
-        const server = serverForConnection(provider, servers)
-        const oauth = oauthByServer[provider.slug]
-        const fresh = effectiveOAuth(oauth, pending)
-        if (server?.status === 'ok' || fresh?.completed || fresh?.failed) {
-          delete next[provider.slug]
-          changed = true
-        }
+    // Decided BEFORE any setState: a state updater runs on a later render, so
+    // collecting side-effect targets inside one leaves them empty at read time.
+    const cleared: string[] = []
+    const failedMints: string[] = []
+    const grantedMints: string[] = []
+    for (const provider of CONNECTION_PROVIDERS) {
+      const pending = locallyWaiting[provider.slug]
+      if (!pending) continue
+      const server = serverForConnection(provider, servers)
+      const fresh = effectiveOAuth(oauthByServer[provider.slug], pending)
+      const outcome = mintOutcome(mintByServer[provider.slug], pending)
+      if (!(server?.status === 'ok' || fresh?.completed || fresh?.failed || outcome.clearWait)) {
+        continue
       }
-      return changed ? next : current
+      cleared.push(provider.slug)
+      if (outcome.error) failedMints.push(provider.slug)
+      if (outcome.probe) grantedMints.push(provider.slug)
+    }
+    if (!cleared.length) return
+
+    setLocallyWaiting(current => {
+      const next = { ...current }
+      for (const slug of cleared) delete next[slug]
+      return next
     })
-  }, [servers, oauthByServer])
+    if (grantedMints.length) {
+      // The cached status predates consent, so without a fresh read the card
+      // keeps showing its pre-consent error after authorization succeeded.
+      void api.mcpProbe().then(probed => {
+        queryClient.setQueryData<McpServer[]>(['mcp-servers'], probed as McpServer[])
+      }).catch(() => undefined)
+    }
+    if (failedMints.length) {
+      setFeedback(current => {
+        const next = { ...current }
+        for (const slug of failedMints) {
+          // Existing strings only. The mint's reason is a coarse machine code and
+          // is deliberately not shown; the dedicated copy lands with the
+          // connections-copy slice, which carries the 14-locale pass.
+          next[slug] = {
+            kind: 'error',
+            text: t('pages.connectionsPage.action_failed', {
+              error: t('pages.connectionsPage.unknown_error'),
+            }),
+          }
+        }
+        return next
+      })
+    }
+  }, [servers, oauthByServer, mintByServer, locallyWaiting, queryClient, t])
 
   const filteredProviders = useMemo(() => {
     // Held feature: offer nothing. No card renders, so no Connect button and no
@@ -532,7 +748,11 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // the banners themselves — see PendingConnect.sinceTs).
     const sinceTs = oauthByServer[provider.slug]?.timestamp ?? 0
     if (existing) {
-      await api.mcpCustomUpdate(existing.name, { url: provider.mcp_url })
+      // Round-trip the stored spec and only overlay the url: a `{ url }`-only
+      // PUT is authoritative for the OAuth hints, so it would clear configured
+      // `scopes`/`clientId` (and any other stated field) on every reconnect.
+      const stored = await api.mcpCustomGet(existing.name)
+      await api.mcpCustomUpdate(existing.name, { ...stored.spec, url: provider.mcp_url })
       // Editing a spec deliberately preserves the disabled flag ("editing is
       // not consent to run") — but Reconnect IS consent, so re-enable the
       // KiroCrew-managed scope. mcpToggle would write the GLOBAL mcp.json
@@ -550,10 +770,23 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     } else {
       await api.mcpCustomAdd({ [provider.slug]: { url: provider.mcp_url } }, true)
     }
-    setLocallyWaiting(current => ({ ...current, [provider.slug]: { kind: existing ? 'reconnect' : 'new', sinceTs } }))
+    // Ask for the approval URL rather than waiting for one, and await it: a
+    // rejected POST must reach `run`'s error path instead of leaving the card in
+    // a waiting state no mint will ever answer. Ordered after the entry write
+    // because the mint activates a one-server spec derived from it. The response
+    // names the row THIS tab started, so a sibling tab's terminal state cannot be
+    // mistaken for ours.
+    const started = await api.connectionsMint(provider.slug)
+    setLocallyWaiting(current => ({
+      ...current,
+      [provider.slug]: {
+        kind: existing ? 'reconnect' : 'new',
+        sinceTs,
+        token: started?.token,
+      },
+    }))
     // Kick a real status probe so the card reflects the new entry instead of
-    // dead-ending on the cached /api/mcp read; the authorization itself (and
-    // its approval URL) is produced by the runtime on the next agent turn.
+    // dead-ending on the cached /api/mcp read.
     void api.mcpProbe().then(probed => {
       queryClient.setQueryData<McpServer[]>(['mcp-servers'], probed as McpServer[])
     }).catch(() => undefined)
@@ -684,7 +917,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
               {filteredProviders.map(provider => {
                 const server = serverForConnection(provider, servers)
                 const pending = locallyWaiting[provider.slug]
-                const oauth = effectiveOAuth(oauthByServer[provider.slug], pending)
+                const oauth = withMintedUrl(
+                  effectiveOAuth(oauthByServer[provider.slug], pending),
+                  mintByServer[provider.slug],
+                )
                 const state = connectionStateFor(server, oauth, !!pending)
                 const cardBusy = busy?.slug === provider.slug ? busy.action : undefined
                 return (

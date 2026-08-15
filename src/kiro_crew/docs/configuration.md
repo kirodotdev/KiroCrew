@@ -39,12 +39,75 @@ isolates the agent, and stacking a second sandbox would break it.
 
 Set via `kirocrew config set agent.sandbox auto`.
 
+## ACP Backend
+
+`agent.acp_backend` selects which ACP agent Kiro Crew drives. `agent.provider`
+stays `acp` either way — the backend is a choice *within* ACP, not a different
+provider.
+
+| Value | Agent | Status |
+|-------|-------|--------|
+| `""` (default) | kiro-cli | full support |
+| `kas` | kiro-agent (KAS) | runs chat; some surfaces still missing |
+
+**What works on `kas`:** normal chat — your configured agent, its prompt, its tool
+allowlist, and session resume. The context-usage percentage meter, compaction
+(summarization) status, and agent-switch echoes are wired: KAS reports these as
+`session/update` discriminants (`session_info_update` with a `context_usage` /
+`turn_completion` / `summarization_*` kind, and `current_mode_update`) rather than
+the separate `_kiro.dev/*` methods kiro-cli uses, and Kiro Crew maps them back to
+the same displays.
+
+**What does not, yet:**
+
+- Native subagent progress reporting (subagents run; their live progress does not
+  surface in the UI).
+- Slash commands: KAS advertises them (`available_commands_update`), but Kiro Crew
+  surfaces no available-commands UI for any backend (kiro-cli's
+  `_kiro.dev/commands/available` is likewise unconsumed), and slash-command
+  *execution* is not wired.
+- Auto-approve (`allowedTools`) is not carried over, so KAS applies its own
+  default approval policy.
+- `spawn_continue` works for runs started with an explicit keep, but not for
+  opportunistically-retained shared subagents.
+- Model selection is unverified: KAS advertises no model list on an
+  unauthenticated session, and Kiro Crew only sends a model the session
+  advertised, so a session may simply run KAS's own default model.
+
+**Signals with no KAS analog** (documented so they are not mistaken for gaps):
+KAS has no `clear/status` notification, and its MCP methods (`_kiro/mcp/status`,
+`_kiro/mcp/toggle`) are request-side only — it emits no MCP server-init
+notification for Kiro Crew to surface. A resumable-session existence probe would
+use KAS's `_kiro/session/list` (which returns the full `sessions[]` to search by
+id); that is deferred to the session-lifecycle work, not the display path.
+
+
+**KAS gets its token from kiro-cli.** Kiro Crew launches KAS with
+`--auth=acp-callback`, so KAS keeps no credential of its own: whenever it needs
+an access token it calls back over ACP (`_kiro/auth/getAccessToken`) and Kiro
+Crew answers by shelling out to `kiro-cli chat _ get-kas-token`, which
+resolves-and-refreshes the token. The refresh token never leaves kiro-cli's own
+store, and this process only ever holds a short-lived access token in transit —
+never cached, never logged. This works on any machine where `kiro-cli login` has
+succeeded; a machine that is not signed in gets an auth error on the first
+prompt (the session still starts cleanly). Sign in with kiro-cli before
+switching.
+
+It also needs a KAS bundle already extracted on the machine by kiro-cli; set
+`KIROCREW_KAS_NODE` / `KIROCREW_KAS_SCRIPT` to point elsewhere.
+
+An unrecognized value logs a warning and falls back to the default backend, so a
+typo costs you a line in the log rather than a gateway that will not start.
+
+Set via `kirocrew config set agent.acp_backend kas`.
+
 ## Key Settings
 
 ```json
 {
   "agent": {
     "provider": "acp",
+    "acp_backend": "",
     "approval_mode": "auto",
     "model": "auto",
     "reasoning_effort": "",

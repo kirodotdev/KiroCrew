@@ -19,6 +19,15 @@ import {
   TAILWIND_RUNTIME_PATH,
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
+import { precompressPlugin } from './scripts/precompress.mjs'
+import {
+  parseBrandingConfig,
+  applyBrandingToHtml,
+  SHELL_OVERLAY_ALLOWLIST,
+} from './scripts/lib/editionShell.mjs'
+
+/** Shape produced by parseBrandingConfig (editionShell.mjs is untyped .mjs). */
+type EditionBranding = { title?: string; themeColor?: string }
 
 const pkg = JSON.parse(readFileSync('./package.json', 'utf-8'))
 const backendPort = process.env.KIROCREW_PORT || 5476
@@ -251,9 +260,84 @@ function editionExtensionPlugin(): Plugin {
         'Unset KIROCREW_EDITION_DIR for a stock build.\n'
     )
   }
+  // Pre-boot shell branding, resolved eagerly like the composition root so a
+  // malformed branding.json fails the build at startup, not mid-bundle. The
+  // eager read also means a dev server restart is needed after editing
+  // branding.json — consistent with how the composition root itself resolves.
+  // Optional: an edition without one keeps the stock title/theme-color.
+  let branding: EditionBranding = {}
+  let overlayFiles: string[] = []
+  if (editionEntry) {
+    const abs = path.dirname(editionEntry)
+    const brandingPath = path.join(abs, 'branding.json')
+    if (existsSync(brandingPath)) {
+      try {
+        branding = parseBrandingConfig(readFileSync(brandingPath, 'utf-8'))
+      } catch (e: unknown) {
+        throw new Error(`[kirocrew-edition] ${brandingPath}: ${(e as Error).message}`)
+      }
+    }
+    // Only allowlisted shell assets overlay the stock public/ copies; anything
+    // else in the edition's public/ fails the build (fail-loud beats a file
+    // that looks deployed but never ships). Deliberately flat: a subdirectory
+    // is rejected like any other stray entry, so the allowlist stays a list of
+    // exact filenames rather than a path-matching scheme. OS junk dotfiles
+    // (.DS_Store and friends) are skipped, not rejected — the OS creates them
+    // behind the author's back, so failing on them would be noise, not safety.
+    const publicDir = path.join(abs, 'public')
+    if (existsSync(publicDir)) {
+      const entries = readdirSync(publicDir, { withFileTypes: true }).filter(
+        (d) => !d.name.startsWith('.')
+      )
+      const strays = entries.filter(
+        (d) => !d.isFile() || !SHELL_OVERLAY_ALLOWLIST.includes(d.name)
+      )
+      if (strays.length > 0) {
+        throw new Error(
+          `[kirocrew-edition] ${publicDir} contains entries outside the shell-overlay allowlist ` +
+            `(${SHELL_OVERLAY_ALLOWLIST.join(', ')}), or non-files: ` +
+            `${strays.map((d) => d.name).join(', ')}. ` +
+            'The allowlist is what keeps an edition from overwriting index.html, sw.js, or vendor/*.'
+        )
+      }
+      overlayFiles = entries.map((d) => d.name)
+    }
+  }
   return {
     name: 'kirocrew-edition-extension',
     enforce: 'pre',
+    // Patch the pre-boot shell (<title>, <meta name="theme-color">) from the
+    // edition's branding.json. registerThemeBranding() can only retitle the tab
+    // after React mounts; this covers what the browser shows before that (and
+    // what a PWA install dialog samples). order:'pre' runs before Vite's own
+    // HTML transform reprints the tags.
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html: string, ctx: { path: string }) {
+        if (!branding.title && !branding.themeColor) return html
+        // Multi-page build: app panels (src/apps/*/panel.html) come through
+        // this hook too. The pre-boot shell is the root index.html only.
+        if (ctx.path !== '/index.html') return html
+        return applyBrandingToHtml(html, branding)
+      },
+    },
+    // Overlay the allowlisted shell assets (PWA manifest + icons) edition-wins.
+    // Emitted through the bundler so the files are visible to other plugins,
+    // rather than copied over dist after the fact. An emitted asset with a
+    // pinned fileName takes precedence over the same-named publicDir copy
+    // (verified against this config on Vite 8 / Rolldown; the negative case —
+    // publicDir winning — would surface immediately as stock bytes in dist).
+    // Build-only by nature of generateBundle: the dev server keeps serving the
+    // stock public/ files, which the seam docs call out as a known limitation.
+    generateBundle() {
+      for (const file of overlayFiles) {
+        this.emitFile({
+          type: 'asset',
+          fileName: file,
+          source: readFileSync(path.join(path.dirname(editionEntry as string), 'public', file)),
+        })
+      }
+    },
     config() {
       if (editionDir) {
         // Let vite's dev server serve/resolve files from outside the project
@@ -392,7 +476,7 @@ function appWindowUrls(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls()],
+  plugins: [react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), swVersionPlugin(), editionExtensionPlugin(), bundleReportPlugin(), appWindowUrls(), precompressPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -452,6 +536,25 @@ export default defineConfig({
           disableJavaScriptFileLoading: true,
           disableJavaScriptEvaluation: true,
           disableCSSFileLoading: true,
+          // Resolve a declined resource load as a silent success instead of
+          // rejecting with a NotSupportedError. happy-dom runs the load
+          // asynchronously on DOM insertion, so that rejection is orphaned —
+          // it escapes the test that inserted the node and vitest counts it as
+          // a run-level unhandled error, failing the whole shard even when every
+          // assertion passed. We assert the serialized DOM, never the sandboxed
+          // widget runtime, so a no-op success preserves the contract under test.
+          handleDisabledFileLoadingAsSuccess: true,
+          // Never follow a link or form navigation over the network. An
+          // un-intercepted `<a href>` click — e.g. an artifact anchor a test
+          // clicks with no onArtifactOpen handler — otherwise makes happy-dom
+          // dial the document origin for real; that fetch outlives the test and
+          // its ECONNREFUSED lands after msw teardown as another orphaned
+          // rejection. Disabling navigation still falls back to setting the URL
+          // (no dial), so tests that read location after a click keep working.
+          navigation: {
+            disableMainFrameNavigation: true,
+            disableChildFrameNavigation: true,
+          },
         },
       },
     },
@@ -469,8 +572,8 @@ export default defineConfig({
     // ceiling that fails a genuine leak loudly instead of dragging the host down.
     // (Vitest 4 pool rework: these are top-level, not poolOptions; minWorkers
     // was removed — only maxWorkers has effect.)
-    maxWorkers: 4,
-    execArgv: ['--max-old-space-size=4096'],
+    maxWorkers: 2,
+    execArgv: ['--max-old-space-size=3072'],
     // Default 5s is too tight for tests that ``await import(...)`` inside the
     // body: under a full concurrent forks run the collect phase can starve the
     // dynamic import past 5s and it times out. 15s gives headroom for

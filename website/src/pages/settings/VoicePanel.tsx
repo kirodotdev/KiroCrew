@@ -168,7 +168,7 @@ export function VoicePanel() {
       </SettingsSection>
 
       <SettingsSection title={i18nT('pages.settings.voicePanel.speech_to_text')}>
-        <SttSettings />
+        <SttSettings cardIndex={1} />
       </SettingsSection>
     </>
   )

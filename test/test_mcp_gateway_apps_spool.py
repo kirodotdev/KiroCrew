@@ -32,6 +32,8 @@ import pytest
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import apps
 from kiro_crew.mcp_gateway.apps import (
+    AUDIENCE_APP,
+    AUDIENCE_MODEL,
     MARKER_PREFIX,
     SCHEMA_VERSION,
     append_marker,
@@ -39,6 +41,7 @@ from kiro_crew.mcp_gateway.apps import (
     spool_dir,
     strip_model_hidden_tools,
     sweep_spool,
+    visibility_allows,
     write_spool,
 )
 from kiro_crew.mcp_gateway.backend import (
@@ -343,6 +346,142 @@ def _tool(name: str, visibility=...) -> dict:
     return tool
 
 
+# --------------------------------------------------------------------------
+# visibility_allows — ONE parser, both audiences
+# --------------------------------------------------------------------------
+
+class TestVisibilityAllows:
+    """SEP-1865 audience semantics, asserted for BOTH directions together.
+
+    The two directions used to be separate implementations with opposite
+    defaults, and the app-side one denied on absence while citing the spec as
+    its reason. Testing them as a table is what keeps them honest.
+    """
+
+    @pytest.mark.parametrize(
+        "vis,model_ok,app_ok",
+        [
+            (...,                  True,  True),   # absent -> spec default
+            (["model", "app"],     True,  True),
+            (["app", "model"],     True,  True),
+            (["model"],            True,  False),
+            (["app"],              False, True),
+            ([],                   False, False),  # explicit empty audience list
+            ("model",              True,  False),  # bare string is coerced
+            ("app",                False, True),
+        ],
+        ids=["absent", "both", "both-reversed", "model-only", "app-only",
+             "empty-list", "bare-model", "bare-app"],
+    )
+    def test_readable_declarations(self, vis, model_ok, app_ok):
+        tool = _tool("t", vis)
+        assert visibility_allows(tool, AUDIENCE_MODEL).allowed is model_ok
+        assert visibility_allows(tool, AUDIENCE_APP).allowed is app_ok
+        assert visibility_allows(tool, AUDIENCE_MODEL).unreadable is False
+        assert visibility_allows(tool, AUDIENCE_APP).unreadable is False
+
+    @pytest.mark.parametrize(
+        "vis",
+        [None, {}, 42, {"app": True}, 0, True],
+        ids=["explicit-null", "empty-dict", "int", "dict", "zero", "bool"],
+    )
+    def test_unreadable_denies_both_audiences(self, vis):
+        """A declaration this host cannot parse denies BOTH sides and is flagged.
+
+        Present-but-unreadable is an attempt to restrict that we cannot honor,
+        so it fails closed in both directions rather than picking a side.
+        """
+        tool = _tool("t", vis)
+        for audience in (AUDIENCE_MODEL, AUDIENCE_APP):
+            verdict = visibility_allows(tool, audience)
+            assert verdict.allowed is False
+            assert verdict.unreadable is True
+
+    def test_absence_is_by_key_not_by_value(self):
+        """``"visibility": null`` is a declaration, not an omission — ``.get()``
+        cannot tell those apart, so presence is tested by key."""
+        assert visibility_allows(_tool("t"), AUDIENCE_APP).allowed is True
+        assert visibility_allows(_tool("t", None), AUDIENCE_APP).allowed is False
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            {"name": "t"},                              # no _meta at all
+            {"name": "t", "_meta": {}},                  # _meta dict, no ui
+            {"name": "t", "_meta": {"ui": {}}},          # ui dict, no visibility
+            {"name": "t", "_meta": {"other": 1}},        # unrelated _meta keys
+            {"name": "t", "_meta": {"ui": {"resourceUri": "ui://x"}}},
+        ],
+        ids=["no-meta", "empty-meta", "empty-ui", "unrelated-meta", "ui-without-vis"],
+    )
+    def test_genuine_absence_allows_both(self, tool):
+        """Absence at ANY level is still absence — the spec default applies."""
+        for audience in (AUDIENCE_MODEL, AUDIENCE_APP):
+            verdict = visibility_allows(tool, audience)
+            assert verdict.allowed is True
+            assert verdict.unreadable is False
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            {"name": "t", "_meta": "bad"},
+            {"name": "t", "_meta": 42},
+            {"name": "t", "_meta": []},
+            {"name": "t", "_meta": {"ui": "bad"}},
+            {"name": "t", "_meta": {"ui": 42}},
+            {"name": "t", "_meta": {"ui": []}},
+        ],
+        ids=["meta-str", "meta-int", "meta-list", "ui-str", "ui-int", "ui-list"],
+    )
+    def test_malformed_container_denies_both(self, tool):
+        """A present-but-non-dict ``_meta``/``ui`` is NOT absence.
+
+        The container that would hold ``visibility`` is unreadable, so a
+        declaration may well be in there and this host cannot see it. Treating
+        that as absence let a tool run with no readable authorization metadata,
+        which is the same fail-open the leaf-level check already guards against.
+        """
+        for audience in (AUDIENCE_MODEL, AUDIENCE_APP):
+            verdict = visibility_allows(tool, audience)
+            assert verdict.allowed is False
+            assert verdict.unreadable is True
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            {"name": "t", "_meta": None},
+            {"name": "t", "_meta": {"ui": None}},
+        ],
+    )
+    def test_null_container_is_absence_not_malformation(self, tool):
+        """A JSON ``null`` container is an unset optional, so the default applies.
+
+        Serializers routinely emit ``"_meta": null`` for an unset optional
+        object. Denying it would withhold EVERY tool from such a server — a
+        worse failure than the deny-on-absence bug this parser exists to fix —
+        and ``null`` cannot conceal a declaration, which is the whole reason a
+        non-dict container denies.
+        """
+        for audience in (AUDIENCE_MODEL, AUDIENCE_APP):
+            verdict = visibility_allows(tool, audience)
+            assert verdict.allowed is True
+            assert verdict.unreadable is False
+
+    def test_non_dict_tool_denies(self):
+        for junk in (None, "tool", 7, []):
+            verdict = visibility_allows(junk, AUDIENCE_APP)
+            assert verdict.allowed is False
+            # Not a metadata problem: there is no tool here to have declared
+            # anything, so this must not be bucketed as an unreadable
+            # declaration. Asserted because the bucketing is otherwise
+            # unobservable and a future caller could rely on it.
+            assert verdict.unreadable is False
+
+
+# --------------------------------------------------------------------------
+# strip_model_hidden_tools
+# --------------------------------------------------------------------------
+
 class TestStripModelHiddenTools:
     def test_drops_app_only_tool(self):
         result = {"tools": [_tool("refresh", ["app"]), _tool("get_weather", ["model", "app"])]}
@@ -456,7 +595,6 @@ def _pool_key(server: str = "excalidraw-mcp") -> PoolKey:
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        user_identity="testuser",
         config_snapshot_hash="jkl012",
     )
 

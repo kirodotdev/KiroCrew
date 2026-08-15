@@ -255,6 +255,48 @@ export const captureStatelessCard = (
   return c && !c.ask_id ? c.cardId ?? null : null
 }
 
+/** Capture a slot's pending BLOCKING card's `ask_id` for send-time capture, the
+ *  `ask_id` counterpart to captureStatelessCard, with the same
+ *  synchronously-at-send-entry contract and for the same reason.
+ *
+ *  A blocking card cannot be retired in the store the way a stateless one is:
+ *  an agent is parked on its HTTP request, so deleting the entry alone leaves
+ *  that agent waiting out its whole window with nothing on screen. Sending a
+ *  composer message instead of using the card therefore has to resolve it
+ *  through the answer endpoint, which is why the send path needs the id rather
+ *  than just "a card was pending".
+ *
+ *  Returns null while the card holds an ANSWER IN PROGRESS — a typed custom
+ *  answer or a pending option selection — because resolving it unmounts the card
+ *  and that work lives only in the component. The same invariant the stateless
+ *  path keeps (dropStaleStatelessQuestion), for the same reason: a send must not
+ *  silently destroy something the user is part-way through. The agent then stays
+ *  blocked, but the card is still on screen with the draft intact, so the user
+ *  keeps both affordances for releasing it. A card the user never touched has no
+ *  draft and is resolved normally. */
+export const capturePendingAskId = (
+  map: ChatState['pendingQuestions'] | undefined,
+  slot: string | null | undefined,
+): string | null => {
+  const c = pendingQuestionFor(map, slot)
+  if (c?.draftActive) return null
+  return c?.ask_id ?? null
+}
+
+/** Whether a send's acceptance should resolve the blocking card captured at its
+ *  entry. Shared by the two send sites so the rule cannot drift between them.
+ *
+ *  `queued` counts, which is the difference from the stateless card's rule and
+ *  the whole point of this helper: a queued message cannot pop until the turn
+ *  ends, and the turn cannot end while the agent is blocked on the card, so
+ *  deferring to queue_pop would hold the two against each other for the entire
+ *  ask window. A rejected send resolves nothing — the card is the user's only
+ *  way to answer, and the session never moved on. */
+export const shouldResolveAskOnSend = (
+  accepted: { ok?: boolean; queued?: boolean } | null | undefined,
+  askAtSend: string | null,
+): boolean => !!askAtSend && !!(accepted?.ok || accepted?.queued)
+
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
 type SlotQueueItem = { content: string; queueId: string; ts: string }
@@ -445,7 +487,7 @@ interface ChatState {
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string }>
+  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
   loadingOlder: boolean
@@ -465,6 +507,9 @@ interface ChatState {
   historyHasMore: boolean
   historyOffset: number
   pendingInput: string | null
+  /** Transient feedback for agent-rebind failures shared by the picker and
+   *  global cycle shortcuts. The App shell owns rendering and expiry. */
+  agentSwitchNotice: { message: string } | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean
@@ -517,6 +562,19 @@ interface ChatState {
    *  treating that as a request would force-focus Files or the last requested
    *  view over the tab the user actually left the chat on. */
   activityTabRequest: number
+  /** Pending "reveal in sidebar" request from the session header menu, or
+   *  null. State, not a window event, on purpose: the sidebar is unmounted
+   *  while the drawer is collapsed (and under preview focus / on mobile), and
+   *  a one-shot CustomEvent dispatched before the listener mounts is silently
+   *  dropped — there is no replay. Held here, the request survives until the
+   *  sidebar consumes and clears it in an effect that also runs on mount
+   *  (issue #912). */
+  revealRequest: { key: string; nonce: number } | null
+  /** Never-reset counter feeding `revealRequest.nonce`, so revealing the same
+   *  session twice produces two distinct requests (a key-only request would
+   *  make the second reveal indistinguishable from the first). Monotonic
+   *  across clears. */
+  revealNonce: number
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
    *  consumed (cleared) once the matching ToolCallLine has expanded itself. */
   focusToolCallId: string | null
@@ -541,7 +599,7 @@ interface ChatState {
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
-  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; draftActive?: boolean }>
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; serverCardId?: string; draftActive?: boolean }>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -593,6 +651,7 @@ const initialState: ChatState = {
   historyHasMore: false,
   historyOffset: 0,
   pendingInput: null,
+  agentSwitchNotice: null,
   creatingSlot: false,
   slotContextPct: {},
   slotContextTokens: {},
@@ -607,6 +666,8 @@ const initialState: ChatState = {
   activityOpen: false,
   activityTab: 'files' as const,
   activityTabRequest: 0,
+  revealRequest: null,
+  revealNonce: 0,
   focusToolCallId: null,
   mcpApps: {},
   slotActivity: seedSlotActivity(),
@@ -767,12 +828,36 @@ function applyNonActiveFrame(
     }
     // Reconcile the optimistic user bubble (appendSlotMessage) rather than
     // pushing a 2nd identical one when the server echoes the user frame — same
-    // pattern as sseSideResult. Kills the during-turn duplicate user message.
-    const lastUser = msgs[msgs.length - 1]
-    if (lastUser?.role === 'user' && lastUser.content === content) {
-      if (ts) lastUser.ts = ts
-      if (meta) lastUser.meta = { ...(lastUser.meta || {}), ...meta }
-      return
+    // pattern as sseSideResult / steer reconcile. The bubble is NOT necessarily
+    // the last message: the agent can start streaming (thinking/tool/assistant
+    // frames) before the server echoes the user frame, so a tail-only check
+    // misses the bubble and the echo is pushed as a duplicate — or worse, the
+    // original bubble never receives its `mid`, making it un-pinnable (#2845).
+    // PRIMARY: sendId correlation. FALLBACK: tail content match for paths
+    // that don't generate a sendId (split-pane, queued promotions).
+    const echoSendId = meta?.sendId as string | undefined
+    if (echoSendId && meta?.mid) {
+      const reconcileFloor = Math.max(0, msgs.length - 50)
+      for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
+        const m = msgs[i]
+        if (m.role !== 'user') continue
+        if (m.meta?.steer) break
+        if (m.meta?.sendId === echoSendId) {
+          if (ts) m.ts = ts
+          m.meta = { ...(m.meta || {}), ...meta }
+          delete (m.meta as Record<string, unknown>).optimistic
+          return
+        }
+        break
+      }
+    } else if (meta?.mid) {
+      // Fallback: tail content match (pre-existing behavior).
+      const last = msgs[msgs.length - 1]
+      if (last?.role === 'user' && last.content === content && !last.meta?.mid) {
+        if (ts) last.ts = ts
+        if (meta) last.meta = { ...(last.meta || {}), ...meta }
+        return
+      }
     }
   }
   msgs.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
@@ -826,11 +911,14 @@ export const fetchHistory = createAsyncThunk(
   },
 )
 
+/** Rows to request per older-history page. */
+const OLDER_PAGE_LIMIT = 100
+
 async function fetchSlotDetail(key: string) {
   // No limit → backend returns all chained history (across gateway restarts).
   const d = await api.chatSlotDetail(key)
   type QueueItem = string | { content: string; id: string }
-  return { key, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  return { key, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
@@ -1130,14 +1218,28 @@ export const deleteSlot = createAsyncThunk(
     // backend that emits a distinct `slot.surface` keeps "switch to a peer
     // session" pinned to the same nav destination.
     const deletedSurface = deletedSlot ? slotSurfaceKey(deletedSlot) : ''
-    // Navigate before removeSlotOptimistic to prevent useEffect race
+    // Navigate before removeSlotOptimistic to prevent a useEffect race: the
+    // active slot must already name a surviving peer by the time this slot
+    // leaves the list.
+    //
+    // What that ordering constrains is the STATE transitions, not the I/O.
+    // `switchSlot.pending` assigns `activeSlot` synchronously as it is
+    // dispatched, so the invariant above holds from that call — not from the
+    // moment its history fetch resolves. That fetch is unbounded (the peer's
+    // whole transcript, megabytes on a long session), so it is carried as a
+    // promise rather than awaited here: blocking on it would hold the dismissed
+    // tab on screen for the length of an unrelated conversation's load, which
+    // reads as a dead close control. The peer paints from the `slotMessages`
+    // cache when it has one, or from `slotLoading` behind the already-removed
+    // tab when it does not.
+    let navigation: Promise<unknown> | undefined
     if (root.chat.activeSlot === key) {
       const sameSurface = new Set(root.dashboard.slots.filter(s => slotSurfaceKey(s) === deletedSurface).map(s => s.key))
       const prev = root.chat.slotHistory.filter(k => k !== key && sameSurface.has(k)).pop()
         || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0]
       dispatch({ type: 'chat/setActiveSlot', payload: null })
       if (prev) {
-        await dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
+        navigation = dispatch(switchSlot(prev)).unwrap().catch(() => dispatch({ type: 'chat/clearSlotState' }))
       } else {
         dispatch({ type: 'chat/clearSlotState' })
       }
@@ -1149,6 +1251,15 @@ export const deleteSlot = createAsyncThunk(
     } catch {
       dispatch(fetchSlots())
       throw new Error('save failed')
+    } finally {
+      // Settle the peer navigation before this thunk reports back, on the
+      // failure path too. Callers that await it treat resolution as "the
+      // dismissal is done" and then read the store (an app agent tearing its
+      // session down, the create-first-then-delete mode switch), so resolving
+      // mid-fetch would hand them a half-loaded peer. Rejection is already
+      // absorbed by the `.catch` above, so this cannot throw and cannot mask
+      // the error being propagated.
+      await navigation
     }
     return key
   },
@@ -1162,7 +1273,10 @@ export const resumeFromHistory = createAsyncThunk(
       dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
-    return { ok: d.ok, key: d.key, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    // Without a cursor this response cannot be paged, so do not advertise more:
+    // a zero cursor beside hasMore renders an affordance that loads nothing.
+    const cursor = typeof d.next_before === 'number' ? d.next_before : null
+    return { ok: d.ok, key: d.key, nextBefore: cursor ?? 0, messages: filterMessages(d.messages || []), hasMore: cursor !== null && (d.has_more || false), total: d.total || 0 }
   },
 )
 
@@ -1189,11 +1303,17 @@ export const loadOlderMessages = createAsyncThunk(
   'chat/loadOlder',
   async (_, { getState }) => {
     const state = (getState() as { chat: ChatState }).chat
-    if (!state.activeSlot || !state.slotHasMore || state.loadingOlder) return null
+    if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
     const slot = state.activeSlot
-    const d = await api.chatSlotDetail(slot, 100, state.slotOldestIndex)
-    return { slot, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex)
+    return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+  },
+  {
+    // Concurrency guard belongs HERE, not in the payload creator: `pending`
+    // sets loadingOlder BEFORE the creator runs, so a creator that reads the
+    // same flag always sees true and returns null -- paging never fetched.
+    condition: (_, { getState }) => !(getState() as { chat: ChatState }).chat.loadingOlder,
   },
 )
 
@@ -1523,7 +1643,12 @@ const chatSlice = createSlice({
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
     clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
-    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
+    setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
+      // Always create a fresh value so repeating the same refusal restarts the
+      // App shell's expiry effect instead of inheriting the previous timer.
+      state.agentSwitchNotice = action.payload === null ? null : { message: action.payload }
+    },
+    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
       if (!state.pendingQuestions) state.pendingQuestions = {}
@@ -1555,6 +1680,13 @@ const chatSlice = createSlice({
         // payload — is what send-time captures compare against, so two
         // deliveries of an identical question are still distinguishable.
         cardId: `card-${secureRandomId()}`,
+        // The SERVER's identity for this ask, carried on the broadcast. Distinct
+        // from `cardId` above, which is minted here per delivery: only the
+        // server's own id can name the record the dismiss route retires, so a
+        // dismissal that lands after a newer card replaced this one is refused
+        // instead of clearing the new card's status. Absent for a blocking card
+        // (its `ask_id` is that identity) and for a payload that predates it.
+        serverCardId: action.payload.card_id,
         // A fresh, structurally IDENTICAL replacement keeps the mounted
         // component (PendingQuestionCard keys the component by payload, not
         // cardId), so the user's local draft survives the swap — but a plain
@@ -1613,14 +1745,30 @@ const chatSlice = createSlice({
       const card = state.pendingQuestions?.[safeKey(action.payload.slot)]
       if (card) card.draftActive = action.payload.active
     },
-    /** Clear the card only if it is the one the backend just resolved.
-     *  Guards against a stale `question_card_resolved` (from a timed-out
-     *  earlier ask) wiping a newer card the user is mid-way through. */
-    resolveQuestionCard(state, action: PayloadAction<{ ask_id: string }>) {
-      // Delete by ask_id match so a stale resolution for an already-replaced
-      // question cannot clear a different slot's live card.
+    /** Clear the card the backend just retired, matched by IDENTITY.
+     *
+     *  `ask_id` names a blocking round-trip; `card_id` names a stateless card
+     *  (compared against the server identity the card was delivered with).
+     *  Matching by identity rather than by slot is what stops a stale retirement
+     *  — for a question already replaced by a newer one — from clearing a live
+     *  card the user is part-way through.
+     *
+     *  A STATELESS card with a draft in progress survives, for the same reason
+     *  `dropStaleStatelessQuestion` spares it: the typed answer lives only in the
+     *  card's component state, so unmounting discards it — and a retirement
+     *  arrives at an unpredictable moment (a nudge frame on a monitored session
+     *  retires the record while the user is still typing). The card is already
+     *  answerable as a plain message, and dismissing it after the server dropped
+     *  the record is treated as success. A BLOCKING ask is not spared: its future
+     *  is already settled, so the card cannot be answered at all. */
+    resolveQuestionCard(state, action: PayloadAction<{ ask_id?: string; card_id?: string }>) {
+      const { ask_id: askId, card_id: cardId } = action.payload
+      if (!askId && !cardId) return
       for (const [slotKey, card] of Object.entries(state.pendingQuestions ?? {})) {
-        if (card?.ask_id === action.payload.ask_id) delete state.pendingQuestions[slotKey]
+        const hit = askId ? card?.ask_id === askId : card?.serverCardId === cardId
+        if (!hit) continue
+        if (!askId && card?.draftActive) continue
+        delete state.pendingQuestions[slotKey]
       }
     },
     setFollowupCard(state, action: PayloadAction<{ slot: string; items: FollowupItem[]; ts?: number }>) {
@@ -1712,6 +1860,13 @@ const chatSlice = createSlice({
       // and the card must survive a failed send. The send path dispatches
       // retireStatelessQuestion after the server confirms delivery.
       if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreaming(state.messages)
+      // Non-steer user bubbles carry a `sendId` in meta (set by ChatPage at
+      // send time) that serves as both the optimistic marker and the correlation
+      // ID for reconciliation. The `optimistic` flag is kept as a simple boolean
+      // so the reconcile scan knows this bubble is pending confirmation (#2845).
+      if (m.role === 'user' && !m.meta?.steer && m.meta?.sendId) {
+        m.meta = { ...(m.meta || {}), optimistic: true }
+      }
       state.messages.push(ensureMsgId(m))
     },
     /** Optimistically append a message to a specific slot's store — global
@@ -1778,6 +1933,11 @@ const chatSlice = createSlice({
       // appendMessage (active-slot) path.
       if (message.role === 'user' && message.meta?.steer && message.meta?.optimistic) {
         finalizeTrailingStreaming(msgs)
+      }
+      // Mark non-steer user bubbles as optimistic so the sseChatMessage
+      // reconcile can distinguish them from channel-replayed messages (#2845).
+      if (message.role === 'user' && !message.meta?.steer && message.meta?.sendId) {
+        message.meta = { ...(message.meta || {}), optimistic: true }
       }
       msgs.push(ensureMsgId(message))
     },
@@ -1864,7 +2024,12 @@ const chatSlice = createSlice({
       state.stopPressedAt[safeKey(action.payload.slotId)] = action.payload.ts
     },
     setSlotState(state, action: PayloadAction<SlotState>) { state.slotState = action.payload },
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string }>) {
+    /** Replace a slot's live status line wholesale. A `tool` phase may carry the
+     *  `toolCallId` it describes so a later refinement of the SAME call can be
+     *  merged into it (see the `tool_call` case in useWebSocket) without a
+     *  refinement of one call inheriting a sibling's purpose when tools run in
+     *  parallel. */
+    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
@@ -1900,6 +2065,11 @@ const chatSlice = createSlice({
     /** Clear after the matching pill has consumed the focus signal, so the same trigger
      *  doesn't re-fire on subsequent re-renders. */
     clearFocusToolCallId(state) { state.focusToolCallId = null },
+    /** Ask the sidebar to reveal a session row (expand collapsed ancestor
+     *  folders, scroll it into view, flash it). Consumed and cleared by
+     *  ChatSidebar once it is mounted and ready — see `revealRequest`. */
+    requestSlotReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { key: action.payload, nonce: state.revealNonce } },
+    clearSlotReveal(state) { state.revealRequest = null },
     /** Drop the previous connection's ephemeral subagent view before the gateway
      *  replays its authoritative running/done snapshot. Without this reset, an
      *  empty replay leaves agents from a restarted gateway visible indefinitely.
@@ -2765,6 +2935,53 @@ const chatSlice = createSlice({
             }
           }
         }
+        // Reconcile the optimistic user bubble rather than pushing a duplicate
+        // when the server echoes the user frame. The bubble is NOT necessarily
+        // the last message: the agent can start streaming (thinking/tool/
+        // assistant frames) before the server echoes the user frame, so a
+        // tail-only check misses the bubble and the echo is pushed as a
+        // duplicate — or worse, the original bubble never receives its `mid`,
+        // making it un-pinnable (#2845).
+        //
+        // PRIMARY: match by `sendId` — a client-generated correlation ID
+        // stamped at send time into both the optimistic bubble and the POST
+        // body. The server preserves meta fields, so the echo carries the same
+        // sendId plus the server-minted `mid`. This is a cryptographic-strength
+        // identity match — distinct messages with identical text but different
+        // sendIds are never conflated.
+        //
+        // FALLBACK: for code paths that create optimistic bubbles without a
+        // sendId (split-pane sends, queued message promotions), fall back to
+        // the pre-existing tail-check: if the last user message matches
+        // content and has no mid yet, reconcile it. This preserves the
+        // original behavior for those paths.
+        const echoSendId = meta?.sendId as string | undefined
+        if (echoSendId && meta?.mid) {
+          const reconcileFloor = Math.max(0, state.messages.length - 50)
+          for (let i = state.messages.length - 1; i >= reconcileFloor; i--) {
+            const m = state.messages[i]
+            if (m.role !== 'user') continue
+            if (m.meta?.steer) break
+            if (m.meta?.sendId === echoSendId) {
+              if (ts) m.ts = ts
+              m.meta = { ...(m.meta || {}), ...meta }
+              delete (m.meta as Record<string, unknown>).optimistic
+              return
+            }
+            break
+          }
+        } else if (meta?.mid) {
+          // Fallback: no sendId on the echo — use tail content match (the
+          // pre-existing reconcile that worked when the echo arrived before
+          // any streaming). Only checks the LAST message (not a backward scan)
+          // to limit false-match risk to the original code's window.
+          const last = state.messages[state.messages.length - 1]
+          if (last?.role === 'user' && last.content === content && !last.meta?.mid) {
+            if (ts) last.ts = ts
+            if (meta) last.meta = { ...(last.meta || {}), ...meta }
+            return
+          }
+        }
       }
       state.messages.push(ensureMsgId({ role, content, cls: cls || '', ts, meta: effectiveMeta, kind }))
     },
@@ -2943,7 +3160,7 @@ const chatSlice = createSlice({
         state._wsChunkedDuringFetch = false
       })
       .addCase(switchSlot.fulfilled, (state, action) => {
-        const { key, messages, running, hasMore, total, queue } = action.payload
+        const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
         state.slotState = running ? 'streaming' : 'idle'
@@ -3019,7 +3236,7 @@ const chatSlice = createSlice({
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? total - messages.length : 0
+        state.slotOldestIndex = hasMore ? nextBefore : 0
         // Hydrate queued messages from the backend queue field through the
         // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
@@ -3045,7 +3262,7 @@ const chatSlice = createSlice({
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
         if (!action.payload) return
-        const { key, messages, running, hasMore, total, queue } = action.payload
+        const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
         // Merge permission messages: prefer state perms (have frontend resolved flags)
@@ -3088,7 +3305,7 @@ const chatSlice = createSlice({
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
         state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? total - messages.length : 0
+        state.slotOldestIndex = hasMore ? nextBefore : 0
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -3165,6 +3382,12 @@ const chatSlice = createSlice({
         state.toolLog = []
         state.subagents = {}
         state.activityTab = 'files'
+        // A brand-new chat starts with the side panel CLOSED, like every other
+        // slot-entry path (switchSlot / resumeFromHistory read `?? false` for a
+        // slot they have no cached bucket for). Without this the panel state of
+        // the chat being left leaked into the new one — and was not persisted
+        // under the new slot's key either, so a reload silently closed it again.
+        state.activityOpen = false
         state.slotRunning = false
         state.slotStopping = false
         state.slotState = 'idle'
@@ -3209,7 +3432,7 @@ const chatSlice = createSlice({
           state.slotState = 'idle'
           state.pendingTurnSlot = null
           state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.total - action.payload.messages.length : 0
+          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
         }
       })
       .addCase(deleteHistorySession.fulfilled, (state, action) => {
@@ -3225,9 +3448,14 @@ const chatSlice = createSlice({
           // historical pastes re-tokenize from localStorage instead of showing
           // as fully-expanded text.
           const merged = mergePreservedPastes(state.messages, action.payload.messages)
-          state.messages = [...merged, ...state.messages]
+          // Invariant, not the fix: virtualKeyFor derives a row key from the
+          // message ts, so an overlapping page would reach React as a duplicate
+          // key. Identity is meta.mid only -- see isRedeliveredMessage on why a
+          // ts tuple cannot express this without dropping legitimate rows.
+          const fresh = merged.filter(m => !isRedeliveredMessage(state.messages, m.meta))
+          state.messages = [...fresh, ...state.messages]
           state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.total - state.messages.length : 0
+          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
         }
       })
       .addCase(loadOlderMessages.rejected, (state) => {
@@ -3237,10 +3465,10 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

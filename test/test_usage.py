@@ -902,6 +902,37 @@ class TestBuildTokenRecordContextFields:
         assert rec["context_window"] == 0
         json.dumps(rec)  # must not raise
 
+    def test_stop_reason_recorded_from_event(self):
+        """The row carries the turn's terminal stop reason so watchdog outcomes
+        (tool_stall / stale_recover) can be joined against the free-form
+        ``agent`` field retroactively — per-agent stall analysis happens HERE,
+        not on OTel attrs (cardinality rule)."""
+        from types import SimpleNamespace
+
+        ev = SimpleNamespace(usage=None, stop_reason="error: tool stall")
+        rec = usage_mod._build_token_record(
+            "chat-1", "m", ev, "acp", datetime.now(timezone.utc)
+        )
+        assert rec["stop_reason"] == "error: tool stall"
+        json.dumps(rec)  # must not raise
+
+    def test_stop_reason_defaults_empty_and_tolerates_non_string(self):
+        # A bare TurnUsage-shaped event (provider_last_turn_usage) has no
+        # stop_reason; a non-string on a test double must not break json.dumps.
+        rec = usage_mod._build_token_record(
+            "chat-1", "m", self._event(), "acp", datetime.now(timezone.utc)
+        )
+        assert rec["stop_reason"] == ""
+
+        from types import SimpleNamespace
+
+        weird = SimpleNamespace(usage=None, stop_reason=1234)
+        rec = usage_mod._build_token_record(
+            "chat-1", "m", weird, "acp", datetime.now(timezone.utc)
+        )
+        assert rec["stop_reason"] == ""
+        json.dumps(rec)
+
     def test_backcompat_defaults_when_no_kwargs(self):
         # Called positionally with no new kwargs (mirrors every legacy caller):
         # the original keys are unchanged and the new keys default to ""/0, so

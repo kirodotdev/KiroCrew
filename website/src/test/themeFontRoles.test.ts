@@ -185,3 +185,37 @@ describe('scopeOverridesCss — font pins are dropped', () => {
     expect(r.kept).toBe(1)
   })
 })
+
+describe('scopeOverridesCss — dropped rules are REPORTED, not merely counted', () => {
+  // The names feed the Settings notice and the console diagnostic. A
+  // count alone leaves an author grepping blind; the selector — plus the
+  // offending property for a font pin, where the selector alone says nothing —
+  // is what turns the drop into a work item.
+  it('names a font pin with its selector AND offending property', () => {
+    const r = scopeOverridesCss("body{--font-body:'X',sans-serif}")
+    expect(r.droppedRules).toEqual(['body { --font-body }'])
+  })
+
+  it('names a disallowed-surface rule by its selector', () => {
+    const r = scopeOverridesCss('.session-card{color:#fff}')
+    expect(r.droppedRules).toEqual(['.session-card'])
+  })
+
+  it('reports one entry per dropped rule and none for kept rules', () => {
+    const r = scopeOverridesCss(
+      "body{background:#101010}\n.session-card{color:#fff}\nbody{font:400 1rem 'X',sans-serif}",
+    )
+    expect(r.kept).toBe(1)
+    expect(r.dropped).toBe(2)
+    expect(r.droppedRules).toHaveLength(2)
+    expect(r.droppedRules).toEqual(['.session-card', 'body { font }'])
+  })
+
+  it('caps a pathologically long selector instead of flooding the notice', () => {
+    const long = `.${'x'.repeat(300)}{color:#fff}`
+    const r = scopeOverridesCss(long)
+    expect(r.droppedRules).toHaveLength(1)
+    expect(r.droppedRules[0].length).toBeLessThanOrEqual(80)
+    expect(r.droppedRules[0].endsWith('…')).toBe(true)
+  })
+})

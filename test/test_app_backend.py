@@ -1455,11 +1455,13 @@ def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
 
     proj = tmp_path / "proj"
     (proj / ".git").mkdir(parents=True)
+    (proj / "src" / "kiro_crew").mkdir(parents=True)
+    (proj / "pyproject.toml").write_text("[project]\nname = 'kiro-crew'\n")
     monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/opt/checkouts/kirocrew")
     monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
     assert dfmod._default_main_repo() == "/opt/checkouts/kirocrew"
 
-    # Without the override the chain falls through to PROJECT_DIR (with .git),
-    # and then to the ~/kirocrew fallback — the packaged-install trap.
+    # Without the override the chain falls through to PROJECT_DIR, which is
+    # adopted only because it carries the Kiro Crew checkout markers.
     monkeypatch.delenv("KIROCREW_DEVFLEET_REPO")
     assert dfmod._default_main_repo() == str(proj)

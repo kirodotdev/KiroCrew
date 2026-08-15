@@ -123,11 +123,10 @@ _STATE_SEVERITY: dict[str, str] = {
 _METRIC_LOOKBACK_SECS = 3600
 
 #: Datadog's mute endpoint takes an optional ``end`` epoch and treats its ABSENCE as
-#: "mute forever" — so posting ``body={}`` (what this adapter used to do) silenced a
-#: production monitor indefinitely, and the only way back was a human noticing and
-#: unmuting by hand. The window is now always sent, bounded by the shared
-#: ``resolve_silence_secs`` so every provider's suppression obeys one ceiling rather
-#: than each adapter inventing its own.
+#: "mute forever", so posting ``body={}`` silences a production monitor indefinitely
+#: and the only way back is a human noticing and unmuting by hand. The window is
+#: therefore always sent, bounded by the shared ``resolve_silence_secs`` so every
+#: provider's suppression obeys one ceiling rather than each adapter inventing its own.
 
 
 def _api_base() -> str:
@@ -305,8 +304,6 @@ class DatadogEvidenceSource:
         return await asyncio.to_thread(self._gather_sync, signal, budget)
 
     def _gather_sync(self, signal: Signal, budget: EvidenceBudget) -> list[Evidence]:
-        import time
-
         monitor_id = signal.labels.get("dd_monitor_id", "")
         if not monitor_id:
             return []

@@ -22,6 +22,14 @@ class _FakeSlot:
         self._auto_run = False
         self.running = True
         self.key = "test-slot"
+        #: Set on every slot whose turns run on a session it did not name
+        #: itself — a cron-born tab (``cron:<job_id>``), a channel-born tab
+        #: (``slack:<ts>``), a workflow-born tab. Empty for a plain chat tab.
+        self.linked_session_key = ""
+        #: No owning app: the App Kit §5.2 cancel guard reads this, and a slot
+        #: nobody owns is cancellable by the dashboard caller.
+        self._app = None
+        self._active_turn_session_key = ""
         self.agent = "kirocrew"
         self.messages: list[dict] = []
         self._dirty = False
@@ -79,6 +87,10 @@ class TestStopHandlerIdempotent:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}  # no force flag
@@ -106,6 +118,10 @@ class TestStopHandlerIdempotent:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}
@@ -137,13 +153,17 @@ class TestInterruptHandlerIdempotent:
         slot._stop_state = "soft_pending"
         slot._stop_event_id = "stop-xyz"
         slot.running = True
-        slot._queue = [{"queue_id": "q1", "content": "hello"}]
+        slot._queue = [{"id": "q1", "content": "hello"}]
 
         state = _FakeState(slot)
         app = web.Application()
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.content_length = 0
@@ -226,6 +246,10 @@ class TestStopCardTeardownRace:
         app["state"] = state
 
         request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
         request.app = app
         request.match_info = {"slot": "test-slot"}
         request.query = {}
@@ -436,3 +460,81 @@ class TestStopCardTeardownRace:
         await _make_stop_resolver(state, slot, "soft", None)()
 
         assert slot._stop_state == "idle"
+
+
+class TestStopCancelsTheSessionTheTurnRunsOn:
+    """Stop must address the session the slot's turns actually run on.
+
+    A slot carrying ``linked_session_key`` runs its turns under THAT key —
+    ``chat_runner`` resolves it with ``effective_session_key`` — so cancelling
+    ``dashboard:<slot key>`` reaches a session that never existed.
+    ``SessionManager.stop_turn`` finds nothing, returns "idle", and the handler
+    settles the card as "stopped" while the turn keeps streaming: a Stop that
+    reports success and does nothing, once per press.
+    """
+
+    @staticmethod
+    def _request(state):
+        from aiohttp import web
+
+        app = web.Application()
+        app["state"] = state
+        request = MagicMock()
+        # A bare MagicMock answers .get("app") with a truthy mock, which the
+        # App Kit 5.2 ownership guard would read as an app token. These cases
+        # are dashboard-user presses, so model the absent header explicitly.
+        request.get = lambda key, default="": default
+        request.app = app
+        request.match_info = {"slot": "test-slot"}
+        request.query = {}
+        return request
+
+    @pytest.mark.asyncio
+    async def test_stop_uses_the_linked_session_key(self):
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_stop
+
+        slot = _FakeSlot()
+        slot.linked_session_key = "cron:40b4958a"
+        state = _FakeState(slot)
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
+            "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"
+        ):
+            await api_chat_slot_stop(self._request(state))
+
+        assert state.sessions.stop_turn.await_args.args[0] == "cron:40b4958a"
+
+    @pytest.mark.asyncio
+    async def test_stop_falls_back_to_the_dashboard_key(self):
+        """A plain chat tab has no linked key, and must keep its own."""
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_stop
+
+        slot = _FakeSlot()
+        state = _FakeState(slot)
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
+            "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"
+        ):
+            await api_chat_slot_stop(self._request(state))
+
+        assert state.sessions.stop_turn.await_args.args[0] == "dashboard:test-slot"
+
+    @pytest.mark.asyncio
+    async def test_interrupt_uses_the_linked_session_key(self):
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_interrupt
+
+        slot = _FakeSlot()
+        slot.linked_session_key = "slack:1786000000.1"
+        # /interrupt is only reachable with something queued to promote.
+        slot._queue = [{"id": "q1", "content": "next"}]
+        state = _FakeState(slot)
+
+        request = self._request(state)
+        request.content_length = 0
+
+        with patch("kiro_crew.dashboard.chat_handlers.sel"), patch(
+            "kiro_crew.dashboard.chat_handlers._reject_pending_approvals"
+        ):
+            await api_chat_slot_interrupt(request)
+
+        assert state.sessions.stop_turn.await_args.args[0] == "slack:1786000000.1"

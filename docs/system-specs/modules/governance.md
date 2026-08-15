@@ -421,7 +421,7 @@ disposition:
   transport is an externally-reachable network surface — deny-by-default on any
   error is the safer posture there, and a transport that fails to start leaks
   nothing. `fail_closed=True` is the same disposition the authorization/admission
-  chokepoints use (e.g. `capabilities.publish` in `handlers/artifacts.py`,
+  chokepoints use (e.g. `capabilities.publish` in `publish_governance.py`,
   `capabilities.theme_install` in `handlers/themes.py`, `capabilities.theme_persona`
   in `chat_runner.py`) where a wrong permit lets bytes leave the box or ingests
   untrusted content. The ALLOW audit is disposition-split: a **governed** allow
@@ -924,8 +924,8 @@ switched off. Two fields keep that honest:
 only POSTURE — set `mode`, entry COUNTS (`allow_count`/`deny_count`),
 capability `enabled` + inner scope names, ordinal `floor` — and NEVER the rule
 CONTENTS (the allow/deny globs, command patterns). This is deliberate: the
-dashboard is reachable by the agent's own browser tooling (Playwright extension
-mode attaches to the user's authenticated Chrome), and `security_policy.json` /
+dashboard is reachable by the agent's own browser tooling (`playwright-cli attach
+--extension` drives the user's authenticated Chrome), and `security_policy.json` /
 `profiles` are on the `is_sensitive_path` keystone precisely so the agent cannot
 read the ceiling it is fenced by — knowing the exact deny patterns is what would
 let it craft an evasion. The human operator reads the authoritative contents from
@@ -993,10 +993,10 @@ denials leave the same forensic trail.
   through the same effective-deny floor as `on_tool_call` is tracked as its own
   follow-up; do not describe computer-use governance as covering it.
 - **Raster capture has two channels and neither is governed.** Computer use has no
-  `observations` scope any more, and Playwright's already-shipped
-  `browser_take_screenshot` never had one — a fleet that means "no raster capture"
-  must deny both `@kirocrew-computer` and `@playwright/browser_take_screenshot` via
-  the `mcp` scope.
+  `observations` scope any more, and `playwright-cli screenshot` is a shell command
+  rather than a tool call, so an `mcp` deny cannot reach it at all. A fleet that
+  means "no raster capture" must deny `@kirocrew-computer` via the `mcp` scope
+  **and** the browser CLI via the `commands` scope.
 - **The `mcp`-scope deny is now the ONLY governance lever over computer use, and it
   is keyed on a renameable alias.** `mcp.deny: ["@kirocrew-computer"]` works on
   unmodified shipped code, but the server key is derived by `mcp_server_alias()` from
@@ -1099,9 +1099,9 @@ Display-only union — it does not widen enforcement.
 with an inner `destinations` `ScopedRuleset` (`identifier` matcher) bounding
 which publish-provider ids are allowed once the capability is on — the direct
 analogue of `capabilities.spawn`'s `agents` ruleset. It is enforced at a Plane-C
-out-of-band chokepoint in the artifact publish handler (`api_artifact_publish`),
-NOT at the host PreToolUse gate: publishing is a user-driven dashboard HTTP
-action ("NOT LLM tools"), so the title-gate never sees it. The chokepoint calls
+out-of-band chokepoint — `publish_governance.publish_denied_reason` — NOT at the
+host PreToolUse gate: publishing is a user-driven dashboard HTTP action ("NOT LLM
+tools"), so the title-gate never sees it. The chokepoint calls
 `governance_permits("capabilities.publish", "destinations:<provider_id>", …)`
 BEFORE dispatching to the provider, and additionally honours the standalone
 operator's `publish.allowed_destinations` config allowlist (default-open,
@@ -1111,6 +1111,26 @@ from `network.egress`: `capabilities.publish.enabled: true` never re-enables git
 publish (the floor is ADD-only and unconditional) nor a fetch host. WHO
 implements a destination is the orthogonal CPP `PublishRegistry` seam; governance
 decides only WHETHER + to WHERE, and runs first.
+
+Callers (one decision, several surfaces — the helper lives in its own module so a
+second surface cannot grow a drifting copy):
+
+| Surface | Destination id | On deny |
+|---|---|---|
+| `api_artifact_publish` + its sharing/review siblings (`handlers/artifacts.py`, via the module-local `_publish_governance_denied` alias) | the requested/effective `publication.provider` | 403 |
+| `GET /api/publish-providers` (`apps/routes.py`) | `deploy-web-aws` | the row is omitted, so the button never renders |
+| `POST /api/deploy/deploy` (`deploy/handlers.py`) | `deploy-web-aws` | 403, audited `deploy/denied` |
+| `POST /api/deploy/pending/{id}/confirm` | `deploy-web-aws` | 403 BEFORE `claim_pending`, so a denied confirm does not consume the entry |
+
+The deploy-path callers are what make the public-web destination genuinely
+closable: hiding the provider row alone would be presentation, not a control
+(the endpoint is reachable directly, and the `deploy_artifact` MCP preview goes
+through `/api/deploy/deploy` too), and gating only the initial deploy would leave
+a pending entry created before the ceiling changed still confirmable. Because the
+deploy path shares `publish.allowed_destinations`, an operator who had already
+narrowed that list for the registry must add `deploy-web-aws` to keep deploying —
+intentional: the list states which destinations are permitted, and the core
+deploy provider was previously the one destination exempt from it.
 
 Unlike the messaging/cron chokepoints (which degrade-to-permit on a transient
 governance-evaluation error so a latent regression can't wedge the surface),

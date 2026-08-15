@@ -177,7 +177,10 @@ export default function BusySendButton({
               data-option=""
               tabIndex={-1}
               onClick={() => select(m)}
-              className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover focus:bg-bg-hover focus:outline-none transition-colors cursor-pointer text-left border-none"
+              // `focus-visible` rather than `focus`: focus lands on this row as
+              // the menu opens, and a plain `focus:` tint would paint it exactly
+              // like the hover state for as long as the menu is open.
+              className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover focus-visible:bg-bg-hover focus:outline-none transition-colors cursor-pointer text-left border-none"
               data-testid={`busy-send-mode-${m}`}
             >
               <span className={`shrink-0 ${m === 'steer' ? 'text-accent' : 'text-warn'}`}>{icon}</span>

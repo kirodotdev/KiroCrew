@@ -21,6 +21,7 @@ const model = (over: Partial<HostModel> = {}): HostModel => ({
   self: null,
   macInset: false,
   electron: true,
+  expanded: false,
   ...over,
 })
 
@@ -41,8 +42,9 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
 
     // Local + the relayed instance tab both render.
-    expect(screen.getByRole('tab', { name: /Local/ })).toBeTruthy()
-    const cloud = screen.getByRole('tab', { name: /Cloud One/ })
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    expect(screen.getByRole('menuitemradio', { name: /Local/ })).toBeTruthy()
+    const cloud = screen.getByRole('menuitemradio', { name: /Cloud One/ })
     expect(cloud).toBeTruthy()
 
     await userEvent.click(cloud)
@@ -51,7 +53,8 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       '*',
     )
 
-    await userEvent.click(screen.getByRole('tab', { name: /Local/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(screen.getByRole('menuitemradio', { name: /Local/ }))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-switch-instance', id: null }),
       '*',
@@ -63,7 +66,32 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       instances: { warm: {}, activeId: null, mru: [], unread: {}, host: null },
     })
     const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
-    expect(container.querySelector('[role="tablist"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Remote crews"]')).toBeNull()
+  })
+
+  it('honors the relayed pin: expanded model renders the chip row, not the dropdown', async () => {
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: [], unread: {}, host: model({ expanded: true }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    // Expanded: crews are always-visible chips (buttons), so there is no
+    // "Switch crew" dropdown trigger to open.
+    expect(screen.queryByRole('button', { name: /Switch crew/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Cloud One/ })).toBeTruthy()
+  })
+
+  it('relays a pin toggle up to the parent instead of writing its own store', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: [], unread: {}, host: model({ expanded: true }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    // The pin is pressed (expanded); clicking it asks the parent to collapse.
+    await userEvent.click(screen.getByRole('button', { name: /Collapse|Show all/i }))
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mc-set-expanded', expanded: false }),
+      '*',
+    )
   })
 })
 

@@ -27,6 +27,8 @@
  * (snip) path, which produces base64 without ever touching disk.
  */
 
+import { mdImageDest } from '../../../utils/fileTokens'
+
 /**
  * A base64 screen-capture crop, as a File the upload route accepts.
  *
@@ -142,7 +144,11 @@ export function attachmentLines(items: readonly PendingAttachment[]): string {
   const images = items.filter((a) => a.isImage)
   const files = items.filter((a) => !a.isImage)
   const lines = [
-    ...images.map((a) => `![image](${a.path})`),
+    // mdImageDest keeps the destination markdown-safe (forward-slashed
+    // Windows paths, `%` escaped, whitespace paths `<…>`-wrapped) — the same
+    // producer rule ChatPage's send path uses, so a dropped image renders in
+    // the sent bubble on Windows too (issue #3497).
+    ...images.map((a) => `![image](${mdImageDest(a.path)})`),
     ...files.map((a, i) => `[attached_file ${i + 1}] ${a.path}`),
   ]
   return lines.join('\n')

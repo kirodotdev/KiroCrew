@@ -127,7 +127,7 @@ await page.route('**/api/**', route => {
   if (path === '/api/config/stt') {
     return json(route, {
       enabled: true, dictation_panel: true, streaming: false,
-      provider: 'whisper', available: true, docker_mode: false,
+      provider: 'whisper', available: true,
       model: 'turbo', models: { turbo: '809M' }, language_code: 'en-US',
       install_step: '', install_detail: '', install_error: '', prereqs: [],
     })

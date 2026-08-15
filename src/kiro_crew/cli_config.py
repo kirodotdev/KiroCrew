@@ -12,11 +12,11 @@ from pathlib import Path
 from kiro_crew import beacon
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
+    ConfigReadError,
     _subtract_overlay,
     config_local_path,
     config_path,
-    stamp_config_meta,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
@@ -74,7 +74,7 @@ def _config_cmd(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            write_config_atomically(config_path(), stamp_config_meta(data))
+            update_config_locked(config_path(), mutate=lambda _: data, on_corrupt="reset")
             sel().log_api_access(
                 caller="cli",
                 operation="config_set_file",
@@ -147,22 +147,24 @@ def _config_cmd(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                 p = config_local_path()
+
                 # NOTE: unlike the automatic/background config writers (which now
                 # fail closed via read_config_for_update), this interactive path
                 # deliberately overwrites a corrupt overlay — the user typed an
                 # explicit `config set --local` and sees the result on stdout.
                 # Pinned by test_config_overlay.py::TestCliConfigSetLocal.
-                try:
-                    d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-                except (json.JSONDecodeError, OSError):
-                    d = {}
-                if not isinstance(d, dict):
-                    d = {}
-                _dict_set_create(d, key, parsed)
-                # Mode-preserving: config.local.json can hold credentials, so a
-                # tightened 0600 must not be widened to the umask default by the
-                # tmp+rename (which creates a new inode).
-                write_config_atomically(p, d)
+                #
+                # on_corrupt="reset" handles the corrupt case inside the same
+                # lock hold: the mutate callback receives {} and writes the
+                # single key from scratch. No second critical section needed.
+                def _mutate_local_overlay(_existing: dict) -> dict:
+                    _dict_set_create(_existing, key, parsed)
+                    return _existing
+
+                update_config_locked(
+                    p, mutate=_mutate_local_overlay, stamp_meta=False, on_corrupt="reset"
+                )
+
                 sel().log_api_access(
                     caller="cli",
                     operation="config_set_local",
@@ -172,20 +174,37 @@ def _config_cmd(args: argparse.Namespace) -> None:
                 )
                 print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
             else:
+                # Validate the key exists before taking the lock.
                 cfg = KiroCrewConfig.load()
                 d = cfg.to_dict()
                 if not _dict_set(d, key, parsed):
                     print(f"❌ Unknown key: {key}", file=sys.stderr)
                     sys.exit(1)
-                lp = config_local_path()
-                if lp.is_file():
-                    try:
-                        raw_local = json.loads(lp.read_text(encoding="utf-8"))
-                        if isinstance(raw_local, dict):
-                            d = _subtract_overlay(d, raw_local)
-                    except (json.JSONDecodeError, OSError):
-                        pass
-                write_config_atomically(config_path(), stamp_config_meta(d))
+
+                def _mutate_base(existing: dict) -> dict:
+                    # Apply the set on the freshly-locked raw data.
+                    # Key was already validated above; use _dict_set_create so
+                    # sections that were never written (still at defaults) get
+                    # their intermediate keys created.
+                    _dict_set_create(existing, key, parsed)
+                    lp = config_local_path()
+                    if lp.is_file():
+                        try:
+                            raw_local = json.loads(lp.read_text(encoding="utf-8"))
+                            if isinstance(raw_local, dict):
+                                return _subtract_overlay(existing, raw_local)
+                        except (json.JSONDecodeError, OSError):
+                            pass
+                    return existing
+
+                try:
+                    update_config_locked(config_path(), mutate=_mutate_base)
+                except ConfigReadError as e:
+                    print(
+                        f"❌ Cannot set key in a corrupt config.json: {e}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 sel().log_api_access(
                     caller="cli",
                     operation="config_set",

@@ -35,16 +35,27 @@ import {
   X,
   Power,
   Loader2,
+  MoreHorizontal,
+  Pencil,
+  Play,
 } from 'lucide-react'
 import {
   api,
   ApiError,
+  isAuthExpiredError,
   type InstanceView,
   type LaunchJob,
   type CloudPreflight,
   type CloudCoords,
 } from '../../api/client'
-import { Card, Btn, Badge } from '../../components/ui'
+import { Card, Btn, Badge, IconButton } from '../../components/ui'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '../../components/ui/dropdown-menu'
 import ErrorNotice from '../../components/ErrorNotice'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -52,6 +63,7 @@ import { useAppDispatch } from '../../store'
 import { removeWarm } from '../../store/instancesSlice'
 import { i18nT } from '../../i18n/t'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
+import { EditInstanceForm, instanceFormFromView, type InstanceDraft } from './InstanceFormFields'
 
 
 /** A launch job the user is still waiting on (not yet a switchable crew). */
@@ -219,6 +231,16 @@ function CrewRow({
   onDelete,
   onRequestDelete,
   onRequestRemove,
+  onEdit,
+  onEditSaved,
+  editDraft,
+  onEditDraftChange,
+  editExternallyChanged,
+  editDraftSeq,
+  onEditRebase,
+  editing,
+  blocked,
+  otherPorts,
 }: {
   inst: InstanceView
   cloudTag: string | null
@@ -235,6 +257,21 @@ function CrewRow({
   onDelete: (tag: string, coords: CloudCoords) => void
   onRequestDelete: (tag: string | null) => void
   onRequestRemove: (id: string | null) => void
+  onEdit: (id: string | null) => void
+  onEditSaved: (updated: InstanceView) => void
+  /** Unsaved work for THIS crew, held by the panel so it survives unmount. */
+  editDraft: InstanceDraft | null
+  onEditDraftChange: (draft: InstanceDraft | null) => void
+  /** Persisted fields that moved under the open draft (see EditInstanceForm). */
+  editExternallyChanged: string[]
+  /** Bumped when the draft is rebased, so the form remounts and re-seeds. */
+  editDraftSeq: number
+  onEditRebase: () => void
+  editing: boolean
+  /** This row's Edit was refused because another row holds unsaved changes. */
+  blocked: boolean
+  /** Ports held by the OTHER crews, so the edit form can flag a real conflict. */
+  otherPorts: number[]
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
@@ -246,9 +283,15 @@ function CrewRow({
   // as possibly-cloud: same confirm step, and copy that says what Remove does and does
   // not do.
   const unverifiedCloud = !isCloud && inst.connection_method === 'ssm' && !!inst.ssm_target
+  // A stop/start this row asked for is still in flight.
+  const lifecycleBusy = busy === `stop:${cloudTag}` || busy === `start:${cloudTag}`
+  // States that occupy the row's second control slot with an inline button.
+  const transient =
+    deleting || lifecycleBusy || (isCloud && confirmDelete) || (!isCloud && confirmRemove)
   const target = inst.connection_method === 'ssm' ? inst.ssm_target : inst.ssh_host
   return (
-    <div className="flex items-start justify-between gap-3 py-2.5 border-b border-border last:border-b-0">
+    <div className="py-2.5 border-b border-border last:border-b-0" data-crew-id={inst.id}>
+    <div className="flex items-start justify-between gap-3">
       <div className="flex items-start gap-3 min-w-0">
         <span className={`mt-0.5 w-8 h-8 shrink-0 grid place-items-center rounded-md ${isCloud ? 'bg-accent-subtle text-accent' : 'bg-bg-hover text-muted'}`}>
           {isCloud ? <Rocket size={16} /> : <Server size={16} />}
@@ -271,10 +314,11 @@ function CrewRow({
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-        <Btn onClick={() => onDiagnose(inst.id)} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}>
-          <Stethoscope className="lucide-inline" /> {busy === `diagnose:${inst.id}` ? '…' : i18nT('pages.settings.instancesPanel.diagnose')}
-        </Btn>
-        {connected ? (
+        {/* A row shows at most two controls. While a transient state occupies
+            them — an armed confirm plus its Cancel, or a teardown in progress —
+            the primary action stands down; connecting is not what the user is
+            being asked about at that moment. */}
+        {transient ? null : connected ? (
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy || deleting}>
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
@@ -283,50 +327,158 @@ function CrewRow({
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}
-        {isCloud ? (
-          <>
-            <Btn onClick={() => onStop(cloudTag, coordsOf(inst))} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}>
-              {busy === `stop:${cloudTag}` ? '…' : i18nT('pages.settings.remoteCrewPanel.stop')}
-            </Btn>
-            {/* Stop without Start is a one-way door: the route exists and the client
-                method existed, but nothing called it — a stopped crew had no path back
-                to running from the dashboard, while its EBS volume kept billing. */}
-            <Btn onClick={() => onStart(cloudTag, coordsOf(inst))} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}>
-              {busy === `start:${cloudTag}` ? '…' : i18nT('pages.settings.remoteCrewPanel.start')}
-            </Btn>
-            {deleting ? (
-              // The delete only requested the teardown; AWS confirms minutes later and
-              // the row is dropped then. Show that it is in progress instead of leaving
-              // the row looking untouched (which read as "nothing happened").
-              <Btn danger disabled aria-label={i18nT('pages.settings.remoteCrewPanel.deleting')}>
-                <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.deleting')}
-              </Btn>
-            ) : confirmDelete ? (
-              <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })}>
-                <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.confirm_delete')}
-              </Btn>
-            ) : (
-              <Btn danger onClick={() => onRequestDelete(cloudTag)} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.remoteCrewPanel.delete_crew', { name: inst.name })}>
-                <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.delete')}
-              </Btn>
-            )}
-          </>
-        ) : unverifiedCloud ? (
-          confirmRemove ? (
-            <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
-              <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.confirm_remove')}
-            </Btn>
-          ) : (
-            <Btn danger onClick={() => onRequestRemove(inst.id)} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
-              <Trash2 className="lucide-inline" />
-            </Btn>
-          )
-        ) : (
-          <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy || deleting} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
-            <Trash2 className="lucide-inline" />
+        {/* A teardown and a pending confirmation stay OUT of the overflow menu:
+            both are transient states the user must see without reopening a menu —
+            the delete only requested the teardown, and AWS confirms minutes later
+            when the row is dropped. Hiding that read as "nothing happened". */}
+        {deleting ? (
+          <Btn danger disabled aria-label={i18nT('pages.settings.remoteCrewPanel.deleting')}>
+            <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.deleting')}
           </Btn>
+        ) : lifecycleBusy ? (
+          // The action was chosen from the menu, which then closed. Report its
+          // progress on the row under the SAME accessible name the menu item
+          // carried, so the crew a request belongs to is never ambiguous.
+          <Btn
+            disabled
+            aria-label={
+              busy === `stop:${cloudTag}`
+                ? i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })
+                : i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })
+            }
+          >
+            <RefreshCw className="lucide-inline animate-spin" />{' '}
+            {busy === `stop:${cloudTag}`
+              ? i18nT('pages.settings.remoteCrewPanel.stopping')
+              : i18nT('pages.settings.remoteCrewPanel.starting')}
+          </Btn>
+        ) : isCloud && confirmDelete ? (
+          <>
+            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })}>
+              {/* Names its target on screen, not only to assistive tech: this click
+                  terminates an EC2 instance, and "Confirm delete" beside two other
+                  rows does not say WHICH. */}
+              <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.delete_crew', { name: inst.name })}
+            </Btn>
+            {/* An armed destructive button needs a way out. The overflow menu is
+                hidden while armed, so without this a mis-click leaves the row
+                showing nothing but a button that terminates an EC2 instance. */}
+            <Btn onClick={() => onRequestDelete(null)} disabled={!!busy}>
+              {i18nT('pages.settings.remoteCrewPanel.cancel')}
+            </Btn>
+          </>
+        ) : !isCloud && confirmRemove ? (
+          <>
+            <Btn danger onClick={() => onRemove(inst.id)} disabled={!!busy} aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}>
+              <Trash2 className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}
+            </Btn>
+            <Btn onClick={() => onRequestRemove(null)} disabled={!!busy}>
+              {i18nT('pages.settings.remoteCrewPanel.cancel')}
+            </Btn>
+          </>
+        ) : null}
+        {/* A row shows at most two controls. Connect/Disconnect is the primary
+            action and everything else lives in this menu; while a transient
+            action occupies the second slot the menu yields, since it is
+            disabled in those states anyway. */}
+        {!transient && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <IconButton
+              aria-label={i18nT('pages.settings.remoteCrewPanel.more_actions', { name: inst.name })}
+              disabled={!!busy || deleting}
+            >
+              <MoreHorizontal className="lucide-inline" />
+            </IconButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[200px]">
+            <DropdownMenuItem
+              className="gap-2 text-[13px]"
+              onSelect={() => onDiagnose(inst.id)}
+              aria-label={i18nT('pages.settings.instancesPanel.diagnose_2', { name: inst.name })}
+            >
+              <Stethoscope className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.diagnose')}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="gap-2 text-[13px]" onSelect={() => onEdit(inst.id)}>
+              <Pencil className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.edit_settings')}
+            </DropdownMenuItem>
+            {isCloud ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="gap-2 text-[13px]"
+                  onSelect={() => onStop(cloudTag, coordsOf(inst))}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}
+                >
+                  <Power className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.stop')}
+                </DropdownMenuItem>
+                {/* Stop without Start is a one-way door: the route exists and the client
+                    method existed, but nothing called it — a stopped crew had no path back
+                    to running from the dashboard, while its EBS volume kept billing. */}
+                <DropdownMenuItem
+                  className="gap-2 text-[13px]"
+                  onSelect={() => onStart(cloudTag, coordsOf(inst))}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
+                >
+                  <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="gap-2 text-[13px] text-danger"
+                  onSelect={() => onRequestDelete(cloudTag)}
+                  aria-label={i18nT('pages.settings.remoteCrewPanel.delete_crew', { name: inst.name })}
+                >
+                  <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.delete')}
+                </DropdownMenuItem>
+              </>
+            ) : (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="gap-2 text-[13px] text-danger"
+                  // Always confirm-gated: the label ends in an ellipsis because a
+                  // second step follows, and the record being removed (host, port,
+                  // TTL, profile) is the one this panel exists to let you correct
+                  // — losing it to a single click has no undo.
+                  onSelect={() => onRequestRemove(inst.id)}
+                  aria-label={i18nT('pages.settings.instancesPanel.remove', { name: inst.name })}
+                >
+                  <Trash2 className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.remove')}
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
         )}
       </div>
+    </div>
+    {blocked && (
+      // At the row, and assertive: the menu closes on select, so a refusal that
+      // renders anywhere else reads as the click having done nothing at all.
+      <p role="alert" className="mt-2 text-[12px] text-warn">
+        {i18nT('pages.settings.remoteCrewPanel.finish_open_edit_first')}
+      </p>
+    )}
+    {editing && (
+      <EditInstanceForm
+        key={`edit-${inst.id}-${editDraftSeq}`}
+        inst={inst}
+        usedPorts={otherPorts}
+        onSaved={onEditSaved}
+        onCancel={() => onEdit(null)}
+        draft={editDraft}
+        externallyChanged={editExternallyChanged}
+        onDraftChange={onEditDraftChange}
+        onRebase={onEditRebase}
+        // Only a CORRELATED cloud crew is addressed by its connection identity:
+        // Stop / Start / Delete resolve the machine through {profile, region,
+        // ssm_target}, so editing those would leave a billing instance the
+        // dashboard can no longer reach. A crew we cannot correlate is offered no
+        // lifecycle action at all, so freezing its fields would protect nothing
+        // and would take away a legitimate way to correct its AWS profile.
+        lockTransport={isCloud}
+      />
+    )}
     </div>
   )
 }
@@ -507,6 +659,25 @@ export function RemoteCrewPanel() {
   const [activeLaunchId, setActiveLaunchId] = useState<string | null>(null)
   const [confirmDeleteTag, setConfirmDeleteTag] = useState<string | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
+  // Only one crew is editable at a time: two open forms on the same list would
+  // let the user save conflicting ports without ever seeing the clash.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  // Unsaved work in the open form. Swapping rows would unmount it and lose typed
+  // host/port corrections silently, so the swap is refused instead.
+  // The unsaved edit itself, keyed by crew — NOT a boolean. The form unmounts
+  // whenever the crew list does (switching to the setup tab is enough), and a
+  // guard can only refuse the exits it knows about; holding the values here means
+  // the work survives the unmount instead of needing a new guard per exit.
+  // `seq` counts REBASES, and is used as the form's React key: adopting the current
+  // record rewrites the draft's values, and a mounted form cannot re-seed itself.
+  const [editDraft, setEditDraft] = useState<
+    { id: string; draft: InstanceDraft; seq: number } | null
+  >(null)
+  const editDirty = editDraft !== null
+  // Which row's Edit was refused, not a bare flag: the refusal has to render at
+  // the row the user actually clicked. Shown once at the bottom of the Card it
+  // could sit off-screen in a long crew list, so the click looked like a no-op.
+  const [editBlockedId, setEditBlockedId] = useState<string | null>(null)
   // Tags whose delete has been accepted by the gateway but not yet confirmed by AWS.
   // The DELETE endpoint returns `cleanup: "pending"` the moment the CloudFormation
   // delete is *requested* — the local registry row is only dropped minutes later, by
@@ -567,6 +738,8 @@ export function RemoteCrewPanel() {
   // leaves the EC2 stack running and billing, invisible to the dashboard. So the list
   // waits until both are known, and surfaces either failure instead of guessing.
   const loadError = !disabled && (instancesQuery.isError || launchesQuery.isError)
+  const authExpired =
+    isAuthExpiredError(instancesQuery.error) || isAuthExpiredError(launchesQuery.error)
   const listLoading = !disabled && (instancesQuery.isLoading || launchesQuery.isLoading)
 
   // `activeLaunchId` is component state, so navigating away and back loses it while
@@ -606,6 +779,42 @@ export function RemoteCrewPanel() {
 
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
   const warmCap = instancesQuery.data?.warm_set_cap || 5
+
+  // A draft outlives its form ON PURPOSE, which means it can also outlive the CREW
+  // it belongs to: Remove a crew mid-edit and the draft stays keyed by that id, so
+  // adding a crew that lands on the same id (ids are derived from the name) would
+  // remount the stale draft on a different machine and let Save overwrite settings
+  // the user never typed. Anchored to the crew's EXISTENCE rather than to the
+  // remove button, so a removal from the CLI, or a cloud Delete, clears it too.
+  // Gated on a successful fetch: an errored poll must not be read as "all gone"
+  // and throw away unsaved work.
+  // Which of the draft's own fields no longer match the crew as it is PERSISTED.
+  // The id staying alive is not proof the record did: a crew removed and recreated
+  // under the same derived id between two polls never disappears from the list, and
+  // a concurrent CLI edit moves the record without touching its id. Both make the
+  // draft's baseline a description of something that no longer exists, so the form
+  // is told and refuses to save until the user adopts the current record.
+  const editExternallyChanged = useMemo(() => {
+    if (editDraft === null) return []
+    const live = instances.find(i => i.id === editDraft.id)
+    if (live === undefined) return []
+    const now = instanceFormFromView(live)
+    const then = instanceFormFromView(editDraft.draft.baseline)
+    // Only the fields that ADDRESS a machine. A label or lifetime someone changed
+    // elsewhere cannot make this a different crew, and the baseline diff already
+    // stops the save from reverting it — interrupting for that would spend the
+    // user's attention on the case that was never dangerous.
+    const identifying = ['method', 'sshHost', 'remotePort', 'ssmTarget', 'awsProfile', 'awsRegion'] as const
+    return identifying.filter(k => now[k] !== then[k])
+  }, [editDraft, instances])
+
+  useEffect(() => {
+    if (!instancesQuery.isSuccess) return
+    const live = new Set(instances.map(i => i.id))
+    if (editingId !== null && !live.has(editingId)) setEditingId(null)
+    setEditDraft(prev => (prev !== null && !live.has(prev.id) ? null : prev))
+    setEditBlockedId(prev => (prev !== null && !live.has(prev) ? null : prev))
+  }, [instances, instancesQuery.isSuccess, editingId])
 
   // instance_id → cloud tag, from every launch job that produced an instance.
   // An SSM instance whose target matches is a cloud crew, and this is its tag.
@@ -777,6 +986,19 @@ export function RemoteCrewPanel() {
     if (next.size !== deletingTags.size) setDeletingTags(next)
   }, [instances, cloudTagByInstanceId, deletingTags])
 
+  // ── Initial load: don't render the full UI until we know whether the
+  //    feature is enabled. Without this the panel flashes the tabbed form
+  //    and then jitters to the "off" card once the 403 arrives. ──
+  if (instancesQuery.isLoading) {
+    return (
+      <Card>
+        <div className="flex items-center gap-2 text-muted text-sm py-2">
+          <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.instancesPanel.loading')}
+        </div>
+      </Card>
+    )
+  }
+
   // ── Disabled feature gate (mirrors InstancesPanel) ──
   if (disabled) {
     return (
@@ -867,9 +1089,14 @@ export function RemoteCrewPanel() {
               // reads as "your crews are gone" when the list simply did not load.
               <div className="py-1">
                 <ErrorNotice message={errMsg(instancesQuery.error ?? launchesQuery.error, i18nT('pages.settings.instancesPanel.unknown_error'))} />
-                <Btn className="mt-2" onClick={() => { reloadInstances(); reloadLaunches() }}>
-                  <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.refresh')}
-                </Btn>
+                {/* Refresh replays the same rejected credential, so it can only
+                    reproduce the error until the user re-authenticates through
+                    the banner the notice points at. */}
+                {!authExpired && (
+                  <Btn className="mt-2" onClick={() => { reloadInstances(); reloadLaunches() }}>
+                    <RefreshCw className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.refresh')}
+                  </Btn>
+                )}
               </div>
             ) : (
               <div>
@@ -894,6 +1121,74 @@ export function RemoteCrewPanel() {
                     onDelete={(tag, coords) => deleteMutation.mutate({ tag, coords })}
                     onRequestDelete={tag => setConfirmDeleteTag(tag)}
                     onRequestRemove={id => setConfirmRemoveId(id)}
+                    editing={editingId === inst.id}
+                    blocked={editBlockedId === inst.id}
+                    onEdit={id => {
+                      if (id !== null && editingId !== null && id !== editingId && editDirty) {
+                        setEditBlockedId(id)
+                        return
+                      }
+                      setEditBlockedId(null)
+                      // Cancel (id === null) is the user CHOOSING to discard; the draft
+                      // goes with it. Every other way the form disappears keeps it.
+                      if (id === null) setEditDraft(null)
+                      setEditingId(id)
+                    }}
+                    editDraft={editDraft?.id === inst.id ? editDraft.draft : null}
+                    editExternallyChanged={editDraft?.id === inst.id ? editExternallyChanged : []}
+                    // A three-way merge, with the old baseline as the merge base: the
+                    // user's TYPED fields are kept, and every field they did not touch
+                    // is taken from the record that actually exists. Keeping all the old
+                    // values instead would turn untouched-but-stale fields into
+                    // deliberate writes — the exact clobber the baseline exists to stop.
+                    editDraftSeq={editDraft?.id === inst.id ? editDraft.seq : 0}
+                    onEditRebase={() =>
+                      setEditDraft(prev => {
+                        if (prev === null || prev.id !== inst.id) return prev
+                        const base = instanceFormFromView(prev.draft.baseline)
+                        const live = instanceFormFromView(inst)
+                        const merged = { ...live }
+                        for (const k of Object.keys(base) as (keyof typeof base)[]) {
+                          if (prev.draft.values[k] === base[k]) continue
+                          // Field-wise assign: the value's type is the field's own, and
+                          // a generic index write cannot see that.
+                          Object.assign(merged, { [k]: prev.draft.values[k] })
+                        }
+                        return {
+                          id: inst.id,
+                          draft: { values: merged, baseline: inst },
+                          seq: prev.seq + 1,
+                        }
+                      })
+                    }
+                    onEditDraftChange={draft =>
+                      setEditDraft(prev => {
+                        const next =
+                          draft === null
+                            ? null
+                            : { id: inst.id, draft, seq: prev?.id === inst.id ? prev.seq : 0 }
+                        // Same values, same object: the report fires on every keystroke,
+                        // and a fresh object each time would re-render for nothing.
+                        return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
+                      })
+                    }
+                    // Clearing editingId without clearing the refusal left the UI
+                    // instructing the user about a form that no longer exists.
+                    onEditSaved={updated => {
+                      setEditingId(null)
+                      setEditDraft(null)
+                      setEditBlockedId(null)
+                      // A warm pane is an iframe pointed at the OLD local port with the
+                      // OLD token. If the save tore the tunnel down (any transport
+                      // field changed), that pane cannot be revived by reconnecting —
+                      // it would reuse a credential the new tunnel never issued and sit
+                      // on 403. Drop it so the next Connect builds a fresh one. A
+                      // name-or-ttl-only edit leaves the tunnel up, and its pane keeps
+                      // working, so it is deliberately NOT dropped.
+                      if (updated.status?.state !== 'connected') dispatch(removeWarm(inst.id))
+                      reloadInstances()
+                    }}
+                    otherPorts={instances.filter(i => i.id !== inst.id).map(i => i.remote_port)}
                   />
                 ))}
                 {inProgress.length === 0 && instances.length === 0 && (

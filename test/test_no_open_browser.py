@@ -100,7 +100,13 @@ class TestNoOpenCliFlag:
         from kiro_crew.slack.gateway import run_gateway
 
         cfg = KiroCrewConfig()
-        with patch("kiro_crew.slack.gateway.GatewayOrchestrator") as mock_orch_cls:
+        with (
+            # run_gateway's real body applies the aggregate cgroup ceiling
+            # (systemctl set-property) — a host-service mutation the rootdir
+            # guard refuses; stub it like every other host mutation.
+            patch("kiro_crew.slack.gateway.ensure_agents_slice_limits", return_value=True),
+            patch("kiro_crew.slack.gateway.GatewayOrchestrator") as mock_orch_cls,
+        ):
             mock_orch = MagicMock()
             mock_orch.run = AsyncMock()
             mock_orch_cls.return_value = mock_orch

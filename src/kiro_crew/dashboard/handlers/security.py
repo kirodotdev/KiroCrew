@@ -268,7 +268,13 @@ def build_denied_commands_snapshot() -> dict:
         enabled = is_pinned or is_floor or (not disable_all and rid not in disabled_ids)
         # "floor" wins over "policy": the floor holds even if every governance
         # pin were removed, so it is the stronger (and always-true) reason.
-        lock_reason = "floor" if is_floor else ("policy" if is_pinned else None)
+        lock_reason: str | None
+        if is_floor:
+            lock_reason = "floor"
+        elif is_pinned:
+            lock_reason = "policy"
+        else:
+            lock_reason = None
         builtins.append(
             {
                 "id": rid,

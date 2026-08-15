@@ -32,7 +32,7 @@ from collections.abc import Coroutine
 from contextvars import ContextVar
 from typing import Any
 
-from kiro_crew.acp.client import _DEFAULT_PROMPT_TIMEOUT
+from kiro_crew.acp.client import resolve_prompt_timeout
 from kiro_crew.config.loader import (
     APPROVAL_TURN_MARGIN_SECS,
     TOOL_APPROVAL_TIMEOUT_MIN,
@@ -68,10 +68,16 @@ def _turn_budget_remaining() -> float | None:
 def _acp_prompt_ceiling() -> float:
     """The transport's own per-prompt timeout.
 
+    Resolves through :func:`~kiro_crew.acp.client.resolve_prompt_timeout`, which
+    follows a configured ceiling ABOVE the 2h default (plus a margin so this
+    module's card always fires before the transport cut). The clamp in
+    :func:`chat_turn_timeout_secs` therefore no longer fires in normal operation;
+    it stays as the fail-safe for a resolver that could not read config.
+
     A function rather than a bare constant reference so tests can substitute it
     without reaching into ``acp.client``.
     """
-    return float(_DEFAULT_PROMPT_TIMEOUT)
+    return float(resolve_prompt_timeout())
 
 
 def chat_turn_timeout_secs() -> float:
@@ -326,6 +332,20 @@ async def _bounded_turn(coro: "Coroutine[Any, Any, Any]", timeout_secs: float) -
         if not task.done():
             # The wrapper itself was cancelled; don't orphan the turn.
             task.cancel()
+
+
+async def bounded_chat_turn(coro: "Coroutine[Any, Any, Any]") -> Any:
+    """Bound *coro* by the configured turn ceiling, resolved OFF the event loop.
+
+    For task-creation sites that cannot ``await`` (sync callbacks, dispatch
+    helpers): ``asyncio.create_task(bounded_chat_turn(_run_chat(...)))`` moves
+    the :func:`chat_turn_timeout_secs` resolution — a ``KiroCrewConfig.load()``
+    whose cache-miss path reads and re-validates the config file — into the
+    task itself via ``asyncio.to_thread``, so an edited config never stalls
+    the loop shared by every session.
+    """
+    timeout = await asyncio.to_thread(chat_turn_timeout_secs)
+    return await asyncio.wait_for(coro, timeout=timeout)
 
 
 def spawn_guarded_turn(

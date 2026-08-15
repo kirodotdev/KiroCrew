@@ -70,7 +70,11 @@ describe('user-visible label tables hold catalog keys', () => {
       // a translation here would make the side panel disagree with the three
       // surfaces it navigates to, so the exemption follows the existing catalog
       // rather than inventing a fourth spelling.
-      const BORROWED = new Set(['pages.chat.sidePanel.menu_issues'])
+      const BORROWED = new Set(['pages.chat.sidePanel.menu_issues',
+        // "Git" is the version-control tool's proper name, not copy - every
+        // locale ships it verbatim (matching components.gitPanel.title, which
+        // the sidecar documents as do-not-translate).
+        'pages.chat.sidePanel.menu_git'])
       const untranslated = Object.values(table)
         .filter(key => !SYMBOLIC.has(key) && !BORROWED.has(key))
         .filter(key => zh[key] === en[key])

@@ -51,6 +51,10 @@ export interface Tip {
   body: string
   why: string
   doc: string
+  // Rendering-only "learn more" target. `doc` doubles as the tip's dismissal
+  // identity on the backend, so a tip that links a doc it does not own for
+  // dismissal purposes carries the link here instead.
+  doc_link?: string
   cta_prompt: string
   action?: TipAction | null
 }
@@ -95,7 +99,10 @@ export function TipCard({ tip, onDismiss }: TipCardProps) {
 
   const navigate = useNavigate()
   const tooltipText = tip.why ? `${tip.title} — ${tip.why}` : tip.title
-  const docHref = tipDocHref(tip.doc)
+  // Prefer the rendering-only doc_link; fall back to doc for tips that still
+  // legitimately use it for both jobs (catalog fallback tips). Whichever value
+  // is used goes through tipDocHref's filename-shape validation.
+  const docHref = tipDocHref(tip.doc_link || tip.doc)
   const actionRoute = tipActionRoute(tip.action)
 
   const handleAction = useCallback(() => {

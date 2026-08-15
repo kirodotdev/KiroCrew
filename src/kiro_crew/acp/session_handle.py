@@ -28,6 +28,7 @@ from typing import Any, Protocol
 
 from kiro_crew import model_registry
 from kiro_crew.acp._dispatch import (
+    _token_count,
     build_permission_event,
     classify_notification,
     parse_metadata,
@@ -42,9 +43,11 @@ from kiro_crew.acp.client import (
     AcpProcessDied,
     AcpTimeoutError,
     _consume_future_exception,
+    _effective_prompt_timeout_async,
     _is_safe_oauth_url,
     _is_tool_interrupted_marker,
     _raise_acp_error,
+    prompt_timeout_for_ceiling,
     resolve_usable_model,
 )
 from kiro_crew.acp.liveness import (
@@ -58,6 +61,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -79,6 +83,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_CONFIG_OPTION,
     METHOD_SET_MODE,
     METHOD_SET_MODEL,
+    MODEL_CONFIG_ID,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
@@ -86,6 +91,8 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
+    UPDATE_CURRENT_MODE,
+    UPDATE_SESSION_INFO,
     AcpEvent,
     AcpPromptStats,
     JsonRpcMessage,
@@ -100,8 +107,6 @@ from kiro_crew.sel import sel
 logger = logging.getLogger(__name__)
 
 # ── Constants ──
-
-_DEFAULT_PROMPT_TIMEOUT = 7200.0  # 2 hours
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,12 @@ class WatchdogSettings:
     tool_stall_hard_cap_secs: float = 3600.0
     model_silent_probe_secs: float = 900.0
     wellness_sample_secs: float = 3.0
+    # Whether a per-agent watchdog_tool_stall_* override was applied to this
+    # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
+    # never the agent name — free-form agent names are a cardinality bomb on
+    # OTel attrs (metrics/schema.py); per-agent joins happen via the always-on
+    # token row store instead.
+    agent_override: bool = False
 
 
 # Fraction of a turn's deadline that a watchdog idle window may occupy. A window
@@ -142,26 +153,31 @@ _TURN_BOUNDED_WINDOWS = (
 )
 
 
-def _clamp_to_prompt_ceiling(key: str, value: float) -> float:
-    """Bound one watchdog window to the transport's own per-prompt timeout.
+def _clamp_to_prompt_ceiling(key: str, value: float, chat_ceiling: float) -> float:
+    """Bound one watchdog window to the transport's per-prompt timeout.
 
-    :data:`_DEFAULT_PROMPT_TIMEOUT` is the one deadline EVERY caller shares —
-    the dispatch loop stops the turn there — so it is the only safe bound for a
-    snapshot that is taken once per handle and reused across prompts.
+    Resolved via :func:`~kiro_crew.acp.client.prompt_timeout_for_ceiling` on the
+    caller's ALREADY-LOADED ``chat_turn_timeout_secs`` (no second config read;
+    the transport's dispatch loop stops the turn at the same deadline), so it
+    is the only safe bound for a snapshot that is taken once per handle and
+    reused across prompts. It follows a raised ``agent.chat_turn_timeout_secs``
+    and never sits below the 2h default, so a proportionately raised watchdog
+    window is honoured instead of being cut to the default's fraction.
 
     Mirrors the shape of ``turn_dispatch.chat_turn_timeout_secs``'s clamp
     against the same timeout: an out-of-range value is honoured as far as the
     system can honour it, and the clamp is logged at warning level so the
     misconfiguration is visible instead of silently ignored.
     """
-    budget = _DEFAULT_PROMPT_TIMEOUT * _TURN_CEILING_WINDOW_FRACTION
+    ceiling = prompt_timeout_for_ceiling(chat_ceiling)
+    budget = ceiling * _TURN_CEILING_WINDOW_FRACTION
     if value <= budget:
         return value
     logger.warning(
         "watchdog.%s=%.0fs leaves no room inside the %.0fs prompt timeout; "
         "clamping to %.0fs. The turn's own timeout would fire first, so the "
         "larger window cannot take effect.",
-        key, value, _DEFAULT_PROMPT_TIMEOUT, budget,
+        key, value, ceiling, budget,
     )
     return budget
 
@@ -184,24 +200,49 @@ def _warn_if_above_chat_ceiling(key: str, value: float, chat_ceiling: float) -> 
         )
 
 
-def _load_watchdog_settings() -> WatchdogSettings:
+def _load_watchdog_settings(crew_agent: str = "") -> WatchdogSettings:
     """Snapshot ``watchdog.*`` from config. Function-level import (mirrors
     ``_sync_effort_levels``) avoids the config -> dashboard -> acp import
-    cycle; any failure falls back to defaults rather than breaking a handle."""
+    cycle; any failure falls back to defaults rather than breaking a handle.
+
+    ``crew_agent`` is the CANONICAL Kiro Crew agent name — a ``cfg.agents``
+    key resolved by the surface that owns the identity (the dashboard slot,
+    or a crew-name-passing surface like Slack/cron) and plumbed here through
+    provider -> runtime -> handle. Resolution is a direct dict lookup: no
+    cross-namespace matching happens here, so a bound kiro agent name (or any
+    non-crew name) simply inherits the globals. That crew's
+    ``watchdog_tool_stall_*`` overrides overlay the globals (> 0 means
+    override; 0 inherits — the same empty-inherits convention as the agent's
+    ``model``).
+    """
     try:
         # circular import: config.loader -> dashboard -> session -> acp
         from kiro_crew.config.loader import KiroCrewConfig
 
         cfg = KiroCrewConfig.load()
         w = cfg.watchdog
+        raw = {key: float(getattr(w, key)) for key in _TURN_BOUNDED_WINDOWS}
+        overridden = False
+        crew = cfg.agents.get(crew_agent) if crew_agent else None
+        if crew is not None:
+            if crew.watchdog_tool_stall_suspect_secs > 0:
+                raw["tool_stall_suspect_secs"] = float(crew.watchdog_tool_stall_suspect_secs)
+                overridden = True
+            if crew.watchdog_tool_stall_hard_cap_secs > 0:
+                raw["tool_stall_hard_cap_secs"] = float(crew.watchdog_tool_stall_hard_cap_secs)
+                overridden = True
+        # Overrides are applied BEFORE the ceiling pass so a per-agent window is
+        # bounded exactly like a global one — an over-ceiling override is clamped
+        # with the same warning instead of smuggling past the prompt timeout.
         chat_ceiling = float(cfg.agent.chat_turn_timeout_secs)
         bounded = {}
         for key in _TURN_BOUNDED_WINDOWS:
-            value = _clamp_to_prompt_ceiling(key, float(getattr(w, key)))
+            value = _clamp_to_prompt_ceiling(key, raw[key], chat_ceiling)
             _warn_if_above_chat_ceiling(key, value, chat_ceiling)
             bounded[key] = value
         return WatchdogSettings(
             wellness_sample_secs=float(w.wellness_sample_secs),
+            agent_override=overridden,
             **bounded,
         )
     except Exception:
@@ -227,6 +268,31 @@ _WORKING_WARN_DEADLINE_FRACTION = 0.25
 # the interval above, 0.0 reads as "logged moments ago" and swallows the very
 # first deferral line — exactly the evidence a freshly restarted gateway needs.
 _WORKING_NEVER_LOGGED = float("-inf")
+
+
+def _watchdog_evidence_class(evidence: str) -> str:
+    """Bucket a free-form oracle evidence string into a closed enum.
+
+    OTel attribute values MUST be low-cardinality (metrics/schema.py): the raw
+    evidence carries pids, byte deltas, and command fragments, so only its
+    SHAPE is emitted. Buckets: ``established_flat`` (LLM-shaped — runtime-held
+    backend socket, flat subtree), ``mcp_flat`` (opaque MCP tool, moving or
+    flat), ``shell`` (shell-child evidence), ``wait`` (the declared-duration
+    wait tool), ``degraded`` (everything else: sampling baseline, unreadable
+    /proc, no pid, oracle error — the oracle could not attest either way).
+    """
+    e = evidence or ""
+    if e.startswith(EVIDENCE_ESTABLISHED_FLAT):
+        return "established_flat"
+    if "mcp subtree" in e:
+        return "mcp_flat"
+    if "shell child" in e:
+        return "shell"
+    if e.startswith("wait tool"):
+        return "wait"
+    return "degraded"
+
+
 # Unresponsive-cancel budget: after cancel() is sent, if kiro-cli does not
 # ack (via a cancelled stopReason on the prompt response) within this window,
 # the dispatch loop unblocks the caller with a terminal EVENT_COMPLETE. The
@@ -287,6 +353,16 @@ class AcpRuntimeProtocol(Protocol):
         ...
 
     @property
+    def acp_backend(self) -> str:
+        """Which ACP backend the process speaks.
+
+        The handle needs it because the backends disagree on verbs, not just on
+        payloads — the model, for one, is a ``session/set_model`` request on
+        kiro-cli and a session config option on KAS.
+        """
+        ...
+
+    @property
     def supports_image_prompt(self) -> bool:
         """Whether the agent advertised ``promptCapabilities.image``.
 
@@ -331,6 +407,7 @@ class AcpSessionHandle:
         queue: asyncio.Queue[JsonRpcMessage | None],
         runtime: AcpRuntimeProtocol,
         watchdog: WatchdogSettings | None = None,
+        crew_agent: str = "",
     ) -> None:
         self._session_id = session_id
         self._queue = queue
@@ -341,7 +418,17 @@ class AcpSessionHandle:
         # Watchdog windows are snapshotted here (construction time) so the
         # dispatch loop never reads config; the liveness oracle carries the
         # per-session evidence state (tracked child, counter samples).
-        self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings()
+        # ``crew_agent`` is the CANONICAL crew identity resolved by the surface
+        # that owns it and plumbed down (see _load_watchdog_settings): it keys
+        # the per-agent watchdog_tool_stall_* overrides by direct config lookup.
+        # It must NEVER become an OTel metric attribute (free-form =>
+        # cardinality bomb; see metrics/schema.py) — telemetry carries the
+        # agent_override BOOLEAN. An explicit ``watchdog`` always wins
+        # verbatim: the async creation paths (runtime.create_session /
+        # load_session) resolve it off-loop and hand it in, so the synchronous
+        # load below is only the fallback for direct constructions (tests).
+        self._crew_agent = crew_agent
+        self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
         self._oracle = LivenessOracle(sample_min_secs=self._watchdog.wellness_sample_secs)
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending
@@ -375,6 +462,16 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._last_stop_reason = ""
+        # Monotonically increasing count of NOTIFICATION frames delivered to this
+        # session by the shared queue. Incremented in _wait_for_response whenever
+        # it consumes a notification (not a response) from the queue while
+        # buffering for a concurrent command call. The TOCTOU guard in
+        # _dispatch_events snapshots this before the oracle await and compares
+        # after: an advance means a real activity frame arrived while the oracle
+        # was executing (even if _wait_for_response had consumed it from the
+        # queue in the meantime). Pure queue-depth checks cannot see frames that
+        # are temporarily held in a concurrent consumer's buffer list.
+        self._ingress_seq: int = 0
         # Consumer-park accounting, read by the idle clocks in _dispatch_events
         # and by external observers via parked_for_secs(). `_parked_total` is
         # cumulative for the turn; `_parked_since` is set only while suspended at
@@ -437,6 +534,13 @@ class AcpSessionHandle:
         self._resolved_model_id: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
+        # Last KAS mode id seen on a current_mode_update, so a re-assert of the
+        # already-current mode does not surface a spurious agent-switch echo
+        # (kiro-cli only emits on a real _kiro.dev/agent/switched). None = unseen.
+        self._last_kas_mode_id: str | None = None
+        # KAS sub-agent roster keyed by agentSubtaskId. Each entry is shaped for
+        # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_runner.
+        self._kas_subagent_roster: dict[str, dict[str, Any]] = {}
 
     @property
     def session_id(self) -> str:
@@ -479,14 +583,19 @@ class AcpSessionHandle:
     # ── Prompt ──
 
     async def prompt(
-        self, message: str, timeout: float = _DEFAULT_PROMPT_TIMEOUT
+        self, message: str, timeout: float | None = None
     ) -> AsyncIterator[AcpEvent]:
         """Send session/prompt and yield AcpEvent objects until the turn completes.
 
         Dispatches events from the per-session queue with the same logic as
         AcpClient._dispatch_events. Detects turn boundaries via the JSON-RPC
         response matching the prompt's request_id.
+
+        ``timeout=None`` (every dashboard turn) resolves from
+        ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
+        turn ceiling instead of cutting the turn at the 2h default underneath it.
         """
+        timeout = await _effective_prompt_timeout_async(timeout)
         # Guard against concurrent prompts on the same handle: a second call
         # would clear _turn_done and race on the shared _queue, corrupting
         # turn state and losing events. Each caller should use its own handle.
@@ -524,6 +633,12 @@ class AcpSessionHandle:
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
         self._permission_options.clear()
+        # Per-turn reset (parity with kiro-cli's authoritative full subagent_list
+        # each turn): otherwise a completed sub-agent from a prior turn stays in
+        # the roster and is re-emitted in the next turn's EVENT_SUBAGENT_LIST,
+        # which the fresh per-turn _native_tracker resurrects as a duplicate
+        # spawn/done card — and the roster would grow unbounded for the session.
+        self._kas_subagent_roster.clear()
 
         # Drain frames left over from a prior abandoned turn. The cancel-unacked
         # / stale / tool-stall / timeout paths synthesize a terminal
@@ -597,9 +712,12 @@ class AcpSessionHandle:
                     # `finally`, not a trailing statement: an abandoned generator
                     # unwinds with GeneratorExit and would otherwise leave
                     # `_parked_since` set forever, which reads from outside as a
-                    # turn parked since the abandonment.
-                    self._parked_total += time.monotonic() - self._parked_since
-                    self._parked_since = None
+                    # turn parked since the abandonment.  Guard against None:
+                    # a turn boundary (line ~517) may reset _parked_since before
+                    # a lingering generator's finally fires on GC.
+                    if self._parked_since is not None:
+                        self._parked_total += time.monotonic() - self._parked_since
+                        self._parked_since = None
         finally:
             if not self._turn_done.is_set():
                 self._turn_done.set()
@@ -781,10 +899,16 @@ class AcpSessionHandle:
             # Inherit the backend default — nothing to send. For the ephemeral
             # _bg session the current model IS session/new's served default.
             return
-        await self._runtime.send_request(
-            METHOD_SET_MODEL,
-            set_model_params(self._session_id, resolved),
-        )
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            # KAS implements no ``session/set_model``; the model is one of its
+            # session config options instead. Same effect, different verb — so
+            # the bookkeeping below is shared rather than duplicated.
+            await self.set_config_option(MODEL_CONFIG_ID, resolved)
+        else:
+            await self._runtime.send_request(
+                METHOD_SET_MODEL,
+                set_model_params(self._session_id, resolved),
+            )
         self._model = resolved
         # Parity with AcpClient.set_model: keep _resolved_model_id in sync so
         # _backfill_context_window looks up the NEW model's window after a switch
@@ -1132,6 +1256,31 @@ class AcpSessionHandle:
                     ]
         return []
 
+    def rebind_watchdog(
+        self, crew_agent: str, settings: WatchdogSettings | None = None
+    ) -> None:
+        """Re-snapshot the watchdog windows for a new canonical crew identity.
+
+        Called on warm-pool rekey: the pooled runtime was spawned before any
+        crew claimed it, so the construction-time snapshot cannot know the
+        claiming crew's ``watchdog_tool_stall_*`` overrides — the identity
+        travels with the SESSION, not the pool key. The dispatch loop reads
+        ``self._watchdog`` on every tick, so the swap takes effect at the next
+        watchdog check; an empty ``crew_agent`` (a claim with no crew) rebinds
+        to the globals so a recycled runtime never carries a previous crew's
+        windows. The oracle keeps its per-session evidence state — only its
+        sampling floor follows the new snapshot.
+
+        ``settings`` is the pre-resolved snapshot: an ASYNC caller (the
+        warm-pool claim) resolves it off-loop and hands it in, making the
+        no-event-loop-I/O property an explicit data dependency rather than a
+        cache-timing contract; None loads synchronously (config-cache hit in
+        practice) for callers without an off-loop path.
+        """
+        self._crew_agent = crew_agent
+        self._watchdog = settings if settings is not None else _load_watchdog_settings(crew_agent)
+        self._oracle._sample_min_secs = self._watchdog.wellness_sample_secs
+
     def store_session_config(self, resp: dict[str, Any]) -> None:
         """Extract configOptions and available models from session/new or session/load response.
 
@@ -1225,7 +1374,13 @@ class AcpSessionHandle:
             self._cleanup_transcript()
 
     def _cleanup_transcript(self) -> None:
-        """Best-effort delete of this session's kiro-cli transcript files."""
+        """Best-effort delete of this session's kiro-cli transcript files.
+
+        A NO-OP on the KAS backend: this unlinks from kiro-cli's sessions dir and
+        KAS keeps its own store, so nothing here matches. The ``keep_transcript``
+        guard therefore protects nothing on KAS — that backend's session record is
+        already gone, removed by the same verb that freed the session.
+        """
         sid = self._session_id
         if not sid:
             return
@@ -1285,7 +1440,17 @@ class AcpSessionHandle:
                         # (terminal) from a capacity blip (retryable).
                         _raise_acp_error(msg.error, self._advertised_model_ids())
                     return msg
-                # Not our response — buffer (do not drop) for re-injection.
+                # Not our response — buffer (do not drop) for re-injection,
+                # and advance the ingress sequence for EVERY buffered frame:
+                # the TOCTOU guard in _dispatch_events snapshots it before the
+                # oracle await and compares after, so frames consumed by this
+                # concurrent waiter are still detected regardless of queue
+                # depth at the time of the check. Responses count too — a
+                # buffered response can be the prompt turn's own terminal
+                # frame, and skipping it let the watchdog cancel a turn whose
+                # completion was sitting in this buffer. A spurious bump only
+                # defers one watchdog tick, so over-counting is fail-safe.
+                self._ingress_seq += 1
                 buffered.append(msg)
             raise AcpTimeoutError(f"Timeout waiting for response to request {req_id}")
         finally:
@@ -1383,19 +1548,69 @@ class AcpSessionHandle:
                         _tool_idle = max(0.0, (now - last_data_ts) - _parked)
                         if _tool_idle <= wd.check_after_secs:
                             continue
+                        # F2 — TOCTOU guard: two complementary signals cover
+                        # the two delivery paths for a frame that arrives DURING
+                        # the oracle await (up to 10 s in an executor, event
+                        # loop yielded).
+                        #
+                        # Path A — no concurrent _wait_for_response: the frame
+                        # sits in _queue until the dispatch loop consumes it.
+                        # qsize() advances when the frame lands.
+                        #
+                        # Path B — concurrent _wait_for_response: it dequeues
+                        # the frame (qsize unchanged), buffers it, and re-
+                        # injects it later. _ingress_seq (incremented in
+                        # _wait_for_response for notification frames) advances.
+                        #
+                        # Combining both signals means an UNKNOWN-over-window
+                        # cancel cannot fire while real activity is in-flight on
+                        # either delivery path.
+                        _ingress_before = self._ingress_seq
+                        _q_depth_before = self._queue.qsize()
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
+                        # TOCTOU recheck — activity on either path prevents the cancel.
+                        if (
+                            self._ingress_seq != _ingress_before
+                            or self._queue.qsize() > _q_depth_before
+                        ):
+                            last_data_ts = time.monotonic()
+                            continue
                         if verdict == VERDICT_WORKING:
                             self._log_working_deferral(_tool_idle, evidence, timeout)
                             continue
-                        # UNKNOWN acts at the suspect window; the hard cap governs
-                        # only the stale/model-wait branch below (it bounds the
-                        # extended UNKNOWN deferral windows there).
+                        # UNKNOWN acts at the suspect window. The suspect
+                        # default (1h) is BUILD-scale forbearance — an LLM-shaped
+                        # stall (flat subtree whose only live evidence is an
+                        # established backend socket: a model turn riding inside
+                        # a tool, e.g. kiro-cli use_subagent) narrows to the
+                        # model-silent budget, because its longest legitimate
+                        # silent gap is minutes, not hours. Keyed STRICTLY on
+                        # the oracle's established_flat evidence tag: plain
+                        # flat-subtree or shell-child evidence (a quiet build /
+                        # quiet MCP tool) keeps the full window.
+                        # F3 — hard cap: watchdog_tool_stall_hard_cap_secs is
+                        # the absolute ceiling for UNKNOWN forbearance. Apply
+                        # min(suspect_window, hard_cap) so the configured cap
+                        # always bounds the effective window. WORKING deferred
+                        # unconditionally above; DEAD/STUCK_INPUT act
+                        # immediately regardless of the window.
+                        # WORKING was already deferred above; the action below
+                        # is the existing non-lethal tool-stall recovery.
+                        _suspect = wd.tool_stall_suspect_secs
+                        _narrowed = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+                        if _narrowed:
+                            _suspect = min(wd.model_silent_probe_secs, _suspect)
+                        _suspect = min(_suspect, wd.tool_stall_hard_cap_secs)
                         _acting = (
                             verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT)
-                            or _tool_idle > wd.tool_stall_suspect_secs
+                            or _tool_idle > _suspect
                         )
                         if not _acting:
                             continue  # UNKNOWN, within budget — keep waiting
+                        self._emit_watchdog_metric(
+                            "cancel", verdict, evidence, _tool_idle,
+                            window="narrowed" if _narrowed else "standard",
+                        )
                         async for ev in self._end_stalled_tool(verdict, evidence, _tool_idle):
                             yield ev
                         return
@@ -1414,10 +1629,41 @@ class AcpSessionHandle:
                         )
                         if _stale_idle <= wd.check_after_secs:
                             continue
+                        # TOCTOU guard — the tool branch's two frame-path
+                        # signals PLUS the runtime activity clock, because this
+                        # branch's idle measurement (unlike the tool clock)
+                        # folds in _last_activity: snapshot all three before
+                        # the oracle await (up to 10 s, event loop yielded) and
+                        # recheck after. Path A: a frame stays in _queue →
+                        # qsize grows. Path B: _wait_for_response buffers it →
+                        # _ingress_seq advances. Either advance means a live
+                        # activity frame arrived during the oracle; reset the
+                        # stale clock and continue rather than probing a live
+                        # turn on a stale idle measurement.
+                        _stale_ingress_before = self._ingress_seq
+                        _stale_q_before = self._queue.qsize()
+                        _stale_runtime_before = self._runtime._last_activity
                         verdict, evidence = await self._consult_oracle_offloaded(model_wait=True)
+                        if (
+                            self._ingress_seq != _stale_ingress_before
+                            or self._queue.qsize() > _stale_q_before
+                        ):
+                            last_data_ts = time.monotonic()
+                            continue
+                        # Path C: stderr/keepalive/stdin traffic advanced the
+                        # runtime clock without a session frame — activity that
+                        # would have deferred this probe had it landed one tick
+                        # earlier must defer it now too. last_data_ts is NOT
+                        # reset (it means "last session frame" and also feeds
+                        # the frames-only tool clock); the next iteration's
+                        # max(last_data_ts, _last_activity) re-derives the
+                        # stale clock from the newer runtime activity itself.
+                        if self._runtime._last_activity > _stale_runtime_before:
+                            continue
                         if verdict == VERDICT_WORKING:
                             self._log_working_deferral(_stale_idle, evidence, timeout)
                             continue
+                        _flat_wait = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
                         if verdict != VERDICT_DEAD:
                             # UNKNOWN: probe only past the window. An established-
                             # but-flat backend connection is probably a non-streamed
@@ -1426,7 +1672,7 @@ class AcpSessionHandle:
                             # cap bounds any UNKNOWN deferral absolutely.
                             window = (
                                 wd.model_silent_probe_secs
-                                if evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+                                if _flat_wait
                                 else wd.stale_window_secs
                             )
                             if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
@@ -1437,6 +1683,18 @@ class AcpSessionHandle:
                         # turn-complete branch (auto-recovery, never "cancelled by
                         # user"), and an unacked cancel confirms the wedge via the
                         # unresponsive-cancel branch at the loop top.
+                        # ``window`` = "extended" when the established_flat
+                        # model-wait probe window (model_silent_probe_secs, 900s)
+                        # governed the decision instead of the ordinary stale
+                        # window (stale_window_secs, 300s). The established_flat
+                        # case is an EXTENSION for model-wait (silence of a
+                        # non-streamed think), not a narrowing as on the tool
+                        # branch — emitting "extended" lets dashboards distinguish
+                        # the two cases correctly.
+                        self._emit_watchdog_metric(
+                            "probe", verdict, evidence, _stale_idle,
+                            window="extended" if _flat_wait else "standard",
+                        )
                         logger.warning(
                             "Stale turn on session %s (idle %.0fs, verdict=%s: %s) — "
                             "probing via session/cancel",
@@ -1801,6 +2059,60 @@ class AcpSessionHandle:
             "Watchdog deferral on session %s: idle %.0fs but verdict WORKING (%s)",
             self._session_id, idle, evidence,
         )
+        # Telemetry rides the same rate limit as the log line: one deferral
+        # point per interval per session, so an hours-long WORKING build contributes a
+        # bounded handful of points instead of one per 5s dispatch tick.
+        self._emit_watchdog_metric("deferral", VERDICT_WORKING, evidence, idle)
+
+    def _emit_watchdog_metric(
+        self, action: str, verdict: str, evidence: str, idle: float, *,
+        window: str = "standard",
+    ) -> None:
+        """Emit kirocrew.watchdog.action + kirocrew.watchdog.idle.duration (best-effort).
+
+        One counter point + one histogram point per watchdog DECISION —
+        ``deferral`` (WORKING, rate-limited via _log_working_deferral),
+        ``probe`` (the non-lethal session/cancel stale probe), and ``cancel``
+        (tool-stall recovery via _end_stalled_tool). Attrs are all closed
+        enums (metrics/schema.py cardinality rule): the free-form evidence is
+        bucketed by :func:`_watchdog_evidence_class`; ``window`` is one of:
+        "standard" (default), "narrowed" (tool-branch established_flat reduces
+        the build-scale suspect window to the model-silent budget), or "extended"
+        (model-wait established_flat extends the 300s stale window to the
+        model-silent probe window for a non-streamed server-side think).
+        ``agent_override`` is the per-agent-override BOOLEAN from the settings
+        snapshot — deliberately NOT the agent name (per-agent joins happen via
+        the always-on token row store, not OTel attrs). Failures never reach
+        the dispatch loop.
+        """
+        try:
+            # circular import: importing get_recorder at module top would form
+            # config.loader -> ... -> acp.client -> metrics.provider ->
+            # config.loader (provider reads KiroCrewConfig). Keep it lazy so
+            # provider is never loaded during config.loader's import chain
+            # (mirrors AcpClient.ensure_ready's emit).
+            from kiro_crew.metrics.provider import get_recorder
+
+            attrs: dict[str, str | int | bool | float] = {
+                "action": action,
+                "verdict": verdict,
+                "evidence_class": _watchdog_evidence_class(evidence),
+                "window": window,
+                "agent_override": bool(self._watchdog.agent_override),
+            }
+            rec = get_recorder()
+            rec.counter("kirocrew.watchdog.action", attrs=attrs)
+            # ms, like every other kirocrew duration histogram: the dashboard's
+            # generic aggregation reports all histograms under *_ms keys, so a
+            # seconds-unit instrument would render 1000x off there.
+            rec.histogram(
+                "kirocrew.watchdog.idle.duration",
+                float(idle) * 1000.0,
+                unit="ms",
+                attrs={"action": action, "evidence_class": attrs["evidence_class"]},
+            )
+        except Exception:  # telemetry must never break the watchdog
+            logger.debug("watchdog metric emit failed", exc_info=True)
 
     async def _end_stalled_tool(
         self, verdict: str, evidence: str, idle: float
@@ -2094,6 +2406,260 @@ class AcpSessionHandle:
             self._permission_options[event.request_id] = recorded
         return event
 
+    def _handle_kas_update(self, session_update: str, update: dict) -> list[AcpEvent] | None:
+        """Map a KAS-only ``session/update`` discriminant to Crew events.
+
+        Returns a (possibly empty) event list for a discriminant KAS uses in
+        place of a kiro-cli ``_kiro.dev/*`` method, or ``None`` when the
+        discriminant is not KAS-specific (ordinary chunk/tool frames) so the
+        caller falls through to the shared parser. Only ever reached on the KAS
+        backend.
+        """
+        if session_update == UPDATE_CURRENT_MODE:
+            # KAS agent-switch echo (kiro-cli: _kiro.dev/agent/switched). The new
+            # mode id stands in for kiro-cli's agentName. KAS re-emits this to
+            # report the CURRENT mode, so suppress only a repeat of the
+            # already-emitted mode (a no-op re-assert); every actual change is
+            # emitted. First-sight is NOT suppressed: the session's initial
+            # current_mode_update is drained pre-prompt without reaching here, so
+            # the first frame that does reach here is a real switch that must not
+            # be dropped.
+            mode_id = update.get("currentModeId")
+            if not (isinstance(mode_id, str) and mode_id):
+                return []
+            if mode_id == self._last_kas_mode_id:
+                return []
+            self._last_kas_mode_id = mode_id
+            return [AcpEvent(kind=EVENT_AGENT_SWITCHED, text=mode_id)]
+        if session_update == UPDATE_SESSION_INFO:
+            return self._handle_kas_session_info(update)
+        # available_commands_update / any other KAS discriminant falls through to
+        # the shared parser, which already returns [] for it — Crew surfaces no
+        # available-commands UI for any backend (kiro-cli's
+        # _kiro.dev/commands/available is likewise unconsumed), so there is
+        # nothing to render and no separate branch is needed.
+        return None
+
+    def _handle_kas_session_info(self, update: dict) -> list[AcpEvent]:
+        """Map a KAS ``session_info_update`` (``_meta.kiro`` union) to events.
+
+        This one discriminant carries what kiro-cli splits across separate
+        methods: ``context_usage`` (the context meter) and ``turn_completion``
+        (per-turn billing) together reconstruct the single ``_kiro.dev/metadata``
+        frame, while the ``summarization_*`` kinds are KAS's compaction status
+        (kiro-cli: ``_kiro.dev/compaction/status``) and the ``steering_*`` kinds
+        are KAS's mid-turn steer echo (kiro-cli: ``session/update`` steer
+        discriminants, handled by the "steer" action).
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return []
+        kind = kiro.get("kind")
+        if kind == "context_usage":
+            self._apply_kas_context_pct(kiro.get("usagePercentage"))
+            return []
+        if kind == "turn_completion":
+            self._apply_kas_turn_completion(kiro)
+            return []
+        if kind in ("summarization_started", "summarization_completed", "summarization_failed"):
+            if kind == "summarization_completed":
+                # Pre-compaction counts no longer describe the session — drop
+                # them so the meter resets and fresh telemetry re-derives real
+                # numbers (parity with the kiro-cli compaction handler).
+                self.last_prompt_stats.reset_after_compaction()
+                status_type = "completed"
+            elif kind == "summarization_failed":
+                status_type = "failed"
+            else:
+                status_type = "started"
+            # conversationSummary is backend-echoed, LLM-influenced text that
+            # reaches the dashboard — redact exfil URLs/credentials first.
+            summary = redact_text(str(kiro.get("conversationSummary", "") or ""))
+            return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
+        if kind in ("steering_queued", "steering_injected", "steering_cleared"):
+            # KAS mid-turn steer echo. kiro-cli sends these as `session/update`
+            # discriminants (handled by the "steer" action); KAS instead puts the
+            # kind under `_meta.kiro`, so route it here. `injected` is the
+            # settling signal (→ EVENT_STEER_CONSUMED, which _settle_consumed_steers
+            # consumes); queued/cleared mirror the kiro path. Never trust
+            # backend-echoed steer text — redact before it reaches any surface.
+            if kind == "steering_cleared":
+                return [AcpEvent(kind=EVENT_STEER_CLEARED)]
+            text = redact_text(str(kiro.get("content") or ""))
+            steer_kind = EVENT_STEER_CONSUMED if kind == "steering_injected" else EVENT_STEER_QUEUED
+            return [AcpEvent(kind=steer_kind, text=text)]
+        return []
+
+    def _handle_kas_subagent(self, update: dict) -> list[AcpEvent] | None:
+        """Route KAS PARENT sub-agent frames to EVENT_SUBAGENT_LIST.
+
+        Returns a list of events when the frame is a PARENT sub-agent lifecycle
+        frame (``kind:"agent-subtask"`` or ``pipeline``), or ``None`` when it is
+        a child nested tool or an ordinary frame that should fall through to the
+        shared parser (so caches populate and tool events render).
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return None
+
+        agent_subtask_id = kiro.get("agentSubtaskId")
+        pipeline = kiro.get("pipeline")
+
+        if not agent_subtask_id and not pipeline:
+            return None
+
+        # Pipeline frame: one entry per stage.
+        if isinstance(pipeline, dict):
+            stages = pipeline.get("stages")
+            if isinstance(stages, list):
+                for stage in stages:
+                    if not isinstance(stage, dict):
+                        continue
+                    s_id = stage.get("agentSubtaskId")
+                    if not isinstance(s_id, str) or not s_id:
+                        continue
+                    s_status = str(stage.get("status") or "in_progress")
+                    s_name = str(stage.get("name") or stage.get("role") or "")
+                    self._kas_subagent_roster[s_id] = {
+                        "sessionId": s_id,
+                        "sessionName": s_name,
+                        "agentName": s_name,
+                        "initialQuery": s_name,
+                        "status": {"type": s_status, "message": ""},
+                    }
+            return [AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=list(self._kas_subagent_roster.values()),
+            )]
+
+        # Individual agent-subtask frame (kind == "agent-subtask") → PARENT.
+        is_parent = kiro.get("kind") == "agent-subtask"
+
+        if is_parent:
+            subtask_id = str(agent_subtask_id)
+            status = str(update.get("status") or "in_progress")
+            title = str(update.get("title") or "")
+            name = title.replace("Sub-agent: ", "") if title.startswith("Sub-agent: ") else title
+            self._kas_subagent_roster[subtask_id] = {
+                "sessionId": subtask_id,
+                "sessionName": title,
+                "agentName": name,
+                "initialQuery": title,
+                "status": {"type": status, "message": ""},
+            }
+            return [AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=list(self._kas_subagent_roster.values()),
+            )]
+
+        # Child nested tool_call/tool_call_update (has agentSubtaskId but NOT
+        # kind:"agent-subtask" or pipeline) → return None so the caller falls
+        # through to parse_session_update (populates caches + renders tool
+        # events). The caller prepends the activity prefix separately.
+        return None
+
+    def _handle_kas_subagent_chunk(self, update: dict) -> list[AcpEvent] | None:
+        """Route KAS agent_message_chunk with agentSubtaskId to activity.
+
+        Returns a list when the chunk belongs to a child sub-agent, else None
+        (fall through to normal chunk handling).
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return None
+        subtask_id = kiro.get("agentSubtaskId")
+        if not isinstance(subtask_id, str) or not subtask_id:
+            return None
+        # Must NOT have kind:"agent-subtask" or pipeline — those are parent frames
+        if kiro.get("kind") == "agent-subtask" or kiro.get("pipeline"):
+            return None
+        text, _thinking = parse_text_chunk(update)
+        if not text or _thinking:
+            # A child's private reasoning (thinking/reasoning content) must not
+            # surface as visible sub-agent activity — parity with the kiro native
+            # subagent path, which only forwards non-thinking agent_message_chunk.
+            return []
+        return [AcpEvent(
+            kind=EVENT_SUBAGENT_ACTIVITY,
+            sub_session_id=subtask_id,
+            text=redact_text(text),
+        )]
+
+    def _build_child_tool_activity_prefix(self, update: dict) -> list[AcpEvent]:
+        """Build an EVENT_SUBAGENT_ACTIVITY prefix for a child nested tool frame.
+
+        Called when ``_handle_kas_subagent`` returns None (child tool) so the
+        activity attribution is emitted BEFORE the tool events from
+        ``parse_session_update``.
+        """
+        meta = update.get("_meta")
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        if not isinstance(kiro, dict):
+            return []
+        subtask_id = kiro.get("agentSubtaskId")
+        if not isinstance(subtask_id, str) or not subtask_id:
+            return []
+        tool_call_id = str(update.get("toolCallId") or "")
+        if not tool_call_id:
+            return []
+        title = redact_text(str(update.get("title") or ""))
+        return [AcpEvent(
+            kind=EVENT_SUBAGENT_ACTIVITY,
+            sub_session_id=subtask_id,
+            tool_call_id=tool_call_id,
+            title=title,
+        )]
+
+    def _apply_kas_context_pct(self, pct: object) -> None:
+        """Apply a KAS ``context_usage`` percentage to the context meter.
+
+        Mirrors ``_track_metadata``'s pct path: a real ``usage_update`` is
+        authoritative (``context_tokens_from_usage``) and must not be clobbered,
+        and the value is sanitized to a real [0, 100] before use.
+        """
+        if pct is None or self.last_prompt_stats.context_tokens_from_usage:
+            return
+        try:
+            pct_f = float(pct)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: a JSON integer beyond float range (int->float
+            # conversion) — malformed telemetry must degrade to "absent", never
+            # abort the active turn's dispatch.
+            return
+        # NaN is caught by self-inequality; ±inf/out-of-range are clamped.
+        pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
+        self.last_prompt_stats.context_pct = pct_f
+        self.last_prompt_stats.note_pct_reported()
+        self._backfill_context_window(pct_f)
+
+    def _apply_kas_turn_completion(self, kiro: dict) -> None:
+        """Set per-turn credits from a KAS ``turn_completion`` frame.
+
+        ``promptTurnSummaries`` entries are ``{usage, unit, unitPlural}``; only
+        ``unit == "credit"`` contributes, mirroring the kiro-cli ``meteringUsage``
+        credit sum (value validation shared via ``_token_count``). The acp
+        provider bills in credits.
+
+        The frame carries the whole turn's summary, so the total is ASSIGNED, not
+        accumulated: a duplicate or resume-replayed ``turn_completion`` reports
+        the same total and must not inflate the displayed cost. A malformed frame
+        (no summaries list) leaves the prior value untouched rather than zeroing.
+        """
+        summaries = kiro.get("promptTurnSummaries")
+        if not isinstance(summaries, list):
+            return
+        total = 0.0
+        for entry in summaries:
+            if not isinstance(entry, dict) or entry.get("unit") != "credit":
+                continue
+            value = _token_count(entry.get("usage"))
+            if value is not None:
+                total += float(value)
+        self.last_prompt_stats.credits = total
+
     def _handle_update(self, msg: JsonRpcMessage) -> list[AcpEvent]:
         """Process a session/update notification and return events."""
         params = msg.params or {}
@@ -2129,6 +2695,54 @@ class AcpSessionHandle:
                 self._sync_effort_levels()
             return []
 
+        # KAS folds signals that kiro-cli sends as separate top-level
+        # ``_kiro.dev/*`` methods (agent switch, per-turn metadata, compaction
+        # status) into ``session/update`` discriminants instead. kiro-cli never
+        # emits these discriminants (verified against its source), so this
+        # KAS-gated branch restores the same displays without touching the kiro
+        # path — a positive ``== ACP_BACKEND_KAS`` check for harness parity (H5).
+        # Returns None only for a non-KAS-specific discriminant, so ordinary
+        # chunk/tool frames still fall through to the shared parser below.
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            kas_events = self._handle_kas_update(session_update, update)
+            if kas_events is not None:
+                return kas_events
+
+        # KAS sub-agent progress: tool_call/tool_call_update frames carrying
+        # _meta.kiro.agentSubtaskId or _meta.kiro.pipeline are sub-agent
+        # lifecycle frames — intercept PARENT frames and route to the native
+        # sub-agent WS path (EVENT_SUBAGENT_LIST) instead of rendering them as
+        # ordinary tool calls. CHILD nested tool frames (agentSubtaskId present,
+        # but not a parent) emit an activity prefix AND fall through to the
+        # shared parser (caches populate + tool events render).
+        # Positive KAS gate (H5).
+        if self._runtime.acp_backend == ACP_BACKEND_KAS:
+            if session_update in ("tool_call", "tool_call_update"):
+                kas_sub_events = self._handle_kas_subagent(update)
+                if kas_sub_events is not None:
+                    return kas_sub_events
+                _child_prefix = self._build_child_tool_activity_prefix(update)
+                if _child_prefix:
+                    # Child nested tool: run the shared parser for its cache
+                    # SIDE EFFECTS ONLY — the trusted _tool_call_is_shell signal
+                    # + redacted input that a later permission/result reads — but
+                    # return ONLY the activity. Surfacing the tool events would
+                    # render the child tool as a top-level tool; the sub-agent
+                    # card is fed by the roster + activity, not the raw frame.
+                    parse_session_update(
+                        update,
+                        tool_input_cache=self._tool_call_inputs,
+                        shell_cache=self._tool_call_is_shell,
+                        raw_params_cache=self._tool_call_raw_params,
+                        mcp_server_name_cache=self._tool_call_mcp_server,
+                        tool_name_cache=self._tool_call_tool_name,
+                    )
+                    return _child_prefix
+            if session_update == "agent_message_chunk":
+                kas_chunk_events = self._handle_kas_subagent_chunk(update)
+                if kas_chunk_events is not None:
+                    return kas_chunk_events
+
         # All other session/update kinds go through the single shared parser so
         # AcpRuntime and AcpClient cannot drift on frame shape or redaction. The
         # parser writes redacted tool inputs into our caller-owned cache AND the
@@ -2160,6 +2774,7 @@ class AcpSessionHandle:
                     command=ev.tool_input,
                     dispatch_ts=time.monotonic(),
                     is_shell=ev.is_shell,
+                    tool_name=ev.tool_name,
                 )
                 self._retire_liveness_state()
             elif ev.kind == EVENT_TOOL_RESULT:

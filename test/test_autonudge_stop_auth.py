@@ -34,10 +34,15 @@ import asyncio
 import pytest
 
 import kiro_crew.mcp_core as mcp_core
-from kiro_crew import session_directive
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew import autonudge_authz, session_directive
+from kiro_crew.autonudge import (
+    AUTONUDGE_STOP_REASON,
+    AutoNudgeService,
+    binding_key_for,
+)
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.mcp_core import _call_tool_inner
+from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.validation import ValidationError
 
 # ── Tool-contract fixtures ────────────────────────────────────────────────────
@@ -89,7 +94,7 @@ def test_monitor_start_defaults_interval_300_and_bounded_cap(default_install):
     result = _call_tool_inner("monitor_start", {"message": "watch CI"})
     args = session_directive.decode(result, "monitor_start")
     assert args["idle_secs"] == 300
-    assert args["max_cycles"] == mcp_core._MONITOR_DEFAULT_MAX_CYCLES
+    assert args["max_cycles"] == _MONITOR_DEFAULT_MAX_CYCLES
     assert args["max_cycles"] == 24
     assert "no cycle cap" not in result.lower()
 
@@ -236,12 +241,13 @@ class _FakeLoop:
 
 
 class _FakeSvc:
-    """Minimal AutoNudge service double: only get_by_slot + remove are used."""
+    """Minimal AutoNudge service double for session-directive mutations."""
 
     def __init__(self, loop=None):
         self._loop = loop
         self.get_by_slot_keys: list[str] = []
         self.removed: list[str] = []
+        self.updated: list[tuple[str, dict]] = []
 
     def get_by_slot(self, key):
         self.get_by_slot_keys.append(key)
@@ -250,16 +256,23 @@ class _FakeSvc:
     async def remove(self, loop_id):
         self.removed.append(loop_id)
 
+    async def update(self, loop_id, **patch):
+        self.updated.append((loop_id, patch))
+        return self._loop
+
 
 def _fake_state():
     return object()
 
 
-def _fake_slot():
+def _fake_slot(*, key="chat-3-1700000000", app=""):
     class _Slot:
-        key = "chat-3-1700000000"
+        pass
 
-    return _Slot()
+    slot = _Slot()
+    slot.key = key
+    slot._app = app
+    return slot
 
 
 def _install_svc(monkeypatch, svc):
@@ -289,6 +302,7 @@ def _record_update(monkeypatch, *, loop=None, error=None):
 
 
 _SESSION = "dashboard:chat-3-1700000000"
+_RESEARCH_SESSION = "dashboard:research-a1b2c3d4"
 
 
 def test_applier_monitor_start_arms_via_the_session_binding_key(monkeypatch):
@@ -524,10 +538,31 @@ def test_applier_monitor_update_without_a_loop_is_a_clean_noop(monkeypatch):
     assert not update_calls
 
 
-def test_applier_autonudge_stop_removes_the_loop_resolved_by_binding(monkeypatch):
-    """OWNERSHIP: autonudge_stop resolves the loop from the session binding key
-    and removes exactly that loop id."""
+def test_applier_autonudge_stop_records_tombstone_for_loop_resolved_by_binding(monkeypatch):
+    """Research Lab retains source-owned stop evidence for its watchdog."""
     svc = _FakeSvc(_FakeLoop("loop-1"))
+    _install_svc(monkeypatch, svc)
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(key="research-a1b2c3d4", app="auto-research"),
+            _RESEARCH_SESSION,
+            "autonudge_stop",
+            {"reason": "done"},
+        )
+    )
+    assert svc.get_by_slot_keys == [binding_key_for(_RESEARCH_SESSION)]
+    assert svc.updated == [
+        ("loop-1", {"active": False, "stopped_reason": AUTONUDGE_STOP_REASON})
+    ]
+    assert svc.removed == []
+    assert "stopped" in result.lower()
+    assert "done" in result
+
+
+def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):
+    """Loops without a tombstone consumer retain the historical remove UX."""
+    svc = _FakeSvc(_FakeLoop("loop-ordinary"))
     _install_svc(monkeypatch, svc)
     result = asyncio.run(
         apply_session_directive(
@@ -535,9 +570,118 @@ def test_applier_autonudge_stop_removes_the_loop_resolved_by_binding(monkeypatch
         )
     )
     assert svc.get_by_slot_keys == [binding_key_for(_SESSION)]
-    assert svc.removed == ["loop-1"]
+    assert svc.removed == ["loop-ordinary"]
+    assert svc.updated == []
     assert "stopped" in result.lower()
-    assert "done" in result
+
+
+@pytest.mark.parametrize(
+    "session_key",
+    (
+        "dashboard:research-notes",
+        "dashboard:research-a1b2c3d",
+        "dashboard:research-a1b2c3d4-extra",
+        "dashboard:research-A1B2C3D4",
+    ),
+)
+def test_applier_autonudge_stop_removes_research_prefix_lookalikes(monkeypatch, session_key):
+    """App provenance cannot turn a non-canonical lookalike into a worker."""
+    svc = _FakeSvc(_FakeLoop("loop-lookalike"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(key=binding_key_for(session_key), app="auto-research"),
+            session_key,
+            "autonudge_stop",
+            {"reason": "done"},
+        )
+    )
+
+    assert svc.get_by_slot_keys == [binding_key_for(session_key)]
+    assert svc.removed == ["loop-lookalike"]
+    assert svc.updated == []
+    assert "stopped" in result.lower()
+
+
+def test_applier_autonudge_stop_removes_canonical_user_named_slot(monkeypatch):
+    """A canonical-looking name is not proof of Research Lab ownership."""
+    svc = _FakeSvc(_FakeLoop("loop-user-named"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            _fake_state(),
+            _fake_slot(key="research-a1b2c3d4"),
+            _RESEARCH_SESSION,
+            "autonudge_stop",
+            {"reason": "done"},
+        )
+    )
+
+    assert svc.get_by_slot_keys == [binding_key_for(_RESEARCH_SESSION)]
+    assert svc.removed == ["loop-user-named"]
+    assert svc.updated == []
+    assert "stopped" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_applier_autonudge_stop_tombstone_survives_api_retry_and_restart(
+    tmp_path, monkeypatch
+):
+    """A reasonless inactive API retry cannot erase source stop evidence.
+
+    The Research Lab watchdog may observe the record only after the worker turn
+    exits or after a gateway restart, so both boundaries must retain it.
+    """
+    svc1 = AutoNudgeService(base_dir=tmp_path)
+    await svc1.start()
+    binding = binding_key_for(_RESEARCH_SESSION)
+    loop = await svc1.add(slot_key=binding, message="watch", idle_secs=60)
+    # Simulate an app-disable pause racing ahead of the worker's source stop.
+    # A deliberate stop must replace the manual reason so re-enable cannot
+    # revive work the worker already finished.
+    await svc1.update(loop.id, active=False)
+    _install_svc(monkeypatch, svc1)
+
+    await apply_session_directive(
+        _fake_state(),
+        _fake_slot(key="research-a1b2c3d4", app="auto-research"),
+        _RESEARCH_SESSION,
+        "autonudge_stop",
+        {"reason": "goal met"},
+    )
+    stopped = svc1.get_by_slot(binding)
+    assert stopped is not None
+    assert stopped.id == loop.id
+    assert stopped.active is False
+    assert stopped.stopped_reason == AUTONUDGE_STOP_REASON
+
+    audit = type("Audit", (), {"log_tool_invocation": lambda self, **_kwargs: None})()
+    monkeypatch.setattr(autonudge_authz, "sel", lambda: audit)
+    updated, error, status = await autonudge_authz.authorize_and_update_nudge(
+        svc=svc1,
+        loop_id=loop.id,
+        active=False,
+        source="dashboard",
+    )
+    assert error is None
+    assert status == 200
+    assert updated is stopped
+    assert stopped.stopped_reason == AUTONUDGE_STOP_REASON
+    assert loop.id not in svc1._timers
+    svc1.stop()
+
+    svc2 = AutoNudgeService(base_dir=tmp_path)
+    await svc2.start()
+    restored = svc2.get_by_slot(binding)
+    assert restored is not None
+    assert restored.id == loop.id
+    assert restored.active is False
+    assert restored.stopped_reason == AUTONUDGE_STOP_REASON
+    assert loop.id not in svc2._timers
+    svc2.stop()
 
 
 def test_applier_autonudge_stop_no_loop_is_a_clean_noop(monkeypatch):
@@ -550,3 +694,4 @@ def test_applier_autonudge_stop_no_loop_is_a_clean_noop(monkeypatch):
     )
     assert "nothing to stop" in result.lower()
     assert svc.removed == []
+    assert svc.updated == []

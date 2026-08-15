@@ -14,10 +14,12 @@ context rebuilding entirely, so the flags cannot apply to it.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew import subagent as subagent_mod
 from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
@@ -176,6 +178,78 @@ class TestContinuationInheritsScope:
         assert captured["include_memory"] is False
         assert captured["include_lessons"] is True
         assert captured["include_project"] is True
+
+    def test_continue_conversation_runs_where_the_run_ran(self, monkeypatch, tmp_path):
+        """A continuation must carry the CALLER's cwd into spawn(), verbatim.
+
+        ``spawn`` resolves an empty cwd to the POOL project before it validates the
+        agent name, so a run spawned against a project-local agent came back
+        "unknown agent" — and every caller reads a non-busy error as unresumable
+        and respawns from the digest alone, dropping the conversation the call
+        exists to preserve. The cwd is the caller's to supply (see
+        ``recorded_cwd``): discovering it here would put a blocking filesystem
+        probe on the gateway's event loop.
+        """
+        mgr = _mgr()
+        mgr._agents["conv3"] = SubagentInfo(id="conv3", task="t")
+        monkeypatch.setattr(mgr, "_conversation_busy", lambda _k: None)
+        monkeypatch.setattr(mgr._sessions, "resumable_sid", lambda _k: "sid-1")
+        monkeypatch.setattr(mgr, "_promote_conversation", lambda *_a: None)
+        proj = tmp_path / "alpha"
+        proj.mkdir()
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(mgr, "spawn", lambda *_a, **kw: captured.update(kw))
+
+        mgr.continue_conversation("conv3", "follow up", cwd=str(proj))
+        assert captured["cwd"] == str(proj)
+
+        # No caller cwd -> nothing invented here; spawn applies its own default.
+        # A recorded state.json must NOT be consulted on this path.
+        monkeypatch.setattr(
+            "kiro_crew.subagent.read_state", lambda _id: {"cwd": str(proj)}
+        )
+        captured.clear()
+        mgr.continue_conversation("conv3", "follow up")
+        assert captured["cwd"] == ""
+
+    def test_recorded_cwd_is_resolved_off_loop_not_inside_continue(self, monkeypatch, tmp_path):
+        """`continue_conversation` is synchronous and runs on the gateway's event
+        loop, so it must NOT probe the recorded path itself -- a stalled network
+        mount would freeze the gateway and its heartbeat. The blocking work lives
+        in `recorded_cwd`, which async callers hand to `asyncio.to_thread`."""
+        mgr = _mgr()
+        proj = tmp_path / "alpha"
+        proj.mkdir()
+        monkeypatch.setattr(
+            "kiro_crew.subagent.read_state", lambda _id: {"cwd": str(proj)}
+        )
+        assert mgr.recorded_cwd("conv9") == str(proj)
+
+        # A project that no longer exists is forwarded ANYWAY, so `spawn` refuses
+        # it. Round 35 filtered this to "" to keep the continuation working; that
+        # was the wrong trade, because an empty cwd resolves to the POOL project and
+        # a follow-up naming relative files would then edit an unrelated repository.
+        # A loud refusal is recoverable; a silent write to the wrong tree is not.
+        gone = tmp_path / "deleted-project"
+        monkeypatch.setattr(
+            "kiro_crew.subagent.read_state", lambda _id: {"cwd": str(gone)},
+        )
+        assert mgr.recorded_cwd("conv9") == str(gone)
+        # Only a run that never recorded a cwd yields "": for it the pool default
+        # is right, because there is no project to miss.
+        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {})
+        assert mgr.recorded_cwd("conv9") == ""
+
+        # And the synchronous path carries no probe of its own. Comments are
+        # stripped first: the method explains the hazard by naming the call, and a
+        # scan that counted prose would fail on its own documentation.
+        src = Path(subagent_mod.__file__).read_text(encoding="utf-8")
+        body = src.split("def continue_conversation")[1].split("\n    def ")[0]
+        code = "\n".join(
+            ln for ln in body.splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert "is_dir(" not in code, "a blocking probe is back on the event loop"
+        assert "read_state(" in code, "premise: the seed read is still there to compare"
 
 
 class TestScopePersistence:

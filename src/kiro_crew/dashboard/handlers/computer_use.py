@@ -711,6 +711,44 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     # tear down the user's session.
     sessions_reset = 0
     if STATE_KEY_ENABLED in state_patch and state_patch[STATE_KEY_ENABLED] != enabled_before:
+        # REBUILD THE AGENT SPEC FIRST. The enable is also a spec-emission gate
+        # (``agent._computer_use_spec_gate``): while it is off the server is not in
+        # ``mcpServers`` at all, so no backend is spawned. A reset alone would
+        # therefore restart every session into the SAME spec that omits the server
+        # — the tools would not appear until the next gateway start, which is a
+        # regression in the one path that has to work. Rebuilding here keeps the
+        # user-visible contract ("enable, sessions restart, tools are there")
+        # exactly as it was.
+        #
+        # UNDER THE CONFIG LOCK, reacquired: the rebuild READS the keystone and
+        # WRITES the spec, so leaving it outside would let two overlapping PUTs
+        # interleave — an enable's slower rebuild could land its spec after a
+        # later disable's, leaving a spec that mounts (and spawns) the server the
+        # keystone now forbids. Holding the lock makes read-decide-write atomic
+        # against every keystone writer, so the rebuild that finishes last is the
+        # one that read the final state. The write block above has already exited
+        # its own acquisition, and ``rebuild_agent_config`` never takes this lock,
+        # so this cannot self-deadlock.
+        #
+        # A rebuild failure must not fail the SAVE: the write already landed and
+        # was audited. The fallback is the pre-existing behaviour — the tool
+        # surface appears on the next gateway start.
+        #
+        # The import is function-local and must STAY function-local, which is not
+        # a style choice: it makes the name resolve at CALL time, so
+        # ``kiro_crew.agent`` is the single place a test can substitute the
+        # rebuild. Hoisting it to module scope binds the name here at import time,
+        # and the test guard that keeps the suite from rewriting the operator's
+        # real ``~/.kiro/agents`` would silently stop reaching this call site.
+        # Pinned by ``test_patching_the_agent_module_REACHES_the_handler``.
+        try:
+            from kiro_crew.agent import rebuild_agent_config
+
+            async with _get_config_lock():
+                await asyncio.to_thread(rebuild_agent_config)
+        except Exception:
+            logger.exception("computer-use enable saved, but agent config rebuild failed")
+
         from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
 
         try:

@@ -66,7 +66,9 @@ jobs:
   sweep:
     name: Nudge stuck PR Readiness statuses
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Headroom for the larger dispatch volume: a real backlog can now be drained
+    # in a single sweep (see MAX_DISPATCH), so the job may fire many recomputes.
+    timeout-minutes: 15
     steps:
       - name: Re-fire readiness for stale pull requests
         env:
@@ -76,10 +78,13 @@ jobs:
           # A `pending` status older than this (minutes) is considered a
           # dropped-event freeze rather than an in-flight fan-out.
           STALE_MINUTES: "15"
-          # Runaway backstop: never dispatch more than this many recomputes in
-          # a single sweep. Anything beyond the cap is left for the next sweep
-          # (it stays stale, so it is picked up again).
-          MAX_DISPATCH: "10"
+          # Runaway backstop ONLY -- not a fairness throttle. Dispatch is
+          # oldest-stale-first (see the sort in the second pass), so the cap can
+          # never perpetually starve a low-numbered PR the way the old small,
+          # PR-number-ordered cap did. It is sized to cover the entire open-PR
+          # set in a single sweep, so a genuine backlog drains in one pass; it
+          # exists only to bound a single sweep against a pathological run.
+          MAX_DISPATCH: "200"
         run: |
           set -euo pipefail
 
@@ -93,8 +98,12 @@ jobs:
           total="$(jq 'length' <<<"$prs")"
           echo "Scanning $total open pull request(s) for stale PR Readiness."
 
-          dispatched=0
-          skipped_cap=0
+          # First pass: COLLECT every stale PR; do NOT dispatch inline. Inline
+          # dispatch in `gh pr list` order plus a cap starves whichever stale PRs
+          # land past the cap on every sweep -- in practice the oldest,
+          # lowest-numbered ones, since the list is newest-first. Gather them all
+          # here, then dispatch oldest-first in the second pass below.
+          stale_file="$(mktemp)"
 
           while read -r row; do
             [ -n "$row" ] || continue
@@ -171,11 +180,28 @@ jobs:
                 ;;
             esac
 
+            # Record as "staleness_epoch<TAB>number<TAB>sha<TAB>reason". The
+            # staleness epoch is the status's own updated_at, so a numeric sort
+            # ascending on column 1 orders by HOW LONG each PR has been frozen.
+            printf '%s\t%s\t%s\t%s\n' "$updated_epoch" "$number" "$sha" "$reason" >>"$stale_file"
+          done < <(jq -c '.[]' <<<"$prs")
+
+          stale_total=0
+          [ -s "$stale_file" ] && stale_total="$(wc -l <"$stale_file" | tr -d ' ')"
+          echo "Found $stale_total stale PR Readiness status(es); dispatching oldest-first."
+
+          dispatched=0
+          skipped_cap=0
+
+          # Second pass: dispatch OLDEST-stale-first (numeric sort ascending on
+          # the staleness epoch in column 1). The longest-frozen PR is always
+          # served first, so nothing can be perpetually deferred by the cap.
+          while IFS=$'\t' read -r s_epoch number sha reason; do
+            [ -n "$number" ] || continue
             if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
               skipped_cap=$(( skipped_cap + 1 ))
               continue
             fi
-
             echo "PR #$number: PR Readiness $reason at $sha -> re-firing recompute."
             if gh workflow run pr-readiness.yml --repo "$REPO" \
                 -f pr="$number" -f sha="$sha" >/dev/null 2>&1; then
@@ -183,6 +209,8 @@ jobs:
             else
               echo "PR #$number: failed to dispatch pr-readiness.yml (will retry next sweep)."
             fi
-          done < <(jq -c '.[]' <<<"$prs")
+          done < <(sort -n -k1,1 "$stale_file")
+
+          rm -f "$stale_file"
 
           echo "Re-fired $dispatched recompute(s); $skipped_cap stale PR(s) deferred to next sweep by MAX_DISPATCH=$MAX_DISPATCH."

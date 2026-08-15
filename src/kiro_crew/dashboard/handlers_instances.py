@@ -17,6 +17,9 @@ crosses this boundary, it is never logged, and it never appears in list/status.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import functools
 import logging
 from typing import TYPE_CHECKING
 
@@ -34,6 +37,7 @@ from kiro_crew.instances.registry import (
     InstancesError,
     InstancesRegistry,
     InvalidInstanceError,
+    validate_ttl,
 )
 from kiro_crew.sel import sel
 
@@ -103,6 +107,17 @@ def _registry(state: "DashboardState"):
     return reg
 
 
+def _apply_update(reg, instance_id: str, changes: dict) -> object:
+    """Write *changes* to *instance_id*. Blocking — callers offload it.
+
+    Module level on purpose: the registry write must never run on the event loop,
+    and a closure defined inside the async handler reads (to a human and to the
+    AST ratchet in ``test_apps_instances_loop_offload``) as a call on the loop
+    even when every caller hands it to a thread.
+    """
+    return reg.update(instance_id, **changes)
+
+
 def _status_for(state: "DashboardState", instance_id: str) -> dict:
     """Live tunnel status dict for an instance, or a disconnected default.
 
@@ -144,7 +159,10 @@ async def api_instances_list(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     reg = _registry(state)
-    items = [_instance_view(state, i) for i in reg.list()]
+    # Registry calls read (and mutations atomically rewrite + fsync)
+    # instances.json under a threading lock a to_thread worker may hold across
+    # its fsync — so every registry touch in these handlers goes off the loop.
+    items = [_instance_view(state, i) for i in await asyncio.to_thread(reg.list)]
     _audit("list", "success")
     return web.json_response(
         {
@@ -168,7 +186,7 @@ async def api_instances_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
     reg = _registry(state)
-    if reg.get(instance_id) is None:
+    if await asyncio.to_thread(reg.get, instance_id) is None:
         _audit("status", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
     # Optional on-demand failure diagnosis: ?diagnose=1 runs the ordered probe
@@ -206,7 +224,8 @@ async def api_instances_add(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be an object"}, status=400)
     try:
-        inst = reg.add(
+        inst = await asyncio.to_thread(
+            reg.add,
             name=str(body.get("name", "")),
             ssh_host=str(body.get("ssh_host", "")),
             remote_port=int(body.get("remote_port", 7777)),
@@ -229,6 +248,36 @@ async def api_instances_add(request: web.Request) -> web.Response:
     return web.json_response(_instance_view(state, inst), status=201)
 
 
+# Declared type of every field the PATCH body may set. `remote_port` is the only
+# non-string; bool is excluded explicitly because `isinstance(True, int)` is True
+# and `True` would otherwise validate as port 1.
+_PATCH_FIELD_TYPES: dict[str, type] = {
+    "name": str,
+    "ssh_host": str,
+    "ttl": str,
+    "remote_bin": str,
+    "connection_method": str,
+    "ssm_target": str,
+    "ssm_run_as": str,
+    "aws_profile": str,
+    "aws_region": str,
+    "remote_port": int,
+}
+
+
+def _wrong_typed_field(changes: dict) -> str | None:
+    """Return an error message for the first field whose JSON type is wrong."""
+    for key, value in changes.items():
+        expected = _PATCH_FIELD_TYPES.get(key)
+        if expected is None:
+            continue
+        if expected is int and (isinstance(value, bool) or not isinstance(value, int)):
+            return f"invalid {key}: expected a number"
+        if expected is str and not isinstance(value, str):
+            return f"invalid {key}: expected a string"
+    return None
+
+
 async def api_instances_update(request: web.Request) -> web.Response:
     """PATCH /api/instances/{id} — edit a configured instance."""
     denied = _guard(request, "update")
@@ -243,34 +292,133 @@ async def api_instances_update(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON body"}, status=400)
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be an object"}, status=400)
-    # Only allow editing user-facing config fields (not internal hints).
-    allowed = {
-        "name",
+    # Only allow editing user-facing config fields (not internal hints). Derived
+    # from the type map rather than listed twice, so a field can never be editable
+    # without a declared type to check it against.
+    allowed = set(_PATCH_FIELD_TYPES)
+    changes = {k: v for k, v in body.items() if k in allowed}
+    # The POST path coerces every field (`str(...)` / `int(...)`); PATCH passed the
+    # decoded JSON value straight into the record, so a wrong-typed value reached
+    # validators that assume the declared type: `{"name": 123}` crashed
+    # `name.strip()` with an AttributeError (HTTP 500), and `{"remote_port": true}`
+    # slipped through as port 1 because bool IS an int. Type-check at the boundary
+    # instead of coercing, so a malformed body is REFUSED rather than silently
+    # reinterpreted -- a PATCH states an intent, and guessing at it is how "7777"
+    # becomes a port nobody chose.
+    bad = _wrong_typed_field(changes)
+    if bad is not None:
+        _audit("update", "denied", request_id=instance_id, error=bad)
+        return web.json_response({"error": bad, "code": "instance_invalid"}, status=400)
+    # A tunnel is opened from these fields, so editing one of them makes a live
+    # tunnel wrong rather than merely out of date: it keeps forwarding the old
+    # port to the old host under the new label. Tear it down as part of the save
+    # so the next connect builds from what the user just entered.
+    transport_keys = {
         "ssh_host",
         "remote_port",
-        "ttl",
-        "remote_bin",
         "connection_method",
         "ssm_target",
         "ssm_run_as",
         "aws_profile",
         "aws_region",
+        "remote_bin",
     }
-    changes = {k: v for k, v in body.items() if k in allowed}
+    current = await asyncio.to_thread(reg.get, instance_id)
+    if current is None:
+        _audit("update", "denied", request_id=instance_id, error="not found")
+        return web.json_response(
+            {"error": "not found", "code": "instance_not_found"}, status=404
+        )
+    transport_changed = any(
+        k in transport_keys and v != getattr(current, k) for k, v in changes.items()
+    )
+    # Validate the PROPOSED record before touching the tunnel. The registry
+    # validates too, but that happens after the teardown — so a rejected edit
+    # would answer 400 having already disconnected a healthy crew, punishing the
+    # user for a typo the save never accepted.
     try:
-        inst = reg.update(instance_id, **changes)
+        dataclasses.replace(current, **changes).validate()  # type: ignore[arg-type]
+        # Not part of the record invariant: a ttl is checked where it is WRITTEN,
+        # so a legacy value cannot fail an unrelated hint write (see
+        # registry.validate_ttl). The edit path is such a write.
+        if "ttl" in changes:
+            validate_ttl(str(changes["ttl"]))
+    except (InvalidInstanceError, AttributeError, TypeError, ValueError) as e:
+        # AttributeError is the backstop for a field added to `allowed` but not to
+        # _PATCH_FIELD_TYPES: a validator calling `.strip()` on a non-string must
+        # still answer 400, never 500.
+        _audit("update", "denied", request_id=instance_id, error=str(e))
+        return web.json_response({"error": str(e), "code": "instance_invalid"}, status=400)
+    mgr = getattr(state, "instances_manager", None)
+
+    try:
+        if transport_changed and mgr is not None:
+            # The teardown and the coordinate rewrite must not be observable
+            # apart. With the lock released between them a `connect` can read the
+            # OLD record, and whether its tunnel is already CONNECTED or still
+            # CONNECTING when the write lands decides whether any after-the-fact
+            # sweep would notice — so the window is closed rather than narrowed:
+            # reconfigure() holds the manager lock across both, and a racing
+            # connect either finishes before (and is torn down inside) or starts
+            # after (and reads the new coordinates).
+            inst = await mgr.reconfigure(
+                instance_id, functools.partial(_apply_update, reg, instance_id, changes)
+            )
+        else:
+            if transport_changed:
+                # No manager: nothing to tear down, but say so — a silent skip
+                # would look identical to a teardown that ran.
+                logger.warning(
+                    "instance %s transport edited with no manager running; "
+                    "no tunnel teardown performed",
+                    instance_id,
+                )
+            inst = await asyncio.to_thread(
+                functools.partial(_apply_update, reg, instance_id, changes)
+            )
     except InstanceNotFoundError as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
-        return web.json_response({"error": str(e)}, status=404)
+        return web.json_response(
+            {"error": str(e), "code": "instance_not_found"}, status=404
+        )
     except (InvalidInstanceError, InstancesError) as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        # The teardown could not stop the old forward. Nothing was persisted, so
+        # the record still matches the tunnel that is actually running; saying so
+        # is better than advancing the record over a live connection to the
+        # previous machine.
+        _audit("update", "denied", request_id=instance_id, error=str(e))
+        logger.warning(
+            "refusing to reconfigure %s: its tunnel could not be torn down",
+            instance_id,
+            exc_info=True,
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "could not close the current tunnel, so the new settings were "
+                    "not saved; disconnect this crew and try again"
+                ),
+                "code": "tunnel_teardown_failed",
+            },
+            status=503,
+        )
     _audit("update", "success", request_id=instance_id)
     return web.json_response(_instance_view(state, inst))
 
 
 async def api_instances_remove(request: web.Request) -> web.Response:
-    """DELETE /api/instances/{id} — remove an instance (disconnects first)."""
+    """DELETE /api/instances/{id} — remove an instance (disconnects first).
+
+    The pre-removal disconnect and the offloaded ``reg.remove`` are separate
+    awaits, so a reconnect landing between them can re-establish a tunnel for
+    the record while it is being deleted. The post-removal disconnect closes
+    that window: once the record is gone, ``connect`` refuses the unknown id,
+    so a final teardown after the successful remove cannot itself be raced —
+    any tunnel it finds is the leftover of a reconnect that slipped in.
+    """
     denied = _guard(request, "remove")
     if denied is not None:
         return denied
@@ -280,10 +428,12 @@ async def api_instances_remove(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
     if mgr is not None:
         await mgr.disconnect(instance_id)  # tear down any live tunnel first
-    existed = reg.remove(instance_id)
+    existed = await asyncio.to_thread(reg.remove, instance_id)
     if not existed:
         _audit("remove", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
+    if mgr is not None:
+        await mgr.disconnect(instance_id)  # sweep any reconnect that raced the removal
     _audit("remove", "success", request_id=instance_id)
     return web.json_response({"removed": instance_id})
 
@@ -399,7 +549,7 @@ async def api_instances_restart(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
-    if _registry(state).get(instance_id) is None:
+    if await asyncio.to_thread(_registry(state).get, instance_id) is None:
         _audit("restart", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
     mgr = getattr(state, "instances_manager", None)
@@ -433,7 +583,7 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
-    inst = _registry(state).get(instance_id)
+    inst = await asyncio.to_thread(_registry(state).get, instance_id)
     if inst is None:
         _audit("send_session", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)

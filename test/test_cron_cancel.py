@@ -228,9 +228,20 @@ class TestSubprocessRegistry:
             assert "cancelme" in _RUNNING_PROCS
             started = time.time()
             assert kill_running_process("cancelme") is True
-            t.join(timeout=10)
-        assert not t.is_alive()
-        assert time.time() - started < 10  # died well before the 30s sleep
+            # Poll for thread death (same pattern as the registration wait
+            # above) instead of one fixed-budget join: an instantaneous
+            # is_alive() read behind a single join can report a still-dying
+            # thread on a loaded runner even when SIGTERM worked. The 20s
+            # deadline stays comfortably below the child's 30s sleep, so
+            # passing still proves death-by-cancellation, not natural expiry.
+            deadline = started + 20
+            while time.time() < deadline and t.is_alive():
+                t.join(timeout=0.1)
+        assert not t.is_alive(), "thread still alive 20s after SIGTERM"
+        # 25, not 20: the final join may return ~0.1s past the poll deadline
+        # with the thread already dead; the headroom keeps that success from
+        # failing here while staying well below the 30s natural expiry.
+        assert time.time() - started < 25  # died well before the 30s sleep
         assert result["status"] == "cancelled"
         assert "cancelme" not in _RUNNING_PROCS
         assert "cancelme" not in _CANCELLED_PROC_JOBS  # flag consumed

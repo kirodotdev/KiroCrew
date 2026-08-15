@@ -201,6 +201,65 @@ describe('promptImages', () => {
     expect(promptPreview(content)).toBe('before after')
     expect(promptImages(content)).toEqual(['/p/q.png'])
   })
+
+  // mdImageDest (fileTokens.ts) wraps whitespace/special-char destinations in
+  // CommonMark's `<…>` form with `\`, `<`, `>` escaped — issue #3497. This
+  // extractor reads RAW markdown, so it must mirror that producer grammar or
+  // the pinned strip regresses to a broken thumbnail for exactly the paths
+  // the fix makes renderable.
+  it('unwraps an angle-bracket destination (space-containing Windows path)', () => {
+    expect(promptImages('![image](<C:/Users/John Doe/uploads/shot.png>)'))
+      .toEqual(['C:/Users/John Doe/uploads/shot.png'])
+  })
+
+  it('carries parentheses inside the bracketed form to the closing bracket', () => {
+    // `screenshot (1).png` is the default Windows duplicate-name shape; the
+    // plain-destination rule (stop at first `)`) must not apply inside `<…>`.
+    const content = '![image](</tmp/screenshot (1).png>)'
+    expect(promptImages(content)).toEqual(['/tmp/screenshot (1).png'])
+    // The text passes must strip the WHOLE form — no trailing `.png>)` residue.
+    expect(promptPreview(content)).toBe('')
+    expect(promptBody(content)).toBe('')
+  })
+
+  it('undoes producer escapes inside the bracketed form', () => {
+    expect(promptImages('![image](</tmp/my dir\\\\.hidden.png>)'))
+      .toEqual(['/tmp/my dir\\.hidden.png'])
+    expect(promptImages('![image](</tmp/a \\<b\\>.png>)'))
+      .toEqual(['/tmp/a <b>.png'])
+  })
+})
+
+describe('pinnedImageUrl', () => {
+  it('encodes the resolved path verbatim (decode happens in promptImages, wrap-gated)', () => {
+    // A wrapped producer destination is decoded by promptImages before it
+    // gets here; decoding again would corrupt a path whose on-disk name
+    // contains a literal %XX.
+    expect(promptImages('![image](</tmp/photo%2520copy.png>)'))
+      .toEqual(['/tmp/photo%20copy.png'])
+    expect(pinnedImageUrl('/tmp/photo%20copy.png'))
+      .toBe(`/api/file-raw?path=${encodeURIComponent('/tmp/photo%20copy.png')}`)
+  })
+
+  it('preserves an unwrapped legacy destination verbatim end-to-end', () => {
+    // Pre-existing history wrote raw paths: `%20` there is part of the
+    // on-disk name, not an encoding to undo.
+    expect(promptImages('![image](/tmp/photo%20copy.png)'))
+      .toEqual(['/tmp/photo%20copy.png'])
+  })
+
+  it('refuses to decode control characters into the query', () => {
+    // decodeLocalPath's guard applies inside the wrapped branch: a %00 NUL
+    // keeps the raw form instead of reaching the backend's realpath.
+    expect(promptImages('![image](</tmp/x%00.png>)'))
+      .toEqual(['/tmp/x%00.png'])
+    expect(pinnedImageUrl('/tmp/x%00.png'))
+      .toBe(`/api/file-raw?path=${encodeURIComponent('/tmp/x%00.png')}`)
+  })
+
+  it('passes remote URLs straight through', () => {
+    expect(pinnedImageUrl('https://example.com/x.png')).toBe('https://example.com/x.png')
+  })
 })
 
 describe('promptBody', () => {

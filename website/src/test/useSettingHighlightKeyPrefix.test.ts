@@ -31,7 +31,19 @@ vi.mock('../components/commandPalette/settingsRegistry.gen', () => ({
       occurrence: 1,
       configKey: 'slack.phase_reactions',
     },
+    {
+      id: 'display.language',
+      label: 'Language',
+      labelKey: 'settings.display.language.label',
+      tab: 'display',
+      type: 'select',
+      occurrence: 1,
+    },
   ],
+}))
+
+vi.mock('../i18n/t', () => ({
+  i18nT: (key: string) => key === 'settings.display.language.label' ? 'Idioma' : key,
 }))
 
 beforeEach(() => {
@@ -87,6 +99,42 @@ describe('useSettingHighlight key: prefix', () => {
     // Should still highlight via legacy label fallback
     expect(el.style.outlineOffset).toBe('4px')
     expect(el.style.borderRadius).toBe('8px')
+
+    document.body.removeChild(el)
+    vi.useRealTimers()
+  })
+
+  it('resolves a translated data-setting-label from the registry translation key', () => {
+    vi.useFakeTimers()
+    let currentSearch = 'unset'
+
+    function CaptureWrapper({ children }: { children: ReactNode }) {
+      return createElement(
+        MemoryRouter,
+        { initialEntries: ['/settings?tab=display&highlight=display.language'] },
+        createElement(LocationProbe, null, children),
+      )
+    }
+    function LocationProbe({ children }: { children?: ReactNode }) {
+      currentSearch = useLocation().search
+      return createElement('div', null, children)
+    }
+
+    const el = document.createElement('div')
+    el.setAttribute('data-setting-label', 'Idioma')
+    document.body.appendChild(el)
+
+    renderHook(() => useSettingHighlight(), {
+      wrapper: CaptureWrapper,
+    })
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+
+    expect(el.style.outlineOffset).toBe('4px')
+    expect(el.style.borderRadius).toBe('8px')
+    expect(currentSearch).not.toContain('highlight=')
+    expect(currentSearch).toContain('tab=display')
 
     document.body.removeChild(el)
     vi.useRealTimers()

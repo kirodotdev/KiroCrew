@@ -264,7 +264,11 @@ def vet_unfurl_url(
         raise UnfurlRejected("invalid_url") from None
     if explicit_port is not None and explicit_port not in ALLOWED_PORTS:
         raise UnfurlRejected("blocked_url")
-    port = explicit_port if explicit_port is not None else (443 if scheme == "https" else 80)
+    if explicit_port is not None:
+        port = explicit_port
+    else:
+        # ALLOWED_SCHEMES is http/https only, so these two defaults cover it.
+        port = 443 if scheme == "https" else 80
 
     # 5. suffixes that cannot name a public host
     for suffix in BLOCKED_HOST_SUFFIXES:

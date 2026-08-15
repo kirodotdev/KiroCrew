@@ -39,7 +39,6 @@ from kiro_crew.apps.manager import (
     uninstall_app,
 )
 from kiro_crew.apps.scaffold import scaffold_app
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_server import _marker_port, resolve_client_port
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
@@ -52,6 +51,7 @@ from kiro_crew.config.loader import (
     config_local_path,
     config_path,
     read_config_for_update,
+    update_config_locked,
 )
 from kiro_crew.cron import CronSchedule, CronService, format_schedule
 from kiro_crew.cron_trigger import trigger_cron_job
@@ -878,7 +878,7 @@ def _cron(args: argparse.Namespace) -> None:
 
     elif action == "update":
         kwargs: dict = {}
-        for field in ("name", "message", "every_secs", "cron_expr", "channel"):
+        for field in ("name", "message", "every_secs", "cron_expr", "channel", "timeout_secs"):
             val = getattr(args, field, None)
             if val is not None:
                 if field == "channel":
@@ -909,7 +909,11 @@ def _cron(args: argparse.Namespace) -> None:
         if "every_secs" in kwargs and "cron_expr" in kwargs:
             print("Provide --every or --cron, not both")
             return
-        updated = svc.update_job(args.job_id, **kwargs)
+        try:
+            updated = svc.update_job(args.job_id, **kwargs)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
         if updated:
 
             audit_resources = f"job_id={args.job_id} fields={','.join(sorted(kwargs))}"
@@ -1170,7 +1174,12 @@ def _policy(args: argparse.Namespace) -> None:
     effective ceiling.  No mutation — purely diagnostic, so it is MCP-safe.
     """
     from kiro_crew.platform.context import current_context
-    from kiro_crew.platform.governance import SCOPE_CATALOG, gate_decision, resolve
+    from kiro_crew.platform.governance import (
+        CAPABILITY,
+        SCOPE_CATALOG,
+        gate_decision,
+        resolve,
+    )
     from kiro_crew.platform.governance_profiles import (
         get_store_profile,
         resolve_active_scope,
@@ -1204,6 +1213,31 @@ def _policy(args: argparse.Namespace) -> None:
             print("Policy: none (editable secure-defaults) — nothing to validate.")
         else:
             print(f"Policy: v{ceiling.version} OK ({len(ceiling.controls)} governed scopes).")
+            # A capability the policy does not name is UNGOVERNED, and an
+            # ungoverned control is permitted — omission never denies (see the
+            # CAPABILITY-DEFAULT CONTRACT in platform/governance.py). That is the
+            # same rule every other archetype follows, but it is the one authors
+            # most often get wrong, because a partial `capabilities` block LOOKS
+            # like a complete statement. Report the gap so an unpinned row reads
+            # as a choice instead of an oversight.
+            unnamed = sorted(
+                scope
+                for scope, spec in SCOPE_CATALOG.items()
+                if spec.kind == CAPABILITY and scope not in ceiling.controls
+            )
+            if unnamed and len(unnamed) < sum(
+                1 for spec in SCOPE_CATALOG.values() if spec.kind == CAPABILITY
+            ):
+                print(
+                    f"   ⚠️  governs capabilities but leaves {len(unnamed)} "
+                    "row(s) UNGOVERNED (therefore permitted):"
+                )
+                for scope in unnamed:
+                    print(f"        {scope}")
+                print(
+                    "      Omission does not deny. Name each row explicitly "
+                    "(enabled true or false) if you meant to decide it."
+                )
         # Force-load every profile; the store records invalid ones as deny-all.
         from kiro_crew.platform.governance_profiles import _profiles_dir
 
@@ -1462,7 +1496,11 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(
                 f"  Episodic: {stats['episodic_active']} active, {stats['episodic_deleted']} deleted"
             )
-            print(f"  FAISS index: {stats['faiss_index_size']} vectors")
+            print(f"  Embedded: {stats['embedded_count']}/{stats['episodic_active']}")
+            if stats["faiss_available"]:
+                print(f"  FAISS accelerator: {stats['faiss_index_size']} vectors indexed")
+            else:
+                print("  FAISS accelerator: not installed — stdlib cosine fallback (exact)")
             print(f"  Audit events: {stats['events_count']}")
 
         elif action == "audit":
@@ -1884,11 +1922,12 @@ def _tailnet(args: argparse.Namespace) -> None:
         print("👻 Tailnet dashboard access")
         if pinned:
             print(
-                "   Policy:     PINNED OFF by your administrator "
-                "(capabilities.tailnet_origin)"
+                "   Policy:     PINNED OFF by your administrator " "(capabilities.tailnet_origin)"
             )
-        print(f"   Trust:      {'enabled' if enabled else 'disabled'} "
-              f"(dashboard.tailscale.enabled)")
+        print(
+            f"   Trust:      {'enabled' if enabled else 'disabled'} "
+            f"(dashboard.tailscale.enabled)"
+        )
         print(f"   Name:       {name or '— (no tailnet name resolvable right now)'}")
         published = state.published
         label = {True: "yes", False: "no", None: "unknown"}[published]
@@ -2023,77 +2062,76 @@ def _telemetry(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
     path = config_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    if not isinstance(data, dict):
-        # Refuse rather than replace. Coercing to {} would make this toggle
-        # silently overwrite the whole file (a JSON array, string, or number is
-        # not a config we can merge into) and then print success — destroying
-        # whatever the user had. A toggle must never be a data-loss path.
-        print(
-            f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
-            "overwrite it. Fix or move the file, then retry.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Same rule as the whole-file check above, applied per section: coercing a
-    # non-object section to {} would DISCARD whatever the user had there and then
-    # print success. Absent is fine (create it); present-but-wrong-type is a
-    # refusal, because this command cannot know what the value was meant to be.
-    sections: dict[str, dict[str, object]] = {}
-    for name in ("telemetry", "dashboard"):
-        existing = data.get(name)
-        if existing is None:
-            sections[name] = {}
-            continue
-        if not isinstance(existing, dict):
+
+    def _mutate_telemetry(data: dict) -> dict:
+        """Apply telemetry toggle inside the config lock."""
+        if not isinstance(data, dict):
+            # Should not happen (read_config_for_update rejects non-objects),
+            # but guard defensively.
             print(
-                f"❌ {path} has a non-object \"{name}\" value "
-                f"({type(existing).__name__}); refusing to overwrite it. Fix or "
-                "remove it, then retry.",
+                f"❌ {path} is not a JSON object ({type(data).__name__}); refusing to "
+                "overwrite it. Fix or move the file, then retry.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        sections[name] = existing
+        # Same rule as the whole-file check above, applied per section: coercing a
+        # non-object section to {} would DISCARD whatever the user had there and then
+        # print success. Absent is fine (create it); present-but-wrong-type is a
+        # refusal, because this command cannot know what the value was meant to be.
+        sections: dict[str, dict[str, object]] = {}
+        for name in ("telemetry", "dashboard"):
+            existing = data.get(name)
+            if existing is None:
+                sections[name] = {}
+                continue
+            if not isinstance(existing, dict):
+                print(
+                    f'❌ {path} has a non-object "{name}" value '
+                    f"({type(existing).__name__}); refusing to overwrite it. Fix or "
+                    "remove it, then retry.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            sections[name] = existing
 
-    sections["telemetry"]["beacon_enabled"] = want
-    data["telemetry"] = sections["telemetry"]
-    # Running this command IS the informed choice the first-run chapter exists to
-    # collect, so record the ack. Otherwise `telemetry enable` on a fresh
-    # headless install would write beacon_enabled: true and still send nothing,
-    # because the first-egress gate would keep waiting for a dashboard screen the
-    # user may never open.
-    sections["dashboard"]["privacy_acked"] = True
-    data["dashboard"] = sections["dashboard"]
-    # Preserve the existing permissions. atomic_write creates a NEW file and
-    # renames it over the old one, so without this an operator's tightened mode
-    # is silently replaced by the umask default (0600 -> 0644 on a typical host).
-    # config.json can hold inline credentials, so a telemetry toggle must never
-    # widen who can read it. Default 0o600 for a file we are creating.
+        sections["telemetry"]["beacon_enabled"] = want
+        data["telemetry"] = sections["telemetry"]
+        # Running this command IS the informed choice the first-run chapter exists to
+        # collect, so record the ack. Otherwise `telemetry enable` on a fresh
+        # headless install would write beacon_enabled: true and still send nothing,
+        # because the first-egress gate would keep waiting for a dashboard screen the
+        # user may never open.
+        sections["dashboard"]["privacy_acked"] = True
+        data["dashboard"] = sections["dashboard"]
+        return data
+
     try:
-        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
-    except OSError:
-        mode = 0o600
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # atomic_write, never path.write_text: this rewrites the user's WHOLE
-        # config.json, so a disk-full or interrupted write would truncate it and
-        # every later load would silently discard their configuration. Temp file
-        # + rename means the old file survives any failure. fsync so the rename
-        # is durable across a power loss.
-        atomic_write(path, json.dumps(data, indent=2) + "\n", fsync=True, mode=mode)
-        # atomic_write's `mode` is POSIX-only — it routes through fchmod_safe,
-        # which is a documented NO-OP on Windows. So on Windows the replacement
-        # file inherits the DIRECTORY's ACL, and a permissive data home would make
-        # a config.json holding inline credentials readable by other local users.
-        # restrict_to_owner applies an owner-only DACL there (and 0600 on POSIX),
-        # and is fail-loud, so a lockdown that cannot be applied surfaces below
-        # rather than silently leaving the file wide open.
+        update_config_locked(path, mutate=_mutate_telemetry, fsync=True, stamp_meta=False)
+        # restrict_to_owner: the atomic write creates a NEW inode, so without
+        # this an operator's tightened mode is silently replaced by the umask
+        # default.  config.json can hold inline credentials, so a telemetry
+        # toggle must never widen who can read it.  The locked helper preserves
+        # mode on POSIX; restrict_to_owner applies the owner-only DACL on
+        # Windows (and 0600 on POSIX for new files). Fail-loud so a lockdown
+        # that cannot be applied surfaces rather than silently leaving the file
+        # wide open.
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+        except OSError:
+            mode = 0o600
         if not platform_compat.IS_POSIX or mode == 0o600:
             platform_compat.restrict_to_owner(path)
+    except ConfigReadError as exc:
+        err_str = str(exc)
+        if "not a JSON object" in err_str:
+            print(
+                f"❌ {path} is not a JSON object; refusing to "
+                "overwrite it. Fix or move the file, then retry.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"❌ Could not read {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
     except OSError as exc:
         print(f"❌ Could not write {path}: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -12,9 +12,11 @@ import base64
 import io
 import os
 import random
+from pathlib import Path
 
 import pytest
 
+from kiro_crew import hooks
 from kiro_crew.acp import prompt_blocks
 from kiro_crew.acp.prompt_blocks import (
     _POSIX_PATH_RE,
@@ -201,14 +203,111 @@ class TestPlatformPathGrammar:
             r"C:\Users\alice\AppData\Local\Temp\tmpabc.png",
             r"C:/Users/alice/AppData/Local/Temp/tmpabc.png",
             r"\\fileserver\team\diagram.jpg",
+            "//fileserver/team/diagram.jpg",
         ],
     )
     def test_windows_pattern_matches_native_absolute_paths(self, text):
-        """The shapes the gateway actually produces on Windows."""
+        """The shapes the gateway actually produces on Windows.
+
+        The forward-slash UNC form is what the dashboard composer serializes
+        into message text (a markdown destination cannot carry raw
+        backslashes), and Windows file APIs accept it verbatim.
+        """
         assert prompt_blocks._WINDOWS_PATH_RE.search(text) is not None
+
+    def test_windows_pattern_extracts_dashboard_unc_image_markdown(self):
+        """A UNC upload serialized by the dashboard must yield the usable path.
+
+        This is the sender-side wire form for a roaming-profile upload: the
+        composer emits ``![image](//host/share/...)``. The extracted group must
+        be the path itself (openable via ``open()`` on Windows), not a mangled
+        span, or the agent silently receives no image block.
+        """
+        text = "![image](//fileserver/home/me/.kiro/crew/uploads/shot.png)"
+        m = prompt_blocks._WINDOWS_PATH_RE.search(text)
+        assert m is not None
+        assert m.group(1) == "//fileserver/home/me/.kiro/crew/uploads/shot.png"
+
+    def test_windows_pattern_ignores_urls(self):
+        """``//`` acceptance must not make ``https://host/x.png`` a candidate."""
+        assert prompt_blocks._WINDOWS_PATH_RE.search("see https://example.com/docs/logo.png") is None
+        assert prompt_blocks._WINDOWS_PATH_RE.search("see http://host/a.png here") is None
 
     def test_windows_pattern_requires_an_absolute_path(self):
         assert prompt_blocks._WINDOWS_PATH_RE.search(r"shots\logo.png") is None
+
+
+class TestUncProbeGate:
+    """UNC-shaped candidates must never reach the filesystem un-gated.
+
+    ``Path.is_file()`` on a UNC path makes Windows open an SMB connection to
+    the named host, so untrusted message text (``\\\\evil\\share\\x.png`` or
+    ``//evil/share/x.png``) would trigger an outbound credential probe. Only
+    UNC paths under the gateway's own attachment roots may be probed.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,want",
+        [
+            (r"\\host\share\x.png", True),
+            ("//host/share/x.png", True),
+            (r"C:\Users\me\x.png", False),
+            ("C:/Users/me/x.png", False),
+            ("/tmp/x.png", False),
+        ],
+    )
+    def test_unc_shape_detection(self, raw, want):
+        assert hooks.is_unc_shape(raw) is want
+
+    def test_attacker_host_is_refused(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "kiro_crew.config.paths.data_home", lambda: tmp_path / "home"
+        )
+        assert hooks.unc_probe_allowed(r"\\evil\share\x.png") is False
+        assert hooks.unc_probe_allowed("//evil/share/x.png") is False
+
+    def test_unc_under_a_unc_data_home_is_allowed(self, monkeypatch):
+        """Roaming profile: the data home ITSELF is a UNC share."""
+        monkeypatch.setattr(
+            "kiro_crew.config.paths.data_home",
+            lambda: Path(r"\\fileserver\home\me\.kiro\crew"),
+        )
+        allowed = hooks.unc_probe_allowed(
+            r"\\fileserver\home\me\.kiro\crew\uploads\shot.png"
+        )
+        forward = hooks.unc_probe_allowed(
+            "//fileserver/home/me/.kiro/crew/uploads/shot.png"
+        )
+        # normcase/normpath only fold separators and case on Windows, so the
+        # cross-separator equivalence holds there; on POSIX the gate is never
+        # consulted (the probe loop is os.name == "nt" scoped).
+        if os.name == "nt":
+            assert allowed is True
+            assert forward is True
+
+    def test_sibling_share_on_same_server_is_refused(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.config.paths.data_home",
+            lambda: Path(r"\\fileserver\home\me\.kiro\crew"),
+        )
+        if os.name == "nt":
+            assert hooks.unc_probe_allowed(r"\\fileserver\other\x.png") is False
+
+    def test_untrusted_unc_text_is_never_stat_probed_on_windows(self, monkeypatch):
+        """End-to-end: build_prompt_blocks must not touch the filesystem for a
+        refused UNC candidate."""
+        if os.name != "nt":
+            pytest.skip("probe loop is Windows-scoped")
+        probed: list[str] = []
+        real_is_file = Path.is_file
+
+        def spy(self):  # type: ignore[no-untyped-def]
+            probed.append(str(self))
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", spy)
+        prompt_blocks.build_prompt_blocks(r"look at \\evil\share\x.png please")
+        assert not any("evil" in p for p in probed)
 
     def test_active_pattern_follows_the_host(self):
         expected = (

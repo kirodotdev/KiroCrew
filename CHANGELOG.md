@@ -2,6 +2,256 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [Unreleased]
+
+- **A Teams answer no longer gets silently truncated by a rate-limited
+  chunk.** The Bot Framework Connector API enforces per-bot rate limits and
+  can return HTTP 429, but the Teams outbound send raised immediately with
+  no retry, unlike the Discord/Telegram/Webex clients (which all absorb a
+  single 429 honoring the server's back-off hint). A multi-chunk answer
+  stops at its first failed chunk, so a throttled chunk dropped it and
+  everything after it, with only a backend log line. Outbound sends now
+  retry once on 429, honoring the Connector API's `Retry-After` header. (#3738)
+
+- **A folder knowledge source added from the dashboard can now be started.**
+  The row's `sync_status` was stored twice — as a table column and inside the
+  properties JSON — and the create path wrote `pending_confirmation` only into
+  the JSON, leaving the column at its `pending` default. The dashboard list
+  reads the column, so a freshly-added `local_folder` / `obsidian_vault` source
+  showed a Pause button instead of the Confirm button that starts the scan and
+  sat at "pending · 0 items · never synced" forever (the workaround was Pause
+  then Resume). Both insert paths (`add_source` and the auto-source path used
+  by drop-folder and project-docs sources) now derive the column from the
+  passed properties, and the store migration repairs already-divergent rows on
+  open, so existing stuck sources become startable without the workaround. (#3701)
+
+- **The Speech-to-Text settings page no longer offers to install Whisper when
+  the provider is AWS Transcribe.** With `stt.provider = "transcribe"` the page
+  showed an "Install Whisper" button (installing an engine Transcribe never
+  uses, so Status stayed "Not installed" forever), listed a Python/Whisper
+  prerequisite toolchain that is irrelevant to Transcribe, and rendered a
+  Runtime row that could only ever read "Native" because the backend never
+  serves `docker_mode`. The install button is now hidden for Transcribe, the
+  prerequisite block surfaces the real requirement — installing the `voice`
+  extra into the gateway's own interpreter, plus a restart hint — the backend
+  refuses `POST /api/stt/install` for Transcribe instead of silently installing
+  the wrong package, and the dead Runtime row is gone. Where no install channel
+  can make the extra importable (frozen build, pip-less interpreter, PEP 668
+  externally-managed python) the page shows an honest unsupported notice
+  instead of a command that cannot succeed, and a missing ffmpeg — which
+  Transcribe's availability check treats as optional even though browser
+  recordings need it — is now flagged with its install command even while the
+  status reads ready. (#3559)
+
+- **`kirocrew` commands start up to ~0.8 s faster, and each MCP stdio server
+  drops ~58 MB of resident memory.** `cli.py` imported its full 132-subcommand
+  dispatch table at module scope — including the Slack gateway, the dashboard
+  state module and (through it) numpy — so every CLI invocation and every
+  long-lived MCP backend process (`mcp-core`, `mcp-cron`, `mcp-computer`) paid
+  ~1.3 s and ~112 MB for subcommands that never run. The four heavy import
+  statements now execute inside the one dispatch branch that uses each name,
+  cutting a fresh `import kiro_crew.cli` to ~0.5 s / ~54 MB. Each command now
+  pays only for the modules its own branch uses: the MCP stdio servers and
+  most verbs save the full ~0.8 s / ~58 MB, while commands that dispatch into
+  the deferred modules (e.g. `gateway`, `cron`) save the portion they don't
+  touch. A ratchet test keeps the deferred modules out of module scope and
+  verifies every deferred import still resolves. Behavior is unchanged: the
+  entry point, the fail-closed security prelude, and all subcommand dispatch
+  are untouched. (#3504)
+
+- **A managed deployment can now withhold the external services the core offers
+  unconditionally.**
+  Three surfaces had no composition point. Two are installable-content registries
+  — skill discovery (skills.sh) and MCP server discovery (the official MCP
+  registry) — which fetch from the public internet and then offer to install what
+  they return, but hardcoded their public provider at registration time. The third
+  is cloud deployment: `kiro_crew/deploy/` provisions S3, CloudFront, IAM roles and
+  a reaper Lambda in the operator's own account and carried no capability gate at
+  all, so `capabilities.publish` (which bounds publish-provider destinations) did
+  not reach it. Together that made "source installable code only from our own
+  registry, and never provision cloud infrastructure" impossible to express without
+  patching the core — a hard blocker for any deployment where third-party code must
+  be reviewed first, or where provisioning is centrally controlled. A new
+  `external_access` platform slot adds `admits_registry(kind, name, api_base)` and
+  `admits_cloud_deployment(target)`. A refused registry is never registered, so it
+  is absent rather than failing per request; a refused cloud deployment makes the
+  deploy surface report itself disabled — so the UI hides the console instead of
+  rendering one whose every button 403s — and refuses every mutating route, wrapped
+  at registration so a new endpoint is gated by being listed rather than by
+  remembering an in-handler check. Both decisions take the concrete target as well
+  as a label, because a name is self-chosen while the URL or target determines
+  where bytes go, so an allowlist stops admitting a provider that later repoints at
+  a different host instead of letting it inherit trust from its name. Both outcomes
+  are SEL-audited: a log carrying only denials cannot show whether the permitted
+  path was ever taken. The public default admits everything, so an ordinary install
+  is unchanged.
+
+- **An MCP server that declares `env.PATH` no longer loses its inherited PATH.**
+  A spec's `env` is applied per key, so naming one directory to add — a Node
+  version manager's shim dir, say — replaced the child's PATH instead of
+  extending it, leaving the server with only that one directory. A launcher that
+  execs a sibling binary then died with "not found" for a binary that was
+  plainly installed, while the dashboard probe — which merged rather than
+  replaced — reported the same server healthy, so nothing in the UI
+  distinguished it from a working server. The full effective PATH (the spec's
+  own entries first, deduped) now backs the probe, command resolution, and the
+  value written into the agent config, so "probes healthy" and "works in a
+  session" can no longer disagree.
+
+- **Every emitted MCP config surface now goes through one env normalization
+  point (`env.emit_env`).** The agent config, the kiro-global entries the sync
+  creates, and the Claude Code `~/.mcp.json` sidecar all expand a declared
+  `env.PATH` the same way, so a server can no longer work under one consumer
+  and die under another. The cosmetic `kiro-cli mcp add` subprocess inside the
+  sync — an unsynchronized second writer whose output the rebuild overwrote —
+  is removed, and the discover→write sequence is a single mutex-serialized
+  entry point (`sync_discovered_servers`) shared by the sync endpoint, the
+  restart pre-sync, and the config watcher, closing their read-modify-write
+  race.
+
+- **The Online badge now means "tools usable", dated.** A probe whose
+  `initialize` succeeds but whose `tools/list` fails reports an error instead
+  of `ok` with an empty list; every probe result carries `probedAt` so the
+  dashboard can show when a status was established instead of presenting a
+  cached one as current; and a managed server served from its in-process
+  declaration is marked `declared` — the tool list is correct, but nothing
+  verified the server can start — instead of rendering identically to a
+  handshake-proven server.
+
+- **Apply & Restart now really mounts a newly installed server, and says so
+  honestly when it cannot.** The restart path runs the one serialized
+  discover→write entry point and reconciles the consumed agent config
+  unconditionally, so an edit that produces an empty discovery delta (a
+  `disabled: true` flip, a changed `env`) is still written out instead of
+  being skipped as "nothing new". A reconcile that FAILS is reported through
+  `mcp_sync_ok` on the restart response rather than being dressed up as a
+  successful apply.
+
+- **Publishing an artifact to the public internet now requires an explicit
+  acknowledgment, and an operator can remove the path entirely.** The warning
+  next to each confirm button could be scrolled past and read as decoration, and
+  the public-web destination was the one publish destination exempt from the
+  operator's publish policy — `deploy-web-aws` was appended to
+  `/api/publish-providers` unconditionally and `POST /api/deploy/deploy` consulted
+  no ceiling, so a team that had closed every other destination still had a
+  one-click path to a world-readable URL. Every surface that creates the public
+  resource (the Publish panel, its scan-override branch, and **Confirm deploy** on
+  a pending entry) now ends at a blocking dialog that names the artifact, states
+  that anyone with the link can view it, states how long the link stays public,
+  and requires pressing **I understand, publish publicly** — a button that is
+  neither pre-focused nor the default action, so no keystroke that dismisses an
+  ordinary dialog can publish by accident. The destination itself now goes through
+  the same `capabilities.publish` chokepoint as artifact publish: closing it in the
+  trust-root policy (or narrowing `publish.allowed_destinations` in `config.json`)
+  removes the button from the provider registry **and** answers 403 from
+  `/api/deploy/deploy` and `/api/deploy/pending/{id}/confirm`, including for the
+  agent-mediated `deploy_artifact` preview. Operators who had already narrowed
+  `publish.allowed_destinations` must add `deploy-web-aws` to keep deploying. (#3599)
+
+- **The Linux desktop app no longer shows two title bars on GNOME-family
+  Wayland desktops.** The window manager's native decoration used to stack on
+  top of the dashboard's own 42px header, wasting vertical space and
+  duplicating controls. On Wayland sessions of desktops that prefer
+  client-side decorations (GNOME, Ubuntu, Unity, Pantheon, Budgie) the window
+  now drops the native frame: the header doubles as the title bar via an
+  injected drag region, and a minimize/maximize/close cluster is injected at
+  the header's top-right (frameless Linux gets no OS-painted controls, unlike
+  the macOS traffic lights and the Windows caption overlay). X11 sessions,
+  desktops that expect server-side decorations (KDE, XFCE, tiling window
+  managers — including hybrids like Regolith that also report a GNOME token),
+  and unknown environments keep the native frame: frameless X11 windows lose
+  mouse edge-resize, which would be worse than the doubled bar. The
+  `linuxFrameless` key in the desktop app's own config (Connection → Open
+  Config File, also in the tray menu; read once at launch) forces either
+  shape. On frameless windows the menu bar auto-hides (press Alt to reveal
+  it) — kept visible it would re-create the stacked-bars problem, removed it
+  would take the menu away entirely. Connection windows follow the same
+  decision. (#3606)
+
+- **A lesson from a previous embedding-model generation could no longer get
+  silently deleted or offered as a false contradiction.** `write_lesson`'s
+  semantic dedup and `find_contradiction_candidates` compared raw embeddings
+  with a cosine helper that silently truncated a dimension mismatch to the
+  shorter vector instead of rejecting it, so a row embedded at a different
+  dimensionality (e.g. left over from an old embedding model) could score a
+  plausible-looking ~0.5 similarity against an unrelated new rule — landing
+  either past the 0.85 dedup line (deleting the old lesson as a "duplicate")
+  or inside the [0.4, 0.85) contradiction band (offered as a false
+  contradiction candidate). Both paths now converge onto the same
+  dimension-checked, float64-precision scorer the ranking paths already use,
+  which also removes a per-row query re-derivation from both loops. (#3466)
+
+- **Computer use no longer costs a 109 MB backend process per chat when it is
+  off — or on platforms where it cannot run at all.** `kirocrew-computer` was
+  registered into the agent spec unconditionally, and the keystone enable was
+  only checked *inside* the process the spec had already caused kiro-cli to
+  spawn: it suppressed the tool list, never the process. Every chat process paid
+  ~109 MB for a disabled capability, including every `spawn_run` subagent, and
+  on Linux/Windows it paid that for a feature with no driver (macOS is the only
+  supported platform) — measured at 16 processes / 1.75 GB on one Linux host.
+  The server is now withheld from the emitted spec, unless this is macOS *and*
+  the keystone is on; enabling it from Settings rebuilds the spec before
+  restarting sessions, so the tools still appear in the session you are sitting
+  in. Your `tools` entries are left untouched — a ref whose server the spec does
+  not define resolves to nothing, so a mount you had narrowed to a single tool
+  comes back exactly as you left it. Only the entry's own `autoApprove` and
+  custom `env` keys are reset by an off/on cycle and need re-applying,
+  deliberately: restoring an approval from a file the agent can write would
+  bypass the PreToolUse gate. The two in-process checks are kept as defence in
+  depth for a mid-session disable. (#3482)
+
+- **Side-panel oversize-question refusal now reports an accurate character
+  target for every script, not just emoji.** The refusal derived its
+  character count from a fixed worst-case floor (4 bytes/char, the emoji
+  case), so an ASCII user over the byte budget was told to cut to ~8,192
+  characters when trimming a single character would do (4x over-deletion),
+  and a zh-CN user (3 bytes/char) was told 8,192 when ~10,922 actually fit.
+  The target is now derived from the submitted question's own byte density,
+  so it's accurate per script — the all-emoji case is unaffected (it already
+  sat at the 4-byte floor). (#3432)
+
+- **The skill browser no longer serves a different skill than the one you asked
+  for.** Three `package/` lookups compared a bare leaf name and returned the
+  first hit, so a request for `package/<name>` could answer with a file under
+  `<root>/<Pkg>/<name>`, or with whichever of two identically named files the
+  filesystem happened to yield. Exact keys now decide first, leaf matching
+  survives only where it is unambiguous, and a real collision resolves to
+  nothing — a 404, with the competing candidates logged — because the
+  `package/<path>` key cannot express which of the two files was meant. Every
+  lookup that previously resolved correctly still resolves to the same file.
+  **Edition maintainers:** roots the core already keys itself (`~/.kiro/skills`,
+  the data home, configured extra paths) are no longer *also* enumerated under
+  `package/`, which previously presented an editable skill as a read-only
+  package one. A stored reference to one of those duplicate `package/` keys
+  stops resolving; the file itself is untouched and still reachable under its
+  canonical key, but the stored reference has to be re-pointed. (#3369)
+
+- **MCP gateway daemons no longer leak when their launcher dies.** A `gatewayd`
+  whose launcher exited without signalling it (a torn-down `pytest` run, for
+  example) used to stay resident forever — invisible to every sweep, ~27 MB
+  each, accumulating without bound. The daemon now watches its own listening
+  socket path and gracefully self-exits once the path is gone (three
+  consecutive checks, POSIX only), and the untracked-orphan sweep reaps any
+  gatewayd whose `--socket` path no longer exists on disk, TERM-first so
+  pooled backends drain cleanly. (#3315)
+
+- **Aggregate memory ceiling across all concurrent agent spawns.** The cgroup
+  memory limit was per-spawn only (65% of RAM each), so many concurrent
+  subagents could collectively request several times host RAM without any
+  single limit breaching. The gateway now also caps their shared parent slice
+  (`kirocrew-agents.slice`) at 80% of RAM plus an aggregate task ceiling —
+  override via `resource_limits.max_total_memory_mb` /
+  `max_total_processes` — and logs which scopes were OOM-killed when the
+  aggregate ceiling engages. (#3316)
+
+- **Slack manifest: private channels now work out of the box.** The shipped app
+  manifest adds the `groups:history` and `users:read` bot scopes and subscribes
+  to the `message.groups` event, so a tracked private channel actually delivers
+  messages and profile lookups resolve real names. **Existing installs are not
+  fixed by upgrading alone**: Slack only grants new scopes on reinstall — update
+  the app's manifest (or re-import it), then reinstall the app to the workspace
+  and copy the new bot token. (#3206)
+
 ## [0.2.0] — 2026-08-09
 
 The first feature release after launch: a real browser for the agent, four new
@@ -45,6 +295,13 @@ weeks in the open.
   toggle, and the shared MCP gateway follows it.
 - **Connections** gained a provider registry, so an integration declares what it
   is asking for and its consent URL is validated before you are sent to it.
+- Pasting an OAuth return address for an approval that has already expired now
+  says so, instead of blaming the paste — a spent approval is told apart from a
+  failed delivery, so you know to start a fresh one rather than re-copy a dead
+  address.
+- Clicking **Connect** now asks for the provider's approval link instead of
+  waiting for one, so the card offers it within seconds rather than only after
+  some later chat happens to reach that server.
 - Code Review Sage works against **GitHub Enterprise Server** hosts.
 - An MCP server that authenticates with OAuth now receives the scope list and
   client id in the fields kiro-cli actually reads, so those connections

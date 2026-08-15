@@ -174,7 +174,7 @@ async def api_skills(request: web.Request) -> web.Response:
 
     Sources:
     - ``kirocrew``: ``~/.kiro/crew/skills/`` (managed by SkillsLoader; editable)
-    - ``aim``: skills from an optional ``aim`` CLI, if present (read-only here)
+    - ``package``: skills an edition contributes, if any (read-only here)
     - ``kiro-user``: ``~/.kiro/skills/`` (open-standard; read-only here)
     - ``kiro-workspace``: ``<project>/.kiro/skills/`` (open-standard; read-only here)
 
@@ -190,9 +190,9 @@ async def api_skills(request: web.Request) -> web.Response:
     # different projects made this fall to None and kiro-workspace skills
     # silently vanished from the listing (#2457).
     project_dir: Path | None = active_project_dir(state, _read_session_key(request))
-    # Run the AIM subprocess async (on the loop, non-blocking), then offload ALL
+    # Run the edition capability lookup async (on the loop, non-blocking), then offload ALL
     # blocking filesystem work — kirocrew list_skills() (os.walk + per-file
-    # frontmatter reads), AIM path globs, kiro per-skill resolve/read, and the
+    # frontmatter reads), package path globs, kiro per-skill resolve/read, and the
     # agent annotation — onto the dedicated DISCOVERY pool in one job. This work
     # would stall the event loop past the loop-stall watchdog (~25s) on large
     # skills×agents catalogs if run on-loop. Use the discovery pool
@@ -527,6 +527,53 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
     return web.json_response({"dismissed": slug})
 
 
+async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
+    """POST /api/skills/-/pending/-/dismiss-all — dismiss pending candidates.
+
+    Accepts an optional JSON body ``{"slugs": ["slug1", ...]}``.  When present,
+    only those slugs are dismissed (the client passes the set it displayed to the
+    user, so a candidate staged *after* the confirmation dialog is never silently
+    deleted).  When the body is absent or ``slugs`` is empty, ALL pending
+    candidates are dismissed (back-compat / fallback).
+    """
+    state: DashboardState = request.app["state"]
+    skills = _get_skills(state)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be a JSON object", "code": "invalid_body"}, status=400)
+    raw_slugs = body.get("slugs")
+    if raw_slugs is not None and (
+        not isinstance(raw_slugs, list)
+        or not all(isinstance(s, str) for s in raw_slugs)
+    ):
+        return web.json_response({"error": "slugs must be an array of strings", "code": "invalid_slugs"}, status=400)
+    slugs: list[str] = raw_slugs if isinstance(raw_slugs, list) else []
+    try:
+        if slugs:
+            count = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(),
+                lambda: skills.dismiss_pending_slugs(slugs),
+            )
+        else:
+            return web.json_response({"error": "slugs array is required and must not be empty", "code": "slugs_required"}, status=400)
+    except Exception:
+        _sel().log_tool_invocation(
+            session_key='', agent='api', source='dashboard',
+            tool_name='api_skills_pending_dismiss_all', tool_kind='skill',
+            outcome='error', metadata={},
+        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name='api_skills_pending_dismiss_all', tool_kind='skill',
+        outcome='ok', metadata={'count': count},
+    )
+    return web.json_response({"dismissed_count": count})
+
+
 async def api_skill_pin(request: web.Request) -> web.Response:
     """POST /api/skills/-/pin — body {name, pinned:bool}. Pin/unpin an auto-skill
     so the lifecycle never archives it."""
@@ -644,6 +691,39 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     return web.json_response({"name": name, "inject_on_trigger": inject})
 
 
+def _match_package_row(
+    rows: list[dict[str, Any]], name: str, pkg_name: str
+) -> dict[str, Any] | None:
+    """Pick the capability row a ``package/<...>`` skill key refers to.
+
+    ``key`` is the exact identifier the row was listed under, so it decides
+    first. Matching on ``name`` is a LEAF comparison and is only a fallback for
+    an edition that keys its rows some other way — two skills can share a leaf
+    under different parents (``package/shared-skill`` and ``package/SomePkg/shared-skill``),
+    and picking the first leaf match would serve the wrong SKILL.md while looking
+    entirely successful.
+
+    So the leaf fallback is used only when it is UNAMBIGUOUS. An ambiguous leaf
+    returns ``None`` (the caller 404s) and logs, because a reader who opened one
+    skill and silently got another has no way to notice.
+    """
+    for row in rows:
+        if row.get("key") == name:
+            return row
+    leaf_matches = [row for row in rows if row.get("name") == pkg_name]
+    if len(leaf_matches) == 1:
+        return leaf_matches[0]
+    if leaf_matches:
+        logger.warning(
+            "skill key %r matches no row key and %d rows by leaf name (%s); "
+            "refusing to guess which SKILL.md was meant",
+            name,
+            len(leaf_matches),
+            ", ".join(sorted(str(r.get("key")) for r in leaf_matches)),
+        )
+    return None
+
+
 async def api_skill_detail(request: web.Request) -> web.Response:
     """GET/PUT/DELETE /api/skills/{name} — get, update, or delete a skill."""
     state: DashboardState = request.app["state"]
@@ -680,18 +760,17 @@ async def api_skill_detail(request: web.Request) -> web.Response:
             package_skills = await mgr.list_skills() if mgr.available() else []
         except Exception:
             package_skills = []
-        for s in package_skills:
-            if s["name"] == pkg_name or s["key"] == name:
-                if s["path"]:
-                    from kiro_crew.hooks import validate_file_path  # noqa: F811
-                    resolved = validate_file_path(s["path"])
-                    if resolved is None:
-                        return web.json_response({"error": "access denied"}, status=403)
-                    try:
-                        content = Path(resolved).read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        pass
-                break
+        row = _match_package_row(package_skills, name, pkg_name)
+        if row is not None and row.get("path"):
+            from kiro_crew.hooks import validate_file_path  # noqa: F811
+
+            resolved = validate_file_path(str(row["path"]))
+            if resolved is None:
+                return web.json_response({"error": "access denied"}, status=403)
+            try:
+                content = Path(resolved).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
     if content is None and (name.startswith("kiro-user/") or name.startswith("kiro-workspace/")):
         # Open-standard kiro-cli skills are read-only here — load via the
         # same path-resolution logic used by the tree/file endpoints so the

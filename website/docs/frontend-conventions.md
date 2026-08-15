@@ -115,6 +115,17 @@ Add a new protocol to `ALLOWED_PROTOCOLS` in that file, and only there. Each
 addition widens what a model-authored or user-pasted link can launch on the host,
 so treat it as a security change, not a formatting one.
 
+One deliberate, key-scoped exception exists: a Windows absolute path
+(`WINDOWS_ABS_PATH_RE` — drive letter or UNC) is passed through **for image
+`src` only**, because `defaultUrlTransform` parses `C:` as an unknown scheme and
+would blank the sender's own uploaded image (issue #3497). The invariant that
+makes it safe: `ImgWithFallback` routes every local path to the same-origin
+`/api/file-raw` endpoint, so the raw filesystem path never reaches the DOM, and
+the shape (single letter + separator) cannot express `javascript:`/`data:`
+payloads. Widening that regex or its key scope is a security change — the same
+constant also decides which paths are treated as local file reads, so the two
+decisions must stay on the one exported copy in `urlTransform.ts`.
+
 ## Data fetching
 
 Always React Query (`useQuery` / `useMutation`) for server state. Do NOT use

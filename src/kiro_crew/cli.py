@@ -40,7 +40,6 @@ from typing import NoReturn
 
 from kiro_crew import __version__, platform_compat
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
-from kiro_crew.browser.cli import run_browse
 from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (
     DASHBOARD_PORT,
@@ -49,8 +48,6 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
-from kiro_crew.dashboard.state import set_build_info
-from kiro_crew.dashboard.urls import parse_dashboard_url
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -331,7 +328,7 @@ def _install_child_watcher() -> None:
     for tens of seconds.  PidfdChildWatcher uses a single epoll fd (no extra
     threads) and is immune to this.  On macOS (no pidfd syscall) we install
     SafeChildWatcher instead -- a single SIGCHLD handler, also free of the
-    thread-per-child storm (the _node_version_manager_bins lru_cache only
+    thread-per-child storm (the node_all_bin_dirs lru_cache only
     shrank the surface; the reaper storm itself remained on the default
     watcher).
 
@@ -561,6 +558,12 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
     if override is not None:
         return None if str(override).lower() == "auto" else int(override)
     try:
+        # Deferred import: ``dashboard.urls`` is a stdlib-only leaf, but
+        # importing it executes ``dashboard/__init__`` — keep it out of
+        # cli.py's module scope so non-gateway commands and the MCP stdio
+        # servers never touch the dashboard package (see issue #3504).
+        from kiro_crew.dashboard.urls import parse_dashboard_url
+
         return parse_dashboard_url(KiroCrewConfig.load().dashboard.url)[1]
     except Exception:
         # Diagnosis only — never let it break the refusal path it decorates.
@@ -1155,6 +1158,13 @@ Examples:
     cron_update.add_argument("--name", help="New job name")
     cron_update.add_argument("--message", help="New message")
     cron_update.add_argument("--every", type=int, dest="every_secs", help="New interval in seconds")
+    cron_update.add_argument(
+        "--timeout-secs",
+        type=int,
+        dest="timeout_secs",
+        default=None,
+        help="Per-wake execution budget in seconds (1..86400, default 1800)",
+    )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")
     cron_update.add_argument(
@@ -1372,6 +1382,7 @@ Examples:
     profile_show.add_argument("name", help="Profile file stem (without .json)")
 
     register_perf_parser(sub)
+    register_bench_parser(sub)
     register_desktop_parser(sub)
 
     kn_parser = sub.add_parser("knowledge", help="Knowledge Base maintenance")
@@ -1392,7 +1403,7 @@ Examples:
     )
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,status,token,url,logs,exec,provision,install}",
+        metavar="{up,down,ls,prune,status,token,url,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1431,6 +1442,35 @@ Examples:
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")
     pod_ls.add_argument("--json", action="store_true", help="Emit rows as JSON")
+    pod_prune = pod_sub.add_parser(
+        "prune", help="Reclaim orphaned pod HOMEs in bulk (the N-at-once `pod down`)"
+    )
+    pod_prune.add_argument(
+        "--older-than",
+        dest="older_than",
+        default="3d",
+        help=(
+            "Only reclaim orphans whose last activity is older than this "
+            "(e.g. 3d, 12h, 30m, 45s). Default: 3d, so a freshly-crashed HOME "
+            "an operator may still be debugging is kept. Use --all to reclaim "
+            "regardless of age."
+        ),
+    )
+    pod_prune.add_argument(
+        "--all",
+        dest="prune_all",
+        action="store_true",
+        help="Reclaim ALL orphans regardless of age (overrides --older-than)",
+    )
+    pod_prune.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Classify and print what would be reclaimed without deleting anything",
+    )
+    pod_prune.add_argument(
+        "--json", action="store_true", help="Emit per-name results as JSON"
+    )
     pod_status = pod_sub.add_parser("status", help="Up/down + health for one pod")
     pod_status.add_argument("name", help="Worktree name")
     pod_status.add_argument("--json", action="store_true", help="Emit status as JSON")
@@ -1773,30 +1813,6 @@ Examples:
     for _bname in _BUILTIN_NAMES:
         sub.add_parser(f"mcp-{_bname}", help=argparse.SUPPRESS)
 
-    # mcp-playwright-proxy (MCP proxy — compresses accessibility tree responses)
-    proxy_parser = sub.add_parser("mcp-playwright-proxy", help=argparse.SUPPRESS)
-    proxy_parser.add_argument("proxy_args", nargs=argparse.REMAINDER)
-
-    # browse — auth management for Playwright MCP browsing
-    browse_parser = sub.add_parser(
-        "browse",
-        help="Setup for Playwright MCP browsing",
-        epilog="""
-Examples:
-  kirocrew browse setup                        # Install Playwright + browsers
-  kirocrew browse auth health                  # Check auth status
-""",
-        formatter_class=_fmt,
-    )
-    browse_parser.add_argument(
-        "browse_args",
-        nargs=argparse.REMAINDER,
-        help="browse sub-command and its arguments",
-    )
-
-    # computer — computer-use (desktop automation) diagnostics. READ-ONLY: there
-    # is deliberately no CLI verb that reads a window's contents or drives an
-    # app, because those are LLM-facing capabilities and the MCP-first rule puts
     # them in the ``kirocrew-computer`` MCP server instead.
     computer_parser = sub.add_parser(
         "computer",
@@ -2049,12 +2065,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
 
-    if len(sys.argv) > 1 and sys.argv[1] == "mcp-playwright-proxy":
-        from kiro_crew.mcp_playwright_proxy import run_proxy
-
-        run_proxy(sys.argv[2:])
-        return
-
     args = parser.parse_args()
 
     # Direct agent-bearing CLI commands do not construct the long-lived
@@ -2173,7 +2183,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
-        asyncio.run(_chat(args.message, args.model, agent=getattr(args, "agent", None)))
+        _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
     elif args.command == "gateway":
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for
@@ -2193,6 +2203,13 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # The asyncio loop handler is installed later inside run().
         _install_crash_guard()
         gw_kwargs = _resolve_gateway_args(args)
+        # Deferred imports (issue #3504): ``dashboard.state`` pulls
+        # vector_memory → numpy (~56 MB) and ``cli_server`` pulls
+        # slack.gateway (~549 ms) — only the gateway command needs either,
+        # so no other subcommand (and no MCP stdio server) pays for them.
+        from kiro_crew.cli_server import _gateway
+        from kiro_crew.dashboard.state import set_build_info
+
         # Resolve the running build's git branch+commit ONCE here in the sync
         # entrypoint: provably AFTER KIROCREW_PROJECT_DIR detection (top of main())
         # and BEFORE asyncio.run() starts the loop. Resolving it at state.py import
@@ -2231,16 +2248,28 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             url=getattr(args, "url", False),
         )
     elif args.command == "cron":
+        from kiro_crew.cli_commands import _cron
+
         _cron(args)
     elif args.command == "spawn":
+        from kiro_crew.cli_commands import _spawn
+
         _spawn(args)
     elif args.command == "run":
+        from kiro_crew.cli_server import _run_task
+
         asyncio.run(_run_task(args))
     elif args.command == "learn":
+        from kiro_crew.cli_commands import _learn
+
         _learn(args)
     elif args.command == "artifact":
+        from kiro_crew.cli_commands import _artifact
+
         _artifact(args)
     elif args.command == "memory":
+        from kiro_crew.cli_commands import _memory_cmd
+
         _memory_cmd(args)
     elif args.command == "mcp-cron":
         from kiro_crew.mcp_cron import run_mcp_server as run_mcp_cron_server
@@ -2257,8 +2286,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         _mod = importlib.import_module(f"kiro_crew.apps.builtins.{args.command[4:]}.mcp_server")
         _mod.run_mcp_server()
-    elif args.command == "browse":
-        run_browse(getattr(args, "browse_args", []))
     elif args.command == "computer":
         # Deferred import: ``computer_use.cli`` reaches the driver seam, and the
         # macOS driver loads native frameworks on first use. Keeping it out of
@@ -2268,12 +2295,20 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
         run_computer(getattr(args, "computer_args", []))
     elif args.command == "eval":
+        from kiro_crew.cli_commands import _run_eval
+
         asyncio.run(_run_eval(args))
     elif args.command == "security":
+        from kiro_crew.cli_commands import _security
+
         _security(args)
     elif args.command == "tailnet":
+        from kiro_crew.cli_commands import _tailnet
+
         _tailnet(args)
     elif args.command == "telemetry":
+        from kiro_crew.cli_commands import _telemetry
+
         _telemetry(args)
     elif args.command == "policy":
         from kiro_crew.cli_commands import _policy
@@ -2282,26 +2317,46 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command == "knowledge":
         _knowledge(args)
     elif args.command == "pod":
+        from kiro_crew.cli_commands import _pod
+
         _pod(args)
     elif args.command == "update":
+        from kiro_crew.cli_server import _update
+
         _update()
     elif args.command == "stop":
+        from kiro_crew.cli_server import _stop
+
         _stop(args.port)
     elif args.command == "restart":
+        from kiro_crew.cli_server import _restart
+
         _restart(args.port)
     elif args.command == "service":
+        from kiro_crew.cli_server import _service_cmd
+
         sys.exit(_service_cmd(args))
     elif args.command == "sandbox":
+        from kiro_crew.cli_server import _sandbox_cmd
+
         sys.exit(_sandbox_cmd(args))
     elif args.command == "cloud":
         sys.exit(handle_cloud(args))
     elif args.command == "logs":
+        from kiro_crew.cli_server import _logs_cmd
+
         _logs_cmd(args)
     elif args.command == "token":
+        from kiro_crew.cli_server import _token
+
         _token(args)
     elif args.command == "logout":
+        from kiro_crew.cli_server import _logout, resolve_client_port
+
         _logout(resolve_client_port(args.port))
     elif args.command == "status":
+        from kiro_crew.cli_server import _status
+
         _status(args)
     elif args.command == "consolidate":
         _consolidate_cmd(args)
@@ -2309,6 +2364,10 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         _config_cmd(args)
     elif args.command == "perf":
         rc = perf_cmd(args)
+        if rc:
+            raise SystemExit(rc)
+    elif args.command == "bench":
+        rc = bench_cmd(args)
         if rc:
             raise SystemExit(rc)
     elif args.command == "desktop":
@@ -2328,10 +2387,16 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         if rc:
             raise SystemExit(rc)
     elif args.command == "agent":
+        from kiro_crew.cli_commands import _handle_agent
+
         _handle_agent(args)
     elif args.command == "workspace":
+        from kiro_crew.cli_commands import _handle_workspace
+
         _handle_workspace(args)
     elif args.command == "app":
+        from kiro_crew.cli_commands import _handle_app
+
         _handle_app(args)
     else:
         print(BANNER)
@@ -2341,42 +2406,22 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 # ── Config ──
 
 
-from kiro_crew.cli_chat import _chat  # noqa: E402
+# NOTE (issue #3504): ``cli_commands`` and ``cli_server`` are deliberately NOT
+# imported at module scope. ``cli_commands`` costs ~556 ms and ``cli_server``
+# ~549 ms (it pulls ``slack.gateway``), and the MCP stdio servers
+# (``kirocrew mcp-core`` / ``mcp-cron`` / ``mcp-computer``) — which dispatch
+# through this module and hold its imports RESIDENT for their whole lifetime —
+# need neither. Every name from those two modules is imported inside the one
+# ``main()`` dispatch branch that uses it. ``test_cli_lazy_imports.py`` ratchets
+# this: a new module-scope import that reaches them fails the suite.
+from kiro_crew.cli_bench import bench_cmd, register_bench_parser  # noqa: E402
+from kiro_crew.cli_chat import _run_chat  # noqa: E402
 from kiro_crew.cli_cloud import add_size_choices as _cloud_size_choices  # noqa: E402
 from kiro_crew.cli_cloud import handle_cloud  # noqa: E402
-from kiro_crew.cli_commands import (  # noqa: E402
-    _artifact,
-    _cron,
-    _handle_agent,
-    _handle_app,
-    _handle_workspace,
-    _learn,
-    _memory_cmd,
-    _pod,
-    _run_eval,
-    _security,
-    _spawn,
-    _tailnet,
-    _telemetry,
-)
 from kiro_crew.cli_config import _config_cmd  # noqa: E402
 from kiro_crew.cli_desktop import desktop_cmd, register_desktop_parser  # noqa: E402
 from kiro_crew.cli_doctor import _doctor  # noqa: E402
 from kiro_crew.cli_perf import perf_cmd, register_perf_parser  # noqa: E402
-from kiro_crew.cli_server import (  # noqa: E402
-    _gateway,
-    _logout,
-    _logs_cmd,
-    _restart,
-    _run_task,
-    _sandbox_cmd,
-    _service_cmd,
-    _status,
-    _stop,
-    _token,
-    _update,
-    resolve_client_port,
-)
 from kiro_crew.cli_setup import (  # noqa: E402, F401
     _fix_shell_profiles,
     _manifest,

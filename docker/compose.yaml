@@ -42,6 +42,10 @@ services:
       WECOM_BOT_ID: ${WECOM_BOT_ID:-}
       WECOM_SECRET: ${WECOM_SECRET:-}
       WEBEX_BOT_TOKEN: ${WEBEX_BOT_TOKEN:-}
+      # kiro-cli's own model credential — the alternative to the one-time
+      # `kiro-cli login` above. Scrubbed into the data home's .env like the
+      # channel credentials; the gateway hands it back to kiro-cli itself.
+      KIRO_API_KEY: ${KIRO_API_KEY:-}
       # Sandbox consent: if this runtime blocks user namespaces (no inner
       # sandbox), agent command execution stays disabled unless you
       # explicitly accept container-as-only-boundary by setting this to 1.

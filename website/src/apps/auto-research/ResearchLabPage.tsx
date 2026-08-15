@@ -7,6 +7,7 @@ import Modal from '../../components/Modal'
 import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { useAvailableModels } from '../../hooks/useAvailableModels'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
@@ -161,6 +162,11 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   const [autoApprove, setAutoApprove] = useState(false)
   const [parallelWorkers, setParallelWorkers] = useState(1)
   const [executionMode, setExecutionMode] = useState<'agent' | 'workflow'>('agent')
+  // Explicit model pick for the campaign's worker. '' = inherit the research
+  // agent's / backend's default (never a concrete id). Options come from the
+  // shared advertised-models list (GET /api/models), same as every picker.
+  const [model, setModel] = useState('')
+  const availableModels = useAvailableModels()
   const [validation, setValidation] = useState<Validation | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -215,7 +221,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
     setSubmitting(true)
     setError(null)
     try {
-      const c = await api.researchCreate({ question, sub_questions: buildSubs(), scope_constraints: scopeConstraints, max_cycles: maxCycles, idle_secs: idleSecs, success_criteria: successCriteria, auto_approve: autoApprove, parallel_workers: parallelWorkers, execution_mode: executionMode })
+      const c = await api.researchCreate({ question, sub_questions: buildSubs(), scope_constraints: scopeConstraints, max_cycles: maxCycles, idle_secs: idleSecs, success_criteria: successCriteria, auto_approve: autoApprove, parallel_workers: parallelWorkers, execution_mode: executionMode, model: executionMode === 'agent' ? model : '' })
       if (c?.id) { await api.researchAction(c.id, 'start'); onDone() }
     } catch {
       setError(i18nT('apps.autoResearch.researchLabPage.failed_to_start_campaign_please_try_again'))
@@ -243,7 +249,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.agent')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.adaptive')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_drives_every_round_itself_deciding_what_t')}</div>
             </button>
-            <button type="button" onClick={() => setExecutionMode('workflow')} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
+            <button type="button" onClick={() => { setExecutionMode('workflow'); setModel('') }} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.dynamic_workflow')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.scripted')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_writes_an_orchestration_script_up_front_a')}</div>
             </button>
@@ -291,6 +297,13 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
           {i18nT('apps.autoResearch.researchLabPage.run_unattended_skip_clarification_questions')}
         </label>
         <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.parallel_workers')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.parallel_workers_2')} min={1} max={5} value={parallelWorkers} className="w-16 text-sm px-3 py-2 rounded-md bg-bg-elevated border border-border text-text outline-none focus-ring" onChange={e => setParallelWorkers(Math.min(5, Math.max(1, Number(e.target.value))))} /><span className="text-xs text-muted">{parallelWorkers > 1 ? `${parallelWorkers} sub-questions investigated in parallel each cycle` : 'sequential (default)'}</span></div>
+        {/* Explicit model pick — agent mode only (the workflow engine resolves
+            its own models, and the backend rejects a pick there). '' = inherit.
+            'auto' is filtered out, mirroring issue-radar's CrewEditor: it would
+            sit next to the clearLabel row as a second "default" with different
+            mechanics ('' inherits the research agent's pin; 'auto' overrides it
+            with an explicit pin subject to the availability withhold). */}
+        {executionMode === 'agent' && <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.model')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.model')} options={availableModels.map(m => m.name).filter(n => n !== 'auto')} clearLabel={i18nT('apps.autoResearch.researchLabPage.model_default_inherit')} value={model} onChange={setModel} /></div>}
       </div>}
 
       {step === 2 && <div className="space-y-3">

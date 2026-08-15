@@ -1,38 +1,28 @@
 {
   "app": {
     "a_newer_version_is_available_no_changelog_entry": "A newer version is available. No changelog entry was added for this release.",
-    "across_chat_agents_mcp_and_subagents": "— across chat, agents, MCP, and subagents.",
     "apps": "Apps",
     "auto_update_on_restart": "Auto-update on restart",
-    "breakdown": "Breakdown",
     "cancel_update": "Cancel Update",
     "changelog": "Changelog",
-    "checking_usage_running": "Checking usage — running",
     "click_to_hide": "Click to hide",
     "close": "Close",
     "cpu": "CPU",
     "credits": "credits",
-    "credits_total": "credits total",
     "developer": "Developer",
     "discord_community": "Discord community",
     "dismiss": "Dismiss",
     "dsk": "DSK",
-    "est_overage_cost": "Est. overage cost",
     "explore": "Explore",
     "explore_apps": "Explore Apps",
     "k_search_for_anything": "⌘K — Search for anything…",
-    "kiro_cli_usage": "kiro-cli /usage",
     "kiro_credit_usage_checking": "Kiro credit usage — checking…",
     "kiro_credit_usage_checking_2": "Kiro credit usage — checking",
-    "kiro_credits": "Kiro Credits",
-    "kiro_credits_title": "Kiro credits: {{used}} / {{limit}} ({{pct}}) — click for details",
-    "kiro_credits_title_with_bonus": "Kiro credits: {{used}} / {{limit}} used — plan {{planUsed}}/{{planLimit}} + {{bonusLabel}} {{bonusUsed}}/{{bonusLimit}} — click for details",
     "kiro_discord_community": "Kiro Discord community",
     "main_navigation": "Main navigation",
     "manage_account": "Manage account",
     "mem": "MEM",
     "metrics_unavailable": "metrics unavailable",
-    "monthly_kiro_credit_usage_from": "Monthly Kiro credit usage from",
     "notifications": "Notifications",
     "notifications_failed_to_load": "Notifications failed to load",
     "open_inbox": "Open inbox",
@@ -195,6 +185,8 @@
         "max_cycles_2": "Max cycles",
         "min": "min",
         "min_20_characters": "Min 20 characters.",
+        "model": "Model",
+        "model_default_inherit": "Default (inherit)",
         "moderate": "Moderate",
         "new_campaign": "New Campaign",
         "new_campaign_2": "+ New Campaign",
@@ -733,6 +725,8 @@
       "composer": {
         "add_screens": "Add screens",
         "clear_all": "Clear all",
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drop_screenshots_or_click_to_browse": "Drop screenshots — or click to browse",
         "fix_the_link": "Fix the link",
         "move_earlier": "Move earlier",
@@ -741,6 +735,7 @@
         "remove": "Remove",
         "send_screenshots": "Send screenshots",
         "try_again": "Try again",
+        "unrecognised": "Unrecognised",
         "use_a_local_folder_instead": "Use a local folder instead"
       },
       "designCritiquePage": {
@@ -763,8 +758,16 @@
         "see_an_example": "See an example",
         "send_screenshots": "Send screenshots",
         "show_this_screen": "Show this screen",
+        "something_went_wrong": "something went wrong",
         "start_a_new_critique_anything_already_running_ke": "Start a new critique — anything already running keeps going",
+        "still_scanning_it_s_kept_running_come_back_to_th": "Still scanning. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
+        "still_working_on_this_one_it_s_kept_running_come": "Still working on this one. It’s kept running — come back in a minute.",
+        "still_working_on_this_one_it_s_kept_running_come_2": "Still working on this one. It’s kept running — come back to this page in a minute and it’ll pick up where it left off.",
         "switch_critique": "Switch critique",
+        "that_critique_didn_t_finish": "That critique didn’t finish.",
+        "that_s_more_than_20_screens_send_fewer": "That’s more than 20 screens — send fewer.",
+        "that_scan_didn_t_finish": "That scan didn’t finish.",
+        "those_weren_t_image_files": "Those weren’t image files.",
         "what_i_d_tighten": "What I'd tighten",
         "what_s_working": "What’s working",
         "what_you_ll_get": "What you’ll get",
@@ -790,15 +793,26 @@
         "page_label": "Design Critique"
       },
       "scopingPicker": {
+        "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
+        "critique_this_screen": "Critique this screen",
         "drag_to_reorder": "Drag to reorder",
         "move_earlier": "Move earlier",
         "move_later": "Move later",
         "optional_brief_who_is_it_for_and_what_is_the_mai": "Optional brief: who is it for, and what is the main task?",
         "optional_who_is_it_for_and_what_s_the_main_task": "Optional: who is it for, and what’s the main task?",
+        "pick_at_least_one_screen": "Pick at least one screen",
         "screens": "Screens",
         "start_over": "Start over",
         "suggested_flows": "Suggested flows",
         "what_should_i_audit": "What should I audit?"
+      },
+      "utils": {
+        "i_ll_capture_it_and_measure_real_contrast_and_si": "I’ll capture it and measure real contrast and sizes.",
+        "i_ll_clone_it_and_list_the_screens_only_pages_th": "I’ll clone it and list the screens. Only pages that render without a server can be seen.",
+        "i_ll_list_the_screens_only_pages_that_render_wit": "I’ll list the screens. Only pages that render without a server can be seen.",
+        "i_ll_pull_the_frames": "I’ll pull the frames.",
+        "it_must_be_running_right_now_i_ll_capture_it_liv": "it must be running right now. I’ll capture it live and measure real contrast and sizes.",
+        "not_something_i_recognise_give_me_a_figma_link_a": "Not something I recognise. Give me a Figma link, a GitHub repo, an absolute local path, or a URL that’s already serving."
       },
       "waitingScreen": {
         "cancel_this_run": "Cancel this run",
@@ -2801,13 +2815,13 @@
     },
     "personalShopper": {
       "manifest": {
-        "description": "A personal advisor that remembers your preferences, browses real stores as you, and helps solve problems that may or may not end in a purchase. It never buys anything — you do.",
+        "description": "A personal advisor that researches real stores and helps solve problems that may or may not end in a purchase. The Preferences tab is your own reference list — paste what matters into chat. It never buys anything — you do.",
         "display_name": "Personal Shopper",
         "highlight_1": "Diagnoses the problem before recommending anything — sometimes the answer is not a purchase at all",
-        "highlight_2": "Remembers your sizes, brands, style, budget and restrictions across every session",
-        "highlight_3": "Browses the stores you configure with your own login, so prices and availability are real",
-        "highlight_4": "You watch the research happen in the Browser panel, and it never touches a cart or checkout",
-        "highlight_5": "Organize what it knows about you into your own groups, without affecting how it recalls them",
+        "highlight_2": "Paste the preferences that matter into chat — the advisor reads your messages, not the Preferences tab",
+        "highlight_3": "Researches only the stores you name, and flags that prices come from public pages, not your signed-in account",
+        "highlight_4": "It has no way to reach a cart or a checkout",
+        "highlight_5": "Organize your saved preferences into groups in the Preferences tab",
         "page_label": "Personal Shopper"
       },
       "historyTab": {
@@ -2829,8 +2843,9 @@
         "personal_shopper": "Personal Shopper",
         "say_something_like_help_me_find_running_shoes_or": "Say something like \"help me find running shoes\" or \"my daughter's birthday is coming up\"",
         "start_a_conversation_with_your_personal_advisor": "Start a conversation with your personal advisor in any chat session.",
+        "start_advisor_conversation": "Start advisor conversation",
+        "start_conversation_failed": "Couldn't start the conversation ({{code}})",
         "your_life_problem_advisor_solves_first_shops_sec": "Your life-problem advisor — solves first, shops second",
-        "tab_chat": "Chat",
         "tab_preferences": "Preferences",
         "tab_history": "History",
         "tab_sites": "Sites"
@@ -2855,26 +2870,24 @@
         "delete_named_group": "Delete group {{name}}",
         "edit_named_preference": "Edit preference “{{text}}”",
         "delete_named_preference": "Delete preference “{{text}}”",
-        "add_your_first_preference": "Add one above, or import them later."
+        "add_your_first_preference": "Add one above, or import them later.",
+        "the_advisor_cannot_read_this_list_paste_what_ma": "The advisor cannot read this list. Paste what matters into the chat when you ask."
       },
       "sitesTab": {
         "add_shopping_site": "Add shopping site",
         "add_site": "Add site",
-        "add_your_shopping_sites_so_the_advisor_can_brows": "Add your shopping sites so the advisor can browse them for you.",
+        "add_your_shopping_sites_so_the_advisor_can_brows": "Add the shopping sites you want to keep track of.",
         "cancel": "Cancel",
-        "how_login_works": "How login works",
+        "how_login_works": "How research works",
         "loading_sites": "Loading sites...",
         "no_sites_configured": "No sites configured",
         "privacy": "Privacy",
         "remove_site": "Remove site",
-        "shopping_sources_the_advisor_can_browse_login_en": "Shopping sources the advisor can browse. Login enables member prices and personalized results.",
+        "shopping_sources_the_advisor_can_browse_login_en": "The advisor cannot read this list. Name a store in chat and it will research that one — this is your own reference list.",
         "site_name_e_g_example_store": "Site name (e.g. Example Store)",
-        "the_advisor_only_visits_sites_you_ve_enabled_her": "The advisor only visits sites you've enabled here. Disabled sites are never browsed, even if they might have relevant results.",
-        "the_advisor_opens_sites_in_the_browser_panel_dur": "The advisor opens sites in the Browser panel during a shopping conversation. You log in once when prompted — the session cookie persists locally for future searches. Your credentials are never stored by the app.",
+        "the_advisor_only_visits_sites_you_ve_enabled_her": "Nothing here leaves your machine.",
+        "the_advisor_opens_sites_in_the_browser_panel_dur": "The advisor reads public store pages only. It cannot sign in to a store or use your session, so prices and stock come from the public page.",
         "url_e_g_store_example_com": "URL (e.g. store.example.com)",
-        "logged_in": "Logged in",
-        "not_logged_in": "Not logged in",
-        "toggle_site": "Enable {{name}}",
         "remove_named_site": "Remove {{name}}",
         "save_failed": "Could not save. Error code: {{code}}"
       }
@@ -3075,13 +3088,17 @@
         },
         "settingsModal": {
           "cancel": "Cancel",
+          "default_keeps_the_model_your_chat_agent_resolves": "Default keeps whatever model your chat agent already resolves to. A pick applies to spec sessions that start after the change — a spec already in progress keeps its current model.",
           "empty_keep_specs_with_each_project_recommended": "Empty = keep specs with each project (recommended)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Leave this empty to keep specs inside each project (a .kiro/specs folder next to your code — the Kiro standard).\n        Or set a folder path to collect all specs in one place instead.",
+          "model_default_inherit": "Default (inherit)",
           "save": "Save",
           "saving": "Saving…",
           "settings": "Settings",
+          "spec_generation_model": "Spec generation model",
           "spec_storage_folder_path": "Spec storage folder path",
-          "where_should_specs_be_saved": "Where should specs be saved?"
+          "where_should_specs_be_saved": "Where should specs be saved?",
+          "which_model_should_run_spec_generation": "Which model should run spec generation?"
         },
         "shimmer": {
           "loading_specs": "Loading specs…",
@@ -3096,6 +3113,8 @@
           "close_esc": "Close (Esc)",
           "close_review_view": "Close review view",
           "document_file_name": "{{name}}.md",
+          "drafting_design": "Drafting design…",
+          "drafting_tasks": "Drafting tasks…",
           "drag_or_use_to_resize": "Drag or use ← → to resize",
           "expand_document_for_review": "Expand document for review",
           "expand_for_review_esc_to_close": "Expand for review (Esc to close)",
@@ -3114,6 +3133,7 @@
           "tab_requirements": "Requirements",
           "tab_tasks": "Tasks",
           "tells_the_agent_this_phase_is_approved_and_to_mo": "Tells the agent this phase is approved and to move on — same as typing it in the chat",
+          "the_agent_is_writing_the_next_document": "Approved — the agent is writing the next document",
           "working": "working…"
         },
         "specRail": {
@@ -3133,9 +3153,15 @@
         },
         "specStatePanel": {
           "answer_with": "How should “{{title}}” be answered?",
+          "answered": "answered",
+          "blocking": "BLOCKING",
+          "context": "CONTEXT",
           "decision_title": "Decision — {{title}}",
+          "decisions": "DECISIONS",
           "options_for": "Options for {{title}}",
+          "pending": "pending",
           "recommended": "RECOMMENDED",
+          "sending": "sending…",
           "template": "Template",
           "tool_calls": "Tool calls",
           "turns": "Turns",
@@ -3212,6 +3238,18 @@
   "components": {
     "agentDropdownList": {
       "no_matches": "No matches"
+    },
+    "gitPanel": {
+      "changes": "Changes",
+      "clean": "clean",
+      "commits": "Commits",
+      "empty_state": "No changes or commits to display.",
+      "just_now": "just now",
+      "loading": "loading...",
+      "refresh": "Refresh",
+      "title": "Git",
+      "uncommitted": "{{count}} uncommitted",
+      "no_project": "No project folder set for this session."
     },
     "agentImportFlow": {
       "back": "Back",
@@ -3327,6 +3365,7 @@
         "view_details_for": "View details for {{name}}"
       },
       "featuredSpotlight": {
+        "collection": "COLLECTION",
         "enable": "Enable",
         "featured": "FEATURED",
         "get": "Get",
@@ -3383,6 +3422,7 @@
       }
     },
     "artifactBody": {
+      "image_could_not_be_loaded": "Image couldn't be loaded",
       "rendering": "Rendering…"
     },
     "artifactFolderDeleteDialog": {
@@ -3416,7 +3456,7 @@
       "close": "Close",
       "cycle": "· cycle",
       "describe_what_you_want_the_agent_to_accomplish": "Describe what you want the agent to accomplish…",
-      "give_the_agent_a_goal_and_it_will_keep_working_t": "Give the agent a goal and it will keep working toward it autonomously — nudging itself between turns at the interval below until the goal is met or the cycle limit is reached.",
+      "give_the_agent_a_goal_and_it_will_keep_working_t": "Set a goal for the agent. Kiro Crew sends the agent a nudge with that goal at the interval below until the goal is complete or the cycle limit is reached.",
       "goal_description": "Goal description",
       "seconds_between_nudges": "Seconds between nudges",
       "last_fire": "Last fire:",
@@ -3433,11 +3473,10 @@
       "hide_terminal_panel": "Hide terminal panel",
       "move_to_side_panel": "Move to side panel",
       "new_terminal": "New terminal",
-      "resize_terminal_panel": "Resize terminal panel"
-    },
-    "browserAuthPrompt": {
-      "browser_needs_authentication": "Browser needs authentication",
-      "dismiss_auth_prompt": "Dismiss auth prompt"
+      "resize_terminal_panel": "Resize terminal panel",
+      "move_panel_to_right": "Move panel to right",
+      "move_panel_to_bottom": "Move panel to bottom",
+      "more_actions": "More actions"
     },
     "chatInput": {
       "add_files_options": "Add files & options",
@@ -3590,11 +3629,19 @@
       "shared_comment": "Shared comment"
     },
     "contentRenderer": {
-      "loading_editor": "Loading editor…"
+      "changes_update_svg_preview_as_you_type": "Changes update the preview as you type.",
+      "editing_svg": "Editing SVG",
+      "loading_editor": "Loading editor…",
+      "svg_source_code": "SVG source code"
     },
     "detailPanel": {
       "close_panel": "Close panel",
       "resize_panel": "Resize panel"
+    },
+    "diagramLightbox": {
+      "close": "Close",
+      "diagram_viewer": "Diagram viewer",
+      "enlarge_diagram": "Enlarge diagram"
     },
     "dialog": {
       "close": "Close"
@@ -3718,7 +3765,10 @@
     "instanceTabBar": {
       "instances": "Remote crews",
       "local": "Local",
-      "local_dashboard": "Local dashboard"
+      "local_dashboard": "Local dashboard",
+      "n_unread": "{{n}} unread",
+      "switch_crew_active": "Switch crew, currently {{name}}",
+      "switch_crew_active_unread": "Switch crew, currently {{name}}, {{n}} unread elsewhere"
     },
     "instancesViewport": {
       "loading_pane": "Loading pane…",
@@ -3896,6 +3946,7 @@
       "command": "command",
       "enable_immediately": "Enable immediately",
       "env": "env",
+      "headers": "headers",
       "loading_current_spec": "Loading current spec…",
       "map_or_a_single_spec_specs_take": "map, or a single spec. Specs take",
       "mcpservers": "mcpServers",
@@ -3905,6 +3956,7 @@
       "saving_keeps_the_server_s_enabled_disabled_state": "Saving keeps the server's enabled/disabled state.",
       "server_name": "server-name",
       "server_name_2": "Server name",
+      "stored_header_values_are_hidden_and_read_only": "Stored header values are hidden and read-only here. To change them, remove and re-add the server — it starts disabled and your tool restrictions won't carry over, so re-apply them after re-adding.",
       "stdio_or": "(stdio) or",
       "that_looks_like_a_single_server_spec_give_it_a_n": "That looks like a single server spec — give it a name:",
       "url": "url",
@@ -4108,7 +4160,8 @@
       "no_external_registries": "No external registries",
       "repo": "Repo *",
       "sync_registry_apps": "Sync registry apps",
-      "you_are_now_trusting_apps_from": "You are now trusting apps from"
+      "you_are_now_trusting_apps_from": "You are now trusting apps from",
+      "registry_url_install_public_repos_only": "Registry-URL install works only for public repos. For a private repo, clone it locally first, then use Install from Path below."
     },
     "remoteArtifactCard": {
       "clone": "Clone",
@@ -4122,7 +4175,8 @@
     },
     "restartButton": {
       "apply_restart": "Apply & Restart",
-      "restarting": "Restarting…"
+      "restarting": "Restarting…",
+      "sessions_restarted_but_mcp_sync_failed": "Sessions restarted, but MCP sync failed — check gateway logs"
     },
     "runInTerminalBtn": {
       "cancel": "Cancel",
@@ -4213,13 +4267,16 @@
     "shortcutsModal": {
       "always_works": "always works",
       "close": "Close",
+      "desktop_app": "Desktop App",
       "enable_shortcuts": "Enable shortcuts",
+      "global_hotkey_hint": "Works system-wide, even while the app is in the background. To change or disable it, edit globalHotkey in the desktop config file (Connection > Open Config File); the change takes effect after the app restarts.",
       "k": "K",
       "keyboard_shortcuts": "Keyboard shortcuts",
       "keyboard_shortcuts_2": "Keyboard Shortcuts",
       "or": "or",
       "search": "Search",
       "search_everywhere": "Search Everywhere",
+      "show_or_focus_the_kiro_crew_window": "Show or focus the Kiro Crew window",
       "use_ctrl_not_option_for_chat_1_9": "Use ⌃ Ctrl (not ⌥ Option) for chat 1–9",
       "use_ctrl_not_option_for_chat_1_to_9": "Use Ctrl (not Option) for chat 1 to 9"
     },
@@ -4284,11 +4341,6 @@
     "skillPickerMenu": {
       "loading_skills": "Loading skills…",
       "no_matching_skills": "No matching skills"
-    },
-    "slackLinkSection": {
-      "post_reminder_in_slack": "Post reminder in Slack",
-      "send_to_slack": "Send to Slack",
-      "unlink_from_slack": "Unlink from Slack"
     },
     "slotTagPopover": {
       "assign_tags": "Assign tags",
@@ -4436,13 +4488,18 @@
     "webPreviewPanel": {
       "back": "Back",
       "browser_live": "Browser — live",
+      "browser_view": "Browser view",
+      "browser_view_is_not_running": "Browser view is not running",
+      "browser_view_unavailable": "Browser view unavailable",
       "can_t_embed_an_http_page_here": "Can't embed an http:// page here",
+      "couldn_t_start_the_browser_view": "Couldn't start the browser view.",
       "dismiss": "Dismiss",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Enter your dev-server URL above (e.g. a Vite or static server running on localhost) to\n              preview the site you're working on — it live-reloads as you edit.",
       "forward": "Forward",
       "http": "http://",
       "live_browser_session": "Live browser session",
       "load_preview": "Load preview",
+      "loading_the_browser_view": "Loading the browser view…",
       "localhost_5173": "localhost:5173",
       "open_in_browser": "Open in browser",
       "page_mixed_content": "page (mixed content).",
@@ -4454,13 +4511,13 @@
       "reload": "Reload",
       "reload_preview": "Reload preview",
       "screenshot_an_area_into_the_chat": "Screenshot an area into the chat",
+      "start_browser_view": "Start browser view",
+      "start_it_to_watch_and_drive_the_agent_s_browser": "Start it to watch and drive the agent's browser session in this panel.",
       "stopped_responding_it_ll_reconnect_automatically": "stopped responding.\n              It'll reconnect automatically when it's back — or reload now.",
       "the_agent_started_a_local_preview_load_it_to_vie": "The agent started a local preview. Load it to view the site in this panel.",
+      "the_browser_view_isn_t_available_on_this_gateway": "The browser view isn't available on this gateway.",
       "the_server_at": "The server at",
       "this_dashboard_is_served_over_https_so_the_brows": "This dashboard is served over HTTPS, so the browser blocks embedding an",
-      "updated": "updated",
-      "view_only_clicks_here_don_t_reach_the_page": "View only — clicks here don't reach the page",
-      "waiting_for_the_browser_to_take_a_screenshot": "Waiting for the browser to take a screenshot…",
       "web_preview": "Web preview"
     },
     "welcomeView": {
@@ -4477,6 +4534,14 @@
     },
     "widgetPlaceholder": {
       "generating": "generating…"
+    },
+    "windowsTitlebarMenu": {
+      "connection": "Connection",
+      "edit": "Edit",
+      "file": "File",
+      "help": "Help",
+      "view": "View",
+      "window": "Window"
     },
     "workspacePicker": {
       "back": "Back",
@@ -4522,6 +4587,9 @@
     }
   },
   "hooks": {
+    "usePanelTabs": {
+      "git": "Git"
+    },
     "useSceneInteraction": {
       "approve": "Approve",
       "click_for_thread": "click for thread",
@@ -4539,6 +4607,9 @@
   },
   "pages": {
     "agentsPage": {
+      "account": "Account",
+      "account_not_reported": "Not reported",
+      "account_not_reported_help": "Shown once the signed-in identity can be tied to the account these credits are billed to. That link is not always available, so this can stay unreported even while credits are shown.",
       "agent_templates": "Agent Templates",
       "auto_approved": "Auto-Approved",
       "awaiting_first_prompt": "awaiting first prompt",
@@ -4551,6 +4622,7 @@
       "est_cost": "Est. cost:",
       "failed": "Failed",
       "filter_models": "Filter models",
+      "harness": "Harness",
       "healthy": "Healthy",
       "high": "High",
       "idle": "Idle",
@@ -4746,7 +4818,8 @@
       "uninstall": "Uninstall",
       "update_one": "{{count}} update",
       "update_other": "{{count}} updates",
-      "v": "v"
+      "v": "v",
+      "installed_app_find_in_library_and_enable": "Installed {{name}}. Turn it on below to enable it."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mo",
@@ -4759,7 +4832,6 @@
       "admin": "Admin",
       "also_create_in_aws_config": "Also create in AWS config",
       "and_click": "and click",
-      "anyone_with_the_link_can_view_it": "anyone with the link can view it",
       "apply_this_policy_yourself_kirocrew_never_edits": "Apply this policy yourself (Kiro Crew never edits your IAM).",
       "artifact_deploy": "Artifact Deploy",
       "aws": "aws",
@@ -4774,12 +4846,10 @@
       "bucketownerenforced": "BucketOwnerEnforced",
       "cli_with": "CLI with",
       "click": "— click",
-      "cloudfront_net": "*.cloudfront.net",
       "command_kirocrew_never_edits_your_iam_the_first": "command. Kiro Crew never edits your IAM.\n              The first deploy reports the exact missing permission if anything's off.",
       "configure_the_profile_on_the": "Configure the profile on the",
       "confirm_gate_audit": "Confirm-gate + audit.",
       "content_is_scanned_for_secrets_and_internal_data": "Content is scanned for secrets and internal-data\n              signals (internal hostnames, account IDs/ARNs) and publishing is blocked-and-warned\n              until you explicitly override. Local directories are checked against sensitive credential paths\n              (",
-      "content_is_served_at_a_random": "Content is served at a random",
       "copy": "Copy",
       "copy_boundary_policy": "Copy boundary policy",
       "copy_policy": "Copy policy",
@@ -4790,7 +4860,6 @@
       "destroy": "Destroy",
       "details": "Details",
       "dismiss": "Dismiss",
-      "domain": "domain —",
       "e_g_my_sandbox": "e.g. my-sandbox",
       "est_cost_not_a_bill": "Est. Cost (not a bill)",
       "estimated_total": "Estimated total —",
@@ -4849,7 +4918,6 @@
       "takes_a_site_down_fast_url_404_reversible": "takes a site down fast\n              (URL → 404, reversible);",
       "tears_down_all_infra_irreversible": "tears down all infra (irreversible).",
       "the_origin_bucket_is_private": "The origin bucket is private.",
-      "the_published_url_is_public_by_link": "The published URL is public-by-link.",
       "then": ", then",
       "then_apply_it_yourself_to_a_dedicated_role_ident": ", then apply it yourself to a dedicated\n              role/identity — console or your own",
       "to_publish_open_an_artifact_and_choose": "To publish, open an artifact and choose",
@@ -4864,11 +4932,12 @@
       "webapp_kind_badge": "webapp",
       "webapp_one": "{{count}} webapp",
       "webapp_other": "{{count}} webapps",
-      "world_readable_no_auth_in_v1_don_t_publish_anyth": "(world-readable;\n              no auth in v1). Don't publish anything you wouldn't put on the open internet.",
       "worst_case_tiers_over_each_ttl_window_estimate_n": "(worst-case tiers, over each TTL window; estimate — not the AWS bill)",
       "writes_only_region_credential_process_via": "(writes only region / credential_process via",
       "your_credentials_never_touch_kirocrew": "Your credentials never touch Kiro Crew.",
-      "your_host_not_your_laptop_artifact_deploy_shells": "(your host), not your laptop — Artifact Deploy shells to"
+      "your_host_not_your_laptop_artifact_deploy_shells": "(your host), not your laptop — Artifact Deploy shells to",
+      "cloud_deployment_disabled": "Cloud deployment is disabled",
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· a newer version is available in the remote copy",
@@ -4885,6 +4954,8 @@
       "cancel_esc": "Cancel (Esc)",
       "comments": "Comments",
       "content_copied_from_v": "content copied from v",
+      "copied": "Copied",
+      "copy_content": "Copy content",
       "created": "Created",
       "discard_unsaved_changes": "Discard unsaved changes?",
       "download": "Download",
@@ -4967,6 +5038,7 @@
       "folder_breadcrumb": "Folder breadcrumb",
       "folder_color": "Folder color",
       "from_your_chats": "From your chats",
+      "image_could_not_be_loaded": "Image couldn't be loaded",
       "kind": "Kind",
       "loading": "Loading…",
       "name": "Name",
@@ -4981,10 +5053,10 @@
       "remove_from_library": "Remove from library",
       "rename": "Rename",
       "rename_folder": "Rename folder",
-      "slug": "Slug",
-      "source": "Source",
       "show_all_count": "Show all ({{count}})",
       "show_less": "Show less",
+      "slug": "Slug",
+      "source": "Source",
       "star_a_document_in_from_your_chats_to_save_it_he": "No saved artifacts yet — star a document in \"From your chats\" to save it here.",
       "star_creates_a_starred_artifact_from_this_docume": "Star (creates a starred artifact from this document)",
       "star_document": "Star document",
@@ -4996,7 +5068,8 @@
       "v": "v",
       "ver": "Ver",
       "widgets_files_and_snippets_live_tracked_with_ver": "Widgets, files, and snippets — live-tracked with version history",
-      "your_artifacts": "Your Artifacts"
+      "your_artifacts": "Your Artifacts",
+      "local_preview": "Local preview"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Agent Capabilities"
@@ -5096,6 +5169,7 @@
         "speak": "Speak",
         "speak_message": "Speak message",
         "steered": "Steered",
+        "turn_model": "model: {{model}}",
         "turn_took": "Turn took {{elapsed}}",
         "turn_took_cost": "Turn took {{elapsed}} ({{cost}} API cost)",
         "turn_took_credits": "Turn took {{elapsed}} and used {{credits}} credits",
@@ -5171,17 +5245,17 @@
         "jump_to_this_prompt": "Jump to this prompt"
       },
       "recoveryCard": {
-        "backend_error_continuing": "backend error · continuing automatically",
-        "cancelled_continuing": "cancelled · continuing",
+        "backend_error_continuing": "backend error · continuation sent automatically",
+        "cancelled_continuing": "stalled tool call cancelled · continuation sent automatically",
         "continued_by_you": "Continued at your request",
-        "empty_output_continuing": "empty output · continuing automatically",
+        "empty_output_continuing": "agent returned no output · continuation sent automatically",
         "n_patterns": "{{count}} patterns",
         "n_tool_calls_blocked": "{{count}} tool calls blocked",
         "no_response_returned": "No response returned",
-        "recovered_continuing": "recovered · continuing",
+        "recovered_continuing": "continuation sent automatically",
         "resuming_the_interrupted_turn": "resuming the interrupted turn",
-        "safety_policy_continuing": "safety policy · continuing automatically",
-        "session_busy_continuing": "session busy · continuing automatically",
+        "safety_policy_continuing": "safety policy blocked the call · continuation sent automatically",
+        "session_busy_continuing": "session busy · continuation sent automatically",
         "tool_call_blocked": "Tool call blocked",
         "tool_stopped_responding": "Tool stopped responding",
         "turn_interrupted": "Turn interrupted",
@@ -5202,7 +5276,7 @@
       "sideChat": {
         "ago": "ago",
         "ask_a_side_question": "Ask a side question",
-        "ask_a_side_question_main_agent_keeps_working": "Ask a side question — main agent keeps working",
+        "ask_a_side_question_main_agent_keeps_working": "Start a side conversation without interrupting the active run.",
         "context_from": "Context from",
         "refresh_context": "Refresh context",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
@@ -5215,6 +5289,8 @@
       "sidePanel": {
         "close_panel": "Close panel",
         "close_tab": "Close tab",
+        "menu_git": "Git",
+        "menu_git_desc": "Branch, changes, and recent commits",
         "move_to_bottom_panel": "Move to bottom panel",
         "open_in_editor": "Open in Editor",
         "open_side_panel_tab": "Open side panel tab",
@@ -5368,8 +5444,8 @@
       "clean_agent_only_no_kirocrew_context_or_mcp": "Clean — agent-only, no Kiro Crew context or MCP",
       "clean_up_sessions": "Clean up sessions",
       "clean_up_sessions_2": "Clean Up Sessions",
-      "clear": "Clear",
-      "clear_closed_sessions_active_tabs_and_pinned_ses": "Clear closed sessions? Active tabs and pinned sessions will be kept.",
+      "clear": "Delete all",
+      "clear_closed_sessions_active_tabs_and_pinned_ses": "Permanently delete all closed sessions? This cannot be undone. Active tabs and pinned sessions are kept.",
       "clear_filter": "Clear filter",
       "clear_search": "Clear search",
       "close": "Close",
@@ -5416,7 +5492,9 @@
       "more_options": "More options",
       "move_folder_to": "Move folder to",
       "needs_approval": "Needs approval",
+      "needs_your_answer": "Needs your answer",
       "new_autopilot_chat": "New autopilot chat",
+      "new_crew_chat": "New Crew Mode chat",
       "new_chat_in_folder": "New chat in folder",
       "new_chat_in_name": "New chat in {{name}}",
       "new_chat_session": "New chat session",
@@ -5458,7 +5536,11 @@
       "temporary_no_memory_reads_or_writes": "Temporary — no memory reads or writes",
       "untagged": "+ untagged",
       "will_be_moved_to_older_sessions": "will be moved to older sessions.",
-      "within": "Within"
+      "within": "Within",
+      "crew_mode": "Crew Mode — topics run in parallel sub-sessions",
+      "crew": "Crew",
+      "autopilot_desc": "One job, done in steps — it plans first, you approve, then it runs stage by stage.",
+      "crew_desc": "Several jobs at once — each topic runs in its own sub-session and answers when it lands."
     },
     "contextBreakdown": {
       "axis_bar": "bar length ∝ √chars · segments = that turn's composition",
@@ -5579,11 +5661,9 @@
       "worktrees_created_under_a_previous_repository_na": "Worktrees created under a previous repository name. Hidden by default; still covered by Prune merged."
     },
     "developer": {
-      "previewSurfacesCard": {
+      "featurePreviewsTab": {
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",
-        "preview_surfaces": "Preview pages",
-        "unreleased_pages_hidden_from_the_sidebar_and_fro": "Unreleased pages, hidden from the sidebar and from Search Everywhere until you turn them on here. Per-device, and unpolished on purpose.",
         "webhooks": "Webhooks"
       }
     },
@@ -5817,7 +5897,7 @@
         "skip": "Skip",
         "source_name": "Source name",
         "source_name_optional": "Source name (optional)",
-        "supports_markdown_plain_text_code_files_html_jso": "Supports: Markdown, plain text, code files, HTML, JSON, YAML, CSV, DOCX, PDF. Max 50 MB per file.",
+        "supports_markdown_plain_text_code_files_html_jso": "Supports: Markdown, plain text, code files, HTML, JSON, YAML, CSV, DOCX, Org Mode, PDF. Max 50 MB per file.",
         "sync": "Sync",
         "sync_source": "Sync source",
         "type_new_to_create": "Type new to create",
@@ -5832,7 +5912,7 @@
       "by_category": "By Category",
       "clear": "Clear",
       "clear_old_caches": "Clear Old Caches",
-      "delete_cached_scroll_positions_from_old_sessions": "Delete cached scroll positions from old sessions (safe — rebuilds automatically)",
+      "delete_cached_scroll_positions_from_old_sessions": "Delete cached row heights and saved reading positions from old sessions (safe — rebuilt as you scroll)",
       "delete_key": "Delete key",
       "export": "Export",
       "export_json": "Export JSON",
@@ -6029,6 +6109,7 @@
         "globals": "Globals",
         "kiro": "Kiro",
         "kirocrew": "Kiro Crew",
+        "last_probed": "Last probed",
         "name": "Name",
         "no_matching_servers": "No matching servers",
         "no_mcp_servers_configured": "No MCP servers configured",
@@ -6036,10 +6117,12 @@
         "pending_change_other": "{{count}} pending changes",
         "probe_mcp_servers": "Probe MCP servers",
         "status": "Status",
+        "tool_list_read_from_the_package_s_declaration_th": "Tool list read from the package's declaration; the server was not spawned to verify it starts.",
         "tools": "Tools",
         "tools_2": "tools",
         "undo": "Undo",
-        "uninstall": "Uninstall"
+        "uninstall": "Uninstall",
+        "declared": "Declared"
       },
       "memoryGraphTab": {
         "loading_graph_data": "Loading graph data…",
@@ -6138,7 +6221,7 @@
         "filter_skills": "Filter skills…",
         "inject_full_content_on_match": "Inject full content on match",
         "injection_off_help": "Only a one-line pointer is added. The agent reads the file if it decides the skill applies, so following it is the agent's choice.",
-        "injection_on_help": "The whole SKILL.md is added every time a trigger matches. Keep this on for a procedure that must be followed whenever its topic comes up.",
+        "injection_on_help": "When a skill trigger matches, the full SKILL.md is added to the prompt. Keep this on when the complete procedure should be included for every matching topic.",
         "injection_update_failed": "Could not update this skill. Try again.",
         "loaded_by": "Loaded by",
         "no_skills_installed": "No skills installed",
@@ -6502,6 +6585,7 @@
       "select_an_archive_to_view_its_contents": "Select an archive to view its contents.",
       "no_archives_with_compaction_hint": "No archives. Archives are created when session files are rotated (>2MB) or compacted. Auto-compaction is controlled by <settingRef/>."
     },
+    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "Older than {{days}} days — {{count}} session · {{size}}",
       "age_option_other": "Older than {{days}} days — {{count}} sessions · {{size}}",
@@ -6511,7 +6595,7 @@
       "background_truncated_sweep": "Showing the {{listed}} largest of {{total}}. Reclaim the rest by age above.",
       "bulk_selected": "{{count}} selected",
       "cancel": "Cancel",
-      "cannot_delete_resumable": "This session can still be resumed, so it is kept. Reclaiming it is not offered yet.",
+      "cannot_delete_resumable": "Storage cleanup is unavailable while this session remains recoverable.",
       "cannot_delete_running": "A turn is running in this session right now, so it cannot be moved to the Trash.",
       "clear_selection": "Clear",
       "confirm_delete_forever": "Delete forever",
@@ -6590,8 +6674,6 @@
       "session_task": "Session / Task",
       "shared": "shared",
       "turns": "Turns",
-      "unattributed": "Unattributed",
-      "unattributed_hint": "Agent runtimes alive on this machine that this gateway does not own — a stale runtime from a previous gateway generation, or a running pod (a separate gateway with its own data home).",
       "uptime": "Uptime"
     },
     "settings": {
@@ -6652,34 +6734,24 @@
         "session_folder_name_desc": "Created for you when you save these settings, if it does not exist yet."
       },
       "browserPanel": {
-        "attach_to_my_browser": "Attach to my browser",
-        "attach_to_my_running_browser": "Attach to my running browser",
-        "attach_uses_your_real_tabs_and_logins": "Attach mode drives your real browser tabs and their existing logins, not a fresh profile.",
-        "browser_engine": "Browser Engine",
-        "browser_mode": "Browser Mode",
-        "browser_not_installed_retry": "The browser tools are not installed yet. Toggle Browser Mode off and on to retry the download.",
-        "cannot_load_browser_config_is_the_gateway_runnin": "Cannot load browser config. Is the gateway running?",
-        "connect_your_browser": "Connect Your Browser",
-        "connection_token_optional": "Connection Token (optional)",
-        "enable_browser_mode": "Enable Browser Mode",
-        "engine_chromium": "Chromium",
-        "engine_firefox": "Firefox",
-        "engine_webkit": "WebKit (Safari engine)",
-        "firefox_webkit_run_playwrights_own_build": "Firefox and WebKit run Playwright's own browser build, not your installed Firefox or Safari, and without your logins.",
-        "headless_mode_active_browser_uses_cookie_injecti": "Headless mode active. The agent drives a separate browser that Kiro Crew launches.",
-        "let_the_agent_read_and_operate_web_pages": "Let the agent read and operate web pages: click, type, and navigate, not just read. Enabling this downloads the browser tools.",
-        "loading_browser_config": "Loading browser config...",
-        "optional_paste_token_to_skip_approval": "Optional: paste the token from the extension to skip the per-connection approval prompt.",
-        "paste_playwright_mcp_extension_token_value_from": "Paste PLAYWRIGHT_MCP_EXTENSION_TOKEN value from the extension popup",
-        "paste_token_here": "Paste token here...",
-        "pick_the_browser_the_agent_launches": "Pick the browser the agent launches.",
-        "playwright_extension_chromium_browsers": "Playwright Extension (Chrome, Edge, Brave, Arc, Opera)",
-        "saved_and_applied_sessions_restarted": "Saved and applied. Sessions restarted.",
-        "setting_up_the_browser_this_can_take_a_minute": "Setting up the browser. This can take a minute the first time.",
-        "step1_install_the_playwright_extension": "Step 1. Install the Playwright Extension for your browser.",
-        "step2_pick_the_tab_when_the_agent_connects": "Step 2. When the agent connects, pick the browser tab it should drive.",
-        "switch_to_headless_mode_this_will_remove_the_sav": "Switch to headless mode? This will remove the saved extension token.",
-        "use_my_chromium_browser_with_existing_logins": "Use my running Chromium browser (Chrome, Edge, Brave, Arc, Opera) with its existing logins and sessions. Recommended for macOS."
+        "browsing": "Browsing",
+        "cannot_load": "Cannot load browser status. Is the gateway running?",
+        "available": "The agent can browse web pages.",
+        "presence_is_consent": "Browsing is available because the Playwright CLI is installed. Removing it is what takes the capability away.",
+        "not_installed": "The agent cannot browse yet.",
+        "install_explains": "Installing the Playwright CLI lets the agent open pages, read them, and fill forms. You can watch and take over from the Browser panel.",
+        "install": "Install Playwright CLI",
+        "installing": "Installing...",
+        "install_takes_a_while": "This downloads a browser, so it can take a few minutes. You can leave this page.",
+        "needs_node": "Needs Node.js 20 or newer to install (found {{version}}).",
+        "attach_needs_extension": "To browse with your own logged-in Chrome, install the Playwright extension in that browser.",
+        "get_the_extension": "Get the extension",
+        "token_label": "Extension token (optional)",
+        "token_placeholder": "Paste from the extension",
+        "token_set": "Saved",
+        "token_save": "Save",
+        "token_clear": "Clear",
+        "token_explains": "Without a token the browser asks you to approve each attach. With one, it connects silently. Copy it from the Playwright extension in your browser."
       },
       "channelDisabledPanel": {
         "checking_your_organization_s_channel_policy": "Checking your organization's channel policy…",
@@ -6699,6 +6771,7 @@
         "auto_add_saved_artifacts": "Auto-Add Saved Artifacts",
         "auto_compact_threshold": "Auto-Compact Threshold",
         "auto_ingest_limit_per_scan": "Auto-Ingest Limit Per Scan",
+        "auto_open_git_panel": "Auto-Open Git in Side Panel",
         "auto_register_project_documents": "Auto-Register Project Documents",
         "combine_follow_up_messages_into_a_single_labeled": "Combine follow-up messages into a single labeled prompt while the agent is busy",
         "compact_is_the_original_view_comfortable_and_ful": "Compact is the original view. Comfortable and Full use more screen space.",
@@ -6711,7 +6784,7 @@
         "content_width": "Content Width",
         "context": "Context",
         "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
-        "default_defers_to_your_agent_config_and_then_to": "Fallback only: an agent with its own model set ignores this. 'Default' defers to your agent config, and then to Kiro's own default. Changing this does not affect sessions that are already open.",
+        "default_defers_to_your_agent_config_and_then_to": "Fallback only: agents with a configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
         "default_model": "Fallback Model",
         "default_normal_length": "Default — normal length",
         "default_reasoning_effort": "Default Reasoning Effort",
@@ -6719,8 +6792,10 @@
         "describe_your_role": "Describe your role",
         "display_time_on_each_message": "Display time on each message",
         "display_usage_percentage_next_to_the_context_pro": "Display usage percentage next to the context progress bar",
+        "display_used_and_total_tokens_next_to_the_contex": "Display used and total tokens next to the context progress bar",
         "e_g_solutions_architect_sre_founder": "e.g. solutions architect, SRE, founder",
         "expand_history_sidebar_by_default": "Expand history sidebar by default",
+        "expand_the_side_panel_to_the_git_tab_each_time_yo": "Expand the side panel to the Git tab each time you start a chat in a git project. The Git tab is created either way.",
         "failed_to_load_config": "Failed to load config.",
         "failed_to_load_dashboard_config": "Failed to load dashboard config.",
         "feature_tips": "Feature Tips",
@@ -6738,9 +6813,9 @@
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace.",
         "keep_your_computer_awake_while_a_task_is_running": "Keep your computer awake while a task is running",
         "kiro_matches_vocabulary_and_examples_to_your_pro": "Kiro matches vocabulary and examples to your professional background",
-        "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro quotes this back to itself when calibrating vocabulary and examples.",
+        "kiro_quotes_this_back_to_itself_when_calibrating": "Kiro uses this description to adapt vocabulary and examples to your role.",
         "knowledge_library": "Knowledge Library",
-        "let_the_agent_add_documents_it_reads_while_workin": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. It reads them with its own tools under your approval — Kiro Crew fetches nothing itself. Added documents appear in one “Auto-added” source you can remove in a click.",
+        "let_the_agent_add_documents_it_reads_while_workin": "Let the agent add documents it reads while working to your knowledge library, so they stay searchable later. The agent reads documents with tools you approve; Kiro Crew does not fetch them directly. Added documents appear in one “Auto-added” source you can remove in a click.",
         "link_previews": "Link Previews",
         "mcp_apps_in_side_panel": "MCP Apps in Side Panel",
         "merge_queued_messages": "Merge Queued Messages",
@@ -6772,6 +6847,7 @@
         "show_intermediate_reasoning_text_between_tool_ca": "Show intermediate reasoning text between tool calls instead of collapsing everything",
         "show_thinking_inline": "Show Thinking Inline",
         "show_timestamps": "Show Timestamps",
+        "show_token_usage": "Show Context Tokens",
         "simplified_tool_call_names": "Simplified Tool Call Names",
         "soft_stop_budget_seconds": "Soft-stop budget (seconds)",
         "split_view_session_grid": "Split View (Session Grid)",
@@ -6808,8 +6884,11 @@
       "developerPanel": {
         "developer_mode": "Developer Mode",
         "developer_tools": "Developer Tools",
+        "gateway": "Gateway",
         "open_developer_page": "Open Developer page",
-        "show_developer_page_in_sidebar_with_logs_system": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
+        "run_a_local_gateway": "Run a local gateway",
+        "show_developer_page_in_sidebar_with_logs_system": "Show Developer page in sidebar with Logs, System metrics, and Memory internals",
+        "start_a_gateway_on_this_machine_turn_it_off_to_u": "Start a gateway on this machine. Turn it off to use Kiro Crew as a client only, connecting to the gateway you have configured instead of running one here. Takes effect next time you open the app."
       },
       "displayPanel": {
         "applying": "Applying…",
@@ -6842,7 +6921,10 @@
         "theme": "Theme",
         "theme_source": "Theme source",
         "theme_source_location": "Theme source location",
-        "ui_font_family_for_the_dashboard": "UI font family for the dashboard",
+        "theme_styles_ignored_body": "They use CSS that themes aren't allowed to change, so Kiro Crew skipped them. If you made this theme, declare fonts in theme.json's fonts list and keep other rules on the allowed surfaces, then install it again.",
+        "theme_styles_ignored_link": "Theming guide",
+        "theme_styles_ignored_title": "Some of this theme's styles were ignored",
+        "ui_font_family_for_the_dashboard_code_font_follo": "UI font family for the dashboard. Code font follows the active theme.",
         "use_your_browser_s_zoom_your_browser_remembers_i": "Use your browser's zoom. Your browser remembers it for this site.",
         "view": "View",
         "zoom_font": "Zoom & Font",
@@ -6916,17 +6998,6 @@
         "up_to": "Up to",
         "use_an_absolute_path_no": ").\n            Use an absolute path (no",
         "enable_via_setting": "Alternatively, set <settingRef/>, then run <restartCmd/>."
-      },
-      "mcpPoolableServers": {
-        "blocked": "blocked",
-        "could_not_load_mcp_servers": "Could not load MCP servers.",
-        "loading_mcp_servers": "Loading MCP servers…",
-        "no_mcp_servers_configured": "No MCP servers configured.",
-        "poolable_mcp_servers": "Poolable MCP servers",
-        "poolable_true": "poolable:true",
-        "pooling_takes_effect_when_the_shared_mcp_gateway": "Pooling takes effect when the shared MCP gateway is enabled. You can pre-configure which\n            servers are poolable here either way.",
-        "shared": "· shared",
-        "used_by": "used by"
       },
       "notificationsPanel": {
         "app": "app",
@@ -7010,27 +7081,6 @@
         "tool_approval": "Tool Approval",
         "your_custom_denies": "Your custom denies"
       },
-      "sharedMcpGatewayToggle": {
-        "cancel": "Cancel",
-        "close": "Close",
-        "continue": "Continue",
-        "mcp_apps": "MCP Apps",
-        "mcp_apps_applies_to_new": "Saved. Applies to new MCP connections; ones already running pick it up when they recycle.",
-        "mcp_apps_gateway_started": "Shared MCP gateway started. Active sessions were restarted with MCP Apps on.",
-        "mcp_apps_no_poolable_servers": "No MCP servers are poolable yet, so nothing can render. Enable at least one under Poolable MCP servers below.",
-        "mcp_apps_saved_unsupported": "Saved. MCP Apps needs the shared MCP gateway, which is not available on this platform.",
-        "mcp_apps_retry_gateway": "Retry starting the gateway",
-        "mcp_apps_capability": "Render interactive UI from MCP servers in chat.",
-        "mcp_apps_failed": "Could not apply. The setting was not changed.",
-        "mcp_apps_needs_gateway": "Takes effect once the shared MCP gateway above is on.",
-        "mcp_apps_will_start_gateway": "Turning this on also starts the shared MCP gateway, which restarts active sessions.",
-        "mcp_apps_starting_gateway": "Starting the shared MCP gateway — active sessions will restart…",
-        "mcp_apps_gateway_follow_failed": "MCP Apps is saved, but the shared MCP gateway did not come up. Toggle the shared MCP gateway off and on above to retry.",
-        "not_available_on_windows": "Not available on Windows — the shared gateway needs Unix-domain sockets. Supported on macOS and Linux.",
-        "roll_back_disable": "Roll back (disable)",
-        "shared_mcp_gateway": "Shared MCP gateway",
-        "this_restarts_all_active_sessions_onto_the_new_m": "This restarts all active sessions onto the new MCP routing — in-flight work will be interrupted. Your dashboard stays signed in. Continue?"
-      },
       "shortcutsPanel": {
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Bind chat-tab switching to Ctrl+digit instead of Option+digit",
         "enable_shortcuts": "Enable shortcuts",
@@ -7100,15 +7150,17 @@
         "model": "Model",
         "not_installed": "not installed",
         "provider": "Provider",
-        "pull_docker_image": "Pull Docker Image",
         "ready": "ready",
         "run_these_commands_in_your_terminal_first": "Run these commands in your terminal first:",
-        "runtime": "Runtime",
         "show_an_animated_panel_while_recording_instead_of": "Show an animated panel while recording instead of the thin status bar. Falls back to the bar when the browser lacks WebGL2 or your system requests reduced motion.",
         "status": "Status",
         "stream_live_partial_transcripts_into_the_input_b": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
         "streaming": "Streaming",
         "then_click_install_below": "Then click Install below.",
+        "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg is missing — voice recordings from the browser cannot be transcribed until it is installed.",
+        "then_restart_the_gateway_so_it_can_import_the_ne": "Then restart the gateway (Settings → About → Restart gateway) so it can import the new packages.",
+        "the_desktop_app_can_t_add_transcribe_support_ins": "The desktop app can't add Transcribe support — its bundled Python can't install extra packages. Install Kiro Crew with pip and run the gateway from that environment instead.",
+        "this_gateway_s_python_can_t_install_extra_packag": "This gateway's Python can't install extra packages, so Transcribe can't be enabled here. Run the gateway from a Python environment where pip can install kirocrew[voice].",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcribe voice into the message box when you click the mic",
         "us_east_1": "us-east-1",
         "whisper_and_mlx_run_locally_transcribe_calls_aws": "Whisper, MLX and Apple Speech run locally; Transcribe calls AWS",
@@ -7309,7 +7361,6 @@
         "delete": "Delete…",
         "deleting": "Deleting…",
         "delete_crew": "Delete {{name}}",
-        "confirm_delete": "Confirm delete",
         "confirm_delete_of": "Confirm deleting {{name}}",
         "delete_warning": "Delete terminates the EC2 instance and ends its charges. This cannot be undone.",
         "before_you_start": "Before you start — your AWS setup",
@@ -7357,14 +7408,29 @@
         "launch_done": "Done — your new crew is ready and now appears in Your crews.",
         "runs_on_gateway": "This runs on the gateway, not in this tab — leave the page or switch crews and it keeps going. Keep Kiro Crew running until it finishes.",
         "unverified_cloud_note": "Kiro Crew cannot verify whether this machine has AWS resources",
-        "confirm_remove": "Confirm remove",
         "remove_warning": "Remove only takes it off this list. If this is a cloud crew, its EC2 instance keeps running and billing — delete it from the AWS console.",
         "checking_against": "Checked against profile {{profile}} in {{region}}.",
         "no_profile_set": "none set (AWS CLI default)",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB disk",
         "start": "Start",
         "start_crew": "Start {{name}}",
-        "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew."
+        "sign_in_unconfirmed": "We could not confirm the sign-in. The code below may still work — finish it here, then connect the crew.",
+        "more_actions": "More actions for {{name}}",
+        "edit_settings": "Edit settings",
+        "edit_crew": "Edit {{name}}",
+        "save_changes": "Save changes",
+        "saving": "Saving…",
+        "failed_to_save_crew": "Could not save this crew",
+        "edit_reconnect_note": "Changing the host, port, or connection method closes the current tunnel. Reconnect when you are ready.",
+        "remove": "Remove…",
+        "transport_locked_note": "Kiro Crew matches this crew to its AWS resources through its connection identity, so the connection method and target cannot be changed here.",
+        "port_must_be_in_range": "Enter a port between 1 and 65535.",
+        "ttl_must_be_hours_or_minutes": "Enter a lifetime like 20h or 30m.",
+        "finish_open_edit_first": "Save or cancel the open edit before editing another crew.",
+        "stopping": "Stopping…",
+        "starting": "Starting…",
+        "changed_outside_this_form": "This crew changed outside this form ({{fields}}). Check the row above — if it is not the crew you started editing, cancel.",
+        "use_my_edits_anyway": "Apply my edits to the crew as it is now"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Inbound webhooks",
@@ -7444,6 +7510,7 @@
       "per_turn_col": "Per turn",
       "phase_col": "Phase",
       "priciest_turn": "Priciest turn",
+      "prior_credits_turns": "credits {{credits}} · turns {{turns}}",
       "profile_scaled_per_row": "Log scale, each profile against its own min–max — the bar shows that instrument’s tail, not its size against the others",
       "range_bar_label": "min {{min}}, p50 {{p50}}, p90 {{p90}}, max {{max}}",
       "sample_count": "n={{count}}",
@@ -7474,6 +7541,8 @@
       "turns_col": "Turns",
       "turns_measured_one": "{{n}} turn measured",
       "turns_measured_other": "{{n}} turns measured",
+      "turns_to_compaction_one": "{{n}} turn",
+      "turns_to_compaction_other": "{{n}} turns",
       "untitled_conversation_on": "Untitled · {{date}}",
       "used_tokens_col": "Used (tokens)",
       "vs_previous_period": "vs previous period",
@@ -7734,8 +7803,7 @@
       "present": "present,",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
-    },
-    "sessionMemoryCard": {}
+    }
   },
   "settings": {
     "tabs": {

@@ -169,7 +169,16 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
   if (value === null) return <span className="text-muted">{i18nT('components.fileRenderers.null')}</span>
   if (typeof value === 'boolean') return <span className="text-ok">{String(value)}</span>
   if (typeof value === 'number') return <span className="text-accent">{value}</span>
-  if (typeof value === 'string') return <span className="text-warning">"{value.length > 200 ? value.slice(0, 200) + '…' : value}"</span>
+  // JSON.stringify restores the escapes JSON.parse consumed (\" \\ \n …), so a
+  // string holding embedded JSON (an SNS Message, an SQS body) renders as valid
+  // JSON source instead of masquerading as unescaped nested JSON — which reads
+  // as a corrupt file. Truncate the RAW value before stringifying so the slice
+  // can never cut an escape sequence in half, and keep the ellipsis OUTSIDE the
+  // quotes so a truncated leaf never reads as the faithful full value.
+  if (typeof value === 'string') {
+    const truncated = value.length > 200
+    return <span className="text-warning">{JSON.stringify(truncated ? value.slice(0, 200) : value)}{truncated && '…'}</span>
+  }
 
   const isArr = Array.isArray(value)
   const entries = isArr ? (value as unknown[]).map((v, i) => [i, v] as const) : Object.entries(value as Record<string, unknown>)
@@ -184,7 +193,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
         <div style={{ paddingLeft: 16 }}>
           {entries.slice(0, 200).map(([k, v]) => (
             <div key={String(k)}>
-              {!isArr && <span className="text-accent">"{String(k)}"</span>}
+              {!isArr && <span className="text-accent">{JSON.stringify(String(k))}</span>}
               {!isArr && <span className="text-muted">: </span>}
               <JsonNode value={v} depth={depth + 1} />
             </div>

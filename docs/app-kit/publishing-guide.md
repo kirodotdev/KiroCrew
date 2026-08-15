@@ -94,10 +94,21 @@ Path form depends on distribution: a registry app uses a repo-relative path
 
 | Field | Rendered where | Aspect |
 |-------|----------------|--------|
-| `iconPath` | Card and row icon, and the gradient fallback's centerpiece | Square PNG with transparency; 256x256 or larger |
+| `iconPath` / `iconPathDark` | Card and row icon, the sidebar glyph, and the gradient fallback's centerpiece | Square, **512x512**, **opaque** — no transparency. The dark variant is optional |
 | `screenshots` / `screenshotsDark` | Detail-page gallery with a lightbox; the first screenshot is also the last-resort hero | Landscape; around 1200px wide |
 | `heroImage` / `heroImageDark` | Discover rows, Library rows, the featured spotlight, feature cards, and the detail banner when no detail-specific art exists | 16:9 (for example 1200x675) |
 | `heroImageDetail` / `heroImageDetailDark` | Detail-page banner only, preferred there over `heroImage` | 25:6 (for example 1200x288) |
+
+The required icon must be **opaque**. An opaque tile carries its own
+background, so it reads correctly on any surface — which is what makes
+`iconPathDark` genuinely optional rather than a latent bug. A transparent icon
+that looks right on light chrome turns into a dark smear on dark chrome, and an
+app that then omits the dark variant ships a broken card.
+
+Built-in first-party apps take a different path: their icon is an SVG under
+`/app-assets/`, inlined and painted from the theme's `--ico-a` / `--ico-b`
+tokens, so a single file covers both appearances and no dark variant exists.
+Raster art cannot repaint, which is the whole reason the variant field is here.
 
 Ship hero art. Every store surface uses it, and it is the difference between
 looking like a product and looking like a list entry.
@@ -356,7 +367,7 @@ Listing an app there means opening a pull request.
 | `name` | yes | Must match `app.json`'s `name`. |
 | `gitUrl` | yes | Any git-cloneable URL (`https://github.com/...`, `git@host:...`). The legacy `repo` field is still read and used as the clone target when no `gitUrl` is present. |
 | `repo` | | Repo identifier the blob proxy uses to serve committed images. |
-| `branch` | | Branch to read and clone. Defaults to `main`. |
+| `branch` | | Branch to read and clone. Defaults to `main`. For an entry cloning the registry repo itself (the monorepo layout), the registry's **configured** branch overrides this declaration — the index was read from that branch, so a divergent declaration names a state that does not exist there; the divergence is warning-logged. Entries cloning a different repository keep their declared branch. |
 | `subdirectory` | | Path within the repo holding `app.json`, for a monorepo layout. Treated as untrusted: it is joined with symlink-resolving containment and rejected if it escapes the clone root. |
 | `resources` | | `"gateway"` (default) or `"app"`: who registers agents, skills, MCP servers, and crons. |
 | `lifecycle` | | `"gateway"` (default), `"app"`, or `"locked"`: who owns updates and uninstall. |

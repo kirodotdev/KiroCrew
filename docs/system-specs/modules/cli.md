@@ -4,6 +4,27 @@
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
+## Import Weight Contract
+
+`cli.py` is the shared dispatcher for every subcommand — including the
+long-lived MCP stdio servers (`kirocrew mcp-core` / `mcp-cron` /
+`mcp-computer`), which hold its module-scope imports resident for their whole
+lifetime. Its module scope therefore stays light: `cli_commands`,
+`cli_server` (which pulls `slack.gateway`) and `dashboard.state` (which pulls
+`vector_memory` → `numpy`) are imported inside the one `main()` dispatch
+branch that uses each name, never at module scope. Deferring them cuts a
+fresh `import kiro_crew.cli` from ~1.3 s / ~112 MB to ~0.5 s / ~54 MB, paid
+per CLI invocation and per MCP backend process.
+`test/test_cli_lazy_imports.py` ratchets the contract: after
+`import kiro_crew.cli` in a fresh interpreter, none of those modules may be
+present in `sys.modules`, and every deferred dispatch import must resolve.
+
+The entry point itself is not negotiable: all invocation forms
+(`kirocrew <sub>`, `python -m kiro_crew <sub>`, and the frozen desktop
+binary) land in `cli.main()`, whose prelude runs `boot_platform()`
+(fail-closed for non-standalone profiles), sandbox env hygiene, and
+`KIROCREW_PROJECT_DIR` resolution before any dispatch.
+
 ## Source Checkout Launcher
 
 The POSIX wrapper at `bin/kirocrew` resolves symlinks to find the real checkout,
@@ -522,16 +543,31 @@ Each step checks if the tool is already installed and skips if present.
 ## Client Port Resolution
 
 `kirocrew token` / `status` / `logout` / `stop` / `restart` must find the port
-the gateway is actually bound to. `cli_server.resolve_client_port()` resolves it
-in this order, first hit wins:
+the gateway is actually bound to. `port_resolution.resolve_client_port()`
+(re-exported by `cli_server`) resolves it
+in this order, first hit wins. The MCP stdio servers (`mcp_core` /
+`mcp_computer`) resolve their gateway API base through the same helper —
+lazily, on the first gateway call, and cached for the process lifetime — so a
+loopback callback and a client CLI command always agree on which gateway they
+are talking to:
 
 1. An explicit `--port N` flag (`0` counts — the check is `is not None`).
-2. `KIROCREW_PORT`, when it parses as an int.
-3. A port **explicitly written** in `dashboard.url`. A portless URL
+2. `KIROCREW_PORT`, when it parses as an int. Deliberately above the bound
+   export: an explicitly-set `KIROCREW_PORT` is how a caller retargets a
+   child at a DIFFERENT gateway — `pod exec` builds a client env with
+   `KIROCREW_PORT=<pod-port>` while the inherited `KIROCREW_BOUND_PORT`
+   still names the spawning live gateway, and the bound value outranking it
+   would walk pod `token`/`status`/`logout` into the live plane.
+   (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright.)
+3. `KIROCREW_BOUND_PORT`, when it parses as an int — the port the parent
+   gateway actually bound, exported once its TCP site is listening
+   (`dashboard.server._export_bound_port`). Never persisted —
+   `service_environment()` deliberately does not capture it.
+4. A port **explicitly written** in `dashboard.url`. A portless URL
    (`http://my.host`) is *not* a port choice: `parse_dashboard_url()`
    substitutes `5476` for the server's benefit, so the client re-splits the URL
    and only accepts the port when it was actually named.
-4. The sole **gateway-owned run-marker**. A running gateway records
+5. The sole **gateway-owned run-marker**. A running gateway records
    `<data-home>/run/gateway-<port>.bin` (see
    `kiro_crew.instances.run_marker`, written for the SSH token-mint), so its
    filename already advertises the port. A client with nothing configured reads
@@ -572,9 +608,9 @@ in this order, first hit wins:
    - **Ambiguity** — with several gateways up there is no basis to pick one, so
      the step refuses, prints the candidate ports and the `--port` /
      `KIROCREW_PORT` hint to stderr, and falls through.
-5. `_DEFAULT_PORT` (`5476`).
+6. `_DEFAULT_PORT` (`5476`).
 
-Step 4 is what makes a single gateway started on a non-default port
+Steps 3 and 5 are what make a single gateway started on a non-default port
 (`kirocrew gateway --port 6776`) reachable from a bare `kirocrew token` with
 zero configuration; before it existed, the client hit a dead 5476 while the
 marker naming the live gateway sat unread. Config-load, URL-parse (including a
@@ -719,6 +755,36 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     the baked `Environment=` lines, so editing it and running `sudo systemctl
     restart kirocrew` changes a value (e.g. the port) without reinstalling.
     Uninstall removes the file and its `/etc/kirocrew` directory.
+  - **Credentials are deliberately NOT captured.** Both baked locations are
+    world-readable — the unit lives in root-owned `/etc/systemd/system` and the
+    override file is installed `0644` — so a model credential placed there
+    would be readable by every local user on the host. `service_environment()`
+    therefore carries no credential — its only installer-derived values are
+    `PATH`, `KIROCREW_KIRO_BIN` and `KIROCREW_PORT` (it also returns `HOME`,
+    `LANG` and `LC_ALL`) — and a test pins the absence so a future "just
+    propagate it" change fails.
+    Consequence: a `KIRO_API_KEY` exported in the installing shell does not
+    reach the service, the readiness probe (which forwards that variable from
+    the *gateway's own* environment) sees no credential, and unless a
+    `kiro-cli login` credential store under the baked `HOME` supplies one
+    instead, the dashboard reports a signed-out state on a host where `kiro-cli`
+    itself is authenticated. `install_service()` prints a warning naming the
+    variable and the remedy when it detects that case, and `~/.kiro/crew/.env`
+    is the supported home — `load_credentials()` reads every key from that file
+    into the gateway environment at boot and forces `0600` on it first. The
+    warning is diagnostic only: it is non-fatal by construction, since the unit
+    is already written and started by the time it runs. `kirocrew doctor` reports
+    the same condition next to its `kiro login` line — the one output where the
+    contradiction is visible, since that line runs `whoami` with the inherited
+    environment and reports signed in. Doctor's report is gated on a service
+    definition existing (`installed_unit_path()`): without one the gateway runs
+    in the foreground and inherits the invoking shell, so the credential does
+    reach it and a warning would be a false positive. It is **advisory only** —
+    never appended to doctor's `issues`, which is the exit-code channel — since
+    that gate establishes a definition on disk, not that the serving gateway
+    lacks a credential; a fall-back login store, or a stopped unit beside a
+    foreground `kirocrew gateway`, both leave the host healthy while the check
+    fires.
   - Boot survival via `WantedBy=multi-user.target` (no linger needed —
     that's a user-service concept; this is system-level).
   - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
@@ -745,7 +811,11 @@ source is most appropriate:
 1. systemd journal if the system service is installed on Linux. Tries
    unprivileged `journalctl` first; falls back to `sudo journalctl`
    only if the unprivileged probe returns no rows.
-2. launchd stdout file if a plist exists on macOS
+2. launchd stdout file if a plist exists on macOS and that file is
+   non-empty. Both conditions matter: the platform probe reports launchd
+   on any macOS host, and an install that never started the agent leaves
+   a 0-byte log behind, so either check alone would capture the command
+   and tail nothing.
 3. `~/.kiro/crew/gateway.log` for foreground gateways
 
 Uses `os.execvp` so signals (Ctrl+C) propagate naturally to the

@@ -68,4 +68,31 @@ describe('deriveFollowUpOptions', () => {
     const msgs = [user('go'), assistant(OPTIONS_MSG), compactionLive(), queued]
     expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual([])
   })
+
+  // An `ask_question` card and the pills would otherwise offer the same choices
+  // at once, in the same band above the composer. Only the card can answer the
+  // blocked tool call, so the pills yield to it.
+  it('returns no options while a question card is pending', () => {
+    const msgs = [user('go'), assistant(OPTIONS_MSG)]
+    expect(deriveFollowUpOptions(msgs, false, true).followUpOptions).toEqual([])
+  })
+
+  it('restores options once the pending question resolves', () => {
+    const msgs = [user('go'), assistant(OPTIONS_MSG)]
+    expect(deriveFollowUpOptions(msgs, false, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
+  // Surfaces that never mount a card omit the argument; suppressing there would
+  // leave them with no way to answer.
+  it('offers options when the pending flag is omitted', () => {
+    const msgs = [user('go'), assistant(OPTIONS_MSG)]
+    expect(deriveFollowUpOptions(msgs, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
+  it('suppresses the plan flag along with the options while a card is pending', () => {
+    const plan = assistant('📋 Plan for: ship it\nStage 1: build\n[OPTIONS: Approve | Revise]')
+    const derived = deriveFollowUpOptions([user('go'), plan], false, true)
+    expect(derived.followUpOptions).toEqual([])
+    expect(derived.followUpIsPlan).toBe(false)
+  })
 })

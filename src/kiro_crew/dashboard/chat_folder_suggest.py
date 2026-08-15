@@ -31,7 +31,7 @@ from typing import Any
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ def _folder_sample_titles(state: DashboardState) -> dict[str, list[str]]:
         # A temporary session CAN be filed (api_chat_slot_folder does not gate on
         # memory_mode, and the folder id is persisted to its metadata line), so
         # the folder filter below is not enough on its own.
-        if str(session.get("memory_mode") or "persistent") in INCOGNITO_MEMORY_MODES:
+        if is_incognito_transcript(session.get("memory_mode")):
             continue
         fid = str(session.get("folder_id") or "")
         if not fid:
@@ -145,7 +145,7 @@ def _live_slot_titles(state: DashboardState, exclude_key: str) -> dict[str, list
             continue
         # Same privacy rule as the archived scan: a LIVE temporary/incognito slot
         # can be filed too, and its title must not reach the prompt either.
-        if slot.memory_mode in INCOGNITO_MEMORY_MODES:
+        if is_incognito_transcript(slot.memory_mode):
             continue
         title = " ".join(str(slot.title or "").split())[:_MAX_SAMPLE_CHARS]
         if not title:

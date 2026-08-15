@@ -295,6 +295,22 @@ class DefaultCapabilityManager:
         return CapabilityResult(ok=False, message="capability manager not available")
 
 
+class DefaultExternalAccessPolicy:
+    """Admits every external service — today's open-source behaviour.
+
+    The public build queries skills.sh and the official MCP registry and offers
+    cloud deployment, so the default must stay permissive or an ordinary install
+    would lose both browsers and the deploy page. A managed edition overrides this
+    to allowlist its own registry and to withhold cloud deployment.
+    """
+
+    def admits_registry(self, kind: str, name: str, api_base: str) -> bool:
+        return True
+
+    def admits_cloud_deployment(self, target: str) -> bool:
+        return True
+
+
 class DefaultAppRegistryPolicy:
     """Today's public trusted-host set + clone-sandbox-mode decision.
 

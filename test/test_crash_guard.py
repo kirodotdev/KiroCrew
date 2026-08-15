@@ -70,3 +70,70 @@ class TestInstallLoopHandler:
         finally:
             loop.close()
         assert crash_guard._CRASH_LOG is None
+
+
+class TestUnclosedConnectionDowngrade:
+    """Unclosed-connection GC noise is downgraded to WARNING, not ERROR."""
+
+    def test_unclosed_connection_logged_at_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        crash_guard._CRASH_LOG = None
+        loop = asyncio.new_event_loop()
+        try:
+            crash_guard.install_loop_handler(loop)
+        finally:
+            loop.close()
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.crash_guard"):
+            crash_guard._asyncio_exception_handler(
+                loop, {"message": "Unclosed connection"}
+            )
+
+        assert any("noise" in r.message for r in caplog.records)
+        assert all(r.levelno <= logging.WARNING for r in caplog.records)
+        # Must NOT write to crash.log
+        crash_log = tmp_path / "home" / "logs" / "crash.log"
+        assert not crash_log.exists()
+
+    def test_unclosed_client_session_also_downgraded(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        crash_guard._CRASH_LOG = None
+        loop = asyncio.new_event_loop()
+        try:
+            crash_guard.install_loop_handler(loop)
+        finally:
+            loop.close()
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.crash_guard"):
+            crash_guard._asyncio_exception_handler(
+                loop, {"message": "Unclosed client session"}
+            )
+
+        assert any("noise" in r.message for r in caplog.records)
+        assert all(r.levelno <= logging.WARNING for r in caplog.records)
+
+    def test_non_unclosed_message_still_errors(self, tmp_path, monkeypatch, caplog):
+        """Other no-exception messages must still go to ERROR + crash.log."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        crash_guard._CRASH_LOG = None
+        loop = asyncio.new_event_loop()
+        try:
+            crash_guard.install_loop_handler(loop)
+        finally:
+            loop.close()
+
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.crash_guard"):
+            crash_guard._asyncio_exception_handler(
+                loop, {"message": "Some other problem"}
+            )
+
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
+        crash_log = tmp_path / "home" / "logs" / "crash.log"
+        assert crash_log.exists()
+        assert "Some other problem" in crash_log.read_text()

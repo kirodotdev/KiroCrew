@@ -27,8 +27,8 @@ PLATFORM_FAKE = "fake"
 PLATFORM_UNSUPPORTED = "unsupported"
 
 # ── MCP tool names (server ``kirocrew-computer``) ──
-# All prefixed ``computer_`` so they can never collide with the playwright
-# server's ``browser_*`` tools in a shared allowlist.
+# All prefixed ``computer_`` so a browser tool can never collide with one of
+# these in a shared allowlist.
 TOOL_LIST_APPS = "computer_list_apps"
 TOOL_GET_STATE = "computer_get_state"
 TOOL_CLICK = "computer_click"

@@ -206,6 +206,23 @@ export default [
       // module parser-facing only, and keep it DOM-free, which is the property
       // that makes that easy to check.
       'src/hooks/themeCss.ts',
+      // The Kiro-ghost avatar generator's art tables. Every literal in the module
+      // is SVG handed to the SVG parser: the shipped mark's `d` path data, the
+      // per-part fragments built from it, and the hex tile colors. Translating any
+      // of them would not change a word anyone reads — it would emit a malformed
+      // path and render a blank avatar.
+      //
+      // Verified copy-free rather than assumed, and by a MECHANICAL boundary: the
+      // module's only import is a TYPE from `@dicebear/core`, it imports no `i18nT`
+      // / `useTranslation`, and it does not touch the DOM — every export is data in,
+      // SVG `string` out. Its consumer `components/CrewAvatar.tsx` stays fully
+      // gated, and that component renders the avatar `alt=""` / `aria-hidden`
+      // precisely because the crew name is shown as real translated text beside it.
+      //
+      // Stated as a false-negative class, per this file's convention: any
+      // user-visible copy ever added to THIS path will not be reported — keep the
+      // module parser-facing only, and keep it DOM-free.
+      'src/lib/kiroGhostAvatar.ts',
       // Same rationale, different convention: this app keeps its seed prompts in a
       // dedicated `lib/prompts.ts` rather than a `*Prompt.ts` file. Also prompt
       // payload sent over the wire, never rendered.
@@ -341,17 +358,41 @@ export default [
               //      flagged, so it lands in the baseline. Accepted: a false positive
               //      costs one baseline entry, a false negative hides copy forever.
               '^(?![a-z]+(?: [a-z]+)+$)[\\s\\-a-z0-9:/\\[\\]().%#]+$',
-              // CSS ATTRIBUTE SELECTORS, e.g. `[role="dialog"],[data-x]` — a
-              // comma-joined list of bracketed attribute selectors, as passed to
-              // querySelector. The Tailwind/class shape above cannot cover these:
-              // its char class forbids `=`, `"` and `,`, which is exactly what an
-              // attribute selector is made of. Such constants live at module level
-              // under an ALL-CAPS name, so `i18n-strict` looks inside them.
+              // Tailwind ARBITRARY-VARIANT clusters, e.g. the shared touch-target
+              // overrides in utils/touchActions.ts:
+              // `[@media(hover:none)]:opacity-100 [@media(hover:none)]:[&_button]:p-2.5`.
+              // The class shape above cannot cover these: its char class forbids
+              // `@`, `&` and `_`, which are exactly what an arbitrary variant is
+              // made of. Such constants live at module level under ALL-CAPS names,
+              // so `i18n-strict` looks inside them.
               //
-              // Deliberately anchored and total: the WHOLE string must be
-              // bracketed selectors, so prose cannot match (prose has no square
-              // brackets), and a sentence merely containing one is still flagged.
-              '^\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\](?:\\s*,\\s*\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])*$',
+              // Deliberately NARROWER than the general class shape: every
+              // space-separated token must BEGIN with a bracketed `@`-variant
+              // (`[@media(...)]:` or `[@supports(...)]:`), so admitting this shape
+              // admits no new prose — copy never opens with `[@`. A cluster
+              // merely containing such a token alongside a plain word still
+              // fails, because every token must match end to end.
+              String.raw`^\[@(?:media|supports)\([^)\s]*\)\]:[^\s]+(?:\s+\[@(?:media|supports)\([^)\s]*\)\]:[^\s]+)*$`,
+              // CSS SELECTOR LISTS, e.g. `[role="dialog"],[data-x]` or
+              // `a,button,[tabindex]` — a comma-joined list of type selectors and
+              // bracketed attribute selectors, as passed to querySelector. The
+              // Tailwind/class shape above cannot cover these: its char class forbids
+              // `=`, `"` and `,`, which is exactly what an attribute selector is made
+              // of. Such constants live at module level under an ALL-CAPS name, so
+              // `i18n-strict` looks inside them.
+              //
+              // A bare type selector is admitted only alongside a bracketed one: the
+              // leading lookahead requires at least one `[` in the WHOLE string, and
+              // that is what keeps this entry from becoming a general "lowercase words
+              // joined by commas" exemption. Without it `'save,delete'` would match,
+              // and `\s*,\s*` permits a space, so `'save, delete'` would too. A
+              // sentence merely containing a bracket still fails, because every member
+              // must match end to end and a prose member carries spaces.
+              //
+              // Known false negative, stated: a comma-joined list of lowercase words
+              // that also holds a bracketed term is exempt. Copy does not take that
+              // shape — a bracket in copy sits inside a phrase, not as a list member.
+              '^(?=[^\\[]*\\[)(?:[a-z][a-z0-9]*|\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\])(?:\\s*,\\s*(?:[a-z][a-z0-9]*|\\[[a-z\\-]+(?:[~|^$*]?=(?:"[^"]*"|\'[^\']*\'))?\\]))*$',
               // Identifiers, paths, URLs, mime types, storage keys.
               // camelCase identifiers only. A plain lowercase word must NOT be excluded
               // here: `saved`, `active` and `done` are all real UI copy, and a pattern of
@@ -610,6 +651,18 @@ export default [
               // trimed = value.trim()`), so a pattern that requires the space can never
               // match. Verified — the space-bearing version left the warning in place.
               '^Auto-Improve -$',
+              // Electron accelerator API tokens, which are the INPUT side of the key
+              // caps above: `accelerator: "CmdOrCtrl+R"` is the string Electron parses
+              // to bind the shortcut, and the Windows titlebar menu rewrites those
+              // tokens to the cap the user actually sees (`CmdOrCtrl` -> `Ctrl`). The
+              // token never reaches the screen, so it is a machine value; the cap it
+              // becomes is already exempt on do-not-translate grounds. Translating the
+              // token would break the binding, not localise anything.
+              //
+              // Anchored and enumerated rather than a PascalCase shape rule on purpose:
+              // `^[A-Z][a-z]+$` would also swallow `File`, `Edit` and `Settings`, which
+              // are genuine UI copy.
+              '^(CommandOrControl|CmdOrCtrl)$',
             ],
           },
 
@@ -854,6 +907,32 @@ export default [
   // not here — keep this module CSS-only.
   {
     files: ['src/apps/md-notebook/styles.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // Developer diagnostics for the APP AUTHOR, printed to the browser console when
+  // an app subscribes to a WS event its manifest has not declared a scope for.
+  // Translating them would be actively wrong, not merely wasteful: each one quotes
+  // the scope identifier the author must paste into `permissions.events`
+  // (`"slots:user"`, `"notification:system"`, `"<scope>:all"`), and those are
+  // compared BY VALUE against the manifest — localised advice would name a scope
+  // the gateway does not recognise.
+  //
+  // `console.*` is already callee-exempt, so the three call sites are covered; the
+  // strings are flagged because they are composed in `checkSubscribeAllowed`, one
+  // pure predicate that centralises the diagnosis for all three. Inlining the prose
+  // into the calls to earn the callee exemption would duplicate its branch logic
+  // three times — a worse module for a lint technicality.
+  //
+  // Scoped to this one file for the same reason as the two above: the module is the
+  // SDK's protocol surface (event tables, hooks, provider) and holds no other prose.
+  // The pieces that DO render copy — `ChatEmbed`, `ChatPanel`, `ChatMessageList` —
+  // are separate files and stay covered. Copy added here later belongs in the
+  // catalog, not under this exemption; keep this module protocol-and-diagnostics.
+  {
+    files: ['src/app-sdk/index.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

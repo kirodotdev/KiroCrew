@@ -305,6 +305,7 @@ export const PanelCard: React.FC<PanelCardProps> = ({
               borderRadius: skin.rowRadius, overflow: 'hidden',
             }}>
               {upNext.map((item, i) => (
+                // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- hover highlight only, no click action
                 <div
                   key={item.id}
                   style={{

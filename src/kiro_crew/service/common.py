@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import enum
 import os
+import shlex
 import shutil
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+
+from kiro_crew.config import loader
 
 SERVICE_NAME = "kirocrew"  # systemd unit name (without .service)
 LAUNCHD_LABEL = "dev.kirocrew.gateway"  # launchd Label
+
+# The NAME of the environment variable kiro-cli reads its model credential
+# from — not the credential. This holds a variable name, is safe to print, and
+# appears verbatim in operator-facing output. Keep key/secret/token/credential
+# words OUT of the identifier: taint analysis classifies sources by identifier
+# name, so a credential-sounding name here marks every string this flows into as
+# a cleartext credential and flags the operator message as a disclosure.
+_AUTH_ENV_VAR = "KIRO_API_KEY"
 
 
 def launchd_live_program() -> "os.PathLike[str]":
@@ -142,6 +154,129 @@ def service_environment(home: str) -> "dict[str, str]":
     if port:
         env["KIROCREW_PORT"] = port
     return env
+
+
+def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
+    """Return whether an API-key credential is set but invisible to the service.
+
+    Deliberately the ONLY function that touches the credential, and it returns a
+    bool rather than any string built from it. The message is assembled
+    separately in :func:`headless_auth_warning` from a constant name and a path,
+    so no value read here can reach a print, a log, or a return value — the
+    no-disclosure property is structural rather than something a reader has to
+    verify by following the formatting.
+
+    True when the installer's environment defines a non-blank ``KIRO_API_KEY``
+    that ``.env`` does not already carry. Only the presence of the NAME is
+    inspected in ``.env``; its value is never read.
+    """
+    source = os.environ if environ is None else environ
+    if not source.get(_AUTH_ENV_VAR, "").strip():
+        return False
+    return _AUTH_ENV_VAR not in _names_defined_in_env_file(loader.env_path())
+
+
+def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
+    """Return a warning when API-key auth will not survive ``service install``.
+
+    ``kiro-cli`` accepts a model credential through ``KIRO_API_KEY`` as an
+    alternative to a ``kiro-cli login`` credential store, and the readiness
+    probe forwards that variable to its ``whoami`` stage — but only from the
+    GATEWAY's own environment. launchd and systemd start the service with a
+    minimal, non-login environment, so a key exported in the shell that ran
+    ``kirocrew service install`` is not there when the service starts: the probe
+    sees no credential, and unless a ``kiro-cli login`` credential store under
+    the baked ``HOME`` supplies one instead, readiness latches
+    ``authenticated=False`` and the dashboard asks for a sign-in the operator has
+    already done.
+
+    The variable is deliberately NOT added to :func:`service_environment`. Both
+    baked locations are readable by every local user — the systemd unit lives in
+    ``/etc/systemd/system`` and the operator-editable override file is installed
+    mode ``0644`` — so baking a credential there would trade a silent
+    misconfiguration for a durable disclosure. ``~/.kiro/crew/.env`` is the
+    supported home: ``load_credentials()`` reads EVERY key from that file (not
+    just the channel-credential allowlist) into the gateway's environment at
+    boot, and enforces ``0600`` on it first.
+
+    Every character of the returned text comes from the module-level variable
+    NAME or the ``.env`` path — never from the credential's value, which this
+    function does not read at all (see :func:`api_key_will_be_dropped`). Returns
+    an empty string when there is nothing to warn about.
+    """
+    if not api_key_will_be_dropped(environ):
+        return ""
+    dotenv = loader.env_path()
+    # The append must never be the step that CREATES the file: under a standard
+    # 022 umask a fresh .env is born 0644, and load_credentials() only tightens
+    # it the next time it reads it — so the key would sit world-readable until
+    # then. Pre-create and chmod first, which also repairs an already-loose file.
+    #
+    # shlex.quote because this line is copy-pasted verbatim: a crew home with a
+    # space word-splits an unquoted path, so `touch` makes the wrong files,
+    # `chmod` fails on a path that does not exist, and the redirect lands the
+    # credential in a different 0644 file that load_credentials() never visits
+    # to tighten — reintroducing the exposure the chmod ordering exists to
+    # prevent. Simple paths are returned unquoted, so the common case is
+    # unchanged.
+    target = shlex.quote(str(dotenv))
+    remedy = (
+        f"touch {target} && chmod 600 {target}\n"
+        f"     printf '%s\\n' \"{_AUTH_ENV_VAR}=${_AUTH_ENV_VAR}\" >> {target}"
+    )
+    lines = [
+        f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
+        "   inherit it, so unless kiro-cli has a login credential store to fall",
+        "   back on, the dashboard will report a signed-out state. Add it",
+        f"   to {dotenv} (0600) and restart the service:",
+        "",
+        f"     {remedy}",
+        "     kirocrew service restart",
+    ]
+    if _home_override_is_set(environ):
+        lines.append("")
+        lines.append(
+            "   KIROCREW_HOME is set here but is also not inherited, so confirm"
+        )
+        lines.append("   that path is the home the service actually starts with.")
+    return "\n".join(lines)
+
+
+def _home_override_is_set(environ: "Mapping[str, str] | None" = None) -> bool:
+    """Whether the installer overrides the crew home (also not inherited)."""
+    source = os.environ if environ is None else environ
+    return bool(source.get("KIROCREW_HOME", "").strip())
+
+
+def _names_defined_in_env_file(path: Path) -> "set[str]":
+    """Return the variable names a ``.env`` file assigns a NON-BLANK value.
+
+    Mirrors ``load_credentials()``'s parse (strip, skip blanks and ``#``
+    comments, split on the first ``=``) so this agrees with what the gateway
+    will actually resolve — including its ``if not v: continue`` guard, which
+    means a bare ``NAME=`` never reaches ``os.environ``. Counting such a name as
+    configured would silence the warning while the failure it warns about
+    persists, so a blank value is treated as absent.
+
+    Values are compared for emptiness and otherwise discarded: nothing here
+    returns, logs, or echoes one. An unreadable or absent file yields an empty
+    set, which makes the caller warn — the safe direction, since a missed
+    warning is the defect being fixed.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    names: set[str] = set()
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        if not value.strip():
+            continue
+        names.add(name.strip())
+    return names
 
 
 def service_path(home: str) -> str:

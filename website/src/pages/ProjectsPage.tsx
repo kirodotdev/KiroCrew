@@ -8,6 +8,7 @@ import type { TaskRunnerStatus, ProjectRun } from '../types'
 import { SendBtn, Btn, Checkbox, Input } from '../components/ui'
 import ResizeHandle from '../components/ResizeHandle'
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
+import { useIsMobile } from '../hooks/useIsMobile'
 import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import ProjectDetailPage from './ProjectDetailPage'
@@ -20,7 +21,13 @@ import { i18nT } from '../i18n/t'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
-const RAIL_COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
+// `whenNarrow` because this page implements the whole mobile drill-down
+// below (full-width rail, detail steps aside, collapse on select). A page
+// that only got the strip would hand the user an expand button that leads
+// straight back into the squeeze.
+const RAIL_COLLAPSE: CollapseConfig = {
+  width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY, whenNarrow: true,
+}
 
 
 function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, onRun, onPlan, disabled, isPlanning, onCancel, planError, banner }: {
@@ -82,6 +89,19 @@ export default function ProjectsPage() {
   const rail = useColumnResize(
     RAIL_WIDTH_KEY, loadRailWidth, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, RAIL_COLLAPSE, loadRailCollapsed,
   )
+  const isMobile = useIsMobile()
+  // On a phone the rail and the pane beside it cannot share the width, so the two
+  // become a drill-down, the same shape WebhooksPage uses: the rail opens
+  // full-width to browse, and picking a run collapses it back to the strip and
+  // hands the screen to the detail. Without this, expanding the rail to choose a
+  // run drops the detail back into the ~124px squeeze this page just fixed, and
+  // the only ways out are a 6px drag handle or arrow keys.
+  const mobileRailOpen = isMobile && !rail.collapsed
+  const selectRun = useCallback((next: ProjectRun | null) => {
+    setSelectedRun(next)
+    setEditingName(false)
+    if (isMobile) rail.collapse()
+  }, [isMobile, rail.collapse])
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
 
@@ -258,8 +278,8 @@ export default function ProjectsPage() {
             tabIndex={0}
             aria-label={i18nT('pages.projectsPage.open_project', { name })}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all ${isActive ? 'bg-accent/15 border border-accent/40' : 'hover:bg-bg-elevated border border-transparent'}`}
-            onClick={() => { setSelectedRun(r); setEditingName(false) }}
-            onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setSelectedRun(r); setEditingName(false) } }}
+            onClick={() => selectRun(r)}
+            onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectRun(r) } }}
           >
             <span className="text-[14px]">{icon}</span>
             <div className="flex-1 min-w-0">
@@ -276,14 +296,43 @@ export default function ProjectsPage() {
     </div>
   )
 
+  // Mode selection swaps the entire form below it, and the labels are localized:
+  // `Depuis une spécification` (fr) measures 157px at 13px where three
+  // side-by-side segments get ~51px each, so a segmented row cannot hold them at
+  // phone width. Narrow renders the modes as a vertical list of full-width
+  // choices; the segmented row returns at `sm:`, where it fits.
+  const modeRowClass = (on: boolean) =>
+    [
+      'flex items-center gap-2 min-h-10 px-3 py-2 rounded-md border-[1.5px] text-left',
+      'text-[13px] font-semibold transition-all cursor-pointer',
+      'sm:flex-1 sm:justify-center sm:min-h-0 sm:py-1.5 sm:text-center sm:border-transparent',
+      on
+        ? 'border-accent bg-accent-subtle text-accent sm:bg-accent sm:text-accent-fg sm:shadow-sm'
+        : 'border-border text-muted hover:text-text hover:bg-bg-elevated',
+      anyPlanning ? 'opacity-50 cursor-not-allowed' : '',
+    ].join(' ')
+
+  const ModeDot = ({ on }: { on: boolean }) => (
+    <span
+      aria-hidden
+      className={`shrink-0 grid place-items-center size-3.5 rounded-full border-[1.5px] sm:hidden ${
+        on ? 'border-accent' : 'border-border-strong'
+      }`}
+    >
+      {on && <span className="size-2 rounded-full bg-accent" />}
+    </span>
+  )
+
   const composePanel = (
     <div className="px-5 py-4">
-      <div className="flex items-center gap-1 mb-4">
-        <button onClick={() => setMode('compose')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'compose' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
-        <button onClick={() => setMode('spec')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'spec' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
-        <button onClick={() => setMode('yaml')} disabled={anyPlanning} className={`px-3 py-1.5 rounded-md text-[13px] font-semibold transition-all ${mode === 'yaml' ? 'bg-accent text-accent-fg shadow-sm' : 'text-muted hover:text-text hover:bg-bg-elevated'} ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
+      <div className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-1 mb-4">
+        <button onClick={() => setMode('compose')} disabled={anyPlanning} aria-pressed={mode === 'compose'} className={modeRowClass(mode === 'compose')}><ModeDot on={mode === 'compose'} /><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
+        <button onClick={() => setMode('spec')} disabled={anyPlanning} aria-pressed={mode === 'spec'} className={modeRowClass(mode === 'spec')}><ModeDot on={mode === 'spec'} /><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
+        <button onClick={() => setMode('yaml')} disabled={anyPlanning} aria-pressed={mode === 'yaml'} className={modeRowClass(mode === 'yaml')}><ModeDot on={mode === 'yaml'} /><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
       </div>
-      <div className="flex gap-2 items-center mb-3">
+      {/* Wraps at phone width: two labelled controls on one line push the
+          workspace field off the right edge otherwise. */}
+      <div className="flex flex-wrap gap-2 items-center mb-3">
         <span className="text-[13px] text-muted font-medium">{i18nT('pages.projectsPage.agent')}</span>
         <AgentSelector agents={agents} defaultAgent={defaultAgentName} value={agent} onChange={(name) => setAgent(name)} />
         <span className="text-[13px] text-muted font-medium ml-2">{i18nT('pages.projectsPage.workspace')}</span>
@@ -295,18 +344,23 @@ export default function ProjectsPage() {
           placeholder={defaultWorkspaceDir || i18nT('pages.projectsPage.default_workspace_folder')}
           title={i18nT('pages.projectsPage.root_folder_for_a_new_plan_leave_blank_to_use_th')}
           disabled={anyPlanning}
-          className={`min-w-[200px] px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
+          // Keeps its 200px floor at every width so a row that cannot fit it
+          // WRAPS the field onto its own line, where `flex-1` gives it the full
+          // width. Letting it shrink instead would keep it on the line as an
+          // unusable sliver. From `sm` up the row has the room, so the field
+          // returns to its natural size.
+          className={`min-w-[200px] flex-1 sm:flex-initial px-2.5 py-1.5 text-[13px] font-mono ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`}
         />
       </div>
       {mode === 'compose' ? (
         <div className="space-y-3">
           <textarea aria-label={i18nT('pages.projectsPage.describe_your_task')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-body outline-none transition-colors focus-ring resize-y min-h-[80px]" rows={3} placeholder={i18nT('pages.projectsPage.describe_your_task_2')} value={userInput} onChange={e => setUserInput(e.target.value)} disabled={isRefining || anyPlanning} />
-          <div className="flex gap-2 items-center">
-            {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.refine_into_spec')}</button>}
-            {!isRefining && <button className={`px-4 h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</button>}
-            {!isRefining && <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>}
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            {!isRefining && <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={refine} disabled={!userInput.trim() || anyPlanning}><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.refine_into_spec')}</button>}
+            {!isRefining && <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-md border border-accent bg-transparent text-accent text-sm font-semibold cursor-pointer font-body hover:bg-accent hover:text-accent-fg transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}>{anyPlanning ? <Hourglass className="lucide-inline" /> : <ClipboardList className="lucide-inline" />} {i18nT('pages.projectsPage.plan')}</button>}
+            {!isRefining && <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(userInput, 'text')} disabled={!userInput.trim() || anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>}
             {isRefining && <>
-              <button className="px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>
+              <button className="inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-danger hover:border-danger transition-all" onClick={async () => { await api.refineCancel(); setRefineStatus('cancelled') }}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>
               <span className="text-accent text-[13px]">{i18nT('pages.projectsPage.refining')}</span>
               {/* Shimmer bar rather than a pulsing label: the motion lives in a
                   placeholder shape, and the text stays legible while it runs. */}
@@ -320,10 +374,10 @@ export default function ProjectsPage() {
               <textarea aria-label={i18nT('pages.projectsPage.refined_spec')} className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2.5 text-text text-sm font-mono outline-none transition-colors focus-ring resize-y min-h-[120px]" rows={8} value={refined} onChange={e => setRefined(e.target.value)} readOnly={isRefining} />
               {refineError && <div className="text-danger mt-1 text-[13px]">{i18nT('pages.projectsPage.error')} {refineError}</div>}
               {!isRefining && refined && (
-                <div className="flex gap-2 mt-2">
-                  <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> {i18nT('pages.projectsPage.plan_from_spec')}</button>
-                  <button className={`px-4 h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(refined, 'spec')} disabled={anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>
-                  <button className={`px-4 h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-text hover:border-border-strong transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => { setRefined(''); setRefineStatus('idle'); setRefineError('') }} disabled={anyPlanning}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
+                <div className="flex flex-col sm:flex-row gap-2 mt-2">
+                  <button className={`btn-sweep bg-accent text-accent-fg border-none rounded-lg inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover transition-all font-body ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => generatePlan(refined, 'spec')} disabled={anyPlanning}><ClipboardList className="lucide-inline" /> {i18nT('pages.projectsPage.plan_from_spec')}</button>
+                  <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-lg border-none bg-ok text-ok-fg text-sm font-semibold cursor-pointer font-body hover:brightness-110 transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => handleRun(refined, 'spec')} disabled={anyPlanning}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.run')}</button>
+                  <button className={`inline-flex flex-wrap items-center justify-center gap-x-1.5 px-4 py-1.5 min-h-9 rounded-md border border-border bg-transparent text-muted text-sm cursor-pointer font-body hover:text-text hover:border-border-strong transition-all ${anyPlanning ? 'opacity-50 cursor-not-allowed' : ''}`} onClick={() => { setRefined(''); setRefineStatus('idle'); setRefineError('') }} disabled={anyPlanning}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
                 </div>
               )}
             </div>
@@ -348,13 +402,13 @@ export default function ProjectsPage() {
       {rail.collapsed ? (
         <CollapsedRail width={rail.width} onExpand={rail.expand} />
       ) : (
-        <aside style={{ width: rail.width }} className="flex-shrink-0 flex flex-col min-h-0 border-r border-border">
+        <aside style={{ width: mobileRailOpen ? '100%' : rail.width }} className="flex-shrink-0 flex flex-col min-h-0 border-r border-border">
           <div className="shrink-0 h-11 px-3 flex items-center gap-2 border-b border-border">
             <ClipboardCheck className="lucide-inline text-accent" />
             <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{i18nT('pages.projectsPage.task_runner')}</span>
           </div>
           <div className="shrink-0 px-3 pt-3">
-            <button onClick={() => setSelectedRun(null)} className="w-full px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>
+            <button onClick={() => selectRun(null)} className="w-full px-3 py-2 rounded-lg text-[13px] font-semibold border cursor-pointer transition-all text-accent bg-accent/10 border-accent/30 hover:bg-accent/20"><Plus className="lucide-inline" /> {i18nT('pages.projectsPage.new_task')}</button>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3">
             {runs.length > 0
@@ -364,17 +418,23 @@ export default function ProjectsPage() {
         </aside>
       )}
 
-      {/* Drag handle — resize the run rail. Dragging well past the minimum collapses it. */}
-      <ResizeHandle
-        handleProps={rail.handleProps}
-        label={i18nT('pages.projectsPage.resize_sidebar')}
-        onNudge={rail.nudge}
-        value={rail.width}
-        min={MIN_RAIL_WIDTH}
-        max={MAX_RAIL_WIDTH}
-      />
+      {/* Drag handle — resize the run rail. Dragging well past the minimum collapses it.
+          Hidden on a phone, as on WebhooksPage: 6px is not a touch target, a stray
+          touch mid-scroll would flip the whole screen to the rail, and beside a
+          full-width rail it is what makes the row overflow. The drill-down covers
+          the same ground there — the strip expands, and picking a run collapses it. */}
+      {!isMobile && (
+        <ResizeHandle
+          handleProps={rail.handleProps}
+          label={i18nT('pages.projectsPage.resize_sidebar')}
+          onNudge={rail.nudge}
+          value={rail.width}
+          min={MIN_RAIL_WIDTH}
+          max={MAX_RAIL_WIDTH}
+        />
+      )}
 
-      <main className="flex-1 min-w-0 min-h-0 flex flex-col">
+      <main className={`flex-1 min-w-0 min-h-0 flex-col ${mobileRailOpen ? 'hidden' : 'flex'}`}>
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">

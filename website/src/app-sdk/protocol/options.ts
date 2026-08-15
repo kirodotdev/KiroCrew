@@ -60,12 +60,22 @@ export interface FollowUpDerivation {
  *    real options-bearing turn it follows and the buttons would vanish after a
  *    compaction. The marker is read from `kind` (live websocket path) or
  *    `meta.kind` (history-reload path).
+ *
+ * `questionPending` suppresses the pills while an `ask_question` card is on
+ * screen for the same slot, so the user is never offered the same choice twice
+ * in two different widgets. The card wins because it is the one holding the
+ * agent: it blocks a tool call, whereas the pills only compose a next message.
+ * Clicking a pill against a blocked turn queues text that turn can never
+ * consume, leaving the user waiting on an answer the agent never receives.
+ * Callers that never render a card pass nothing — suppressing pills there would
+ * leave that surface with no way to answer at all.
  */
 export function deriveFollowUpOptions(
   messages: ChatMessage[],
   isStreaming: boolean,
+  questionPending = false,
 ): FollowUpDerivation {
-  if (isStreaming) return { followUpOptions: [], followUpIsPlan: false }
+  if (isStreaming || questionPending) return { followUpOptions: [], followUpIsPlan: false }
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m.role === 'user' || m.role === 'queued') return { followUpOptions: [], followUpIsPlan: false }

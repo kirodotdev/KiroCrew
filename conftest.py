@@ -9,7 +9,8 @@ rootdir, which is the one conftest pytest applies to all three testpaths.
 
 Only the host-mutation floor belongs in this file. It is deliberately narrow: a
 guard that makes it impossible for a test to reconfigure or restart the
-developer's real Kiro Crew service. Everything else stays in ``test/conftest.py``.
+developer's real Kiro Crew service, and one that fails the run when a test leaves
+residue in the repository checkout. Everything else stays in ``test/conftest.py``.
 
 One consequence of living at the rootdir: the module name ``conftest`` is now
 resolvable from the repository root as well as from ``test/``, and 11 test modules
@@ -402,3 +403,152 @@ def _block_host_service_mutation(request, monkeypatch):
         asyncio.base_events.BaseEventLoop, "subprocess_shell", guarded_subprocess_shell
     )
     monkeypatch.setattr(os, "execve", guarded_exec)
+
+
+# ── the repository checkout is host state too ─────────────────────────
+
+
+#: Repository root. This file lives at the rootdir, so its parent IS the root.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent
+
+#: Name prefixes the TEST RUNNER owns, exempt regardless of what git says.
+#:
+#: These are created by pytest and coverage, not by a test, so they are outside
+#: what this guard is looking for. They are also all declared in `.gitignore`
+#: (`/.pytest_cache`, `/.coverage`, `/.coverage.*`, `/.cache`), so on a host where
+#: `git check-ignore` classifies them this list changes nothing. It exists because
+#: that classification proved platform-dependent: MEASURED, the same
+#: `.pytest_cache` at the same commit reports ignored on Linux and NOT ignored on
+#: the Windows runner, which fired this guard on three shards where every test
+#: passed. Matched by prefix rather than exact name because coverage writes
+#: per-process files (`.coverage.<host>.<pid>.<rand>`).
+_ROOT_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (".pytest_cache", ".coverage", ".cache")
+
+
+def _runner_owned(name: str) -> bool:
+    """Whether *name* is test-runner scratch rather than something a test wrote."""
+    return name.startswith(_ROOT_RESIDUE_ALLOWED_PREFIXES)
+
+
+#: Root listing taken before collection, so only what the RUN adds is reported.
+#: A developer's own untracked scratch file must not fail their suite.
+_ROOT_BASELINE: set[str] | None = None
+
+
+def _root_entries() -> set[str] | None:
+    """Immediate children of the repository root, or ``None`` if unreadable."""
+    try:
+        return {child.name for child in _REPO_ROOT.iterdir()}
+    except OSError:
+        return None
+
+
+def _not_ignored(names: set[str]) -> list[str] | None:
+    """*names* that git would NOT ignore, or ``None`` when git cannot classify.
+
+    Deferring to ``git check-ignore`` rather than a pattern list here keeps this
+    guard honest about one thing: ``.pytest_cache``, ``.coverage`` and the build
+    trees are already declared ignorable, and duplicating that list would drift.
+
+    ``None`` is a THIRD answer, not a failure. ``check-ignore`` exits 0 when it
+    ignored something, 1 when it ignored nothing, and 128 when it could not look
+    at all -- a non-git export of the test tree, or a checkout git refuses for
+    dubious ownership, which is what a uid mismatch under a mounted volume
+    produces. MEASURED: 1 and 128 both come back with EMPTY stdout, so the exit
+    code is the only thing that separates "nothing here is ignored" from "I never
+    got to look". Reading 128 as the former would report every toolchain artifact
+    the run created as residue and fail the whole suite on an environment where
+    the question is unanswerable. A guard that cries wolf gets deleted, and then
+    it protects nothing -- so the caller reports that it could not check and
+    leaves the verdict alone.
+    """
+    if not names:
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            cwd=str(_REPO_ROOT),
+            input="\n".join(sorted(names)),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    ignored = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+    return [name for name in sorted(names) if name not in ignored]
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Snapshot the repository root, on the controller only.
+
+    Under ``-n auto`` every worker shares this filesystem, so letting each one
+    snapshot and report would turn a single stray file into one failure per
+    worker. The controller's session brackets all of them, which is exactly the
+    window this guard wants.
+    """
+    global _ROOT_BASELINE
+    if hasattr(session.config, "workerinput"):
+        return
+    _ROOT_BASELINE = _root_entries()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail the run when the suite left new, non-ignored entries at the root.
+
+    A test writes there without any ``touch`` or ``open`` in its own source: a
+    child process inherits pytest's CWD, which is the repository root, so a
+    subprocess spawned without ``cwd=`` puts every relative write into the
+    checkout. That is invisible to a reviewer reading the test, it survives the
+    run, and an empty file produced this way has already been committed and
+    shipped. Detected here rather than cleaned: deleting an unexpected file is
+    not this guard's call to make.
+    """
+    if hasattr(session.config, "workerinput") or _ROOT_BASELINE is None:
+        return
+    current = _root_entries()
+    if current is None:
+        return
+    added = {name for name in current - _ROOT_BASELINE if not _runner_owned(name)}
+    residue = _not_ignored(added)
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if residue is None:
+        # Said out loud rather than skipped silently: if this ever starts
+        # happening in CI, the guard has stopped working and the log is the only
+        # place that would say so.
+        if reporter is not None:
+            reporter.write_line(
+                "repository-root residue check skipped: git could not classify "
+                f"{_REPO_ROOT} (not a checkout, or refused)"
+            )
+        return
+    if not residue:
+        return
+    # Only promote a clean run to a failure. A non-zero *exitstatus* already
+    # carries a more specific verdict than "tests failed" -- INTERRUPTED (2) and
+    # INTERNAL_ERROR (3) tell a caller the run did not complete, and overwriting
+    # either with TESTS_FAILED would report a finished, failing suite instead.
+    # The residue is reported either way, since it is real regardless of how the
+    # run ended.
+    if exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    if reporter is None:
+        return
+    reporter.write_sep("=", "repository root residue", red=True)
+    reporter.write_line(
+        f"{len(residue)} new entr{'y' if len(residue) == 1 else 'ies'} at "
+        f"{_REPO_ROOT}, left behind by this run:"
+    )
+    for name in residue:
+        reporter.write_line(f"    {name}")
+    reporter.write_line("")
+    reporter.write_line(
+        "A test must not write into the checkout. The usual cause is a "
+        "subprocess spawned without cwd=: it inherits pytest's CWD, which is "
+        "this directory, so every relative write lands here. Pass "
+        "cwd=<a directory under tmp_path> to the spawn, and scope any assertion "
+        "about the file to where that child actually ran."
+    )

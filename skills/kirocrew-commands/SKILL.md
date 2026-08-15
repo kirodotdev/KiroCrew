@@ -98,23 +98,85 @@ See `src/kiro_crew/pod/README.md` for the full reference.
 | `kirocrew chat -m "message"` | Single message (non-interactive) |
 | `kirocrew chat --model claude-opus` | Use specific model |
 
-## Browsing (Playwright MCP)
+## Browsing (`playwright-cli`)
 
-Browsing uses **Playwright MCP tools**, not kirocrew CLI. The `kirocrew browse` subcommands manage auth only.
+Browsing is not a `kirocrew` subcommand and not an MCP tool. You drive a browser by
+running `playwright-cli` shell commands. It is available when the binary is on
+`PATH`. **Settings → Browser** installs it with one click (and holds the optional
+attach token); the equivalent by hand is `npm install -g @playwright/cli@latest`
+(Node.js 20 or newer).
 
 | Command | Description |
 |---------|-------------|
-| `kirocrew browse setup` | Install Playwright MCP + browsers |
-| `kirocrew browse auth health` | Check browser auth / cookie status (prints JSON) |
-| `kirocrew browse auth refresh` | Write Playwright storage state from an exported cookie jar |
+| `playwright-cli open <url>` | Open a page (prints URL, title, and a snapshot path) |
+| `playwright-cli snapshot` | Write the accessibility tree to a YAML file, print its path |
+| `playwright-cli click <ref>` / `fill <ref> <text>` | Act on an element from a snapshot |
+| `playwright-cli screenshot [ref]` | Write a PNG, print its path. `[ref]` is an ELEMENT, not a path; do not pass `--filename` (it resolves against the CWD and is not auto-approved) |
+| `playwright-cli state-save` / `state-load <file>` | Save or restore a logged-in session. Bare `state-save` writes into the service's own directory; both a name and `state-load` prompt for approval, because each names a local path |
+| `playwright-cli attach --extension` | Drive the user's own running Chrome, with their logins |
+| `playwright-cli show --port <n> --host 127.0.0.1` | Serve the CLI's dashboard for the Browser panel |
 
-**Browsing workflow:** Load the `browser-auth` skill (or follow it directly):
-1. `kirocrew browse auth health` — check auth; if unhealthy or no cookies, tell the user to export a fresh cookie jar from a browser where they're logged in
-2. `kirocrew browse auth refresh` — write Playwright storage state from the exported cookie jar (pre-loads auth into the browser context)
-3. Use Playwright MCP tools: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill_form`, `browser_take_screenshot`, `browser_evaluate`
-4. On a 401 / login redirect, the session cookies expired — the user re-exports the cookie jar and you re-run `kirocrew browse auth refresh`
+**Browsing workflow:** load the `web-browse`, `web-verify`, or `browser-auth`
+skill for the shape of the task, then:
+1. `command -v playwright-cli`. Absent means browsing is unavailable: read the page
+   with `web_fetch` and tell the user the install command.
+2. `playwright-cli open <url>`. The printed URL and title usually confirm the page
+   without reading anything else.
+3. Read the snapshot YAML at the printed path only when you need the tree, for
+   example before clicking. Refs like `[ref=e5]` belong to that snapshot, so
+   re-snapshot after any page change.
+4. On a login redirect, the session is absent or expired: `state-load` a saved
+   session, or ask the user to sign in in the Browser panel and `state-save` it.
 
-**Note:** Playwright auto-installs during `kirocrew setup`.
+**No npm access (internal registry, air-gapped host):** detection is **PATH-based**
+-- `playwright-cli` on `PATH` is all that matters, so ANY install route works and the
+Settings button is a convenience, not the only one. In order of likelihood:
+
+1. Most internal registries proxy npmjs, so the plain install already works.
+2. Force the public registry for this one package:
+   `npm install -g @playwright/cli --registry=https://registry.npmjs.org`.
+3. **An internal registry that requires a login the user does not have** (the
+   common Amazon-internal / corporate case). Install into a user-owned prefix
+   against the public registry, ignoring the corporate `.npmrc` for this one
+   command, then put the binary on `PATH`:
+
+   ```bash
+   NPM_CONFIG_USERCONFIG=/dev/null \
+     npm install --prefix ~/.local/share/playwright-cli \
+     --registry=https://registry.npmjs.org @playwright/cli@0.1.18
+   mkdir -p ~/.local/bin
+   ln -sf ~/.local/share/playwright-cli/node_modules/.bin/playwright-cli \
+     ~/.local/bin/playwright-cli
+   ```
+
+   Two caveats worth stating to the user rather than burying: `~/.local/bin` has
+   to be **on `PATH`** or Kiro Crew still reports "not installed" (detection is
+   `PATH` + the Node bin dirs, nothing else); and `NPM_CONFIG_USERCONFIG=/dev/null`
+   deliberately ignores their employer's registry configuration, which is their
+   call to make, not ours to assume.
+4. Air-gapped: `npm pack @playwright/cli` on a connected machine, copy the
+   `.tgz` over, then `npm install -g ./playwright-cli-<version>.tgz`. Note the
+   tarball alone is not runnable -- it needs its `playwright` /
+   `playwright-core` dependencies resolved too.
+
+What does **not** substitute for it: `pip install playwright` and
+`dotnet tool install Microsoft.Playwright.CLI` install a DIFFERENT tool -- the
+`playwright` browser-installer/codegen CLI, not `@playwright/cli` (binary
+`playwright-cli`, its own 0.x line, which depends on `playwright@1.63.0-alpha`).
+Switching to yarn, pnpm or bun hits the same registry, so it only helps when the
+`npm` client itself is missing. And there is **no standalone binary**: the
+upstream GitHub release carries no build assets and `playwright-cli.js` starts
+with `#!/usr/bin/env node`, so Node.js 18+ is required no matter how it is
+fetched.
+
+**Approval:** page-scoped verbs run without prompting the user, because installing
+the CLI is itself the consent. Verbs that reach the local machine still prompt on
+purpose -- `eval`, `run-code`, `upload`, `state-load`, a named `state-save`, and the
+installers. Let the user approve those rather than rewriting the command to dodge
+the prompt.
+
+The full verb list is in the skill `playwright-cli install --skills agents --global`
+writes.
 
 ## Autonomous Task Runner
 

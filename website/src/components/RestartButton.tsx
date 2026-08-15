@@ -11,9 +11,17 @@ export default function RestartButton() {
   const restart = async () => {
     setRestarting(true)
     try {
-      await api.restartSessions()
-      setIsError(false)
-      setMsg(i18nT('components.restartButton.sessions_restarted_config_applied'))
+      const res = await api.restartSessions()
+      // The sessions DID restart, but a failed reconcile means they restarted
+      // against a config that may not match the sources — reporting "config
+      // applied" there would be the exact lie this button exists to avoid.
+      if (res && res.mcp_sync_ok === false) {
+        setIsError(true)
+        setMsg(i18nT('components.restartButton.sessions_restarted_but_mcp_sync_failed'))
+      } else {
+        setIsError(false)
+        setMsg(i18nT('components.restartButton.sessions_restarted_config_applied'))
+      }
     } catch (e: unknown) {
       setIsError(true)
       setMsg(e instanceof Error ? e.message : i18nT('components.restartButton.restart_failed'))

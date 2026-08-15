@@ -7,7 +7,7 @@ import DetailPanel from './DetailPanel'
 import Clickable from './Clickable'
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
 import { SendBtn } from './ui'
-import { ArtifactBodyNative, ArtifactBodyIframe } from './ArtifactBody'
+import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
 import { copyToClipboard } from '../utils/clipboard'
@@ -223,6 +223,12 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
         <div className="h-full flex items-center justify-center px-6 text-center text-[13px] text-danger">
           {i18nT('components.artifactPanel.couldn_t_load_this_artifact_it_may_have_been_del')}
         </div>
+      ) : effectiveKind === 'image' && artifact ? (
+        <ArtifactBodyImage
+          artifact={artifact}
+          slug={slug}
+          heightStyle={BODY_HEIGHT_STYLE}
+        />
       ) : usesIframe && artifact ? (
         <ArtifactBodyIframe
           artifact={artifact}

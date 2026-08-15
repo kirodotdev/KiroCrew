@@ -24,8 +24,7 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
     config_path,
-    read_config_for_update,
-    write_config_atomically,
+    update_config_locked,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.platform.update_governance import (
@@ -721,19 +720,33 @@ async def api_update_auto(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     enabled = body.get("enabled", True)
-    # Read, modify, write config. The read fails CLOSED: treating an unreadable
-    # config as {} would write back a single-key file and wipe every other
-    # setting the user has (see read_config_for_update).
-    path = config_path()
+
+    def _set_auto_update(data: dict) -> dict:
+        data["auto_update"] = enabled
+        # RETURN it: `update_config_locked` reads a `None` return as "do not write" and
+        # exits with the data untouched, so an in-place-only callback silently drops the
+        # write while still reporting success.
+        return data
+
+    # `update_config_locked` holds the advisory lock across the READ and the write, so no
+    # other process can land between them -- the whole point, since the in-process
+    # `_get_config_lock()` this endpoint used to rely on does not serialize against the CLI
+    # or a second gateway.
+    #
+    # Offloaded because that lock is blocking: called inline from this coroutine it would
+    # stall every session and the liveness heartbeat while contended, which is what the
+    # repo's `no-blocking-call-on-event-loop` rule forbids.
+    #
+    # The read still fails CLOSED (`on_corrupt` defaults to "fail"): treating an unreadable
+    # config as {} would write back a single-key file and wipe every other setting the user
+    # has (see read_config_for_update).
     try:
-        data = read_config_for_update(path)
+        await asyncio.to_thread(update_config_locked, config_path(), mutate=_set_auto_update)
     except ConfigReadError:
         logger.exception("Refusing to toggle auto-update: config is unreadable")
         return web.json_response(
             {"error": "failed to read config file", "code": "config_unreadable"}, status=500
         )
-    data["auto_update"] = enabled
-    write_config_atomically(path, data)
     return web.json_response({"ok": True, "auto_update": enabled})
 
 
@@ -1310,8 +1323,27 @@ _log_ring_handler: _RingLogHandler | None = None
 
 
 async def _safe_ws_send(ws: web.WebSocketResponse, msg: str, state: DashboardState) -> None:
-    """Send to WS, removing dead subscribers on failure."""
+    """Send a log frame to one subscriber, re-checking its scope first.
+
+    Subscription is granted once, in the ``subscribe_logs`` handler, and the
+    handler above then fans out straight to ``_ws_log_subscribers`` without
+    passing the broadcast chokepoint. Re-check here, through
+    ``DashboardState._ws_client_allowed`` itself (rather than a hand-rolled
+    scope comparison) so revoking an app's ``log`` scope (a narrowed manifest,
+    or ``app disable``) stops the stream on a socket that is already
+    subscribed, and so this decision gets the same SEL audit trail as every
+    other event instead of a silent, unaudited duplicate of the check.
+
+    This runs on the event loop (the caller hands it to ``create_task`` via
+    ``call_soon_threadsafe``), which is what makes the check safe: the scope
+    cache must never be consulted from the logging thread, where a cold miss
+    would fall back to a synchronous manifest read.
+    """
     try:
+        if not ws.get("_is_dashboard_user", False):
+            if not state._ws_client_allowed(ws, "log", {}):
+                state._ws_log_subscribers.discard(ws)
+                return
         await ws.send_str(msg)
     except Exception:
         state._ws_log_subscribers.discard(ws)

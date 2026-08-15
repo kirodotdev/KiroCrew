@@ -25,7 +25,10 @@ describe('settingsExtract — i18n-aware label resolution', () => {
       FILE,
     )
     expect(entries).toHaveLength(1)
-    expect(entries[0].label).toBe('Language')
+    expect(entries[0]).toMatchObject({
+      label: 'Language',
+      labelKey: 'settings.display.language.label',
+    })
   })
 
   it('resolves a t() description alongside a t() label', () => {
@@ -45,6 +48,17 @@ describe('settingsExtract — i18n-aware label resolution', () => {
       FILE,
     )
     expect(entries[0].label).toBe('Language')
+  })
+
+  it('retains the exact key from an i18nT() label', () => {
+    const { entries } = extractFromSource(
+      `<SettingsSelect label={i18nT('settings.display.language.label')} value={x} onChange={f} />`,
+      FILE,
+    )
+    expect(entries[0]).toMatchObject({
+      label: 'Language',
+      labelKey: 'settings.display.language.label',
+    })
   })
 
   it('still extracts plain string literals', () => {

@@ -2,10 +2,11 @@ import { useState } from 'react'
 import Clickable from '../components/Clickable'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, XCircle, Rocket, Plus, Star } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Globe, Copy, ExternalLink, RefreshCw, Trash2, Undo2, ShieldCheck, Terminal, ChevronDown, ChevronRight, Lock, CheckCircle, XCircle, Rocket, Plus, Star } from 'lucide-react'
 import type { Artifact } from '../types'
 import { PageHeader, Card, CardTitle, StatCard, Btn, Input, Toggle , Badge} from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
+import PublicPublishAckModal from '../components/PublicPublishAckModal'
 import InfoTip from '../components/InfoTip'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { formatCost } from '../utils/formatCost'
@@ -51,9 +52,19 @@ export default function ArtifactDeployPage() {
   const [npRole, setNpRole] = useState('')
   const [npCreate, setNpCreate] = useState(false)
 
+  const { data: deployCfg } = useQuery<{ cloudDeploymentEnabled?: boolean }>({
+    queryKey: ['deploy-web', 'config'],
+    queryFn: () => jget('/config'),
+  })
+  // Absent means an older backend that predates the flag — treat as enabled so a
+  // version skew never hides a working deploy surface. Only an explicit false
+  // withholds it.
+  const cloudDeploymentDisabled = deployCfg?.cloudDeploymentEnabled === false
+
   const { data: profilesResp } = useQuery<ProfilesResp>({
     queryKey: ['deploy-web', 'profiles'],
     queryFn: () => jget('/profiles'),
+    enabled: !cloudDeploymentDisabled,
   })
   const profiles = profilesResp?.profiles || []
   const defaultProfile = profilesResp?.default || ''
@@ -231,6 +242,23 @@ export default function ArtifactDeployPage() {
       <PageHeader title={i18nT('pages.artifactDeployPage.artifact_deploy')} subtitle={i18nT('pages.artifactDeployPage.one_console_for_deploying_artifacts_to_your_own')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0" style={{ color: 'var(--text)' }}>
 
+      {/* Cloud deployment withheld: the PROVISIONING half of this console is
+          hidden below, but the deployments table and its recall/destroy actions
+          stay — a policy that stops new deployments must not strand exposure
+          created while it was still permitted, which is the same reason those
+          routes are ungated on the backend. */}
+      {cloudDeploymentDisabled && (
+        <Card>
+          <CardTitle>
+            <Lock size={14} aria-hidden="true" />
+            {i18nT('pages.artifactDeployPage.cloud_deployment_disabled')}
+          </CardTitle>
+          <p style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>
+            {i18nT('pages.artifactDeployPage.cloud_deployment_disabled_detail')}
+          </p>
+        </Card>
+      )}
+
       {/* StatCard row — mirrors AgentsPage/ArtifactsPage pattern */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         <StatCard label={i18nT('pages.artifactDeployPage.profiles')} value={profiles.length} />
@@ -243,6 +271,7 @@ export default function ArtifactDeployPage() {
         <Card style={{ whiteSpace: 'pre-wrap', borderColor: 'var(--accent)', fontSize: 12 }}>{notice}</Card>
       )}
 
+      {!cloudDeploymentDisabled && (<>
       {/* Getting started guide */}
       <Card>
         <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showGuide ? 12 : 0 }}
@@ -277,13 +306,17 @@ export default function ArtifactDeployPage() {
         )}
       </Card>
 
-      {/* Security model (collapsible) */}
+      {/* Security model (collapsible) — the public-by-link warning stays visible even when collapsed */}
       <Card>
-        <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: showSecurity ? 12 : 0 }}
+        <Clickable style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 8 }}
              onClick={() => setShowSecurity((v) => !v)}>
           {showSecurity ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           <CardTitle className="!mb-0"><Lock size={15} /> {i18nT('pages.artifactDeployPage.how_this_is_secured')}</CardTitle>
         </Clickable>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--warn) 30%, transparent)', background: 'var(--warn-subtle)', color: 'var(--warn)', fontSize: 12.5, lineHeight: 1.5, marginBottom: showSecurity ? 12 : 0 }}>
+          <AlertTriangle className="lucide-inline" style={{ flexShrink: 0, marginTop: 2 }} />
+          <span style={{ fontWeight: 600 }}>{i18nT('pages.artifactDeployPage.public_by_link_warning')}</span>
+        </div>
         {showSecurity && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 12.5, lineHeight: 1.55 }}>
             <div>
@@ -294,10 +327,9 @@ export default function ArtifactDeployPage() {
               <code>{i18nT('pages.artifactDeployPage.bucketownerenforced')}</code> {i18nT('pages.artifactDeployPage.ownership_and_sse_aes256_with')} <b>{i18nT('pages.artifactDeployPage.no_public_bucket_policy')}</b>{i18nT('pages.artifactDeployPage.only_cloudfront_can_read_it_via_an_origin_access')}
               <code>{i18nT('pages.artifactDeployPage.aws_sourcearn')}</code> {i18nT('pages.artifactDeployPage.pins_your_specific_distribution_the_bucket_name')}
             </div>
-            <div>
-              <b>{i18nT('pages.artifactDeployPage.the_published_url_is_public_by_link')}</b> {i18nT('pages.artifactDeployPage.content_is_served_at_a_random')}
-              <code>{i18nT('pages.artifactDeployPage.cloudfront_net')}</code> {i18nT('pages.artifactDeployPage.domain')} <b>{i18nT('pages.artifactDeployPage.anyone_with_the_link_can_view_it')}</b> {i18nT('pages.artifactDeployPage.world_readable_no_auth_in_v1_don_t_publish_anyth')}
-            </div>
+            {/* The exposure claim itself lives in the always-visible banner above;
+                this line carries only the facts that banner does not state. */}
+            <div>{i18nT('pages.artifactDeployPage.random_domain_note')}</div>
             <div>
               <b>{i18nT('pages.artifactDeployPage.pre_publish_scan_sensitive_path_guard')}</b> {i18nT('pages.artifactDeployPage.content_is_scanned_for_secrets_and_internal_data')}<code>{i18nT('pages.artifactDeployPage.aws_2')}</code>, <code>{i18nT('pages.artifactDeployPage.ssh')}</code>{i18nT('pages.artifactDeployPage.before_any_upload')}
             </div>
@@ -523,6 +555,8 @@ export default function ArtifactDeployPage() {
         </Card>
       )}
 
+      </>)}
+
       {/* Deployments — CardTitle + InfoTip + table-striped */}
       <Card>
         <div className="flex justify-between items-center">
@@ -628,6 +662,10 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
     refetchInterval: 10000,
   })
   const pending = data?.pending || []
+  // The pending entry awaiting the blocking public-exposure acknowledgment.
+  // Confirming a pending entry deploys immediately, so it goes through the same
+  // gate as a Publish-panel confirm rather than firing straight from the row.
+  const [ackEntry, setAckEntry] = useState<PendingEntry | null>(null)
 
   const confirmMut = useMutation({
     mutationFn: async ({ id, overrideScan }: { id: string; overrideScan?: boolean }) => {
@@ -676,13 +714,20 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
                   <div style={{ color: 'var(--muted)', fontSize: 11 }}>
                     {i18nT('pages.artifactDeployPage.source')} {source} {i18nT('pages.artifactDeployPage.profile_2')} {e.profile || i18nT('pages.artifactDeployPage.default')} {i18nT('pages.artifactDeployPage.ttl')} {e.ttl_hours}{i18nT('pages.artifactDeployPage.h_scan')} {e.scan_summary} &middot; {age}{i18nT('pages.artifactDeployPage.m_ago')}
                   </div>
+                  {/* Confirming commits a public publish — the warning sits inside
+                      each entry so it stays beside its own confirm button even
+                      when many entries make the list scroll. */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 5, color: 'var(--warn)', fontSize: 11, marginTop: 2 }}>
+                    <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                    <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+                  </div>
                   {e.override_scan_required && (
                     <div style={{ color: 'var(--warn)', fontSize: 11, marginTop: 2 }}>
                       {i18nT('pages.artifactDeployPage.blocked_by_non_credential_scan_findings_review_a')}
                     </div>
                   )}
                 </div>
-                <Btn danger onClick={() => confirmMut.mutate({ id: e.id, overrideScan: !!e.override_scan_required })} disabled={confirmMut.isPending}>
+                <Btn danger onClick={() => setAckEntry(e)} disabled={confirmMut.isPending}>
                   {e.override_scan_required ? i18nT('pages.artifactDeployPage.deploy_anyway') : i18nT('pages.artifactDeployPage.confirm_deploy')}
                 </Btn>
                 <Btn onClick={() => dismissMut.mutate(e.id)} disabled={dismissMut.isPending}>
@@ -698,6 +743,22 @@ function PendingConfirmations({ qc }: { qc: ReturnType<typeof useQueryClient> })
           )
         })}
       </div>
+      {/* Same blocking acknowledgment the Publish panel uses — confirming here
+          creates the public resource, so it cannot be a one-click row action. */}
+      <PublicPublishAckModal
+        open={!!ackEntry}
+        target={ackEntry?.site_id || ''}
+        ttlHours={ackEntry?.ttl_hours ?? 0}
+        busy={confirmMut.isPending}
+        onCancel={() => setAckEntry(null)}
+        onConfirm={() => {
+          const entry = ackEntry
+          setAckEntry(null)
+          if (entry) {
+            confirmMut.mutate({ id: entry.id, overrideScan: !!entry.override_scan_required })
+          }
+        }}
+      />
     </Card>
   )
 }

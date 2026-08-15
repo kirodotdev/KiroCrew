@@ -492,7 +492,7 @@ def deploy(
     repo: str = "",
     ref: str = "",
     allow_ssh_cidr: str = "",
-    ship_source: bool = True,
+    ship_source: Optional[bool] = None,
     dashboard_port: int = 0,
     disable_rollback: bool = False,
     dry_run: bool = False,
@@ -500,9 +500,10 @@ def deploy(
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
-    When ``ship_source`` (default) the local source is packaged and uploaded to
-    S3 so the instance installs from it (private-repo safe) instead of cloning
-    GitHub. ``subnet_id`` pins the launch to an explicit subnet (validated by
+    By default the local source is packaged and uploaded only when Kiro Crew is
+    running from a checkout; packaged installs use the template's public-repo
+    clone path. Explicit ``ship_source=True`` remains fail-closed when no checkout
+    exists. ``subnet_id`` pins the launch to an explicit subnet (validated by
     :func:`resolve_explicit_subnet`) instead of auto-discovery. ``dry_run``
     returns the exact argv without calling AWS. ``proc_sink`` is forwarded to
     :func:`aws.run_aws` for the (long) deploy call so a caller running deploy on
@@ -521,6 +522,13 @@ def deploy(
         repo = validate_field(repo, _REPO_SPEC) or ""
     if ref:
         ref = validate_field(ref, _REF_SPEC) or ""
+
+    from kiro_crew.cloud import source as source_mod
+
+    if ship_source is None:
+        ship_source = source_mod.find_repo_root() is not None
+        if not ship_source:
+            logger.info("no checkout found; the instance will clone the public repo")
 
     if dry_run:
         # For the dry run we can't hit AWS for the VPC or account id, so show
@@ -551,8 +559,6 @@ def deploy(
 
     existing = find_stack(tag, profile, region)
     reused = existing is not None
-
-    from kiro_crew.cloud import source as source_mod
 
     # Ensure the SHARED, immutable instance permissions boundary exists (created
     # once by launcher code, not per-launch CFN — see source.ensure_instance_boundary

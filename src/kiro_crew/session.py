@@ -78,10 +78,12 @@ import asyncio
 import inspect
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -94,6 +96,8 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -106,6 +110,8 @@ from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
 from kiro_crew.messaging.link import (
+    UNBIND_REASON_SESSION_DESTROYED,
+    UNBIND_REASON_UNSPECIFIED,
     ChannelLink,
     canonical_key,
     legacy_key,
@@ -115,8 +121,10 @@ from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.providers.base import CancelOutcome, LLMProvider
 from kiro_crew.sandbox import cleanup_stale_sandbox_profiles
 from kiro_crew.sel import sel
-from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
+from kiro_crew.session_map import MIRROR_OPT_OUT_FLAG
+from kiro_crew.session_map import SessionMap as SessionMap  # noqa: F401
+from kiro_crew.session_map import UnbindListener, set_unbind_listener
 from kiro_crew.session_pid import (
     _build_child_map,
     _cleanup_orphaned_mcp_servers,
@@ -171,6 +179,16 @@ def _is_claude_backend(provider: Any) -> bool:
     return backend == "claude"
 
 
+def _provider_label(provider: Any) -> str:
+    """Backend identity key for *provider* — see ``providers.acp.provider_label``.
+
+    Deferred import for the same reason ``_is_claude_backend`` defers it.
+    """
+    from kiro_crew.providers.acp import provider_label  # circular: providers -> session
+
+    return provider_label(provider)
+
+
 def _provider_effectively_alive(provider: Any) -> bool:
     """Whether a session's provider should be treated as live (NOT stale).
 
@@ -212,7 +230,7 @@ def detect_provider_switch(session_map: "SessionMap", session_key: str, new_prov
     is achieved via KiroCrew's own history replay (build_session_replay), never
     via session_id translation.
     """
-    stored_provider = session_map.get_provider(session_key) or "acp"
+    stored_provider = session_map.get_provider(session_key) or PROVIDER_LABEL_DEFAULT
     if stored_provider == new_provider:
         return False
     # Only counts as a switch if there's actually a stored SID to discard
@@ -388,6 +406,34 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # Cap on remembered per-session channel notice targets. reset()/remove() evict
 # their own entries, so this only bounds sessions dropped by some other path.
 _MAX_ORIGIN_LINKS = 512
+
+
+# Trailing ``:gen{N}`` on a session key. Matched here rather than reused from
+# messaging.link because that module's copy is private to its own parser.
+_GEN_SUFFIX_RE = re.compile(r"^gen\d+$")
+
+
+def _opt_out_key(key: str) -> str:
+    """The key an automatic-mirroring refusal is stored under.
+
+    The durable BUCKET, never the generation-suffixed session key. The refusal is
+    a preference about the CONVERSATION, not about one session — the same reason
+    the per-route model choice is not keyed by session — and generations rotate
+    on ``/new`` and on the configured idle/daily reset. Keyed per generation, an
+    idle rotation would silently undo the user's "off" with no action on their
+    part, and every rotated generation would strand its own row that pruning is
+    forbidden to collect. Bucket-keyed, one conversation holds one such row.
+
+    The suffix is stripped textually rather than through the canonical parser,
+    because the shapes that most need it are the ones the parser rejects: a
+    ``dm_scope="unified"`` bucket is ``unified:{agent}``, which is too short for
+    the §9 grammar, so a parser-only rule would leave unified conversations keyed
+    per generation — exactly the bug this function exists to prevent.
+    """
+    canon = canonical_key(key)
+    head, sep, tail = canon.rpartition(":")
+    return head if sep and _GEN_SUFFIX_RE.match(tail) else canon
+
 
 # Background session recycle thresholds (more aggressive than chat compaction)
 _BG_RECYCLE_PCT = 70.0  # recycle at 70% — well before overflow
@@ -1555,6 +1601,10 @@ class SessionManager:
         companion subagent runtime spawns with the SAME security posture as the
         parent (sandboxed + MCP-gateway-routed), never a bare unsandboxed
         process. Returns {} when the parent/client can't be resolved.
+
+        The backend travels with the posture: a companion runtime shares its
+        parent's process topology, so resolving it independently would spawn a
+        different agent than the session it belongs to.
         """
         provider = self.get_provider(parent_session_key)
         if provider is None:
@@ -1569,6 +1619,7 @@ class SessionManager:
             ("_mcp_gateway_overlay", "mcp_gateway_overlay"),
             ("_mcp_gateway_settings_mcp_json", "mcp_gateway_settings_mcp_json"),
             ("_mcp_gateway_socket", "mcp_gateway_socket"),
+            ("backend", "acp_backend"),
         ):
             val = getattr(client, attr, None)
             if val is not None:
@@ -2124,8 +2175,6 @@ class SessionManager:
           mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
           and are re-resolved.
         """
-        from kiro_crew.agent import kiro_agents_dir_path
-
         try:
             dir_mtime = kiro_agents_dir_path().stat().st_mtime
         except OSError:
@@ -2603,7 +2652,45 @@ class SessionManager:
                 )
 
                 if isinstance(provider, AcpProvider):
-                    provider.client.rekey(key, channel_id)
+                    # The claiming session's canonical crew identity travels
+                    # with the claim: a kiro-shared client rebinds the handle's
+                    # per-agent watchdog windows; the AcpClient path accepts it
+                    # for parity. Pool claims are default-agent-only, so the
+                    # caller-supplied kwarg (the dashboard slot's resolved
+                    # alias) is the only possible source. The snapshot is
+                    # resolved OFF the loop and handed in as data — the load
+                    # is file reads + jsonschema validation on a config
+                    # change, and passing it explicitly (instead of a cache
+                    # pre-warm) means no future rekey caller can silently put
+                    # that I/O back on the event loop.
+                    # circular import: session -> acp.session_handle at module
+                    # scope would loop through acp.client -> session.
+                    from kiro_crew.acp.session_handle import _load_watchdog_settings
+                    from kiro_crew.config.loader import resolve_crew_identity
+
+                    _claim_kwarg = extra_factory_kwargs.get("crew_agent")
+
+                    def _resolve_claim_watchdog() -> tuple[str, object]:
+                        # Same identity rule as the provider factory (a claim
+                        # must match the cold start it replaces), on a FRESH
+                        # config so a crew added since factory build resolves.
+                        _cfg = KiroCrewConfig.load()
+                        _crew = resolve_crew_identity(
+                            _cfg,
+                            agent,
+                            None if _claim_kwarg is None else str(_claim_kwarg),
+                        )
+                        return _crew, _load_watchdog_settings(_crew)
+
+                    _claim_crew, _claim_wd = await asyncio.to_thread(
+                        _resolve_claim_watchdog
+                    )
+                    provider.client.rekey(
+                        key,
+                        channel_id,
+                        crew_agent=_claim_crew,
+                        watchdog=_claim_wd,
+                    )
                     # Switch model post-claim if caller requested non-default.
                     if model:
                         _pool_model = (
@@ -2699,7 +2786,9 @@ class SessionManager:
                 is_cc_now = (
                     ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider)
                 ) or _is_claude_backend(provider)
-                current_provider = "claude_code" if is_cc_now else "acp"
+                current_provider = (
+                    PROVIDER_LABEL_CLAUDE if is_cc_now else _provider_label(provider)
+                )
                 if detect_provider_switch(self._session_map, key, current_provider):
                     resume_sid = None
                     _provider_switched = True
@@ -2838,14 +2927,22 @@ class SessionManager:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
-                    if _provider_switched or (
+                    _replay_needed = (
                         getattr(provider, "_history_replay_needed", False) is True
-                    ):
+                    )
+                    if _provider_switched or _replay_needed:
                         # provider_switch_replay OR F2 load-recovery fell back to
                         # a fresh native session (stale lock never cleared):
                         # replay KiroCrew's conversation_log into the new session
                         # on the first prompt so the slot isn't context-free.
                         sess.provider_switch_replay = True
+                    if _replay_needed and _provider_label(provider) != PROVIDER_LABEL_DEFAULT:
+                        # SessionMap.get() only self-prunes entries whose kiro
+                        # transcript is gone; a backend that owns its own storage
+                        # is never file-checked, so a failed load is the only
+                        # signal its sid went stale. Drop it here or every later
+                        # turn re-attempts the same doomed load.
+                        self._session_map.clear_sid(key)
                     self._sessions[key] = sess
                     logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
@@ -2864,7 +2961,7 @@ class SessionManager:
                     _cwd_str = provider.cwd
                     if not is_stateless and isinstance(provider, AcpProvider):
                         sid = provider.client._session_id
-                        _prov_label = "claude_code" if _is_claude_backend(provider) else "acp"
+                        _prov_label = _provider_label(provider)
                         if sid:
                             self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                     elif (
@@ -3096,7 +3193,25 @@ class SessionManager:
             if pct > 0:
                 logger.info("Session %s context at %.0f%% (CC-managed)", key, pct)
         elif pct >= self._cfg.session.autocompact_pct:
-            self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
+            # Defensive twin of the rekey-time reset (#2932): compaction is
+            # destructive-ish (it rewrites the conversation), so it must never
+            # fire on a percentage that no telemetry has confirmed for the
+            # CURRENT session binding. Today every path that raises context_pct
+            # also calls note_pct_reported(), so this gate is unreachable in
+            # production — it exists so a future handoff/reset path that
+            # preserves a stale pct while leaving it flagged unknown degrades
+            # to a skipped compaction instead of compacting an empty session.
+            # Fail-quiet on doubles: providers without the probe read as
+            # "confirmed" (unchanged behavior).
+            if _context_pct_is_unknown(provider):
+                logger.info(
+                    "Session %s context %.0f%% is unconfirmed for this session — "
+                    "skipping compaction until telemetry reports",
+                    key,
+                    pct,
+                )
+            else:
+                self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
         elif pct >= _CONTEXT_WARN_PCT:
             logger.warning("Session %s context at %.0f%%", key, pct)
         elif pct > 0:
@@ -3192,13 +3307,14 @@ class SessionManager:
 
         kiro-cli only: if the in-place ``/compact`` fails or times out, the
         session is recycled — killed so the next user message re-seeds context
-        via build_session_context(). The session_map entry is dropped so we
-        don't false-resume from stale state. That recycle happens inside
-        ``_compact_in_place``, under the turn semaphore it already holds, so no
-        queued turn can slip in between the failed compact and the kill. A
-        recycle is never forced through a live turn: if the turn semaphore
-        cannot be acquired within the budget, the attempt is skipped and the
-        next turn-end ``check_context_usage`` re-triggers it.
+        via build_session_context(). The session_map entry's resume sid is
+        cleared so we don't false-resume from stale state, while the entry
+        itself (and the channel bindings it carries) survives. That recycle
+        happens inside ``_compact_in_place``, under the turn semaphore it
+        already holds, so no queued turn can slip in between the failed compact
+        and the kill. A recycle is never forced through a live turn: if the turn
+        semaphore cannot be acquired within the budget, the attempt is skipped
+        and the next turn-end ``check_context_usage`` re-triggers it.
         """
         try:
             session = self._sessions.get(key)
@@ -3262,7 +3378,7 @@ class SessionManager:
             self._compacting.discard(key)
 
     async def _recycle_held(self, key: str, session: "_Session", pct: float) -> None:
-        """Recycle *session* — SIGKILL the provider and drop the map entry.
+        """Recycle *session* — SIGKILL the provider and clear its resume sid.
 
         The caller MUST already hold ``session.semaphore`` and is responsible
         for releasing it: this method neither acquires nor releases it, so the
@@ -3273,6 +3389,14 @@ class SessionManager:
         Operates strictly on the *session object passed in*: pop-by-identity
         means a fresh session registered by a racing cold-start is never
         popped or killed by mistake.
+
+        Housekeeping never removes a session's channel identity; only explicit
+        user actions do. The overflowed native conversation must not be resumed,
+        so this clears the sid (as :meth:`discard_conversation` does) instead of
+        deleting the session-map entry: the entry also carries the mirror
+        binding, the Slack thread/channel linkage and the durable flags, so a
+        full delete silently unlinks a mirrored session and forks its later
+        inbound messages into a new conversation.
         """
         self._recycling[key] = session
         try:
@@ -3288,9 +3412,9 @@ class SessionManager:
                 await session.provider.shutdown()
                 logger.info("Recycled session %s (context overflow; entry already replaced)", key)
             else:
-                self._session_map.delete(key)
+                self._session_map.clear_sid(key)
                 await popped.provider.shutdown()
-                logger.info("Recycled session %s (context overflow)", key)
+                logger.info("Recycled session %s (context overflow; sid cleared)", key)
             await self._fire_compact_callback(key, pct, success=True)
         finally:
             if self._recycling.get(key) is session:
@@ -3499,7 +3623,7 @@ class SessionManager:
             # Reap any companion subagent runtime keyed by this parent (see remove()).
             await self.release_subagent_runtime(key)
         finally:
-            self._session_map.delete(key)
+            self._session_map.delete(key, reason=UNBIND_REASON_SESSION_DESTROYED)
             logger.info("Destroyed session (map deleted): %s", key)
 
     async def discard_conversation(self, key: str) -> None:
@@ -3726,7 +3850,7 @@ class SessionManager:
                         # on next startup doesn't see a missing entry, default
                         # to "acp", and falsely fire a switch for users still
                         # on claude_code.
-                        _prov_label = "claude_code" if _is_claude_backend(sess.provider) else "acp"
+                        _prov_label = _provider_label(sess.provider)
                         self._session_map.set(key, sid, provider=_prov_label, cwd=_cwd_str)
                 elif ClaudeCodeProvider is not None and isinstance(
                     sess.provider, ClaudeCodeProvider
@@ -3741,6 +3865,18 @@ class SessionManager:
                         )
                     ):
                         self._session_map.set(key, sid, provider="claude_code", cwd=_cwd_str)
+
+            # The set() calls above run on the loop and therefore DEFER their
+            # disk write; the gateway exits via os._exit, which never cancels
+            # tasks, so nothing downstream would ever land them. This is the
+            # shutdown durability point: await the off-loop flush so a wedged
+            # filesystem cannot hold the loop past the shutdown deadline.
+            try:
+                await self._session_map.aflush()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("close_all: session map flush failed", exc_info=True)
 
             sessions = dict(self._sessions)
             self._sessions.clear()
@@ -4131,6 +4267,18 @@ class SessionManager:
         """Remove a session's Slack link (stop mirroring). Returns True if one was present."""
         return self._session_map.clear_slack_link(key)
 
+    def set_slack_paused(self, key: str, paused: bool) -> bool:
+        """Set whether turns reach the linked Slack thread; return the prior state.
+
+        Disconnecting retains the thread binding and its reverse index, so a reply
+        there still resolves to this session.
+        """
+        return self._session_map.set_slack_paused(key, paused)
+
+    def is_slack_paused(self, key: str) -> bool:
+        """True iff this session's Slack thread is disconnected but still bound."""
+        return self._session_map.is_slack_paused(key)
+
     def get_session_for_thread(self, thread_ts: str) -> str | None:
         """Return the session key linked to a Slack thread, or None."""
         return self._session_map.get_session_for_thread(thread_ts)
@@ -4152,17 +4300,20 @@ class SessionManager:
         link: ChannelLink | None,
         *,
         accepts_inbound: bool = False,
+        reason: str = UNBIND_REASON_UNSPECIFIED,
     ) -> None:
         """Bind (or clear) a session's channel-neutral mirror target.
 
         ``accepts_inbound`` upgrades a non-Slack outbound mirror into a
         persisted session-resume binding. Slack owns its dedicated reverse
-        index; other channels use :meth:`find_mirror_sessions`.
+        index; other channels use :meth:`find_mirror_sessions`. ``reason`` is
+        recorded when this call ends an existing inbound binding.
         """
         self._session_map.set_mirror_link(
             key,
             link,
             accepts_inbound=accepts_inbound,
+            reason=reason,
         )
 
     def get_mirror_link(self, key: str) -> ChannelLink | None:
@@ -4173,6 +4324,67 @@ class SessionManager:
     def mirror_accepts_inbound(self, key: str) -> bool:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)
+
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        """Record (or withdraw) a refusal of AUTOMATIC origin mirroring.
+
+        A channel that mirrors its own conversation by default needs an
+        in-channel "off" that the NEXT inbound message does not silently undo,
+        and clearing the binding cannot express that: an entry with no ``mirror``
+        is indistinguishable from one that was never linked, so the automatic
+        bind would fire again one message later. This flag is that difference.
+
+        Persisted, because the bind it suppresses is itself re-asserted on every
+        turn and survives a restart — an in-memory refusal would come back on
+        its own. Only the automatic bind consults it; an explicit ``/link`` or
+        dashboard link is a direct instruction and :meth:`set_mirror_link` never
+        reads it.
+        """
+        with self._session_map.batched_save():
+            self._session_map.set_flag(_opt_out_key(key), MIRROR_OPT_OUT_FLAG, opted_out)
+            # Retire a refusal an earlier build stored under the generation key,
+            # so it cannot outlive a withdrawal made through the bucket.
+            legacy = canonical_key(key)
+            if legacy != _opt_out_key(key):
+                self._session_map.set_flag(legacy, MIRROR_OPT_OUT_FLAG, False)
+
+    def mirror_opt_out(self, key: str) -> bool:
+        """True iff this conversation declined automatic origin mirroring.
+
+        Reads the bucket, then falls back to the generation key an earlier build
+        wrote. Without the fallback, upgrading silently restores mirroring for
+        every conversation that had already turned it off — the exact failure the
+        flag exists to prevent, delivered by the fix for it.
+
+        A legacy hit is PROMOTED to the bucket, which is why this read writes.
+        Reading it without promoting would honour the refusal for the generation
+        it was stored under and lose it at the next rotation, so an upgrading user
+        would keep the expiring behaviour this change exists to remove. Retiring
+        the old row in the same write also stops it holding an entry that pruning
+        is forbidden to collect, one per generation.
+        """
+        bucket = _opt_out_key(key)
+        if self._session_map.get_flag(bucket, MIRROR_OPT_OUT_FLAG):
+            return True
+        legacy = canonical_key(key)
+        if legacy == bucket:
+            return False
+        if not self._session_map.get_flag(legacy, MIRROR_OPT_OUT_FLAG):
+            return False
+        with self._session_map.batched_save():
+            self._session_map.set_flag(bucket, MIRROR_OPT_OUT_FLAG, True)
+            self._session_map.set_flag(legacy, MIRROR_OPT_OUT_FLAG, False)
+        return True
+
+    def batched_save(self) -> AbstractContextManager[None]:
+        """Collapse the session-map writes of a related mutation sequence into one.
+
+        Each mutation rewrites the whole map, so a caller making several of them
+        (a link, an unlink) pays that cost once per operation unless it says
+        otherwise. Must not be held across an ``await`` — see
+        :meth:`SessionMap.batched_save`.
+        """
+        return self._session_map.batched_save()
 
     def set_origin_link(self, key: str, link: ChannelLink) -> None:
         """Record the channel conversation this session was started from.
@@ -4223,13 +4435,36 @@ class SessionManager:
         """Sessions that must stop *key* from binding *link*, or [] if it is free."""
         return self._session_map.mirror_claim_blockers(key, link, accepts_inbound=accepts_inbound)
 
-    def clear_mirror_link(self, key: str) -> bool:
+    def clear_mirror_link(self, key: str, *, reason: str = UNBIND_REASON_UNSPECIFIED) -> bool:
         """Remove a session's outbound mirror binding. Returns True iff present."""
-        return self._session_map.clear_mirror_link(key)
+        return self._session_map.clear_mirror_link(key, reason=reason)
 
-    def clear_mirror_links_at(self, link: ChannelLink) -> list[str]:
+    def clear_mirror_links_at(
+        self, link: ChannelLink, *, reason: str = UNBIND_REASON_UNSPECIFIED
+    ) -> list[str]:
         """Clear every session mirroring to an exact location; return cleared keys."""
-        return self._session_map.clear_mirror_links_at(link)
+        return self._session_map.clear_mirror_links_at(link, reason=reason)
+
+    @staticmethod
+    def set_unbind_listener(callback: UnbindListener | None) -> None:
+        """Register the sink notified when an inbound resume binding is removed.
+
+        The registry it writes is the session map's, shared by every instance, so
+        a removal performed through a throwaway map is announced too.
+        """
+        set_unbind_listener(callback)
+
+    def set_mirror_paused(self, key: str, paused: bool, *, origin: bool = False) -> bool:
+        """Set whether turns reach one non-Slack delivery; return the prior state.
+
+        ``origin`` selects the born-in conversation rather than the explicit
+        mirror binding — a session can hold both, and they mute independently.
+        """
+        return self._session_map.set_mirror_paused(key, paused, origin=origin)
+
+    def is_mirror_paused(self, key: str, *, origin: bool = False) -> bool:
+        """True iff the named non-Slack delivery is disconnected (see the setter)."""
+        return self._session_map.is_mirror_paused(key, origin=origin)
 
     # Backward-compat aliases used by callers not yet migrated
     async def set_channel(self, key: str, channel_id: str) -> None:

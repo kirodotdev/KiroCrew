@@ -22,8 +22,10 @@ import { useRef, useEffect, type KeyboardEvent, type FocusEvent } from 'react'
  * component unmounts an input mid-composition (e.g. Escape cancels a rename
  * and removes the input from the tree), `compositionEnd` will never fire and
  * `composingRef` would stay true forever, blocking Enter on other inputs that
- * share this hook. `bindEnter` and `composition` auto-`reset()` on blur/Escape
- * to avoid that.
+ * share this hook. `bindEnter` auto-`reset()`s on blur/Escape to avoid that.
+ * The bare `composition` binding does NOT: a consumer wiring its own
+ * `onKeyDown` must call `reset()` on blur/Escape itself (`useComposerDraft`
+ * does this for composer surfaces).
  *
  * Usage (simple Enter/Escape inputs):
  *   const ime = useImeGuard()

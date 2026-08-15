@@ -118,3 +118,199 @@ class TestCredentialRedaction:
             "eyJargonized.intercontinentalization",
         ):
             assert module.redact(text) == text, text
+
+
+# ---------------------------------------------------------------------------
+# Issue #2550: stable span_hash per reviewer finding + marker-regex parity.
+# ---------------------------------------------------------------------------
+
+STATUS_SCRIPT = SCRIPT.with_name("pr_status.py")
+
+_HEAD = "f" * 40
+_OLD = "a" * 40
+
+
+def _load_status() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("prepare_pr_status_parity", STATUS_SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestMarkerRegexParity:
+    """Both scripts carry a copy of the reviewer-marker contract; neither can
+    import the other (each is standalone-copyable by design), so parity is
+    pinned here -- drift would make pr_status.py gate on markers that
+    pr_findings.py cannot see, or vice versa."""
+
+    def test_stamp_and_block_patterns_are_byte_identical(self) -> None:
+        findings = _load_script()
+        status = _load_status()
+        assert findings.REVIEWED_STAMP_RE.pattern == status.REVIEWED_STAMP_RE.pattern
+        assert findings.BLOCK_MERGE_RE.pattern == status.BLOCK_MERGE_RE.pattern
+        assert findings._CTRL_RE.pattern == status._CTRL_RE.pattern
+        assert findings.DEFAULT_MARKER_AUTHORS == status.DEFAULT_MARKER_AUTHORS
+        assert findings.DEFAULT_MARKER_BINDINGS == status.DEFAULT_MARKER_BINDINGS
+        assert findings._COMMENT_KEY_RE.pattern == status._COMMENT_KEY_RE.pattern
+
+    def test_c1_controls_are_stripped(self) -> None:
+        """U+009B is the single-byte CSI (equivalent to ESC-[): a bot finding
+        carrying C1 controls must not reach the terminal through sanitize()."""
+        module = _load_script()
+        laced = "safe\x9b31mred\x9d]0;title\x07also\x85line"
+        cleaned = module.sanitize(laced)
+        assert "\x9b" not in cleaned
+        assert "\x9d" not in cleaned
+        assert "\x85" not in cleaned
+        assert "safe" in cleaned and "also" in cleaned
+
+    def test_emitting_workflows_still_carry_the_marker_grammar(self) -> None:
+        """Pin the EMITTERS to the consumers, not just the two consumer copies
+        to each other: a review-workflow prompt tweak that drops or renames a
+        stamp would silently orphan the parsers -- the freshness gate would see
+        no stamps and stop gating. This drift is exactly what the marker-
+        grammar spec (docs/ci/prepare-pr-portability.md §5.9) exists to stop."""
+        workflows = {
+            ".github/workflows/codex-review.yml": (
+                "[GPT-REVIEWED]",
+                "[BLOCK-MERGE]",
+                "<!-- codex-ai-review -->",
+            ),
+            ".github/workflows/claude-review.yml": (
+                "[OPUS-REVIEWED]",
+                "[BLOCK-MERGE]",
+                "<!-- claude-ai-review -->",
+            ),
+            ".github/workflows/design-review.yml": (
+                "[DESIGN-REVIEWED]",
+                "<!-- design-review -->",
+            ),
+            ".github/workflows/ux-review.yml": (
+                "[UX-REVIEWED]",
+                "<!-- ux-review -->",
+            ),
+        }
+        for rel, markers in workflows.items():
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            for marker in markers:
+                assert marker in text, (
+                    f"{rel} no longer emits {marker}; update the parsers in "
+                    "pr_status.py/pr_findings.py and §5.9 of "
+                    "docs/ci/prepare-pr-portability.md together"
+                )
+
+
+class TestSpanHash:
+    def test_deterministic_and_line_number_independent(self) -> None:
+        """The same finding after a rebase must keep its identity, or
+        recurrence detection resets on every push. The hash takes no line
+        number and reads no file, so it is stable by construction."""
+        module = _load_script()
+        a = module.span_hash("src/mod.py", "gpt/BLOCKING")
+        b = module.span_hash("src/mod.py", "gpt/BLOCKING")
+        assert a == b
+        assert len(a) == 12
+
+    def test_different_rule_class_separates_findings_in_one_path(self) -> None:
+        module = _load_script()
+        assert module.span_hash("a.py", "gpt/BLOCKING") != module.span_hash(
+            "a.py", "opus/BLOCKING"
+        )
+
+    def test_no_file_is_ever_opened_for_untrusted_paths(self) -> None:
+        """Finding paths come from UNTRUSTED bot-comment text. Reading any
+        file a comment names -- even inside the working tree, which can be a
+        dotfiles checkout holding credentials -- is a file read of
+        LLM-influenced input that this standalone script cannot route through
+        the repo's sensitive-path gate. Ratchet: the module must contain no
+        open() call at all outside the redaction-safe stdlib imports."""
+        source = SCRIPT.read_text(encoding="utf-8")
+        assert "open(" not in source.replace("subprocess.run", ""), (
+            "pr_findings.py must never open() a file: finding paths are "
+            "untrusted comment text and cannot be routed through hooks.py"
+        )
+
+
+class TestExtractFindings:
+    def test_scoped_to_current_head_and_bound_lane_comments(self) -> None:
+        module = _load_script()
+        bindings = dict(_load_script().DEFAULT_MARKER_BINDINGS)
+        comments = [
+            # Stale comment: findings for a diff that no longer exists.
+            {
+                "user": {"type": "Bot"},
+                "body": (
+                    "<!-- codex-ai-review -->\n"
+                    f"BLOCKING -- src/old.py:5 -- gone\n[GPT-REVIEWED] {_OLD}"
+                ),
+            },
+            # Fresh comment: one blocking + one advisory.
+            {
+                "user": {"type": "Bot"},
+                "body": (
+                    "<!-- codex-ai-review -->\n"
+                    "BLOCKING -- src/x.py:10 -- broken guard\n"
+                    "FINDING -- src/y.py:20 -- could be tighter -> Fix: tighten\n"
+                    f"[GPT-REVIEWED] {_HEAD}\n[BLOCK-MERGE] {_HEAD}"
+                ),
+            },
+            # Un-keyed comment: no bound lane, contributes nothing.
+            {
+                "user": {"type": "Bot"},
+                "body": f"BLOCKING -- src/z.py:1 -- fake\n[GPT-REVIEWED] {_HEAD}",
+            },
+        ]
+
+        found = list(module.extract_findings(comments, _HEAD, bindings))
+
+        assert [(f["kind"], f["path"], f["line"]) for f in found] == [
+            ("BLOCKING", "src/x.py", 10),
+            ("FINDING", "src/y.py", 20),
+        ]
+        assert all(f["reviewer"] == "gpt" for f in found)
+        assert all(f["block_merge"] for f in found)
+        assert all(len(f["span"]) == 12 for f in found)
+
+
+class TestFindingLineFormats:
+    def test_bold_opus_format_is_parsed(self) -> None:
+        """Opus emits `**BLOCKING — file:line — title**` with detail on
+        following lines; omitting it from the listing hides real blockers."""
+        module = _load_script()
+        bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+        comments = [
+            {
+                "user": {"type": "Bot"},
+                "body": (
+                    "<!-- claude-ai-review -->\n"
+                    "**BLOCKING \u2014 src/a.py:12 \u2014 guard removed**\n"
+                    "detail line\n"
+                    f"[OPUS-REVIEWED] {_HEAD}\n[BLOCK-MERGE] {_HEAD}"
+                ),
+            },
+        ]
+
+        found = list(module.extract_findings(comments, _HEAD, bindings))
+
+        assert [(f["kind"], f["path"], f["line"]) for f in found] == [
+            ("BLOCKING", "src/a.py", 12)
+        ]
+
+    def test_plain_gpt_format_still_parses(self) -> None:
+        module = _load_script()
+        bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+        comments = [
+            {
+                "user": {"type": "Bot"},
+                "body": (
+                    "<!-- codex-ai-review -->\n"
+                    f"FINDING -- src/b.py:3 -- tighten -> Fix: x\n[GPT-REVIEWED] {_HEAD}"
+                ),
+            },
+        ]
+        found = list(module.extract_findings(comments, _HEAD, bindings))
+        assert [(f["kind"], f["path"], f["line"]) for f in found] == [
+            ("FINDING", "src/b.py", 3)
+        ]

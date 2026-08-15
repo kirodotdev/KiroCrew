@@ -3,13 +3,13 @@
  * reach: the three header ⋮ panels (Clean Up, Switch All Sessions, Manage
  * Tags), the Older Sessions pane (resume / delete / load-more / date segments /
  * folder-grouped search results), the narrow-width header collapse, and the
- * `reveal-slot` window event.
+ * store-driven reveal-in-sidebar request (chat.revealRequest).
  *
  * Radix DropdownMenu cannot be opened by mouse in jsdom (needs PointerEvent),
  * so every trigger here is activated by keyboard — the path jsdom does handle.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -88,6 +88,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { requestSlotReveal } from '../store/chatSlice'
 
 interface TestSlot {
   key: string
@@ -120,6 +121,9 @@ function renderSidebar(opts: {
   folders?: ChatFolder[]
   history?: TestHistoryItem[]
   historyHasMore?: boolean
+  /** Pre-set chat.revealRequest, simulating a reveal requested while the
+   *  sidebar was unmounted (the #912 D1 regression case). */
+  revealRequest?: { key: string; nonce: number }
 } = {}) {
   const slots = opts.slots ?? []
   const folders = opts.folders ?? []
@@ -144,6 +148,8 @@ function renderSidebar(opts: {
       ...defaults.chat,
       activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {},
       goalLoops: {}, workflowRuns: {}, subagentQueued: {}, slotHistory: [],
+      revealRequest: opts.revealRequest ?? null,
+      revealNonce: opts.revealRequest?.nonce ?? 0,
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
@@ -360,7 +366,21 @@ describe('ChatSidebar — header menu view + tag entries', () => {
 })
 
 describe('ChatSidebar — Older Sessions pane', () => {
-  const daysAgo = (n: number) => Math.floor((Date.now() - n * 86400_000) / 1000)
+  // Pin the clock for the date-bucket assertions (issue #2919): a raw
+  // `Date.now() - n days` fixture slides across local midnight when the suite
+  // runs just after 00:00, moving the `daysAgo(1)` row from Yesterday into
+  // Last 7 Days. The pin is LOCAL midday — the farthest point from both
+  // midnight edges in any timezone — and fixtures are built here at
+  // collection time from the PIN constant, not the faked clock (the
+  // beforeEach below only pins what the component reads at render). Faking
+  // ONLY `Date` leaves real timers driving waitFor/promises. Mid-January
+  // avoids DST transitions inside the lookback window.
+  const PIN = new Date(2026, 0, 15, 12, 0, 0) // local midday, not 12:00Z
+  const daysAgo = (n: number) => Math.floor((PIN.getTime() - n * 86400_000) / 1000)
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(PIN)
+  })
   const HISTORY: TestHistoryItem[] = [
     { key: 'h1', title: 'Fresh history', modified: daysAgo(0), agent: 'builder' },
     { key: 'h2', title: 'Yesterday history', modified: daysAgo(1) },
@@ -415,7 +435,7 @@ describe('ChatSidebar — Older Sessions pane', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderSidebar({ history: HISTORY })
     openHistory()
-    fireEvent.click(screen.getByText('Clear'))
+    fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
     confirmSpy.mockRestore()
   })
@@ -500,32 +520,85 @@ describe('ChatSidebar — narrow-width header', () => {
   })
 })
 
-describe('ChatSidebar — reveal-slot event', () => {
-  it('expands the ancestor folders of the revealed session and scrolls to it', async () => {
-    const scrollIntoView = vi.fn()
-    const original = Element.prototype.scrollIntoView
+describe('ChatSidebar — reveal request (store-driven, issue #912)', () => {
+  let scrollIntoView: ReturnType<typeof vi.fn>
+  let originalScroll: typeof Element.prototype.scrollIntoView
+  beforeEach(() => {
+    scrollIntoView = vi.fn()
+    originalScroll = Element.prototype.scrollIntoView
     Element.prototype.scrollIntoView = scrollIntoView
-    try {
-      const folders: ChatFolder[] = [
-        { id: 'f-parent', name: 'Parent', order: 0, collapsed: true },
-        { id: 'f-child', name: 'Child', order: 1, parent_id: 'f-parent', collapsed: true },
-      ]
-      renderSidebar({
-        slots: [{ key: 'k-deep', title: 'Deep one', running: false, folder_id: 'f-child' }],
-        folders,
-      })
-      window.dispatchEvent(new CustomEvent('reveal-slot', { detail: 'k-deep' }))
-      await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f-child', { collapsed: false }))
-      expect(mocks.updateChatFolder).toHaveBeenCalledWith('f-parent', { collapsed: false })
-      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
-    } finally {
-      Element.prototype.scrollIntoView = original
-    }
+  })
+  afterEach(() => { Element.prototype.scrollIntoView = originalScroll })
+
+  it('consumes a request set BEFORE mount: expands ancestors, scrolls, clears the request', async () => {
+    // The D1 regression case: with the drawer collapsed the sidebar is
+    // unmounted, so the old window CustomEvent was dispatched into nothing and
+    // dropped. The store request must survive until this mount consumes it.
+    const folders: ChatFolder[] = [
+      { id: 'f-parent', name: 'Parent', order: 0, collapsed: true },
+      { id: 'f-child', name: 'Child', order: 1, parent_id: 'f-parent', collapsed: true },
+    ]
+    const { store } = renderSidebar({
+      slots: [{ key: 'k-deep', title: 'Deep one', running: false, folder_id: 'f-child' }],
+      folders,
+      revealRequest: { key: 'k-deep', nonce: 1 },
+    })
+    await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f-child', { collapsed: false }))
+    expect(mocks.updateChatFolder).toHaveBeenCalledWith('f-parent', { collapsed: false })
+    // The row enters the DOM only after the optimistic expansion re-render —
+    // the bounded retry (not a one-shot timeout) must still find it (D3).
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    expect(store.getState().chat.revealRequest).toBeNull()
   })
 
-  it('ignores a reveal event with no session key', () => {
-    renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
-    window.dispatchEvent(new CustomEvent('reveal-slot', { detail: '' }))
+  it('flashes the revealed row so an in-place reveal is visible', async () => {
+    renderSidebar({
+      slots: [{ key: 'k-a', title: 'Alpha', running: false }],
+      revealRequest: { key: 'k-a', nonce: 1 },
+    })
+    // The confirmation outline is the only signal when the row was already on
+    // screen (D4) — scrollIntoView on a visible row is a visual no-op.
+    await waitFor(() => {
+      const row = document.querySelector('[data-session-row="k-a"]')
+      expect(row?.classList.contains('session-reveal-flash')).toBe(true)
+    })
+  })
+
+  it('re-fires for a repeat reveal of the same session (nonce-keyed)', async () => {
+    const { store } = renderSidebar({ slots: [{ key: 'k-a', title: 'Alpha', running: false }] })
+    act(() => { store.dispatch(requestSlotReveal('k-a')) })
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1))
+    act(() => { store.dispatch(requestSlotReveal('k-a')) })
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2))
+  })
+
+  it('clears the sidebar search filter when it hides the target row', async () => {
+    localStorage.setItem('mc-session-pinned-only', '1')
+    const { store } = renderSidebar({
+      slots: [
+        { key: 'k-a', title: 'Alpha', running: false },
+        { key: 'k-b', title: 'Beta', running: false },
+      ],
+    })
+    const search = screen.getByPlaceholderText('Search sessions…')
+    fireEvent.change(search, { target: { value: 'b' } })
+    // Filter active: Alpha's row is out of the DOM entirely (D5).
+    await waitFor(() => expect(document.querySelector('[data-session-row="k-a"]')).toBeNull())
+    act(() => { store.dispatch(requestSlotReveal('k-a')) })
+    // Reveal is an explicit "show me this row": the filter is dropped so the
+    // reveal has something to land on.
+    await waitFor(() => expect((search as HTMLInputElement).value).toBe(''))
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    // The status-filter clearing must ALSO clear the persisted key — the
+    // sidebar unmounts when the drawer collapses, and remount re-reads it.
+    expect(localStorage.getItem('mc-session-pinned-only')).toBe('0')
+  })
+
+  it('ignores a request for an unknown session key but still consumes it', async () => {
+    const { store } = renderSidebar({ slots: [{ key: 'k-a', title: 'A', running: false }] })
+    act(() => { store.dispatch(requestSlotReveal('k-gone')) })
+    await waitFor(() => expect(store.getState().chat.revealRequest).toBeNull())
     expect(mocks.updateChatFolder).not.toHaveBeenCalled()
+    expect(scrollIntoView).not.toHaveBeenCalled()
   })
 })

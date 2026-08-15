@@ -75,6 +75,10 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
   const { data, isLoading } = useQuery({
     queryKey: ['registries'],
     queryFn: () => api.listRegistries(),
+    // handleAdd sends a REPLACE-ALL PUT built from this cached list, so a stale
+    // cache would silently erase a registry added from another tab. Use a finite
+    // staleTime so focus-refetch fires here (the global default is Infinity).
+    staleTime: 30_000,
   })
   const registries: Registry[] = data?.registries || []
 
@@ -158,6 +162,10 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         {i18nT('components.registryManager.external_registries')}
         <InfoTip text={i18nT('components.registryManager.org_owned_app_catalogs_hosted_in_git_repositorie')} />
       </CardTitle>
+
+      {bare && (
+        <p className="text-[12px] text-muted mb-3">{i18nT('components.registryManager.registry_url_install_public_repos_only')}</p>
+      )}
 
       {/* No hand-off: the notice sits beside unsaved form input, and the button
           navigates away — which would discard what the user typed. */}

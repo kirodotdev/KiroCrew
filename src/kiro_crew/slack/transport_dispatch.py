@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
+    mint_options_token,
     remember_slack_options,
 )
 from kiro_crew.executors import run_in_embed_pool
@@ -544,6 +545,56 @@ async def handle_message_transport(
         # different session, which makes any control this turn posts stale the
         # instant it lands — compared after the run below.
         _pre_run_owner = sessions.get_session_for_thread(reply_ts) or session_key
+
+        # Persisting-and-stamping is handed to the renderer because the token has
+        # to be inside the footer it is about to post, and the footer is posted
+        # from inside the run below. Only the renderer knows the final text; only
+        # we know the conversation and its transcript, so we pass in the operation
+        # rather than the state.
+        _stamped_turn = False
+
+        async def _persist_and_stamp(final_text: str) -> str | None:
+            nonlocal _stamped_turn
+            if not conversation_log or _is_slack_restricted(session_key):
+                return None
+            _log = conversation_log
+            if _logged_user_turn:
+                # The user's question was made durable before the run, so only
+                # the reply is outstanding. Read the row back inside the same hold
+                # that wrote it, so the stamp names this reply and not whatever a
+                # later writer appends.
+                def _append_and_read() -> str | None:
+                    with _log.atomic_appends(session_key):
+                        _log.append(
+                            session_key,
+                            "assistant",
+                            final_text,
+                            source_thread=session_key,
+                            source_user=user_id,
+                        )
+                        return _log.last_row_ts(session_key)
+
+                row_ts = await asyncio.to_thread(_append_and_read)
+            else:
+                row_ts = await save_conversation_turn_off_loop(
+                    _log,
+                    session_key,
+                    text,
+                    final_text,
+                    source_thread=session_key,
+                    source_user=user_id,
+                )
+            _stamped_turn = True
+            # The asker is the conversation that RAN this turn. Resolving the
+            # thread's owner here would name whoever took it over mid-turn -- a
+            # session that never asked the question.
+            return mint_options_token(
+                cast("DashboardState | None", get_dashboard_state()),
+                session_key,
+                row_ts,
+            )
+
+        renderer.stamp_options = _persist_and_stamp
         accumulated = await driver.run(full_message)
 
         # ── Post-turn bookkeeping ──
@@ -624,7 +675,13 @@ async def handle_message_transport(
         # so a turn is never persisted reply-only.
         try:
             if conversation_log and not _is_slack_restricted(session_key):
-                if _logged_user_turn:
+                # Skipped only when the stamp above already wrote this turn (an
+                # options turn). Every other completion -- and any turn whose stamp
+                # failed -- still persists here, so no path ends up writing the
+                # turn twice and none ends up not writing it at all.
+                if _stamped_turn:
+                    pass
+                elif _logged_user_turn:
                     if accumulated:
                         # Same off-loop reasoning as the receipt write above.
                         await asyncio.to_thread(
@@ -687,7 +744,20 @@ async def handle_message_transport(
         # Guarantee renderer teardown even if TurnDriver.run() raised before
         # on_done: cancels the 30s tool-elapsed timer so it can't survive the
         # turn and keep hitting append_task against a dead stream.
+        #
+        # Teardown is best-effort and must NEVER prevent the release below: the
+        # semaphore is keyed by SESSION, so a close() that raises here would
+        # wedge every later message in that conversation (and its queue drain)
+        # until the gateway restarts, not merely lose this turn. Same guard as
+        # Discord's dispatcher and the shared pipeline.
         if renderer is not None:
-            await renderer.close()
+            try:
+                await renderer.close()
+            except Exception:
+                logger.warning(
+                    "Slack: renderer.close failed session=%s",
+                    session_key,
+                    exc_info=True,
+                )
         if _acquired:
             sessions.release(session_key)

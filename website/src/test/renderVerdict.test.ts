@@ -323,11 +323,15 @@ describe('CI supplies a base commit on both paths', () => {
   // tests above would still pass.
   const ci = readFileSync(resolve(process.cwd(), '../.github/workflows/ci.yml'), 'utf-8')
   // Any `*_BASE_REF` wiring, not just the i18n ones: `brand-lint` passes
-  // `BRAND_BASE_REF` through the same resolver and needs the same guarantees.
+  // `BRAND_BASE_REF` and `harness-parity` passes `HARNESS_BASE_REF` through the
+  // same resolver and both need the same guarantees.
   const wirings = ci.match(/^\s*[A-Z0-9_]*BASE_REF: \$\{\{.*$/gm) || []
 
   it('wires every diff-scoped gate step', () => {
-    expect(wirings).toHaveLength(4)
+    // A count, not a set: the point is that a gate ADDED to ci.yml cannot skip
+    // this file's `base.sha` assertion below by going unnoticed. Bump it when a
+    // diff-scoped gate lands, and check the new wiring is in the loop.
+    expect(wirings).toHaveLength(5)
   })
 
   it('diffs a PR against the commit its merge ref was built on, not the branch tip', () => {
@@ -494,9 +498,18 @@ describe('INVARIANT — with a diff in hand, a total can never fail the run', ()
     const raising = (gate.match(/totalIsFallback = (?!false)[^\n]*/g) || [])
       .map(s => s.replace(/\s*\}\).*$/, '').trim())
     expect(raising).toEqual(['totalIsFallback = !!scope.fallback'])
-    // ...and exactly one branch of resolveBaseScope may raise it.
-    expect((gate.match(/fallback: true/g) || []).length).toBe(1)
+    // ...and only branches of resolveBaseScope that render NO base may raise it. There
+    // are exactly two such branches, and they are the same class — "there is no diff to
+    // measure", not "the diff says this is fine":
+    //   - no base REF was given, so nothing identifies a base commit;
+    //   - a base ref exists but its tree cannot be BUILT, because the base bundle
+    //     compiles against this branch's node_modules and this branch removed a
+    //     dependency the base still imports.
+    // Both must keep the debt record as the guard; an opt-out (`--no-vs-base` and
+    // friends) must NOT, since it asked for a report rather than losing the check.
+    expect((gate.match(/fallback: true/g) || []).length).toBe(2)
     expect(gate).toMatch(/if \(!baseRef\) \{[\s\S]*?fallback: true/)
+    expect(gate).toMatch(/const missing = [\s\S]*?if \(missing\.length\) \{[\s\S]*?fallback: true/)
     // The default must be the safe one, so a new early return cannot raise it by omission.
     expect(gate).toMatch(/let totalIsFallback = false/)
   })

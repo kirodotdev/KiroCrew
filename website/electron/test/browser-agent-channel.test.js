@@ -333,3 +333,57 @@ test("start(): idempotent — a second start does not launch a second loop", asy
   assert.strictEqual(ch.isRunning(), false);
   assert.strictEqual(calls.drain, 0);
 });
+
+// ── idle host-presence heartbeat (local gateway only) ──
+
+test("idle + local gateway: sends a host-presence heartbeat (empty keys, wait_ms 0)", async () => {
+  const { fetchFn, calls } = fakeFetch(() => res(204));
+  const ch = createAgentCommandChannel(
+    baseDeps({ fetchFn, listPanelIds: () => [], isGatewayLocal: () => true, idleMs: 10 })
+  );
+  ch.start();
+  await waitFor(() => calls.drain >= 1);
+  await ch.stop();
+  assert.deepStrictEqual(calls.drains[0], { session_keys: [], wait_ms: 0 });
+  assert.strictEqual(calls.result, 0, "a heartbeat never posts a result");
+});
+
+test("idle + remote gateway: no heartbeat, never hits the network", async () => {
+  const { fetchFn, calls } = fakeFetch(() => res(204));
+  const ch = createAgentCommandChannel(
+    baseDeps({ fetchFn, listPanelIds: () => [], isGatewayLocal: () => false, idleMs: 10 })
+  );
+  ch.start();
+  await sleep(60); // several idle cycles
+  await ch.stop();
+  assert.strictEqual(calls.drain, 0, "must not push the local secret to a remote gateway");
+});
+
+// ── poke(): abort an in-flight long-poll and re-read the tracked set ──
+
+test("poke(): wakes an idle loop to re-read listPanelIds at once", async () => {
+  let keys = [];
+  const { fetchFn, calls } = fakeFetch(() => res(204));
+  const ch = createAgentCommandChannel(
+    baseDeps({
+      fetchFn,
+      isGatewayLocal: () => false, // no heartbeat -> the loop parks in the idle sleep
+      idleMs: 10000,               // a long park that only a poke() should cut short
+      listPanelIds: () => keys.slice(),
+    })
+  );
+  ch.start();
+  await sleep(30); // let it read [] and enter the long idle sleep
+  assert.strictEqual(calls.drain, 0, "no drain while idle with no panels");
+  keys = ["new"];
+  ch.poke(); // must wake the idle sleep -> re-read -> drain the new key at once
+  await waitFor(() => calls.drains.some((d) => d.session_keys.includes("new")));
+  await ch.stop();
+  assert.strictEqual(ch.isRunning(), false);
+});
+
+test("poke(): safe no-op when the loop is not running", () => {
+  const { fetchFn } = fakeFetch(() => res(204));
+  const ch = createAgentCommandChannel(baseDeps({ fetchFn }));
+  assert.doesNotThrow(() => ch.poke());
+});

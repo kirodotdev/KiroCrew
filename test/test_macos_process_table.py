@@ -156,7 +156,6 @@ def test_sampler_pass_over_many_pids_takes_one_snapshot(monkeypatch):
 
     calls = _counting_ps(monkeypatch)
     monkeypatch.setattr(sm, "_iter_descendant_pids", lambda pid: [pid])
-    monkeypatch.setattr(sm, "_unattributed", lambda owned, self_pid: None)
     monkeypatch.setattr("kiro_crew.dashboard.handlers.usage.slot_spend", lambda: {})
 
     sampler = sm.SessionMemorySampler()

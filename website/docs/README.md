@@ -10,7 +10,7 @@ Backend and whole-system docs are in [`../../docs/`](../../docs/README.md).
 | [theming-contract.md](theming-contract.md) | The CSS variable contract, the stable class hooks a theme may target, and what is deliberately not customizable. |
 | [frontend-conventions.md](frontend-conventions.md) | Shared components, accessibility, URL sanitization, data fetching, animation, and styling. |
 | [i18n-catalog.md](i18n-catalog.md) | Catalog structure, key naming, plurals, and the formatting seam. |
-| [testing.md](testing.md) | The three test layers, which to use when, how Playwright really runs, and the manual procedures. |
+| [testing.md](testing.md) | The three test layers, which to use when, how Playwright really runs, how to keep a test deterministic under a loaded shard, and the manual procedures. |
 | [extension-seams.md](extension-seams.md) | The registry seams a downstream edition composes against, and the fail-closed edition opt-in. |
 
 Related, outside this directory:

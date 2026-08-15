@@ -587,16 +587,14 @@ def split_sentences(text: str) -> list[str]:
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
     """Concatenate MP3 files into a single file using ffmpeg.
 
-    Windows: ffmpeg is not guaranteed on PATH (the dashboard-streaming stitch
-    path then fails); should be made optional + warn. The Slack thread-upload
-    path is unaffected. Tracked as follow-on work.
+    Windows: ffmpeg is not guaranteed on PATH, so the dashboard-streaming stitch
+    path fails there; making it optional with a warning is a known gap. The
+    Slack thread-upload path is unaffected.
     """
     if not paths:
         return None
     if len(paths) == 1:
         if output:
-            import shutil
-
             shutil.copy2(paths[0], output)
             return output
         return paths[0]

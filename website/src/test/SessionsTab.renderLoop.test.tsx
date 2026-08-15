@@ -186,7 +186,6 @@ describe('SessionsTab render stability', () => {
       }],
       tasks: [],
       totals: { rss_mb: 512, host_mb: 16000, procs: 2, sessions: 1, tasks: 0 },
-      unattributed: null,
       history: [],
     }
     const spy = vi.spyOn(api, 'sessionsMemory')
@@ -207,7 +206,7 @@ describe('SessionsTab render stability', () => {
   it('still says there are none once an empty payload really arrives', async () => {
     vi.spyOn(api, 'sessionsMemory').mockResolvedValue({
       sessions: [], tasks: [], totals: { rss_mb: 0, host_mb: 1000, procs: 0, sessions: 0, tasks: 0 },
-      unattributed: null, history: [],
+      history: [],
     } as never)
 
     mount()
@@ -232,7 +231,7 @@ describe('SessionsTab render stability', () => {
     // accidentally reintroduces an identity change.
     vi.spyOn(api, 'sessionsMemory').mockResolvedValue({
       sessions: [], tasks: [], totals: { rss_mb: 0, host_mb: 1000, procs: 0, sessions: 0, tasks: 0 },
-      unattributed: null, history: [],
+      history: [],
     } as never)
 
     mount()

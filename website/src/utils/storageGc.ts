@@ -14,10 +14,12 @@
 /** Prefixes that are scoped per-session and should be cleaned up.
  *  localStorage key prefixes — storage identifiers, never rendered. Not UI copy.
  *  Each must stay byte-identical to the writer that produces it (the first is
- *  `LS_KEY_PREFIX` in `hooks/virtualizer/HeightCache.ts`); a translated or
- *  reworded entry silently stops collecting that family of keys. */
+ *  `LS_KEY_PREFIX` in `hooks/virtualizer/HeightCache.ts`, the second is
+ *  `ANCHOR_KEY_PREFIX` in `hooks/virtualizer/ScrollAnchorCache.ts`); a
+ *  translated or reworded entry silently stops collecting that family of keys. */
 const SESSION_PREFIXES = [
   'vc_heights_',
+  'vc_anchor_',
   'kirocrew:touched-files:',
   'mc-panel-tabs:',
   'mc-activity-open:',

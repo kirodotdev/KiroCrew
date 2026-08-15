@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hmac
+import importlib.util
 import json
 import logging
 import math
@@ -14,6 +15,8 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
+import sysconfig
 from pathlib import Path
 
 from aiohttp import web
@@ -299,12 +302,15 @@ async def api_ready(request: web.Request) -> web.Response:
 
 #: Accepted shape for ``dashboard.language`` — a conservative BCP-47 subset
 #: (``en``, ``zh-CN``, ``pt-BR``, ``zh-Hans-CN``). Deliberately validates SHAPE,
-#: not membership in the frontend's shipped-language list: keeping the set of
-#: available languages a pure frontend data change (``SUPPORTED_LANGUAGES`` +
-#: one catalog) means adding a language never needs a backend edit. An
-#: unrecognised-but-well-formed tag is safe because the SPA's
-#: ``resolveLanguage()`` falls back to browser detection for any code it has no
-#: catalog for.
+#: not membership in the frontend's shipped-language list: ``""`` and
+#: not-yet-shipped tags must stay writable (the SPA's ``resolveLanguage()``
+#: falls back to detection for any code it has no catalog for, so a persisted
+#: non-catalog value degrades gracefully client-side). Membership IS enforced,
+#: but at the point of use: ``context.ui_language_tag`` gates the agent-steer
+#: read path on ``_UI_LANGUAGE_CATALOGS`` so a non-catalog tag is never claimed
+#: to the model as the UI language (#1130). A new backend consumer of
+#: ``dashboard.language`` must route through that resolver rather than reading
+#: the raw field.
 _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
 
@@ -492,6 +498,7 @@ _STT_LANGUAGE_CODES: tuple[str, ...] = (
     "it-IT",
     "pt-BR",
     "ja-JP",
+    "ko-KR",
     "zh-CN",
 )
 
@@ -564,8 +571,25 @@ async def api_stt_config(request: web.Request) -> web.Response:
     # _stt_prereq_commands probes for a system python/brew via subprocess; run it
     # off the event loop so a slow/again-spawned interpreter check can't stall the
     # gateway (observed as "event-loop heartbeat: lag" on Windows where the probe
-    # is heavier). The GET is read-only, so threading it is safe.
-    prereqs = await asyncio.to_thread(_stt_prereq_commands, provider)
+    # is heavier). The GET is read-only, so threading it is safe. The ffmpeg and
+    # install-channel probes ride in the same thread: ensure_ffmpeg_in_path,
+    # find_spec and the PEP 668 marker check all touch the filesystem, which
+    # does not belong on the loop either.
+
+    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool]:
+        cmds = _stt_prereq_commands(provider)
+        ensure_ffmpeg_in_path()
+        no_ffmpeg = shutil.which("ffmpeg") is None
+        unsupported = not _voice_extra_importable() and not _pip_install_channel_available()
+        # The bundled desktop app is the one unsupported cause with different
+        # user guidance (no Python environment of the user's own to fix), so
+        # the UI needs to distinguish it from the pip-less/PEP 668 causes.
+        bundled = platform_compat.is_bundled_interpreter()
+        return cmds, no_ffmpeg, unsupported, bundled
+
+    prereqs, ffmpeg_missing, transcribe_unsupported, bundled_app = await asyncio.to_thread(
+        _prereqs_and_probes
+    )
     return web.json_response(
         {
             "enabled": cfg.stt.enabled,
@@ -592,8 +616,104 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "install_detail": _stt_install_status["detail"],
             "install_error": _stt_install_status["error"],
             "prereqs": prereqs,
+            # True when no install channel can make Transcribe's import
+            # requirement (`boto3` + `amazon-transcribe`) satisfiable in this
+            # process — frozen build, pip-less interpreter, or PEP 668
+            # externally-managed python. The Settings page shows an unsupported
+            # notice instead of an empty prerequisite panel. Computed in the
+            # threaded probe above: find_spec and the marker check touch the
+            # filesystem.
+            "transcribe_unsupported": transcribe_unsupported,
+            "bundled_interpreter": bundled_app,
+            # ffmpeg is required to remux the browser's .webm for the
+            # non-streaming path, but is_available() only logs a warning when
+            # it is absent — so availability can read "ready" while dictation
+            # would fail. Served separately so the UI can surface the gap even
+            # when the provider is otherwise available.
+            "ffmpeg_missing": ffmpeg_missing,
         }
     )
+
+
+def _voice_extra_importable() -> bool:
+    """True when the ``voice`` extra actually imported in this process.
+
+    Reads ``kiro_crew.transcribe``'s own import outcome (its module-level
+    try/except sets ``boto3 = None`` on failure) rather than probing specs: a
+    partial installation whose dist-info exists but whose import fails must
+    surface the repair command, not suppress it. Runs off the event loop —
+    ``transcribe`` is already imported at module load, so this is an attribute
+    read, but callers batch it with the other filesystem probes anyway.
+    """
+    from kiro_crew import transcribe
+
+    if transcribe.boto3 is None:
+        return False
+    try:
+        import amazon_transcribe  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _pip_install_channel_available() -> bool:
+    """True when ``<gateway python> -m pip install`` can plausibly succeed.
+
+    Three environments make that command a guaranteed dead end, and surfacing
+    it there recreates the press-and-nothing-changes failure this surface
+    exists to avoid:
+
+    - a frozen backend: its import set is fixed at build time (the packaging
+      spec excludes the voice extra), so no install can become importable;
+    - the desktop app's bundled interpreter (see
+      :func:`platform_compat.is_bundled_interpreter`): pip may exist, but a
+      pip install writes into the code-signed bundle — breaking launches and
+      updates — and is discarded on every app update;
+    - an interpreter without the ``pip`` module (uv tool installs, some
+      pipx layouts);
+    - a PEP 668 externally-managed interpreter (distro/brew pythons), where
+      pip refuses to install. Checked only outside a venv: inside one, pip
+      works and deliberately ignores the marker, so a venv returns True.
+    """
+    if getattr(sys, "frozen", False):
+        return False
+    if platform_compat.is_bundled_interpreter():
+        return False
+    if importlib.util.find_spec("pip") is None:
+        return False
+    # PEP 668 applies to the environment pip would install into. Inside a venv
+    # pip deliberately ignores the marker, and `sysconfig.get_path("stdlib")`
+    # resolves to the BASE interpreter's directory — where distro/brew pythons
+    # place it — so checking it from a venv would misfire on the recommended
+    # install layout (venv on a Debian/Ubuntu/Homebrew python).
+    if sys.prefix != sys.base_prefix:
+        return True
+    return not (Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED").exists()
+
+
+def _ffmpeg_install_commands() -> list[str]:
+    """Platform command(s) that put ffmpeg on PATH, or ``[]`` when it already is."""
+    ensure_ffmpeg_in_path()
+    if shutil.which("ffmpeg"):
+        return []
+    system = platform.system()
+    if system == "Darwin":
+        return ["brew install ffmpeg"]
+    if system == "Windows":
+        return ["winget install --id Gyan.FFmpeg"]
+    if shutil.which("apt-get"):
+        return ["sudo apt-get install -y ffmpeg"]
+    # Amazon Linux: no ffmpeg in the distro repos — build minimal ffmpeg from
+    # source (the official recommendation).
+    proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
+    script = os.path.join(proj, "scripts", "build-ffmpeg.sh") if proj else ""
+    if script and os.path.isfile(script):
+        return [
+            "sudo dnf install -y gcc make nasm diffutils 2>/dev/null"
+            " || sudo yum install -y gcc make nasm diffutils",
+            f"bash {shlex.quote(script)}",
+        ]
+    return ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
 
 
 def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
@@ -603,10 +723,38 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
     mlx-whisper``) and only needs ffmpeg beyond that — it does not require the
     system-python/whisper toolchain.
     """
+    if provider == "transcribe":
+        # AWS Transcribe's availability is "boto3 + amazon-transcribe importable
+        # by THIS gateway process" (see kiro_crew.transcribe.is_available); the
+        # optional ``voice`` extra provides both, and there is no separate
+        # binary, so the Install button flow does not apply.
+        cmds: list[str] = []
+        if not _voice_extra_importable():
+            if not _pip_install_channel_available():
+                # No install channel can make the extra importable in this
+                # build/interpreter — the Settings page shows an unsupported
+                # notice (`transcribe_unsupported`) instead of a command that
+                # cannot succeed.
+                return []
+            # The command targets the gateway's own interpreter: the import
+            # happens in-process, so a system python or ``--user`` install is
+            # not importable here.
+            if os.name == "nt":
+                # POSIX quoting is wrong for Windows shells; ``&`` is
+                # PowerShell's call operator for a quoted executable path.
+                cmds.append(f'& "{sys.executable}" -m pip install "kirocrew[voice]"')
+            else:
+                cmds.append(f"{shlex.quote(sys.executable)} -m pip install 'kirocrew[voice]'")
+        # The non-streaming path remuxes the browser's .webm through ffmpeg, and
+        # is_available() only logs a warning when ffmpeg is absent — this list
+        # is the one user-visible surface for that gap.
+        cmds.extend(_ffmpeg_install_commands())
+        return cmds
+
     ensure_ffmpeg_in_path()
 
     system = platform.system()
-    cmds: list[str] = []
+    cmds = []
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     if provider == "mlx":
@@ -626,7 +774,10 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
                 '/bin/bash -c "$(curl -fsSL'
                 ' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
             ]
-        return []
+        # ffmpeg is still surfaced when missing: the Install button covers it
+        # during setup, but a ready mlx install that later loses ffmpeg has no
+        # button — this list is what the ready-state warning renders.
+        return _ffmpeg_install_commands()
 
     has_python = _find_suitable_python() is not None
 
@@ -660,20 +811,7 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
                 # AL2: python3.7 is too old for whisper; Docker mode handles it
                 pass
         if not has_ffmpeg:
-            if shutil.which("apt-get"):
-                cmds.append("sudo apt-get install -y ffmpeg")
-            else:
-                # AL2023/AL2: build minimal ffmpeg from source (official recommendation)
-                proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
-                script = os.path.join(proj, "scripts", "build-ffmpeg.sh") if proj else ""
-                if script and os.path.isfile(script):
-                    cmds.append(
-                        "sudo dnf install -y gcc make nasm diffutils 2>/dev/null"
-                        " || sudo yum install -y gcc make nasm diffutils"
-                    )
-                    cmds.append(f"bash {shlex.quote(script)}")
-                else:
-                    cmds.append("echo 'Build ffmpeg from source:" " https://ffmpeg.org/releases/'")
+            cmds.extend(_ffmpeg_install_commands())
     return cmds
 
 
@@ -736,10 +874,30 @@ async def api_stt_install(request: web.Request) -> web.Response:
             {"error": f"Install already in progress: {_stt_install_status['step']}"}, status=409
         )
 
+    # Native install via shell script, tailored to the configured provider.
+    # Transcribe has no local runtime to install (its requirement is the
+    # ``voice`` extra importable by this process, surfaced as a prerequisite
+    # command) — reject rather than installing a Whisper runtime, which cannot
+    # change Transcribe's availability.
+    provider = KiroCrewConfig.load().stt.provider
+    if provider == "transcribe":
+        _sel().log_api_access(
+            caller=caller,
+            operation="stt.install",
+            outcome="denied",
+            error="no local install for provider=transcribe",
+        )
+        return web.json_response(
+            {
+                "code": "stt_no_local_install",
+                "error": "AWS Transcribe has no local install;"
+                " run the prerequisite command to add the 'voice' extra instead",
+            },
+            status=400,
+        )
+
     _stt_install_status = {"step": "starting", "detail": "", "error": ""}
 
-    # Native install via shell script, tailored to the configured provider.
-    provider = KiroCrewConfig.load().stt.provider
     _sel().log_api_access(
         caller=caller,
         operation="stt.install",
@@ -881,9 +1039,7 @@ def _build_stt_install_script(provider: str = "whisper") -> str:
     """
     prelude = _stt_install_path_prelude()
     if provider == "mlx":
-        return (
-            prelude
-            + r"""
+        return prelude + r"""
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -904,10 +1060,7 @@ pipx install --force mlx-whisper 2>&1 || { echo "ERROR: pipx install mlx-whisper
 
 echo "Done. mlx_whisper=$(command -v mlx_whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
-        )
-    return (
-        prelude
-        + r"""
+    return prelude + r"""
 # Pick up ffmpeg from ~/ffmpeg if installed there
 [ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
 
@@ -976,7 +1129,6 @@ echo "Installing openai-whisper..."
 
 echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
 """
-    )
 
 
 async def api_stt_transcribe(request: web.Request) -> web.Response:
@@ -1148,6 +1300,9 @@ _STARTUP_READ_AGENT_KEYS = frozenset(
 
 async def api_kirocrew_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/kirocrew — read or update KiroCrew config."""
+    # Re-imported at call time (not reused from the module-level binding) so a
+    # test that redirects ``kiro_crew.config.loader.config_path`` at a temp path
+    # is observed by this handler.
     from kiro_crew.config.loader import config_path  # noqa: F811
 
     if request.method == "PUT":
@@ -1293,8 +1448,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         # A startup-read key that was merely re-sent with its existing value did
         # not change the enforced cap, so it must not raise the hint.
         restart_required = any(
-            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key)
-            for key in applied
+            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key) for key in applied
         )
         return web.json_response({"ok": True, "restart_required": restart_required})
 
@@ -1313,7 +1467,7 @@ def _agent_values() -> set[str]:
 def _active_advertised_ids(request: web.Request) -> list[str] | None:
     """Advertised model ids from the first active provider, or None if unknown.
 
-    Uses the shared :func:`advertised_model_ids` shape parser (#1596) so this
+    Uses the shared :func:`advertised_model_ids` shape parser so this
     validation sees exactly what the session-init withhold check sees. Returns
     ``None`` when no session has initialized / nothing was advertised, so callers
     treat entitlement as UNKNOWN rather than denying on no evidence.
@@ -1430,9 +1584,24 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": 0, "max": 7200},
+    # Intent-level session summaries in the chat right panel. Only the boolean
+    # enable is editable here: it spends tokens on turns the user did not ask to
+    # pay for, so it is off by default and the Settings toggle is the single
+    # opt-in. The cadence/cap fields (min_user_turns, max_intents, …) stay
+    # config-file-only — they are power-user knobs, not first-run choices.
+    "session_summary.enabled": {"type": "bool"},
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # Default shell for the built-in terminal panel (Settings → Display →
+    # Terminal). "" = unset, use $SHELL / the platform default. The executable
+    # check lives as an off-loop special case in the PATCH handler (a PATH
+    # scan must not run inline on the event loop, and validate_fn is called
+    # synchronously); the spawn path re-validates at open time and falls back
+    # rather than failing, so a stale value can never cost the user their
+    # terminal — the save-time check exists to surface a typo immediately in
+    # the Settings field.
+    "dashboard.terminal.shell": {"type": "str", "max_len": 512},
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
@@ -1584,8 +1753,7 @@ def _tailnet_governance_pinned_off() -> bool:
 
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
-    from kiro_crew.agent import _atomic_json_write  # noqa: F811
-    from kiro_crew.config.loader import config_path  # noqa: F811
+    from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 
     caller = request.get("user")
     if not caller:
@@ -1675,6 +1843,30 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 
+    # The terminal's default shell must name a program that exists — "" clears
+    # the setting (restores the $SHELL / platform default). shutil.which stats
+    # every PATH entry, so the probe runs off-loop (same rationale as the
+    # governance reads below); the spawn path re-validates at open time and
+    # falls back regardless, so this gate is a UX surface, not the safety
+    # boundary — it exists to refuse a typo visibly at save time instead of
+    # letting it be discovered as a silently different shell on the next
+    # terminal open. The body carries a machine-readable `code` (the AGENTS
+    # contract for new non-2xx JSON): the Settings field maps it to a catalog
+    # key, since rendering this English sentence verbatim would ship an
+    # untranslated string into a 12-language dashboard.
+    if path_key == "dashboard.terminal.shell" and value.strip():
+        resolved = await asyncio.to_thread(shutil.which, value.strip())
+        if not resolved:
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {
+                    "error": "must be an executable shell (an absolute path or a "
+                    "command on PATH); leave empty to use the system default",
+                    "code": "shell_not_executable",
+                },
+                status=400,
+            )
+
     # ── Governance: refuse a write an enterprise ceiling has pinned ──
     # Only re-ENABLING is refused. Writing `false` is always allowed even under a
     # ceiling that already forbids the beacon: the ceiling is a floor on privacy,
@@ -1746,37 +1938,37 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 403,
             )
 
-    # Read, update, write
+    # Read, update, write — serialized across processes via update_config_locked.
     cfg_path = config_path()
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
     async with _get_config_lock():
+        parts = path_key.split(".")
+
+        def _mutate_config_patch(data: dict) -> dict | None:
+            """Apply a single dotted-key assignment to the raw config dict."""
+            # Walk (creating) intermediate objects, then set the leaf. Handles
+            # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
+            # ("agent.model"), and 3-level ("agent.role_models.background") —
+            # instead of special-cases that would clobber a whole section for a
+            # 3-level key.
+            section = data
+            for part in parts[:-1]:
+                nxt = section.setdefault(part, {})
+                if not isinstance(nxt, dict):
+                    raise ValueError(f"config section '{part}' is not an object")
+                section = nxt
+            section[parts[-1]] = value
+            return data
+
         try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-        except Exception:
+            await asyncio.to_thread(update_config_locked, cfg_path, mutate=_mutate_config_patch)
+        except ConfigReadError:
             _log_sel("error", f"{path_key}=read_failed")
             return web.json_response({"error": "failed to read config file"}, status=500)
-
-        parts = path_key.split(".")
-        # Walk (creating) intermediate objects, then set the leaf. Handles
-        # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
-        # ("agent.model"), and 3-level ("agent.role_models.background") — instead
-        # of the previous special-cases that would clobber a whole section for a
-        # 3-level key.
-        section = data
-        for part in parts[:-1]:
-            nxt = section.setdefault(part, {})
-            if not isinstance(nxt, dict):
-                _log_sel("error", f"{path_key}=section_not_dict")
-                return web.json_response(
-                    {"error": f"config section '{part}' is not an object"}, status=500
-                )
-            section = nxt
-        section[parts[-1]] = value
-
-        try:
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_json_write(cfg_path, data)
+        except ValueError as exc:
+            _log_sel("error", f"{path_key}=section_not_dict")
+            return web.json_response({"error": str(exc)}, status=500)
         except OSError:
             _log_sel("error", f"{path_key}=write_failed")
             return web.json_response({"error": "failed to write config file"}, status=500)
@@ -2001,8 +2193,6 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
     await resp.prepare(request)
 
     last_pos = 0
-    import asyncio  # noqa: F811
-
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
 
     for _ in range(1200):  # 20 min max

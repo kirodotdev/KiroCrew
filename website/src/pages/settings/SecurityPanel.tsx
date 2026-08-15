@@ -473,7 +473,26 @@ export const SCOPE_LABEL_KEY: Record<string, string> = {
   'capabilities.telemetry': 'pages.settings.securityPanel.gov_scope_telemetry',
 }
 
-/** Localised scope name. An unknown scope falls back to its title-cased leaf. */
+/** Localised scope name, falling back to a humanised leaf for an unknown scope.
+ *
+ *  The fallback exists for a scope this build has no catalog entry for, which in
+ *  practice means one a COMPANION EDITION registered through ``register_scope``:
+ *  the snapshot endpoint iterates ``SCOPE_CATALOG``, so such a row reaches this
+ *  panel, but shipping an i18n key for it is impossible — the core does not know
+ *  the scope exists.
+ *
+ *  Humanised rather than raw, because governed-scope leaves are snake_case by
+ *  convention (``capabilities.capability_install``,
+ *  ``capabilities.external_access``), and a title-cased raw leaf renders them as
+ *  `Capability_install` / `External_access` in the middle of an otherwise
+ *  copy-edited security panel. Underscores and hyphens become spaces and each word
+ *  is capitalised, so the row reads `Capability Install` / `External Access`.
+ *
+ *  Deliberately NOT localised: the leaf is an operator-authored identifier, not
+ *  product copy, so there is nothing to translate and no key to translate it under.
+ *  A known scope still resolves through ``SCOPE_LABEL_KEY`` and stays translated in
+ *  every locale.
+ */
 function scopeLabel(scope: string): string {
   // `hasOwnProperty`, not a truthiness test on the lookup: `scope` arrives from
   // `GET /api/governance-policy`, so a scope named `toString` or `constructor` would
@@ -481,7 +500,23 @@ function scopeLabel(scope: string): string {
   // i18next and then to JSX. Same hazard as `effortLabel` in `lib/effort.ts`.
   if (Object.prototype.hasOwnProperty.call(SCOPE_LABEL_KEY, scope)) return i18nT(SCOPE_LABEL_KEY[scope])
   const leaf = scope.includes('.') ? scope.slice(scope.indexOf('.') + 1) : scope
-  return leaf.charAt(0).toUpperCase() + leaf.slice(1)
+  return humaniseScopeLeaf(leaf)
+}
+
+/** Turn a snake_case / kebab-case scope leaf into Title Case words.
+ *
+ *  Exported for the test: the panel renders the result verbatim, so the mapping
+ *  from identifier to displayed text is worth pinning directly rather than only
+ *  through a mounted component.
+ */
+export function humaniseScopeLeaf(leaf: string): string {
+  return leaf
+    .split(/[_-]+/)
+    // Drop empties so a leading, trailing or doubled separator cannot produce a
+    // double space or a stray leading space in the rendered row.
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
 }
 
 /** Pluralize a count with its noun, e.g. 3 → "3 rules", 1 → "1 rule". */
@@ -1515,7 +1550,7 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
       </SettingsCard>
 
       {/* Card B — Your custom denies */}
-      <SettingsCard>
+      <SettingsCard index={1}>
         <div className="text-[13px] font-semibold text-text">{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
         <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
           {i18nT('pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg')}

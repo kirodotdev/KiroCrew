@@ -30,7 +30,7 @@ from kiro_crew import task_executor
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.dashboard.handlers import usage
 from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
-from kiro_crew.task_models import Project, Task
+from kiro_crew.task_models import SESSION_PREFIX, Project, Task
 
 # A turn long enough that ``int(elapsed_s * 1000)`` is unambiguously >= 1 on any
 # host (asyncio.sleep is a lower bound), yet trivially short for the suite.
@@ -38,6 +38,15 @@ _TURN_SLEEP_S = 0.02
 # A provider-reported duration the ~20 ms local clock can never coincide with,
 # so "provider wins" is distinguishable from "local clock was used".
 _PROVIDER_MS = 987654
+# Every record this file's turns persist carries a slot key under this prefix:
+# ``execute_task`` receives ``_SESSION_KEY`` explicitly and ``self_review``
+# derives ``{SESSION_PREFIX}:{run.task_id}:review`` from the same task id. The
+# interception filters on it (see ``_intercept_usage``), so a record persisted
+# by any OTHER test — whose slot key necessarily differs — can never reach the
+# captured list, and the exactly-one-row assertions stay exact.
+_RUN_TASK_ID = "task-test"
+_SLOT_PREFIX = f"{SESSION_PREFIX}:{_RUN_TASK_ID}:"
+_SESSION_KEY = f"{_SLOT_PREFIX}task1"
 
 
 def _complete_event(duration_ms: int) -> LLMEvent:
@@ -50,9 +59,21 @@ def _intercept_usage(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
     Patches the record's disk append and the client-reading helpers (which would
     otherwise need a live provider). Returns the list capturing each record.
+
+    The capture is scoped to this file's slot keys: within one xdist worker, a
+    concurrent test's fire-and-forget persist can resolve the patched
+    ``_write_token_record`` while it is installed here, and an unscoped append
+    would count that foreign record against this file's exactly-one-row
+    assertions. Filtering on ``_SLOT_PREFIX`` keeps the assertions exact
+    instead of widening them.
     """
     captured: list[dict] = []
-    monkeypatch.setattr(usage, "_write_token_record", lambda record, now: captured.append(record))
+
+    def _capture(record: dict, now: object) -> None:
+        if str(record.get("slot", "")).startswith(_SLOT_PREFIX):
+            captured.append(record)
+
+    monkeypatch.setattr(usage, "_write_token_record", _capture)
     monkeypatch.setattr(usage, "read_context_tokens", lambda *a, **k: (100, 1000))
     monkeypatch.setattr(usage, "read_effective_agent", lambda *a, **k: "agentX")
     monkeypatch.setattr(usage, "read_effective_model", lambda *a, **k: "test-model")
@@ -64,7 +85,7 @@ def _intercept_usage(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
 def _make_run(task: Task) -> Project:
     run = Project(spec_path="spec.md", spec_content="body")
-    run.task_id = "task-test"
+    run.task_id = _RUN_TASK_ID
     run.tasks = [task]
     run.branch_name = ""  # no git branch -> skip diff/commit/revert paths
     run.work_dir = ""
@@ -115,7 +136,7 @@ async def _run_execute_task(monkeypatch: pytest.MonkeyPatch, provider_ms: int) -
         None,  # test_cmd
         "",  # work_dir
         AsyncMock(),  # on_notify (unused on the happy path)
-        "taskrunner:task-test:task1",
+        _SESSION_KEY,
     )
     assert ok is True
     assert len(captured) == 1, "execute_task must persist exactly one row per turn"
@@ -145,7 +166,7 @@ async def _run_self_review(monkeypatch: pytest.MonkeyPatch, provider_ms: int) ->
     sessions.reset = AsyncMock()
 
     ok = await task_executor.self_review(
-        run, task, sessions, "agentX", "taskrunner:task-test:task1"
+        run, task, sessions, "agentX", _SESSION_KEY
     )
     assert ok is True
     assert len(captured) == 1, "self_review must persist exactly one row per turn"
@@ -182,3 +203,18 @@ async def test_self_review_provider_duration_wins(monkeypatch: pytest.MonkeyPatc
     # Negative control for the review turn (see execute_task counterpart).
     record = await _run_self_review(monkeypatch, provider_ms=_PROVIDER_MS)
     assert record["duration_ms"] == _PROVIDER_MS
+
+
+def test_intercept_ignores_foreign_slot_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REGRESSION: a write under another test's slot key is never captured.
+
+    Within one xdist worker a concurrent test's persist can reach the patched
+    ``_write_token_record`` while this file's interception is installed. Feeding
+    the interceptor a foreign-slot record directly proves the filter drops it,
+    so the exactly-one-row assertions above cannot see another test's write.
+    """
+    captured = _intercept_usage(monkeypatch)
+    ours = {"slot": _SESSION_KEY, "duration_ms": 1}
+    usage._write_token_record({"slot": "dashboard:someone-else:1", "duration_ms": 2}, None)
+    usage._write_token_record(ours, None)
+    assert captured == [ours]

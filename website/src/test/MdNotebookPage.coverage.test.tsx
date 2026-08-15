@@ -246,6 +246,38 @@ describe('MdNotebookPage', () => {
     expect(screen.getByRole('button', { name: 'One' })).toBeTruthy()
   })
 
+  it('persists a collapsed folder per vault, and clears it on re-expand', async () => {
+    await renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'folder' }))
+    await waitFor(() => expect(localStorage.getItem('mdnb-collapsed-v1')).toBe('["folder"]'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'folder' }))
+    await waitFor(() => expect(localStorage.getItem('mdnb-collapsed-v1')).toBe('[]'))
+  })
+
+  it('restores collapsed folders on mount, so the tree keeps its shape', async () => {
+    localStorage.setItem('mdnb-active-vault', '"v1"')
+    localStorage.setItem('mdnb-collapsed-v1', '["folder"]')
+    await renderPage()
+    // The folder itself is listed; only what is inside it stays hidden.
+    expect(await screen.findByRole('button', { name: 'folder' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Two' })).toBeNull()
+  })
+
+  it('keeps one vault’s collapsed folders out of another’s', async () => {
+    await renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: 'folder' }))
+    await waitFor(() => expect(localStorage.getItem('mdnb-collapsed-v1')).toBe('["folder"]'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Switch vault' }))
+    await userEvent.click(screen.getByRole('option', { name: /Second vault/ }))
+    await screen.findByRole('button', { name: 'Other' })
+    // The second vault has its own (absent) entry rather than inheriting one a
+    // folder name it does not have would have silently collapsed.
+    expect(localStorage.getItem('mdnb-collapsed-v2')).toBeNull()
+    expect(localStorage.getItem('mdnb-collapsed-v1')).toBe('["folder"]')
+  })
+
   // ── opening a note ────────────────────────────────────────────────────────
 
   it('opens a note on click, showing its body and its backlinks', async () => {

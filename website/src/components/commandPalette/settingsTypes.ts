@@ -16,6 +16,12 @@ export interface SettingEntry {
   id: string
   /** Human-readable label from the JSX prop. */
   label: string
+  /**
+   * Catalog key for a translated label. The registry keeps the English label
+   * for search, while deep-link highlighting resolves this key at runtime so
+   * it can match the label rendered in the active locale.
+   */
+  labelKey?: string
   /** Optional description from the JSX prop. */
   description?: string
   /** Which settings tab this belongs to (matches SettingsPage TABS key). */

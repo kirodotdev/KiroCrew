@@ -139,6 +139,33 @@ async def test_parked_for_secs_reports_a_consumer_holding_an_event():
 
 
 @pytest.mark.asyncio
+async def test_park_finally_survives_none_parked_since():
+    """GeneratorExit when _parked_since is already None must not raise TypeError.
+
+    Regression: if a turn boundary resets _parked_since before a lingering
+    generator is GC'd, the finally block attempted `time.monotonic() - None`,
+    raising TypeError and producing ERROR-level crash_guard log noise.
+    """
+    handle = _make_handle()
+    _feed_on_prompt(handle, _tool_call_frame())
+
+    agen = handle.prompt("hi", timeout=2.0)
+    await agen.__anext__()  # consumer holds the event (parks)
+
+    # Simulate the race: a turn boundary resets park state before GC fires.
+    handle._parked_since = None
+    handle._parked_total = 0.0
+
+    # aclose() triggers GeneratorExit inside the yield -> finally fires.
+    # Before the fix this raised TypeError; now it must be a no-op.
+    await agen.aclose()
+
+    # No crash, park total unchanged (the abandoned park is silently discarded).
+    assert handle._parked_total == 0.0
+    assert handle._parked_since is None
+
+
+@pytest.mark.asyncio
 async def test_park_state_does_not_carry_across_turns():
     """Park state is per-turn. Carrying it would charge the previous turn's
     consumer time to this one, and a permission left unanswered when the last

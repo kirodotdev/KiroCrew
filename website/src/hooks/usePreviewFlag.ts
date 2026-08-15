@@ -7,7 +7,7 @@ import type { PreviewFlagChange } from '../utils/previewFlags'
  * Reactive read of a preview flag (see `utils/previewFlags.ts`).
  *
  * Subscribing matters here, not just reading: the nav rail is rendered by the
- * app shell, which does not remount when the Developer > Config toggle flips.
+ * app shell, which does not remount when the Developer > Feature Previews toggle flips.
  * Without this hook the rail would keep its pre-toggle contents until a reload,
  * and a user who just enabled a surface would conclude the toggle is broken.
  *

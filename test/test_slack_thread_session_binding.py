@@ -297,9 +297,20 @@ def test_a_link_created_mid_turn_is_not_clobbered(monkeypatch):
 
 
 def _corrupted_map(session_map, first, second):
-    """Two entries claiming one thread, written in the given order."""
+    """Two entries claiming one thread, written in the given order.
+
+    Writes the corruption directly into ``_data``: ``set_slack_link`` now
+    evicts a thread's prior owner, so it can no longer produce the
+    two-owner state this healing path exists for. The state still occurs
+    in the wild in maps persisted before that eviction existed, which is
+    exactly what these tests simulate.
+    """
     for key in (first, second):
-        session_map.set_slack_link(key, _THREAD_TS, _CHANNEL)
+        key = canonical_key(key)
+        entry = session_map._data.setdefault(key, {"sid": ""})
+        entry["slack_thread_ts"] = _THREAD_TS
+        entry["slack_channel_id"] = _CHANNEL
+    session_map._save()
     session_map._rebuild_thread_index()
     return session_map
 

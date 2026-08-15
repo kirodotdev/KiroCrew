@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useLocation } from 'react-router-dom'
-import { TerminalSquare, Plus, X, ChevronDown, PictureInPicture2 } from 'lucide-react'
-import { PanelRightSolid } from './icons/panels'
+import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom } from 'lucide-react'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from './ui/dropdown-menu'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
 import { usePanelTabs } from '../hooks/usePanelTabs'
@@ -12,13 +14,16 @@ import { openActivityPanel, selectActiveSlotProject } from '../store/chatSlice'
 import { openPopout as openTerminalPopout, isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout, bringBack as bringBackTerminalPopout, returnSelfToMain } from '../utils/terminalPopout'
 import {
   useBottomTerminal, addTab, removeTab, setActiveTab, setTabsOrder,
-  closeBottomTerminal, setBottomTerminalHeight, MAX_TERMINALS,
+  closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
+  toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH,
   type TermTab,
 } from '../hooks/useBottomTerminal'
 
 import { i18nT } from '../i18n/t'
 /** Fraction of the viewport the panel may grow to via the resize grip. */
 const MAX_VH = 0.72
+/** Fraction of the viewport width the right-docked panel may grow to. */
+const MAX_VW = 0.55
 
 /** Live terminal tab title — the running command / cwd basename pushed by the
  *  backend poller; falls back to "Terminal" until the first frame arrives. */
@@ -62,7 +67,7 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer, show
             title={canTransfer ? i18nT('components.bottomTerminalPanel.move_to_side_panel') : i18nT('components.bottomTerminalPanel.open_a_chat_page_to_move_this_terminal_there')}
             aria-label={i18nT('components.bottomTerminalPanel.move_to_side_panel')}
           >
-            <PanelRightSolid size={12} />
+            <PanelRight size={12} />
           </button>
         )}
         <button
@@ -90,7 +95,7 @@ function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer, show
  *    ends with a "Return" control that re-docks the panel in the main window.
  */
 export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
-  const { tabs, activeId } = useBottomTerminal()
+  const { tabs, activeId, position } = useBottomTerminal()
   const del = useDeleteTerminalSession()
 
   // Move-to-chat is only offered while the user is actually ON the chat page
@@ -172,7 +177,7 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
                 onClose={() => closeTab(t.id)}
                 onTransfer={() => transferToChat(t.id, t.cwd)}
                 canTransfer={canTransferToChat}
-                showTransfer={variant === 'dock'}
+                showTransfer={false}
               />
             </Reorder.Item>
           ))}
@@ -189,21 +194,34 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
         </button>
         {variant === 'dock' ? (
           <div className="flex items-center gap-0.5 ml-auto shrink-0">
-            <button
-              className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
-              onClick={popOut}
-              title={i18nT('components.bottomTerminalPanel.pop_out_to_window')}
-              aria-label={i18nT('components.bottomTerminalPanel.pop_out_to_window')}
-            >
-              <PictureInPicture2 size={14} />
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
+                  aria-label={i18nT('components.bottomTerminalPanel.more_actions')}
+                  title={i18nT('components.bottomTerminalPanel.more_actions')}
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[180px]">
+                <DropdownMenuItem onSelect={toggleTerminalPosition}>
+                  {position === 'bottom' ? <PanelRight size={13} className="shrink-0" /> : <PanelBottom size={13} className="shrink-0" />}
+                  {position === 'bottom' ? i18nT('components.bottomTerminalPanel.move_panel_to_right') : i18nT('components.bottomTerminalPanel.move_panel_to_bottom')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={popOut}>
+                  <PictureInPicture2 size={13} className="shrink-0" />
+                  {i18nT('components.bottomTerminalPanel.pop_out_to_window')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <button
               className="flex items-center justify-center w-7 h-7 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0"
               onClick={() => closeBottomTerminal()}
               title={i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
               aria-label={i18nT('components.bottomTerminalPanel.hide_terminal_panel')}
             >
-              <ChevronDown size={16} />
+              {position === 'bottom' ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
           </div>
         ) : (
@@ -271,19 +289,19 @@ export function TerminalDetachedBar() {
 
 /**
  * App-wide docked terminal panel. Toggled from the sidebar Terminal icon
- * (App.tsx), it spans the whole app (below the routed <main>) rather than
- * living inside a single chat's activity bar. A terminals-only tab view: each
- * tab is a single-session CliPanel bound to a PTY in terminalRegistry — so
+ * (App.tsx), it spans the whole app (below or beside the routed <main>)
+ * depending on `position`. A terminals-only tab view: each tab is a
+ * single-session CliPanel bound to a PTY in terminalRegistry — so
  * hiding/reopening the panel, switching tabs, or navigating routes keeps every
  * shell warm. Only closing an individual tab kills its PTY.
  */
 export default function BottomTerminalPanel() {
-  const { open, height } = useBottomTerminal()
+  const { open, height, width, position } = useBottomTerminal()
   const [dragging, setDragging] = useState(false)
 
-  /* ── Top grip resize (drag up → taller) ── */
+  /* ── Top grip resize (drag up → taller, for bottom position) ── */
   const startHRef = useRef(0)
-  const gripResize = usePointerDrag({
+  const gripResizeBottom = usePointerDrag({
     threshold: 0,
     onStart: () => {
       startHRef.current = height
@@ -292,9 +310,30 @@ export default function BottomTerminalPanel() {
       document.body.style.cursor = 'row-resize'
     },
     onMove: ({ dy }) => {
-      // Grip is at the panel TOP, so dragging UP (dy < 0) grows the panel.
       const maxH = Math.round(window.innerHeight * MAX_VH)
       setBottomTerminalHeight(Math.min(maxH, startHRef.current - dy))
+    },
+    onEnd: () => {
+      setDragging(false)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    },
+  })
+
+  /* ── Left grip resize (drag left → wider, for right position) ── */
+  const startWRef = useRef(0)
+  const gripResizeRight = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      startWRef.current = width
+      setDragging(true)
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'col-resize'
+    },
+    onMove: ({ dx }) => {
+      // Grip is at the panel LEFT, so dragging LEFT (dx < 0) grows the panel.
+      const maxW = Math.round(window.innerWidth * MAX_VW)
+      setBottomTerminalWidth(Math.min(maxW, Math.max(MIN_WIDTH, startWRef.current - dx)))
     },
     onEnd: () => {
       setDragging(false)
@@ -308,6 +347,40 @@ export default function BottomTerminalPanel() {
     document.body.style.userSelect = ''
     document.body.style.cursor = ''
   }, [])
+
+  if (position === 'right') {
+    return (
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="right-terminal"
+            className="shrink-0 overflow-hidden border-l border-border bg-bg"
+            initial={{ width: 0 }}
+            animate={{ width }}
+            exit={{ width: 0 }}
+            transition={{ duration: dragging ? 0 : 0.22, ease: 'easeOut' }}
+            style={{ willChange: 'width' }}
+          >
+            <div className="flex flex-row h-full" style={{ width }}>
+              <div
+                {...gripResizeRight}
+                className="relative shrink-0 w-[6px] cursor-col-resize group/drag"
+                style={{ touchAction: 'none' }}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={i18nT('components.bottomTerminalPanel.resize_terminal_panel')}
+              >
+                <div className={`absolute inset-y-0 left-0 w-[2px] transition-colors duration-200 ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`} />
+              </div>
+              <div className="flex-1 min-w-0 min-h-0">
+                <TerminalTabsView variant="dock" />
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    )
+  }
 
   return (
     <AnimatePresence initial={false}>
@@ -323,7 +396,7 @@ export default function BottomTerminalPanel() {
         >
           <div className="flex flex-col" style={{ height }}>
           <div
-            {...gripResize}
+            {...gripResizeBottom}
             className="relative shrink-0 h-[6px] cursor-row-resize group/drag"
             style={{ touchAction: 'none' }}
             role="separator"

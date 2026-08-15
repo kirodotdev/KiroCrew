@@ -48,6 +48,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
+| `external_access` | adapter | `DefaultExternalAccessPolicy` (`admits_registry()` / `admits_cloud_deployment()` → `True`) | allowlist installable content to an internal registry; withhold cloud deployment |
 | `registry` | adapter | `DefaultAppRegistryPolicy` (public-forge baseline) | internal git hosts |
 | `apps_loader` | adapter | `DefaultAppsLoader` (OSS builtins) | internal app sources (code-reviewer; team_manager/mimir follow-on) |
 | `package_manager` | adapter | **RESERVED** — `DefaultPackageManager`; installs are inline in `cli_doctor.py` (use `CapabilityManager`) | — (slot inert) |
@@ -57,6 +58,35 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `feature_apps` | tuple | **RESERVED** — `()`; apps register via `apps_loader` (provenance record only) | — (slot inert) |
+
+> `external_access` note — three surfaces the core offers unconditionally, none of
+> which had a composition point. Two are installable-content registries: skill
+> discovery (skills.sh) and MCP server discovery (the official registry) hardcoded
+> their public provider at registration time, so a managed deployment could not
+> restrict where installable code came from without patching the core. The third is
+> **cloud deployment**: `kiro_crew/deploy/` provisions S3, CloudFront, IAM roles and
+> a reaper Lambda in the operator's own account and carried no capability gate at
+> all — `capabilities.publish`, which bounds publish-provider destinations, does not
+> reach it.
+>
+> `admits_registry(kind, name, api_base)` is consulted in both `_build_registry()`
+> functions; a refused provider is never registered, so it is ABSENT rather than
+> failing per request and no later install path is left to gate.
+> `admits_cloud_deployment(target)` is consulted by `deploy/handlers.py`: the read
+> at `GET /api/deploy/config` reports `cloudDeploymentEnabled` so the frontend hides
+> the console instead of rendering one whose every button 403s, and every mutating
+> route is wrapped at registration so a new endpoint is gated by being listed rather
+> than by remembering an in-handler check. Read endpoints stay open deliberately —
+> a 403 on `config` would leave the page unable to explain itself.
+>
+> Both decisions take the concrete target as well as a label, because a name is
+> self-chosen while the URL or target determines where bytes go; an allowlist pinned
+> to the target stops admitting a provider that repoints at a different host.
+> `_shared.py::admits_registry` / `admits_cloud_deployment` are the single call
+> points: they deny on a composed-adapter error (reaching that fallback means an
+> operator intended to restrict something), let `PlatformCompositionError`
+> propagate, and SEL-audit **both** outcomes — a log carrying only denials cannot
+> show whether the permitted path was ever taken.
 
 > `registry` note — the public `DefaultAppRegistryPolicy` encodes the
 > public-forge baseline and ships no internal-host set. The enterprise companion
@@ -645,7 +675,21 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   searching those roots — a row outside them lists but 404s on tree/detail, so an
   edition satisfying both Protocols MUST keep them consistent; the core enforces
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed
-  row outside every `extra_skills()` root);
+  row outside every `extra_skills()` root. Two further constraints bind the keys
+  an edition may hand out. **A root the core already keys itself is not
+  `package/` territory:** `~/.kiro/skills`, the data home skills dir, configured
+  `skills.extra_paths`, and the active project's `.kiro/skills` are keyed
+  `kiro-user/`, `kiro-workspace/`, or unprefixed, so advertising one of them from
+  `extra_skills()` (legitimate — it makes the loader index it) does NOT also
+  expose it under `package/`; `_edition_package_roots()` computes that difference
+  once and both catalog enumeration and path resolution read it, so the two
+  cannot drift. **Resolution is exact-first and refuses ambiguity:** a
+  `package/<name>` request prefers `<root>/<name>/SKILL.md` over a nested
+  `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
+  it resolves to `None` — HTTP 404, with the competing candidates logged — rather
+  than picking one, because the key cannot express which was meant (paths that
+  merely symlink to the same file are not a tie). An edition that wants both of
+  two same-named skills reachable MUST therefore key them distinguishably);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`

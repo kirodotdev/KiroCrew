@@ -2685,8 +2685,8 @@
       "defaultValue": {
         "check_after_secs": 60.0,
         "stale_window_secs": 300.0,
-        "tool_stall_suspect_secs": 10800.0,
-        "tool_stall_hard_cap_secs": 10800.0,
+        "tool_stall_suspect_secs": 3600.0,
+        "tool_stall_hard_cap_secs": 3600.0,
         "model_silent_probe_secs": 900.0,
         "wellness_sample_secs": 3.0
       }
@@ -2728,10 +2728,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Tool stall suspect (s)",
-      "help": "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and the turn routed to tool-stall recovery (continue-nudge, no re-run of the original message). WORKING tools (e.g. a matched live build child) are never cancelled regardless of duration. Default 3h to accommodate long-running builds and MCP tools on macOS where the liveness oracle degrades (no /proc) and cannot distinguish live builds from stalls.",
+      "help": "Idle seconds before an UNKNOWN-verdict in-flight tool is cancelled and the turn routed to tool-stall recovery (continue-nudge, no re-run of the original message). WORKING tools (e.g. a matched live build child) are never cancelled regardless of duration. Default 1h: generous enough for long builds and MCP tools on macOS, where the liveness oracle degrades (no /proc) and cannot distinguish a live build from a stall, while still landing inside the turn's own ceiling (agent.chat_turn_timeout_secs) so recovery is reachable. A window at or past that ceiling is clamped at load with a warning.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 10800.0
+      "defaultValue": 3600.0
     },
     {
       "path": "watchdog.tool_stall_hard_cap_secs",
@@ -2742,10 +2742,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Hard cap (s)",
-      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window). Applies ONLY to UNKNOWN verdicts — never to a WORKING session. Default 3h.",
+      "help": "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended probably-thinking window). Applies ONLY to UNKNOWN verdicts — never to a WORKING session. Default 1h, bounded by the turn ceiling like the suspect window.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 10800.0
+      "defaultValue": 3600.0
     },
     {
       "path": "watchdog.model_silent_probe_secs",
@@ -4135,6 +4135,7 @@
         "quick_send": false,
         "session_grid": false,
         "mcp_app_panel": false,
+        "auto_open_git_panel": false,
         "terminal": {
           "enabled": true
         },
@@ -4459,6 +4460,20 @@
       "tags": [],
       "label": "Open MCP Apps in the side panel",
       "help": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat bubble. The panel opens automatically and can be expanded; the chat keeps a compact placeholder linking to it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.auto_open_git_panel",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-open Git in the side panel",
+      "help": "Expand the chat's right side panel to its Git tab each time a session starts in a project directory that is a git repository. The Git tab itself is always created either way, so it is one click away.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -5098,6 +5113,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew"
+    },
+    {
+      "path": "agents.*.watchdog_tool_stall_suspect_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tool stall suspect override (s)",
+      "help": "Per-agent override for watchdog.tool_stall_suspect_secs on sessions running this agent. 0 inherits the global window (default 1h). Set low (e.g. 900) for a pure-LLM agent whose longest legitimate silent gap is minutes, not hours.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
+      "path": "agents.*.watchdog_tool_stall_hard_cap_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tool stall hard cap override (s)",
+      "help": "Per-agent override for watchdog.tool_stall_hard_cap_secs on sessions running this agent. 0 inherits the global cap (default 1h). Applies ONLY to UNKNOWN verdicts — a WORKING session is never acted on.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
     },
     {
       "path": "default_agent",

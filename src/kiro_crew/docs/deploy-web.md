@@ -1,5 +1,11 @@
 # Artifact Deploy
 
+> **⚠️ Everything you publish here is world-readable.** A deployed artifact is served from a public
+> CloudFront URL with **no authentication and no access control** — anyone with the link can view
+> it, and obscurity is not access control. Do not publish anything you would not put on the open
+> internet. The exposure lasts until the deployment's TTL expires or you recall/destroy it
+> (§3), and an operator can remove this path entirely (§6.8).
+
 Artifact Deploy publishes an artifact from your library to a public HTTPS URL in **your own AWS
 account**: a private S3 bucket behind CloudFront with Origin Access Control, with an optional
 time-to-live and automatic cleanup. Kiro Crew stores only your AWS **profile name**, never your
@@ -10,7 +16,8 @@ Deploy is part of Kiro Crew itself, so there is nothing to install or enable. Th
 `/deploy` in the dashboard (the **Artifact Deploy** button on the Artifacts page opens it); it
 holds AWS profile setup, the IAM policy generator, and the list of everything you have deployed.
 Publishing happens from the thing you want to publish: an artifact's **Publish** panel, or the
-**Deploy** button on an app card.
+**Deploy** button on an app card. Every publish ends at a blocking acknowledgment dialog that
+names what becomes public and for how long; there is no path to a public URL that skips it.
 
 ---
 
@@ -112,8 +119,11 @@ complete in seconds.
 | API | adds an API Gateway HTTP API to a Lambda at `/<slug>/api/*` | API-backed demo |
 | Stateful | adds a DynamoDB table | app that persists data |
 
-The Lambda is invoked only by API Gateway rather than exposed through a world-accessible Function
-URL, so accounts running automated guardrails against public Function URLs do not flag it.
+The Lambda is invoked only by API Gateway — its resource policy is scoped to
+`apigateway.amazonaws.com`, so the function is never directly reachable from the internet. A
+Function URL would instead require a `Principal:"*"` policy, making the Lambda itself
+world-accessible; this shape is therefore also fine in accounts running automated guardrails
+against public Function URLs.
 
 ---
 
@@ -123,6 +133,14 @@ URL, so accounts running automated guardrails against public Function URLs do no
 |------|----------|
 | Finite TTL (API default 72h, maximum 8760h) | Requires the **reaper**: an in-account, EventBridge-scheduled Lambda that deletes expired deployments. Without it, finite-TTL deploys are refused with a 409. |
 | Persistent (`ttl_hours=0`) | No reaper required. Take the site down yourself from the console. |
+
+The TTL is the **exposure window**, so it is part of the acknowledgment rather than a setting buried
+elsewhere: the dialog in front of every publish states either "this link stays public for N hours,
+then it is deleted automatically" or "this link stays public until you recall or destroy the
+deployment". The Publish panel's TTL selector sits on the step before it, so the window is chosen
+and then re-read at the moment of commitment. Note that the dashboard's default selection is
+**Persistent** — the longest exposure — because a finite TTL is refused outright when the reaper is
+not installed.
 
 The reaper is installed once per account by an operator, with
 `scripts/install-reaper.sh --profile <P> --region <R>` from
@@ -203,6 +221,12 @@ to serve content from a bucket that is never itself public.
 - Content is served from a random CloudFront domain over HTTPS only. **Anyone with the link can
   view it**: treat published content as world-readable. There is no auth or signed-URL gate.
 - Obscurity is not access control. Do not publish anything you would not put on the open internet.
+- Every path that creates a public resource — the artifact **Publish** panel, its scan-override
+  branch, and **Confirm deploy** on a pending entry — ends at a blocking acknowledgment dialog. It
+  names the artifact, states that anyone with the link can view it, states how long the link stays
+  public, and requires you to press **I understand, publish publicly**. That button is never the
+  default action and is never pre-focused, so no keystroke that dismisses an ordinary dialog can
+  publish by accident.
 
 ### 6.4 Mutations are tag-gated
 The generated IAM policy conditions every mutating and deleting action on
@@ -229,6 +253,54 @@ rejected, so the directory cannot be swapped between the check and the upload.
 Deploy, Recall, Destroy, and Tear down each require an explicit confirmation and are never
 auto-approved. Every confirmed action emits an audit event recording the action, the site, and the
 outcome.
+
+### 6.8 Turning the public-web path off entirely
+Some environments should not have this capability at all, and a warning is not a control. The
+public-web destination is `deploy-web-aws`, and it goes through the same publish-governance
+chokepoint as the artifact library's own publish destinations, so an operator can close it in either
+of two places:
+
+- **Enterprise policy (the durable control).** In the trust-root `security_policy.json` — which the
+  agent can neither read nor rewrite — either turn the capability off wholesale:
+
+  ```json
+  { "capabilities": { "publish": { "enabled": false } } }
+  ```
+
+  or keep publishing on and bound the destinations:
+
+  ```json
+  { "capabilities": { "publish": { "enabled": true,
+      "scopes": { "destinations": { "mode": "allow", "allow": ["internal-registry"] } } } } }
+  ```
+
+- **Standalone config (convenience).** In `config.json`, name the destinations you permit:
+
+  ```json
+  { "publish": { "allowed_destinations": ["internal-registry"] } }
+  ```
+
+  An empty list (the default) allows every registered destination. This list can only **narrow**: a
+  destination the policy denies is never re-permitted here. Prefer the policy file when the point is
+  that the running app must not be able to undo the decision — `config.json` is writable by an
+  auto-approved agent shell.
+
+Either way the effect is the same in both directions: `deploy-web-aws` disappears from
+`GET /api/publish-providers` so the button never renders, **and** `POST /api/deploy/deploy` and
+`POST /api/deploy/pending/{id}/confirm` answer `403` — including for the agent-mediated
+`deploy_artifact` preview. A filtered list alone would not be a control, so the endpoints re-make the
+decision themselves.
+
+Note for operators upgrading: if you already narrowed `publish.allowed_destinations` for the artifact
+registry, that list now governs the public-web path too. Add `deploy-web-aws` to it if you want to
+keep deploying.
+
+**What this does not close.** The chokepoint covers the artifact library's publish destinations and
+the core `deploy-web-aws` path. An **installed app** that declares its own publish provider serves
+that publish at its own `/api/apps/<app>/…` endpoint, which this gate is not consulted on — so
+narrowing `allowed_destinations` does not by itself close an app's destination. Disable or uninstall
+the app to remove that path, and prefer the enterprise policy file when the requirement is that
+nothing running in the box can re-open a route.
 
 ---
 

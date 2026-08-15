@@ -19,6 +19,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, ShoppingBag, Lock, Trash2, X, ArrowUp, Boxes,
+  AlertTriangle, PowerOff,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn, EmptyState, PageHeader, SearchInput } from '../components/ui'
@@ -26,18 +27,20 @@ import SimpleSelect from '../components/SimpleSelect'
 import { recordEvent } from '../rum'
 import SegmentedControl from '../components/SegmentedControl'
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
+import type { EditorialArtwork } from '../components/appstore/useEditorialArt'
 import FeatureCard from '../components/appstore/FeatureCard'
 import CategoryRail, { type SourceRow } from '../components/appstore/CategoryRail'
 import AppListRow from '../components/appstore/AppListRow'
 import InstalledAppCard from '../components/appstore/InstalledAppCard'
 import TrustAppModal, { isTrustDeniedError, useTrustGate, type TrustAppTarget } from '../components/appstore/TrustAppModal'
 import SourcesPopover from '../components/appstore/SourcesPopover'
-import { categoryFor, categoryCounts, type Category } from '../components/appstore/categories'
+import { categoryFor, categoryCounts, mergeCategoryOrder, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
-import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
+import { isVerified, normalizeInstalledApp, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
+import ErrorBoundary from '../components/ErrorBoundary'
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
 type RemovableDep = UninstallPreview['dependencies']['removable'][number]
@@ -65,6 +68,126 @@ function initialTab(): Tab {
  * deterministically — apps shipping hero art first, then verified publishers,
  * then name.
  */
+/**
+ * One published featured section, as it arrives from the registry endpoint.
+ *
+ * `type` is the discriminator the card branches on. An `app` section always
+ * carries exactly one ref; a `collection` carries two or more plus the title
+ * that explains why they share a card. Both spell the refs as a list so
+ * resolution is one code path regardless of type.
+ */
+type EditorialSection = {
+  type: 'app' | 'collection'
+  appRefs: string[]
+  title?: string
+  blurb?: string
+  artwork?: EditorialArtwork
+}
+
+/** A collection below this has lost members; see the drop in `featuredSections`. */
+const MIN_COLLECTION_APPS = 2
+/** The schema's collection ceiling, re-applied at the fetch boundary. */
+const MAX_SECTION_APPS = 6
+
+/**
+ * An artwork URL safe to hand an `<img src>`, or undefined.
+ *
+ * The server already screens these refs and this is the SECOND check, not the
+ * first. It exists because one guard for a property the contract states
+ * absolutely -- no scheme other than the catalog's own may reach the DOM -- is
+ * one regression away from none.
+ *
+ * What it blocks: every scheme except https, which covers `javascript:` and
+ * `data:` (neither has a slash after the colon, so a naive `"://"` test admits
+ * both), and the scheme-relative `//host` form that inherits the page scheme
+ * while looking like a path.
+ *
+ * What it deliberately does NOT block: an https URL on a host other than the
+ * catalog. Rejecting that needs the catalog origin, and the only copy of it lives
+ * server-side (`official_catalog.OFFICIAL_CATALOG_BASE`); a second copy here
+ * would silently blank all artwork the day the catalog moves. That case stays
+ * the server's job, where the origin is already known.
+ */
+function editorialArtUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value || value.startsWith('//')) return undefined
+  const local = value.startsWith('/')
+  return local || value.startsWith('https://') ? value : undefined
+}
+
+/** Project a section's artwork, dropping anything whose light variant is unusable. */
+function normalizeEditorialArtwork(value: unknown): EditorialArtwork | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const raw = value as Record<string, unknown>
+  const url = editorialArtUrl(raw.url)
+  if (!url) return undefined
+  const urlDark = editorialArtUrl(raw.urlDark)
+  const alt = typeof raw.alt === 'string' ? raw.alt : undefined
+  return { url, ...(urlDark ? { urlDark } : {}), ...(alt ? { alt } : {}) }
+}
+
+/**
+ * Which app in a featured card has an action in flight, or null.
+ *
+ * `actionLoading` is a single `"<name>:<action>"` slot, so only one app can be
+ * busy at a time. Resolving it to a name lets each row disable its OWN control
+ * instead of the card disabling all of them — pressing Get on one member of a
+ * collection must not freeze the others.
+ *
+ * A value with no colon is treated as the whole name rather than silently losing
+ * its last character, so a future caller that sets a bare name still disables the
+ * right row instead of no row.
+ */
+export function featuredBusyName(actionLoading: string | null, apps: RegistryApp[]): string | null {
+  if (!actionLoading) return null
+  const sep = actionLoading.indexOf(':')
+  const name = sep === -1 ? actionLoading : actionLoading.slice(0, sep)
+  return apps.some(a => a.name === name) ? name : null
+}
+
+/**
+ * Boundary key carrying FULL data identity (#3702).
+ *
+ * `ErrorBoundary` latches its error state, so the key must change whenever the
+ * row's data changes — that is what remounts a boundary whose card threw once
+ * the registry payload is corrected. Keying on selected fields (name, version,
+ * icon, …) is whack-a-mole: the fix re-latches whenever the crashing field is
+ * one the key does not carry (e.g. a same-version icon correction). Serializing
+ * the whole row makes "any field changed" the remount condition, and an
+ * identical refetch produces the identical string, so nothing remounts
+ * spuriously. Rows come from React Query's cache via `useMemo`, so references
+ * are stable across unrelated re-renders — the WeakMap makes the serialization
+ * once per distinct row object.
+ */
+const cardKeyCache = new WeakMap<object, string>()
+export function cardDataKey(row: object): string {
+  let key = cardKeyCache.get(row)
+  if (key === undefined) {
+    key = JSON.stringify(row)
+    cardKeyCache.set(row, key)
+  }
+  return key
+}
+
+/**
+ * Compact degraded placeholder for a Browse-tab card whose render threw
+ * (#3702). Mirrors the Library-card boundary fallback (#3689): the broken
+ * card degrades in place while its siblings and the page chrome keep
+ * rendering. Browse cards describe registry entries rather than installed
+ * apps, so unlike the Library fallback there is no management action to
+ * preserve — the card is notice-only.
+ */
+function BrowseCardFallback({ label, message, className }: { label?: string; message: string; className?: string }) {
+  return (
+    <div className={`border border-border rounded-lg p-4 flex items-center gap-3${className ? ` ${className}` : ''}`}>
+      <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)] shrink-0" />
+      <div className="min-w-0 text-sm">
+        {label && <span className="font-medium text-text">{label}</span>}
+        <span className={label ? 'text-muted ml-2' : 'text-muted'}>{message}</span>
+      </div>
+    </div>
+  )
+}
+
 export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
   const rank = (f: RegistryApp['featured']) => (typeof f === 'number' ? f : 1e9)
   // "Not external" via the server-computed field, falling back to the
@@ -108,9 +231,21 @@ export default function AppsPage() {
   const { data: apps = [], isLoading: appsLoading, error: appsError } = useQuery<InstalledApp[]>({
     queryKey: ['apps'],
     queryFn: () => api.listApps(),
+    // The ['apps'] cache is shared with observers that fetch it raw
+    // (MigrationCheck, the command palette's apps provider), and React Query
+    // keeps one queryFn per key — whichever observer registered last fetches.
+    // Normalization therefore lives in `select`, which runs on every read of
+    // THIS observer no matter which caller populated the cache. Manifests
+    // come from user-authored app.json files, so optional collections may be
+    // missing or mistyped (mirrors the registry normalization below).
+    select: rows => rows.map(normalizeInstalledApp),
   })
 
-  const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{ apps: RegistryApp[] }>({
+  const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
+    apps: RegistryApp[]
+    categoryOrder: string[]
+    editorialSections: EditorialSection[]
+  }>({
     queryKey: ['registry'],
     // api.listRegistry() types `apps` as unknown[]; the backend payload matches
     // RegistryApp, so narrow it here at the single fetch boundary.
@@ -119,7 +254,58 @@ export default function AppsPage() {
       // Normalize at the single fetch boundary: registry.py yields minimal
       // rows when an app.json fetch fails, and external registries are
       // user-supplied JSON, so display fields may be missing or mistyped.
-      return { apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp) }
+      //
+      // `categoryOrder` is published presentation, so it gets the same
+      // treatment: a non-array, or a member that is not a string, collapses to
+      // an empty list, which `mergeCategoryOrder` reads as "use the canonical
+      // order".
+      const publishedOrder = Array.isArray(res.categoryOrder)
+        ? res.categoryOrder.filter((id): id is string => typeof id === 'string')
+        : []
+      // Published layout gets the same treatment as the order: the server
+      // already screened each artwork URL, but the SHAPE arrives over HTTP like
+      // any other payload, so a malformed section is dropped here rather than
+      // reaching a component that would throw mid-render.
+      const publishedSections: EditorialSection[] = Array.isArray(res.editorialSections)
+        ? res.editorialSections.flatMap((raw: unknown) => {
+            if (!raw || typeof raw !== 'object') return []
+            const s = raw as Record<string, unknown>
+            // An unrecognised type is skipped, not coerced: the document's
+            // contract is that a client renders what it knows and ignores the
+            // rest, which is what lets a new shape publish ahead of support.
+            if (s.type !== 'app' && s.type !== 'collection') return []
+            const refs = Array.isArray(s.appRefs)
+              ? s.appRefs.filter((n): n is string => typeof n === 'string' && !!n.trim()).map(n => n.trim())
+              : []
+            // Dedupe and cap HERE as well as server-side. This boundary exists to
+            // not trust the payload, and every bound it skipped was one the
+            // component would have rendered: duplicate refs collide row keys, and
+            // an `app` section carrying several refs would render a multi-row card
+            // headed by one member's name.
+            const unique = [...new Set(refs)].slice(0, MAX_SECTION_APPS)
+            if (s.type === 'app' ? unique.length !== 1 : unique.length < MIN_COLLECTION_APPS) return []
+            const title = typeof s.title === 'string' && s.title.trim() ? s.title.trim() : undefined
+            // A collection is nothing without its theme, so one that arrives
+            // without a title is dropped rather than rendered anonymously. A
+            // whitespace-only title is absent, not present-and-blank -- otherwise
+            // the card renders an empty heading over the rows.
+            if (s.type === 'collection' && !title) return []
+            return [{
+              type: s.type,
+              appRefs: unique,
+              // An `app` section is headed by the app's own name; a published
+              // title there means the document meant `collection`.
+              title: s.type === 'collection' ? title : undefined,
+              blurb: typeof s.blurb === 'string' ? s.blurb : undefined,
+              artwork: normalizeEditorialArtwork(s.artwork),
+            }]
+          })
+        : []
+      return {
+        apps: (res.apps as RegistryApp[]).map(normalizeRegistryApp),
+        categoryOrder: publishedOrder,
+        editorialSections: publishedSections,
+      }
     },
     staleTime: 5 * 60_000, // cache for 5min to avoid re-fetching on tab switch
   })
@@ -188,7 +374,45 @@ export default function AppsPage() {
   const featured = useMemo(() => pickFeatured(browseApps), [browseApps])
   const [spotlight, ...secondary] = featured
 
-  const categories = useMemo(() => categoryCounts(browseApps), [browseApps])
+  /**
+   * Editorial featured sections, resolved against the apps this client can
+   * actually show. A reference that resolves to nothing is dropped — the
+   * registry is the source of truth for what exists, so editorial can never
+   * conjure an app by naming one.
+   *
+   * A collection that falls below two resolvable apps is dropped whole rather
+   * than demoted to a single-app card: the title states why several apps belong
+   * together, and showing one survivor under that theme would claim something
+   * the curator did not write.
+   *
+   * Empty means "fall back to `pickFeatured`", which is what Discover did before
+   * the editorial document had a layout. That is also today's live state:
+   * `sections` is published empty, so the derived pick is what ships -- rendered
+   * by the same card, so the layout change reaches users before any curated
+   * section does.
+   */
+  const featuredSections = useMemo(() => {
+    const byName = new Map(browseApps.map(a => [a.name, a]))
+    return (registryData?.editorialSections || []).flatMap(section => {
+      const resolved = section.appRefs.map(n => byName.get(n)).filter((a): a is RegistryApp => !!a)
+      const floor = section.type === 'collection' ? MIN_COLLECTION_APPS : 1
+      if (resolved.length < floor) return []
+      return [{ ...section, apps: resolved }]
+    })
+  }, [registryData, browseApps])
+
+  // The published rail order decides the sequence of the categories it names;
+  // anything it omits keeps its canonical position. An absent or unusable
+  // document leaves the order exactly as it was before the editorial document
+  // existed.
+  const categoryOrder = useMemo(
+    () => mergeCategoryOrder(registryData?.categoryOrder || []),
+    [registryData],
+  )
+  const categories = useMemo(
+    () => categoryCounts(browseApps, categoryOrder),
+    [browseApps, categoryOrder],
+  )
 
   const sources: SourceRow[] = useMemo(() => {
     // Count built-ins from browseApps so the SOURCES totals describe the same
@@ -425,7 +649,22 @@ export default function AppsPage() {
             className="w-[220px]"
             aria-label={i18nT('pages.appsPage.search_apps')}
           />
-          <SourcesPopover open={sourcesOpen} onOpenChange={setSourcesOpen} onError={setError} />
+          <SourcesPopover
+            open={sourcesOpen}
+            onOpenChange={setSourcesOpen}
+            onError={setError}
+            onInstalled={(name) => {
+              // A path-installed app lands DISABLED, so it never shows in the
+              // sidebar — steer to Library (where disabled apps live) and
+              // confirm, instead of the popover silently closing. Clear any
+              // Discover search first: the Library list filters on the same
+              // `query`, so a stale non-matching term would hide the new app.
+              setQuery('')
+              setTab('library')
+              setSuccessMsg(i18nT('pages.appsPage.installed_app_find_in_library_and_enable', { name }))
+              setTimeout(() => setSuccessMsg(''), 6000)
+            }}
+          />
         </>}
       />
 
@@ -504,13 +743,13 @@ export default function AppsPage() {
                   </div>
                 )}
                 {(uninstallTarget.manifest?.agents?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallTarget.manifest.agents!.length })}</div>
+                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallTarget.manifest?.agents?.length || 0 })}</div>
                 )}
                 {(uninstallTarget.manifest?.skills?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallTarget.manifest.skills!.length })}</div>
+                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallTarget.manifest?.skills?.length || 0 })}</div>
                 )}
                 {(uninstallTarget.manifest?.crons?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallTarget.manifest.crons!.length })}</div>
+                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallTarget.manifest?.crons?.length || 0 })}</div>
                 )}
               </div>
 
@@ -599,26 +838,95 @@ export default function AppsPage() {
             />
           ) : (
             <>
-              {showEditorial && spotlight && (
+              {/* A published layout replaces the derived one entirely: mixing a
+                  curator's cards with `featured`-flag picks would show the
+                  same app twice and give the curator no way to say "only these". */}
+              {showEditorial && featuredSections.length > 0 ? (
+                featuredSections.map((section, position) => (
+                  <ErrorBoundary
+                    /* Keyed by document POSITION plus the section's FULL data
+                       identity (cardDataKey over the whole section: members,
+                       title, blurb, artwork). The position prefix keeps two
+                       content-identical sections from colliding -- the publish
+                       gate checks duplicate refs within a section, not across
+                       them, and a colliding key lets React reconcile one card
+                       against the other's fiber. The cardDataKey suffix gives
+                       this boundary the same "any field changed" remount
+                       contract as the other three sites, so a corrected
+                       payload -- including a section-level artwork/title/blurb
+                       fix -- clears a latched fallback. */
+                    key={`${position}:${cardDataKey(section)}`}
+                    scope={`apps:featured-section:${position}:${section.type}`}
+                    fallback={
+                      <BrowseCardFallback
+                        label={section.title}
+                        message={i18nT('pages.appsPage.this_section_could_not_be_displayed')}
+                        className="mb-6"
+                      />
+                    }
+                  >
+                    <FeaturedSpotlight
+                      type={section.type}
+                      apps={section.apps}
+                      title={section.title}
+                      blurb={section.blurb}
+                      artwork={section.artwork}
+                      busyName={
+                        featuredBusyName(actionLoading, section.apps)
+                      }
+                      onGet={name => getApp(name)}
+                      onEnable={name => enableApp(name)}
+                      onOpenApp={(name, e) => openDetail(name, e)}
+                    />
+                  </ErrorBoundary>
+                ))
+              ) : showEditorial && spotlight && (
                 <>
-                  <FeaturedSpotlight
-                    app={spotlight}
-                    busy={actionLoading === `${spotlight.name}:enable`}
-                    onOpen={e => openDetail(spotlight.name, e)}
-                    onGet={() => getApp(spotlight.name)}
-                    onEnable={() => enableApp(spotlight.name)}
-                  />
+                  <ErrorBoundary
+                    /* Full-data key: see cardDataKey — remounts when ANY field
+                       of the corrected payload changes, same latched-error
+                       reason as the app-list-row boundary. */
+                    key={cardDataKey(spotlight)}
+                    scope={`apps:featured-section:${spotlight.name}`}
+                    fallback={
+                      <BrowseCardFallback
+                        label={spotlight.displayName || spotlight.name}
+                        message={i18nT('pages.appsPage.this_app_could_not_be_displayed')}
+                        className="mb-6"
+                      />
+                    }
+                  >
+                    <FeaturedSpotlight
+                      type="app"
+                      apps={[spotlight]}
+                      busyName={featuredBusyName(actionLoading, [spotlight])}
+                      onGet={name => getApp(name)}
+                      onEnable={name => enableApp(name)}
+                      onOpenApp={(name, e) => openDetail(name, e)}
+                    />
+                  </ErrorBoundary>
                   {secondary.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-6">
                       {secondary.map(app => (
-                        <FeatureCard
-                          key={app.name}
-                          app={app}
-                          busy={actionLoading === `${app.name}:enable`}
-                          onOpen={e => openDetail(app.name, e)}
-                          onGet={() => getApp(app.name)}
-                          onEnable={() => enableApp(app.name)}
-                        />
+                        <ErrorBoundary
+                          /* Full-data key: see cardDataKey. */
+                          key={cardDataKey(app)}
+                          scope={`apps:feature-card:${app.name}`}
+                          fallback={
+                            <BrowseCardFallback
+                              label={app.displayName || app.name}
+                              message={i18nT('pages.appsPage.this_app_could_not_be_displayed')}
+                            />
+                          }
+                        >
+                          <FeatureCard
+                            app={app}
+                            busy={actionLoading === `${app.name}:enable`}
+                            onOpen={e => openDetail(app.name, e)}
+                            onGet={() => getApp(app.name)}
+                            onEnable={() => enableApp(app.name)}
+                          />
+                        </ErrorBoundary>
                       ))}
                     </div>
                   )}
@@ -664,15 +972,31 @@ export default function AppsPage() {
                     <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={i18nT('pages.appsPage.try_a_different_search_or_category')} />
                   ) : (
                     filteredBrowse.map(app => (
-                      <AppListRow
-                        key={app.name}
-                        app={app}
-                        busy={actionLoading === `${app.name}:enable` || !!updatingAll}
-                        onOpen={e => openDetail(app.name, e)}
-                        onGet={() => getApp(app.name)}
-                        onUpdate={() => updateApp(app.name)}
-                        onEnable={() => enableApp(app.name)}
-                      />
+                      <ErrorBoundary
+                        /* Full-data key (cardDataKey): the boundary latches
+                           its error state, so ANY corrected registry payload —
+                           including a same-version metadata fix — must remount
+                           it; a partial key would reuse the errored fiber and
+                           leave the placeholder up after the data is fixed. */
+                        key={cardDataKey(app)}
+                        scope={`apps:app-list-row:${app.name}`}
+                        fallback={
+                          <BrowseCardFallback
+                            label={app.displayName || app.name}
+                            message={i18nT('pages.appsPage.this_app_could_not_be_displayed')}
+                            className="mb-2"
+                          />
+                        }
+                      >
+                        <AppListRow
+                          app={app}
+                          busy={actionLoading === `${app.name}:enable` || !!updatingAll}
+                          onOpen={e => openDetail(app.name, e)}
+                          onGet={() => getApp(app.name)}
+                          onUpdate={() => updateApp(app.name)}
+                          onEnable={() => enableApp(app.name)}
+                        />
+                      </ErrorBoundary>
                     ))
                   )}
                 </div>
@@ -712,14 +1036,45 @@ export default function AppsPage() {
               )}
               <div className="space-y-3">
                 {filteredInstalled.map(app => (
-                  <InstalledAppCard
+                  <ErrorBoundary
                     key={app.name}
-                    app={{ ...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name) }}
-                    actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
-                    onAction={handleAction}
-                    onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}
-                    onDetail={() => openDetail(app.name)}
-                  />
+                    scope="apps:installed-card"
+                    fallback={
+                      <div className="border border-border rounded-lg p-4 flex items-center gap-3">
+                        <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)] shrink-0" />
+                        <div className="min-w-0 text-sm flex-1">
+                          <span className="font-medium text-text">{app.manifest?.displayName || app.name}</span>
+                          <span className="text-muted ml-2">{i18nT('pages.appsPage.this_app_could_not_be_displayed')}</span>
+                        </div>
+                        {/* The crashed card removed the app's management surface, so the
+                            fallback must keep one recovery path: quiet a broken enabled
+                            app, or remove a disabled one entirely (locked apps cannot
+                            be uninstalled). Same handlers as the healthy card. */}
+                        <div className="shrink-0">
+                          {app.enabled ? (
+                            <Btn
+                              onClick={() => handleAction(app.name, 'disable')}
+                              disabled={actionLoading === `${app.name}:disable`}
+                            >
+                              <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
+                            </Btn>
+                          ) : app.lifecycle !== 'locked' && (
+                            <Btn danger onClick={() => handleAction(app.name, 'uninstall')}>
+                              <Trash2 size={14} /> {i18nT('components.appstore.installedAppCard.uninstall')}
+                            </Btn>
+                          )}
+                        </div>
+                      </div>
+                    }
+                  >
+                    <InstalledAppCard
+                      app={{ ...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name) }}
+                      actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
+                      onAction={handleAction}
+                      onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}
+                      onDetail={() => openDetail(app.name)}
+                    />
+                  </ErrorBoundary>
                 ))}
               </div>
             </>

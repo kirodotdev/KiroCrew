@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import move_transcript_past
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.dashboard.handlers import api_sessions_summarize
@@ -131,10 +132,9 @@ class TestSessionsSummarizeHandler:
         async with TestClient(TestServer(_make_app(log, "sum", created))) as c:
             await c.post("/api/sessions/summarize", json={"keys": ["alpha"]})
             # New activity in the session — mtime advances, cache is stale.
-            import time as _t
-
-            _t.sleep(0.01)
+            sig = log.session_mtime("alpha")  # what the first call cached against
             log.append("alpha", "user", "a new turn changes the transcript")
+            move_transcript_past(log, "alpha", sig)  # don't rely on the OS tick (#2981)
             await c.post("/api/sessions/summarize", json={"keys": ["alpha"]})
         assert len(created) == 2
 

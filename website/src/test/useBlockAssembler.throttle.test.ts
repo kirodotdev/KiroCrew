@@ -56,6 +56,20 @@ describe('useBlockAssembler streaming throttle', () => {
     expect(parses()).toBe(afterMount + 2)
   })
 
+  it('parses once on a cold mount of a completed message, not twice', () => {
+    // Only a fresh mount runs the useState seed, so a rerender into
+    // streaming:false cannot reach it -- this has to mount false outright.
+    const text = `${MARK} done\n\`\`\`js\nconst x = 1\n\`\`\`\ntail`
+    const parses = countParsesOf(MARK)
+
+    const { result } = renderHook(() => useBlockAssembler(text, false))
+    // Read before the assertion below, which parses again on the same counter.
+    const afterMount = parses()
+
+    expect(afterMount).toBe(1)
+    expect(result.current).toEqual(parseBlocks(text, false))
+  })
+
   it('returns a stable reference across renders inside one window', () => {
     const { result, rerender } = renderHook(
       ({ text }) => useBlockAssembler(text, true),

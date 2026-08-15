@@ -4,6 +4,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { fileReadUrl } from '../utils/fileReadUrl'
 import { isSafePath } from '../utils/safePath'
 import { parseDiffLines, DIFF_BG, DIFF_FG, DIFF_NUM, DIFF_EDGE, type DiffLine } from '../utils/diffUtils'
+import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import UnchangedSeparator from './UnchangedSeparator'
 
 import { i18nT } from '../i18n/t'
@@ -237,7 +238,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, s
     <div className="diff-block group/diff rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
         <span className="text-muted text-[13px] font-mono">{i18nT('components.diffBlock.diff')}{headerPath && <span className="ml-1.5 text-muted/70">— {headerPath.split('/').pop()}</span>}</span>
-        <div className="flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity">
+        <div className={`flex items-center gap-1 opacity-0 group-hover/diff:opacity-100 group-focus-within/diff:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
           {/* Open: hover-gated alongside the other diff actions for visual
               consistency. Plain "Open" label, no icon, since the diff header
               already prefixes the file name. */}

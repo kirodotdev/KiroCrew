@@ -363,7 +363,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
 
       {/* ── Required ── */}
       <SettingsSection title={i18nT('pages.settings.botChannelPanel.required')}>
-        <SettingsCard>
+        <SettingsCard index={1}>
           <SettingsToggle
             label={i18nT('pages.settings.botChannelPanel.enable', { channel: spec.name })}
             description={i18nT('pages.settings.botChannelPanel.start_the_channel_at_gateway_startup', { channel: spec.name })}
@@ -406,7 +406,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
 
       {/* ── Identity & access ── */}
       <SettingsSection title={i18nT('pages.settings.botChannelPanel.identity_access')}>
-        <SettingsCard>
+        <SettingsCard index={2}>
           {spec.allowAll && (
             <>
               <SettingsToggle
@@ -457,7 +457,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       {/* ── Forum topics (optional; Telegram supergroups) ── */}
       {spec.forum && (
         <SettingsSection title={i18nT('pages.settings.botChannelPanel.forum_topics')}>
-          <SettingsCard>
+          <SettingsCard index={3}>
             <SettingsToggle
               label={spec.forum.toggleLabel}
               description={spec.forum.toggleDescription}
@@ -490,7 +490,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
 
       {/* ── Behavior ── */}
       <SettingsSection title={i18nT('pages.settings.botChannelPanel.behavior')}>
-        <SettingsCard>
+        <SettingsCard index={4}>
           <SettingsInput
             label={i18nT('pages.settings.botChannelPanel.soft_context_threshold')}
             description={spec.thresholdDescription}

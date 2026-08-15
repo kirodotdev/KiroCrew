@@ -108,6 +108,27 @@ async def _no_audit(**kwargs: Any) -> None:
     del kwargs
 
 
+@pytest.fixture(autouse=True)
+def _agents_dir_never_the_real_home(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep every test in this module off the developer's real ``~/.kiro/agents``.
+
+    The readiness probe asks kiro-cli to validate each required spec it finds, and
+    that enumeration resolves through the shared (KIRO_HOME-aware) agents dir. With
+    KIRO_HOME unset, tests that only meant to assert binary resolution would spawn
+    a validate per spec that happens to exist on the host — making their call-count
+    assertions depend on the machine they run on.
+    """
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path_factory.mktemp("kiro-home")))
+    import kiro_crew.kiro_prerequisite as kiro_prerequisite_module
+
+    monkeypatch.setattr(
+        kiro_prerequisite_module, "_default_spec_lister", lambda: [], raising=True
+    )
+
+
 async def _wait_for_operation(service: KiroPrerequisiteService) -> None:
     task = service._task
     assert task is not None
@@ -4546,6 +4567,437 @@ class TestAgentSpecsNarrowReadiness:
 
         assert (await service.snapshot())["ready"] is False
         assert await service.session_ready() is True
+
+
+class TestRejectedAgentSpecsNarrowReadiness:
+    """A spec that is PRESENT can still be one kiro-cli refuses to load.
+
+    ``missing_agent_specs`` answers presence by statting the file, which cannot
+    see this: kiro-cli drops a spec it rejects from its agent table, so
+    ``--agent kirocrew`` resolves to the default agent with none of Kiro Crew's
+    MCP servers and only a line on stderr. That is the shape of the customer
+    report behind issue #3116 — "my migrated agents stopped working" with a
+    perfectly present file on disk.
+
+    The oracle is the binary, not a schema copied into this repo, so a future
+    kiro-cli that changes the spec format is REPORTED rather than guessed at.
+
+    Two properties are load-bearing and are pinned in both directions:
+
+    * ``kiro-cli agent validate`` exits 0 whether or not it accepted the file, so
+      the verdict lives only in its output. A test that asserted on the exit code
+      would pass while detecting nothing.
+    * output that is NOT a schema rejection (a sandbox denial, a vanished file)
+      must NOT be reported as a rejected spec, or the gate sends the user to
+      rewrite a spec that was fine.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_agents_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep the ownership guard in ``agent.py`` from declining under a worktree.
+
+        These tests supply their specs through ``spec_lister`` (see ``_service``),
+        so all this needs to do is keep the env from pointing at the real home.
+        """
+        monkeypatch.setenv("KIRO_HOME", str(tmp_path / ".kiro"))
+
+    @staticmethod
+    def _spec_dir(tmp_path: Path) -> Path:
+        agents = tmp_path / ".kiro" / "agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        return agents
+
+    @staticmethod
+    def _service(
+        tmp_path: Path,
+        runner: Any,
+    ) -> KiroPrerequisiteService:
+        # Staged inside tmp_path so binary discovery and sign-in eligibility do
+        # not depend on the host: without these, a machine with a real kiro-cli
+        # reaches the probe while CI finds nothing viable and never gets far
+        # enough to ask about specs.
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+        token = tmp_path / ".aws" / "sso" / "cache" / "kiro-auth-token-cli.json"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"accessToken":"secret"}', encoding="utf-8")
+        agents = tmp_path / ".kiro" / "agents"
+
+        def _lister() -> list[tuple[str, Path]]:
+            from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
+
+            # Mirrors present_required_agent_specs (required-and-present only) over
+            # this test's dir, so the probe's spawn count is stated here rather than
+            # inherited from the host's real agents dir.
+            return [
+                (name, agents / name)
+                for name in REQUIRED_KIRO_AGENT_FILES
+                if (agents / name).is_file()
+            ]
+
+        return KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            home=tmp_path,
+            process_runner=runner,
+            audit_writer=_no_audit,
+            spec_lister=_lister,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_required_spec_blocks_readiness_and_names_the_reason(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text("{}", encoding="utf-8")
+        reason = (
+            f"Error: Json supplied at {agents / 'kirocrew.json'} is invalid: "
+            "data did not match any variant of untagged enum Repr"
+        )
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args[:2] == ["agent", "validate"]:
+                # Exit 0 WITH an error message is exactly what kiro-cli does.
+                return ProcessResult(ok=True, output=reason, returncode=0)
+            return ProcessResult(ok=True)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == ["kirocrew.json"]
+        assert status["ready"] is False
+        assert status["repair_required"] is True
+        assert "is invalid" in status["agent_spec_rejection_detail"]
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_spec_leaves_readiness_alone(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text("{}", encoding="utf-8")
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args[:2] == ["agent", "validate"]:
+                # Acceptance is SILENT — no output at all.
+                return ProcessResult(ok=True, output="", returncode=0)
+            return ProcessResult(ok=True)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == []
+        assert status["agent_spec_rejection_detail"] == ""
+        assert status["ready"] is True
+        assert status["repair_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_output_that_is_not_a_schema_rejection_is_not_reported(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A probe that could not READ the spec must not indict the spec.
+
+        Without this, a sandbox denial or a spec deleted between the stat and the
+        spawn would put the install behind a repair card whose only remedy is to
+        rewrite a file that was never malformed.
+        """
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text("{}", encoding="utf-8")
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            if args[:2] == ["agent", "validate"]:
+                return ProcessResult(
+                    ok=False,
+                    output="Error: Permission denied (os error 13)",
+                    returncode=1,
+                )
+            return ProcessResult(ok=True)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == []
+        assert status["ready"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_absent_spec_costs_no_spawn(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Absence is ``missing_agent_specs``' job, so it is not probed here.
+
+        Also bounds the added cost: the probe budget grows only by the specs that
+        actually exist, and a home with none pays nothing.
+        """
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            return ProcessResult(ok=True)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert not any(a[:2] == ["agent", "validate"] for a in calls)
+        assert status["rejected_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_cli_is_not_asked_about_specs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """One fault, one card: a CLI that cannot authenticate is reported as that.
+
+        Asking a signed-out binary whether it likes our specs spends a spawn per
+        spec on an answer the user cannot act on until sign-in is fixed, and would
+        stack a rejection card on top of the sign-in card. Pins the gate so a later
+        refactor cannot quietly reintroduce those spawns.
+        """
+        spec = self._spec_dir(tmp_path) / "kirocrew.json"
+        spec.write_text("{}", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            # Version succeeds so a binary is found; whoami fails -> signed out.
+            if args[:1] == ["whoami"] or "whoami" in args:
+                return ProcessResult(ok=False, output="not logged in")
+            return ProcessResult(ok=True, output="1.0.0")
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert not status["authenticated"]
+        assert not any(a[:2] == ["agent", "validate"] for a in calls)
+        assert status["rejected_agent_specs"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_mcp_server_with_no_command_is_reported_without_a_spawn(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """``agent validate`` accepts this; the loader cannot start the server.
+
+        Probed against the shipped binary: a spec whose ``mcpServers`` entry omits
+        ``command`` produces no output and exit 0 from ``agent validate``, so the
+        binary alone would call it accepted while the session runs without the
+        tools the spec declares. Structural, so it must cost no subprocess.
+        """
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "mcpServers": {"broken": {"args": ["x"]}}}),
+            encoding="utf-8",
+        )
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            # Mimics the real binary on this input: silent acceptance.
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == ["kirocrew.json"]
+        assert "broken" in status["agent_spec_rejection_detail"]
+        assert "neither a command" in status["agent_spec_rejection_detail"]
+        assert not any(a[:2] == ["agent", "validate"] for a in calls)
+
+    @pytest.mark.asyncio
+    async def test_a_spec_the_bounded_reader_rejects_fails_open(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """An unreadable spec is a different fault with its own reporting.
+
+        The structural read goes through the module's bounded helper so a
+        pathologically large spec cannot OOM the gateway through the readiness
+        probe. That helper also refuses a symlink, and when it refuses, the
+        structural check must decline to judge rather than invent a rejection —
+        the binary still gets its say.
+        """
+        agents = self._spec_dir(tmp_path)
+        real = tmp_path / "elsewhere.json"
+        real.write_text(json.dumps({"mcpServers": {"broken": {"args": []}}}), encoding="utf-8")
+        (agents / "kirocrew.json").symlink_to(real)
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        # No structural verdict, and the binary was still consulted.
+        assert status["rejected_agent_specs"] == []
+        assert any(a[:2] == ["agent", "validate"] for a in calls)
+
+    @pytest.mark.asyncio
+    async def test_a_structural_rejection_detail_is_redacted(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The detail names the MCP server, and a server name is user-supplied.
+
+        Every dashboard-facing string in this module goes through
+        ``_sanitize_detail``; the structural finding must not be the one exception,
+        or a name carrying a credential reaches the readiness payload verbatim.
+        """
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {
+                        "svc?token=AKIAIOSFODNN7EXAMPLE": {"args": []},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            del args
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == ["kirocrew.json"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in status["agent_spec_rejection_detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_remote_url_mcp_server_is_launchable_and_not_reported(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A remote MCP server has no ``command`` and is perfectly valid.
+
+        The custom-MCP handler's own contract is "spec needs 'command' (stdio) or
+        'url' (remote)", and ``rebuild_agent_config`` writes a URL-only entry into
+        the required spec. Treating that as unlaunchable would force a healthy
+        install into a readiness gate whose only escape discards the user's MCP tool
+        selections — worse than the silent gap this check closes.
+        """
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "mcpServers": {"remote": {"url": "https://mcp.example.com/sse"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            del args
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == []
+        assert status["ready"]
+
+    @pytest.mark.asyncio
+    async def test_a_launchable_mcp_server_still_reaches_the_binary(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The structural check must not become the only oracle.
+
+        It answers one narrow question. Everything else — including whether this
+        build of kiro-cli likes the schema at all — stays the binary's call, so a
+        spec that passes the structural read must still be validated.
+        """
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text(
+            json.dumps(
+                {"name": "kirocrew", "mcpServers": {"ok": {"command": "uvx", "args": []}}}
+            ),
+            encoding="utf-8",
+        )
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            return ProcessResult(ok=True, output="", returncode=0)
+
+        status = await self._service(tmp_path, run).snapshot(force=True)
+
+        assert status["rejected_agent_specs"] == []
+        assert any(a[:2] == ["agent", "validate"] for a in calls)
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_spec_is_re_probed_but_never_rewritten(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The rejection card's button re-asks the binary; it must not rewrite.
+
+        ``_repair_agent_specs`` documents that it only rebuilds when the main spec
+        is ABSENT, which is what keeps it out of a lost-update class: the rebuild
+        regenerates the whole file and re-merges ``mcpServers``, but not the
+        ``tools``/``allowedTools`` half ``api_mcp_toggle`` writes separately. A
+        rejected spec is present, so rebuilding it can silently drop a concurrent
+        toggle's grant. Pins both halves: no write, and a forced re-probe so the
+        button still does something only the binary can answer.
+        """
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text("{}", encoding="utf-8")
+        rebuilt: list[str] = []
+        calls: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append(args)
+            if args[:2] == ["agent", "validate"]:
+                return ProcessResult(ok=True, output="x is invalid: bad", returncode=0)
+            return ProcessResult(ok=True)
+
+        service = self._service(tmp_path, run)
+        await service.snapshot(force=True)
+        assert service._status.rejected_agent_specs == ["kirocrew.json"]
+
+        async def _fake_repair() -> str:
+            rebuilt.append("called")
+            return ""
+
+        # Patch the write itself: this asserts the guard's decision, not that
+        # rebuild_agent_config works (which has its own coverage).
+        service._repair_agent_specs = _fake_repair  # type: ignore[method-assign]
+
+        await service.repair_agent_specs(caller="test")
+
+        # A rejected spec exists on disk, so regenerating it would drop a
+        # concurrent api_mcp_toggle edit to the tools/allowedTools half that
+        # rebuild_agent_config does not re-merge. Losing a user's tool grants to
+        # clear a rejection is worse than the rejection, so the write must NOT
+        # happen -- the button re-asks the binary instead.
+        assert rebuilt == []
+        # The button is not inert: a forced re-probe means a spec kiro-cli now
+        # accepts clears the card, which a stat-only overlay could never decide.
+        assert sum(1 for a in calls if a[:2] == ["agent", "validate"]) >= 2
+
+    @pytest.mark.asyncio
+    async def test_repair_declines_when_nothing_is_wrong(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The widened guard must not turn every Check again into a write."""
+        agents = self._spec_dir(tmp_path)
+        (agents / "kirocrew.json").write_text("{}", encoding="utf-8")
+        (agents / "kirocrew-lite.json").write_text("{}", encoding="utf-8")
+        rebuilt: list[str] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            return ProcessResult(ok=True)
+
+        service = self._service(tmp_path, run)
+        await service.snapshot(force=True)
+
+        async def _fake_repair() -> str:
+            rebuilt.append("called")
+            return ""
+
+        service._repair_agent_specs = _fake_repair  # type: ignore[method-assign]
+
+        await service.repair_agent_specs(caller="test")
+
+        assert rebuilt == []
 
 
 class TestAgentSpecRepairIsAPostNotAGet:

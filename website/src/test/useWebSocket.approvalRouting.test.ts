@@ -5,7 +5,7 @@
  * Routing one to `chat.activeSlot` would plant a permission card in whatever
  * chat the user happens to be viewing, where the card's slot-scoped Trust
  * control resolves against that innocent slot and 404s as soon as the short
- * background window elapses ("That approval expired").
+ * background window elapses ("approval request expired").
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'

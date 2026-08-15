@@ -741,6 +741,62 @@ class TestConfigPutRoundTrip:
             assert "fr-FR" in data["language_codes"]
 
 
+class TestSttLanguageCodes:
+    """The language list that drives the Chat Settings STT picker.
+
+    The picker is the only supported way to choose a recognition language, so a
+    language missing from this list is unreachable without hand-editing
+    config.json — even when the provider (AWS Transcribe) supports it.
+    """
+
+    def test_korean_is_offered(self):
+        """Korean must be selectable in the picker.
+
+        Regression: `ko-KR` was absent while ja-JP and zh-CN were present, so
+        Korean speakers could not choose their language from the dashboard.
+        """
+        from kiro_crew.dashboard.handlers.core import _STT_LANGUAGE_CODES
+
+        assert "ko-KR" in _STT_LANGUAGE_CODES
+
+    def test_codes_are_unique_and_well_formed(self):
+        """Every entry is a distinct `ll-CC` BCP-47 tag.
+
+        A duplicate renders twice in the dropdown, and a malformed tag is
+        rejected by Transcribe at stream-start rather than at selection time.
+        """
+        from kiro_crew.dashboard.handlers.core import _STT_LANGUAGE_CODES
+
+        assert len(set(_STT_LANGUAGE_CODES)) == len(_STT_LANGUAGE_CODES)
+        for code in _STT_LANGUAGE_CODES:
+            language, _, region = code.partition("-")
+            assert language.isalpha() and language.islower() and len(language) == 2, code
+            assert region.isalpha() and region.isupper() and len(region) == 2, code
+
+    @pytest.mark.asyncio
+    async def test_korean_round_trips_through_the_config_api(self, tmp_path, monkeypatch):
+        """Selecting Korean persists and is served back to the UI."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.dashboard import handlers
+
+        app = web.Application()
+        app.router.add_get("/api/config/stt", handlers.api_stt_config)
+        app.router.add_put("/api/config/stt", handlers.api_stt_config)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put(
+                "/api/config/stt",
+                json={"provider": "transcribe", "language_code": "ko-KR"},
+            )
+            assert resp.status == 200
+
+            resp = await client.get("/api/config/stt")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["language_code"] == "ko-KR"
+            assert "ko-KR" in data["language_codes"]
+
+
 class TestDefensiveGuards:
     """Regression tests for review-bot rev 2 findings (posts #9, #10)."""
 
@@ -1011,13 +1067,14 @@ class TestSttProviderGating:
         assert "apple" not in core._stt_providers()
 
     def test_mlx_prereqs_empty_when_brew_present(self, monkeypatch):
-        """The Install button installs ffmpeg/pipx/mlx-whisper, so when brew is
-        present there are no manual prereqs to surface (no duplication)."""
+        """The Install button installs pipx/mlx-whisper, so with brew present
+        and ffmpeg on PATH there are no manual prereqs to surface."""
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
         monkeypatch.setattr(core, "find_brew", lambda: "/opt/homebrew/bin/brew")
+        monkeypatch.setattr(core.shutil, "which", lambda _n: "/opt/homebrew/bin/ffmpeg")
         assert core._stt_prereq_commands("mlx") == []
 
     def test_mlx_prereqs_empty_when_brew_off_path(self, monkeypatch):
@@ -1033,7 +1090,10 @@ class TestSttProviderGating:
 
         monkeypatch.setattr(core, "_is_apple_silicon", lambda: True)
         monkeypatch.setattr(core, "ensure_ffmpeg_in_path", lambda: None)
-        monkeypatch.setattr("shutil.which", lambda _name, **_kw: None)
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name, **_kw: "/opt/homebrew/bin/ffmpeg" if name == "ffmpeg" else None,
+        )
         monkeypatch.setattr("os.path.isfile", lambda p: p == "/opt/homebrew/bin/brew")
         monkeypatch.setattr("os.access", lambda p, _mode: p == "/opt/homebrew/bin/brew")
         assert core._stt_prereq_commands("mlx") == []

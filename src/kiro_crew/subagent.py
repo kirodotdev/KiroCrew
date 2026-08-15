@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
 from kiro_crew.executors import run_in_embed_pool
 
 if TYPE_CHECKING:
@@ -73,6 +74,11 @@ from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.session_workspace import result_path as _ws_result_path
 from kiro_crew.slack.format import extract_options
 from kiro_crew.stats import Stats
+from kiro_crew.subagent_completion_meta import (
+    OUTCOME_FAILED,
+    OUTCOME_INTERRUPTED,
+    single_completion_meta,
+)
 from kiro_crew.subagent_cost import (
     append_cost_sample,
     compact_cost_log,
@@ -339,10 +345,10 @@ def _subagent_default_model() -> str:
     """Explicit sub-agent model pin (``agent.role_models['subagent']``), or ``""``.
 
     Returns ``""`` when the sub-agent role is unpinned so the caller OMITS the
-    model kwarg and keeps deferring to the provider's configured default exactly
-    as before this knob existed — rather than forcing the chat default on as an
-    explicit override (which also breaks callers/mocks that don't expect the
-    kwarg). Only a deliberate pin overrides. Never raises.
+    model kwarg and keeps deferring to the provider's configured default —
+    rather than forcing the chat default on as an explicit override (which also
+    breaks callers/mocks that don't expect the kwarg). Only a deliberate pin
+    overrides. Never raises.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig, normalize_agent_model
@@ -356,8 +362,8 @@ def _subagent_default_effort() -> str:
     """Explicit sub-agent effort pin (``agent.role_efforts['subagent']``), or ``""``.
 
     Returns ``""`` when unpinned so the caller omits ``reasoning_effort_override``
-    and the factory's default effort applies — the prior behavior. Only a
-    deliberate pin overrides. Never raises.
+    and the factory's default effort applies. Only a deliberate pin overrides.
+    Never raises.
     """
     try:
         from kiro_crew.config.loader import KiroCrewConfig
@@ -417,9 +423,16 @@ def _digest_hold_secs() -> float:
 DIGEST_HOLD_SECS = _digest_hold_secs()
 
 
-def _timeout_context(info: "SubagentInfo", *, include_elapsed: bool = True) -> str:
-    """Build a human-readable context string for timeout errors."""
-    parts = [f"turn {info.turns}/{info.max_turns}"]
+def _timeout_context(info: "SubagentInfo", *, include_elapsed: bool = True, turn_limit: int = 0) -> str:
+    """Build a human-readable context string for timeout errors.
+
+    ``turn_limit`` is the resolved effective turn cap (per-spawn override →
+    manager default → hardcoded). ``info.max_turns`` alone is only the raw
+    per-spawn override, which is 0 when unset and would render a misleading
+    ``turn N/0``. When no positive cap is known, the cap is omitted entirely.
+    """
+    limit = turn_limit or info.max_turns
+    parts = [f"turn {info.turns}/{limit}" if limit > 0 else f"turn {info.turns}"]
     if info.last_tool:
         parts.append(f"last tool: {_redact(info.last_tool)}")
     if include_elapsed:
@@ -1186,7 +1199,7 @@ class SubagentManager:
         on_spawn_approval: SpawnApprovalCallback | None = None,
         is_yolo: Callable[[], bool] | None = None,
         on_event: SubagentEventCallback | None = None,
-        on_orphan_notify: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_orphan_notify: Callable[..., Awaitable[bool]] | None = None,
         on_orphan_dm: Callable[[str], Awaitable[bool]] | None = None,
         completion_keep: str = "head",
         completion_keep_chars: int = COMPLETION_KEEP_DEFAULT_CHARS,
@@ -1290,6 +1303,14 @@ class SubagentManager:
             )
         except Exception:
             self._spawn_stagger_secs = 2.0
+
+    def _effective_turn_limit(self, info: SubagentInfo) -> int:
+        """Resolved turn cap for a run: per-spawn ``max_turns`` → config
+        default (``agent.subagent_max_turns``) → hardcoded ``_TURN_LIMIT``.
+
+        ``0`` at any level means "not set" and falls through to the next.
+        """
+        return info.max_turns or self._default_turn_limit or _TURN_LIMIT
 
     def update_completion_keep(self, mode: str, max_chars: int) -> None:
         """Update the live completion-keep mode and char budget.
@@ -1528,12 +1549,26 @@ class SubagentManager:
                 f"Result saved at: `{result_path}`\n"
                 f"Use the read tool to retrieve it."
             )
+            # A restart orphan whose result survived on disk: interrupted, not a
+            # plain failure. The note is the only explanation the header carries.
+            row_meta = single_completion_meta(
+                agent_id=agent_id,
+                outcome=OUTCOME_INTERRUPTED,
+                task=task_preview,
+                note="orphaned by gateway restart",
+            )
         else:
             msg = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ❌ lost to gateway restart\n"
                 f"Task: {task_preview}\n"
                 f"No result was captured before the restart."
+            )
+            row_meta = single_completion_meta(
+                agent_id=agent_id,
+                outcome=OUTCOME_FAILED,
+                task=task_preview,
+                note="lost to gateway restart",
             )
 
         # Redact before any delivery path (injection or Slack DM)
@@ -1545,7 +1580,7 @@ class SubagentManager:
         # tab the digest DM below is the only surface.
         if has_dashboard_surface(parent_session):
             try:
-                injected = await self._try_inject_orphan_notification(parent_session, msg)
+                injected = await self._try_inject_orphan_notification(parent_session, msg, row_meta)
                 if injected:
                     # Update tombstone recovery_action
                     try:
@@ -1566,18 +1601,23 @@ class SubagentManager:
         # Undelivered: hand back for the caller's single digest DM.
         return msg
 
-    async def _try_inject_orphan_notification(self, parent_session: str, msg: str) -> bool:
+    async def _try_inject_orphan_notification(
+        self, parent_session: str, msg: str, meta: dict | None = None
+    ) -> bool:
         """Try to inject a message into the parent dashboard session.
 
         Delegates to the gateway-wired ``on_orphan_notify`` callback, which
         appends the (already-redacted) message to the parent slot's transcript
         and queues it into ``slot._pending_subagent_failures`` so the LLM
         learns about the orphan on its next turn. Returns True if delivered.
+
+        ``meta`` carries the structured completion facts for the dashboard card
+        (#1792) so the orphan row renders without re-parsing its prose header.
         """
         if self._on_orphan_notify is None:
             return False
         try:
-            delivered = bool(await self._on_orphan_notify(parent_session, msg))
+            delivered = bool(await self._on_orphan_notify(parent_session, msg, meta))
         except Exception:
             logger.debug("on_orphan_notify raised for %s", parent_session, exc_info=True)
             return False
@@ -2275,9 +2315,9 @@ class SubagentManager:
             if not info.error and not info.user_stopped:
                 # A user stop is neutral — never synthesize a reap error for it.
                 if reason == "startup_timeout":
-                    info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False)}]"
+                    info.error = f"Failed to start within {self._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._effective_turn_limit(info))}]"
                 else:
-                    info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False)}]"
+                    info.error = f"Reaped after {int(elapsed)}s (exceeded {self._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._effective_turn_limit(info))}]"
             if not info.user_stopped:
                 # A user-initiated stop is a neutral outcome, not a failure.
                 Stats().inc_subagent_failed()
@@ -2539,17 +2579,11 @@ class SubagentManager:
         measurement divided by the number of concurrently-live sharing sessions
         on the same pid, i.e. an average share, not an exclusive figure.
         """
-
-        def _r(s: str) -> str:
-            s, _ = redact_exfiltration_urls(s)
-            s, _ = redact_credentials(s)
-            return s
-
         return [
             {
                 "id": a.id,
-                "task": _r(a.task[:80]),
-                "agent": _r(a.agent),
+                "task": _redact(a.task[:80]),
+                "agent": _redact(a.agent),
                 "parent": a.parent_session_key,
                 "rss_mb": round(a.last_rss_gb * 1024, 1),
                 "peak_rss_mb": round(a.peak_rss_gb * 1024, 1),
@@ -3166,7 +3200,7 @@ class SubagentManager:
                 last_used = float(state.get("updated_at") or state.get("started") or 0.0)
                 out.append((
                     conv_id, conv_key, sid,
-                    str(state.get("provider") or "acp"),
+                    str(state.get("provider") or PROVIDER_LABEL_DEFAULT),
                     str(state.get("cwd") or ""),
                     last_used,
                 ))
@@ -3238,8 +3272,15 @@ class SubagentManager:
         agent: str = "",
         model: str | None = None,
         max_turns: int = 0,
+        cwd: str = "",
+        _preassigned_id: str = "",
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id*.
+
+        ``_preassigned_id`` mirrors ``spawn``: a caller that must persist the
+        dispatch identity BEFORE the side effect (so a crash in between is
+        recoverable rather than ambiguous) supplies the id it already wrote
+        down, instead of discovering the minted one only on return.
 
         Retain-by-default: works on ANY completed run whose session files are
         still on disk — no keep flag needed at spawn time. Every run's sid /
@@ -3282,7 +3323,7 @@ class SubagentManager:
                 self._sessions.seed_conversation(
                     conv_key,
                     sid,
-                    provider=str(state.get("provider") or "acp"),
+                    provider=str(state.get("provider") or PROVIDER_LABEL_DEFAULT),
                     cwd=str(state.get("cwd") or ""),
                 )
         # Re-check: SessionMap.get self-prunes entries whose session files
@@ -3316,18 +3357,52 @@ class SubagentManager:
         # The conversation TTL sweep / spawn_release owns deletion from here.
         self._promote_conversation(conv_id, conv_key)
         inc_memory, inc_lessons, inc_project = self._inherited_context_groups(conv_id)
+        # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
+        # cwd to the pool project before it validates the agent name, so a run
+        # spawned against a project-local agent (defined under that project's
+        # .kiro/agents/) came back "unknown agent" here — and the caller reads any
+        # non-busy error as unresumable and respawns from the digest alone,
+        # silently dropping the conversation this call exists to preserve.
+        #
+        # The cwd must come from the CALLER, not be discovered here. This method is
+        # synchronous and runs on the gateway's event loop, so probing the recorded
+        # path (`is_dir()`) would freeze the gateway for as long as a stalled
+        # network mount takes to answer. Async callers resolve it off-loop instead:
+        # crew passes its slot project, and `recorded_cwd()` gives the others the
+        # run's own recorded path to hand back in.
         return self.spawn(
             task,
+            _preassigned_id=_preassigned_id,
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,
             max_turns=max_turns,
             keep=True,
+            cwd=cwd,
             conversation_key=conv_key,
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
         )
+
+    def recorded_cwd(self, conv_id: str) -> str:
+        """The cwd run *conv_id* executed in, or "" if it never had one.
+
+        `continue_conversation` deliberately does NOT discover this itself: it is
+        synchronous and runs on the gateway's event loop, where the state read would
+        block for as long as a stalled network mount takes to answer. This helper
+        does the blocking work in one place so an async caller can hand it to
+        `asyncio.to_thread` and pass the result in.
+
+        A path that no longer exists is returned ANYWAY, so `spawn` refuses it.
+        Round 35 filtered it to "" to keep such a continuation working, which was
+        the wrong trade: an empty cwd resolves to the POOL project, so a follow-up
+        whose task names relative files would have edited an unrelated project's
+        working tree. A loud refusal is recoverable; a silent write to the wrong
+        repository is not. Only a run that never recorded a cwd returns "" — for it
+        the pool default is correct, because there is no project to miss.
+        """
+        return str((read_state(conv_id) or {}).get("cwd") or "")
 
     def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
         """Recover the context scope of the run being continued.
@@ -3691,7 +3766,9 @@ class SubagentManager:
         busy = self._conversation_busy(conv_key)
         if busy is not None:
             return False, f"conversation_busy: run {busy.id} is in flight"
-        provider_label = self._sessions.conversation_provider(conv_key) or "acp"
+        provider_label = (
+            self._sessions.conversation_provider(conv_key) or PROVIDER_LABEL_DEFAULT
+        )
         sid = self._sessions.forget_conversation(conv_key)
         self._conversations.pop(conv_key, None)
         # Demote the persisted source of truth too (#1115): with the disk
@@ -3749,6 +3826,21 @@ class SubagentManager:
                 pass  # no running loop (sync/test context)
             return
         params = self._queue.pop(0)
+        # A run can be cancelled WHILE it waits here — a user stop, or a session
+        # deleted out from under it. Starting it anyway would execute tools for
+        # work already reported as stopped, so skip it and drain the next one
+        # instead: `cancel()` marks the info terminal but cannot unqueue this.
+        queued_id = str(params.get("_preassigned_id") or "")
+        if queued_id:
+            waiting = self._agents.get(queued_id)
+            if waiting is not None and (waiting.done or waiting.user_stopped or waiting.reaped):
+                logger.info("Skipping queued spawn %s: cancelled while waiting", queued_id)
+                self._emit_queue_depth(
+                    str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))
+                )
+                if self._queue:
+                    self._drain_queue()
+                return
         logger.info(
             "Draining queue: spawning '%s' (%d left)",
             str(params.get("task", ""))[:40],
@@ -3767,7 +3859,31 @@ class SubagentManager:
         # the queue round-trip — including `_preassigned_id`, which makes the agent
         # start under the id its caller was already told (and, if the gate re-queues
         # it, keeps that id across the second round-trip too).
-        self.spawn(**params, _from_queue=True)
+        drained = self.spawn(**params, _from_queue=True)
+        # A drained spawn has NO synchronous reader: this call site is a timer
+        # callback, and the original caller was handed a queued info long ago. So a
+        # terminal rejection here — the cwd was deleted while the run waited, the
+        # agent stopped resolving — was dropped on the floor: no completion event,
+        # and the caller's own bookkeeping showed the run as still going. Crew left
+        # such a topic `running` forever.
+        #
+        # Only for NON-batch runs, which is exactly the set `_announce_rejection`
+        # skips (it announces batch members itself, from inside `spawn`). Announcing
+        # regardless double-counted a queued batch rejection: the wave's own
+        # accounting closed early and emitted a duplicate or incomplete digest.
+        if (
+            drained is not None
+            and drained.done
+            and drained.error
+            and not drained.batch_id
+            and self._on_done
+        ):
+            try:
+                self._tasks[f"reject-{drained.id}"] = asyncio.ensure_future(
+                    self._safe_announce(drained)
+                )
+            except RuntimeError:
+                pass  # no running loop (sync/test context)
         if self._queue and self._running_count < self._max_concurrent:
             try:
                 asyncio.get_event_loop().call_later(self._spawn_stagger_secs, self._drain_queue)
@@ -3808,8 +3924,8 @@ class SubagentManager:
             # A user Stop funnels into `_force_reap` and can land while this
             # approval is still pending (a human prompt has no deadline), and
             # `_force_reap` releases the slot and reports. A bare decrement here
-            # then double-released — driving `_running_count` negative — and the
-            # announce below double-reported the completion.
+            # would double-release — driving `_running_count` negative — and the
+            # announce below would double-report the completion.
             if self._release_slot(info):
                 self._running_count -= 1
                 self._drain_queue()
@@ -4207,7 +4323,7 @@ class SubagentManager:
             )
         except asyncio.TimeoutError:
             if not info.reaped:
-                info.error = f"Timed out after {self._default_timeout // 60} minutes [{_timeout_context(info)}]"
+                info.error = f"Timed out after {self._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._effective_turn_limit(info))}]"
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._write_tombstone(info, "timeout")
@@ -4804,7 +4920,7 @@ class SubagentManager:
             message,
             is_new,
             session_key,
-            provider_type="claude_code" if is_cc else "acp",
+            provider_type=self._provider_label_of(client),
             model_window=_sub_window,
             context_groups=_groups,
         )
@@ -4819,7 +4935,7 @@ class SubagentManager:
 
         result_text = ""
         turns = 0
-        turn_limit = info.max_turns or self._default_turn_limit or _TURN_LIMIT
+        turn_limit = self._effective_turn_limit(info)
         # Reports inherited agent (not just info.agent) so telemetry shows
         # the actual agent used for this subagent session.
         await self._fire_event(
@@ -4840,7 +4956,7 @@ class SubagentManager:
         # Record session_id and provider type for session file cleanup
         try:
             session_id = client.session_id if hasattr(client, "session_id") else ""
-            provider_type = "claude_code" if is_cc else "acp"
+            provider_type = self._provider_label_of(client)
             state_update: dict[str, object] = {
                 "session_id": session_id,
                 "provider": provider_type,
@@ -5324,6 +5440,21 @@ class SubagentManager:
 
         return is_claude_backend(provider)
 
+    @staticmethod
+    def _provider_label_of(provider: object) -> str:
+        """Backend identity key for *provider*, persisted with the run's state.
+
+        Mirrors ``_is_cc_provider`` in also matching the (dead) standalone
+        ``ClaudeCodeProvider``, which the shared ``provider_label`` helper does
+        not know about.
+        """
+        if ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider):
+            return PROVIDER_LABEL_CLAUDE
+        # circular import: see _is_cc_provider.
+        from kiro_crew.providers.acp import provider_label
+
+        return provider_label(provider)
+
     def _cancel_task_intentionally(
         self,
         task: "asyncio.Task",  # type: ignore[type-arg]
@@ -5362,6 +5493,29 @@ class SubagentManager:
                 info._cancel_retry_used = True
         task.cancel()
 
+    def _unqueue(self, agent_id: str) -> bool:
+        """Drop a not-yet-started spawn from the stagger queue. True if removed.
+
+        The queue is the only record of a waiting run — `spawn` returns its queued
+        SubagentInfo without registering it in ``_agents`` — so removing the entry
+        is what makes a cancel take effect before the work exists. Also re-emits the
+        parent's queued depth, or the chip keeps counting an agent that will never
+        run.
+        """
+        keep = [p for p in self._queue if str(p.get("_preassigned_id") or "") != agent_id]
+        if len(keep) == len(self._queue):
+            return False
+        dropped = [p for p in self._queue if str(p.get("_preassigned_id") or "") == agent_id]
+        self._queue = keep
+        for p in dropped:
+            try:
+                self._emit_queue_depth(
+                    str(p.get("parent_session_key", "")), str(p.get("batch_id", ""))
+                )
+            except Exception:
+                logger.debug("queue-depth re-emit failed after unqueue", exc_info=True)
+        return True
+
     async def cancel(self, agent_id: str) -> bool:
         """Cancel a single running subagent. Returns True if found and cancelled.
 
@@ -5372,6 +5526,15 @@ class SubagentManager:
         """
         info = self._agents.get(agent_id)
         if not info or info.done:
+            # A run still WAITING behind the stagger has no `_agents` record at
+            # all: `spawn` builds its queued SubagentInfo and returns it without
+            # registering. So this used to answer False and leave the entry in the
+            # queue, which the drain later started — the stop was reported as
+            # ineffective while the work ran anyway, and a purge on a deleted
+            # session could not reach it. Unqueueing IS the cancel for that state.
+            if self._unqueue(agent_id):
+                logger.info("Cancelled queued subagent %s before it started", agent_id)
+                return True
             return False
         info.user_stopped = True
         # Neutral semantics live in the RECORD, not just the live event: a user

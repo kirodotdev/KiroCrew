@@ -1,0 +1,112 @@
+# Per-file coverage baseline — files below the floor when the gate landed.
+#
+# The gate (scripts/check_per_file_coverage.py) requires every measured file to
+# meet the per-file floor EXCEPT the ones listed here. This list may only
+# shrink. A refresh DELETES graduated and vanished entries and copies every
+# surviving line through verbatim, so a recorded rate is never rewritten and no
+# path can be added -- neither a new offender nor a regression can be cleared by
+# refreshing instead of by adding tests. Each line therefore stays an accurate
+# record of the moment it was taken.
+#
+# Refresh after a file graduates, is deleted, or is renamed:
+#   python3 scripts/check_per_file_coverage.py <report> --label <lane> \
+#       --floor <n> --baseline <this file> --update-baseline
+#
+# Format: <path> <rate-when-recorded>   # <covered>/<statements>
+src/app-sdk/index.ts 48.0   # 36/75
+src/app-sdk/shared-modules.ts 0.0   # 0/1
+src/apps/auto-improvement/AutoImprovementPage.tsx 58.0   # 47/81
+src/apps/auto-improvement/FindingDetail.tsx 8.3   # 2/24
+src/apps/auto-improvement/SetupPanel.tsx 53.7   # 36/67
+src/apps/auto-improvement/lib/agentSession.ts 32.6   # 28/86
+src/apps/code-review-sage/api.ts 12.7   # 9/71
+src/apps/crew-companion/LottieRenderer.tsx 9.5   # 2/21
+src/apps/crew-companion/SpriteRenderer.tsx 39.6   # 19/48
+src/apps/crew-companion/ToggleRow.tsx 66.7   # 2/3
+src/apps/crew-companion/api.ts 0.0   # 0/24
+src/apps/crew-companion/petdexImport.ts 10.4   # 5/48
+src/apps/crew-companion/useWalking.ts 28.3   # 17/60
+src/apps/design-critique/api.ts 0.0   # 0/30
+src/apps/issue-radar/components/PrFiltersSection.tsx 0.0   # 0/16
+src/apps/issue-radar/components/ReviewButton.tsx 0.0   # 0/17
+src/apps/issue-radar/lib/agentSession.ts 16.4   # 9/55
+src/apps/issue-radar/views/ComingSoon.tsx 0.0   # 0/2
+src/apps/issue-radar/views/OverviewView.tsx 29.5   # 23/78
+src/apps/issue-radar/views/SettingsView.tsx 0.0   # 0/3
+src/apps/issue-radar/views/settings/GeneralSettings.tsx 0.0   # 0/29
+src/apps/md-notebook/SettingsPage.tsx 64.0   # 73/114
+src/apps/meetings/MeetingView.tsx 0.0   # 0/32
+src/apps/meetings/TaskReviewView.tsx 0.0   # 0/20
+src/apps/meetings/api.ts 55.6   # 45/81
+src/apps/meetings/components/TaskSidebar.tsx 3.6   # 1/28
+src/apps/mochi/api.ts 30.0   # 15/50
+src/apps/mochi/mochiHelpers.ts 0.0   # 0/2
+src/apps/mochi/mochiLanguage.tsx 0.0   # 0/16
+src/apps/mochi/panel/MochiSnipHost.tsx 0.0   # 0/48
+src/apps/mochi/pet/main.tsx 0.0   # 0/21
+src/apps/mochi/snip/main.tsx 0.0   # 0/54
+src/apps/mochi/src/renderer/LottieRenderer.tsx 32.7   # 16/49
+src/apps/mochi/src/renderer/PetdexImporter.tsx 0.0   # 0/40
+src/apps/mochi/src/renderer/SpriteRenderer.tsx 39.6   # 19/48
+src/apps/mochi/src/shared/appearanceTypes.ts 8.7   # 6/69
+src/apps/mochi/src/shared/utils.ts 0.0   # 0/44
+src/apps/ops-mission-control/HandoverPanel.tsx 0.0   # 0/42
+src/apps/ops-mission-control/api.ts 42.4   # 36/85
+src/apps/papyrus/PapyrusEditor.tsx 0.0   # 0/49
+src/apps/papyrus/ProjectList.tsx 48.6   # 36/74
+src/apps/papyrus/api.ts 9.8   # 6/61
+src/apps/personal-shopper/HistoryTab.tsx 0.0   # 0/45
+src/apps/personal-shopper/PersonalShopperPage.tsx 0.0   # 0/19
+src/apps/personal-shopper/SitesTab.tsx 0.0   # 0/49
+src/apps/personal-shopper/api.ts 5.3   # 1/19
+src/apps/pptx-maker/LibraryPanel.tsx 39.6   # 42/106
+src/apps/pptx-maker/api.ts 3.5   # 2/57
+src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
+src/apps/workflows/WorkflowRunTree.tsx 3.4   # 1/29
+src/apps/workflows/WorkflowSourcePanel.tsx 4.7   # 2/43
+src/apps/workflows/WorkflowsRuns.tsx 35.5   # 22/62
+src/components/AddJobSplitButton.tsx 66.7   # 2/3
+src/components/AppIcon.tsx 51.1   # 24/47
+src/components/BottomTerminalPanel.tsx 55.1   # 49/89
+src/components/ChatPane.tsx 69.0   # 100/145
+src/components/CommentThreadPopover.tsx 59.0   # 46/78
+src/components/EmbeddedDragRegionReporter.tsx 13.9   # 5/36
+src/components/ExecutionsView.tsx 48.8   # 20/41
+src/components/FileArtifactComments.tsx 52.0   # 52/100
+src/components/GitPanel.tsx 0.0   # 0/44
+src/components/InlineCommentOverlay.tsx 31.9   # 23/72
+src/components/LogEntry.tsx 0.0   # 0/16
+src/components/MarkdownToc.tsx 55.0   # 77/140
+src/components/SessionPulseSurveyCard.tsx 47.9   # 34/71
+src/components/Strands.tsx 52.2   # 71/136
+src/components/folderColorPaint.ts 0.0   # 0/4
+src/components/notifications/NotificationDetailPanel.tsx 43.2   # 16/37
+src/hooks/sceneCanvas.ts 39.1   # 18/46
+src/hooks/useAgentSync.ts 0.0   # 0/31
+src/hooks/useArtifactFolders.ts 29.6   # 8/27
+src/hooks/useBottomTerminal.ts 66.3   # 65/98
+src/hooks/useCronActions.ts 31.0   # 9/29
+src/hooks/usePopoutSync.ts 0.0   # 0/51
+src/hooks/useQuickSearchShortcut.ts 40.5   # 17/42
+src/hooks/useSSE.ts 0.0   # 0/32
+src/hooks/useStreamingStt.ts 73.3   # 154/210
+src/lib/disintegrate.ts 0.0   # 0/54
+src/lib/embedded.ts 75.0   # 3/4
+src/main.tsx 0.0   # 0/26
+src/pages/AppPage.tsx 0.0   # 0/21
+src/pages/MigrationPage.tsx 0.0   # 0/38
+src/pages/chat/KnowledgePicker.tsx 0.0   # 0/23
+src/pages/chat/PinnedPrompt.tsx 3.5   # 2/57
+src/pages/chat/SidePanel.tsx 69.3   # 124/179
+src/pages/chat/WorkflowProgressBar.tsx 51.2   # 22/43
+src/pages/overview/EmbeddingModelCard.tsx 58.7   # 64/109
+src/pages/overview/MemoryGraphTab.tsx 68.3   # 97/142
+src/pages/overview/PortabilityTab.tsx 0.0   # 0/60
+src/pages/overview/UsageTab.tsx 0.0   # 0/21
+src/pages/settings/DisplayPanel.tsx 69.5   # 82/118
+src/pages/settings/InstancesPanel.tsx 63.3   # 88/139
+src/pages/settings/OverviewPanel.tsx 0.0   # 0/2
+src/pages/settings/SttSettings.tsx 67.8   # 78/115
+src/pages/settings/WeixinPanel.tsx 54.0   # 47/87
+src/providers/adapters/acp.ts 62.3   # 71/114
+src/utils/highlightClient.ts 25.0   # 10/40

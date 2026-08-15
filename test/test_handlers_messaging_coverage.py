@@ -277,6 +277,20 @@ class TestApiSpawnContinue:
         assert resp.status == 200
         assert mgr.continue_conversation.call_args.kwargs["max_turns"] == 0
 
+    def test_the_runs_own_cwd_is_resolved_off_loop_and_forwarded(self) -> None:
+        """A continuation has to run where the run ran, or a project-local agent
+        fails to resolve and the caller respawns from a digest -- losing the
+        conversation. `continue_conversation` is synchronous and on the event loop,
+        so the lookup happens here, in a thread, and is passed in.
+        """
+        mgr = _mgr()
+        mgr.recorded_cwd = MagicMock(return_value="/proj/alpha")
+        mgr.continue_conversation.return_value = _info(id="run2")
+        resp = _run(mod.api_spawn_continue, self._req(mgr, {"task": "x"}))
+        assert resp.status == 200
+        assert mgr.continue_conversation.call_args.kwargs["cwd"] == "/proj/alpha"
+        mgr.recorded_cwd.assert_called_once_with("conv1")
+
 
 # ── api_spawn_steer / release ──
 
@@ -1045,287 +1059,6 @@ class TestSlackReactions:
         assert "xoxb-9999999999-abc" not in _payload(resp)["error"]
 
 
-# ── browser routes ──
-
-
-class TestBrowserEvent:
-    def test_400_on_invalid_json(self) -> None:
-        resp = _run(mod.api_browser_event, _Req(_state(), _BAD_JSON))
-        assert _payload(resp)["error"] == "invalid JSON"
-
-    def test_400_without_an_event_name(self) -> None:
-        resp = _run(mod.api_browser_event, _Req(_state(), {"url": "x"}))
-        assert resp.status == 400
-        assert _payload(resp)["error"] == "event is required"
-
-    def test_broadcasts_extra_fields_and_redacts_strings(self) -> None:
-        state = _state()
-        body = {
-            "event": "navigate",
-            "type": "ignored",
-            "ts": "ignored",
-            "note": "token xoxb-1234567890-secret",
-            "count": 3,
-        }
-        assert _payload(_run(mod.api_browser_event, _Req(state, body))) == {"ok": True}
-        name, payload = state.broadcast_ws.call_args.args
-        assert name == "browser_event"
-        assert payload["event"] == "navigate"
-        assert payload["count"] == 3
-        assert "xoxb-1234567890-secret" not in payload["note"]
-        assert payload["type"] == "browser_event"
-
-
-class TestResolveBrowseSessionKey:
-    def test_non_integer_pid_resolves_to_nothing(self) -> None:
-        assert mod._resolve_browse_session_key("nope") == ""
-        assert mod._resolve_browse_session_key(None) == ""
-
-    def test_direct_hit_on_the_posting_pid(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "dashboard:chat-1")
-        assert mod._resolve_browse_session_key(42) == "dashboard:chat-1"
-
-    def test_walks_up_to_the_ancestor_that_has_a_sidecar(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "dashboard:chat-7" if pid == 9 else "")
-        monkeypatch.setattr(mod.platform_compat, "get_ppid", lambda pid: 9)
-        assert mod._resolve_browse_session_key(42) == "dashboard:chat-7"
-
-    def test_stops_when_the_ancestor_walk_fails(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-
-        def _boom(pid: int) -> int:
-            raise OSError("no such process")
-
-        monkeypatch.setattr(mod.platform_compat, "get_ppid", _boom)
-        assert mod._resolve_browse_session_key(42) == ""
-
-    def test_cycle_in_the_process_chain_terminates(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        monkeypatch.setattr(mod.platform_compat, "get_ppid", lambda pid: 42 if pid == 43 else 43)
-        assert mod._resolve_browse_session_key(42) == ""
-
-
-class TestBrowserFrame:
-    _FRAME = "aGVsbG8="
-
-    def test_403_from_off_host(self) -> None:
-        req = _Req(_state(), {"data": self._FRAME}, remote="203.0.113.7")
-        resp = _run(mod.api_browser_frame, req)
-        assert resp.status == 403
-        assert _payload(resp)["error"] == "loopback only"
-
-    def test_400_on_invalid_json(self) -> None:
-        resp = _run(mod.api_browser_frame, _Req(_state(), _BAD_JSON))
-        assert resp.status == 400
-        assert _payload(resp)["error"] == "invalid JSON"
-
-    def test_400_when_the_body_carries_no_frame(self) -> None:
-        resp = _run(mod.api_browser_frame, _Req(_state(), {"format": "jpeg"}))
-        assert resp.status == 400
-        assert _payload(resp)["error"] == "no frame data"
-
-    def test_broadcasts_and_reports_subscriber_count(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        state = _state()
-        state.ws_client_count.return_value = 2
-        body = {"data": self._FRAME, "format": "png", "source": "pump"}
-        resp = _run(mod.api_browser_frame, _Req(state, body))
-        assert _payload(resp) == {"ok": True, "subscribers": 2}
-        name, payload = state.broadcast_ws.call_args.args
-        assert name == mod.BROWSER_FRAME_EVENT
-        assert payload["format"] == "png"
-
-    def test_resolved_key_overrides_and_strips_the_dashboard_prefix(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "dashboard:chat-5")
-        state = _state()
-        body = {"data": self._FRAME, "host_pid": 11}
-        assert _run(mod.api_browser_frame, _Req(state, body)).status == 200
-        assert state.broadcast_ws.call_args.args[1]["session_key"] == "chat-5"
-
-
-class TestBrowserPumpAudit:
-    def test_403_from_off_host(self) -> None:
-        resp = _run(mod.api_browser_pump_audit, _Req(_state(), remote="203.0.113.7"))
-        assert resp.status == 403
-
-    def test_ok_from_loopback(self) -> None:
-        assert _payload(_run(mod.api_browser_pump_audit, _Req(_state()))) == {"ok": True}
-
-
-class TestBrowserAuthRetry:
-    def test_broadcasts_the_ensure_result(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "browser_auth_ensure", lambda: {"healthy": True})
-        state = _state()
-        resp = _run(mod.api_browser_auth_retry, _Req(state))
-        assert _payload(resp) == {"healthy": True}
-        assert state.broadcast_browser_event.call_args.args[0] == "auth_retry"
-
-    def test_failure_becomes_500(self, monkeypatch) -> None:
-        def _boom() -> dict:
-            raise RuntimeError("no cookies")
-
-        monkeypatch.setattr(mod, "browser_auth_ensure", _boom)
-        resp = _run(mod.api_browser_auth_retry, _Req(_state()))
-        assert resp.status == 500
-        assert _payload(resp)["error"] == "no cookies"
-
-
-class TestBrowserConfig:
-    def test_get_reports_mode_engine_extension_and_install(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
-        monkeypatch.setattr(mod, "get_browser_engine", lambda: "firefox")
-        monkeypatch.setattr(mod, "has_playwright_extension", lambda: True)
-        monkeypatch.setattr(mod, "get_extension_token", lambda: "tok")
-        monkeypatch.setattr(mod, "is_playwright_installed", lambda: True)
-        resp = _run(mod.api_browser_config_get, _Req(_state()))
-        assert _payload(resp) == {
-            "enabled": True,
-            "engine": "firefox",
-            "engines": list(mod.BROWSER_ENGINES),
-            "extension_mode": True,
-            "token": True,
-            "installed": True,
-        }
-
-    def _stub_enable_side_effects(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "generate_playwright_config", lambda engine=None: None)
-        monkeypatch.setattr(
-            mod, "ensure_playwright_installed", lambda engine: {"ok": True, "step": "done"}
-        )
-
-    def test_save_enables_extension_mode_and_writes_the_token(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        self._stub_enable_side_effects(monkeypatch)
-        monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "registered"))
-        body = {"enabled": True, "extension_mode": True, "token": "secret-value"}
-        resp = _run(mod.api_browser_config_save, _Req(_state(), body))
-        payload = _payload(resp)
-        assert payload["ok"] is True and payload["enabled"] is True
-        assert payload["mcp_status"] == "registered"
-        assert (tmp_path / "playwright-extension-mode").exists()
-        assert (tmp_path / "playwright-extension-token").read_text() == "secret-value"
-
-    def test_save_disabling_deregisters_and_removes_both_files(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        (tmp_path / "playwright-extension-mode").touch()
-        (tmp_path / "playwright-extension-token").write_text("x", encoding="utf-8")
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "deregistered"))
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": False, "extension_mode": False}))
-        assert resp.status == 200
-        assert _payload(resp)["mcp_status"] == "deregistered"
-        assert not (tmp_path / "playwright-extension-mode").exists()
-        assert not (tmp_path / "playwright-extension-token").exists()
-
-    def test_mcp_registration_failure_is_reported_not_raised(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        self._stub_enable_side_effects(monkeypatch)
-
-        def _boom() -> tuple[None, str]:
-            raise OSError("mcp.json locked")
-
-        monkeypatch.setattr(mod, "register_playwright_proxy", _boom)
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": True, "extension_mode": False}))
-        payload = _payload(resp)
-        assert payload["ok"] is True
-        assert payload["mcp_status"] == "registration-failed"
-
-    def test_installer_exception_never_500s_defers_softly(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
-        # Enabling Browser Mode must NEVER 500 or surface a raw install error, even
-        # if the (contracted-non-raising) installer raises unexpectedly. The save
-        # returns 200 with a calm browser-deferred advisory; Browser Mode stays on.
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "generate_playwright_config", lambda engine=None: None)
-        monkeypatch.setattr(mod, "register_playwright_proxy", lambda: (None, "registered"))
-
-        def _explode(engine: str) -> dict:
-            raise RuntimeError("unexpected boom deep in the installer")
-
-        monkeypatch.setattr(mod, "ensure_playwright_installed", _explode)
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": True, "extension_mode": False}))
-        assert resp.status == 200
-        payload = _payload(resp)
-        assert payload["ok"] is True and payload["enabled"] is True
-        assert payload["install"]["step"] == "browser-deferred"
-        assert "boom" not in payload["install"]["detail"]
-
-    def test_app_token_cannot_enable_browser_mode(self, monkeypatch, tmp_path: Path) -> None:
-        # Enabling Browser Mode is a keystone-level grant; an app token (truthy
-        # request["app"]) must be refused with 403 before any state is written.
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-
-        def _must_not_write(_enabled: bool) -> None:
-            raise AssertionError("app token must not reach set_browser_mode_enabled")
-
-        monkeypatch.setattr(mod, "set_browser_mode_enabled", _must_not_write)
-        req = _Req(_state(), {"enabled": True, "extension_mode": False}, extra={"app": "some-app"})
-        resp = _run(mod.api_browser_config_save, req)
-        assert resp.status == 403
-        assert _payload(resp)["code"] == "dashboard_user_required"
-
-    def test_truthy_non_bool_does_not_enable(self, monkeypatch, tmp_path: Path) -> None:
-        # A truthy non-boolean ("false"/1/"off") must NOT enable a security
-        # capability — only a real JSON true does. So it takes the disable path
-        # (deregister), never the installer/register path.
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "absent"))
-
-        def _must_not_install(engine: str) -> dict:
-            raise AssertionError('"false" must not trigger the installer')
-
-        monkeypatch.setattr(mod, "ensure_playwright_installed", _must_not_install)
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": "false", "extension_mode": False}))
-        payload = _payload(resp)
-        assert payload["ok"] is True
-        assert payload["enabled"] is False
-
-    def test_disabling_revokes_active_sessions(self, monkeypatch, tmp_path: Path) -> None:
-        # Disabling must reset live sessions, or the running ACP session keeps its
-        # cached browser_* tools (kiro-cli caches tools/list for the session's
-        # lifetime) and browsing works while Settings say "off". Fires because
-        # this is a real enable->disable transition.
-        (tmp_path / "browser-mode-enabled").touch()  # currently ENABLED
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: True)
-        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "deregistered"))
-        import kiro_crew.dashboard.handlers.sessions as sessions_mod
-
-        calls: list[int] = []
-
-        async def _fake_reset(_req: Any) -> int:
-            calls.append(1)
-            return 2
-
-        monkeypatch.setattr(sessions_mod, "_reset_all_sessions", _fake_reset)
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": False, "extension_mode": False}))
-        payload = _payload(resp)
-        assert calls == [1]
-        assert payload["sessions_reset"] == 2
-
-    def test_no_op_resave_does_not_reset_sessions(self, monkeypatch, tmp_path: Path) -> None:
-        # Re-saving the same disabled value is not a transition and must NOT tear
-        # down the user's live session.
-        monkeypatch.setattr(loader, "data_home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "browser_mode_enabled", lambda: False)
-        monkeypatch.setattr(mod, "deregister_playwright_proxy", lambda: (None, "absent"))
-        import kiro_crew.dashboard.handlers.sessions as sessions_mod
-
-        def _must_not_reset(_req: Any) -> int:
-            raise AssertionError("a no-op re-save must not reset sessions")
-
-        monkeypatch.setattr(sessions_mod, "_reset_all_sessions", _must_not_reset)
-        resp = _run(mod.api_browser_config_save, _Req(_state(), {"enabled": False, "extension_mode": False}))
-        payload = _payload(resp)
-        assert payload["sessions_reset"] == 0
-
-
 # ── small helpers ──
 
 
@@ -1338,6 +1071,10 @@ class TestHelpers:
             ("abcdefgh", "••••efgh"),
             ("ab", "••••"),
         ],
+        # Safe display labels: without them pytest embeds the token-shaped
+        # value in the test ID, which then lands in derived artifacts
+        # (.test_durations, junit XML) and trips GitHub push protection.
+        ids=["empty", "slack-token", "generic", "too-short"],
     )
     def test_mask_secret(self, value: str, expected: str) -> None:
         assert mod._mask_secret(value) == expected
@@ -1882,173 +1619,6 @@ def _install_bus(monkeypatch, bus: _FakeBus) -> _FakeBus:
 _INTERNAL = {"internal_auth": True}
 
 
-class TestBrowserCommand:
-    def test_403_from_off_host(self) -> None:
-        req = _Req(_state(), {"op": "click"}, remote="203.0.113.7", extra=_INTERNAL)
-        resp = _run(mod.api_browser_command, req)
-        assert resp.status == 403
-        assert _payload(resp)["code"] == "loopback_only"
-
-    def test_403_for_a_cookie_caller_without_the_internal_secret(self) -> None:
-        resp = _run(mod.api_browser_command, _Req(_state(), {"op": "click"}))
-        assert resp.status == 403
-
-    @pytest.mark.parametrize("body", [_BAD_JSON, [1], "str", None])
-    def test_400_on_a_non_object_body(self, body: Any) -> None:
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert resp.status == 400
-        assert _payload(resp)["code"] == "invalid_json"
-
-    @pytest.mark.parametrize("op", [None, "", 7])
-    def test_400_without_an_op(self, op: Any) -> None:
-        resp = _run(mod.api_browser_command, _Req(_state(), {"op": op}, extra=_INTERNAL))
-        assert _payload(resp)["code"] == "op_required"
-
-    def test_400_when_args_is_not_an_object(self) -> None:
-        body = {"op": "click", "args": [1, 2]}
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert resp.status == 400
-        assert _payload(resp)["code"] == "args_must_be_object"
-
-    def test_503_when_no_session_can_be_identified(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        body = {"op": "click", "session_key": 7}
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert resp.status == 503
-        assert _payload(resp)["code"] == "no_native_panel"
-
-    def test_resolved_pid_wins_over_the_body_session_key(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "dashboard:chat-9")
-        bus = _install_bus(monkeypatch, _FakeBus())
-        body = {"op": "click", "host_pid": 5, "session_key": "stale"}
-        assert _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL)).status == 200
-        assert bus.submit_calls[0][0] == "chat-9"
-
-    @pytest.mark.parametrize("timeout_ms", [None, 0, -1, True, "500"])
-    def test_invalid_timeout_falls_back_to_the_default(self, monkeypatch, timeout_ms: Any) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        bus = _install_bus(monkeypatch, _FakeBus())
-        body = {"op": "click", "session_key": "chat-1", "timeout_ms": timeout_ms}
-        assert _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL)).status == 200
-        assert bus.submit_calls[0][3] == mod.DEFAULT_COMMAND_TIMEOUT_MS
-
-    @pytest.mark.parametrize(
-        "exc_name,status,code",
-        [
-            ("NoPanelError", 503, "no_native_panel"),
-            ("QueueFullError", 429, "queue_full"),
-            ("TimeoutError", 504, "timeout"),
-        ],
-    )
-    def test_bus_failures_map_to_status(
-        self, monkeypatch, exc_name: str, status: int, code: str
-    ) -> None:
-        exc: BaseException = (
-            asyncio.TimeoutError()
-            if exc_name == "TimeoutError"
-            else getattr(mod, exc_name)()  # NoPanelError / QueueFullError
-        )
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        _install_bus(monkeypatch, _FakeBus(submit=exc))
-        body = {"op": "click", "session_key": "chat-1"}
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert resp.status == status
-        assert _payload(resp)["code"] == code
-
-    def test_successful_outcome_returns_the_result(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        _install_bus(monkeypatch, _FakeBus(submit={"id": "c1", "ok": True, "result": {"x": 1}}))
-        body = {"op": "click", "session_key": "chat-1", "args": {"ref": "e7"}}
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert _payload(resp) == {"id": "c1", "ok": True, "result": {"x": 1}}
-
-    def test_failed_outcome_returns_the_error(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        _install_bus(monkeypatch, _FakeBus(submit={"id": "c1", "ok": False, "error": "boom"}))
-        body = {"op": "click", "session_key": "chat-1"}
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert _payload(resp) == {"id": "c1", "ok": False, "error": "boom"}
-
-    def test_failed_outcome_without_a_message_uses_a_placeholder(self, monkeypatch) -> None:
-        monkeypatch.setattr(mod, "verify_session_pid", lambda pid: "")
-        _install_bus(monkeypatch, _FakeBus(submit={"id": "c1", "ok": False}))
-        body = {"op": "click", "session_key": "chat-1"}
-        resp = _run(mod.api_browser_command, _Req(_state(), body, extra=_INTERNAL))
-        assert _payload(resp)["error"] == "error"
-
-
-class TestBrowserCommandDrain:
-    def test_403_from_off_host(self) -> None:
-        req = _Req(_state(), {"session_keys": []}, remote="203.0.113.7", extra=_INTERNAL)
-        assert _run(mod.api_browser_command_drain, req).status == 403
-
-    @pytest.mark.parametrize("body", [_BAD_JSON, [1]])
-    def test_400_on_a_non_object_body(self, body: Any) -> None:
-        resp = _run(mod.api_browser_command_drain, _Req(_state(), body, extra=_INTERNAL))
-        assert _payload(resp)["code"] == "invalid_json"
-
-    @pytest.mark.parametrize("keys", [None, "chat-1", ["chat-1", 7]])
-    def test_400_on_bad_session_keys(self, keys: Any) -> None:
-        req = _Req(_state(), {"session_keys": keys}, extra=_INTERNAL)
-        resp = _run(mod.api_browser_command_drain, req)
-        assert resp.status == 400
-        assert _payload(resp)["code"] == "session_keys_invalid"
-
-    def test_204_when_nothing_arrives(self, monkeypatch) -> None:
-        _install_bus(monkeypatch, _FakeBus(drain=None))
-        req = _Req(_state(), {"session_keys": ["chat-1"]}, extra=_INTERNAL)
-        assert _run(mod.api_browser_command_drain, req).status == 204
-
-    def test_returns_the_queued_command(self, monkeypatch) -> None:
-        command = {"id": "c1", "session_key": "chat-1", "op": "click", "args": {}}
-        _install_bus(monkeypatch, _FakeBus(drain=command))
-        req = _Req(_state(), {"session_keys": ["chat-1"]}, extra=_INTERNAL)
-        assert _payload(_run(mod.api_browser_command_drain, req)) == command
-
-    @pytest.mark.parametrize("wait_ms", [None, 0, True, "500"])
-    def test_invalid_wait_falls_back_to_the_default(self, monkeypatch, wait_ms: Any) -> None:
-        bus = _install_bus(monkeypatch, _FakeBus(drain=None))
-        req = _Req(_state(), {"session_keys": [], "wait_ms": wait_ms}, extra=_INTERNAL)
-        _run(mod.api_browser_command_drain, req)
-        assert bus.drain_calls[0][1] == mod.DEFAULT_DRAIN_WAIT_MS
-
-
-class TestBrowserCommandResult:
-    def test_403_from_off_host(self) -> None:
-        req = _Req(_state(), {"id": "c1"}, remote="203.0.113.7", extra=_INTERNAL)
-        assert _run(mod.api_browser_command_result, req).status == 403
-
-    @pytest.mark.parametrize("body", [_BAD_JSON, "str"])
-    def test_400_on_a_non_object_body(self, body: Any) -> None:
-        resp = _run(mod.api_browser_command_result, _Req(_state(), body, extra=_INTERNAL))
-        assert _payload(resp)["code"] == "invalid_json"
-
-    @pytest.mark.parametrize("cid", [None, "", 7])
-    def test_400_without_an_id(self, cid: Any) -> None:
-        resp = _run(mod.api_browser_command_result, _Req(_state(), {"id": cid}, extra=_INTERNAL))
-        assert resp.status == 400
-        assert _payload(resp)["code"] == "id_required"
-
-    def test_404_for_an_unmatched_id(self, monkeypatch) -> None:
-        _install_bus(monkeypatch, _FakeBus(complete=False))
-        req = _Req(_state(), {"id": "c1", "ok": True}, extra=_INTERNAL)
-        resp = _run(mod.api_browser_command_result, req)
-        assert resp.status == 404
-        assert _payload(resp)["code"] == "unknown_command"
-
-    def test_coerces_a_non_string_error(self, monkeypatch) -> None:
-        bus = _install_bus(monkeypatch, _FakeBus())
-        req = _Req(_state(), {"id": "c1", "ok": False, "error": 500}, extra=_INTERNAL)
-        assert _payload(_run(mod.api_browser_command_result, req)) == {"ok": True}
-        assert bus.complete_calls[0] == ("c1", False, None, "500")
-
-    def test_forwards_a_successful_result(self, monkeypatch) -> None:
-        bus = _install_bus(monkeypatch, _FakeBus())
-        req = _Req(_state(), {"id": "c1", "ok": True, "result": {"x": 1}}, extra=_INTERNAL)
-        assert _run(mod.api_browser_command_result, req).status == 200
-        assert bus.complete_calls[0] == ("c1", True, {"x": 1}, None)
-
-
 class TestDeleteMessage:
     def test_400_on_invalid_json(self) -> None:
         resp = _run(mod.api_delete_message, _Req(_state(), _BAD_JSON))
@@ -2085,8 +1655,11 @@ def test_module_exposes_every_route_handler_under_test() -> None:
         "api_notification_channel_settings",
         "api_slack_pins",
         "api_slack_reactions",
-        "api_browser_event",
-        "api_browser_frame",
+        "api_browser_token_put",
+        "api_browser_install_get",
+        "api_browser_install_start",
+        "api_browser_view_get",
+        "api_browser_view_start",
         "api_teams_config_save",
     ):
         assert callable(getattr(mod, name)), name

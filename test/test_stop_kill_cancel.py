@@ -44,7 +44,6 @@ def _make_pool_key(server: str = "test-mcp") -> PoolKey:
         "autoapprove_set_hash": "c" * 64,
         "approval_mode": "interactive",
         "trust_all_tools": False,
-        "user_identity": "test-user",
         "config_snapshot_hash": "d" * 64,
     })
 
@@ -227,7 +226,7 @@ class TestKillPathIsPlatformCorrect:
        ``recycle_if_idle`` / ``shutdown`` instead of degrading, and in
        ``shutdown`` it also skipped the ``process.kill()`` fallback so the
        backend was never killed at all.
-    2. Per Mesh-2801 the ``_async`` variant is mandatory from a coroutine: the
+    2. The ``_async`` variant is mandatory from a coroutine: the
        Windows branch spawns ``taskkill`` with a 5s timeout, which stalls the
        loop. Patching only the async symbol would let a regression back to the
        sync helper pass silently, so both symbols are pinned and the sync one
@@ -527,7 +526,6 @@ class TestDetachOnCancelFailure:
             "autoapprove_set_hash": "2" * 64,
             "approval_mode": "interactive",
             "trust_all_tools": False,
-            "user_identity": "leak",
             "channel_id": "C_LEAK",
             "config_snapshot_hash": "3" * 64,
             "session_key": "dashboard:chat-leak",
@@ -654,6 +652,7 @@ class TestConservativeShutdown:
         mgr._queue = []
         mgr._running_count = 1
         mgr._default_timeout = 300
+        mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
         mgr._record_cost = MagicMock()
         mgr._on_event = None
@@ -717,6 +716,7 @@ class TestConservativeShutdown:
         mgr._queue = []
         mgr._running_count = 2
         mgr._default_timeout = 300
+        mgr._default_turn_limit = 100
         mgr._write_tombstone = MagicMock()
         mgr._record_cost = MagicMock()
         mgr._on_event = None

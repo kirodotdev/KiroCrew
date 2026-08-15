@@ -207,7 +207,7 @@ export function WebexPanel() {
 
       {/* ── Required token ── */}
       <SettingsSection title={i18nT('pages.settings.webexPanel.required')}>
-        <SettingsCard>
+        <SettingsCard index={1}>
           <SecretField
             key={`bot-${formKey}`}
             label={i18nT('pages.settings.webexPanel.webex_bot_token')}
@@ -227,7 +227,7 @@ export function WebexPanel() {
 
       {/* ── Access ── */}
       <SettingsSection title={i18nT('pages.settings.webexPanel.access')}>
-        <SettingsCard>
+        <SettingsCard index={2}>
           <SettingsToggle
             label={i18nT('pages.settings.webexPanel.enable_webex_channel')}
             description={i18nT('pages.settings.webexPanel.start_the_channel_at_gateway_boot_when_a_token_i')}

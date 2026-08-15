@@ -53,6 +53,7 @@ function parseHostModel(data: unknown): HostModel | null {
     self,
     macInset: !!d.macInset,
     electron: !!d.electron,
+    expanded: !!d.expanded,
   }
 }
 

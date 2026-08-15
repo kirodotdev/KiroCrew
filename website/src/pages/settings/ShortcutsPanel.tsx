@@ -1,7 +1,8 @@
 import { formatShortcut, IS_MAC, shortcutLabel } from '../../hooks/useKeyboardShortcuts'
-import { SHORTCUT_GROUPS, ShortcutRow, KeyCapSequence, groupShortcuts, shortcutGroupLabel, useShortcutPrefs } from '../../components/ShortcutsModal'
+import { SHORTCUT_GROUPS, ShortcutRow, KeyCapSequence, GlobalHotkeyRow, groupShortcuts, shortcutGroupLabel, useShortcutPrefs } from '../../components/ShortcutsModal'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsButtonGroup } from '../../components/settings'
 import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
+import { useGlobalHotkey } from '../../hooks/useGlobalHotkey'
 import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
 import { Btn } from '../../components/ui'
 
@@ -66,6 +67,7 @@ function SearchEverywhereConfig() {
  */
 export function ShortcutsPanel() {
   const { enabled, macCtrl, toggle, toggleMacCtrl } = useShortcutPrefs()
+  const globalHotkey = useGlobalHotkey()
 
   return (
     <div className="max-w-2xl">
@@ -86,13 +88,17 @@ export function ShortcutsPanel() {
           />
         )}
       </SettingsCard>
-      {SHORTCUT_GROUPS.map(group => {
+      {SHORTCUT_GROUPS.map((group, gi) => {
         const entries = groupShortcuts(group, macCtrl)
         if (entries.length === 0) return null
         return (
           <div key={group}>
             <SettingsSection title={shortcutGroupLabel(group)} />
-            <SettingsCard>
+            {/* Ordinal from the full group list, not the rendered subset: a gap
+                where a group rendered null only stretches the stagger, while a
+                compacted ordinal would shift every later card's delay whenever a
+                group toggles. */}
+            <SettingsCard index={gi + 1}>
               {entries.map(s => (
                 <ShortcutRow key={s.id} label={shortcutLabel(s)} keys={formatShortcut(s).split(' + ')} />
               ))}
@@ -101,9 +107,18 @@ export function ShortcutsPanel() {
         )
       })}
       <SettingsSection title={i18nT('pages.settings.shortcutsPanel.search')} />
-      <SettingsCard>
+      <SettingsCard index={SHORTCUT_GROUPS.length + 1}>
         <SearchEverywhereConfig />
       </SettingsCard>
+      {globalHotkey && (
+        <div>
+          <SettingsSection title={i18nT('components.shortcutsModal.desktop_app')} />
+          <SettingsCard>
+            <GlobalHotkeyRow />
+            <div className="text-[12px] text-muted px-2 pb-1">{i18nT('components.shortcutsModal.global_hotkey_hint')}</div>
+          </SettingsCard>
+        </div>
+      )}
     </div>
   )
 }

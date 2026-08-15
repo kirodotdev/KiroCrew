@@ -76,7 +76,6 @@ function defaultPayload() {
       },
     ],
     totals: { rss_mb: 704, runtimes: 2, host_mb: 16384, host_pct: 4.3, rss_is_upper_bound: false },
-    unattributed: { procs: 33, rss_mb: 13824, oldest_uptime_s: 14400 },
     history: [{ t: 1, mb: 600 }, { t: 2, mb: 700 }],
   }
 }
@@ -170,63 +169,17 @@ describe('SessionsTab render', () => {
     expect(btn).toBeNull()
   })
 
-  it('shows an empty state when there are no sessions and no unattributed', async () => {
+  it('shows an empty state when there are no sessions', async () => {
     mockSessionsMemory.mockResolvedValue({
       sessions: [],
       tasks: [],
       totals: { rss_mb: 0, runtimes: 0, host_mb: 16384, host_pct: 0, rss_is_upper_bound: false },
-      unattributed: null,
       history: [],
     })
     renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
     await waitFor(() => {
       expect(screen.getByTestId('empty-state')).toBeInTheDocument()
     })
-  })
-})
-
-// ── Unattributed row ──
-
-describe('Unattributed row', () => {
-  it('renders above session rows when procs > 0', async () => {
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByText('Debugging session')).toBeInTheDocument()
-    })
-    expect(screen.getByTestId('unattributed-row')).toBeInTheDocument()
-  })
-
-  it('is hidden when procs is 0', async () => {
-    const payload = defaultPayload()
-    payload.unattributed = { procs: 0, rss_mb: 0, oldest_uptime_s: null }
-    mockSessionsMemory.mockResolvedValue(payload)
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByText('Debugging session')).toBeInTheDocument()
-    })
-    expect(screen.queryByTestId('unattributed-row')).not.toBeInTheDocument()
-  })
-
-  it('is hidden when unattributed is null (platform cannot enumerate)', async () => {
-    const payload = defaultPayload()
-    payload.unattributed = null as never
-    mockSessionsMemory.mockResolvedValue(payload)
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByText('Debugging session')).toBeInTheDocument()
-    })
-    expect(screen.queryByTestId('unattributed-row')).not.toBeInTheDocument()
-  })
-
-  // Finding 6: unattributed uses warn, not danger
-  it('uses text-warn class (not text-danger) for the unattributed row', async () => {
-    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
-    await waitFor(() => {
-      expect(screen.getByTestId('unattributed-row')).toBeInTheDocument()
-    })
-    const row = screen.getByTestId('unattributed-row')
-    expect(row.className).toContain('text-warn')
-    expect(row.className).not.toContain('text-danger')
   })
 })
 
@@ -351,9 +304,10 @@ describe('Columns popover dismissal', () => {
     await waitFor(() => {
       expect(colsBtn.getAttribute('aria-expanded')).toBe('false')
     })
+    expect(document.activeElement).toBe(colsBtn)
   })
 
-  it('closes on outside click', async () => {
+  it('closes on outside press', async () => {
     renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
     await waitFor(() => {
       expect(screen.getByText('Debugging session')).toBeInTheDocument()
@@ -361,9 +315,16 @@ describe('Columns popover dismissal', () => {
     // Open the picker
     const colsBtn = screen.getAllByRole('button').find(b => b.getAttribute('aria-haspopup') !== null)!
     fireEvent.click(colsBtn)
+    // Await the panel, then flush a macrotask: Radix attaches its outside-press
+    // listener in a setTimeout(0) after open, so a synchronous press would land
+    // before the listener exists and be silently ignored.
+    await screen.findByRole('dialog')
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(colsBtn.getAttribute('aria-expanded')).toBe('true')
-    // Click outside (on the document body)
-    fireEvent.mouseDown(document.body)
+    // A real outside press is pointerdown followed by click; Radix defers the
+    // dismissal of a button-0 press until the click lands.
+    fireEvent.pointerDown(document.body)
+    fireEvent.click(document.body)
     await waitFor(() => {
       expect(colsBtn.getAttribute('aria-expanded')).toBe('false')
     })
@@ -375,7 +336,68 @@ describe('Columns popover dismissal', () => {
       expect(screen.getByText('Debugging session')).toBeInTheDocument()
     })
     const colsBtn = screen.getAllByRole('button').find(b => b.getAttribute('aria-haspopup') !== null)!
-    expect(colsBtn.getAttribute('aria-haspopup')).toBe('true')
+    expect(colsBtn.getAttribute('aria-haspopup')).toBe('dialog')
+  })
+})
+
+// ── Issue 2843: focus management and scroll anchoring ──
+
+describe('Columns popover focus and anchoring', () => {
+  /** Rect helper: the trigger button anchored at a given viewport top. */
+  function rectAt(top: number): DOMRect {
+    return {
+      x: 500, y: top, top, bottom: top + 24, left: 500, right: 580,
+      width: 80, height: 24, toJSON: () => ({}),
+    } as DOMRect
+  }
+
+  it('moves focus inside the dialog on open', async () => {
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const colsBtn = screen.getAllByRole('button').find(b => b.getAttribute('aria-haspopup') !== null)!
+    fireEvent.click(colsBtn)
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true)
+    })
+  })
+
+  it('repositions the panel when the page scrolls while open', async () => {
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Debugging session')).toBeInTheDocument()
+    })
+    const colsBtn = screen.getAllByRole('button').find(b => b.getAttribute('aria-haspopup') !== null)!
+    // Anchor the trigger at a known viewport position before opening.
+    let top = 100
+    colsBtn.getBoundingClientRect = () => rectAt(top)
+    fireEvent.click(colsBtn)
+    await screen.findByRole('dialog')
+    const wrapper = document.querySelector('[data-radix-popper-content-wrapper]') as HTMLElement
+    expect(wrapper).not.toBeNull()
+    // Wait for the initial position pass to land.
+    await waitFor(() => {
+      expect(wrapper.style.transform).toContain('translate')
+    })
+    // Coupling note: this parses Floating UI's transform serialization
+    // (translate/translate3d). Assert parseability ONCE here so a dependency
+    // bump that changes the format fails loudly, not as a waitFor timeout.
+    const parseY = (transform: string) => {
+      const m = /translate(?:3d)?\(([^,]+),\s*(-?[\d.]+)px/.exec(transform)
+      return m ? Number(m[2]) : null
+    }
+    const yBefore = parseY(wrapper.style.transform)
+    expect(yBefore, `unparseable popper transform: ${wrapper.style.transform}`).not.toBeNull()
+    // A 40px scroll moves the anchor up; the panel must follow, not float away.
+    // The exact y depends on which side Floating UI placed the panel, so assert
+    // the delta: it must track the anchor's 40px shift.
+    top = 60
+    fireEvent.scroll(window)
+    await waitFor(() => {
+      expect(parseY(wrapper.style.transform)).toBe(yBefore! - 40)
+    })
   })
 })
 
@@ -412,7 +434,6 @@ describe('Empty state description (finding 7b)', () => {
       sessions: [],
       tasks: [],
       totals: { rss_mb: 0, runtimes: 0, host_mb: 16384, host_pct: 0, rss_is_upper_bound: false },
-      unattributed: null,
       history: [],
     })
     renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)

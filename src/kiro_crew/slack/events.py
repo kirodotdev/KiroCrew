@@ -40,6 +40,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import format_schedule
+from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
@@ -88,7 +89,7 @@ from kiro_crew.slack.sessions_view import (
     _SESSION_KIND_TASKRUNNER,
     _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
-    _collect_recent_sessions,
+    _collect_recent_sessions_off_loop,
 )
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.stats import Stats
@@ -144,7 +145,10 @@ def _on_tracked_done(task: asyncio.Task[object]) -> None:
 def _get_skills_loader() -> SkillsLoader:
     global _skills_loader  # noqa: PLW0603
     if _skills_loader is None:
-        _skills_loader = SkillsLoader()
+        # Listing only: the gateway startup already ran the builtin sync (in a
+        # worker thread). Re-syncing here would put its filesystem work on the
+        # event loop that renders the Slack Home tab.
+        _skills_loader = SkillsLoader(install_builtins=False)
     return _skills_loader
 
 
@@ -163,6 +167,30 @@ _MAX_SEEN = 5000
 
 # prevent GC of fire-and-forget tasks (Python event loop holds weak refs)
 _background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+
+#: How many Home Tab session collections may run at once. Every
+#: ``app_home_opened`` from an allowed user schedules its own publish, and the
+#: collector reads up to ``per_kind * 10`` transcripts on worker threads. Those
+#: threads are the process-wide default executor, shared with history appends,
+#: cron store writes and session storage, so an unbounded fan-out of tab opens
+#: makes unrelated ``asyncio.to_thread`` callers queue behind multi-MB reads.
+#: One at a time is what the collector had before it was offloaded, when running
+#: on the loop serialized it by accident; this keeps that bound on purpose.
+_HOME_TAB_COLLECT_CONCURRENCY = 1
+_home_tab_collect_sem: asyncio.Semaphore | None = None
+
+
+def _home_tab_collect_gate() -> asyncio.Semaphore:
+    """The collector gate, created on the loop that first needs it.
+
+    Built lazily rather than at import: a module-level ``asyncio.Semaphore``
+    binds to whatever loop happens to be current when the module loads, and the
+    gateway's loop is not running yet at that point.
+    """
+    global _home_tab_collect_sem
+    if _home_tab_collect_sem is None:
+        _home_tab_collect_sem = asyncio.Semaphore(_HOME_TAB_COLLECT_CONCURRENCY)
+    return _home_tab_collect_sem
 
 
 class SeenCache:
@@ -269,12 +297,12 @@ async def _handle_agent(
     if args:
         name = args.strip().split()[0]
         if name.lower() in ("off", "default"):
-            _set_default_agent("")
+            await run_config_write(_set_default_agent, "")
             await respond("🔄 Reset to default agent.")
             return
         resolved = _resolve_agent_name(name)
         if resolved:
-            _set_default_agent(resolved)
+            await run_config_write(_set_default_agent, resolved)
             await respond(f"🔄 Switched to agent: *{resolved}*")
             return
         await respond(f"❌ Unknown agent `{name}`. Pick one below:")
@@ -602,7 +630,7 @@ async def _handle_sessions(
     # pattern: capture the exception, redact-then-truncate the message,
     # and emit an ``error=`` audit field.
     try:
-        rows = _collect_recent_sessions(
+        rows = await _collect_recent_sessions_off_loop(
             orch.sessions if orch is not None else None,
             limit=_SESSIONS_DEFAULT_LIMIT,
         )
@@ -1092,11 +1120,15 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 except (AttributeError, TypeError):
                     per_kind = _HOME_TAB_SESSIONS_PER_KIND
                 # Single directory scan for both kinds; partition + cap in memory.
-                all_rows = _collect_recent_sessions(
-                    sess_mgr,
-                    limit=per_kind * 10,
-                    kind=(_SESSION_KIND_DASHBOARD, _SESSION_KIND_TASKRUNNER),
-                )
+                # Gated so a burst of tab opens cannot put N of these scans in
+                # the shared executor at once; the rest of the publish, which is
+                # Slack API calls, stays unserialized.
+                async with _home_tab_collect_gate():
+                    all_rows = await _collect_recent_sessions_off_loop(
+                        sess_mgr,
+                        limit=per_kind * 10,
+                        kind=(_SESSION_KIND_DASHBOARD, _SESSION_KIND_TASKRUNNER),
+                    )
                 sel().log_api_access(
                     caller=user_id,
                     operation="slack.home_tab_sessions_data_access",

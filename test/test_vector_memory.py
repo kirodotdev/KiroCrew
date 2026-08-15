@@ -16,8 +16,10 @@ from kiro_crew.vector_memory import (
     SemanticRejectCode,
     VectorMemoryStore,
     _contains_injection,
+    _get_snowball,
     _jaccard,
     _mmr_rerank,
+    _stem_one,
     _stem_words,
     _tokenize,
 )
@@ -786,6 +788,9 @@ class TestMemoryStats:
         assert stats["semantic_active"] == 1
         assert stats["episodic_active"] == 1
         assert stats["faiss_index_size"] == 0  # no FAISS without numpy/faiss
+        # Availability of the optional accelerator is reported separately so
+        # callers can distinguish "not installed" from "nothing indexed".
+        assert isinstance(stats["faiss_available"], bool)
 
 
 class TestStemWords:
@@ -816,14 +821,44 @@ class TestStemWords:
         result = _stem_words({"bug", "run", "fix"})
         assert {"bug", "run", "fix"} <= result
 
+    def test_memoized_stem_matches_the_batch_stemmer(self) -> None:
+        """The per-word cache must not change what stemming produces.
+
+        The previous implementation stemmed a whole set in one ``stemWords``
+        call. Memoizing per word is only safe if it yields the same set, so
+        pin that against the stemmer directly rather than against itself.
+        """
+        words = {
+            "testing", "deployment", "shipped", "fixes", "running", "caches",
+            "relevance", "ranked", "lessons", "workspaces", "bug", "run",
+        }
+        direct = words | set(_get_snowball().stemWords(sorted(words)))
+
+        assert _stem_words(words) == direct
+        # And per single word, where a batch call cannot mask an ordering bug.
+        for word in words:
+            assert _stem_words({word}) == {word} | set(_get_snowball().stemWords([word]))
+
+    def test_repeated_words_are_stemmed_once(self) -> None:
+        """A word seen again is served from the cache instead of re-stemmed."""
+        _stem_one.cache_clear()
+        _stem_words({"provisioning"})
+        after_first = _stem_one.cache_info()
+        _stem_words({"provisioning"})
+        after_second = _stem_one.cache_info()
+
+        assert after_first.misses == 1
+        assert after_second.misses == 1, "second call must not re-stem"
+        assert after_second.hits == after_first.hits + 1
+
 
 class TestEmbedFnLazyRebind:
     """Tests for lazy embed_fn rebinding via embed_fn_factory.
 
-    Regression: Mesh-XXXX. Before this fix, if Ollama was unavailable at gateway
-    boot, vector_memory.embed_fn stayed None for the entire gateway lifetime,
-    and every new memory wrote with embedding=NULL. Lazy rebind recovers from
-    this by retrying the factory on subsequent embed attempts (rate-limited).
+    Before this fix, if Ollama was unavailable at gateway boot,
+    vector_memory.embed_fn stayed None for the entire gateway lifetime, and
+    every new memory wrote with embedding=NULL. Lazy rebind recovers from this
+    by retrying the factory on subsequent embed attempts (rate-limited).
     """
 
     def test_no_factory_returns_none(self, tmp_path: Path) -> None:
@@ -2774,3 +2809,267 @@ class TestHandlerOffload1947:
                 self._find_inline_calls(tree, locked, str(path.relative_to(root)))
             )
         assert not violations, "\n".join(violations)
+
+
+class TestSemanticWriteTimeEmbedding:
+    """set_semantic persists a value vector; retrieval ranks from storage.
+
+    The write path embeds ``"<key> <value_json>"`` in _write_semantic's tail
+    and get_semantic_context ranks from the STORED blobs (one query embed per
+    request, never one per row). The backfill sweep repairs rows written while
+    the model was absent, including set_semantic_if_absent imports.
+    """
+
+    _DIM = 8
+
+    def _directional_embed(self, counter: list[int] | None = None):
+        """Deterministic embed: one axis per known topic word.
+
+        ``tokyo`` and ``nippon`` share an axis so a query can hit a row on the
+        VECTOR term with zero keyword overlap — isolating what is under test.
+        Optionally counts calls via *counter* (a single-element list).
+        """
+        axes = {"paris": 0, "tokyo": 1, "nippon": 1, "coffee": 2}
+
+        def _embed(text: str) -> list[float]:
+            if counter is not None:
+                counter[0] += 1
+            vec = [0.0] * self._DIM
+            for word, i in axes.items():
+                if word in text.lower():
+                    vec[i] += 1.0
+            if not any(vec):
+                vec[self._DIM - 1] = 1.0
+            return vec
+
+        return _embed
+
+    def _stored_embedding(self, store: VectorMemoryStore, key: str) -> bytes | None:
+        row = store.db.execute(
+            "SELECT embedding FROM semantic_memory WHERE key = ?", (key,)
+        ).fetchone()
+        assert row is not None
+        return row["embedding"]
+
+    def test_set_semantic_persists_embedding(self, tmp_path: Path) -> None:
+        import struct
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        embed = self._directional_embed()
+        store.embed_fn = embed
+
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+
+        blob = self._stored_embedding(store, "pref.city")
+        assert blob is not None, "write-time embedding was not persisted"
+        # The stored vector is the embed of "<key> <value_json>" — the same
+        # text retrieval ranks against.
+        expected = embed('pref.city "Paris"')
+        assert list(struct.unpack(f"{len(blob) // 4}f", blob)) == pytest.approx(expected)
+
+    def test_update_replaces_stale_vector(self, tmp_path: Path) -> None:
+        import struct
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        embed = self._directional_embed()
+        store.embed_fn = embed
+
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert store.set_semantic("pref.city", "Tokyo", 1.0, "user_explicit") is None
+
+        blob = self._stored_embedding(store, "pref.city")
+        assert blob is not None
+        assert list(struct.unpack(f"{len(blob) // 4}f", blob)) == pytest.approx(
+            embed('pref.city "Tokyo"')
+        )
+
+    def test_update_without_embed_fn_clears_stale_vector(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = self._directional_embed()
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert self._stored_embedding(store, "pref.city") is not None
+
+        # Model gone: the re-write must NOT keep ranking by the old value's
+        # vector — NULL leaves the row a backfill candidate.
+        store.embed_fn = None
+        assert store.set_semantic("pref.city", "Tokyo", 1.0, "user_explicit") is None
+        assert self._stored_embedding(store, "pref.city") is None
+
+    def test_space_swap_mid_embed_leaves_null(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        inner = self._directional_embed()
+
+        def _swapping_embed(text: str):
+            # A model swap lands while the embed is in flight: the produced
+            # vector belongs to the OLD space and must not be committed.
+            store._space_generation += 1
+            return inner(text)
+
+        store.embed_fn = _swapping_embed
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert self._stored_embedding(store, "pref.city") is None
+
+    def test_lesson_write_keeps_raw_rule_vector(self, tmp_path: Path) -> None:
+        import struct
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        counter = [0]
+        embed = self._directional_embed(counter)
+        store.embed_fn = embed
+
+        rule = "always drink coffee before reviews"
+        assert store.write_lesson(rule) is True
+        lessons = store.get_lessons()
+        assert len(lessons) == 1
+        blob = lessons[0]["embedding"]
+        assert isinstance(blob, bytes)
+        # write_lesson owns the lesson vector contract: raw rule text, NOT the
+        # "<key> <value_json>" envelope _write_semantic embeds for KV rows.
+        assert list(struct.unpack(f"{len(blob) // 4}f", blob)) == pytest.approx(embed(rule))
+        # counter includes the assertion line's own embed(rule) call above.
+        # Exactly ONE embed during write_lesson (the rule): _write_semantic must
+        # skip lesson.* keys, or every lesson write pays a second, discarded
+        # embed of the JSON envelope.
+        assert counter[0] == 2, "lesson write embedded more than the rule text"
+
+    def test_get_semantic_context_ranks_from_stored_vectors(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = self._directional_embed()
+        # "nippon" shares a vector axis with "tokyo" but has zero keyword
+        # overlap with the query, so ranking it first requires the stored
+        # vector to be read — the keyword term alone cannot produce it.
+        assert store.set_semantic("pref.travel", "nippon", 1.0, "user_explicit") is None
+        assert store.set_semantic("pref.drink", "coffee", 1.0, "user_explicit") is None
+
+        counter = [0]
+        store.embed_fn = self._directional_embed(counter)
+        ctx = store.get_semantic_context(query_text="tokyo")
+
+        assert counter[0] == 1, "retrieval must embed only the query, never per row"
+        lines = [ln for ln in ctx.splitlines() if ln.startswith("pref.")]
+        assert lines and lines[0].startswith("pref.travel"), ctx
+
+    def test_write_time_embed_uses_bulk_priority(self, tmp_path: Path) -> None:
+        from kiro_crew.embeddings import PRIORITY_BULK
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        seen: list[int] = []
+
+        def _embed(text: str, priority: int = -1) -> list[float]:
+            seen.append(priority)
+            return [1.0] * self._DIM
+
+        _embed.accepts_priority = True  # type: ignore[attr-defined]
+        store.embed_fn = _embed
+
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        # The write-time vector is a corpus-style deferred asset (nothing
+        # blocks on it), reached from consolidation and import loops — it must
+        # never queue ahead of interactive or explicit-write embeds.
+        assert seen == [PRIORITY_BULK]
+
+    def test_reaffirmation_keeps_vector_without_reembedding(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        texts: list[str] = []
+        inner = self._directional_embed()
+
+        def _embed(text: str) -> list[float]:
+            texts.append(text)
+            return inner(text)
+
+        store.embed_fn = _embed
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        blob = self._stored_embedding(store, "pref.city")
+        assert blob is not None
+
+        # Same value re-affirmed (consolidation rewrites the same keys every
+        # cycle): the upsert keeps the vector and the tail skips the embed —
+        # re-embedding identical text would spend an inference per cycle.
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert self._stored_embedding(store, "pref.city") == blob
+        assert texts.count('pref.city "Paris"') == 1, texts
+
+    def test_null_vector_row_does_not_outrank_embedded_row(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        # Legacy row written while the model was absent: NULL vector, but a
+        # perfect keyword overlap with the query (key + value hit every word).
+        assert (
+            store.set_semantic("pref.tokyo_travel_plans", "tokyo travel plans", 1.0, "user_explicit")
+            is None
+        )
+        # Embedded row: zero keyword overlap, perfect vector match ("nippon"
+        # shares the query's axis in the fake embedding space).
+        store.embed_fn = self._directional_embed()
+        assert store.set_semantic("pref.trip", "nippon", 1.0, "user_explicit") is None
+
+        ctx = store.get_semantic_context(query_text="tokyo travel plans")
+        lines = [ln for ln in ctx.splitlines() if ln.startswith("pref.")]
+        # Both rows score on the same weighted scale: the vectorless row must
+        # not keep the unweighted keyword score (1.0) and outrank the
+        # vector-matched row (0.6) — evidence-backed rows win.
+        assert lines and lines[0].startswith("pref.trip"), ctx
+
+    def test_embedding_persist_failure_does_not_fail_the_write(self, tmp_path: Path) -> None:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = self._directional_embed()
+
+        # A DB error while persisting the derived vector (disk full, I/O error)
+        # must not escape: the semantic row is already committed, and callers
+        # batch many keys per call — an exception here would discard every
+        # remaining item in the batch. The row stays NULL for the backfill.
+        import sqlite3 as _sqlite3
+
+        real_db = store.db
+
+        class _FailingDb:
+            def execute(self, sql: str, *args: object):
+                if sql.startswith("UPDATE semantic_memory SET embedding"):
+                    raise _sqlite3.OperationalError("disk I/O error")
+                return real_db.execute(sql, *args)
+
+            def __getattr__(self, name: str):
+                return getattr(real_db, name)
+
+        store._db = _FailingDb()  # type: ignore[assignment]
+        try:
+            assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        finally:
+            store._db = real_db
+
+        row = store.db.execute(
+            "SELECT value_json, embedding FROM semantic_memory WHERE key = 'pref.city'"
+        ).fetchone()
+        assert row is not None and row["value_json"] == '"Paris"'
+        assert row["embedding"] is None
+
+    def test_backfill_covers_semantic_kv_rows(self, tmp_path: Path) -> None:
+        import struct
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        # Written while the model is absent: rows land with NULL embeddings.
+        assert store.set_semantic("pref.city", "Paris", 1.0, "user_explicit") is None
+        assert store.set_semantic_if_absent("pref.drink", "coffee", 1.0, "import") == "imported"
+        assert self._stored_embedding(store, "pref.city") is None
+        assert self._stored_embedding(store, "pref.drink") is None
+
+        embed = self._directional_embed()
+        store.embed_fn = embed
+        store.backfill_missing_embeddings()
+
+        for key, value_json in (("pref.city", '"Paris"'), ("pref.drink", '"coffee"')):
+            blob = self._stored_embedding(store, key)
+            assert blob is not None, f"backfill left {key} NULL"
+            assert list(struct.unpack(f"{len(blob) // 4}f", blob)) == pytest.approx(
+                embed(f"{key} {value_json}")
+            )

@@ -24,6 +24,86 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 7. **Make Live** — repoint the live gateway at another worktree via a
    live-target pointer file (no service definition is ever mutated)
 
+## Main Checkout Discovery
+
+Every git operation is rooted at `MAIN_REPO`, the primary checkout whose worktrees the
+fleet manages. It is resolved in this order, first hit wins:
+
+| Tier | Source | Marker-tested? |
+|------|--------|----------------|
+| 1 | `KIROCREW_DEVFLEET_REPO` env var | no — taken verbatim |
+| 2 | `dev_fleet.repo_path` in `config.json` / `config.local.json` | no — taken verbatim |
+| 3 | `KIROCREW_PROJECT_DIR` | yes |
+| 4 | the checkout this gateway is executing from (`src/kiro_crew` layout walk) | yes |
+| 5 | conventional clone locations under `$HOME` (`kirocrew`, `KiroCrew`, `kiro-crew` directly and under `Repos`, `repos`, `src`, `Projects`, `projects`, `dev`, `git`, `code`, `workplace`) | yes |
+
+Tier 5 matches directory names case-insensitively against each parent's own listing rather than joining the guessed spellings, so the resolved path is spelled the way the filesystem spells it. A blind join succeeds against a differently-cased directory on a case-insensitive filesystem (macOS) and yields a path that does not match the ones git reports for the same tree.
+
+The marker test (`_is_kirocrew_checkout`) requires `.git`, `src/kiro_crew/` and
+`pyproject.toml` together. `.git` alone is insufficient on purpose: an unrelated
+repository adopted as the main checkout would have its worktrees listed and Pull+Build,
+rebase and worktree-removal git commands run inside it. Tiers 1–2 skip the test *during
+discovery* because the user named that path — a typo must surface as an error against it
+rather than be silently replaced by a discovered checkout — but the path is still validated
+once at startup, and `_repo()` — the single accessor every git argv and path build goes
+through — then raises `RepoUnreadable` naming it. The gate lives in the accessor rather than
+in worktree discovery because sync and the background refresher reach git without passing
+through discovery, and `pull --ff-only` plus `pip install -e` inside an unrelated repository
+is the worst available outcome. "Not replaced by a discovered checkout" and "not validated" are separable, and
+only the first is wanted: a readable-but-wrong configured path would otherwise be operated
+on rather than reported.
+
+Module import evaluates tiers 1, 3 and 4 — two env reads and a handful of stats — because
+the module is imported from the async route-registration path. Tier 2 (a config-file read)
+and tier 5 (up to 30 candidate directories x 3 markers) run only on the subprocess executor
+in `dev_fleet_startup()`. The startup result is then normalized through
+`_resolve_primary_checkout`, so a hint naming a linked worktree still manages the whole
+fleet.
+
+The `/fleet` payload reports both the resolved `main_repo` and
+`main_repo_inferred`. The latter is true for tiers 3–5 and false for the two
+operator-configured tiers. The page surfaces an inferred path once above the fleet,
+so the checkout targeted by Pull+Build, rebase, and prune is visible without adding
+noise for operators who configured it explicitly.
+
+When no tier resolves, `MAIN_REPO` is `""` — never a synthesized path. Discovery raises
+`RepoNotConfigured` and `/fleet` answers `{"worktrees": [], "needs_setup": true}` with no
+`error` field, which the page renders as a setup prompt. A synthesized default instead
+produces a red "Discovery Error" naming a directory the user never chose, which reads as a
+broken app rather than an unanswered question.
+
+Because `""` would make `git -C ""` operate on the backend's own working directory (and
+`Path("")` is `Path(".")`), no consumer reads the global directly: every site that runs git
+against the checkout or builds paths from it resolves it through the `_repo()` accessor,
+which returns the path or raises `RepoNotConfigured`. Sites that deliberately degrade
+instead of failing catch it and say what the degraded answer is — upstream-remote
+resolution falls back to `origin`, build-pending detection reports nothing pending,
+fallback-remote loading leaves the list empty, sync refuses with its usual
+`{"ok": false}` shape, and the background refresher idles. Bare `MAIN_REPO` loads outside
+the accessor are limited to truthiness guards, enforced for loads within `server.py` by an
+AST ratchet (`test/test_dev_fleet_repo_accessor.py`); a helper split out into a sibling
+module must route through `_repo()` by convention, since the ratchet only sees this file.
+
+Every OTHER route that resolves a worktree (`/worktree`, `/disk`, `/prune-candidates`,
+`/prune-run`, the pod routes, `/rebase`, `/make-live`) reaches `_discover_worktrees` too, so
+both unresolved states are converted once in `hmac_proxy_middleware` into a `409`:
+`RepoNotConfigured` → `{"ok": false, "code": "repo_not_configured"}`, and `RepoUnreadable`
+(a checkout was named but git cannot enumerate it) → `{"ok": false, "code":
+"repo_unreadable"}`. The boundary lives in the middleware rather than per handler so a newly
+added route cannot forget the case and answer a click with an uncaught 500. The page
+suppresses the fleet toolbar, the row-action how-to, and the stat-card counts in BOTH states
+— the fleet is unknown either way, so a count would assert a number nobody measured — which
+means those routes are not offered in the first place; the 409 is the backstop for a direct
+API caller.
+
+`/fleet` is the one route that distinguishes them: `needs_setup` for the unconfigured state,
+an `error` string for the unreadable one, which the page renders as the Discovery Error
+banner naming the path (the user chose it).
+
+When a checkout WAS named and git cannot read it, the error names the mechanism that
+supplied the path (`_repo_source_hint`) — the remedy is to edit that one, and listing both
+leaves the user guessing which they set.
+
 ## Routes
 
 Public routes are under `/apps/dev-fleet/api/*` (gateway proxy, session auth via token
@@ -35,7 +115,7 @@ verification. Route names below are relative to that prefix.
 | Route | Description |
 |-------|-------------|
 | `/apps/dev-fleet/api/health` | Liveness + gateway **start identity**: `{status, start_id}`. `start_id` is the live unit's `ExecMainStartTimestampMonotonic` (launchd: job PID; foreground last resort: run-marker pid; `null` when unavailable); the dashboard polls it to detect the NEW process after a restart (see Action narration). Served on the proxied `/api/` namespace because the gateway only forwards `/apps/dev-fleet/api/*` to the backend. (The bare `/health` carries the same body but is HMAC-exempt and reached only by the gateway's own internal liveness poll.) |
-| `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s). `?fresh=1` forces cache bypass. |
+| `/apps/dev-fleet/api/fleet` | Lightweight worktree + pod list (polled every 12s), including `main_repo` and `main_repo_inferred`. `?fresh=1` forces cache bypass. Answers `{worktrees: [], needs_setup: true}` when no main checkout was found (see Main Checkout Discovery) and `{worktrees: [], error}` when a named checkout is unreadable. |
 | `/apps/dev-fleet/api/worktree?name=` | Lazy per-branch detail: PR, commits, disk usage |
 | `/apps/dev-fleet/api/pod/logs?name=&n=` | Pod journal tail (recent N lines, default 120) |
 | `/apps/dev-fleet/api/run?id=` | Async run status + streamed output (last 60 lines) |
@@ -292,16 +372,19 @@ auto-expanded, and both persist until the user clicks the dismiss `×`
 `✓ Provisioned` briefly, then clears (the fleet refetch flips the row to its
 built state).
 
-**Known limitation — no reattach after a page reload.** Provision run state
-(including the persisted failed run and its log) lives only in component memory.
-A browser reload during or after a provision loses it, because the `/fleet`
-payload exposes no provision run ids to reattach to on mount (unlike sync, which
-reattaches via `sync_run_id`). The single-flight reattach above only covers a
-Provision **button-click** while a run is in flight, not a fresh page load.
-Server-backed reattach (exposing active/failed provision run ids in `/fleet` so
-the page can reattach on mount, mirroring `sync_run_id`) is tracked as follow-up
-work ([issue #321](https://github.com/kirodotdev/KiroCrew/issues/321); see also
-[issue #231](https://github.com/kirodotdev/KiroCrew/issues/231), PR #320).
+**Reattach after a page reload (server-backed).** Each `/fleet` worktree entry
+carries a `provision_run_id` while that checkout's provision run is still
+executing or after it finished unsuccessfully (mirroring `sync_run_id`).
+Successful and registry-evicted runs are omitted — there is nothing to
+reattach to. On mount the page fetches `/run?id=<rid>` for each exposed id: a
+running run resumes polling into the stepper (accumulating the log window as
+usual), and a failed run restores the persisted red failure state with its log
+auto-expanded. Reattached and locally-started runs are deduped by run id, so a
+fleet refetch never starts a second poll loop for a run already being tracked.
+The dismiss `×` is client-side only: a failed run's id keeps being exposed
+until a newer provision for that checkout replaces it, the run is evicted from
+the bounded registry, or the gateway restarts — so a reload after dismissing
+re-shows the failure. Server-side dismissal is deliberately out of scope here.
 
 ## Action narration (restart + sync feedback)
 

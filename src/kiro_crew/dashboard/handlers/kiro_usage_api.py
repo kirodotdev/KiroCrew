@@ -134,9 +134,25 @@ _JSON_TOKEN_READ_IDS = (
 # exactly this path.
 # ``~/.local/share`` is not a sensitive credential path, so this read is a direct
 # read-only sqlite open. auth_kv holds a JSON blob per key.
+#
+# The entries are deliberately UNGUARDED by ``sys.platform``: every candidate is
+# existence-checked before it is opened, so a path that cannot exist on the
+# running OS is inert, and a platform-independent module constant is what lets
+# tests patch the tuple without becoming host-dependent.
+#
+# The Windows entry is the fixed default Roaming location, NOT resolved from
+# ``%APPDATA%``. Membership here is a trust claim (``from_cli_store=True``)
+# that rests on agent file tools being unable to write the store, and that
+# fence (``_SENSITIVE_HOME_DIRS``) is home-anchored at exactly this path — so
+# an APPDATA-resolved location either equals this entry or falls outside the
+# fence and must not be trusted. A redirected Roaming profile therefore keeps
+# the text-scrape fallback rather than gaining a forgeable trusted path; the
+# same posture as the Linux entry, which does not follow ``XDG_DATA_HOME``
+# redirection either.
 _CLI_SQLITE_DBS = (
     Path.home() / ".local" / "share" / "kiro-cli" / "data.sqlite3",
     Path.home() / "Library" / "Application Support" / "kiro-cli" / "data.sqlite3",
+    Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3",
 )
 
 # Auth stores belonging to OTHER products (amazon-q). Readable, and often the same
@@ -158,6 +174,8 @@ _SQLITE_AUDIT_READ_ID = "kiro_usage_api.sqlite_token"
 # as a wild figure. Real plans are in the thousands; a million-credit ceiling is
 # comfortably above any real plan while still catching garbage.
 _MAX_CREDITS = 1_000_000.0
+_MAX_BONUS_GRANTS = 32
+_MAX_BONUS_NAME_CHARS = 100
 
 # Cap the RTS response body so an oversized or indefinitely-streamed response
 # cannot exhaust memory or tie up a shared subprocess worker. The usage JSON is
@@ -705,15 +723,17 @@ def _map_response(data: dict) -> dict | None:
         except (ValueError, OSError, OverflowError, TypeError):
             pass
 
-    # Best-effort bonus / free-trial pool. GetUsageLimits can carry a second
-    # breakdown entry (a promotional / welcome or free-trial pool) that is spent
+    # Best-effort bonus / free-trial pools. GetUsageLimits can carry additional
+    # breakdown entries (promotional / welcome or free-trial pools) that are spent
     # BEFORE the plan; kiro-cli's text output shows the same thing as a "Bonus
     # Credits" section. The exact resourceType label is not documented, so match
     # conservatively on known bonus-like markers and never treat the primary
     # CREDIT entry or an unrelated quota (e.g. TOKEN) as bonus. Emitted only when
     # a finite used+limit pair exists, mirroring the text-scrape fields so the
-    # dashboard never branches on source.
+    # dashboard never branches on source. Retain every bounded grant; the legacy
+    # scalar fields mirror the first one for older clients.
     _bonus_markers = ("FREE_TRIAL", "FREETRIAL", "TRIAL", "BONUS", "PROMO", "GIFT", "WELCOME")
+    bonus_credits: list[dict[str, object]] = []
     for b in breakdowns:
         if b is credit:
             continue
@@ -728,12 +748,24 @@ def _map_response(data: dict) -> dict | None:
             b_limit = _bounded(b.get("usageLimit"))
         if b_used is None or b_limit is None or b_limit <= 0:
             continue
-        result["bonus_used"] = b_used
-        result["bonus_limit"] = b_limit
         label = b.get("title") or b.get("displayName") or rtype.replace("_", " ").title()
-        if isinstance(label, str) and label:
-            result["bonus_label"] = label[:100]
-        break
+        if not isinstance(label, str) or not label or not label.isprintable():
+            continue
+        bonus_credits.append(
+            {
+                "name": label[:_MAX_BONUS_NAME_CHARS],
+                "used": b_used,
+                "total": b_limit,
+            }
+        )
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
+    if bonus_credits:
+        result["bonus_credits"] = bonus_credits
+        first = bonus_credits[0]
+        result["bonus_used"] = first["used"]
+        result["bonus_limit"] = first["total"]
+        result["bonus_label"] = first["name"]
 
     return result
 

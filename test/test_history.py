@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -993,22 +995,27 @@ class TestSearchSessions:
 
 
 class TestSearchQueryTokens:
-    """Bounds on the tokenizer shared by the matcher and the snippet builders.
+    """Bounds on the parse shared by the matcher and the snippet builders.
 
-    Every token costs one full scan of a session's text, so the token list is
+    Every needle costs one full scan of a session's text, so the needle list is
     the knob that multiplies search cost on a user-supplied string.
     """
 
-    def test_repeated_terms_collapse_to_one_token(self):
+    @staticmethod
+    def _required_texts(query: str) -> tuple[list[str], str]:
+        needles, phrase, _ = history.parse_search_query(query)
+        return ([n.text for n in needles if n.required], phrase)
+
+    def test_repeated_terms_collapse_to_one_needle(self):
         """A repeated term must not buy extra scans — it cannot change an AND match.
 
         Regression: a 256-char query of repeated "a " tokenized to 128 terms and
         drove 128 full scans per session instead of 1, stalling a keystroke-driven
         search.
         """
-        tokens, phrase = history.search_query_tokens("a " * 128)
+        texts, phrase = self._required_texts("a " * 128)
 
-        assert tokens == ["a"], "duplicates must collapse"
+        assert texts == ["a"], "duplicates must collapse"
         assert phrase == " ".join(["a"] * 128), "the phrase keeps the query as typed"
 
     def test_distinct_terms_are_capped(self):
@@ -1019,20 +1026,20 @@ class TestSearchQueryTokens:
         """
         query = " ".join(f"t{i}" for i in range(history.SEARCH_MAX_TOKENS + 25))
 
-        tokens, _ = history.search_query_tokens(query)
+        texts, _ = self._required_texts(query)
 
-        assert len(tokens) == history.SEARCH_MAX_TOKENS
-        assert tokens[0] == "t0", "the cap keeps the first terms, in order"
+        assert len(texts) == history.SEARCH_MAX_TOKENS
+        assert texts[0] == "t0", "the cap keeps the first terms, in order"
 
-    def test_whitespace_only_query_yields_no_tokens(self):
-        """No tokens, so an all-tokens-present check cannot be vacuously true."""
-        assert history.search_query_tokens("   \t\n") == ([], "")
+    def test_whitespace_only_query_yields_no_needles(self):
+        """No needles, so an all-required-present check cannot be vacuously true."""
+        assert history.parse_search_query("   \t\n") == ([], "", False)
 
     def test_order_is_first_seen(self):
-        """Token order is stable and first-seen, so the snippet fallback is predictable."""
-        tokens, _ = history.search_query_tokens("beta alpha beta gamma")
+        """Needle order is stable and first-seen, so the snippet fallback is predictable."""
+        texts, _ = self._required_texts("beta alpha beta gamma")
 
-        assert tokens == ["beta", "alpha", "gamma"]
+        assert texts == ["beta", "alpha", "gamma"]
 
     def test_deduped_query_still_gets_phrase_treatment(self, tmp_path):
         """"a a" dedups to ONE token but its phrase is still two words.
@@ -1048,6 +1055,265 @@ class TestSearchQueryTokens:
 
         assert [s["key"] for s in results] == ["hit"]
         assert results[0]["snippet"], "a deduped multi-word query must still snippet"
+
+
+class TestCjkSearch:
+    """CJK-aware query segmentation — gate on characters, rank on bigrams.
+
+    CJK text is written without spaces, so whitespace tokenization hands the
+    matcher a whole clause as ONE token and a multi-word query only ever
+    matches its own literal sentence. These tests pin the recall fix (character
+    gate) and the precision compensation (bigram-weighted ranking).
+    """
+
+    @staticmethod
+    def _write_cjk_session(tmp_path, key: str, content: str) -> None:
+        """Write a session file directly so CJK stays unescaped in the JSONL.
+
+        Mirrors the unicode-casefold test above: ``json.dumps`` with default
+        ``ensure_ascii=True`` would store ``\\uXXXX`` escapes, which the parser
+        unescapes anyway — writing raw keeps the fixture human-readable.
+        """
+        line = json.dumps({"role": "user", "content": content}, ensure_ascii=False)
+        (tmp_path / f"{key}.jsonl").write_text(line + "\n", encoding="utf-8")
+
+    def test_spaceless_multiword_cjk_query_matches_separated_words(self, tmp_path):
+        """"内存泄漏" must find a session whose words appear apart.
+
+        Regression: the whole run was one required substring, so only a
+        transcript containing the literal string "内存泄漏" could match — the
+        exact-sentence trap this segmentation exists to break.
+        """
+        self._write_cjk_session(tmp_path, "hit", "今天调查了内存里的数据泄漏问题")
+        self._write_cjk_session(tmp_path, "miss", "完全无关的话题")
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("内存泄漏")
+
+        assert [s["key"] for s in results] == ["hit"]
+
+    def test_cjk_gate_is_still_an_and(self, tmp_path):
+        """A session missing one query character stays disqualified."""
+        self._write_cjk_session(tmp_path, "alpha", "内存充足没有问题")
+        log = ConversationLog(base_dir=tmp_path)
+
+        assert log.search_sessions("内存泄漏") == []
+
+    def test_adjacent_cjk_match_outranks_scattered_characters(self, tmp_path):
+        """Bigram + phrase weighting puts the real word hit first.
+
+        Both sessions pass the character gate and the adjacency floor (each
+        contains at least one query bigram); the one containing the query as an
+        adjacent run must rank above the one holding only the words apart, or
+        the gate's extra recall would degrade top-N precision.
+        """
+        self._write_cjk_session(tmp_path, "scattered", "内存里的数据泄漏了")
+        self._write_cjk_session(tmp_path, "adjacent", "内存泄漏定位完成了")
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("内存泄漏")
+
+        assert [s["key"] for s in results] == ["adjacent", "scattered"]
+
+    def test_character_scatter_without_any_adjacency_is_excluded(self, tmp_path):
+        """All query characters present but never adjacent — noise, not a hit.
+
+        Individual han/kana characters are common enough that ranking alone
+        cannot keep scatter off a result page with few real hits, so the
+        adjacency floor excludes rather than down-ranks.
+        """
+        # Contains 内, 存, 泄, 漏 — but no bigram of "内存泄漏" appears adjacently.
+        self._write_cjk_session(tmp_path, "scatter", "内部保存了泄压阀和漏水的记录")
+        log = ConversationLog(base_dir=tmp_path)
+
+        assert log.search_sessions("内存泄漏") == []
+
+    def test_long_query_bigram_truncation_waives_the_adjacency_floor(self, tmp_path):
+        """A 14+-char CJK query truncates its bigram set; the floor must not
+        turn that cost cap into a hidden gate.
+
+        Regression (Design review): a session whose only adjacency hit was a
+        DROPPED bigram would be excluded by the floor — hiding results for
+        exactly the long spaceless queries the segmentation exists to serve,
+        and breaking the "truncation only loosens" safety rationale.
+        """
+        # 15 distinct chars -> 14 bigrams > _SEARCH_MAX_SCORING_EXTRAS (12).
+        query = "".join(chr(0x4E00 + i) for i in range(15))
+        # Session contains every char (satisfies the gate, capped at 12
+        # required) but adjacently only the LAST bigram — one of the two the
+        # cap drops — plus the rest scattered with separators.
+        tail_bigram = query[-2:]
+        scattered = "、".join(query[:-2]) + "。" + tail_bigram
+        self._write_cjk_session(tmp_path, "longhit", scattered)
+        log = ConversationLog(base_dir=tmp_path)
+
+        assert [s["key"] for s in log.search_sessions(query)] == ["longhit"]
+
+    def test_mixed_script_token_splits_at_script_boundary(self, tmp_path):
+        """"kirocrew部署" matches a doc where the ASCII and CJK parts sit apart."""
+        self._write_cjk_session(tmp_path, "hit", "kirocrew 的部署流程记录")
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("kirocrew部署")
+
+        assert [s["key"] for s in results] == ["hit"]
+
+    def test_single_cjk_character_query_matches(self, tmp_path):
+        self._write_cjk_session(tmp_path, "hit", "泄压阀已检查")
+        log = ConversationLog(base_dir=tmp_path)
+
+        assert [s["key"] for s in log.search_sessions("泄")] == ["hit"]
+
+    def test_cjk_match_returns_snippet(self, tmp_path):
+        """The snippet builder shares the parse, so a CJK hit still excerpts."""
+        self._write_cjk_session(tmp_path, "hit", "前情提要之后我们讨论了内存泄漏的修复方案")
+        log = ConversationLog(base_dir=tmp_path)
+
+        results = log.search_sessions("内存泄漏")
+
+        assert results and "内存泄漏" in results[0]["snippet"]
+
+
+class TestParseSearchQuery:
+    """Needle derivation — required/scoring split and its bounds."""
+
+    def test_ascii_terms_are_required_full_weight(self):
+        needles, phrase, floor = history.parse_search_query("deploy Timeout")
+
+        assert needles == [
+            history.SearchNeedle("deploy", 1.0, True),
+            history.SearchNeedle("timeout", 1.0, True),
+        ]
+        assert phrase == "deploy timeout"
+        assert floor is False, "no bigrams -> no adjacency floor"
+
+    def test_cjk_run_gates_on_chars_and_scores_on_bigrams(self):
+        needles, _, floor = history.parse_search_query("内存泄漏")
+
+        required = [n for n in needles if n.required]
+        scoring = [n for n in needles if not n.required]
+        assert [n.text for n in required] == ["内", "存", "泄", "漏"]
+        assert all(n.weight == history._CJK_CHAR_WEIGHT for n in required)
+        assert [n.text for n in scoring] == ["内存", "存泄", "泄漏"]
+        assert all(n.weight == 1.0 for n in scoring)
+        assert floor is True, "untruncated bigrams enforce the adjacency floor"
+
+    def test_single_cjk_char_run_is_a_full_weight_term(self):
+        """A lone character IS the whole term — no bigrams, no down-weighting."""
+        needles, _, _ = history.parse_search_query("泄")
+
+        assert needles == [history.SearchNeedle("泄", 1.0, True)]
+
+    def test_scoring_extras_are_capped(self):
+        """Bigrams cost one scan each, so they get their own bound."""
+        run = "".join(chr(0x4E00 + i) for i in range(40))
+
+        needles, _, floor = history.parse_search_query(run)
+
+        scoring = [n for n in needles if not n.required]
+        required = [n for n in needles if n.required]
+        assert len(scoring) == history._SEARCH_MAX_SCORING_EXTRAS
+        assert len(required) == history.SEARCH_MAX_TOKENS
+        assert floor is False, (
+            "a truncated bigram set cannot prove no-adjacency-anywhere, so the "
+            "floor is waived — truncation must only LOOSEN, never hide a session"
+        )
+
+    def test_snippet_needles_order_phrase_then_bigrams_then_chars(self):
+        """Excerpts center on the first hit, so highest-signal needles go first."""
+        needles = history.snippet_needles("内存泄漏")
+
+        assert needles[0] == "内存泄漏"
+        assert needles.index("内存") < needles.index("内")
+
+    def test_snippet_needles_empty_for_whitespace(self):
+        assert history.snippet_needles("   \t") == []
+
+    def test_snippet_needles_keep_ascii_first_seen_order(self):
+        """ASCII fallback order stays first-typed — the pre-CJK contract."""
+        needles = history.snippet_needles("beta alphabet gamma")
+
+        assert needles == ["beta alphabet gamma", "beta", "alphabet", "gamma"]
+
+
+class TestNeedlesMatchText:
+    """Single-text gate shared with title-only fallbacks (Discord resume)."""
+
+    @staticmethod
+    def _matches(query: str, text: str) -> bool:
+        needles, _, floor = history.parse_search_query(query)
+        return history.needles_match_text(needles, text.casefold(), floor)
+
+    def test_ascii_all_words_required(self):
+        assert self._matches("link specific", "Link to a Specific Session")
+        assert not self._matches("link specific", "Link to a Session")
+
+    def test_cjk_words_apart_match(self):
+        """The exact trap the whitespace word-count test never caught: a
+        spaceless CJK query is one 'word', so the old all-words gate demanded
+        the literal substring."""
+        assert self._matches("内存泄漏", "内存的泄漏问题排查")
+
+    def test_cjk_scatter_without_adjacency_rejected(self):
+        assert not self._matches("内存泄漏", "内部保存了泄压阀和漏水的记录")
+
+    def test_cjk_missing_char_rejected(self):
+        assert not self._matches("内存泄漏", "内存充足没有问题")
+
+    def test_empty_needles_match_nothing(self):
+        assert not history.needles_match_text([], "anything")
+
+
+class TestRecencyBoost:
+    """Bounded multiplicative recency weighting in search_sessions ranking."""
+
+    @staticmethod
+    def _set_age(tmp_path, key: str, days: float) -> None:
+        t = time.time() - days * 86400
+        os.utime(tmp_path / f"{key}.jsonl", (t, t))
+
+    def test_recent_session_outranks_stale_equal_match(self, tmp_path):
+        """At equal relevance the newer session must come first.
+
+        Regression: scoring was pure term frequency, so a year-old session
+        matching twice buried today's session matching once.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("stale", "user", "apollo deployment notes")
+        log.append("fresh", "user", "apollo deployment notes")
+        self._set_age(tmp_path, "stale", 365)
+        self._set_age(tmp_path, "fresh", 0)
+
+        results = log.search_sessions("apollo")
+
+        assert [s["key"] for s in results] == ["fresh", "stale"]
+
+    def test_stale_double_mention_loses_to_fresh_single_mention(self, tmp_path):
+        """The canonical complaint, verbatim: a year-old session matching TWICE
+        must not outrank today's session matching once. This is what sizes
+        _RECENCY_MAX_BOOST — a ceiling of 1.0 left exactly this case unfixed.
+        """
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("stale", "user", "apollo apollo deployment notes here")
+        log.append("fresh", "user", "apollo filler deployment notes here")
+        self._set_age(tmp_path, "stale", 365)
+        self._set_age(tmp_path, "fresh", 0)
+
+        results = log.search_sessions("apollo")
+
+        assert [s["key"] for s in results] == ["fresh", "stale"]
+
+    def test_decisively_better_old_match_still_wins(self, tmp_path):
+        """The boost is bounded, so it reorders near-ties, not clear wins."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("stale", "user", "apollo apollo apollo apollo apollo notes")
+        log.append("fresh", "user", "apollo filler filler filler filler notes")
+        self._set_age(tmp_path, "stale", 365)
+        self._set_age(tmp_path, "fresh", 0)
+
+        results = log.search_sessions("apollo")
+
+        assert [s["key"] for s in results] == ["stale", "fresh"]
 
 
 class TestArchive:
@@ -3765,3 +4031,34 @@ class TestMetadataReadSurvivesATransientSharingViolation:
         assert any(
             "could not read metadata" in r.getMessage() for r in caplog.records
         ), f"no warning recorded; got {[r.getMessage() for r in caplog.records]}"
+
+
+class TestAppendIfAbsentOffLoop:
+    """The returned future IS the contract: callers holding the only durable
+    copy of something await it to turn "scheduled" into "on disk"."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_executor_future_when_a_loop_is_running(self) -> None:
+        log = MagicMock()
+        fut = history.append_if_absent_off_loop(log, "dashboard:s1", "assistant", "body")
+        assert fut is not None, "the scheduled write was not handed back to the caller"
+        await fut
+        log.append_if_absent.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_the_returned_future_carries_the_append_failure(self) -> None:
+        log = MagicMock()
+        log.append_if_absent.side_effect = OSError("history lock contention")
+        fut = history.append_if_absent_off_loop(log, "dashboard:s1", "assistant", "body")
+        assert fut is not None
+        with pytest.raises(OSError):
+            await fut
+
+    def test_returns_none_when_written_inline(self) -> None:
+        # No running loop: the append already happened, so there is nothing to
+        # await and None is the correct answer, not a lost future.
+        log = MagicMock()
+        assert history.append_if_absent_off_loop(
+            log, "dashboard:s1", "assistant", "body"
+        ) is None
+        log.append_if_absent.assert_called_once()

@@ -45,6 +45,16 @@ class PodError(RuntimeError):
     """A pod operation could not be completed (bad name, no worktree, mint failed…)."""
 
 
+class PodBackendAbsent(PodError):
+    """The pod service manager is provably not running on this host.
+
+    Raised only from branches where the backend is demonstrably absent (e.g.
+    Linux with no session bus socket and no DBUS_SESSION_BUS_ADDRESS). Callers
+    that need to distinguish 'backend absent, no pods possible' from 'backend
+    present but erroring' can catch this subclass specifically.
+    """
+
+
 def validate_name(name: str) -> str:
     if not name or not _NAME_RE.match(name):
         raise PodError(f"invalid pod name {name!r}")
@@ -342,7 +352,7 @@ def require_systemd() -> None:
     if not has_session_bus():
         uid = getattr(os, "getuid", lambda: -1)()
         user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
-        raise PodError(
+        raise PodBackendAbsent(
             f"no `systemd --user` session bus for uid {uid} "
             f"(looked for {session_bus_socket()}).\n"
             "Pods are systemd --user units, so one is required.\n"
@@ -819,7 +829,11 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
     :func:`cleanup_home`'s re-validation via ``kirocrew pod down <name>``.
     """
     try:
-        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir()]
+        # never follow a symlink: a link under pod_root can point at a LIVE
+        # pod's HOME (or anywhere), and everything downstream of this
+        # enumeration treats the NAME as the directory it will judge and
+        # delete. A real pod HOME is always created as a plain directory.
+        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir() and not p.is_symlink()]
     except OSError:
         return []
     live = active_names(cfg)
@@ -1030,6 +1044,12 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         or (k.endswith("_TOKEN") and not k.startswith("AWS_"))
     ]:
         env.pop(key, None)
+    # Cross-plane guard: a gateway-descended caller inherits the LIVE
+    # gateway's KIROCREW_BOUND_PORT (dashboard.server._export_bound_port).
+    # Inside a pod env it would name the wrong plane — the pod's own
+    # KIROCREW_PORT above is the target — so drop it unconditionally rather
+    # than rely on resolution precedence alone.
+    env.pop("KIROCREW_BOUND_PORT", None)
     return env
 
 
@@ -1079,13 +1099,41 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
         print(f"refusing pod cleanup for invalid instance name {name!r}")
         return 2
     root = cfg.pod_root.resolve()
-    target = (cfg.pod_root / name).resolve()
+    unresolved = cfg.pod_root / name
+    # Refuse to delete THROUGH a symlink: resolving first lets a link planted
+    # under pod_root pass the containment check below while the tree it names
+    # lives elsewhere — including another, live pod's HOME. A real pod HOME is
+    # always created as a plain directory, so a link here is never ours to follow.
+    if unresolved.is_symlink():
+        print(f"refusing pod cleanup: {unresolved} is a symlink, not a pod HOME")
+        return 2
+    target = unresolved.resolve()
     if target == root or target.parent != root:
         print(f"refusing pod cleanup: {target} is not a pod dir under {root}")
         return 2
-    shutil.rmtree(target, ignore_errors=True)
-    if not target.exists():
+    # Delete by the UNRESOLVED name, never the resolved target: between the
+    # symlink pre-check above and this call the entry can be swapped for a
+    # symlink (check-to-use race), and rmtree on the RESOLVED path would then
+    # delete the live sibling the link points at. rmtree itself refuses a
+    # top-level symlink, so deleting by name makes the swap harmless — nothing
+    # is removed and the survivor check below reports the failure.
+    shutil.rmtree(unresolved, ignore_errors=True)
+    # Verify by the ENTRY itself, never the resolved target: an entry swapped
+    # to a DANGLING symlink during the delete makes rmtree refuse silently
+    # (suppressed by ignore_errors), and the resolved target of a dangling
+    # link does not exist — so a target-existence check would report a clean
+    # reclaim while the link remains as residue that orphan_homes (which
+    # skips symlinks) can never surface again.
+    if not os.path.lexists(unresolved):
         return 0
+    if unresolved.is_symlink():
+        # Swapped to a symlink mid-delete: rmtree refused it (correctly), and
+        # the link itself is the residue — name it rather than the target.
+        print(
+            f"pod cleanup did not remove {unresolved}: the entry is now a "
+            "symlink, which teardown refuses to follow — remove it by hand"
+        )
+        return 1
     survivors = _surviving_entries(target)
     print(
         f"pod cleanup did not fully remove {target}: still present "
@@ -1194,7 +1242,7 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
 #                    `chat --tui` branches straight into `_tui` (cli.py:1818), so
 #                    excluding only `tui` left the same hole open. Every OTHER
 #                    client verb (`status`, `logout`, and the credential verb) goes
-#                    through `cli_server.resolve_client_port`, which DOES honour
+#                    through `port_resolution.resolve_client_port`, which DOES honour
 #                    `KIROCREW_PORT` — so this hazard is confined to `_tui`.
 #   logs           — `cli_server._logs_cmd` runs `journalctl -u <SERVICE_NAME>`,
 #                    the HOST service unit, so inside a pod it would show the LIVE

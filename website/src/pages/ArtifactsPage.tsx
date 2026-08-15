@@ -1,8 +1,8 @@
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
+import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, ImageOff, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, FileText, FilePlus } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
@@ -22,9 +22,11 @@ import { DndDraggable, DndDroppable } from '../components/dnd'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { sanitize } from '../api/helpers'
+import { compareText } from '../i18n/format'
 import { useTheme } from '../hooks/useTheme'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { framablePreviewUrl } from '../lib/safeUrl'
+import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
 import { markJustCreatedBlank } from '../lib/blankHandoff'
 import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
 import { useAppPreview } from '../components/WebAppArtifactCard'
@@ -47,7 +49,7 @@ function readThemeVars(): Record<string, string> {
   return out
 }
 
-const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp'] as const
+const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp', 'image'] as const
 
 const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   widget: 'aim',
@@ -57,6 +59,7 @@ const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'> = {
   json: 'ok',
   text: 'ok',
   webapp: 'aim',
+  image: 'warn',
 }
 
 /** Explain a refused "Add Artifact" pick in the library's error banner.
@@ -84,6 +87,63 @@ function isoToTs(iso: string): number {
   if (!iso) return 0
   const t = Date.parse(iso)
   return Number.isFinite(t) ? Math.floor(t / 1000) : 0
+}
+
+// ── Table column sorting ─────────────────────────────────────────────────
+// Clicking a header cycles asc → desc → default (the server's order). The
+// star and Actions columns are controls, not data, and stay unsortable.
+type SortKey = 'name' | 'slug' | 'kind' | 'source' | 'version' | 'tags' | 'updated'
+type SortState = { key: SortKey; dir: 'asc' | 'desc' } | null
+
+const ARTIFACT_SORT_STORAGE_KEY = 'mc-artifacts-sort'
+const SORT_KEYS = new Set<SortKey>(['name', 'slug', 'kind', 'source', 'version', 'tags', 'updated'])
+
+function readPersistedSort(): SortState {
+  try {
+    const value: unknown = JSON.parse(safeGetItem(ARTIFACT_SORT_STORAGE_KEY) ?? 'null')
+    if (!value || typeof value !== 'object') return null
+    const { key, dir } = value as { key?: unknown; dir?: unknown }
+    return typeof key === 'string' && SORT_KEYS.has(key as SortKey) && (dir === 'asc' || dir === 'desc')
+      ? { key: key as SortKey, dir }
+      : null
+  } catch {
+    return null
+  }
+}
+
+/** Type-aware comparator: numeric for version, chronological for updated,
+ * locale-collated natural string for the rest (compareText names the active
+ * UI locale — never the host's). Direction is applied by the caller. */
+function compareArtifacts(a: Artifact, b: Artifact, key: SortKey): number {
+  switch (key) {
+    case 'version':
+      return a.version - b.version
+    case 'updated': {
+      // Byte-order ISO-8601 compare (same backend format, +00:00 offset):
+      // chronological AND keeps the microsecond precision Date.parse drops,
+      // so two artifacts updated within the same second still order correctly.
+      const au = a.updated_at || ''
+      const bu = b.updated_at || ''
+      return au < bu ? -1 : au > bu ? 1 : 0
+    }
+    case 'source':
+      return compareText(a.session_title || a.source || '', b.session_title || b.source || '')
+    case 'tags':
+      return compareText((a.tags || []).join(', '), (b.tags || []).join(', '))
+    case 'slug':
+      return compareText(a.slug, b.slug)
+    case 'kind':
+      return compareText(a.kind, b.kind)
+    default:
+      return compareText(a.name, b.name)
+  }
+}
+
+function sortArtifacts(items: Artifact[], sort: SortState): Artifact[] {
+  if (!sort) return items
+  const mul = sort.dir === 'desc' ? -1 : 1
+  // Array.prototype.sort is stable, so equal rows keep the server's order.
+  return [...items].sort((a, b) => compareArtifacts(a, b, sort.key) * mul)
 }
 
 /** Infer an artifact `kind` for a session document from its extension.
@@ -257,6 +317,40 @@ function ContentThumb({ content, kind }: { content: string; kind: Artifact['kind
   )
 }
 
+/** Thumbnail for image artifacts: the picture streamed straight from the
+ * artifact's asset endpoint (the server sets Content-Type), object-fit
+ * contained and height-capped so cards stay uniform. Lazy so off-screen
+ * gallery cards don't fetch bytes until scrolled into view. Alt text prefers
+ * the stored `image.alt`, falling back to the artifact name. */
+function ImageThumb({ a }: { a: Artifact }) {
+  // The asset endpoint can legitimately 404/500 (pruned sidecar, unreadable
+  // file, refused mime). A bare <img> would leave the browser's broken-image
+  // glyph sitting in an otherwise healthy card with nothing to read.
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1 max-h-[300px] h-[120px] overflow-hidden bg-bg-elevated p-2 text-center">
+        <ImageOff size={16} className="text-muted shrink-0" aria-hidden="true" />
+        <span className="text-[11px] text-muted">
+          {i18nT('pages.artifactsPage.image_could_not_be_loaded')}
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center justify-center max-h-[300px] overflow-hidden bg-bg-elevated p-2">
+      <img
+        src={`/api/artifacts/${a.slug}/asset`}
+        alt={a.image?.alt || a.name}
+        loading="lazy"
+        className="max-w-full max-h-[280px] object-contain"
+        draggable={false}
+        onError={() => setFailed(true)}
+      />
+    </div>
+  )
+}
+
 const WEBAPP_STATUS_DOT: Record<string, string> = {
   live: 'bg-ok',
   deploying: 'bg-warn animate-pulse',
@@ -276,6 +370,10 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const meta = art.webapp_metadata
   const status = meta?.lifecycle?.status ?? 'draft'
   const publicUrl = meta?.deploy_target?.public_url || ''
+  // When the platform withholds cloud deployment there is no deploy state worth
+  // reporting: every artifact would read "Not deployed" for a capability that is
+  // not on offer. The local preview below is unaffected and still renders.
+  const cloudDeployEnabled = useCloudDeploymentEnabled()
   // Local-first: serve the app's local copy through the gateway preview
   // channel (works for every lifecycle state); fall back to iframing the
   // live CloudFront deployment; else a status hero.
@@ -283,12 +381,12 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const frameUrl = previewBase
     || (!mini && status === 'live' && remoteFramable ? framablePreviewUrl(publicUrl) : null)
   const urlLabel = (() => {
-    if (!publicUrl) return i18nT('pages.artifactsPage.not_deployed')
+    if (!publicUrl) return cloudDeployEnabled ? i18nT('pages.artifactsPage.not_deployed') : ''
     try {
       const u = new URL(publicUrl)
       return `${u.host}${u.pathname}`
     } catch {
-      return i18nT('pages.artifactsPage.not_deployed')
+      return cloudDeployEnabled ? i18nT('pages.artifactsPage.not_deployed') : ''
     }
   })()
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -307,7 +405,7 @@ function WebAppThumb({ art, mini = false }: { art: Artifact; mini?: boolean }) {
   const heroIcon = status === 'expired'
     ? <Cloud size={mini ? 16 : 24} className="text-muted" aria-hidden="true" />
     : <Rocket size={mini ? 16 : 24} className={status === 'deploying' ? 'text-warn animate-pulse' : 'text-accent/70'} aria-hidden="true" />
-  const heroLabel = status === 'expired' ? i18nT('pages.artifactsPage.expired') : status === 'deploying' ? i18nT('pages.artifactsPage.deploying') : status === 'live' ? i18nT('pages.artifactsPage.live') : i18nT('pages.artifactsPage.not_deployed_2')
+  const heroLabel = status === 'expired' ? i18nT('pages.artifactsPage.expired') : status === 'deploying' ? i18nT('pages.artifactsPage.deploying') : status === 'live' ? i18nT('pages.artifactsPage.live') : cloudDeployEnabled ? i18nT('pages.artifactsPage.not_deployed_2') : i18nT('pages.artifactsPage.local_preview')
   return (
     <div className="bg-card">
       {/* chrome bar */}
@@ -560,7 +658,7 @@ function FolderMiniThumb({ a }: { a: Artifact }) {
   const content = full?.content || ''
   return (
     <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
-      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
     </div>
   )
 }
@@ -738,7 +836,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
     >
       {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
       <div className="pointer-events-none">
-        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
+        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
       </div>
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">
@@ -889,20 +987,42 @@ function MasonryGridItem({ data, context, index }: { data: GridEntry; context: L
   )
 }
 
-/** Column headers shared by the flat table and the folder tree table. */
-function LibraryTableHead() {
+/** Column headers shared by the flat table and the folder tree table. Data
+ * columns sort on click (asc → desc → default); the star and Actions columns
+ * are control columns and stay plain. */
+function LibraryTableHead({ sort, onSort }: { sort: SortState; onSort: (key: SortKey) => void }) {
   const th = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium'
+  const sortable = (key: SortKey, label: string, extra: string) => {
+    const active = sort?.key === key
+    return (
+      <th
+        className={`${th} ${extra}`}
+        aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+      >
+        <Btn
+          type="button"
+          onClick={() => onSort(key)}
+          className={`bg-transparent border-none p-0 gap-1 rounded-none text-[12px] font-medium uppercase tracking-[.04em] hover:bg-transparent active:scale-100 ${active ? 'text-text hover:text-text' : 'text-muted hover:text-text'}`}
+        >
+          {label}
+          {active && (sort.dir === 'asc'
+            ? <ChevronUp size={12} className="shrink-0" aria-hidden="true" />
+            : <ChevronDown size={12} className="shrink-0" aria-hidden="true" />)}
+        </Btn>
+      </th>
+    )
+  }
   return (
     <thead>
       <tr>
         <th className={`${th} w-[40px] text-center`} aria-label={i18nT('pages.artifactsPage.starred')}></th>
-        <th className={`${th} min-w-[160px]`}>{i18nT('pages.artifactsPage.name')}</th>
-        <th className={`${th} w-[180px]`}>{i18nT('pages.artifactsPage.slug')}</th>
-        <th className={`${th} w-[100px]`}>{i18nT('pages.artifactsPage.kind')}</th>
-        <th className={`${th} w-[110px]`}>{i18nT('pages.artifactsPage.source')}</th>
-        <th className={`${th} w-[60px]`}>{i18nT('pages.artifactsPage.ver')}</th>
-        <th className={`${th} min-w-[160px]`}>{i18nT('pages.artifactsPage.tags')}</th>
-        <th className={`${th} w-[110px]`}>{i18nT('pages.artifactsPage.updated')}</th>
+        {sortable('name', i18nT('pages.artifactsPage.name'), 'min-w-[160px]')}
+        {sortable('slug', i18nT('pages.artifactsPage.slug'), 'w-[180px]')}
+        {sortable('kind', i18nT('pages.artifactsPage.kind'), 'w-[100px]')}
+        {sortable('source', i18nT('pages.artifactsPage.source'), 'w-[110px]')}
+        {sortable('version', i18nT('pages.artifactsPage.ver'), 'w-[60px]')}
+        {sortable('tags', i18nT('pages.artifactsPage.tags'), 'min-w-[160px]')}
+        {sortable('updated', i18nT('pages.artifactsPage.updated'), 'w-[110px]')}
         <th className={`${th} w-[120px]`}>{i18nT('pages.artifactsPage.actions')}</th>
       </tr>
     </thead>
@@ -1167,6 +1287,8 @@ function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath }:
  * rendered while any filter is active, when folder scoping is bypassed). */
 function LibraryTable({
   items,
+  sort,
+  onSort,
   onOpen,
   onDelete,
   deletingSlug,
@@ -1177,6 +1299,8 @@ function LibraryTable({
   materializingPath = null,
 }: {
   items: Artifact[]
+  sort: SortState
+  onSort: (key: SortKey) => void
   onOpen: (slug: string) => void
   onDelete: (a: Artifact) => void
   deletingSlug: string | null
@@ -1189,7 +1313,7 @@ function LibraryTable({
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse table-striped">
-        <LibraryTableHead />
+        <LibraryTableHead sort={sort} onSort={onSort} />
         <tbody>
           {items.map((a) => (
             <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} onTogglePin={onTogglePin} pinningSlug={pinningSlug} />
@@ -1267,8 +1391,10 @@ function FolderRow({ folder, folders, depth, expanded, onToggle, actions, dropHi
 /** Nested, collapsible tree table (browse mode): folders in pre-order with
  * their artifacts indented beneath, Unfiled at the end. Collapsed by default —
  * expansion is client-local (localStorage), by design (§2.5). */
-function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
+function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggleExpand, folderActions, onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug, overFolderId, dragActive, sessionDocs = [], onMaterialize, materializingPath = null }: {
   items: Artifact[]
+  sort: SortState
+  onSort: (key: SortKey) => void
   folders: ArtifactFolder[]
   expandedIds: ReadonlySet<string>
   onToggleExpand: (id: string) => void
@@ -1340,7 +1466,7 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse table-striped">
-        <LibraryTableHead />
+        <LibraryTableHead sort={sort} onSort={onSort} />
         <tbody>
           {rows}
           {folders.length > 0 && (
@@ -1387,6 +1513,10 @@ function LibraryTree({ items, folders, expandedIds, onToggleExpand, folderAction
 
 export default function ArtifactsPage() {  const navigate = useNavigate()
   const qc = useQueryClient()
+  // Hides the AWS deploy console entry when the platform withholds cloud
+  // deployment — otherwise the option is visible and only explains itself after
+  // a click.
+  const cloudDeployEnabled = useCloudDeploymentEnabled()
   const [filter, setFilter] = useState('')
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
@@ -1398,6 +1528,18 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [view, setView] = useState<'grid' | 'table'>(
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
+  // Table column sort persists beside the view choice; null renders the
+  // server's order, and stale storage safely falls back to that default.
+  const [sort, setSort] = useState<SortState>(readPersistedSort)
+  const handleSort = useCallback((key: SortKey) => {
+    const next: SortState = sort?.key !== key
+      ? { key, dir: 'asc' }
+      : sort.dir === 'asc'
+        ? { key, dir: 'desc' }
+        : null
+    setSort(next)
+    safeSetItem(ARTIFACT_SORT_STORAGE_KEY, JSON.stringify(next))
+  }, [sort])
 
   // ── Folder browse scope ──────────────────────────────────────
   // The open folder rides the URL (?folder=<id>) so gallery navigation is
@@ -1758,6 +1900,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     )
   }, [artifacts, filter, pinnedOnly])
 
+  // Column-sorted rows for the table views. The tree view buckets by folder
+  // after sorting, so rows sort within each folder. The gallery has no
+  // columns, so it keeps the server's order.
+  const sortedVisible = useMemo(() => sortArtifacts(visible, sort), [visible, sort])
+
   // Browse-mode gallery scoping: no filters → only artifacts filed in the open
   // folder (a dangling folder_id degrades to unfiled). Any filter active →
   // flat matches across all folders (§2.6). The tree table buckets for itself.
@@ -1980,9 +2127,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               aria-label={i18nT('pages.artifactsPage.filter_by_tag')}
               onChange={setTagFilter}
             />
-            <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
-              <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
-            </Btn>
+            {cloudDeployEnabled && (
+              <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
+                <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
+              </Btn>
+            )}
             <div className="inline-flex items-center rounded-lg border border-border bg-bg-elevated p-0.5" role="group" aria-label={i18nT('pages.artifactsPage.filter_starred')}>
               <button
                 type="button"
@@ -2112,7 +2261,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               />
             ) : filtersActive ? (
               <LibraryTable
-                items={visible}
+                items={sortedVisible}
+                sort={sort}
+                onSort={handleSort}
                 onOpen={handleOpen}
                 onDelete={handleDelete}
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
@@ -2124,7 +2275,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               />
             ) : (
               <LibraryTree
-                items={visible}
+                items={sortedVisible}
+                sort={sort}
+                onSort={handleSort}
                 folders={folders}
                 expandedIds={expandedIds}
                 onToggleExpand={toggleExpanded}

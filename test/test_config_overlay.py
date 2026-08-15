@@ -301,7 +301,9 @@ class TestCliConfigSetLocal:
             config_action="set", key="agent.yolo", value="true", file=None, local=True
         )
 
-        with patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"):
+        with patch(
+            "kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"
+        ):
             with patch("kiro_crew.cli_config.sel"):
                 _config_cmd(args)
 
@@ -322,7 +324,9 @@ class TestCliConfigSetLocal:
             config_action="set", key="bogus.key", value="hello", file=None, local=True
         )
 
-        with patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"):
+        with patch(
+            "kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"
+        ):
             with patch("kiro_crew.cli_config.sel"):
                 _config_cmd(args)
 
@@ -353,7 +357,10 @@ class TestCliConfigSetLocal:
 
         with (
             patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
-            patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"),
+            patch(
+                "kiro_crew.cli_config.config_local_path",
+                return_value=config_dir / "config.local.json",
+            ),
             patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
             patch("kiro_crew.cli_config.sel"),
         ):
@@ -376,7 +383,9 @@ class TestCliConfigSetLocal:
             config_action="set", key="agent.yolo", value="true", file=None, local=True
         )
 
-        with patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"):
+        with patch(
+            "kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"
+        ):
             with patch("kiro_crew.cli_config.sel"):
                 _config_cmd(args)
 
@@ -396,7 +405,9 @@ class TestCliConfigSetLocal:
             config_action="set", key="agent.yolo", value="true", file=None, local=True
         )
 
-        with patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"):
+        with patch(
+            "kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"
+        ):
             with patch("kiro_crew.cli_config.sel"):
                 _config_cmd(args)
 
@@ -424,7 +435,10 @@ class TestCliConfigSetLocal:
 
         with (
             patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
-            patch("kiro_crew.cli_config.config_local_path", return_value=config_dir / "config.local.json"),
+            patch(
+                "kiro_crew.cli_config.config_local_path",
+                return_value=config_dir / "config.local.json",
+            ),
             patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
             patch("kiro_crew.cli_config.sel"),
         ):
@@ -432,3 +446,62 @@ class TestCliConfigSetLocal:
 
         saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
         assert saved["agent"]["dangerously_skip_permissions"] is True
+
+    def test_corrupt_base_prints_refusal(self, tmp_path: Path) -> None:
+        """config set key val on a corrupt base config.json prints a refusal and exits."""
+        import argparse
+
+        import pytest
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / "kiro"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text("not valid json {{")
+
+        args = argparse.Namespace(
+            config_action="set", key="agent.model", value="test-model", file=None, local=False
+        )
+
+        with (
+            patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
+            patch(
+                "kiro_crew.cli_config.config_local_path",
+                return_value=config_dir / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                _config_cmd(args)
+            assert exc_info.value.code == 1
+
+        # The corrupt file is NOT overwritten
+        assert (config_dir / "config.json").read_text() == "not valid json {{"
+
+    def test_config_set_file_replaces_corrupt_base(self, tmp_path: Path) -> None:
+        """config set --file replaces a corrupt config.json cleanly (on_corrupt=reset)."""
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / "kiro"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text("broken!!!")
+
+        good_file = tmp_path / "good.json"
+        good_file.write_text(json.dumps({"agent": {"model": "auto"}}))
+
+        args = argparse.Namespace(
+            config_action="set", key=None, value=None, file=str(good_file), local=False
+        )
+
+        with (
+            patch("kiro_crew.cli_config.config_path", return_value=config_dir / "config.json"),
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            _config_cmd(args)
+
+        saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert saved["agent"]["model"] == "auto"

@@ -41,6 +41,11 @@ Current status:
   the two channels do not share an uninstall registry key. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
+- **Integrated Windows chrome** — the preview desktop shell uses the
+  dashboard's 42px header as its titlebar. File/Edit/View/Connection/Window/Help
+  open the existing native Electron menus from the left of that row, the command
+  palette remains centered on the window, and native minimize/maximize/close
+  controls remain on the right.
 
 The source install below remains the fully supported path.
 
@@ -66,7 +71,34 @@ From a clone, in PowerShell:
 ```powershell
 git clone https://github.com/kirodotdev/KiroCrew.git
 cd kirocrew
+.\make.ps1 build
+```
 
+If that reports "running scripts is disabled on this system", Windows' default
+execution policy (`Restricted`) is blocking it. Either allow your own scripts
+once, or bypass the policy for a single run without changing any setting:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # persistent, no admin needed
+powershell -ExecutionPolicy Bypass -File .\make.ps1 build   # or: one run only
+```
+
+`make.ps1` is the Windows counterpart of the Makefile — same target names, same
+artifacts (`build`, `frontend`, `backend`, `test`, `wheel`, `backend-bin`,
+`desktop`, `clean`). It exists as a separate driver because `make` is not part of
+a Windows install and the Makefile's recipes are POSIX-shaped throughout;
+`test/test_build_target_parity.py` fails the build if the two target sets
+diverge. Unlike `ensure-python.sh` / `ensure-node.sh`, `make.ps1` itself installs
+no toolchain (their install paths are `curl … | sh`): it searches — the `py`
+launcher first, then `PATH`, skipping the Microsoft Store alias stub — and prints
+the `winget` command if nothing usable is found. The two desktop targets are the
+exception, because they hand off to `packaging/build-desktop.sh`, which does
+provision what it needs: a pinned `uv` and a python-build-standalone interpreter
+to embed in the app.
+
+The equivalent by hand, if you would rather not use the driver:
+
+```powershell
 # Build the frontend first (optional but recommended) so the dashboard is bundled:
 #   cd website; npm install; npm run build; cd ..
 #   Copy-Item -Recurse website\dist src\kiro_crew\static\dist
@@ -150,7 +182,7 @@ while the other 503s. Concretely:
 | Command cron jobs (`sh -c "…"`) | not supported on Windows — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. The job fails-closed with an explanation. Use a **script cron** or an LLM `message` cron on this platform |
 | Script hooks (Settings → Hooks) | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above (like script crons — the hook command routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists; without it the hook returns that message as its `error`). With the opt-in they run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
-| Browser automation (Playwright MCP) | works (installed via `npm`/`npx @playwright/mcp`) |
+| Browser automation (`playwright-cli`) | works (`npm install -g @playwright/cli@latest`, needs Node.js 20 or newer) |
 | Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present **and** the `agent.sandbox_allow_unsandboxed_exec` opt-in above is set — the `aws polly` spawn routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it synthesis returns no audio and the log names that setting |
@@ -279,5 +311,7 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 ## Related
 
 - [README](../../README.md) — quick-start Platforms note
+- [install](install.md) — the build-target table shared with macOS and Linux
 - [AGENTS.md](../../AGENTS.md) — the cross-platform shim table
 - `src/kiro_crew/platform_compat.py` — the cross-platform shim
+- `make.ps1` — the Windows build driver

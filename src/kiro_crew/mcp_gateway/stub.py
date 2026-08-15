@@ -299,6 +299,16 @@ def _binary_version(command: str) -> str:
         return "unknown"
 
 
+def binary_fingerprint(command: str) -> str:
+    """Public alias of :func:`_binary_version`.
+
+    The shareability cache keys on the same token the pool does, so an in-place
+    binary upgrade invalidates both. One implementation, two consumers — a second
+    copy would drift and let one of them keep a stale identity.
+    """
+    return _binary_version(command)
+
+
 def _resolve_channel_id(cli_value: Optional[str]) -> Optional[str]:
     """``--channel-id`` wins; else ``KIROCREW_CHANNEL_ID`` env; else None."""
     return cli_value or os.environ.get("KIROCREW_CHANNEL_ID") or None
@@ -344,8 +354,12 @@ def _build_caller_block(channel_id: Optional[str]) -> dict[str, str]:
     both ends of the wire in agreement. If the key is still unknown at register
     (claim hasn't happened yet), the recaller loop repairs it later."""
     session_key = CallerContext.from_env().session_key
+    # Diagnostic identity only — the OS user. USERNAME is the Windows spelling
+    # of USER; check both so this dimension is not empty on one platform.
+    # (A ``KIROCREW_PRINCIPAL`` override existed historically but nothing ever
+    # set it — Kiro Crew is single-operator, so it was deleted.)
     principal = (
-        os.environ.get("KIROCREW_PRINCIPAL") or os.environ.get("USER") or ""
+        os.environ.get("USER") or os.environ.get("USERNAME") or ""
     )
     if session_key.startswith("cron:"):
         session_type = "cron"
@@ -389,14 +403,6 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         work_dir = str(args.work_dir)
 
     caller = _build_caller_block(channel_id)
-    # USERNAME is the Windows spelling of USER; check both so this diagnostic
-    # dimension is not empty on one platform.
-    user_identity = (
-        caller["principal_id"]
-        or os.environ.get("USER", "")
-        or os.environ.get("USERNAME", "")
-        or "unknown"
-    )
 
     return {
         "type": "register",
@@ -426,7 +432,15 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # per-connection backend exist without making every key
         # connection-private.
         "poolable": bool(args.poolable),
-        "user_identity": user_identity,
+        # Wire-compat ballast, NOT a pool dimension: an adopted daemon that
+        # outlived a package upgrade (the manager adopts anything answering
+        # ``pong`` with no version handshake — see gatewayd's capability
+        # comment) still runs a ``PoolKey.from_register`` that hard-requires
+        # ``user_identity``. Omitting the key would make that daemon reject
+        # every new stub's register as malformed, silently un-pooling the
+        # whole install until the daemon restarts. A current daemon ignores
+        # the key. Safe to drop once no pre-#3604 daemon can be adopted.
+        "user_identity": caller["principal_id"] or "unknown",
         "channel_id": channel_id,
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
         "caller": caller,

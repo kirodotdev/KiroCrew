@@ -7,6 +7,7 @@ optional profile seeding.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from kiro_crew.providers.base import (
     LLMProvider,
 )
 from kiro_crew.sel import sel
+from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger(__name__)
 
@@ -282,9 +284,26 @@ class EvalRunner:
                 vector_store=vector_store,
             )
 
+            # Constructed on a running loop, where construction-time sync
+            # skips itself; eval runs standalone with no gateway to own the
+            # sync, so run the explicit seam in a worker thread (mirrors
+            # gateway startup). The loader targets a scenario-local skills
+            # dir: eval must never write quarantines into the user's real
+            # skills home, and a self-contained dir keeps scenarios
+            # reproducible across machines. A failed sync must not fail the
+            # scenario before it runs.
+            skills = SkillsLoader(skills_path=ws / "skills", install_builtins=False)
+            try:
+                await asyncio.to_thread(skills.sync_builtins)
+            except Exception:
+                logger.warning(
+                    "builtin-skill sync failed; continuing without synced "
+                    "builtins", exc_info=True,
+                )
             ctx_builder = ContextBuilder(
                 memory=memory,
                 lessons=lesson_store,
+                skills=skills,
                 conversation_log=conv_log,
             )
 

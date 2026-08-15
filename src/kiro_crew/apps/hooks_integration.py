@@ -11,6 +11,7 @@ lifecycle points. An app that declares no hooks is a no-op.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -293,7 +294,9 @@ async def on_gateway_startup(
     if not _lifecycle_dispatcher:
         return
 
-    enabled = [a for a in list_apps() if a.get("enabled")]
+    # list_apps() walks the apps dir (two file reads per app) — off the loop.
+    installed = await asyncio.to_thread(list_apps)
+    enabled = [a for a in installed if a.get("enabled")]
     if not enabled:
         return
 
@@ -377,7 +380,9 @@ async def on_gateway_shutdown() -> None:
     if not _lifecycle_dispatcher:
         return
 
-    enabled = [a for a in list_apps() if a.get("enabled")]
+    # list_apps() walks the apps dir (two file reads per app) — off the loop.
+    installed = await asyncio.to_thread(list_apps)
+    enabled = [a for a in installed if a.get("enabled")]
     apps_with_hooks = [
         a
         for a in enabled

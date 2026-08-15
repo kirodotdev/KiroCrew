@@ -126,11 +126,11 @@ class TestApiServerSpawn:
         """
         order: list[str] = []
         warm = AsyncMock(side_effect=lambda _d: order.append("warm"))
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         # The warm only ever touches an ALLOWLISTED cwd; stand in for a config
         # whose allowed_roots admit tmp_path.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging.validate_cwd",
+            "kiro_crew.spawn_warm.validate_cwd",
             lambda cwd, roots: (cwd, ""),
         )
         mock_mgr = MagicMock()
@@ -159,9 +159,9 @@ class TestApiServerSpawn:
         path spawn() itself was about to refuse.
         """
         warm = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging.validate_cwd",
+            "kiro_crew.spawn_warm.validate_cwd",
             lambda cwd, roots: ("", "cwd not under an allowed root"),
         )
         mock_mgr = MagicMock()
@@ -186,9 +186,9 @@ class TestApiServerSpawn:
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
 
         warm = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.messaging.validate_cwd",
+            "kiro_crew.spawn_warm.validate_cwd",
             lambda cwd, roots: ("", "root no longer allowed"),
         )
         old = MagicMock(
@@ -213,7 +213,7 @@ class TestApiServerSpawn:
     async def test_spawn_without_agent_skips_the_warm(self, tmp_path, monkeypatch):
         """No agent name -> nothing to validate -> no warm round-trip added."""
         warm = AsyncMock()
-        monkeypatch.setattr("kiro_crew.dashboard.handlers.messaging.warm_project_agent_names", warm)
+        monkeypatch.setattr("kiro_crew.spawn_warm.warm_project_agent_names", warm)
         mock_mgr = MagicMock()
         mock_mgr.spawn.return_value = MagicMock(id="test-790", done=False, error="")
         state = _make_state(tmp_path, subagents=mock_mgr)
@@ -303,6 +303,51 @@ class TestApiServerNoUiRoutes:
 
 class TestStartApiServerWiring:
     """Integration test: start_api_server installs middleware and hook store."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_headless_state_carries_the_conversation_log(self, tmp_path, monkeypatch):
+        """Headless mode still runs Slack turns, so it needs the transcript.
+
+        Anything that judges how far a conversation has got reads it through
+        ``state.conversation_log``. Leaving it unset here left those readers on
+        their can't-tell branch, so an OPTIONS control posted under
+        ``--slack-only`` carried no position and every click on it was honoured
+        however stale -- the validation was inert for the whole mode.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.server as _srv
+        import kiro_crew.dashboard.state as _st
+        import kiro_crew.kiro_prerequisite as _prerequisite
+
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        service = MagicMock()
+        service.close = AsyncMock()
+        monkeypatch.setattr(
+            _prerequisite, "KiroPrerequisiteService", MagicMock(return_value=service)
+        )
+
+        from kiro_crew.dashboard.server import start_api_server
+
+        _log = MagicMock(name="conversation_log")
+        runner, state = await start_api_server(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+            assume_kiro_ready=True,
+            conversation_log=_log,
+        )
+        try:
+            assert state.conversation_log is _log
+        finally:
+            await runner.cleanup()
 
     @pytest.mark.asyncio
     async def test_server_has_audit_middleware_and_hook_store(self, tmp_path, monkeypatch):

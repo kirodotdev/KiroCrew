@@ -502,7 +502,7 @@ export default function SchedulePage() {
             />
           }
         />
-        <div className={`flex-1 overflow-y-auto px-6 min-h-0 ${showEmptyState ? 'pb-2' : 'pb-8'}`}>
+        <div className={`flex-1 overflow-y-auto px-3 sm:px-6 min-h-0 ${showEmptyState ? 'pb-2' : 'pb-8'}`}>
           {loadError ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <p className="text-danger text-sm mb-3">{loadError}</p>
@@ -511,7 +511,7 @@ export default function SchedulePage() {
           ) : loading ? (
             <div className="flex items-center justify-center py-20"><Skeleton className="h-6 w-32 rounded" /></div>
           ) : jobs.length === 0 && !creating ? (
-            <div className="flex flex-col h-full min-h-0">
+            <div className="flex flex-col sm:h-full min-h-0">
               {cronFolders.length > 0 && (
                 <div className="mb-4">
                   {cronFolders.map(f => (
@@ -525,7 +525,7 @@ export default function SchedulePage() {
                   ))}
                 </div>
               )}
-              <div className="flex-1 flex flex-col items-center justify-center text-center min-h-0 py-8">
+              <div className="sm:flex-1 flex flex-col items-center sm:justify-center text-center min-h-0 py-4 sm:py-8">
                 <CalendarClock className="w-16 h-16 text-muted/20 mb-4" strokeWidth={1} aria-hidden="true" />
                 <div className="text-muted text-sm font-medium">{i18nT('pages.schedulePage.no_scheduled_jobs_yet')}</div>
                 <p className="text-sm text-muted max-w-[360px] mb-5 mt-2">{i18nT('pages.schedulePage.schedule_recurring_tasks_to_run_automatically_ch')}</p>
@@ -542,8 +542,8 @@ export default function SchedulePage() {
                   create flow pre-filled. Only FEATURED presets surface here so
                   the empty state stays compact as the full catalog grows — the
                   rest live in the "Browse all templates" gallery. */}
-              <div className="w-full shrink-0 pt-6">
-                <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="w-full shrink-0 pt-4 sm:pt-6">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <div className="text-left text-[12px] font-medium uppercase tracking-[.04em] text-muted">{i18nT('pages.schedulePage.start_from_a_pre_made_schedule')}</div>
                   <Btn onClick={() => setGalleryOpen(true)}>
                     <span className="flex items-center gap-1.5"><LayoutGrid size={14} aria-hidden="true" /> {i18nT('pages.schedulePage.browse_all_templates')}</span>
@@ -580,7 +580,7 @@ export default function SchedulePage() {
               is nothing to filter or select in the other two. */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {jobsView === 'list' && (<>
-              <div className="flex-1 min-w-[200px]"><SearchInput placeholder={i18nT('pages.schedulePage.filter_jobs')} value={cronFilter} onChange={e => setCronFilter(e.target.value)} /></div>
+              <div className="flex-1 min-w-[140px] sm:min-w-[200px]"><SearchInput placeholder={i18nT('pages.schedulePage.filter_jobs')} value={cronFilter} onChange={e => setCronFilter(e.target.value)} /></div>
               {selectedIds.size > 0 && (
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[13px] text-muted whitespace-nowrap">{selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
@@ -645,7 +645,7 @@ export default function SchedulePage() {
                 CardTitle: the page header already names this surface, and the
                 view switcher next to it says which of the three views is on —
                 a "Jobs" heading between them would restate both. */}
-            <Card className="p-3 mb-0">
+            <Card className="p-3 mb-0 overflow-x-auto">
             {actionError?.id === 'batch-move' && (
               <div className="px-3 py-1.5 mb-2 rounded-md bg-danger/5 border border-danger/20">
                 <span className="text-danger text-[12px]">{actionError.msg}</span>
@@ -658,7 +658,7 @@ export default function SchedulePage() {
                 once cells stopped wrapping. Fixed layout makes horizontal
                 overflow structurally impossible: over-long values truncate with
                 a tooltip instead of pushing their neighbours. */}
-            <Table className="table-fixed">
+            <Table className="table-fixed min-w-[900px]">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">

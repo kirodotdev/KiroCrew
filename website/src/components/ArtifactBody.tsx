@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import DOMPurify from 'dompurify'
+import { Download, Image as ImageIcon, ImageOff } from 'lucide-react'
 import hljs from '../utils/hljs'
 import { useTheme } from '../hooks/useTheme'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
@@ -34,6 +35,10 @@ export function fileTypeForKind(kind: Artifact['kind']): FileType {
     case 'json':     return 'json'
     case 'svg':      return 'svg'
     case 'text':     return 'code'
+    // image is served as raw bytes from its asset URL, not rendered from
+    // content — it never flows through ContentRenderer, but map it explicitly
+    // so a stray call can't misroute image bytes into the markdown path.
+    case 'image':    return 'image'
     // widget / html shouldn't reach here, but fall back to markdown rather
     // than throwing — keeps the page survivable for unexpected enum values.
     default:         return 'markdown'
@@ -218,6 +223,82 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
       ) : (
         <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>
       )}
+    </div>
+  )
+})
+
+/** The URL the image bytes stream from. The server sets Content-Type, so the
+ * browser renders it directly in an <img> / downloads it via an anchor — the
+ * artifact JSON never carries base64. Slugs are already URL-safe, but encode
+ * defensively so an unexpected character can't break the path. */
+export function artifactAssetUrl(slug: string): string {
+  return `/api/artifacts/${encodeURIComponent(slug)}/asset`
+}
+
+/** Renders an image artifact: the picture itself streamed from the asset URL,
+ * plus a Download control pointing at the same URL. No Monaco, no iframe —
+ * image is not an editable text kind, so it never reaches ArtifactBodyNative /
+ * ArtifactBodyIframe. Reads the optional `image` metadata defensively: `alt`
+ * drives the accessible description (falling back to the artifact name), and
+ * `width`/`height` set the intrinsic aspect ratio so the layout doesn't jump
+ * before the bytes arrive. Download names the file from `original_filename`,
+ * or a slug + extension when that is absent. */
+export const ArtifactBodyImage = memo(function ArtifactBodyImage({
+  artifact, slug, heightStyle,
+}: {
+  artifact: Artifact
+  slug: string
+  /** Override the body height/min-height (side-panel fit), mirroring the other
+   *  bodies. Falls back to the full-page reading height. */
+  heightStyle?: React.CSSProperties
+}) {
+  const url = artifactAssetUrl(slug)
+  const alt = artifact.image?.alt || artifact.name
+  const downloadName =
+    artifact.image?.original_filename || `${slug}.${artifact.image?.ext || 'png'}`
+  // The asset endpoint can legitimately fail (missing sidecar, unreadable file,
+  // a mime the read path refuses). Without this the user gets the browser's
+  // broken-image glyph and no explanation on an otherwise healthy page.
+  const [failed, setFailed] = useState(false)
+  return (
+    <div
+      className="rounded-xl border border-border bg-card overflow-hidden flex flex-col"
+      style={heightStyle ?? { minHeight: 480, height: 'calc(100vh - 240px)' }}
+    >
+      <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto p-4">
+        {failed ? (
+          <div className="flex flex-col items-center gap-2 text-center">
+            <ImageOff size={24} className="text-muted" aria-hidden="true" />
+            <span className="text-sm text-muted">
+              {i18nT('components.artifactBody.image_could_not_be_loaded')}
+            </span>
+          </div>
+        ) : (
+          <img
+            src={url}
+            alt={alt}
+            width={artifact.image?.width}
+            height={artifact.image?.height}
+            loading="lazy"
+            className="max-w-full max-h-full object-contain"
+            draggable={false}
+            onError={() => setFailed(true)}
+          />
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 text-sm text-muted">
+        <span className="flex items-center gap-1.5 min-w-0">
+          <ImageIcon size={14} className="shrink-0" />
+          <span className="truncate">{downloadName}</span>
+        </span>
+        <a
+          href={url}
+          download={downloadName}
+          className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-text hover:border-border-strong transition-colors shrink-0"
+        >
+          <Download size={14} /> {i18nT('pages.artifactDetailPage.download')}
+        </a>
+      </div>
     </div>
   )
 })

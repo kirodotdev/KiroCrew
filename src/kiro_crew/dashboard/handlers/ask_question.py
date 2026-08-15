@@ -201,16 +201,26 @@ async def api_ask_question(request: web.Request) -> web.Response:
 
 
 async def api_ask_question_pending(request: web.Request) -> web.Response:
-    """GET /api/ask-question/pending — list question cards still awaiting an answer.
+    """GET /api/ask-question/pending — question cards still awaiting an answer.
 
-    The ``question_card`` websocket event is a one-shot broadcast, so a client
-    that reloads or reconnects after it fired has no card on screen while the
-    agent is still blocked — the question is invisible until the wait elapses.
-    This is the rehydration source, mirroring ``GET /api/approvals`` for tool
-    approvals (the frontend re-syncs both on websocket open).
+    ``question_card`` is a one-shot broadcast, so a client that reloads or
+    reconnects after it fired has no card on screen while the agent is still
+    waiting — the question is invisible. This is the rehydration source,
+    mirroring ``GET /api/approvals`` for tool approvals (the frontend re-syncs
+    both on websocket open).
 
-    Owner-only on the same grounds as the other two endpoints: the payload is
-    the question text addressed to the owner.
+    Both kinds are listed, distinguished by which identity they carry:
+
+    * a BLOCKING ask carries ``ask_id`` — its payload lives in
+      ``_pending_questions`` for as long as the parked wait does;
+    * a STATELESS card carries ``card_id`` — its redacted payload is kept on the
+      slot's needs-input record. Without it a reloaded tab would show the
+      session's "needs your answer" status with no card to answer, and no way to
+      dismiss it (the client no longer knows the ``card_id``) — a stuck state
+      that only sending a message could clear.
+
+    Owner-only on the same grounds as the other endpoints: the payload is the
+    question text addressed to the owner.
     """
     state: DashboardState = request.app["state"]
     deny = _deny_app_token(request, "ask_question_pending")
@@ -219,17 +229,93 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
     deny = _deny_non_owner(request, "ask_question_pending")
     if deny is not None:
         return deny
-    return web.json_response(
-        [
+    out: list[dict] = [
+        {
+            "ask_id": ask_id,
+            "slot": p.get("slot", ""),
+            "questions": p.get("questions", []),
+            "ts": p.get("ts", 0),
+        }
+        for ask_id, p in state._pending_questions.items()
+    ]
+    for slot_key, slot in list((getattr(state, "_slots", None) or {}).items()):
+        for card_id, rec in list((getattr(slot, "_question_pending", None) or {}).items()):
+            # Blocking entries are already listed above, from the authoritative
+            # wait registry; a record with no stored questions predates nothing
+            # renderable, so it is a status-only marker and is skipped rather
+            # than emitted as an empty card.
+            if rec.get("blocking") or not rec.get("questions"):
+                continue
+            out.append(
+                {
+                    "card_id": card_id,
+                    "slot": slot_key,
+                    "questions": rec.get("questions", []),
+                    "ts": rec.get("ts", 0),
+                }
+            )
+    return web.json_response(out)
+
+
+async def api_ask_question_dismiss(request: web.Request) -> web.Response:
+    """POST /api/ask-question/dismiss — retire a stateless card's status.
+
+    Body: ``{slot, card_id}`` — the slot key and the card identity the
+    ``question_card`` payload carries. Deliberately not a session key: a
+    channel-born conversation's session key and its slot key differ, and the
+    client holds only the slot. ``card_id`` is required because a dismissal is a
+    round-trip: the card can be replaced by a newer ask before the request lands,
+    and a slot-only clear would retire the NEW card's status, leaving it
+    unanswered with nothing to say so.
+
+    A stateless card (no ``ask_id``) blocks nothing, so dismissing it was purely
+    a client-side removal — and the slot's ``needs_input`` status, which the
+    sidebar and the sessions board read, would go on claiming the agent is
+    waiting on an answer until the next message landed. This is the dismiss half
+    of that record; the answer half retires through the ordinary user message the
+    card's submit sends.
+
+    Owner-only on the same grounds as the other endpoints: it mutates the
+    owner's own session status.
+    """
+    state: DashboardState = request.app["state"]
+    deny = _deny_app_token(request, "ask_question_dismiss")
+    if deny is not None:
+        return deny
+    deny = _deny_non_owner(request, "ask_question_dismiss")
+    if deny is not None:
+        return deny
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+    slot_key = str(body.get("slot") or "")
+    if not slot_key:
+        return web.json_response({"error": "slot is required", "code": "missing_slot"}, status=400)
+    card_id = str(body.get("card_id") or "")
+    if not card_id:
+        return web.json_response(
+            {"error": "card_id is required", "code": "missing_card_id"}, status=400
+        )
+    # Only the stateless record is dismissible here. A blocking ask owns its own
+    # lifecycle through the answer endpoint, and clearing its status from this
+    # route would report a session as unblocked while its tool call is still
+    # parked on the wait. A stale card_id, an unknown slot and an already-retired
+    # record all land here too: from this route's point of view they are one
+    # answer — there is nothing of yours left to dismiss.
+    if not state.clear_question_pending(slot_key, blocking=False, card_id=card_id):
+        return web.json_response(
             {
-                "ask_id": ask_id,
-                "slot": p.get("slot", ""),
-                "questions": p.get("questions", []),
-                "ts": p.get("ts", 0),
-            }
-            for ask_id, p in state._pending_questions.items()
-        ]
-    )
+                "error": "no pending question card for that slot and card_id",
+                "code": "question_card_not_found",
+            },
+            status=404,
+        )
+    return web.json_response({"ok": True})
 
 
 async def api_ask_question_answer(request: web.Request) -> web.Response:

@@ -45,7 +45,7 @@ describe('parseRecoveryMessage', () => {
     expect(p?.title).toBe('Tool call blocked')
     // The attempt is hedged in the detail line; the title never claims success.
     expect(p?.title).not.toMatch(/recover/i)
-    expect(p?.detail).toBe('safety policy · continuing automatically')
+    expect(p?.detail).toBe('safety policy blocked the call · continuation sent automatically')
   })
 
   it('surfaces the single deny pattern as the chip', () => {
@@ -108,7 +108,7 @@ describe('parseRecoveryMessage', () => {
     )
     expect(connection?.kind).toBe('connection')
     expect(connection?.title).toBe('Turn interrupted')
-    expect(connection?.detail).toBe('backend error · continuing automatically')
+    expect(connection?.detail).toBe('backend error · continuation sent automatically')
     expect(connection?.chip).toBe('')
   })
 
@@ -122,7 +122,7 @@ describe('parseRecoveryMessage', () => {
     )
     expect(busy?.kind).toBe('busy')
     expect(busy?.title).toBe('Turn interrupted')
-    expect(busy?.detail).toBe('session busy · continuing automatically')
+    expect(busy?.detail).toBe('session busy · continuation sent automatically')
     expect(busy?.detail).not.toContain('backend error')
     expect(busy?.chip).toBe('')
     expect(busy?.body).toContain('still busy')
@@ -137,7 +137,7 @@ describe('parseRecoveryMessage', () => {
     )
     expect(interrupted?.kind).toBe('posttoken')
     expect(interrupted?.title).toBe('Turn interrupted')
-    expect(interrupted?.detail).toBe('backend error · continuing automatically')
+    expect(interrupted?.detail).toBe('backend error · continuation sent automatically')
     expect(interrupted?.chip).toBe('')
     expect(interrupted?.body.startsWith('[')).toBe(false)
 
@@ -146,7 +146,7 @@ describe('parseRecoveryMessage', () => {
     )
     expect(empty?.kind).toBe('empty')
     expect(empty?.title).toBe('No response returned')
-    expect(empty?.detail).toBe('empty output · continuing automatically')
+    expect(empty?.detail).toBe('agent returned no output · continuation sent automatically')
   })
 })
 
@@ -159,7 +159,7 @@ describe('RecoveryCard', () => {
     render(<RecoveryCard parsed={parsed} />)
     expect(screen.getByTestId('recovery-card')).toHaveAttribute('data-kind', 'refusal')
     expect(screen.getByText('Tool call blocked')).toBeInTheDocument()
-    expect(screen.getByText('safety policy · continuing automatically')).toBeInTheDocument()
+    expect(screen.getByText('safety policy blocked the call · continuation sent automatically')).toBeInTheDocument()
     expect(screen.getByTestId('recovery-card-chip')).toHaveTextContent('.*env.*grep.*AWS.*')
     // The machine-facing prose is folded away until asked for.
     expect(screen.queryByTestId('recovery-card-body')).toBeNull()

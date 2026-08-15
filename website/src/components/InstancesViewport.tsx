@@ -36,11 +36,12 @@ import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import { useAppDispatch, useAppSelector } from '../store'
 import { removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
-import InstanceTabBar, { visibleInstanceTabs } from './InstanceTabBar'
+import InstanceTabBar, { visibleInstanceTabs, useCrewSwitcherExpanded, setCrewSwitcherExpanded } from './InstanceTabBar'
 import { resolveTunnelOrigin } from '../lib/tunnelOrigin'
-import { TRAFFIC_LIGHT_INSET_PX } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
-import { isElectron } from '../lib/electron'
+import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
+import type { DragGap } from '../lib/dragGaps'
 
 import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -77,6 +78,16 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Panes whose embedded SPA has announced readiness for their CURRENT src.
   // Tests preload partial slices, so tolerate a missing map.
   const ready = useAppSelector(s => s.instances.ready) ?? {}
+  // The crew-switcher pin preference, relayed into every embedded pane so a
+  // remote pane's bar matches the local bar. Reactive: a change re-broadcasts
+  // the model (see buildModelFor deps + the broadcast effect) so all panes flip
+  // together, and the embedded pin toggle routes back here via `mc-set-expanded`.
+  const [expanded] = useCrewSwitcherExpanded()
+
+  // Per-instance header drag gaps relayed up by each embedded pane
+  // (mc-drag-gaps). Only the ACTIVE pane's gaps are rendered, but they are
+  // keyed by id so a background pane's report is retained for an instant switch.
+  const [dragGaps, setDragGaps] = useState<Record<string, DragGap[]>>({})
 
   // Embedded instance panes never host nested panes (single-level by design),
   // so skip the poll and render nothing — see isEmbeddedPane / InstanceTabBar.
@@ -158,6 +169,20 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     portToIdRef.current = m
   }, [warm])
 
+  // Drop relayed drag gaps for panes that are no longer warm, so the map cannot
+  // grow without bound and a re-warmed pane starts from its own fresh report.
+  useEffect(() => {
+    setDragGaps(prev => {
+      const next: Record<string, DragGap[]> = {}
+      let changed = false
+      for (const id of Object.keys(prev)) {
+        if (warm[id]) next[id] = prev[id]
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [warm])
+
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       const id = resolveTunnelOrigin(e.origin, portToIdRef.current)
@@ -188,6 +213,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         ) {
           dispatch(setActiveId(target))
         }
+      } else if (data.type === 'mc-set-expanded') {
+        // The embedded pane's pin was toggled. It has no access to the parent's
+        // preference store from its own iframe realm, so it relays the new value
+        // here; applying it broadcasts to every bar (local header + all panes)
+        // via the module store, keeping the pin one shared value everywhere.
+        const next = (data as { expanded?: unknown }).expanded
+        if (typeof next === 'boolean') setCrewSwitcherExpanded(next)
       } else if (data.type === 'mc-embedded-ready') {
         // The pane just (re)mounted and asked for the current model — send it now
         // rather than waiting for the next input-driven broadcast. Also record
@@ -195,6 +227,24 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // (drives the loading overlay + load watchdog below).
         dispatch(setPaneReady(id))
         postModelToRef.current(id)
+      } else if (data.type === 'mc-drag-gaps') {
+        // The embedded pane relays the control-free spans of its header so the
+        // host can re-add `-webkit-app-region: drag` there (the blanket marks
+        // the whole iframe no-drag). Sanitize: finite, positive-width spans
+        // only, capped so a malformed/hostile pane can't flood the render.
+        const raw = Array.isArray((data as { gaps?: unknown }).gaps)
+          ? ((data as { gaps: unknown[] }).gaps)
+          : []
+        const gaps: DragGap[] = []
+        for (const g of raw) {
+          if (!g || typeof g !== 'object') continue
+          const x = Number((g as { x?: unknown }).x)
+          const w = Number((g as { w?: unknown }).w)
+          if (!Number.isFinite(x) || !Number.isFinite(w) || x < 0 || w <= 0) continue
+          gaps.push({ x, w })
+          if (gaps.length >= 32) break
+        }
+        setDragGaps(prev => ({ ...prev, [id]: gaps }))
       }
     }
     window.addEventListener('message', onMessage)
@@ -337,9 +387,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
             ttlTotal: ttlToSeconds(selfInst.ttl),
           }
         : null
-      return { type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, electron: isElectron }
+      return { type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, electron: isElectron, expanded }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset],
+    [instancesQuery.data, warm, unread, activeId, macInset, expanded],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -366,7 +416,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, instancesQuery.data, postModelTo])
+  }, [warm, activeId, unread, macInset, instancesQuery.data, postModelTo, expanded])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
@@ -432,6 +482,31 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           style={{ display: id === activeId ? 'block' : 'none' }}
         />
       ))}
+      {/* Draggable title-bar strips for the active remote pane. Rendered AFTER
+          the iframe so they follow it in DOM order — Electron collects
+          draggable regions in document order, so a `drag` strip here re-adds
+          drag over the gap that the blanket `iframe` no-drag rule subtracted.
+          Only while the pane's own header is actually on screen (not the
+          loading/error overlays, which carry their own interactive tab strip).
+          Each strip sits in a control-free gap the pane measured, so it never
+          swallows a header button's clicks. */}
+      {isElectron && activeId && !showPanel && !showLoading && !!warm[activeId] && activeReady &&
+        (dragGaps[activeId] ?? []).map((g, i) => {
+          // Stay clear of the caption controls at the right edge: Windows'
+          // native titleBarOverlay buttons, or frameless Linux's injected
+          // cluster (#electron-linux-controls). The pane can't know the host
+          // platform, so clip here — otherwise a drag strip overlays Close and
+          // a click there drags the window instead.
+          const rightBound = isWinElectron
+            ? Math.max(0, window.innerWidth - WIN_CAPTION_OVERLAY_WIDTH)
+            : isLinuxFramelessElectron
+              ? Math.max(0, window.innerWidth - LINUX_CAPTION_CONTROLS_WIDTH)
+              : Number.POSITIVE_INFINITY
+          const left = g.x
+          const width = Math.min(g.x + g.w, rightBound) - left
+          if (width < 1) return null
+          return <div key={`drag-${i}`} aria-hidden className="host-drag-strip" style={{ left, width }} />
+        })}
       {showLoading && activeId && (
         <div className="absolute inset-0 flex flex-col bg-bg">
           {/* Same escape hatch as the error panel: while this overlay is up the

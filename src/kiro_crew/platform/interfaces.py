@@ -658,6 +658,55 @@ class CapabilityManager(Protocol):
 # ── install / structural extension points ──
 
 
+class ExternalAccessPolicy(Protocol):
+    """Which external services this deployment may reach, beyond the deny floor.
+
+    The core offers three things unconditionally that a managed deployment may
+    have to withhold, and none of them had a composition point:
+
+    * **Installable-content registries.** Skill discovery (``skill_providers/``,
+      skills.sh) and MCP server discovery (``mcp_providers/``, the official MCP
+      registry) fetch from the public internet and then offer to INSTALL what
+      they return. Both hardcoded their public provider at registration time.
+    * **Cloud deployment.** ``kiro_crew/deploy/`` provisions real infrastructure
+      (S3, CloudFront, IAM roles, a reaper Lambda) in the operator's own cloud
+      account and hands back a public URL. It carries no capability gate at all,
+      so ``capabilities.publish`` — which bounds publish-provider destinations —
+      does not reach it.
+
+    One policy object rather than three, because they answer the same question
+    ("may this deployment use an external service the core offers by default?")
+    and because a single object gives ONE audited admission chokepoint and one
+    thing for an operator to implement, instead of a decision that is logged in
+    some places and not others.
+
+    Both decisions take the concrete target as well as a label. A name is
+    something a provider chooses for itself; the URL or target is what determines
+    where bytes go. An allowlist pinned to the target stops admitting a provider
+    that later repoints at a different host, rather than letting it inherit trust
+    from its name.
+
+    The public default admits everything, so open-source behaviour is unchanged.
+    """
+
+    def admits_registry(self, kind: str, name: str, api_base: str) -> bool:
+        """Whether the *kind* registry *name* serving ``api_base`` may be queried.
+
+        *kind* is the catalog the provider belongs to — ``"skill"`` or ``"mcp"``.
+        Returning ``False`` means the provider is never registered.
+        """
+        ...
+
+    def admits_cloud_deployment(self, target: str) -> bool:
+        """Whether this deployment may provision infrastructure in a cloud account.
+
+        *target* names the deployment backend (``"aws"`` today). Returning
+        ``False`` makes the deploy surface report itself disabled and refuse every
+        mutating request.
+        """
+        ...
+
+
 class AppRegistryPolicy(Protocol):
     """Trusted git hosts + clone-sandbox-mode decision for the app registry.
 

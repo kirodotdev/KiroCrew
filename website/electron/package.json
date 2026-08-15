@@ -73,6 +73,8 @@
     "files": [
       "main.js",
       "app-menu.js",
+      "windows-menu-model.js",
+      "windows-titlebar.js",
       "badge.js",
       "native-theme.js",
       "zoom.js",
@@ -89,7 +91,10 @@
       "sandbox-profile.js",
       "home-dir.js",
       "local-token.js",
+      "local-gateway.js",
       "window-state.js",
+      "linux-frame.js",
+      "global-hotkey.js",
       "gateway-liveness.js",
       "gateway-recovery.js",
       "pyspy-dump.js",
@@ -130,7 +135,9 @@
       "loading.html",
       "token-prompt.html",
       "icon.png",
-      "icon-nightly.png"
+      "icon-nightly.png",
+      "trayTemplate.png",
+      "trayTemplate@2x.png"
     ],
     "extraResources": [
       {

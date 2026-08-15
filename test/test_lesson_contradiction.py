@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import zlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,18 @@ from kiro_crew.vector_memory import (
     _lesson_slug,
     _split_stored,
 )
+
+
+def _discriminating_embed(text: str) -> list[float]:
+    """A one-hot embedding that differs per text, deterministically.
+
+    `hash()` is randomized per process, so on roughly 1 in 384 interpreter starts
+    two distinct strings land on the same slot, embed identically, and semantic
+    dedup deletes a row for reasons that have nothing to do with the matcher under
+    test. `adler32` is stable across processes, so the discrimination these tests
+    depend on is a property of the fixture rather than of the hash seed.
+    """
+    return [1.0 if i == zlib.adler32(text.encode()) % 384 else 0.0 for i in range(384)]
 
 
 class _FakeBgSession:
@@ -110,6 +123,57 @@ class TestFindContradictionCandidates:
             assert store.write_lesson(word)
         result = store.find_contradiction_candidates(query_text)
         assert len(result) == 5
+
+    def test_mismatched_dimension_row_is_never_a_candidate(self, tmp_path):
+        """Regression for #3466: a row embedded at a different dimensionality
+        (e.g. a leftover from a previous embedding-model generation) must score
+        0.0 -- not a plausible-looking partial-overlap value computed by
+        truncating against the shorter vector -- so it can never land inside
+        the contradiction band."""
+        import struct
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = _discriminating_embed
+        assert store.write_lesson("Use chronological order for release notes")
+        rows = store.db.execute("SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'").fetchall()
+        assert len(rows) == 1
+        key = rows[0]["key"]
+        # Overwrite the stored 384-float embedding with a 128-float one, as a
+        # row from an older embedding-model generation would carry.
+        stale_blob = struct.pack("128f", *([0.5] * 128))
+        store.db.execute(
+            "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (stale_blob, key)
+        )
+        store.db.commit()
+        result = store.find_contradiction_candidates("Use chronological order for release notes")
+        assert result == []
+
+    def test_dedup_never_matches_a_mismatched_dimension_row(self, tmp_path):
+        """The semantic-dedup path (write_lesson) shares the same guard: a
+        stale-dimension row must not be treated as a near-duplicate of a new
+        rule just because a truncated dot product happens to clear 0.85."""
+        import struct
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        store.embed_fn = _discriminating_embed
+        assert store.write_lesson("Always quote shell arguments in scripts")
+        rows = store.db.execute("SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'").fetchall()
+        key = rows[0]["key"]
+        stale_blob = struct.pack("128f", *([0.5] * 128))
+        store.db.execute(
+            "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (stale_blob, key)
+        )
+        store.db.commit()
+        # A genuinely different, word-disjoint rule must still be accepted as
+        # its own lesson rather than being silently dropped as a "duplicate"
+        # of the dimension-mismatched row.
+        assert store.write_lesson("Never hardcode credentials in config files")
+        remaining = store.db.execute(
+            "SELECT key FROM semantic_memory WHERE key LIKE 'lesson.%'"
+        ).fetchall()
+        assert len(remaining) == 2
 
 
 @pytest.mark.asyncio
@@ -718,7 +782,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
         would pass or fail without telling us anything about lower() vs casefold()."""
         store = self._store(tmp_path)
         try:
-            store.embed_fn = lambda t: [1.0 if i == hash(t) % 384 else 0.0 for i in range(384)]
+            store.embed_fn = _discriminating_embed
             assert store.write_lesson("Ma\u00dfe", "tool") is True
             store.write_lesson("Masse", "tool", "Do not confuse with volume")
 
@@ -737,7 +801,7 @@ class TestWriteLessonAttachesNegativeToStoredRule:
         Discriminating embed_fn for the same reason as the test above."""
         store = self._store(tmp_path)
         try:
-            store.embed_fn = lambda t: [1.0 if i == hash(t) % 384 else 0.0 for i in range(384)]
+            store.embed_fn = _discriminating_embed
             assert store.write_lesson("Stra\u00dfe", "tool") is True
             store.write_lesson("STRASSE", "tool", "Do not misspell")
 

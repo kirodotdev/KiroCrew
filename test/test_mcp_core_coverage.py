@@ -31,6 +31,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew import mcp_core
+from kiro_crew.history import INCOGNITO_MEMORY_MODES
 from kiro_crew.mcp_core import (
     _call_tool,
     _casefold_match_span,
@@ -148,23 +149,6 @@ class TestSearchSnapshot:
     def test_max_results_caps_output(self):
         out = _search_snapshot("\n".join(["hit"] * 10), "hit", max_results=3)
         assert "Found 3 matches" in out
-
-
-class TestBrowseTools:
-    def test_browse_outline_tool_returns_compressed_outline(self):
-        result = _call_tool(
-            "browse_outline", {"snapshot": '- button "Go" [ref=e1]', "max_lines": 10}
-        )
-        assert "Page outline (1 elements)" in result
-        assert "[ref=e1]" in result
-
-    def test_browse_search_tool_returns_matches(self):
-        result = _call_tool("browse_search", {"snapshot": "alpha\nbeta", "query": "beta"})
-        assert "Found 1 matches" in result
-
-    def test_browse_search_tool_reports_missing_query(self):
-        result = _call_tool("browse_search", {"snapshot": "alpha"})
-        assert result == "Error: query is required"
 
 
 # ── loopback HTTP verb helpers ────────────────────────────────────────────
@@ -288,7 +272,7 @@ class TestPostTransportClassification:
 
 class TestHistoryScalarHelpers:
     def test_incognito_detection_is_case_insensitive(self):
-        mode = sorted(mcp_core._HISTORY_INCOGNITO_MODES)[0]
+        mode = sorted(INCOGNITO_MEMORY_MODES)[0]
         assert _history_is_incognito({"memory_mode": mode.upper()}) is True
         assert _history_is_incognito({"memory_mode": "persistent"}) is False
         assert _history_is_incognito({}) is False

@@ -732,6 +732,32 @@ class TestDependencyInstall:
         assert any("venv" in argv for argv in runs), runs
         assert any("install" in argv for argv in runs), runs
 
+    def test_the_installer_never_shells_out_to_a_bare_interpreter(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Venv creation must use sys.executable and pip must run as
+        `<venv python> -m pip` — `.venv/bin/pip` is POSIX-only and a bare
+        `python3` relies on PATH. Anything else leaves a Windows venv created
+        but never provisioned, which the venv-first interpreter policy would
+        then prefer while it holds none of the app's dependencies."""
+        import sys
+
+        from kiro_crew.apps.interpreter import venv_python_path
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_text("requests\n")
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-argv", _manifest("server.py"))
+        venv_run = " ".join(next(argv for argv in runs if "venv" in argv))
+        assert sys.executable in venv_run, venv_run
+        assert "python3 -m venv" not in venv_run, venv_run
+        pip_run = " ".join(next(argv for argv in runs if "install" in argv))
+        assert str(venv_python_path(spawn_root)) in pip_run, pip_run
+        assert "-m pip" in pip_run, pip_run
+        assert "/bin/pip" not in pip_run.replace("\\", "/"), pip_run
+
     def test_a_failed_dependency_install_does_not_block_the_spawn(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -859,14 +885,24 @@ class TestAsgiDispatch:
     def test_the_app_venv_interpreter_is_preferred_when_present(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        venv_bin = spawn_root / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        (venv_bin / "python3").write_text("")
+        # Real venv layout per platform: POSIX ships bin/python3, native Windows
+        # ships Scripts\python.exe (and no python3). The shared resolver honours
+        # both and requires the file to be runnable, so a permission-stripped
+        # interpreter cannot become a guaranteed-EACCES spawn target.
+        from kiro_crew import platform_compat as _pc
+
+        if _pc.IS_WINDOWS:
+            venv_py = spawn_root / ".venv" / "Scripts" / "python.exe"
+        else:
+            venv_py = spawn_root / ".venv" / "bin" / "python3"
+        venv_py.parent.mkdir(parents=True)
+        venv_py.write_text("#!/bin/sh\n")
+        venv_py.chmod(0o755)
         (spawn_root / "app.py").write_text(self._ASGI_SRC)
         seen = _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("asgi-venv", _manifest("app.py"))
-        assert seen["argv"][0] == str(venv_bin / "python3")
+        assert seen["argv"][0] == str(venv_py)
 
 
 # ---------------------------------------------------------------------------

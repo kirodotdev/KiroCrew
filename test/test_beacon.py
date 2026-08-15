@@ -990,13 +990,15 @@ class TestTelemetryCliWrite:
         assert not _stat.S_IMODE(cfg.stat().st_mode) & 0o077
 
     def test_uses_atomic_write_not_write_text(self, _isolated_home, monkeypatch):
-        """The toggle must route through atomic_write, never path.write_text.
+        """The toggle must route through update_config_locked (atomic + locked).
 
-        Regression test: it used to call ``path.write_text``, which truncates in
-        place — a disk-full or interrupted write mid-rewrite of the user's WHOLE
-        config.json would leave a partial file and every later load would
-        silently discard their configuration. ``atomic_write`` writes a temp file
-        and renames, so a failure leaves the original untouched.
+        Regression test: the toggle used to call ``path.write_text``, which
+        truncates in place — a disk-full or interrupted write mid-rewrite of the
+        user's WHOLE config.json would leave a partial file and every later load
+        would silently discard their configuration. The current path goes through
+        ``update_config_locked`` → ``write_config_atomically`` → ``atomic_write``
+        (temp + rename), so a failure leaves the original untouched and concurrent
+        writers are serialized by an advisory lock.
 
         Asserted at the call site rather than by simulating a failed write,
         because ``KiroCrewConfig.load()`` performs its own migration write-back
@@ -1010,18 +1012,18 @@ class TestTelemetryCliWrite:
 
         calls: list[dict] = []
 
-        def spy(path, content, **kwargs):
-            calls.append({"path": str(path), **kwargs})
-            from kiro_crew.atomic_write import atomic_write as real
+        real_update = cli_commands.update_config_locked
 
-            real(path, content, **kwargs)
+        def spy(path=None, **kwargs):
+            calls.append({"path": str(path) if path else None, **kwargs})
+            return real_update(path, **kwargs)
 
-        monkeypatch.setattr(cli_commands, "atomic_write", spy)
+        monkeypatch.setattr(cli_commands, "update_config_locked", spy)
         cli_commands._telemetry(self._args("disable"))
 
-        assert calls, "toggle must write through atomic_write"
+        assert calls, "toggle must write through update_config_locked"
         assert calls[0]["path"] == str(cfg)
-        assert calls[0].get("fsync") is True, "rename must be durable"
+        assert calls[0].get("fsync") is True, "write must be durable"
         assert json.loads(cfg.read_text())["telemetry"]["beacon_enabled"] is False
 
     @pytest.mark.parametrize("section", ["telemetry", "dashboard"])

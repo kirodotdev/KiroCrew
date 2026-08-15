@@ -72,6 +72,41 @@ gateway over loopback with the `X-Internal-Secret` handshake (the pattern
 sibling header, read only by `GET /api/token/local`), and relays the text result
 back. Everything of consequence happens in the gateway.
 
+### The shim is not spawned at all unless it can be used
+
+`agent._computer_use_spec_gate()` decides whether `kirocrew-computer` appears in
+the **emitted agent spec**: macOS **and** the keystone enable, or no entry. This is
+a separate control from the two in-process checks, and it has to be, because those
+run inside a process the spec already caused kiro-cli to spawn — they can make a
+disabled feature advertise zero tools, but not make it cost nothing. It cost
+~109 MB of resident memory per chat process (including every `spawn_run`
+subagent), and on Linux/Windows it cost that for a capability with no driver:
+`backend.select_default_backend` has one only on macOS, so the process could never
+have done anything at all.
+
+The gate **fails closed** — a missing, unreadable or malformed keystone yields no
+entry — matching `enable_state`'s own posture, for a stronger reason: the open
+position hands out the operator's whole desktop.
+
+Both in-process checks stay, and they cover what the gate structurally cannot: the
+keystone flipping **off** mid-session, after the spec was written and the backend
+spawned. The gate covers what they cannot: the process existing.
+
+`tools` is **not** touched. The `@kirocrew-computer` ref the shipped
+`defaults.json` grants stays where it is: a ref resolves against the agent's own
+`mcpServers` plus the global `mcp.json`, so once the entry is withheld the ref names
+nothing and launches nothing. Removing it would destroy a mount the user may have
+narrowed to a single tool and cannot be reconstructed on re-enable — the bare ref the
+template re-adds is wider than what they chose.
+
+The entry's `autoApprove` and user `env` keys are the one thing an off/on cycle does
+reset. Stashing them would need a sidecar the agent can write, and an approval
+restored from there would never reach the PreToolUse gate — see
+[Managed servers](../../architecture/mcp.md#managed-servers). The operator
+re-applies them. Pinned by
+`test_computer_use_registration.py::TestSpecEmissionGate`,
+`::TestGatedEntryIsNotPreserved` and `::TestGatedRefsAreLeftALONE`.
+
 Three reasons the split is worth the extra hop, none of them governance:
 
 * **the native work must not run in the shim.** A ctypes fault is not catchable in
@@ -198,8 +233,8 @@ flipping one flag.
 ## The 10-tool contract
 
 Server `kirocrew-computer` (slash-free: kiro-cli splits an agent `@server`
-reference on `/`). All tools prefixed `computer_` so they can never collide with
-the playwright server's `browser_*`.
+reference on `/`). All tools prefixed `computer_` so the GUI plane is
+namespace-distinct from every other server's tools.
 
 | Tool | Required | Optional | Class |
 |---|---|---|---|
@@ -1081,10 +1116,10 @@ parameter capped it — a Slack window measured **~437KB base64 ≈ 109K tokens*
 one call.
 
 Files land in `os.path.join(tempfile.gettempdir(), "kirocrew-computer-shots")`
-(the exact idiom `mcp_playwright_proxy.py` uses and which its test pins by source
-text), created `mode=0o700`, each file passed through
-`platform_compat.restrict_to_owner`, ring-trimmed to `SCREENSHOT_KEEP = 200`.
-Only the **path** is ever relayed; the bytes never enter a result.
+(the idiom its test pins by source text), created `mode=0o700`, each file passed
+through `platform_compat.restrict_to_owner`, ring-trimmed to
+`SCREENSHOT_KEEP = 200`. Only the **path** is ever relayed; the bytes never enter
+a result.
 
 ---
 
@@ -1570,6 +1605,28 @@ it, asks the agent to look at a window, and is told there are no tools. Restarti
 is the same remedy `POST /api/mcp/sync` already applies when MCP routing changes,
 and for the same reason.
 
+**The spec is rebuilt BEFORE the reset, under the config lock, and both of those are
+load-bearing.** The enable is also a spec-emission gate ([above](#the-shim-is-not-spawned-at-all-unless-it-can-be-used)),
+so while it was off the server was not in `mcpServers` at all. A reset alone would
+restart every session into the *same* spec that omits it, and the tools would not
+appear until the next gateway start; a rebuild *after* the reset would be equally
+broken, restarting sessions into the old spec. Rebuilding first keeps the
+user-visible contract — enable, sessions restart, the tools are there — exactly as
+it was before the gate existed.
+
+The lock matters because the rebuild READS the keystone and WRITES the spec. Outside
+it, two overlapping PUTs interleave: an enable's slower rebuild can land its spec
+*after* a later disable's, leaving a spec that mounts — and therefore spawns — the
+server the keystone now forbids. Holding `_get_config_lock()` makes read-decide-write
+atomic against every keystone writer, so whichever rebuild finishes last is the one
+that read the final state. It is a plain reacquisition: the write block has already
+exited its own, and `rebuild_agent_config` never takes this lock.
+
+A rebuild failure never fails the SAVE (same rule as the reset: the write already
+landed and was audited), and the fallback is the old behaviour of the surface
+appearing on the next cold gateway. Pinned by
+`test_computer_use_api.py::TestEnableRestartsSessions`.
+
 Deliberately narrow, so a restart is never gratuitous:
 
 - only on the `enabled` key, and only when the value actually CHANGED — a no-op
@@ -1615,10 +1672,10 @@ unexplained session reset reads as a crash. Pinned by
   `screencapture` typed into a Bash tool are `commands`-scope items, never
   re-parsed into GUI sub-effects, and the **web terminal PTY**
   (`dashboard/handlers/terminal.py`) contains no deny-floor or governance call at
-  all — it is an operator-only, ungoverned plane today. Playwright's
-  `browser_take_screenshot` is a second pixel channel needing its own `mcp` deny.
-  None of these are covered by any `computer_use.*` scope, and the spec says so
-  rather than implying coverage.
+  all — it is an operator-only, ungoverned plane today. `playwright-cli screenshot`
+  is a second pixel channel and lands on this same plane: it is a shell command,
+  so an `mcp`-scope deny cannot reach it. None of these are covered by any
+  `computer_use.*` scope, and the spec says so rather than implying coverage.
 
 ---
 

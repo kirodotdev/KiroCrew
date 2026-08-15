@@ -329,4 +329,20 @@ describe('QuestionCard — collapsing', () => {
     unmount()
     expect(onDraftChange).toHaveBeenLastCalledWith(false)
   })
+
+  it('caps its height and scrolls the questions, keeping the action row out of the scroller', () => {
+    // A card taller than the column it mounts in grew PAST the top of the
+    // viewport and was clipped there, so the first questions were neither
+    // readable nor reachable. The questions must live in their own bounded
+    // scroller, and Submit / Dismiss must sit outside it so they stay reachable
+    // without scrolling to the end.
+    render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} onDismiss={vi.fn()} />)
+    const card = screen.getByText('What is your favorite color?').closest('div.rounded-xl')!
+    expect(card.className).toContain('max-h-[min(60vh,32rem)]')
+    const scroller = screen.getByText('What is your favorite color?').closest('.overflow-y-auto')
+    expect(scroller).not.toBeNull()
+    // The action row is a sibling of the scroller, never inside it.
+    const submitRow = screen.getByText('Submit').closest('div')!
+    expect(scroller!.contains(submitRow)).toBe(false)
+  })
 })

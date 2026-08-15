@@ -56,6 +56,12 @@ export interface HostModel {
    *  instance-switch chord: in a plain browser those chords are reserved for
    *  browser tab switching, so the pane must not bind (or advertise) them. */
   electron: boolean
+  /** The parent's crew-switcher pin preference (expanded chip row vs collapsed
+   *  dropdown). Relayed so the embedded bar matches the local bar instead of
+   *  reading its own cross-origin-iframe localStorage, which the parent's pin
+   *  toggle can never reach. The embedded pin toggle posts `mc-set-expanded`
+   *  back up so the preference stays one shared value across every pane. */
+  expanded: boolean
 }
 
 interface InstancesState {

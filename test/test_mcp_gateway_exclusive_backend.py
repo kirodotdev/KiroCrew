@@ -40,7 +40,6 @@ def _make_pool_key(server: str = "srv", agent: str = "agent") -> PoolKey:
         autoapprove_set_hash="ghi789",
         approval_mode="reads",
         trust_all_tools=False,
-        user_identity="testuser",
         config_snapshot_hash="jkl012",
     )
 
@@ -337,7 +336,6 @@ def _register_frame(*, poolable: bool) -> dict[str, Any]:
         "approval_mode": "interactive",
         "trust_all_tools": False,
         "poolable": poolable,
-        "user_identity": "ex",
         "channel_id": "C_EX",
         "config_snapshot_hash": "3" * 64,
         "session_key": "dashboard:chat-EX-1",

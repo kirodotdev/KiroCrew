@@ -427,8 +427,9 @@ interface Worktree {
   issues?: IssueRef[]; tickets?: TicketRef[]; summary?: string | null
   own_commits?: number; real_dirty?: boolean; is_live?: boolean; is_staged?: boolean; legacy?: boolean
   path?: string
+  provision_run_id?: string | null
 }
-interface FleetData { worktrees: Worktree[]; error?: string; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; manual_restart?: string }
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; manual_restart?: string }
 interface SyncRun { rid: string; status: 'running' | 'done' | 'error'; lines: string[]; startedAt: number; exit?: number | null; last?: string; stepLabel?: string }
 // Provision run state: the FULL output is kept (not just the last
 // line) so the expandable log panel can show everything, and a failed run
@@ -616,6 +617,10 @@ export default function DevFleetPage() {
   const [syncRun, setSyncRun] = useState<SyncRun | null>(null)
   const [syncLogOpen, setSyncLogOpen] = useState(false)
   const syncAttachedRef = useRef(false)
+  // Provision run ids already being tracked (started locally or reattached),
+  // so the fleet-driven reattach below never starts a second poll loop for a
+  // run this session is already polling.
+  const provAttachedRef = useRef<Set<string>>(new Set())
   // Poll-loop lifecycle: loops exit when the component unmounts or a run is
   // explicitly dismissed — otherwise navigation would leak up-to-900-request
   // closures, and dismissing the stepper would be undone by the next tick.
@@ -633,7 +638,7 @@ export default function DevFleetPage() {
     invalidateFleet()
   }
   function toggleProvLog(name: string) { setProvLogOpen((o) => ({ ...o, [name]: !o[name] })) }
-  const [confirmReq, setConfirmReq] = useState<{ title: string; desc: ReactNode; confirmLabel?: string; danger?: boolean; width?: number; resolve: (v: boolean) => void } | null>(null)
+  const [confirmReq, setConfirmReq] = useState<{ title: string; desc: ReactNode; confirmLabel?: string; cancelLabel?: string; danger?: boolean; width?: number; resolve: (v: boolean) => void } | null>(null)
   const [restarting, setRestarting] = useState(false)
   // A cutover is dangerous BEFORE `restarting` goes true: makeLive() awaits the
   // /make-live POST, and that request stages the live-target pointer and issues the
@@ -644,10 +649,30 @@ export default function DevFleetPage() {
   // row (the busy flag is per-worktree, the hazard is process-wide).
   const makeLivePending = Object.entries(busy).some(([k, v]) => v && k.endsWith(':makelive'))
   const gatewayMutating = restarting || makeLivePending
+  // The worktree a cutover is staged onto (live-target pointer written, gateway
+  // not yet restarted into it), but only while the backend would ACCEPT the
+  // pointer-only cancel: on a drivable host /make-live refuses it
+  // (staged_cutover_pending), so offering the control there would promise a
+  // cancel that never happens. staged_cancel_available comes from the same
+  // predicate the backend's cancel branch uses; absent (older backend) fails
+  // closed to the pre-cancel-control behaviour. Non-null exactly while the
+  // live row should offer "Cancel staged cutover".
+  const stagedWorktree = fleet?.staged_cancel_available === true
+    ? (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
+    : null
+  // The row the cancel actually posts (re-confirming it as the live target
+  // is the cancel). Needed by the staged row's co-located menu item.
+  const liveWorktree = stagedWorktree
+    ? (fleet?.worktrees || []).find((x) => x.is_live && x.path) || null
+    : null
+  // ANY pending stage, cancellable or not: a restart boots the staged
+  // checkout, so the restart confirm must say so — that hazard does not
+  // depend on whether the pointer-only cancel is available.
+  const pendingStage = (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
   const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
   const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
-  const askConfirm = (title: string, desc: ReactNode, opts?: { confirmLabel?: string; danger?: boolean; width?: number }) => new Promise<boolean>((resolve) => setConfirmReq({ title, desc, ...(opts || {}), resolve }))
+  const askConfirm = (title: string, desc: ReactNode, opts?: { confirmLabel?: string; cancelLabel?: string; danger?: boolean; width?: number }) => new Promise<boolean>((resolve) => setConfirmReq({ title, desc, ...(opts || {}), resolve }))
   const settleConfirm = (val: boolean) => setConfirmReq((c) => { if (c) c.resolve(val); return null })
 
   const setFlag = (k: string, v: boolean) => setBusy((b) => ({ ...b, [k]: v }))
@@ -682,6 +707,45 @@ export default function DevFleetPage() {
       })
       .catch(() => { /* run endpoint unreachable — nothing to reattach */ })
   }, [fleet?.sync_run_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ─── Provision reattach on page load ─── */
+  // The fleet payload carries a provision_run_id per worktree while a
+  // provision is running or after it failed (mirrors sync_run_id). On mount,
+  // rehydrate the stepper/log for each: a running run resumes polling, a
+  // failed run restores the persisted failure state with the log expanded.
+  useEffect(() => {
+    for (const w of fleet?.worktrees || []) {
+      const rid = w.provision_run_id
+      if (!rid || provAttachedRef.current.has(rid)) continue
+      provAttachedRef.current.add(rid)
+      const name = w.name
+      api.get<{ status?: string; output?: string[]; exit_code?: number; started?: number }>('/run?id=' + rid)
+        .then((run) => {
+          if (!run) {
+            // Nothing usable came back — allow a later fleet refetch to retry.
+            provAttachedRef.current.delete(rid)
+            return
+          }
+          const t0 = run.started ? run.started * 1000 : Date.now()
+          const lines = run.output || []
+          if (run.status === 'running') {
+            setProv((p) => ({ ...p, [name]: { status: 'running', lines, startedAt: t0 } }))
+            void pollProvisionRun(name, rid, t0, lines)
+          } else if (run.exit_code !== 0) {
+            // Only unsuccessful runs are exposed by the backend, but guard
+            // anyway: a successful run has nothing to reattach.
+            setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines, startedAt: t0, exit: run.exit_code ?? null } }))
+            setProvLogOpen((o) => ({ ...o, [name]: true }))
+          }
+        })
+        .catch(() => {
+          // Transient failure (gateway restart mid-request, network blip):
+          // un-dedupe so the next fleet refetch can attempt the reattach
+          // again instead of permanently orphaning the run id.
+          provAttachedRef.current.delete(rid)
+        })
+    }
+  }, [fleet?.worktrees]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ─── Tick for elapsed counter ─── */
   const [, setTick] = useState(0)
@@ -721,7 +785,36 @@ export default function DevFleetPage() {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last })
         setFlag('__syncmain', false)
-        if (okRun) notify(i18nT('pages.devFleetPage.synced_restart_gateway_to_apply_the_new_build'), { type: 'success' })
+        if (okRun) {
+          // Auto-restart the gateway when the service is drivable — the build
+          // just updated static/dist on the live checkout, so applying it only
+          // needs a bounce. Skip the confirm dialog since the user already
+          // explicitly started Pull+Build knowing it updates their live code.
+          if (fleet?.gateway_service_active) {
+            notify(i18nT('pages.devFleetPage.pulls_main_rebuilds_then_restarts_automatically'), { type: 'success' })
+            setRestarting(true)
+            setGatewayError(null)
+            api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+              .then(async (r) => {
+                if (!r?.ok) {
+                  const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
+                  notify(msg, { type: 'error' })
+                  setGatewayError(msg)
+                  setRestarting(false)
+                } else {
+                  await awaitGatewayBack(r.start_id ?? null)
+                }
+              })
+              .catch((e: unknown) => {
+                const msg = `${i18nT('pages.devFleetPage.restart_failed')}: ${(e as Error)?.message || String(e)}`
+                notify(msg, { type: 'error' })
+                setGatewayError(msg)
+                setRestarting(false)
+              })
+          } else {
+            notify(i18nT('pages.devFleetPage.synced_restart_gateway_to_apply_the_new_build'), { type: 'success' })
+          }
+        }
         else notify(i18nT('pages.devFleetPage.pull_build_failed_exit_code_detail', { code: run.exit_code, detail: last }), { type: 'error' })
         invalidateFleet()
         return
@@ -778,9 +871,12 @@ export default function DevFleetPage() {
   // Poll a single provision run to completion, accumulating the server's
   // sliding 60-line output window into a full client-side buffer
   // (mergeLogWindow) so the "full log" panel keeps early output. Shared by a
-  // fresh provision and by reattaching to an already-in-flight run.
-  async function pollProvisionRun(name: string, rid: string, startedAt: number) {
-    let acc: string[] = []
+  // fresh provision and by reattaching to an already-in-flight run; a
+  // reattach passes the lines it already fetched as `seed` so fast output
+  // between that fetch and the first poll can only produce a visible gap
+  // marker, never a silently dropped prefix.
+  async function pollProvisionRun(name: string, rid: string, startedAt: number, seed: string[] = []) {
+    let acc: string[] = seed.slice()
     for (let i = 0; i < 900; i++) {
       await sleep(2000)
       if (!pollAliveRef.current) return
@@ -846,6 +942,10 @@ export default function DevFleetPage() {
         setProvLogOpen((o) => ({ ...o, [name]: true }))
         return
       }
+      // A poll loop for this run may already exist (the fleet-driven reattach
+      // effect attaches to in-flight runs); never start a second one.
+      if (provAttachedRef.current.has(r.run_id)) return
+      provAttachedRef.current.add(r.run_id)
       await pollProvisionRun(name, r.run_id, startedAt)
     } catch (e: unknown) {
       const msg = (e as Error)?.message || String(e)
@@ -1018,7 +1118,14 @@ export default function DevFleetPage() {
   }
 
   async function restartGateway() {
-    const ok = await askConfirm(i18nT('pages.devFleetPage.restart_gateway_2'), i18nT('pages.devFleetPage.applies_the_last_pull_build_the_dashboard_will_b'), { confirmLabel: i18nT('pages.devFleetPage.restart') })
+    const ok = await askConfirm(i18nT('pages.devFleetPage.restart_gateway_2'),
+      // With a stage pending, a restart COMPLETES the cutover: the gateway
+      // comes back on the staged checkout, the opposite of the cancel that
+      // sits beside this control. The confirm must say which code comes up.
+      pendingStage
+        ? i18nT('pages.devFleetPage.restarting_completes_the_pending_cutover_boots', { staged: pendingStage.name })
+        : i18nT('pages.devFleetPage.applies_the_last_pull_build_the_dashboard_will_b'),
+      { confirmLabel: i18nT('pages.devFleetPage.restart') })
     if (!ok) return
     setRestarting(true)
     setGatewayError(null)
@@ -1042,31 +1149,58 @@ export default function DevFleetPage() {
   async function makeLive(w: Worktree) {
     // Only the already-live row is blocked. Main is a valid target when it is
     // NOT live (after a cutover to a feature worktree, this is the way back).
-    if (w.is_live) return
+    // The live row is a valid target too while a cutover is staged onto another
+    // worktree: re-confirming the running checkout as the live target is how
+    // the stage is cancelled (the backend re-pins the pointer; nothing
+    // restarts), and it is the only cancel the dashboard can offer.
+    const cancellingStage = !!w.is_live && !!stagedWorktree
+    if (w.is_live && !cancellingStage) return
     if (!w.path) { notify(i18nT('pages.devFleetPage.cannot_resolve_worktree_path_for_name', { name: w.name }), { type: 'error' }); return }
     // The dialog must not promise an automatic restart on a host where Dev Fleet
     // cannot drive the service: there the cutover only STAGES, and the operator
     // finishes it by hand. Keyed off the same signal the backend uses to decide,
     // so the copy cannot drift from what actually happens.
     const canRestart = fleet?.gateway_service_active === true
-    const ok = await askConfirm(i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
-      canRestart
-        ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
-        : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
-      { confirmLabel: i18nT('pages.devFleetPage.make_live') })
+    const ok = await askConfirm(
+      cancellingStage
+        ? i18nT('pages.devFleetPage.cancel_staged_cutover_2')
+        : i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
+      cancellingStage
+        ? i18nT('pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', { name: w.name, staged: stagedWorktree?.name ?? '' })
+        : canRestart
+          ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
+          : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
+      cancellingStage
+        ? { confirmLabel: i18nT('pages.devFleetPage.cancel_staged_cutover'), cancelLabel: i18nT('pages.devFleetPage.keep_cutover') }
+        : { confirmLabel: i18nT('pages.devFleetPage.make_live') })
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
       const r = await api.post<{
         ok?: boolean; error?: string; start_id?: string | null
-        staged_only?: boolean; notice?: string
-      }>('/make-live', { path: w.path })
+        staged_only?: boolean; cancelled?: boolean; notice?: string
+      }>('/make-live', cancellingStage && stagedWorktree?.path
+        // Bind the cancel to the stage the operator confirmed: the backend
+        // refuses (stage_changed) if another tab re-staged between the dialog
+        // and this POST, instead of silently discarding a stage never seen.
+        ? { path: w.path, expected_staged: stagedWorktree.path }
+        : { path: w.path })
       if (!r?.ok) {
         // Same treatment as a failed restart: this branch surfaces
         // restart_detached's message, which names a remedy the operator has to
         // act on — useless in a 7s toast.
         const msg = r?.error || i18nT('pages.devFleetPage.make_live_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(w.name + ':makelive', false); return
+      }
+      // Stage cancelled: the pointer is re-pinned at the running checkout and
+      // no process is coming or going, so the restart overlay and the identity
+      // handshake must both be skipped — waiting would strand the user on the
+      // 60s timeout for a restart that never happens.
+      if (r.cancelled) {
+        if (r.notice) notify(r.notice, { type: 'info' })
+        setFlag(w.name + ':makelive', false)
+        invalidateFleet()
+        return
       }
       // Staged, not bounced: this gateway is not a service Dev Fleet can
       // restart, so the operator finishes the cutover with the command the
@@ -1125,6 +1259,12 @@ export default function DevFleetPage() {
   // bundle wrong, so reading those first sends you down the wrong trail.
   const servingReason = fleet?.serving_install_reason || null
   const isDiscoveryError = !fleetError && !!fleet?.error
+  // Its own state, not an error: the backend found no Kiro Crew checkout to
+  // manage, which on a first run is simply a question nobody has answered yet.
+  const needsSetup = !fleetError && !!fleet?.needs_setup
+  // Either way the fleet is UNKNOWN, so the same chrome is wrong: counts would
+  // assert numbers nobody measured, and the row actions have nothing to act on.
+  const noFleet = needsSetup || isDiscoveryError
   const ql = q.trim().toLowerCase()
   const matchesRow = (w: Worktree) => !ql || (w.name + ' ' + (w.branch || '')).toLowerCase().includes(ql)
   const statusRank = (w: Worktree) => (w.is_main ? 0 : w.running ? 1 : (!w.has_dist ? 3 : 2))
@@ -1187,29 +1327,57 @@ export default function DevFleetPage() {
   function rowButtons(w: Worktree): ReactNode[] {
     if (w.is_main) {
       const out: ReactNode[] = [
-        <ConfirmBtn key="sync" title={i18nT('pages.devFleetPage.pull_build_main')} desc={i18nT('pages.devFleetPage.pulls_main_and_rebuilds_6_min_does_not_restart')} confirmLabel={i18nT('pages.devFleetPage.start')} onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
+        <ConfirmBtn key="sync" title={i18nT('pages.devFleetPage.pull_build_main')} desc={fleet?.gateway_service_active ? i18nT('pages.devFleetPage.pulls_main_rebuilds_then_restarts_automatically') : i18nT('pages.devFleetPage.pulls_main_and_rebuilds_6_min_does_not_restart')} confirmLabel={i18nT('pages.devFleetPage.start')} onConfirm={() => syncMain()} btn={{ disabled: !!busy['__syncmain'] || syncRun?.status === 'running' || gatewayMutating }}>
           {iconLabel(<RefreshCw size={13} className="lucide-inline" />, busy['__syncmain'] || syncRun?.status === 'running' ? i18nT('pages.devFleetPage.building') : i18nT('pages.devFleetPage.pull_build_2'))}
         </ConfirmBtn>,
       ]
-      if (fleet?.gateway_service_active) {
+      const showRestart = !!fleet?.gateway_service_active
+      const showCancel = !!w.is_live && !!stagedWorktree
+      if (showRestart && showCancel) {
+        // Both gateway actions at once (reachable on a foreground-eligible
+        // host with a stage pending) would put a third sibling beside
+        // Pull+Build and break the two-button row cap — collapse them into
+        // one overflow trigger, which counts as a single control.
         out.push(
-          <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
-            {iconLabel(<RotateCw size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.restart'))}
-          </Btn>
+          <MenuBtn key="gwmenu" items={[
+            { label: i18nT('pages.devFleetPage.restart'), icon: <RotateCw size={13} className="lucide-inline" />, onClick: () => restartGateway(), disabled: gatewayMutating },
+            { label: i18nT('pages.devFleetPage.cancel_staged_cutover'), icon: <X size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', { staged: stagedWorktree?.name ?? '' }) },
+          ]} />
         )
-      }
-      // After a cutover to a feature worktree, main is dormant (is_live=false)
-      // and this inline control is the only way back to running main live. It sits
-      // OUTSIDE the gateway_service_active gate on purpose: staging a cutover
-      // needs no drivable service, and a host without one is precisely where
-      // gating it would strand the operator on a feature worktree with no route
-      // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
-      if (!w.is_live) {
-        out.push(
-          <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
-            {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
-          </Btn>
-        )
+      } else {
+        if (showRestart) {
+          out.push(
+            <Btn key="restart" onClick={() => restartGateway()} disabled={gatewayMutating} aria-label={i18nT('pages.devFleetPage.restart_gateway')}>
+              {iconLabel(<RotateCw size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.restart'))}
+            </Btn>
+          )
+        }
+        // After a cutover to a feature worktree, main is dormant (is_live=false)
+        // and this inline control is the only way back to running main live. It sits
+        // OUTSIDE the gateway_service_active gate on purpose: staging a cutover
+        // needs no drivable service, and a host without one is precisely where
+        // gating it would strand the operator on a feature worktree with no route
+        // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
+        if (!w.is_live && !w.is_staged) {
+          out.push(
+            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
+              {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
+            </Btn>
+          )
+        }
+        // Mutually exclusive with Make live: this appears only while THIS row is
+        // live and a cutover is staged onto another worktree. Same makeLive()
+        // call — re-confirming the running checkout as the live target is the
+        // cancel — and it sits outside the gateway_service_active gate for the
+        // same reason Make live does: staged cutovers exist precisely on hosts
+        // without a drivable service.
+        if (showCancel) {
+          out.push(
+            <Btn key="cancelcutover" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', { staged: stagedWorktree?.name ?? '' })}>
+              {iconLabel(<X size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.cancel_staged_cutover'))}
+            </Btn>
+          )
+        }
       }
       if (fleet?.build_pending) {
         // Keep the visible text short: the ACTIONS grid column is fixed-width and
@@ -1236,7 +1404,18 @@ export default function DevFleetPage() {
       // Staging a cutover writes only the live-target pointer, so it needs no
       // pod support and no drivable service — gating it on podsAvailable would
       // hide it on exactly the hosts it exists to serve.
-      !w.is_live ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      // Hidden on the already-staged row: there it only re-stages, and next
+      // to Cancel staged cutover it misreads as "complete the cutover now".
+      !w.is_live && !w.is_staged ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      // The cancel counterpart: only while THIS row is live and a cutover is
+      // staged onto another worktree. Ungated on podsAvailable for the same
+      // reason as Make live — cancelling touches only the live-target pointer.
+      w.is_live && stagedWorktree ? { label: i18nT('pages.devFleetPage.cancel_staged_cutover'), icon: <X size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.keeps_this_checkout_the_live_target_and_discards', { staged: stagedWorktree.name }) } : null,
+      // The same cancel, co-located with the state that prompts it: the STAGED
+      // row wears the "Restart pending" badge, so it is where an operator who
+      // staged the wrong worktree actually looks. Still cancels by confirming
+      // the LIVE worktree — the item just lives where the problem is visible.
+      !w.is_live && stagedWorktree?.name === w.name && liveWorktree ? { label: i18nT('pages.devFleetPage.cancel_staged_cutover'), icon: <X size={13} className="lucide-inline" />, onClick: () => makeLive(liveWorktree), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.keeps_the_live_checkout_the_live_target_and_disc', { staged: stagedWorktree.name }) } : null,
       // QA + video drives the pod-e2e suite, which brings a pod up.
       podsAvailable ? { label: i18nT('pages.devFleetPage.qa_video'), icon: <Video size={13} className="lucide-inline" />, onClick: () => launchQa(w.name) } : null,
       podsAvailable && w.running ? { label: i18nT('pages.devFleetPage.stop_pod'), icon: <Square size={13} className="lucide-inline" />, onClick: () => act(w.name, 'down'), danger: true } : null,
@@ -1366,7 +1545,9 @@ export default function DevFleetPage() {
             {/* A staged cutover outlives the toast that announced it: without a
                 persistent marker an operator who dismissed or missed the toast
                 reads the old running image as the new one. */}
-            {w.is_staged ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={i18nT('pages.devFleetPage.cutover_staged_run_the_restart_command_to_finish', { cmd: fleet?.manual_restart || 'kirocrew restart' })}>{i18nT('pages.devFleetPage.restart_pending')}</Badge> : null}
+            {w.is_staged ? <Badge variant="warn" className="text-[10px] px-1.5 py-0" title={stagedWorktree?.name === w.name
+              ? i18nT('pages.devFleetPage.cutover_staged_run_cmd_to_finish_or_cancel', { cmd: fleet?.manual_restart || 'kirocrew restart' })
+              : i18nT('pages.devFleetPage.cutover_staged_run_the_restart_command_to_finish', { cmd: fleet?.manual_restart || 'kirocrew restart' })}>{i18nT('pages.devFleetPage.restart_pending')}</Badge> : null}
             {w.summary ? <span title={w.summary} style={{ fontSize: 11.5, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' } as CSSProperties}>{w.summary}</span> : null}
           </div>
           {isMainWithStepper ? renderSyncStepper() : provActive ? renderProvStepper(w) : (
@@ -1403,6 +1584,17 @@ export default function DevFleetPage() {
   ) : null
   let body: ReactNode
   if (loading && !fleet) body = <ContentSkeleton rows={5} />
+  else if (needsSetup) body = (
+    <div role="region" aria-labelledby="devfleet-setup-title" data-testid="devfleet-needs-setup" style={{ padding: 24, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)' }}>
+      <h2 id="devfleet-setup-title" style={{ margin: 0, fontWeight: 600, fontSize: 15 }}>{i18nT('pages.devFleetPage.no_checkout_found')}</h2>
+      <p style={{ margin: '8px 0 0', color: 'var(--muted)', fontSize: 14 }}>{i18nT('pages.devFleetPage.no_checkout_found_help')}</p>
+      {/* The remedy is its own line: bundled into the explanation it has to be
+          re-read to be acted on. Both halves are whole sentences, so neither
+          key depends on the other's word order in translation. */}
+      <p style={{ margin: '8px 0 0', fontSize: 14 }}>{i18nT('pages.devFleetPage.no_checkout_found_action')}</p>
+      <p style={{ margin: '8px 0 0', fontFamily: 'ui-monospace, monospace', fontSize: 13, color: 'var(--text)', overflowWrap: 'anywhere' }}>{i18nT('pages.devFleetPage.no_checkout_found_env_example')}</p>
+    </div>
+  )
   else if (error) body = isDiscoveryError
     ? <div role="alert" style={{ padding: 24, borderRadius: 8, border: '1px solid var(--danger)', background: 'var(--danger-subtle, rgba(239,68,68,0.08))' }}><p style={{ margin: 0, fontWeight: 600, color: 'var(--danger)' }}>{i18nT('pages.devFleetPage.discovery_error')}</p><p style={{ margin: '8px 0 0', color: 'var(--text)', fontSize: 14 }}>{error}</p></div>
     : <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.backend_unavailable')} subtitle={error} />
@@ -1410,7 +1602,7 @@ export default function DevFleetPage() {
   else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
 
   const confirmDialog = (
-    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>
+    <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{confirmReq?.cancelLabel || i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>
       <p className="text-sm text-muted m-0">{confirmReq?.desc}</p>
     </Modal>
   )
@@ -1512,12 +1704,27 @@ export default function DevFleetPage() {
         <div className="flex-1 min-w-0 flex flex-col min-h-0">
           <PageHeader title={i18nT('pages.devFleetPage.dev_fleet')} subtitle={i18nT('pages.devFleetPage.manage_the_git_worktrees_of_your_main_checkout_s')} />
           <div className="flex-1 overflow-y-auto px-6 pb-8 min-h-0">
+            {/* The how-to describes row actions; with no readable fleet there are
+                no rows, and instructions for absent controls read as a broken page. */}
+            {!noFleet && (
             <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1 max-w-[860px]">
               {i18nT('pages.devFleetPage.each_row_below_is_a_git_worktree_discovered_from')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span> {i18nT('pages.devFleetPage.on_the_main_row_to_fast_forward_it_from_origin_a')} <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span> {i18nT('pages.devFleetPage.boots_any_worktree_as_an_isolated_throwaway_gate')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
               <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
             </p>
+            )}
+            {!noFleet && fleet?.main_repo_inferred && fleet.main_repo && (
+              <div
+                role="note"
+                data-testid="inferred-main-checkout"
+                className="flex items-center gap-2 mt-2 max-w-[860px] text-[12px] leading-relaxed text-text-strong"
+              >
+                <Info size={13} className="lucide-inline shrink-0" />
+                <span>{i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr')}:</span>
+                <code className="min-w-0 break-all rounded bg-bg-elevated px-1.5 py-0.5 text-text-strong select-text">{fleet.main_repo}</code>
+              </div>
+            )}
             {gatewayError && (
               <div
                 role="alert"
@@ -1576,14 +1783,24 @@ export default function DevFleetPage() {
                 </div>
               </div>
             )}
+            {/* Dashes, not zeros, whenever the fleet is unknown: "WORKTREES 0" is a
+                claim about a fleet that was never read, which is the same
+                false certainty the discovery fix exists to remove. */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-3.5">
-              <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={running} accent />
-              <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={wts.length} />
-              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={needsProv} />
-              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={diskGb} />
+              <StatCard label={i18nT('pages.devFleetPage.running_pods')} value={noFleet ? '—' : running} accent={!noFleet} />
+              <StatCard label={i18nT('pages.devFleetPage.worktrees')} value={noFleet ? '—' : wts.length} />
+              <StatCard label={i18nT('pages.devFleetPage.needs_provision')} value={noFleet ? '—' : needsProv} />
+              <StatCard label={i18nT('pages.devFleetPage.disk_worktrees')} value={noFleet ? '—' : diskGb} />
             </div>
             <Card>
-              <CardTitle><span className="flex items-center gap-1.5">{i18nT('pages.devFleetPage.worktrees_count', { count: wts.length })}<InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} /></span></CardTitle>
+              {/* Same reasoning as the dashed stat cards: "(0)" is a count of a
+                  fleet that was never read, so the title drops it entirely. */}
+              <CardTitle><span className="flex items-center gap-1.5">{noFleet ? i18nT('pages.devFleetPage.worktrees') : i18nT('pages.devFleetPage.worktrees_count', { count: wts.length })}{!noFleet && <InfoTip text={i18nT('pages.devFleetPage.every_git_worktree_of_the_main_checkout_pull_bui')} />}</span></CardTitle>
+              {/* Filter, sort, Prune merged and Refresh all act on a fleet that
+                  could not be read. Rendering them beside the setup card or the
+                  discovery error invites a click whose only possible answer is a
+                  failure, in the states with the least context to interpret it. */}
+              {!noFleet && (
               <div className="flex flex-wrap gap-2.5 items-center mt-3 mb-1">
                 <div className="flex-1 min-w-[140px]">
                   <SearchInput placeholder={i18nT('pages.devFleetPage.filter_worktrees')} value={q} onChange={(e) => setQ((e.target as HTMLInputElement).value)} aria-label={i18nT('pages.devFleetPage.filter_worktrees_2')} />
@@ -1616,6 +1833,7 @@ export default function DevFleetPage() {
                 <Btn danger={!busy['__prune']} onClick={pruneShipped} disabled={!!busy['__prune']} aria-busy={!!busy['__prune']}>{iconLabel(busy['__prune'] ? <LoaderCircle className="lucide-inline animate-spin" /> : <Trash2 size={13} className="lucide-inline" />, i18nT(busy['__prune'] ? 'pages.devFleetPage.scanning_merged' : 'pages.devFleetPage.prune_merged'))}</Btn>
                 <Btn onClick={() => invalidateAll()} disabled={loading} aria-label={i18nT('pages.devFleetPage.refresh_fleet')}>{iconLabel(<RefreshCw size={14} className="lucide-inline" />, i18nT('pages.devFleetPage.refresh'))}</Btn>
               </div>
+              )}
               <div className="overflow-x-auto -mx-1 px-1">
                 {body}
               </div>

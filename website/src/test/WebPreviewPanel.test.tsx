@@ -11,6 +11,36 @@ vi.mock('../hooks/useScreenSnip', async (importOriginal) => {
   return { ...actual, isScreenSnipSupported: () => true }
 })
 
+// Browser-view status/start, stubbed at the api seam. Only these two methods are
+// replaced — the rest of the client (and ApiError, which the hook branches on)
+// stays real, so no other call site in this panel changes behaviour.
+const getBrowserView = vi.fn()
+const startBrowserView = vi.fn()
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      getBrowserView: () => getBrowserView(),
+      startBrowserView: () => startBrowserView(),
+    },
+  }
+})
+
+/** A view server that is up, on the loopback IPv4 address the CLI must bind. */
+const RUNNING = { status: 'running', url: 'http://127.0.0.1:45613/', port: 45613, reason: null }
+/** Installed, nothing serving yet — the state a start action is offered for. */
+const STOPPED = { status: 'stopped', url: null, port: null, reason: null }
+
+// Every test in this file renders the panel, which reads the view status. Default
+// it to `stopped` so the tests that are about the dev-server preview neither hit
+// an undefined query result nor get the browser view overlaid on them.
+beforeEach(() => {
+  getBrowserView.mockReset().mockResolvedValue(STOPPED)
+  startBrowserView.mockReset().mockResolvedValue(RUNNING)
+})
+
 // The panel isolates a loopback preview host equal to the dashboard host onto
 // the other loopback alias. Compute what the code will produce so host
 // assertions don't depend on the test env's window.location.hostname.
@@ -408,18 +438,62 @@ describe('WebPreviewPanel', () => {
     fireEvent.click(screen.getByText(':3000'))
     let frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.style.width).toBe('')
-    fireEvent.click(screen.getByLabelText('Preview size'))
+    // Device presets now live inside the overflow menu → Preview size submenu.
+    // Radix opens on pointerDown, not click.
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions' }),
+      { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
+    )
+    fireEvent.click(screen.getByText('Preview size'))
     fireEvent.click(screen.getByText('iPhone SE'))
     frame = screen.getByTitle('Web preview') as HTMLIFrameElement
     expect(frame.style.width).toBe('375px')
     expect(frame.style.height).toBe('667px')
   })
 
-  it('device preset buttons are type=button so they never submit the URL form', () => {
+  it('device preset items carry menuitemradio semantics with aria-checked', () => {
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    fireEvent.click(screen.getByLabelText('Preview size'))
-    const preset = screen.getByText('iPhone SE').closest('button') as HTMLButtonElement
-    expect(preset.getAttribute('type')).toBe('button')
+    fireEvent.click(screen.getByText(':3000'))
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions' }),
+      { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
+    )
+    fireEvent.click(screen.getByText('Preview size'))
+    const responsive = screen.getByRole('menuitemradio', { name: /Responsive/ })
+    expect(responsive).toHaveAttribute('aria-checked', 'true')
+    const iphone = screen.getByRole('menuitemradio', { name: /iPhone SE/ })
+    expect(iphone).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('action row renders exactly 4 top-level sibling controls (regression guard for max-two-buttons-per-row)', () => {
+    // The row is: back, forward, (URL container), expand, divider, overflow, crop.
+    // The URL container is its own group (not counted); the divider is decorative.
+    // Sibling action controls = back + forward + expand + overflow + crop = 5.
+    // This matches the base-branch count (back + forward + expand + preview-size
+    // + crop = 5). The overflow REPLACED preview-size, so the count did not grow.
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    const form = screen.getByLabelText('Preview URL').closest('form') as HTMLFormElement
+    // Count direct-child buttons that are action controls (exclude the
+    // URL container's internal reload/open-in-browser and the decorative divider).
+    const directButtons = Array.from(form.children).filter(el => {
+      if (el.getAttribute('aria-hidden') === 'true') return false // divider
+      if (el.tagName === 'DIV') return false // URL container
+      return el.tagName === 'BUTTON' || el.getAttribute('role') === 'button'
+    })
+    // 5 = back, forward, expand, overflow trigger, crop (canSnip is mocked on).
+    // Identical to baseline (which had preview-size instead of overflow).
+    expect(directButtons).toHaveLength(5)
+  })
+
+  it('browser-view toggle still works through the overflow menu', () => {
+    getBrowserView.mockResolvedValue(STOPPED)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions' }),
+      { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
+    )
+    const item = screen.getByRole('menuitem', { name: /Browser view/ })
+    expect(item).toBeInTheDocument()
   })
 
   it('dispatches a snip request when the crop button is clicked', () => {
@@ -451,31 +525,144 @@ describe('WebPreviewPanel', () => {
   })
 })
 
-describe('WebPreviewPanel — live agent-browse mirror', () => {
-  const emitFrame = (session_key = 'sess-1') =>
-    act(() => {
-      window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', {
-        detail: { data: 'Zm9vYmFy', format: 'jpeg', session_key },
-      }))
-    })
+describe('WebPreviewPanel — Playwright CLI browser view', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
 
-  it('overlays the read-only live mirror when a browse frame arrives (preview stays mounted)', () => {
+  /** The toggle, whichever of its two instances is currently exposed (the hidden
+   *  subtree is `aria-hidden`, so a role query can only ever see one).
+   *
+   *  In the URL bar it now sits behind the standard overflow trigger: that row
+   *  already carried back / forward / expand / preview-size, and
+   *  `max-two-buttons-per-row` forbids a legacy-status row from growing. The
+   *  overlay header keeps its own direct button, so when the view is UP the
+   *  toggle is still reachable in one click and this helper finds it there. */
+  const toggle = () => {
+    const direct = screen.queryByRole('button', { name: 'Browser view' })
+    if (direct) return direct
+    // Radix opens on pointerdown, not click.
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions' }),
+      { pointerId: 1, button: 0, ctrlKey: false, isPrimary: true },
+    )
+    return screen.getByRole('menuitem', { name: /Browser view/ })
+  }
+
+  it('frames the CLI dashboard at the reported URL when the view is running', async () => {
+    getBrowserView.mockResolvedValue(RUNNING)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    expect(screen.queryByText('Browser — live')).toBeNull()
-    emitFrame('sess-1')
-    expect(screen.getByText('Browser — live')).toBeInTheDocument()
-    expect(screen.getByAltText('Live browser session')).toBeInTheDocument()
+    // Running takes the panel over on its own — the same precedence the frame
+    // mirror had, so an agent that starts browsing still surfaces itself.
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    expect(frame.src).toBe('http://127.0.0.1:45613/')
+    expect(screen.getByText('Browser view')).toBeInTheDocument()
     // Preview subtree stays MOUNTED (hidden) under the overlay so iframe/form
     // state survives — its empty-state node is still in the DOM, just hidden.
     expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
   })
 
-  it('does NOT show the live mirror for a frame from a DIFFERENT session (no cross-session leak)', () => {
+  it('layers nothing over the frame, so the CLI keeps its remote input', async () => {
+    // The CLI dashboard's own mouse/keyboard input IS the control surface. A
+    // scrim or hint bar over the frame would swallow exactly those events, so
+    // the frame must be the last thing in its container and not be inert.
+    getBrowserView.mockResolvedValue(RUNNING)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    emitFrame('sess-2') // a background session's browse frame
-    // This panel is scoped to sess-1, so a sess-2 frame must not flip it live.
-    expect(screen.queryByText('Browser — live')).toBeNull()
-    expect(screen.getByText('Preview a local web server')).toBeInTheDocument()
+    const frame = await screen.findByTitle('Live browser session')
+    const box = frame.parentElement as HTMLElement
+    expect(box.lastElementChild).toBe(frame)
+    expect(frame.className).not.toContain('pointer-events-none')
+    expect(frame.closest('[aria-hidden="true"]')).toBeNull()
+  })
+
+  it('offers a start action when the view is stopped, and POSTs it', async () => {
+    getBrowserView.mockResolvedValue(STOPPED)
+    startBrowserView.mockResolvedValue(RUNNING)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    // Stopped does NOT take the panel over — the preview stays usable — so the
+    // state is reached through the toggle.
+    fireEvent.click(toggle())
+    expect(await screen.findByText('Browser view is not running')).toBeInTheDocument()
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
+    fireEvent.click(screen.getByText('Start browser view'))
+    await waitFor(() => expect(startBrowserView).toHaveBeenCalled())
+    // The start response IS the new status, so the frame appears without a
+    // second read.
+    const frame = await screen.findByTitle('Live browser session') as HTMLIFrameElement
+    expect(frame.src).toBe('http://127.0.0.1:45613/')
+  })
+
+  it('reports a failed start instead of leaving the card looking hung', async () => {
+    getBrowserView.mockResolvedValue(STOPPED)
+    startBrowserView.mockRejectedValue(new Error('port 45613 already in use'))
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(toggle())
+    fireEvent.click(await screen.findByText('Start browser view'))
+    expect(await screen.findByText(/Couldn't start the browser view/)).toBeInTheDocument()
+    expect(screen.getByText(/port 45613 already in use/)).toBeInTheDocument()
+  })
+
+  it('reports a start that answered 200 and still did not run', async () => {
+    // The endpoint returns the post-attempt STATUS, not an HTTP error, so a launch
+    // that failed comes back as a perfectly good `stopped`. Re-rendering the same
+    // card would make the click look like it did nothing.
+    getBrowserView.mockResolvedValue(STOPPED)
+    startBrowserView.mockResolvedValue(STOPPED)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(toggle())
+    fireEvent.click(await screen.findByText('Start browser view'))
+    expect(await screen.findByText(/Couldn't start the browser view/)).toBeInTheDocument()
+    expect(screen.getByText('Browser view is not running')).toBeInTheDocument()
+  })
+
+  it('shows the server’s own reason when the view is unavailable', async () => {
+    getBrowserView.mockResolvedValue({
+      status: 'unavailable',
+      url: null,
+      port: null,
+      reason: 'playwright-cli is not installed. Run: npm install -g @playwright/cli@latest',
+    })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(toggle())
+    expect(await screen.findByText('Browser view unavailable')).toBeInTheDocument()
+    // Verbatim, never translated — it names the real cause, and a catalog key
+    // could only either drop the detail or assert a cause the server didn't give.
+    expect(screen.getByText(/npm install -g @playwright\/cli@latest/)).toBeInTheDocument()
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
+  })
+
+  it('falls back to its own copy when an unavailable view reports no reason', async () => {
+    getBrowserView.mockResolvedValue({ status: 'unavailable', url: null, port: null, reason: null })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(toggle())
+    expect(await screen.findByText('Browser view unavailable')).toBeInTheDocument()
+    expect(screen.getByText("The browser view isn't available on this gateway.")).toBeInTheDocument()
+  })
+
+  it('explains a running status whose URL cannot be framed rather than navigating it', async () => {
+    // A malformed or non-http(s) URL is never handed to the iframe: it would be
+    // a navigation the panel cannot vouch for. It degrades to the explanatory
+    // state, which is also what makes the value safe to trust elsewhere.
+    getBrowserView.mockResolvedValue({
+      status: 'running', url: 'javascript:alert(1)', port: 45613, reason: null,
+    })
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    fireEvent.click(toggle())
+    expect(await screen.findByText('Browser view unavailable')).toBeInTheDocument()
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
+  })
+
+  it('lets the user dismiss a running view to get the dev-server preview back', async () => {
+    getBrowserView.mockResolvedValue(RUNNING)
+    renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+    await screen.findByTitle('Live browser session')
+    // The toggle exposed while the overlay is up is the pressed one in its header.
+    fireEvent.click(toggle())
+    await waitFor(() => expect(screen.queryByTitle('Live browser session')).toBeNull())
+    // ...and the preview is interactive again (no longer under an aria-hidden lid).
+    expect(screen.getByLabelText('Preview URL').closest('[aria-hidden="true"]')).toBeNull()
   })
 })
 
@@ -502,13 +689,6 @@ describe('WebPreviewPanel — native browser transport', () => {
     return api
   }
 
-  const emitFrame = (session_key = 'sess-1') =>
-    act(() => {
-      window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', {
-        detail: { data: 'Zm9vYmFy', format: 'jpeg', session_key },
-      }))
-    })
-
   beforeEach(() => {
     localStorage.clear()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(undefined))
@@ -520,39 +700,36 @@ describe('WebPreviewPanel — native browser transport', () => {
     vi.unstubAllGlobals()
   })
 
-  it('native view OWNS the panel when available — a chat-opened page lands in it, not the mirror', async () => {
+  it('native view OWNS the panel when available — a chat-opened page lands in it, not the CLI view', async () => {
+    getBrowserView.mockResolvedValue(RUNNING)
     installNativeBridge(true)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    // Wait for the mirror's <img> to be gone, which only happens once the native
-    // view is open and owning the panel. Before getState resolves, a streamed
-    // frame legitimately shows the mirror -- that is the deliberate fallback for
-    // a desktop shell whose native view has nothing in it yet.
-    emitFrame('sess-1')
-    await waitFor(() => expect(screen.queryByAltText('Live browser session')).toBeNull())
-    // A further streamed frame must NOT override the now-open native view.
-    emitFrame('sess-1')
-    expect(screen.queryByAltText('Live browser session')).toBeNull()
+    // Wait for the CLI frame to be gone, which only happens once the native view
+    // is open and owning the panel. Before getState resolves, a running CLI view
+    // legitimately shows -- that is the deliberate fallback for a desktop shell
+    // whose native view has nothing in it yet.
+    await waitFor(() => expect(screen.queryByTitle('Live browser session')).toBeNull())
+    expect(screen.queryByTitle('Live browser session')).toBeNull()
   })
 
-  it('shows the mirror when the bridge EXISTS but no native view is open yet', async () => {
-    // Regression: gating the mirror on `!native.available` blanked the panel on a
+  it('shows the CLI browser view when the bridge EXISTS but no native view is open yet', async () => {
+    // Regression: gating this on `!native.available` blanked the panel on a
     // desktop shell whose preload bridge exists while nothing has been opened
-    // natively -- frames were arriving with nothing rendering them. The real
-    // condition is `!nativeOpen`.
+    // natively. The real condition is `!nativeOpen`.
+    getBrowserView.mockResolvedValue(RUNNING)
     installNativeBridge(false)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    emitFrame('sess-1')
     await waitFor(() =>
-      expect(screen.getByAltText('Live browser session')).toBeInTheDocument()
+      expect(screen.getByTitle('Live browser session')).toBeInTheDocument()
     )
   })
 
-  it('falls back to the read-only mirror when NO native view is available (remote gateway / plain browser)', () => {
-    // No browserAPI bridge → native.available is false → streamed frames are the
-    // only transport, so the mirror shows.
+  it('falls back to the CLI browser view when NO native view is available (remote gateway / plain browser)', async () => {
+    // No browserAPI bridge → native.available is false → the CLI dashboard is
+    // the only transport, so its frame shows.
+    getBrowserView.mockResolvedValue(RUNNING)
     renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
-    emitFrame('sess-1')
-    expect(screen.getByAltText('Live browser session')).toBeInTheDocument()
+    expect(await screen.findByTitle('Live browser session')).toBeInTheDocument()
   })
 
   // NOTE: three tests are deliberately gone from here — they pinned the
@@ -562,8 +739,8 @@ describe('WebPreviewPanel — native browser transport', () => {
   // (security.py: "Presence alone is the authorization") and the agent command
   // channel takes LIGHT itself, so the panel carries no agent-authorization
   // control to assert. Transport selection is still covered by the three tests
-  // above (native owns the panel / mirror before a native view / mirror when no
-  // bridge exists).
+  // above (native owns the panel / CLI view before a native view / CLI view when
+  // no bridge exists).
 
   it('hides (never destroys) the native view when the panel goes inactive, and closes it on unmount', async () => {
     const api = installNativeBridge(true)

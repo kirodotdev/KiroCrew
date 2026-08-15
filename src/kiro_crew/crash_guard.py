@@ -104,8 +104,13 @@ def _asyncio_exception_handler(loop, context) -> None:  # noqa: no-blocking-call
         exc_tuple = (type(exception), exception, exception.__traceback__)
         _write_crash(header, exc_tuple)
     else:
-        logger.error("asyncio unhandled: %s (no exception object)", message)
-        _write_crash(f"ASYNCIO UNHANDLED (no exc): {message}")
+        if message.startswith("Unclosed"):
+            # GC noise from aiohttp sessions dropped without close() — harmless,
+            # not worth a crash.log entry.
+            logger.warning("asyncio unhandled (noise): %s", message)
+        else:
+            logger.error("asyncio unhandled: %s (no exception object)", message)
+            _write_crash(f"ASYNCIO UNHANDLED (no exc): {message}")
 
 
 def install(loop=None) -> None:

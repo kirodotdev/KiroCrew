@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Pencil, Send, Copy, Check, Link2, Target, Pin, PinOff } from 'lucide-react'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
+import { HOVER_NONE_ACTIONS_ROW_CLS } from '../../utils/touchActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { applySearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
@@ -211,7 +212,11 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           </motion.div>
         </>
       ) : bubble}
-      <div className="flex items-center gap-1.5 px-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300">
+      {/* Where the pointer cannot hover the footer is always visible and its
+          descendant overrides grow every action to a 40px touch target (20px
+          icon + 10px padding); hover-capable pointers keep the reveal-on-hover
+          behavior and the compact 14px icons untouched. */}
+      <div className={`flex items-center gap-1.5 px-1 mt-1 opacity-0 transition-opacity duration-300 delay-100 group-hover/msg:opacity-100 group-hover/msg:delay-300 group-focus-within/msg:opacity-100 group-focus-within/msg:delay-300 ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
         <button
           onClick={() => {
             const pastes = (meta?.pastes as PasteBlock[] | undefined) || []

@@ -6,6 +6,8 @@ import WidgetFrame from '../components/WidgetFrame'
 import { ThemeProvider } from '../hooks/useTheme'
 import { api, ApiError } from '../api/client'
 import { effectiveWidgetSlug } from '../lib/widgetSlug'
+import { i18nT } from '../i18n/t'
+import { TAILWIND_COMPLEXITY_THRESHOLD } from '../lib/widgetComplexity'
 
 // WidgetFrame consumes useTheme(), which requires a ThemeProvider, and now
 // useQuery, which requires a QueryClient. Wrap every render here to mirror the
@@ -59,7 +61,17 @@ beforeEach(() => {
       }
     }
   } as typeof Blob
-  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-widget')
+  // Well-formed blob: URI (scheme + real origin + opaque path), not a bare
+  // 'blob:test-widget' literal. happy-dom's disableIframePageLoading refuses
+  // the iframe navigation synchronously, but its AsyncTaskManager can retry
+  // the SAME request later, off this test's call stack. A malformed value
+  // survives that retry looking like a same-origin PATH once the scheme is
+  // gone, missing the msw catch-all's blob:/data: fast path and its
+  // DOM_DRIVEN_LOAD_RE allowlist alike — landing on the 501 fallback, which
+  // surfaces as a deferred ECONNREFUSED during fork-worker teardown and can
+  // crash the whole shard (not just this test). Anchoring to the real test
+  // origin keeps the blob: scheme intact through the retry either way.
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test-widget')
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
 
   // Jest-dom inherits the real CSSOM, so spy on getComputedStyle to inject a
@@ -283,7 +295,9 @@ describe('WidgetFrame openInNewTab', () => {
       if (typeof parts[0] === 'string') wrapper = parts[0] as string
       return new realBlob(parts, opts)
     })
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    // Well-formed blob: URI — see the beforeEach mock above for why a bare
+    // 'blob:test' literal risks a deferred ECONNREFUSED crashing the shard.
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(window, 'open').mockReturnValue(null)
 
@@ -302,7 +316,9 @@ describe('WidgetFrame openInNewTab', () => {
       mimeType = opts?.type ?? ''
       return new realBlob(args[0] as BlobPart[], opts)
     })
-    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test')
+    // Well-formed blob: URI — see the beforeEach mock above for why a bare
+    // 'blob:test' literal risks a deferred ECONNREFUSED crashing the shard.
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:http://localhost:6776/test')
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.spyOn(window, 'open').mockReturnValue(null)
 
@@ -916,5 +932,99 @@ describe('WidgetFrame exists-vs-pinned states', () => {
 
     const slug = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })
     expect(queryClient.getQueryData(['artifact-saved', slug])).toEqual({ exists: false, pinned: false })
+  })
+})
+
+// Structural-contract tests for the expanded (full-screen) layout.
+//
+// Percentage iframe heights require an unbroken definite-height chain: the
+// expanded root is a fixed-position flex column, the body wrapper is a
+// shrinkable flex-1 item, and the iframe resolves 100% against it so it fills
+// the space below the toolbar. These tests pin that CLASS STRUCTURE only —
+// happy-dom computes no layout, so they cannot observe rendered geometry.
+// Real display regressions need a browser-level geometry assertion.
+describe('WidgetFrame expanded layout (structural contract)', () => {
+  const expandLabel = () => i18nT('components.widgetFrame.expand')
+
+  it('expanded: root is a flex column and the body wrapper/iframe form an unbroken height chain', () => {
+    const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+    const root = container.firstElementChild as HTMLElement
+    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+
+    // Collapsed baseline: measured pixel height, plain wrapper, no modal classes.
+    expect(iframe.style.height).not.toBe('100%')
+    expect(root.classList.contains('flex-col')).toBe(false)
+
+    const btn = container.querySelector(
+      `button[aria-label="${expandLabel()}"]`,
+    ) as HTMLButtonElement
+    expect(btn).not.toBeNull()
+    act(() => { btn.click() })
+
+    // Token-level checks: `flex` must be its own class (flex-col alone sets
+    // no display), and `inset-4` is what makes the fixed root's height
+    // definite — without it the chain below has nothing to resolve against.
+    // classList.contains() (not jest-dom's toHaveClass) because this TS
+    // project does not load the matcher's type extensions for test files.
+    expect(root.classList.contains('fixed')).toBe(true)
+    expect(root.classList.contains('inset-4')).toBe(true)
+    expect(root.classList.contains('flex')).toBe(true)
+    expect(root.classList.contains('flex-col')).toBe(true)
+    // The wrapper introduced for the progress indicator must fill the modal.
+    const bodyWrapper = iframe.parentElement as HTMLElement
+    expect(bodyWrapper.classList.contains('flex-1')).toBe(true)
+    expect(bodyWrapper.classList.contains('min-h-0')).toBe(true)
+    // The iframe resolves against the flexed wrapper, not a magic 36px calc.
+    expect(iframe.style.height).toBe('100%')
+  })
+
+  it('expanded: the loading overlay of a heavy widget spans the full body wrapper', () => {
+    // Enough unique Tailwind utility classes to cross the complexity
+    // threshold, so the parent-side progress overlay actually renders and
+    // its expanded-mode height style is exercised.
+    const classes = Array.from(
+      { length: TAILWIND_COMPLEXITY_THRESHOLD + 10 },
+      (_, i) => `p-${i}`,
+    ).join(' ')
+    const { container } = wrap(<WidgetFrame html={`<div class="${classes}">x</div>`} title="T" />)
+    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    // The overlay stays mounted until the iframe's load event, which the
+    // mocked blob: URL never fires in this environment.
+    const overlay = iframe.parentElement!.querySelector(
+      '[class*="absolute"][class*="inset-0"]',
+    ) as HTMLElement
+    expect(overlay).not.toBeNull()
+    expect(overlay.style.height).not.toBe('100%')
+
+    const btn = container.querySelector(
+      `button[aria-label="${expandLabel()}"]`,
+    ) as HTMLButtonElement
+    act(() => { btn.click() })
+
+    expect(overlay.style.height).toBe('100%')
+  })
+
+  it('restores the collapsed layout on minimize', () => {
+    const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
+    const root = container.firstElementChild as HTMLElement
+    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    const collapsedHeight = iframe.style.height
+
+    const expandBtn = container.querySelector(
+      `button[aria-label="${expandLabel()}"]`,
+    ) as HTMLButtonElement
+    act(() => { expandBtn.click() })
+    const minimizeBtn = container.querySelector(
+      `button[aria-label="${i18nT('components.widgetFrame.minimize')}"]`,
+    ) as HTMLButtonElement
+    expect(minimizeBtn).not.toBeNull()
+    act(() => { minimizeBtn.click() })
+
+    expect(root.classList.contains('flex-col')).toBe(false)
+    // The expanded-only sizing classes must be gone; don't pin the exact
+    // class list so harmless collapsed-mode additions don't break this.
+    expect(iframe.parentElement!.classList.contains('flex-1')).toBe(false)
+    expect(iframe.parentElement!.classList.contains('min-h-0')).toBe(false)
+    expect(iframe.style.height).toBe(collapsedHeight)
   })
 })

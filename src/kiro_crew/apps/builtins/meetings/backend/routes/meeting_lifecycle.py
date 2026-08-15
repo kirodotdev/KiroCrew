@@ -107,7 +107,10 @@ def _init_meeting(meeting_id: str, title: str, body: dict[str, Any], root: Any) 
         store.write_tasks(meeting_id, [], root)
 
     config = store.read_config(root)
-    agents_enabled = field_str_list(body, "agents_enabled") or meta.get("agents_enabled")
+    # `[]` means "no agents" and absent means "use the defaults", so fall back
+    # on None rather than falsiness — `or` would collapse the two.
+    body_agents = field_str_list(body, "agents_enabled")
+    agents_enabled = body_agents if body_agents is not None else meta.get("agents_enabled")
     enabled = sess.get_enabled_agents(config, agents_enabled)
     store.ensure_agent_files(meeting_id, enabled, meta.get("title", "Meeting Notes"), root)
     return meta

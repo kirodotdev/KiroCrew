@@ -31,6 +31,8 @@ from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew.acp.client import _OVERSIZE_DRAIN_MAX_BYTES
 from kiro_crew.acp.runtime import (
+    _REQUEST_TIMEOUT,
+    _SESSION_NEW_TIMEOUT,
     _TERMINATE_TIMEOUT,
     AcpRuntime,
     AcpRuntimeDead,
@@ -1540,6 +1542,9 @@ async def test_tool_stall_cancels_session_not_runtime(monkeypatch):
             await asyncio.sleep(0.06)
             raise asyncio.TimeoutError
 
+        def qsize(self) -> int:
+            return 0  # always empty; TOCTOU guard sees no new frames
+
     handle._queue = _SilentQueue()  # type: ignore[assignment]
 
     events = []
@@ -1582,6 +1587,9 @@ async def test_tool_stall_recovery_completes_even_if_cancel_fails(monkeypatch):
         async def get(self):
             await asyncio.sleep(0.06)
             raise asyncio.TimeoutError
+
+        def qsize(self) -> int:
+            return 0  # always empty; TOCTOU guard sees no new frames
 
     handle._queue = _SilentQueue()  # type: ignore[assignment]
 
@@ -3250,8 +3258,9 @@ class TestAcpRuntimePidTracking:
 class TestAcpRuntimeLoadSession:
     """load_session() must mirror AcpClient._initialize_session's resume path:
     issue session/load DIRECTLY (no session/new first) under the ORIGINAL sid,
-    with the same cwd + empty mcpServers + _kiro.dev/session_file _meta. The
-    double-session drift it replaces produced stopReason='refusal'."""
+    with the same cwd + mcpServers (pooled broker stubs re-declared; [] when no
+    overlay is configured) + _kiro.dev/session_file _meta. The double-session
+    drift it replaces produced stopReason='refusal'."""
 
     @pytest.mark.asyncio
     async def test_load_session_sends_direct_session_load_params(self, monkeypatch):
@@ -3260,7 +3269,7 @@ class TestAcpRuntimeLoadSession:
 
         sent: list[tuple[str, dict]] = []
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             sent.append((method, params))
             # session/load echoes "modes"; set_mode echoes nothing meaningful.
             if method == METHOD_SESSION_LOAD:
@@ -3285,6 +3294,8 @@ class TestAcpRuntimeLoadSession:
         assert load_params == {
             "sessionId": "sid-123",
             "cwd": "/work",
+            # [] because _make_runtime configures no MCP-gateway overlay — the
+            # non-pooled path is unchanged by the #3528 stub re-declaration.
             "mcpServers": [],
             "_meta": {"_kiro.dev/session_file": "/home/u/.kiro/sessions/cli/sid-123.json"},
         }
@@ -3308,7 +3319,7 @@ class TestAcpRuntimeLoadSession:
         rt, _, _ = _make_runtime()
         rt._can_load_session = True
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             return {}  # no "modes" → load did not actually restore state
 
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
@@ -3327,7 +3338,7 @@ class TestAcpRuntimeLoadSession:
         rt._can_load_session = True
         captured: dict = {}
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             if method == METHOD_SESSION_LOAD:
                 captured.update(params)
                 return {"modes": {}, "models": []}
@@ -3337,6 +3348,8 @@ class TestAcpRuntimeLoadSession:
         await rt.load_session("/k/sid.json", "sid", cwd="/w", agent="kirocrew")
 
         # Mirror of AcpClient's kiro-branch load_params (client.py step 2).
+        # mcpServers is [] on BOTH paths here because no overlay is configured;
+        # the pooled case is covered by test_load_session_redeclares_pooled_stubs.
         expected = {
             "sessionId": "sid",
             "cwd": "/w",
@@ -3370,6 +3383,140 @@ class TestAcpRuntimeLoadSession:
             await rt.load_session("/k/sid.json", "sid-z", cwd="/w", agent="kirocrew")
         assert METHOD_SESSION_TERMINATE in methods
         assert "sid-z" not in rt._session_queues
+
+    @pytest.mark.asyncio
+    async def test_load_session_redeclares_pooled_stubs(self, tmp_path, monkeypatch):
+        """#3528 regression: a resumed session must re-declare the pooled broker
+        stubs. session/load re-initializes the session's MCP servers, so the []
+        this path used to send was APPLIED — the stubs stopped shadowing the
+        agent spec's same-named entries and kiro-cli spawned its own copy of
+        every pooled server, silently un-pooling the session for life.
+
+        Asserts on the EMITTED mcpServers of both requests: load_session must
+        carry exactly the entries create_session injects for the same agent +
+        overlay. Mutating the fix back to [] fails the first assert."""
+        from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
+
+        overlay = tmp_path / "agents"
+        overlay.mkdir()
+        (overlay / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "mcpServers": {"builder-mcp": {
+                _WRAPPER_MARKER: True,
+                "command": "/data/mcp-gateway/stubs/mc-mcp-stub-wrapper.sh",
+                "args": ["--target-command=builder-mcp"],
+                "env": {},
+            }}}),
+            encoding="utf-8",
+        )
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        rt._mcp_gateway_overlay = str(overlay)
+
+        sent: list[tuple[str, dict]] = []
+
+        async def _fake_send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {}, "models": []}
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-new"}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+        await rt.load_session("/k/sid.json", "sid-r", cwd="/w", agent="kirocrew")
+        load_params = next(p for m, p in sent if m == METHOD_SESSION_LOAD)
+        assert [e["name"] for e in load_params["mcpServers"]] == ["builder-mcp"]
+
+        # Parity with create_session for the same agent + overlay: the two
+        # injection paths must never diverge.
+        await rt.create_session(cwd="/w", agent="kirocrew")
+        new_params = next(p for m, p in sent if m == METHOD_SESSION_NEW)
+        assert load_params["mcpServers"] == new_params["mcpServers"]
+
+    @pytest.mark.asyncio
+    async def test_load_session_resolves_stubs_off_the_event_loop(self, monkeypatch):
+        """The overlay lookup stats and reads files; like create_session it must
+        run via asyncio.to_thread, not on the loop thread."""
+        import threading
+
+        import kiro_crew.acp.runtime as rt_mod
+
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        rt._mcp_gateway_overlay = "/nonexistent-overlay"
+
+        loop_thread = threading.current_thread()
+        seen: list[threading.Thread] = []
+
+        def _recording_pooled(overlay_dir, agent, channel_id=None):
+            seen.append(threading.current_thread())
+            return []
+
+        monkeypatch.setattr(rt_mod, "pooled_session_servers", _recording_pooled)
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        await rt.load_session("/k/sid.json", "sid-t", cwd="/w", agent="kirocrew")
+
+        assert seen, "load_session never consulted pooled_session_servers"
+        assert all(t is not loop_thread for t in seen)
+
+    def test_every_session_request_builder_consults_pooled_servers(self):
+        """#3528 guard: the stub injection now lives at multiple call sites in
+        two files, and this bug was exactly one of them silently sending [].
+        Enumerate every function that issues session/new or session/load and
+        assert each one consults the pooled-stub resolution (either
+        pooled_session_servers directly or the _pooled_mcp_servers hook), so a
+        fourth builder — or a regression in an existing one — fails here
+        instead of shipping another silent un-pooling path."""
+        import ast
+        import inspect
+
+        import kiro_crew.acp.client as client_mod
+        import kiro_crew.acp.runtime as rt_mod
+
+        _SEND_FUNCS = {"_send_request", "_send_and_await"}
+        _SESSION_METHODS = {"METHOD_SESSION_NEW", "METHOD_SESSION_LOAD"}
+
+        def _builders(module) -> dict[str, str]:
+            src = inspect.getsource(module)
+            out: dict[str, str] = {}
+            for node in ast.walk(ast.parse(src)):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for call in ast.walk(node):
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and call.func.attr in _SEND_FUNCS
+                        and call.args
+                        and isinstance(call.args[0], ast.Name)
+                        and call.args[0].id in _SESSION_METHODS
+                    ):
+                        out[node.name] = ast.get_source_segment(src, node) or ""
+                        break
+            return out
+
+        builders = {**_builders(rt_mod), **_builders(client_mod)}
+        # The four known builders; a new one is included automatically.
+        assert {
+            "create_session",
+            "load_session",
+            "_new_session_following_substitution",
+            "_initialize_session",
+        } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
+        for name, body in builders.items():
+            assert (
+                "pooled_session_servers" in body or "_pooled_mcp_servers" in body
+            ), (
+                f"{name} issues session/new or session/load but never consults "
+                "the pooled broker stubs — it would un-pool its sessions (#3528)"
+            )
 
 
 @pytest.mark.asyncio
@@ -3406,7 +3553,7 @@ async def test_create_session_registers_queue_on_success(monkeypatch):
     registered so the returned handle receives its frames."""
     rt, _, _ = _make_runtime()
 
-    async def _fake_send(method, params):
+    async def _fake_send(method, params, timeout=None):
         if method == METHOD_SESSION_NEW:
             return {"sessionId": "sid-ok"}
         return {}
@@ -3813,7 +3960,7 @@ async def test_mcp_free_runtime_skips_no_report_ceiling(monkeypatch):
     rt._process = proc
     rt._pid = 4242
 
-    async def _fake_send(method, params):
+    async def _fake_send(method, params, timeout=None):
         if method == METHOD_SESSION_NEW:
             return {"sessionId": "sid-lite"}
         return {}
@@ -3871,7 +4018,7 @@ async def test_reader_retains_mcp_registration_frames_during_init():
     task = asyncio.create_task(rt._reader_loop())
     try:
 
-        async def _fake_send(method, params):
+        async def _fake_send(method, params, timeout=None):
             if method == METHOD_SESSION_NEW:
                 # Frames arrive while session/new is in flight — before the
                 # queue can be registered under the not-yet-known session id.
@@ -5207,3 +5354,154 @@ def test_parse_session_modes_shapes():
     assert ids == ["kirocrew", "ops", "code-reviewer"]
     assert current == "kirocrew"
     assert advertised is True
+
+
+# ── Session-start timeout budget (#2946) ──
+#
+# kiro-cli blocks the session/new (and session/load) response while it
+# initializes the session's MCP servers; a remote server pending OAuth holds
+# that for its full 30s authorization wait. These tests lock in the CALL SITE
+# — the timeout actually handed to _send_and_await — not just the constant,
+# because dropping the ``timeout=`` argument silently reverts to the generic
+# 30s _REQUEST_TIMEOUT, which is the exact regression.
+
+
+@pytest.mark.asyncio
+async def test_session_new_call_site_passes_budget_above_request_timeout(monkeypatch):
+    """create_session must hand _send_and_await an explicit session/new timeout
+    that exceeds _REQUEST_TIMEOUT — the generic default equals the backend's
+    30s OAuth wait, turning session start into a race the client loses."""
+    rt, _, _ = _make_runtime()
+    rt._expect_mcp_reports = False  # skip the MCP drain wait — not under test
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            seen["timeout"] = timeout
+            return {"sessionId": "sid-budget"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.create_session(cwd="/w", mcp_servers=[])
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert isinstance(seen["timeout"], float)
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_session_load_call_site_passes_budget_above_request_timeout(monkeypatch):
+    """load_session is gated by the same MCP re-initialization (kiro-cli
+    re-initializes servers on load; oauth_request frames are staged while
+    either request is in flight), so it must carry the same budget."""
+    rt, _, _ = _make_runtime()
+    rt._can_load_session = True
+    rt._expect_mcp_reports = False  # skip the MCP drain wait — not under test
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            seen["timeout"] = timeout
+            return {"modes": {"currentModeId": "kirocrew"}}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.load_session("/home/u/.kiro/sessions/cli/sid-9.json", "sid-9", cwd="/w")
+
+    assert seen["timeout"] == _SESSION_NEW_TIMEOUT
+    assert seen["timeout"] > _REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_session_start_budget_follows_config(monkeypatch):
+    """agent.session_start_timeout_secs raises the session/new budget: the
+    configured value is resolved lazily (off-loop, on first session start —
+    never in __init__, where a config cache miss would block the event loop)
+    and handed to _send_and_await, so a large agent whose MCP fleet needs
+    longer than the 90s default (many servers, sandboxed per-server
+    launchers, loaded hosts) can extend the budget without patching the
+    constant. Resolved once per runtime and cached thereafter."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    fake_cfg = SimpleNamespace(agent=SimpleNamespace(session_start_timeout_secs=240))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake_cfg))
+
+    rt, _, _ = _make_runtime()
+    rt._expect_mcp_reports = False
+    # Lazy: construction must not have resolved (or read) config.
+    assert rt._session_start_timeout is None
+    seen: dict[str, object] = {}
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            seen["timeout"] = timeout
+            return {"sessionId": "sid-cfg"}
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    await rt.create_session(cwd="/w", mcp_servers=[])
+
+    assert seen["timeout"] == 240.0
+    # Cached: later session starts on this runtime reuse the snapshot.
+    assert rt._session_start_timeout == 240.0
+    assert await rt._session_start_budget() == 240.0
+
+
+def test_runtime_construction_never_touches_config(monkeypatch):
+    """AcpRuntime.__init__ runs on the event loop; KiroCrewConfig.load() is a
+    synchronous disk read + schema validation on a cache miss, so the budget
+    must resolve lazily (off-loop) on first session start — never at
+    construction."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    def _boom(cls):
+        raise AssertionError("config must not be consulted at construction")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+    rt = AcpRuntime(work_dir="/tmp")
+    assert rt._session_start_timeout is None
+
+
+def test_resolve_session_start_timeout_floors_and_falls_back(monkeypatch):
+    """The resolver never returns below the built-in floor (a budget under the
+    backend's 30s OAuth wait recreates the #2946 race), and any config-load
+    failure degrades to the default instead of breaking runtime construction."""
+    from types import SimpleNamespace
+
+    from kiro_crew.acp.runtime import _resolve_session_start_timeout
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    # Below-floor value (belt-and-braces: the loader clamp already prevents
+    # this on disk, but a degraded load must not shrink the budget either).
+    low_cfg = SimpleNamespace(agent=SimpleNamespace(session_start_timeout_secs=10))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: low_cfg))
+    assert _resolve_session_start_timeout() == _SESSION_NEW_TIMEOUT
+
+    # Config load blowing up falls back to the default.
+    def _boom(cls):
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+    assert _resolve_session_start_timeout() == _SESSION_NEW_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_send_and_await_timeout_error_names_the_budget():
+    """The timeout message must carry the budget that elapsed so a 90s
+    session-start timeout is distinguishable from a generic 30s one. The
+    'timed out' substring is load-bearing (chat_runner matches on it)."""
+    rt, _, _ = _make_runtime()
+
+    with pytest.raises(AcpRuntimeError) as exc_info:
+        # stdin is mocked and nothing ever responds → wait_for times out.
+        await rt._send_and_await("probe/method", {}, timeout=0.01)
+
+    msg = str(exc_info.value)
+    assert "timed out" in msg
+    assert "0.01s" in msg
+    assert "probe/method" in msg

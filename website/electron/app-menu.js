@@ -44,6 +44,7 @@ function buildMenuTemplate(deps) {
     ...(isMac
       ? [
           {
+            id: "app-menu",
             label: appName,
             submenu: [
               aboutItem,
@@ -62,14 +63,16 @@ function buildMenuTemplate(deps) {
         ]
       : [
           {
+            id: "file-menu",
             // Windows/Linux home for Settings; the quit role renders as
             // "Exit" on Windows and "Quit" on Linux.
             label: "File",
             submenu: [settingsItem, { type: "separator" }, { role: "quit" }],
           },
         ]),
-    { role: "editMenu" },
+    { id: "edit-menu", role: "editMenu" },
     {
+      id: "view-menu",
       label: "View",
       submenu: [
         // Explicit handlers, not { role: ... }: the roles target the focused
@@ -104,6 +107,7 @@ function buildMenuTemplate(deps) {
       ],
     },
     {
+      id: "connection-menu",
       label: "Connection",
       submenu: [
         { label: "New Connection Window…", accelerator: "CmdOrCtrl+N", click: openNewConnectionWindow },
@@ -115,9 +119,9 @@ function buildMenuTemplate(deps) {
         { label: "Open Config File", click: openConfigFile },
       ],
     },
-    { role: "windowMenu" },
+    { id: "window-menu", role: "windowMenu" },
     // Windows/Linux home for About (Help > About <app>).
-    ...(isMac ? [] : [{ label: "Help", submenu: [aboutItem] }]),
+    ...(isMac ? [] : [{ id: "help-menu", label: "Help", submenu: [aboutItem] }]),
   ];
 }
 

@@ -469,12 +469,6 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
-    "dashboard/handlers/messaging.py": (
-        "reader (STRICT): api_browser_frame resolves the browse-mirror session "
-        "key from the posting Playwright proxy's host_pid by walking process "
-        "ancestry and calling session_pid_sig.verify_session_pid (HMAC-verified) "
-        "on each ancestor — HOST-pid-keyed, no unsigned .txt read"
-    ),
     "peer_resolve.py": (
         "reader: the SERVER-side /proc ancestry walk (extracted from "
         "mcp_gateway/gatewayd._resolve_peer_identity, which now delegates "

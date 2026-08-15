@@ -805,7 +805,7 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
             if rate > 0:
                 growth = round(rate, 2)
                 remaining = _COMPACTION_PCT - seg[-1][1]
-                to_90 = int(remaining / rate) if remaining > 0 else 0
+                to_90 = math.ceil(remaining / rate) if remaining > 0 else 0
         convo_rows.append(
             {
                 "slot": c["slot"],
@@ -1075,6 +1075,13 @@ def _build_token_record(
         credits = float(getattr(u, "credits", 0.0))
     except (TypeError, ValueError):
         credits = 0.0
+    # Turn stop reason, read off the EVENT (AcpEvent carries it; a bare
+    # TurnUsage from provider_last_turn_usage does not — recorded as "").
+    # Free-form per-row (this store has no cardinality limit, unlike OTel
+    # attrs), so watchdog outcomes (STOP_REASON_TOOL_STALL / _STALE_RECOVER)
+    # can be joined against the row's ``agent`` field retroactively — this is
+    # where per-agent stall analysis happens, deliberately NOT on metric attrs.
+    _stop = getattr(event, "stop_reason", "")
     return {
         "_type": "tokens",
         "ts": now.isoformat(),
@@ -1105,6 +1112,10 @@ def _build_token_record(
             str(k): _coerce_int(v) for k, v in (ctx_blocks or {}).items() if _coerce_int(v) > 0
         },
         "phase": phase or "",
+        # Additive: the turn's terminal stop reason ("" when the producer has
+        # none). str-coerced so a non-string on a test double / legacy event
+        # can't break json.dumps.
+        "stop_reason": _stop if isinstance(_stop, str) else "",
     }
 
 

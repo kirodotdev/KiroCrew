@@ -51,6 +51,10 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # the prompt that actually blocks a turn has its own critical channel
     # (system.approval), and this is the report about it, not the prompt.
     "system.safety_override": _DEFAULT_PRIORITY,
+    # Host resource pressure ("threshold crossed" per the RFC). The channel
+    # default stays `default`; the producer escalates the entering-critical
+    # note explicitly (see notifications/resource_pressure.py).
+    "system.resources": _DEFAULT_PRIORITY,
 }
 
 # Fallback channel for legacy kinds that have no dedicated system channel

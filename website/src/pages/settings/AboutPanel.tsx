@@ -16,22 +16,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric } from '../../i18n/format'
-type UpdateState = {
-  state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
-  version?: string
-  notes?: string
-  pubDate?: string
-  channel?: string
-  message?: string
-  /** Which stage failed. Absent on builds older than the phase-aware emit. */
-  phase?: 'check' | 'download' | 'install'
-  /** Stable failure class; the user-facing copy is chosen from this, not from `message`. */
-  code?: string
-  httpStatus?: number
-  /** Download progress, 0-100. Absent until the first progress event arrives. */
-  percent?: number
-  bytesPerSecond?: number
-}
+import type { UpdateState } from '../../hooks/useUpdateSubscription'
 
 /** Human-readable transfer rate for the progress label. */
 function formatRate(bps: number): string {
@@ -106,6 +91,7 @@ const UPDATE_ERROR_KEYS = {
   integrity: 'pages.settings.aboutPanel.update_error_integrity',
   misconfigured: 'pages.settings.aboutPanel.update_error_misconfigured',
   unknown: 'pages.settings.aboutPanel.update_error_unknown',
+  installUnknown: 'pages.settings.aboutPanel.update_error_install_unknown',
 } as const
 
 function updateErrorText(st: UpdateState | null | undefined): string {
@@ -130,7 +116,12 @@ function updateErrorText(st: UpdateState | null | undefined): string {
     // The detail still reaches the log via the main process; only fall
     // back to it if the catalog key is somehow missing, since a raw string beats
     // an empty error line.
-    default: return i18nT(UPDATE_ERROR_KEYS.unknown) || st?.message || ''
+    //
+    // The INSTALL phase gets its own generic: the shared one advises "try
+    // checking for updates again", which sits directly beside the card's Retry
+    // button — two conflicting next steps for the same failure. The install
+    // copy names what failed and leaves the next step to the card's controls.
+    default: return i18nT(st?.phase === 'install' ? UPDATE_ERROR_KEYS.installUnknown : UPDATE_ERROR_KEYS.unknown) || st?.message || ''
   }
 }
 

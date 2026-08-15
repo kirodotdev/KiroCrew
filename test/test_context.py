@@ -1117,3 +1117,68 @@ class TestAsyncCallSitesUseToThread:
             "query embed blocks the event loop; wrap in run_in_embed_pool (or "
             "add '# loop-ok: <reason>' if genuinely safe):\n  " + "\n  ".join(offenders)
         )
+
+
+class TestMemoryGetContextQueryWiring:
+    """build_session_context passes the user's message as the memory query.
+
+    Wiring ``query=query_text`` into the single ``memory.get_context()`` call
+    is what makes semantic retrieval take the ranked branch instead of recency,
+    and what lets episodic retrieval (query-gated inside ``get_context``) fire.
+    Episodic must be injected exactly once — the old sibling injection in
+    ``build_message`` is gone.
+    """
+
+    def _builder(self, tmp_path):
+        return ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+
+    def test_new_session_passes_query_to_get_context(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        builder = self._builder(tmp_path)
+        fake_memory = MagicMock()
+        fake_memory.get_context.return_value = ""
+        fake_memory.vector_store = None
+
+        with patch.object(ContextBuilder, "get_memory_for", return_value=fake_memory):
+            builder.build_message("what did we decide about paris", True, "sess-1")
+
+        assert fake_memory.get_context.call_count == 1
+        kwargs = fake_memory.get_context.call_args.kwargs
+        assert kwargs["query"] == "what did we decide about paris"
+
+    def test_episodic_injected_exactly_once(self, tmp_path):
+        from types import SimpleNamespace
+
+        builder = self._builder(tmp_path)
+        store = builder.get_memory_for(None)
+        store._vector_store = SimpleNamespace(
+            get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
+            get_semantic_context=lambda query_text, cap: "",
+            get_lessons_context=lambda query_text, cap: "",
+        )
+        msg, _ = builder.build_message("q", True, "s1")
+        assert msg.count("[EPISODIC-SENTINEL]") == 1
+
+    def test_episodic_query_is_the_user_message(self, tmp_path):
+        from types import SimpleNamespace
+
+        seen: list[str] = []
+        builder = self._builder(tmp_path)
+        store = builder.get_memory_for(None)
+
+        def _episodic(query_text, cap):
+            seen.append(query_text)
+            return ""
+
+        store._vector_store = SimpleNamespace(
+            get_episodic_context=_episodic,
+            get_semantic_context=lambda query_text, cap: "",
+            get_lessons_context=lambda query_text, cap: "",
+        )
+        builder.build_message("find my tokyo notes", True, "s2")
+        assert seen == ["find my tokyo notes"]

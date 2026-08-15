@@ -691,7 +691,7 @@ async function reconcileMochiAfterCurrent() {
 }
 
 async function reconcileMochi() {
-  const { openPetWindow, closePetWindow } = require("./petOverlays");
+  const { openPetWindow, closePetWindow, rearmBlankedOverlays, hasBlankedOverlay } = require("./petOverlays");
   const {
     closeAvatarWindowFromReconcile,
     setAvatarBaseUrl,
@@ -809,6 +809,22 @@ async function reconcileMochi() {
   // window is now the Avatars gallery, opened on demand rather than at startup.
   closeAvatarWindowFromReconcile();
   openPetWindow(mochiPetBaseUrl, mochiPetToken);
+  // An overlay stuck on a gateway error page (expired cookie or a transient 5xx)
+  // has hidden itself; re-arm it with a token that works for the CURRENT target.
+  // For a remote instance that is its own token; for self the pet rides the
+  // same-origin cookie (empty token) — exactly what expired — so carry the
+  // CURRENT local token on the URL to re-establish it. Reuse the cached token,
+  // never mint here: the reconcile probes already clear cachedGatewayToken on a
+  // genuine 401/403, so gatewayToken() re-mints only when the old one was truly
+  // rejected. Minting every tick while a non-auth 4xx/5xx keeps an overlay
+  // blanked would churn session nonces and evict pending auth links.
+  if (hasBlankedOverlay()) {
+    let rearmToken = mochiPetToken;
+    if (mochiPetInstanceId === SELF_INSTANCE) {
+      rearmToken = await gatewayToken();
+    }
+    rearmBlankedOverlays(mochiPetBaseUrl, rearmToken);
+  }
   // Fully enabled again: bring the panel back if disable had hidden it.
   restorePanelOnEnable(mochiPetBaseUrl, mochiPetToken);
   // FIRST OPEN: on the first enabled tick of a session (fresh enable, or the pet
@@ -1185,6 +1201,11 @@ function initMochi(deps) {
   BACKEND_URL = deps.backendUrl;
   fetchLocalToken = deps.fetchLocalToken;
   glog = deps.glog;
+  try {
+    require("./panelWindow").setMainWindowGetter(deps.getMainWindow);
+  } catch {
+    /* module shape changed */
+  }
   startMochiWatcher();
 }
 

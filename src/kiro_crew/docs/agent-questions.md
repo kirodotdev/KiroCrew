@@ -142,14 +142,37 @@ Returns `{status: "answered", ask_id, answers}` or `{status: "timeout", ask_id}`
 Body: `{answers: {question: answer}}`, or `{dismissed: true}` to unblock with no
 answer. 404 when no pending question owns that id.
 
-`GET /api/ask-question/pending` — question cards still awaiting an answer, as
-`[{ask_id, slot, questions, ts}]` (question text already redacted).
+`GET /api/ask-question/pending` — question cards still awaiting an answer.
 `question_card` is a one-shot broadcast, so a reload or websocket reconnect after
-it fired would otherwise leave the agent blocked with nothing on screen until the
-window elapses. The frontend re-syncs this on websocket open, the same way it
-re-syncs `GET /api/approvals`.
+it fired would otherwise leave the agent waiting with nothing on screen. The
+frontend re-syncs this on websocket open, the same way it re-syncs
+`GET /api/approvals`. Both kinds are listed, distinguished by their identity:
 
-**All three endpoints are owner-only.** Refusing app tokens is not enough: a
+| Shape | Source | Meaning |
+|---|---|---|
+| `{ask_id, slot, questions, ts}` | the blocked wait registry | a parked round-trip |
+| `{card_id, slot, questions, ts}` | the slot's needs-input record | a stateless card |
+
+The stateless half exists because the status is durable while the card was not:
+without it a reloaded tab shows "needs your answer" with no card to answer and no
+way to dismiss it (the client no longer knows the `card_id`), and only sending a
+message could clear it. Rehydration is add-only and never overwrites a card
+already on screen — that card is either the same ask carrying the user's
+half-entered answer or a newer one, and both outrank a snapshot. A record with no
+stored `questions` is a status-only marker and is not listed.
+
+`POST /api/ask-question/dismiss` — retire a STATELESS card's session status.
+Body: `{slot, card_id}` — the slot key and the card identity the `question_card`
+payload carries (not a session key: a channel-born conversation's two keys differ
+and the client holds only the slot). `card_id` is required because the dismissal
+is a round-trip: a newer ask can replace the card before the request lands, and a
+slot-only clear would retire the NEW card's status. 400 without it; 404 when the
+slot holds no stateless record with that id. A blocking ask is deliberately NOT
+dismissible here — it owns its lifecycle through the answer endpoint, and clearing
+its status from this route would report a session as unblocked while its tool call
+is still parked on the wait.
+
+**All four endpoints are owner-only.** Refusing app tokens is not enough: a
 dashboard session token is also minted for every allowed Slack user
 (`!dashboard`), and it carries an empty app claim, so it clears the app gate
 while belonging to someone who is not the owner. That caller could address a card
@@ -168,6 +191,82 @@ all-clients channel. Owner-gating the HTTP endpoints would buy nothing otherwise
 an allowed Slack user's `!dashboard` session registers as an ordinary WS client,
 so a plain `broadcast_ws` would hand them the owner's question text, options, and
 `ask_id` over the socket even though they cannot call the endpoints.
+
+## Session status: `needs_input`
+
+A card is a websocket broadcast with no transcript row, so an ask was visible only
+in the tab that happened to receive it — and a BLOCKING ask parks the turn, so the
+slot went on reporting `running` with nothing able to advance it. Every slot
+payload therefore carries one derived field:
+
+| Field | Meaning |
+|---|---|
+| `needs_input` | an unanswered question card is on screen |
+
+Its scope is exactly that: it corrects a status that would otherwise be **wrong**.
+A turn that merely ENDED is not an ask, including one ending in an `[OPTIONS:]`
+tag — every finished turn is waiting on the user, so a status raised there carries
+no information (the same reason `waiting_for_input` cannot carry a badge) and the
+row already says so with its last message and its unread dot. Raising it there
+also cost the row its live turn status, since surfaces rank this above every
+"working" signal. It is separate from `pending_approval`, whose answer is
+allow/deny on a tool rather than input, and which keeps its own precedence and
+label everywhere the two are rendered.
+
+It is **not** gated on `running`: a blocking ask parks the turn mid-flight, so the
+session is running AND waiting on the user. Surfaces rank it directly below the
+approval treatments and above every "working" signal for that reason — otherwise
+a blocked session reads as "Thinking…".
+
+The record is a map on the slot keyed by the ask's identity,
+`{card_id: {ts, blocking, questions?}}`, written by `post_question_card` (with a
+minted `card_id`, which also rides the broadcast so a client can name it later)
+and by `request_question` (`card_id` = the `ask_id`). A map rather than one field
+because parked asks overlap — with a single record the second ask overwrote the
+first, and whichever resolved first cleared the only entry while the other was
+still waiting. Entries are recorded BEFORE the delivery await, because a
+backpressured socket would otherwise leave a window where a user row finds no
+record to retire and the mark lands after it, stranding an answered session in
+`needs_input`. There is deliberately **no capacity eviction**: dropping a blocking
+entry would clear the status of an `ask_question` call still parked on its future
+and report a stuck session as idle. The map is bounded by construction instead —
+at most one stateless entry per slot, and one blocking entry per in-flight
+`ask_question` request, each holding a live HTTP request bounded by
+`_QUESTION_TIMEOUT_MAX`.
+
+A stateless entry also stores its redacted `questions`, which is what makes the
+durable status actionable: the card itself is a broadcast with no transcript row,
+so the pending endpoint above serves the payload back to a reloaded tab rather
+than leaving a status with no card behind it.
+
+A **stateless card supersedes** any earlier stateless entry, because the frontend
+holds one card per slot: keeping both would leave the replaced card unreachable —
+nothing to answer or dismiss — while its entry held the status up. Blocking
+entries are never collapsed; each parked round-trip is separately answerable.
+
+Retirement, and only these paths:
+
+| Path | Retires |
+|---|---|
+| a LIVE turn-consuming message (`user` or `nudge` — see `_QUESTION_RETIRING_ROLES`) | the stateless entry only |
+| the blocking round-trip's exit (answered / dismissed / timed out / cancelled) | its own entry, by `card_id` |
+| `POST /api/ask-question/dismiss` | the stateless entry, by `card_id` |
+
+Every retirement is also **announced** as a `question_card_resolved` event carrying
+the `card_id`, so a second window — and a `/pending` response already in flight —
+drops the card instead of re-rendering it. The reverse direction is covered too: a
+cancelled queued answer never lands, so the client re-syncs `/pending` on
+`queue_cancel` and the card comes back from the record rather than leaving the
+status with nothing on screen.
+
+Both filters (`blocking`, `card_id`) leave a non-matching entry in place rather
+than clearing it. Three things deliberately do NOT retire anything: a user row
+against a blocking entry (nothing it does resolves a parked wait, so clearing
+would report the agent as working while its tool call is stuck), a REPLAYED user
+row (`broadcast=False` — transcript-rotation recovery, forks and session transfers
+re-append historical rows, and an old message says nothing about the question
+asked a moment ago), and the agent's own further output (a card posted mid-turn
+outlives the lines that follow it).
 
 ## Frontend behaviour
 

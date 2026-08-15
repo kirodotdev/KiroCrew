@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Callable
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import is_sensitive_path
@@ -489,7 +490,9 @@ class FolderWatcher:
                                attempts=prior_attempts + 1)
 
             item_ids, outcome = await self._ingest_file(
-                file_path, source_id, namespace, props, old_ids, root=uri)
+                file_path, source_id, namespace, props, old_ids, root=uri,
+                on_duplicate=lambda: self._record_deduped_state(
+                    source_id, file_path, content_hash, mtime, now))
             if item_ids is None:
                 # Ingestion failed. The 'scanning' marker above is only a crash hint,
                 # so it has to be replaced with a terminal status here rather than
@@ -508,10 +511,10 @@ class FolderWatcher:
                 # the Library under another source. 'deduped' -- the same status the
                 # dedup sweep writes -- records WHY the file has no item group, so a
                 # later scan can tell it apart from an ingest that produced nothing.
-                # The content_hash and mtime are stored with it, which is what lets
-                # an edit bring the file back into the scan.
-                self._update_state(source_id, file_path, content_hash, mtime, "[]", now,
-                                   "deduped", commit=False)
+                # The row itself was written by the ``on_duplicate`` finalizer above,
+                # inside the gate's own run-to-completion hop, because the gate has
+                # already committed by the time it reports back and a cancellation
+                # here would leave that commit unrecorded.
                 stats["skipped"] += 1
             else:
                 self._update_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False)
@@ -670,6 +673,78 @@ class FolderWatcher:
         return row["error_message"] if row else None
 
     def _update_state(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, commit: bool = True):
+        self._write_state_row(source_id, file_path, content_hash, mtime, item_ids, now,
+                              status, error_message, attempts=attempts)
+        if commit:
+            self.store.db.commit()
+
+    def _deduped_text_hash(self, content_hash: str) -> str | None:
+        """Text hash for a row the pre-ingest gate refused, or ``None``.
+
+        A refused row owns nothing, so it has no items to derive the text hash
+        from -- and it is exactly the row that later needs one, because releasing
+        its claim is what stops a folder being handed a document whose file is
+        gone. Take it from the byte-identical row it was refused against: equal
+        bytes through the same reader give equal text, so this is derived rather
+        than guessed. ``None`` when there is no sibling to derive from; the
+        ownership lookup coalesces to content_hash for such a row, which is the
+        right answer wherever it can be reached (the gate can only have refused a
+        plaintext file in that situation, and for plaintext the two are equal).
+        """
+        if not content_hash:
+            return None
+        sib = self.store.db.execute(
+            "SELECT text_hash FROM folder_file_state "
+            "WHERE content_hash = ? AND text_hash IS NOT NULL LIMIT 1",
+            (content_hash,)).fetchone()
+        return sib["text_hash"] if sib else None
+
+    def _surviving_group(self, source_id: str, file_path: str) -> list[str]:
+        """This file's group per :meth:`KnowledgeStore.surviving_group_in_txn`.
+
+        Never on the event loop, and only inside the caller's write transaction.
+
+        Returning empty is not proof that this source owns nothing for the
+        document. ``_adopt_reassigned_item`` matches a folder row on
+        ``COALESCE(text_hash, content_hash)``, and a refused row's ``text_hash``
+        is derived from a byte-identical sibling row -- so for a transformed file
+        (PDF, DOCX, HTML, where the bytes hash and the text hash differ) with no
+        such sibling, the adoption matches nothing and this read cannot see the
+        item. That gap predates this change: the terminal write was previously an
+        unconditional empty group, so the row never named the item either. Closing
+        it needs the incoming document's TEXT hash carried out of the gate rather
+        than guessed from a sibling, which is a change to what the gate reports and
+        does not belong here. ``test_deduped_state_write_recovers_a_transformed_
+        files_reassigned_item`` is an xfail pinning it. The aggregate tables store
+        the text hash in ``content_hash`` directly and do not have this gap.
+        """
+        return self.store.surviving_group_in_txn(
+            "folder_file_state", source_id, file_path)
+
+    def _record_deduped_state(self, source_id: str, file_path: str, content_hash: str,
+                              mtime: float, now: str) -> None:
+        """Terminal write for a file the pre-ingest gate refused.
+
+        Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the
+        gate's own ``BEGIN IMMEDIATE`` and on its worker thread. It therefore takes
+        no lock and no transaction of its own: the delete of the previous group, the
+        location claim on the holder's items, the terminal job row and this record
+        are one atomic unit. Nothing can observe a claim without the row that names
+        it, and nothing can interleave between them.
+
+        The group is DERIVED rather than assumed empty, because a
+        ``delete_source_cascade`` that committed BEFORE this transaction took the
+        lock may already have reassigned the surviving item here and adopted it into
+        this row. Predicting ``[]`` would erase that and leave the last copy owned
+        by this source but named by no row: unreachable by the deleted-file path,
+        and undeletable.
+        """
+        adopted = self._surviving_group(source_id, file_path)
+        self._write_state_row(
+            source_id, file_path, content_hash, mtime, json.dumps(adopted), now,
+            "done" if adopted else "deduped")
+
+    def _write_state_row(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
         # lookups have to relate this row to items, and items are keyed by the text
         # hash -- for a PDF or HTML file that is a different string from the bytes
@@ -687,23 +762,8 @@ class FolderWatcher:
                 "SELECT content_hash FROM items WHERE id = ?", (ids[0],)).fetchone()
             if row:
                 text_hash = row["content_hash"]
-        elif status == "deduped" and content_hash:
-            # A row refused by the pre-ingest gate owns nothing, so it has no items to
-            # derive the text hash from -- and it is exactly the row that later needs
-            # one, because releasing its claim is what stops a folder being handed a
-            # document whose file is gone. Take it from the byte-identical row it was
-            # refused against: equal bytes through the same reader give equal text, so
-            # this is derived rather than guessed.
-            sib = self.store.db.execute(
-                "SELECT text_hash FROM folder_file_state "
-                "WHERE content_hash = ? AND text_hash IS NOT NULL LIMIT 1",
-                (content_hash,)).fetchone()
-            if sib:
-                text_hash = sib["text_hash"]
-            # Left NULL when there is no sibling to derive from. The ownership lookup
-            # coalesces to content_hash for such a row, which is the right answer
-            # wherever it can be reached: the gate can only have refused a plaintext
-            # file in that situation, and for plaintext the two hashes are equal.
+        elif status == "deduped":
+            text_hash = self._deduped_text_hash(content_hash)
         # ``attempts`` defaults to 0, so every terminal write ('done', 'deduped',
         # 'failed') clears the retry budget as a side effect of not passing it: the
         # count only ever accumulates across consecutive 'scanning' markers, which is
@@ -711,8 +771,6 @@ class FolderWatcher:
         self.store.db.execute(
             "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message, attempts))
-        if commit:
-            self.store.db.commit()
 
     def _update_last_seen(self, source_id: str, file_path: str, now: str):
         self.store.db.execute(
@@ -779,7 +837,9 @@ class FolderWatcher:
 
     async def _ingest_file(self, file_path: str, source_id: str, namespace: str, props: dict,
                            old_item_ids: list[str],
-                           root: str = "") -> tuple[list[str] | None, str]:
+                           root: str = "",
+                           on_duplicate: Callable[[], None] | None = None,
+                           ) -> tuple[list[str] | None, str]:
         """Ingest one file.
 
         Returns ``(item_ids, outcome)`` where *outcome* is ``"done"``,
@@ -839,7 +899,8 @@ class FolderWatcher:
             job_id = await self.pipeline.ingest_file(
                 resolved, source_id=source_id, namespace=namespace,
                 original_name=Path(file_path).name,
-                old_item_ids=old_item_ids)
+                old_item_ids=old_item_ids,
+                on_duplicate=on_duplicate)
 
             if job_id and (self.pipeline.get_job_status(job_id) or {}).get(
                     "status") == DUPLICATE_JOB_STATUS:

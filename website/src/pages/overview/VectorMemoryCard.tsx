@@ -397,7 +397,11 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
     {active && view === 'semantic' && (
       <Card>
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.structured_key_value_facts_about_you_confidence')} /></CardTitle>
-        <div className="flex gap-2 items-center mb-3 relative">
+        {/* Two inputs and a button. `flex-wrap` so the button drops to its own
+            line at a narrow width instead of the three of them competing: with
+            no wrap the inputs cannot shrink past their intrinsic minimum, so the
+            row overflows and the button leaves the viewport. */}
+        <div className="flex gap-2 items-center flex-wrap mb-3 relative">
           <div className="relative" style={{ flex: 1 }}>
             <Input placeholder={i18nT('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} value={newKey} onChange={e => { setNewKey(e.target.value); setWriteError('') }}
               list="key-suggestions" className="w-full" />
@@ -408,7 +412,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
           <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
         </div>
         {writeError && <p className="text-danger text-[13px] mb-2"><AlertTriangle className="lucide-inline" /> {writeError}</p>}
-        <div className="flex gap-2 items-center mb-3">
+        <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')} style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null) }} />
           {semFilter && <Btn onClick={() => { setSemFilter(''); setEditKey(null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
@@ -457,7 +461,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
     {active && view === 'episodic' && (
       <Card>
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.episodic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.conversation_fragments_with_vector_search_import')} /></CardTitle>
-        <div className="flex gap-2 items-center mb-3">
+        <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadEpisodic() }} />
           <SendBtn onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
@@ -533,7 +537,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
     {active && view === 'inspector' && (
       <Card>
         <CardTitle><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.memory_inspector')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.preview_what_gets_injected_into_prompts_enter_a')} /></CardTitle>
-        <div className="flex gap-2 items-center mb-3">
+        <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadPreview(inspectorQuery) }} />
           <SendBtn onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>

@@ -14,19 +14,44 @@ import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
-import type { StatusData, ChatSlot, Notification, PullRequestStatusBatch, TodoList } from '../types'
+import type { StatusData, ChatMessage, ChatSlot, Notification, PullRequestStatusBatch, TodoList } from '../types'
 import { i18nT } from '../i18n/t'
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
+type VoiceProgress = {
+  slot: string
+  messageId: string
+  spokenLen: number
+}
+
+function voiceMessageId(message: ChatMessage): string {
+  const clientId = message.meta?.clientTs
+  if (typeof clientId === 'string' && clientId) return clientId
+  if (message.ts) return message.ts
+  const serverId = message.meta?.mid
+  return typeof serverId === 'string' ? serverId : ''
+}
+
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
-/** Own-property `ask_id`s held in the pending-question map, in map order.
- *  Legacy cards (no ask_id) are excluded: they have no server-side record. */
+/** The server-side IDENTITY of a held card: a blocking ask's `ask_id`, or a
+ *  stateless card's server-minted `card_id`. Both kinds are listed by
+ *  `GET /api/ask-question/pending`, so both can be reconciled against it.
+ *
+ *  A card with neither (an entry built by a fixture, or delivered before the
+ *  server kept a record) has no identity to compare, and absence from the
+ *  snapshot says nothing about it — those are skipped rather than reported
+ *  stale. */
+export function identityOf(card: { ask_id?: string; serverCardId?: string } | undefined): string {
+  return card?.ask_id || card?.serverCardId || ''
+}
+
+/** Own-property card identities held in the pending-question map, in map order. */
 export function askIdsOf(
-  map: Record<string, { ask_id?: string } | undefined> | undefined,
+  map: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
 ): string[] {
   return Object.values(map ?? {})
-    .map((card) => card?.ask_id)
+    .map((card) => identityOf(card))
     .filter((id): id is string => !!id)
 }
 
@@ -53,10 +78,18 @@ export function resolvedSince(log: Map<string, number>, watermark: number): stri
  *  - An id that vanished locally during the fetch was resolved by a WS event, so
  *    the response's copy is already dead and must not be re-added — a
  *    resurrected card can only 404 on submit.
+ *
+ *  Both kinds of card go through this, keyed by `identityOf`: the server records
+ *  and lists stateless cards too, so a tab that was disconnected while its card
+ *  was retired or replaced must have it removed, not merely be denied a
+ *  duplicate. A card whose identity is absent from the snapshot is stale in
+ *  exactly the same sense for both kinds.
  */
-export function reconcileQuestions<T extends { ask_id: string; slot?: string; questions?: unknown[] }>(
-  before: Record<string, { ask_id?: string } | undefined> | undefined,
-  after: Record<string, { ask_id?: string } | undefined> | undefined,
+export function reconcileQuestions<
+  T extends { ask_id?: string; card_id?: string; slot?: string; questions?: unknown[] },
+>(
+  before: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
+  after: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
   pending: T[],
   resolvedDuringFetch: string[] = [],
 ): { drop: string[]; add: T[] } {
@@ -64,35 +97,57 @@ export function reconcileQuestions<T extends { ask_id: string; slot?: string; qu
   // Two independent sources, because neither alone is sufficient:
   //  - the before/after diff catches a card that WAS local and disappeared
   //    (including one this client resolved itself, with no WS event involved);
-  //  - the observed resolution log catches an ask_id this client never held, so
+  //  - the observed resolution log catches an identity this client never held, so
   //    there was nothing for the diff to notice. That is the case where the
   //    snapshot alone would resurrect a dead card.
   const dead = new Set([
     ...askIdsOf(before).filter((id) => !afterIds.has(id)),
     ...resolvedDuringFetch,
   ])
+  const beforeIds = new Set(askIdsOf(before))
+  /** True when *slot* now holds a DIFFERENT card that the snapshot cannot know
+   *  about — one that arrived while the request was in flight (its identity is
+   *  absent from `before`). The same ordering argument as the drop side, applied
+   *  to adds: one card renders per slot, so adding the snapshot's row would
+   *  replace a newer live card with a stale one. */
+  const arrivedDuringFetch = (slot: string | undefined, identity: string): boolean => {
+    if (!slot) return false
+    const held = identityOf(after?.[slot])
+    return !!held && held !== identity && !beforeIds.has(held)
+  }
   return {
     drop: staleAskIds(before, pending),
-    add: pending.filter((q) => !!q.slot && !!q.questions?.length && !dead.has(q.ask_id)),
+    add: pending.filter((q) => {
+      const identity = q.ask_id || q.card_id || ''
+      return (
+        !!q.slot &&
+        !!q.questions?.length &&
+        !dead.has(identity) &&
+        !arrivedDuringFetch(q.slot, identity)
+      )
+    }),
   }
 }
 
-/** Ask-ids held locally that the server no longer lists as pending.
+/** Card identities held locally that the server no longer lists as pending.
  *
  *  `question_card` and `question_card_resolved` are one-shot broadcasts, so a
  *  reload or reconnect can miss either one: a card that should be showing is
- *  absent, or one resolved while disconnected is still on screen. Reconnect
- *  therefore reconciles in both directions rather than only adding.
+ *  absent, or one retired while disconnected is still on screen. Reconnect
+ *  therefore reconciles in both directions rather than only adding — for a
+ *  stateless card as much as a blocking one, since keeping a retired or
+ *  superseded card would send its answer against a question the agent has
+ *  already moved past.
  *
- *  Legacy cards (no ask_id) are never reported stale: the server has no record
- *  of them, so their absence from the response says nothing about them.
+ *  A card with no identity at all is never reported stale: there is nothing to
+ *  compare, so its absence from the response says nothing about it.
  *  Exported so this is unit-testable without standing up a live socket.
  */
 export function staleAskIds(
-  current: Record<string, { ask_id?: string } | undefined> | undefined,
-  pending: { ask_id: string }[],
+  current: Record<string, { ask_id?: string; serverCardId?: string } | undefined> | undefined,
+  pending: { ask_id?: string; card_id?: string }[],
 ): string[] {
-  const live = new Set(pending.map((q) => q.ask_id))
+  const live = new Set(pending.map((q) => q.ask_id || q.card_id || '').filter(Boolean))
   return askIdsOf(current).filter((id) => !live.has(id))
 }
 
@@ -120,10 +175,13 @@ export function useWebSocket() {
      with a sequence so trimming never shifts a watermark's meaning. */
   const resolvedAskIdsRef = useRef<Map<string, number>>(new Map())
   const resolvedSeqRef = useRef(0)
-  const recordResolvedAskId = useCallback((askId: string) => {
-    if (!askId) return
+  /** Log a RETIRED question identity — a blocking `ask_id` or a stateless
+   *  `card_id`, in one map because the snapshot add side asks the same question
+   *  of both: "was this retired while my request was in flight?" */
+  const recordRetiredId = useCallback((retiredId: string) => {
+    if (!retiredId) return
     const log = resolvedAskIdsRef.current
-    log.set(askId, ++resolvedSeqRef.current)
+    log.set(retiredId, ++resolvedSeqRef.current)
     if (log.size > 200) {
       // Drop the oldest entries; a reconcile only ever consults recent ones.
       const oldest = [...log.entries()].sort((a, b) => a[1] - b[1]).slice(0, log.size - 200)
@@ -138,11 +196,16 @@ export function useWebSocket() {
   const reconnectingRef = useRef(false)  // suppress markSlotUnread during reconnect catch-up
   const lastVersionRef = useRef<string | null>(null)
   const lastGitlabHostsGenRef = useRef<number | null>(null)
+  const lastSlotsRawRef = useRef<string | null>(null)
+  const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
   const voiceQueueRef = useRef<string[]>([])
   const voicePlayingRef = useRef(false)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const autoSpeakRef = useRef(false)
-  const spokenLenRef = useRef(0)  // chars already sent to TTS during streaming
+  // Speech offsets belong to one concrete message. A segment for another slot
+  // must not reset the active message, and a new post-tool segment must start
+  // from zero even while the previous message remains in the transcript.
+  const voiceProgressRef = useRef<VoiceProgress | null>(null)
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
   // #1 streaming-chunk coalescing: accumulate per-slot chunk text and flush
@@ -173,6 +236,35 @@ export function useWebSocket() {
     voicePlayingRef.current = false
     dispatch(setVoicePlaying(false))
   }, [dispatch])
+
+  const voiceProgressFor = useCallback((slot: string, message: ChatMessage): VoiceProgress | null => {
+    const messageId = voiceMessageId(message)
+    if (!messageId) return null
+    const current = voiceProgressRef.current
+    if (!current || current.slot !== slot || current.messageId !== messageId) {
+      const next = { slot, messageId, spokenLen: 0 }
+      voiceProgressRef.current = next
+      voiceMutedRef.current = false
+      return next
+    }
+    return current
+  }, [])
+
+  const enqueueVoiceSynthesis = useCallback((slot: string, text: string) => {
+    synthChainRef.current = synthChainRef.current
+      .then(() => api.voiceSynthesize(slot, text))
+      .catch(() => {})
+  }, [])
+
+  const flushVoiceTail = useCallback((slot: string, message: ChatMessage) => {
+    const progress = voiceProgressFor(slot, message)
+    if (!progress) return
+    const remaining = message.content.slice(progress.spokenLen).trim()
+    // Mark the whole message consumed even when its tail is below the speech
+    // floor, so a later completion event cannot reconsider or repeat it.
+    progress.spokenLen = message.content.length
+    if (remaining.length >= 10) enqueueVoiceSynthesis(slot, remaining)
+  }, [enqueueVoiceSynthesis, voiceProgressFor])
 
   const playNextVoiceChunk = useCallback(() => {
     if (voicePlayingRef.current || voiceQueueRef.current.length === 0) return
@@ -294,15 +386,34 @@ export function useWebSocket() {
       // `before`/`after` cannot see it, because there was nothing to remove.
       const resolvedSeen = resolvedSeqRef.current
       const pending = await api.pendingQuestions()
+      // ONE reconcile for both kinds. The server records and lists stateless
+      // cards, so their absence from the snapshot is evidence in the same way a
+      // blocking ask's is: a tab that was disconnected while its card was retired
+      // or superseded must lose it, or submitting it answers a question the agent
+      // has already moved past.
       const { drop, add } = reconcileQuestions(
         before,
         store.getState().chat.pendingQuestions,
         pending,
         resolvedSince(resolvedAskIdsRef.current, resolvedSeen),
       )
-      for (const askId of drop) dispatch(resolveQuestionCard({ ask_id: askId }))
+      // Identity-keyed retirement: an entry is dropped by whichever id it holds.
+      const heldBefore = Object.values(before ?? {})
+      for (const id of drop) {
+        const wasBlocking = heldBefore.some((c) => c?.ask_id === id)
+        dispatch(resolveQuestionCard(wasBlocking ? { ask_id: id } : { card_id: id }))
+      }
       for (const q of add) {
-        dispatch(setQuestionCard({ slot: q.slot as string, ask_id: q.ask_id, questions: q.questions }))
+        // A stateless row carries `card_id`; a blocking one carries `ask_id`. The
+        // reducer coalesces a structurally identical re-delivery, so re-adding a
+        // card this tab already holds keeps the mounted component and the user's
+        // half-entered answer rather than churning it.
+        dispatch(setQuestionCard({
+          slot: q.slot as string,
+          ask_id: q.ask_id,
+          card_id: q.card_id,
+          questions: q.questions as Parameters<typeof setQuestionCard>[0]['questions'],
+        }))
       }
     } catch { /* ignore */ }
   }, [dispatch])
@@ -334,29 +445,28 @@ export function useWebSocket() {
     // after the batched content has landed in the store. (Moved here from the
     // per-chunk path so it reads the post-dispatch streaming content.)
     if (dispatchedActive && autoSpeakRef.current && activeSlot) {
-      if (spokenLenRef.current === 0) voiceMutedRef.current = false
       const msgs = store.getState().chat.messages
       const streaming = [...msgs].reverse().find(m => m.role === 'streaming')
       if (streaming) {
+        const progress = voiceProgressFor(activeSlot, streaming)
+        if (!progress) return
         const full = streaming.content
         let lastBound = -1
         const re = /[.!?](?:\s|$)/g
         let match
         while ((match = re.exec(full)) !== null) {
-          if (match.index + 1 > spokenLenRef.current) lastBound = match.index + 1
+          if (match.index + 1 > progress.spokenLen) lastBound = match.index + 1
         }
-        if (lastBound > spokenLenRef.current) {
-          const newText = full.slice(spokenLenRef.current, lastBound).trim()
+        if (lastBound > progress.spokenLen) {
+          const newText = full.slice(progress.spokenLen, lastBound).trim()
           if (newText.length >= 10) {
-            spokenLenRef.current = lastBound
-            synthChainRef.current = synthChainRef.current
-              .then(() => api.voiceSynthesize(activeSlot, newText))
-              .catch(() => {})
+            progress.spokenLen = lastBound
+            enqueueVoiceSynthesis(activeSlot, newText)
           }
         }
       }
     }
-  }, [dispatch])
+  }, [dispatch, enqueueVoiceSynthesis, voiceProgressFor])
 
   const scheduleChunkFlush = useCallback(() => {
     if (chunkFlushScheduledRef.current) return
@@ -414,6 +524,9 @@ export function useWebSocket() {
       // gateway, so after a restart an equal number can mean a different
       // allowlist. Clearing it makes the next generation frame refetch.
       lastGitlabHostsGenRef.current = null
+      // Forget the last raw slots frame too, so a reconnect whose first frame
+      // repeats the last one before it cannot swallow that first frame.
+      lastSlotsRawRef.current = null
       // Cache auto-speak preference
       api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
       if (wasConnectedRef.current) {
@@ -449,6 +562,12 @@ export function useWebSocket() {
         slotActivityBufRef.current.clear()
         dispatch(sseConnected())
         dispatch(fetchSlots()).finally(() => { reconnectingRef.current = false })
+        // A summary regenerated while the socket was down pushed a
+        // `session_summary` event nobody received, and the panel does not poll,
+        // so without this the stale summary persists until the tab remounts.
+        // Invalidate every slot's summary (the key is per-slot and we cannot
+        // know which ones moved); react-query only refetches the observed ones.
+        queryClient.invalidateQueries({ queryKey: ['session-summary'] })
         seedGoalLoops()
         dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
@@ -468,8 +587,17 @@ export function useWebSocket() {
       }
       wasConnectedRef.current = true
       dispatch(sseConnected())
-      dispatch(fetchSlots())
       seedGoalLoops()
+      // FIRST connect only: App's mount effect already dispatched fetchSlots,
+      // and this handler fires strictly after it, so repeating it here is a
+      // redundant round-trip at the worst possible moment. The reconnect branch
+      // above still refetches — there it recovers state missed while the socket
+      // was down. fetchNotifications IS still dispatched here despite the
+      // mount-effect copy: syncPendingApprovals must only run after a
+      // notifications fetch has settled, because fetchNotifications.fulfilled
+      // replaces membership and ordering wholesale and would wipe any approval
+      // notifications synced before it. Its merge preserves local ack flags
+      // only, so it is no protection for a row the response does not carry.
       dispatch(fetchNotifications()).then(() => syncPendingApprovals())
       syncPendingQuestions()
       // Eagerly subscribe to subagent events on first connect too.
@@ -508,7 +636,14 @@ export function useWebSocket() {
             break
           }
           case 'slots': {
+            // An identical repeat carries identical values for every arm below, but
+            // only while no other writer (fetchSlots) has since replaced the list.
+            const raw = e.data as string
+            if (raw === lastSlotsRawRef.current
+                && store.getState().dashboard.slots === lastSlotsArrayRef.current) break
+            lastSlotsRawRef.current = raw
             dispatch(sseSlots(data as ChatSlot[]))
+            lastSlotsArrayRef.current = store.getState().dashboard.slots
             if (msg.yolo !== undefined) {
               dispatch(sseStatus({ yolo: msg.yolo } as StatusData))
             }
@@ -547,6 +682,20 @@ export function useWebSocket() {
           case 'slot_title':
             dispatch(sseSlotTitle(data as { key: string; title: string }))
             break
+          case 'session_summary': {
+            // A turn finished and the backend regenerated this session's intent
+            // summary. Invalidate so the panel picks it up immediately.
+            //
+            // This event is why the summary panel does not poll: the summary is
+            // deliberately a pull-friendly artifact — a panel on an interval
+            // would reward refreshing, which is the checking loop the feature
+            // exists to remove. Push-on-change gives freshness without it.
+            const key = (data as { key?: string }).key
+            if (key) {
+              queryClient.invalidateQueries({ queryKey: ['session-summary', key] })
+            }
+            break
+          }
           case 'artifact_update': {
             // Live artifact refresh: the backend broadcasts from the artifact
             // mutation funnel (create / content PATCH / revert / relocate /
@@ -631,7 +780,14 @@ export function useWebSocket() {
             }
             // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
             if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
+              // Android Chrome throws "Illegal constructor" for page-context
+              // Notification; an uncaught throw here kills the whole message
+              // handler, so the native toast is best-effort.
+              try {
+                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
+              } catch {
+                /* unsupported platform */
+              }
             }
             dispatch(addNotification({
               kind: 'approval',
@@ -737,7 +893,7 @@ export function useWebSocket() {
             // trigger (no-op unless an L2 theme with that manifest sound is
             // active + unmuted). User/tool messages don't chime.
             if (data.role === 'assistant') emitThemeSound('message-received')
-            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); spokenLenRef.current = 0; synthChainRef.current = Promise.resolve() }
+            if (data.role === 'user' || data.role === 'inject' || data.role === 'subagent') { stopVoice(); voiceProgressRef.current = null; synthChainRef.current = Promise.resolve() }
             if (data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))
             }
@@ -771,6 +927,14 @@ export function useWebSocket() {
             break
           case 'queue_cancel':
             dispatch(cancelQueuedMessage(data))
+            // A cancelled queued message is an answer that never lands. The
+            // card was cleared optimistically when it was submitted, so without
+            // this the slot would keep reporting needs_input with nothing on
+            // screen to answer or dismiss. Re-syncing brings the card back from
+            // the server's own record — the question is genuinely unanswered
+            // again. Harmless when the cancelled message was not an answer: the
+            // snapshot then lists nothing for the slot and adds nothing.
+            syncPendingQuestions()
             break
           case 'queue_edit':
             dispatch(editQueuedMessage(data))
@@ -802,9 +966,46 @@ export function useWebSocket() {
             break
           }
           case 'tool_call':
+            // Re-broadcast BEFORE the store dispatches: ChatPage opens the Browser
+            // panel from this event, and a reducer that throws on a malformed
+            // payload must not also cost the panel its only signal.
+            window.dispatchEvent(new CustomEvent('kirocrew-tool-call', { detail: data }))
             dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
             if (data.slot) {
-              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'tool', text: sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || data.tool), toolName: sanitizeLlmOutput(data.tool), ts: Date.now() }))
+              // A refinement (`is_update`) carries only the fields it refines,
+              // so merge it into the live status the way sseToolActivity merges
+              // the tool-log entry: an update that omits `purpose` must not
+              // replace the purpose the initial tool_call supplied with the raw
+              // command, and one that omits `tool` must not blank the title.
+              // Without this the session-list row of a running session flips
+              // from the agent's purpose to the literal command mid-call.
+              // Merging is gated on the tool_call_id matching, so when several
+              // tools run in parallel a refinement of one cannot inherit a
+              // sibling's purpose.
+              //
+              // `text` holds the PURPOSE ALONE and stays empty when the agent
+              // supplied none — the fallback to the tool title belongs to
+              // toolStatusLabel, which owns the label rule. Storing the title
+              // in `text` instead would make the two indistinguishable here,
+              // and a purpose-less call would then pin the initial stub title
+              // ("Terminal") for the whole call instead of advancing to the
+              // refined command.
+              const tcid = (data as Record<string, unknown>).tool_call_id as string | undefined
+              const isUpdate = (data as Record<string, unknown>).is_update === true
+              const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
+              const toolName = sanitizeLlmOutput(data.tool || '')
+              const prev = store.getState().chat.slotStatusDetail[data.slot]
+              const mergeInto = isUpdate && tcid && prev?.kind === 'tool' && prev.toolCallId === tcid
+                ? prev
+                : undefined
+              dispatch(setSlotStatusDetail({
+                slot: data.slot,
+                kind: 'tool',
+                text: purpose || mergeInto?.text || '',
+                toolName: toolName || mergeInto?.toolName || '',
+                ...(tcid ? { toolCallId: tcid } : {}),
+                ts: Date.now(),
+              }))
             }
             // Note: do NOT dispatch sseChatMessage here. The backend persists the
             // tool message via slot.append and broadcasts it as 'chat_message'.
@@ -826,13 +1027,15 @@ export function useWebSocket() {
             dispatch(setQuestionCard({ ...(data as Parameters<typeof setQuestionCard>[0]), fresh: true }))
             break
           case 'question_card_resolved': {
-            const ask = data as { ask_id: string }
+            const ask = data as { ask_id?: string; card_id?: string }
             // Recorded independently of local state: a resolution can arrive for
             // a card this client never held (empty state, or the card only exists
             // in an in-flight rehydration snapshot), in which case the dispatch
             // below is a no-op and the reconcile would otherwise re-add a dead
-            // card. See recordResolvedAskId.
-            recordResolvedAskId(ask.ask_id)
+            // card. See recordRetiredId. Both identities land in the same log —
+            // a blocking ask's `ask_id` and a stateless card's `card_id` — so one
+            // watermark covers both kinds on the snapshot add side.
+            recordRetiredId(ask.ask_id || ask.card_id || '')
             dispatch(resolveQuestionCard(ask))
             break
           }
@@ -1001,11 +1204,16 @@ export function useWebSocket() {
             }
             break
           }
-          case 'chat_segment':
+          case 'chat_segment': {
             flushChunks()
+            const segmentSlot = data.slot as string
+            if (autoSpeakRef.current && !voiceMutedRef.current && segmentSlot === store.getState().chat.activeSlot) {
+              const streaming = [...store.getState().chat.messages].reverse().find(m => m.role === 'streaming')
+              if (streaming) flushVoiceTail(segmentSlot, streaming)
+            }
             dispatch(sseChatMessage({ ...data, role: '_segment' }))
-            spokenLenRef.current = 0
             break
+          }
           case 'chat_status':
             if (data.slot && data.status) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: data.status, ts: Date.now() }))
@@ -1017,6 +1225,14 @@ export function useWebSocket() {
           case 'chat_done':
             flushChunks()
             if (data.slot) chunkBufRef.current.delete(data.slot)
+            // Consume the tail while the streaming row still carries the same
+            // identity used by sentence-boundary progress tracking.
+            if (autoSpeakRef.current && !voiceMutedRef.current && data.slot === store.getState().chat.activeSlot) {
+              const msgs = store.getState().chat.messages
+              const last = [...msgs].reverse().find(m => m.role === 'streaming')
+                ?? [...msgs].reverse().find(m => m.role === 'assistant')
+              if (last) flushVoiceTail(data.slot, last)
+            }
             dispatch(sseChatMessage({ ...data, role: '_done' }))
             // Turn-complete chime: sound-only (no feed entry, no toast).
             // Plays on every real turn completion — active or background
@@ -1060,20 +1276,7 @@ export function useWebSocket() {
               queryClient.invalidateQueries({ queryKey: ['pull-request-source'], refetchType })
               queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'], refetchType })
             }
-            // Auto-speak: speak any remaining unspoken text from streaming
-            if (autoSpeakRef.current && !voiceMutedRef.current && data.slot === store.getState().chat.activeSlot) {
-              const msgs = store.getState().chat.messages
-              const last = [...msgs].reverse().find(m => m.role === 'assistant')
-              if (last) {
-                const remaining = last.content.slice(spokenLenRef.current).trim()
-                if (remaining.length >= 10) {
-                  synthChainRef.current = synthChainRef.current
-                    .then(() => api.voiceSynthesize(data.slot, remaining))
-                    .catch(() => {})
-                }
-              }
-              spokenLenRef.current = 0
-            } else if (data.slot === store.getState().chat.activeSlot) {
+            if ((!autoSpeakRef.current || voiceMutedRef.current) && data.slot === store.getState().chat.activeSlot) {
               // Re-check config in case it changed
               api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
             }
@@ -1205,12 +1408,6 @@ export function useWebSocket() {
             queryClient.invalidateQueries({ queryKey: ['pull-request-checks', delta.url] })
             break
           }
-          case 'browser_frame':
-            // Live mirror frame (a screenshot the agent took, forwarded by the
-            // MCP proxy). Routed via a window event so the Browser panel
-            // (WebPreviewPanel via useBrowserFrame) can render without a Redux slice.
-            window.dispatchEvent(new CustomEvent('kirocrew-browser-frame', { detail: data }))
-            break
           case 'computer_use_frame':
             // Computer-use PiP frame — the downscaled JPEG the agent's own
             // computer_get_state call already captured, relayed by the gateway
@@ -1239,7 +1436,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordResolvedAskId])
+  }, [dispatch, flushChunks, scheduleChunkFlush, scheduleSlotActivityFlush, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordRetiredId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes

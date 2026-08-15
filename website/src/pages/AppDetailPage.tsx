@@ -24,6 +24,7 @@ import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription, appHighlights } from '../components/appstore/appManifest'
+import { stringList } from '../components/appstore/types'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -33,6 +34,7 @@ type AppInfo = {
   author: string
   icon?: string
   iconUrl?: string
+  iconUrlDark?: string
   tags?: string[]
   highlights?: string[]
   screenshots?: string[]
@@ -250,6 +252,7 @@ export default function AppDetailPage() {
           // icon and hero instead of the generic Package box.
           icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
           iconUrl: registryEntry?.iconUrl || m.iconUrl || m.ui?.pages?.[0]?.iconUrl || '',
+          iconUrlDark: registryEntry?.iconUrlDark || m.iconUrlDark || '',
           tags: m.tags || registryEntry?.tags || [],
           highlights: m.highlights || registryEntry?.highlights || [],
           screenshots: registryEntry?.screenshots || m.screenshots || [],
@@ -543,9 +546,16 @@ export default function AppDetailPage() {
   const desktopOnly = needsDesktopApp(app)
   const canUpdate = app.lifecycle === 'gateway'
   const canUninstall = app.lifecycle !== 'locked'
-  const agentCount = app.manifest?.agents?.length || 0
-  const skillCount = app.manifest?.skills?.length || 0
-  const cronCount = app.manifest?.crons?.length || 0
+  // stringList (not `|| []`): a mistyped truthy non-array from a user-authored
+  // manifest would pass `||` and then throw on `.map`. This fetch path
+  // (/api/apps/{name}) has no query-boundary normalizer, so coerce here.
+  const manifestAgents = stringList(app.manifest?.agents)
+  const manifestSkills = stringList(app.manifest?.skills)
+  const rawCrons = app.manifest?.crons
+  const manifestCrons = Array.isArray(rawCrons) ? rawCrons.filter(c => !!c && typeof c.name === 'string') : []
+  const agentCount = manifestAgents.length
+  const skillCount = manifestSkills.length
+  const cronCount = manifestCrons.length
   // Theme-aware hero banner source (mirrors the Browse card resolution).
   // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
   // Browse hero, then the opposite theme.
@@ -660,7 +670,7 @@ export default function AppDetailPage() {
         {/* Hero */}
         <div className="flex items-start gap-5 mb-6">
           <div className="w-24 h-24 rounded-2xl bg-accent/10 flex items-center justify-center shrink-0 overflow-hidden">
-            <AppIcon icon={app.icon} iconUrl={app.iconUrl} size={64} />
+            <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} size={64} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1 flex-wrap">
@@ -962,22 +972,22 @@ export default function AppDetailPage() {
             <Card>
               <CardTitle>{i18nT('pages.appDetailPage.resources')}</CardTitle>
               <div className="grid gap-1.5 mt-2 text-[13px]">
-                {(app.manifest?.agents || []).length > 0 && (
+                {agentCount > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Bot size={13} className="mt-0.5 shrink-0" />
-                    <div>{app.manifest!.agents!.map((a: string) => a.split('/').pop()?.replace('.json', '')).join(', ')}</div>
+                    <div>{manifestAgents.map((a: string) => a.split('/').pop()?.replace('.json', '')).join(', ')}</div>
                   </div>
                 )}
-                {(app.manifest?.skills || []).length > 0 && (
+                {skillCount > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Zap size={13} className="mt-0.5 shrink-0" />
-                    <div>{app.manifest!.skills!.map((s: string) => s.split('/').pop()).join(', ')}</div>
+                    <div>{manifestSkills.map((s: string) => s.split('/').pop()).join(', ')}</div>
                   </div>
                 )}
-                {(app.manifest?.crons || []).length > 0 && (
+                {cronCount > 0 && (
                   <div className="flex items-start gap-2 text-muted">
                     <Clock size={13} className="mt-0.5 shrink-0" />
-                    <div>{app.manifest!.crons!.map((c) => c.name).join(', ')}</div>
+                    <div>{manifestCrons.map((c) => c.name).join(', ')}</div>
                   </div>
                 )}
               </div>

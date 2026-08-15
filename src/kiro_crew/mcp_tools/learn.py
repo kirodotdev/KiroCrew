@@ -1,0 +1,194 @@
+"""The durable lessons and corrections tools: what they advertise and what they do.
+
+``schemas()`` returns the ADVERTISEMENT half of each tool -- its name, the
+model-facing description, and the JSON Schema a call is validated against.
+``HANDLERS`` maps each of those names to the function that runs it. Both halves
+of a tool live here so its contract and its behavior are read together, and
+``test_mcp_tool_registry`` fails if one arrives without the other.
+
+Handlers reach this server's shared plumbing as attributes of ``mcp_core`` --
+``mcp_core._post``, the identity resolvers, the governance vets. That is
+deliberate rather than untidy: an attribute lookup resolves at CALL time, so a
+test that rebinds one on the module still intercepts the handler. Importing
+those names directly here would bind them at import time and silently escape
+every existing patch site.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from kiro_crew import mcp_core
+from kiro_crew.validation import LEARN_ADD_SCHEMA, MAX_SHORT_STRING
+
+
+def schemas() -> list[dict[str, Any]]:
+    """Descriptors for the learn tools."""
+    # Derive the learn_add rule/negative char limit from the schema field the
+    # validator actually enforces (single source of truth) so the tool hint
+    # tracks the enforced limit — including a future config-driven value —
+    # instead of a parallel constant that can silently drift.
+    _rule_max = next(
+        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "rule"),
+        MAX_SHORT_STRING,
+    )
+    _neg_max = next(
+        (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "negative"),
+        MAX_SHORT_STRING,
+    )
+    return [
+        {
+            "name": "learn_add",
+            "description": (
+                "Save a learned correction or preference that persists across all "
+                "future sessions. MUST be called when the user corrects you, says "
+                "'always do X', 'never do Y', or 'remember that'. Include both "
+                "the rule (what to do) and negative (what not to do)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "maxLength": _rule_max,
+                        "description": (
+                            f"The lesson to remember. HARD LIMIT {_rule_max} "
+                            "characters — longer rules are REJECTED (not truncated), "
+                            "so keep it concise. Put 'what not to do' in the separate "
+                            "'negative' field rather than inlining a long '-- NOT: ...' "
+                            "clause here, and split unrelated corrections into multiple "
+                            "learn_add calls instead of one oversized rule."
+                        ),
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["tool", "preference", "knowledge"],
+                        "description": "Category: tool, preference, or knowledge",
+                    },
+                    "negative": {
+                        "type": "string",
+                        "maxLength": _neg_max,
+                        "description": (
+                            f"What NOT to do (optional). HARD LIMIT {_neg_max} "
+                            "characters — rejected if exceeded."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["global", "workspace"],
+                        "description": "Where to save: 'global' (default, all workspaces) or 'workspace' (active workspace only)",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Workspace name (required when scope='workspace'). Use the workspace name from your session context.",
+                    },
+                },
+                "required": ["rule", "category"],
+            },
+        },
+        {
+            "name": "learn_list",
+            "description": "List all saved lessons and corrections",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "learn_remove",
+            "description": "Remove lessons whose rule contains the given substring",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Substring to match"},
+                },
+                "required": ["query"],
+            },
+        },
+    ]
+
+
+def learn_add(name: str, args: dict[str, Any]) -> str:
+    rule = args.get("rule", "")
+    category = args.get("category", "knowledge")
+    if not rule:
+        return "Error: rule is required"
+    # Governance: a durable lesson write is re-injected into every future
+    # session, so it is gated by capabilities.memory_writes (default on; a
+    # policy/profile may disable it for a sandboxed surface/app).
+    _gov_mem = mcp_core._vet_memory_writes_governance(mcp_core._resolve_session_key())
+    if _gov_mem:
+        return f"Error: {_gov_mem}"
+    scope = args.get("scope", "global")
+    payload: dict[str, str] = {"rule": rule, "category": category, "scope": scope}
+    # The tool schema advertises ``negative`` -- and the ``rule`` description
+    # explicitly tells the model to prefer it over inlining a "-- NOT: ..."
+    # clause -- but this payload never forwarded it, so the clause was dropped
+    # client-side before /api/lessons could see it. The route validates the
+    # field via LEARN_ADD_SCHEMA and passes it through to write_lesson.
+    negative = args.get("negative", "")
+    if negative:
+        payload["negative"] = negative
+    if scope == "workspace":
+        ws = args.get("workspace", "")
+        if not ws:
+            return "Error: workspace name is required when scope='workspace'"
+        payload["workspace"] = ws
+    d = mcp_core._post("/api/lessons", payload)
+    err_val = d.get("error")
+    if err_val:
+        # Map the backend session-scope error to a user-actionable
+        # message so the LLM can explain the situation instead of
+        # leaking an opaque HTTP 400 as a "transport failed" error.
+        # See api_lessons_create in dashboard/handlers/cron.py: the
+        # "unknown session" response is returned when the X-Session-Key
+        # matches neither a live in-memory slot, a restricted key, the
+        # slack: namespace, nor a persisted session JSONL — so the
+        # remaining cases are genuinely unrecognised keys (forged, or
+        # ephemeral/incognito sessions that never wrote to disk), not
+        # merely evicted real sessions.
+        if "unknown session" in str(err_val):
+            return (
+                "Lesson was NOT saved: this session is not recognised "
+                "by the gateway (no active slot, restricted key, or "
+                "persisted history found for this session key). Start "
+                "a new Slack thread or dashboard tab and re-state the "
+                "lesson you want to save — it will not carry over "
+                "from this session automatically."
+            )
+        # ``err_val`` is already redacted at the trust boundary by
+        # ``_http_error_body`` (HTTP bodies are untrusted external content).
+        return f"Error: {err_val}"
+    return f"Saved lesson ({scope}): {rule}"
+
+
+def learn_list(name: str, args: dict[str, Any]) -> str:
+    d = mcp_core._get("/api/lessons")
+    # Surface transport/auth failures instead of rendering them as "no
+    # lessons". ``_get`` returns ``{"error": ...}`` on a non-2xx, which has
+    # no ``lessons`` key — reporting that as an empty list told the agent its
+    # memory was empty when the real cause was an HTTP 403 from a mismatched
+    # gateway credential, and sent a debugging session after the wrong bug.
+    err_val = d.get("error")
+    if err_val:
+        return f"Error: {err_val}"
+    lessons = d.get("lessons", [])
+    if not lessons:
+        return "No lessons saved."
+    lines = []
+    for le in lessons:
+        lines.append(f"[{le.get('category', '?')}] {le['rule']}")
+    return "\n".join(lines)
+
+
+def learn_remove(name: str, args: dict[str, Any]) -> str:
+    query = args["query"]
+    d = mcp_core._delete("/api/lessons", {"rule": query})
+    if d.get("error"):
+        return f"Error: {d['error']}"
+    return f"Removed lessons matching: {query}"
+
+
+HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+    "learn_add": learn_add,
+    "learn_list": learn_list,
+    "learn_remove": learn_remove,
+}

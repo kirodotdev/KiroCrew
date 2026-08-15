@@ -29,6 +29,15 @@ they typed). The consequence for `i18nT()`: a call in RENDER position re-resolve
 but a value baked into a `useMemo` whose deps exclude the language does not. Put
 such a lookup behind a getter or a function, never inside the memoized value.
 
+### Settings registry labels
+
+`scripts/settingsExtract.ts` resolves translated setting labels to English for
+command-palette search and also stores their catalog key in the generated
+registry. Keep both values: `useSettingHighlight` resolves the key in the active
+locale before matching `data-setting-label`, while the palette deliberately
+continues to index the stable English text. Run `npm run gen:settings` after
+changing a setting label or its translation key.
+
 ## Catalog structure
 
 Catalogs live in `src/i18n/locales/`:

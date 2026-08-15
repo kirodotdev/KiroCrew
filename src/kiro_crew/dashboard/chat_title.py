@@ -151,8 +151,9 @@ _TITLE_REFRESH_PROMPT_TEMPLATE = (
 # Interpolating the raw BCP-47 tag mirrors context._build_ui_language_section:
 # the frontend's SUPPORTED_LANGUAGES registry is the single source of truth for
 # the shipped set, so a code→name table here would be a second list to keep in
-# sync. The tag is shape-validated by ``context.ui_language_tag`` before it
-# reaches the prompt.
+# sync. The tag is shape-validated AND catalog-gated by
+# ``context.ui_language_tag`` before it reaches the prompt, so a title is never
+# steered to a language the sidebar around it cannot render.
 _TITLE_LANGUAGE_TEMPLATE = (
     "Write the title in the language of BCP-47 tag {lang}. That is the language "
     "the sidebar around the title is rendered in, so the title must be in it "

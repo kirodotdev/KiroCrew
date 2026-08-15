@@ -254,6 +254,14 @@ class TestConfigSchemaProperties:
             origin = typing.get_origin(tp)
             if origin is list or origin is dict:
                 reachable_paths.add(f"{path}.*")
+            # A dict field may declare known sub-keys via _meta(...,
+            # properties={...}); those flatten into first-class entries
+            # (see TestDeclaredDictProperties) and are reachable by
+            # construction from the field's own metadata.
+            declared = (f.metadata or {}).get("properties")
+            if isinstance(declared, dict):
+                for key in declared:
+                    reachable_paths.add(f"{path}.{key}")
 
         assert len(SCHEMA_REGISTRY) > 0, "Registry should not be empty"
 
@@ -298,6 +306,9 @@ class TestConfigSchemaProperties:
         all_fields = _all_fields_recursive(KiroCrewConfig)
         for path, f in all_fields:
             tp = _resolve_type(f)
+            optional_args = typing.get_args(tp)
+            if len(optional_args) == 2 and type(None) in optional_args:
+                tp = next(arg for arg in optional_args if arg is not type(None))
             origin = typing.get_origin(tp)
 
             # Determine expected JSON Schema type
@@ -443,6 +454,40 @@ class TestConfigSchemaProperties:
 # ---------------------------------------------------------------------------
 # Phase 2: Agent-Workspace Bindings Schema Registry Tests
 # ---------------------------------------------------------------------------
+
+
+class TestDeclaredDictProperties:
+    """A plain-dict field may declare known sub-keys via ``_meta(...,
+    properties={...})``; they must flatten into first-class entries while the
+    dict stays open (additionalProperties) so undeclared keys remain valid."""
+
+    def test_terminal_shell_is_first_class_entry(self) -> None:
+        index = {e.path: e for e in SCHEMA_REGISTRY}
+        entry = index.get("dashboard.terminal.shell")
+        assert entry is not None, "declared sub-key did not flatten into the registry"
+        assert entry.type == "string"
+        assert entry.label == "Default shell"
+
+    def test_terminal_dict_stays_open_for_undeclared_keys(self) -> None:
+        # Declaring `shell` must not close the dict: max_sessions,
+        # completion.commands and cwd are documented keys with no declaration
+        # and must still validate (and round-trip) as before.
+        node = JSON_SCHEMA["properties"]["dashboard"]["properties"]["terminal"]
+        assert node.get("additionalProperties") is True
+        assert "shell" in node.get("properties", {})
+
+    def test_declared_key_type_violation_keeps_value_and_dict(self) -> None:
+        # _apply_field_default is deliberately depth-capped (deeper paths
+        # reach dict-field values the loader tolerates — see its docstring),
+        # so a violating declared 3-level sub-key is retained: the warning
+        # says "value kept", the surrounding dict survives untouched, and the
+        # value is re-validated by its consumer (_resolve_shell coerces and
+        # rejects at spawn time).
+        from kiro_crew.config.validation import validate_config_data
+
+        data = {"dashboard": {"terminal": {"enabled": True, "shell": 123}}}
+        validate_config_data(data)
+        assert data["dashboard"]["terminal"] == {"enabled": True, "shell": 123}
 
 
 class TestAgentWorkspaceBindingsSchema:
@@ -594,3 +639,50 @@ class TestFieldTypeResolution:
         ap = sc.get("additionalProperties", {})
         assert isinstance(ap, dict) and ap.get("type") == "object"
         assert "properties" in ap and len(ap["properties"]) > 0
+
+
+class TestOptionalFieldMapping:
+    """An ``X | None`` / ``Optional[X]`` dataclass field maps to a nullable
+    base type, not ``"string"``.
+
+    Locks in the field-level ``_optional_inner`` unwrap: without it the union
+    type itself reaches ``_python_type_to_json`` and falls through to the
+    catch-all ``"string"`` with ``nullable=False``, making "unset means
+    inherit the downstream default" unexpressible for numeric config fields.
+    This module uses ``from __future__ import annotations``, so the dataclass
+    below also exercises the string-annotation resolution path end to end.
+    """
+
+    def test_optional_int_field_maps_to_nullable_integer(self) -> None:
+        @dataclasses.dataclass
+        class _Demo:
+            pep604: int | None = None
+            classic: typing.Optional[int] = None
+
+        js = _schema_module.build_json_schema(_Demo)
+        assert js["properties"]["pep604"]["type"] == ["integer", "null"]
+        assert js["properties"]["classic"]["type"] == ["integer", "null"]
+
+        by_path = {e.path: e for e in _schema_module.flatten_to_entries(js, prefix="demo")}
+        for name in ("pep604", "classic"):
+            entry = by_path[f"demo.{name}"]
+            assert entry.type == "integer", (
+                f"{name}: resolved to {entry.type!r} — 'string' here means the "
+                f"Optional unwrap regressed and the union fell through the type map"
+            )
+            assert entry.nullable is True
+
+    def test_non_optional_field_stays_single_typed(self) -> None:
+        # The plain single-type form must survive: widening a non-optional
+        # integer to ["integer", "null"] would let jsonschema accept a null
+        # the loader strips, silently reverting the field to its default.
+        @dataclasses.dataclass
+        class _Demo:
+            plain: int = 3
+
+        js = _schema_module.build_json_schema(_Demo)
+        assert js["properties"]["plain"]["type"] == "integer"
+        by_path = {e.path: e for e in _schema_module.flatten_to_entries(js, prefix="demo")}
+        entry = by_path["demo.plain"]
+        assert entry.type == "integer"
+        assert entry.nullable is False

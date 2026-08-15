@@ -443,19 +443,36 @@ class TeamsClient:
         try:
             token = await self._get_app_token()
             session = await self._ensure_session()
-            async with session.post(
-                url,
-                json=activity,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
-            ) as resp:
-                if resp.status >= 400:
-                    text = await resp.text()
-                    raise RuntimeError(f"HTTP {resp.status}: {text[:200]}")
-                try:
-                    return await resp.json()
-                except Exception:
-                    return {}
+            # Honors a single 429 Retry-After back-off, mirroring the
+            # Discord/Telegram/Webex clients' _api(): the Bot Framework
+            # Connector API enforces per-bot rate limits and returns 429 on
+            # excess traffic, and TeamsRenderer.on_done stops at the first
+            # failed chunk of a multi-chunk answer (so it doesn't deliver an
+            # incoherent gap) -- an un-retried 429 here silently truncates
+            # the user's answer instead of a single short wait.
+            for attempt in range(2):
+                async with session.post(
+                    url,
+                    json=activity,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
+                ) as resp:
+                    if resp.status == 429 and attempt == 0:
+                        retry_after = 1.0
+                        try:
+                            retry_after = float(resp.headers.get("Retry-After", "1"))
+                        except (TypeError, ValueError):
+                            pass
+                        await asyncio.sleep(min(max(retry_after, 0.5), 10.0))
+                        continue
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        raise RuntimeError(f"HTTP {resp.status}: {text[:200]}")
+                    try:
+                        return await resp.json()
+                    except Exception:
+                        return {}
+            return None
         except Exception as exc:
             self.last_error = f"send failed: {type(exc).__name__}"
             logger.warning("Teams: outbound send failed: %s", type(exc).__name__)

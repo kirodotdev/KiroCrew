@@ -9,12 +9,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import kiro_crew.env as env_mod
 from kiro_crew.env import (
-    _node_version_manager_bins,
     activate_mise,
     augmented_path,
     ensure_node,
+    node_all_bin_dirs,
     resolve_krb5_ccname,
 )
 
@@ -118,35 +120,176 @@ class TestAugmentedPath:
         assert ".local/bin" in result
 
     def test_includes_nvm_node_bins(self, tmp_path, monkeypatch) -> None:
-        # Simulate a home with two nvm-installed node versions.
+        # Simulate a home with two nvm-installed node versions. The bin dirs are
+        # deliberately EMPTY (no `node` inside): MCP-binary discovery must keep
+        # including them — a global npm binary does not need node beside it.
         nvm = tmp_path / ".nvm" / "versions" / "node"
         (nvm / "v18.0.0" / "bin").mkdir(parents=True)
         (nvm / "v22.5.0" / "bin").mkdir(parents=True)
         monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
-
-        dirs = augmented_path("/usr/bin").split(os.pathsep)
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
         nvm_marker = os.path.join(".nvm", "versions", "node")
         nvm_bins = [d for d in dirs if nvm_marker in d]
         assert len(nvm_bins) == 2
-        # Newest version first (reverse-sorted).
+        # Newest version first (numeric version ranking).
         assert "v22.5.0" in nvm_bins[0]
         assert "v18.0.0" in nvm_bins[1]
 
+    def test_mise_shims_follow_mise_data_dir(self, tmp_path, monkeypatch) -> None:
+        """The shims entry must track MISE_DATA_DIR, and must stay AHEAD of the
+        per-version install bins — the shim honours the project's version pin,
+        the raw install bin does not."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", str(tmp_path / "custom-mise"))
+        shims = tmp_path / "custom-mise" / "shims"
+        install_bin = tmp_path / "custom-mise" / "installs" / "node" / "22.0.0" / "bin"
+        shims.mkdir(parents=True)
+        install_bin.mkdir(parents=True)
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert str(shims) in dirs
+        assert str(install_bin) in dirs
+        assert dirs.index(str(shims)) < dirs.index(str(install_bin))
 
-class TestNodeVersionManagerBins:
-    def test_empty_when_no_managers(self, tmp_path) -> None:
-        assert _node_version_manager_bins(str(tmp_path)) == []
+    def test_relative_mise_data_dir_yields_no_relative_path_entry(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A relative MISE_DATA_DIR must not put a relative entry (e.g.
+        'relative-mise/shims') on a spawned subprocess's PATH — the child would
+        re-resolve it against ITS cwd, shadowing the configured command."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setenv("MISE_DATA_DIR", "relative-mise")
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        for d in dirs:
+            assert os.path.isabs(d), f"relative PATH entry leaked: {d!r}"
 
-    def test_skips_version_dir_without_bin(self, tmp_path) -> None:
+
+class TestNodeAllBinDirs:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        env_mod._node_all_bin_dirs.cache_clear()
+        yield
+        env_mod._node_all_bin_dirs.cache_clear()
+
+    @pytest.fixture
+    def fake_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p
+        )
+        monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        return tmp_path
+
+    def test_empty_when_no_managers(self, fake_home) -> None:
+        assert node_all_bin_dirs() == ()
+
+    def test_skips_version_dir_without_bin(self, fake_home) -> None:
         # A node version dir that has no bin/ subdir is ignored.
-        (tmp_path / ".nvm" / "versions" / "node" / "v20.0.0").mkdir(parents=True)
-        assert _node_version_manager_bins(str(tmp_path)) == []
+        (fake_home / ".nvm" / "versions" / "node" / "v20.0.0").mkdir(parents=True)
+        assert node_all_bin_dirs() == ()
 
-    def test_returns_existing_bin(self, tmp_path) -> None:
-        bin_dir = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+    def test_returns_existing_bin_even_without_node(self, fake_home) -> None:
+        # No-narrowing pin vs the retired _node_version_manager_bins: a bare
+        # bin dir (no executable `node`) is still a search location, because a
+        # globally-installed MCP binary can live there on its own.
+        bin_dir = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
         bin_dir.mkdir(parents=True)
-        result = _node_version_manager_bins(str(tmp_path))
-        assert result == [str(bin_dir)]
+        assert node_all_bin_dirs() == (str(bin_dir),)
+
+    def test_returns_all_versions_not_just_the_best(self, fake_home) -> None:
+        # THE regression this consolidation must not ship: narrowing to the
+        # best version per root would silently stop finding MCP binaries
+        # installed under a non-best Node version.
+        nvm = fake_home / ".nvm" / "versions" / "node"
+        old = nvm / "v18.0.0" / "bin"
+        new = nvm / "v22.5.0" / "bin"
+        old.mkdir(parents=True)
+        new.mkdir(parents=True)
+        dirs = node_all_bin_dirs()
+        assert str(old) in dirs
+        assert str(new) in dirs
+        assert dirs.index(str(new)) < dirs.index(str(old))
+
+    def test_covers_mise_asdf_and_fnm_layouts(self, fake_home) -> None:
+        # The retired implementation knew only nvm + a wrong fnm layout; the
+        # consolidated one searches every manager root the build tier knows.
+        layouts = [
+            fake_home / ".local/share/mise/installs/node/22.0.0/bin",
+            fake_home / ".asdf/installs/nodejs/20.1.0/bin",
+            fake_home / ".local/share/fnm/node-versions/v20.1.0/installation/bin",
+            fake_home / ".fnm/node-versions/v18.2.0/installation/bin",
+        ]
+        for d in layouts:
+            d.mkdir(parents=True)
+        dirs = node_all_bin_dirs()
+        for d in layouts:
+            assert str(d) in dirs
+
+    def test_numeric_versions_outrank_alias_names(self, fake_home) -> None:
+        # Ordering change vs the retired reverse-lexicographic sort, which put
+        # 'lts-krypton' above '24.16.0'.
+        root = fake_home / ".local/share/mise/installs/node"
+        alias = root / "lts-krypton" / "bin"
+        numeric = root / "24.16.0" / "bin"
+        alias.mkdir(parents=True)
+        numeric.mkdir(parents=True)
+        dirs = node_all_bin_dirs()
+        assert dirs.index(str(numeric)) < dirs.index(str(alias))
+
+    def test_is_cached(self, fake_home) -> None:
+        """Second call returns the cached result without re-globbing."""
+        nvm = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+        nvm.mkdir(parents=True)
+        result1 = node_all_bin_dirs()
+        # Remove the dir -- a non-cached implementation would return () now.
+        nvm.rmdir()
+        result2 = node_all_bin_dirs()
+        assert result1 == result2 == (str(nvm),)
+
+    def test_cache_is_keyed_on_home(self, fake_home, tmp_path_factory, monkeypatch) -> None:
+        """A different HOME is a different cache key — a caller under a patched
+        HOME must get a fresh scan, not the previous key's dirs."""
+        first = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+        first.mkdir(parents=True)
+        assert node_all_bin_dirs() == (str(first),)
+        other = tmp_path_factory.mktemp("otherhome")
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: str(other) if p == "~" else p
+        )
+        assert node_all_bin_dirs() == ()
+
+    def test_relative_mise_data_dir_is_excluded(self, fake_home, monkeypatch) -> None:
+        """A relative MISE_DATA_DIR must not put a relative entry on a spawned
+        subprocess's PATH — the child would re-resolve it against ITS cwd."""
+        monkeypatch.setenv("MISE_DATA_DIR", "relative-mise")
+        d = fake_home / "relative-mise" / "installs" / "node" / "22.0.0" / "bin"
+        d.mkdir(parents=True)
+        monkeypatch.chdir(fake_home)
+        for entry in node_all_bin_dirs():
+            assert os.path.isabs(entry), entry
+
+    def test_legacy_fnm_flat_bin_layout_still_found(self, fake_home) -> None:
+        """Strict-superset pin vs the retired scan, which globbed
+        ``~/.fnm/node-versions/<ver>/bin`` (no ``installation`` segment)."""
+        d = fake_home / ".fnm" / "node-versions" / "v20.0.0" / "bin"
+        d.mkdir(parents=True)
+        assert str(d) in node_all_bin_dirs()
+
+    def test_cache_info_exists(self) -> None:
+        """lru_cache exposes cache_info -- confirms decorator is applied."""
+        assert hasattr(env_mod._node_all_bin_dirs, "cache_info")
+        assert hasattr(env_mod._node_all_bin_dirs, "cache_clear")
 
 
 class TestEnsureNode:
@@ -441,28 +584,6 @@ class TestActivateMise:
         assert env == {"PATH": "/usr/bin"}
 
 
-class TestNodeVersionManagerBinsCache:
-    """Verify _node_version_manager_bins is cached (lru_cache) to prevent
-    repeated filesystem I/O on the event-loop thread under GIL pressure."""
-
-    def test_is_cached(self, tmp_path) -> None:
-        """Second call with same arg returns cached result without re-globbing."""
-        _node_version_manager_bins.cache_clear()
-        nvm = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
-        nvm.mkdir(parents=True)
-        result1 = _node_version_manager_bins(str(tmp_path))
-        # Remove the dir -- a non-cached implementation would return [] now
-        nvm.rmdir()
-        result2 = _node_version_manager_bins(str(tmp_path))
-        assert result1 == result2 == [str(nvm)]
-        _node_version_manager_bins.cache_clear()
-
-    def test_cache_info_exists(self) -> None:
-        """lru_cache exposes cache_info -- confirms decorator is applied."""
-        assert hasattr(_node_version_manager_bins, "cache_info")
-        assert hasattr(_node_version_manager_bins, "cache_clear")
-
-
 class TestGitBuildInfo:
     """kiro_crew.env.git_build_info reports the running checkout's branch+sha."""
 
@@ -540,3 +661,279 @@ class TestGitBuildInfo:
         monkeypatch.setattr("kiro_crew.env.subprocess.run", _boom)
         assert env.git_build_info() == ("", "")
         env.git_build_info.cache_clear()
+
+
+class TestDedupPath:
+    def test_keeps_first_occurrence_order(self) -> None:
+        raw = os.pathsep.join(["/a", "/b", "/a", "/c", "/b"])
+        assert env_mod.dedup_path(raw).split(os.pathsep) == ["/a", "/b", "/c"]
+
+    def test_drops_empty_entries(self) -> None:
+        raw = os.pathsep.join(["", "/a", "", "/b"])
+        assert env_mod.dedup_path(raw).split(os.pathsep) == ["/a", "/b"]
+
+    def test_dedup_keys_on_normalized_form(self) -> None:
+        """Two spellings of one directory collapse; the first is emitted as-is."""
+        raw = os.pathsep.join(["/usr/bin/", "/usr/bin", "/usr/./bin"])
+        assert env_mod.dedup_path(raw) == "/usr/bin/"
+
+    def test_empty_input_is_empty(self) -> None:
+        assert env_mod.dedup_path("") == ""
+
+
+class TestSpecEnvPath:
+    """A spec's env.PATH must expand to a PATH the child can actually use."""
+
+    def test_spec_entries_come_first(self, monkeypatch) -> None:
+        """A spec that pins a toolchain must not be shadowed by the augmentation."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        entries = env_mod.spec_env_path("/opt/shims").split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+
+    def test_multiple_spec_entries_keep_their_order(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        declared = os.pathsep.join(["/opt/first", "/opt/second"])
+        entries = env_mod.spec_env_path(declared).split(os.pathsep)
+        assert entries[:2] == ["/opt/first", "/opt/second"]
+
+    def test_inherited_path_is_retained(self, monkeypatch) -> None:
+        """The whole point: the fragment does not become the child's ONLY PATH."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/sbin"]))
+        entries = env_mod.spec_env_path("/opt/shims").split(os.pathsep)
+        assert "/usr/bin" in entries
+        assert "/sbin" in entries
+
+    def test_result_is_deduped(self, monkeypatch) -> None:
+        """A fragment already present in PATH must not be emitted twice."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/opt/shims"]))
+        entries = env_mod.spec_env_path("/opt/shims").split(os.pathsep)
+        assert entries.count("/opt/shims") == 1
+
+    def test_idempotent(self, monkeypatch) -> None:
+        """Re-expanding an already-expanded value is a no-op.
+
+        install_agent rewrites the agent config on every start, so a
+        non-idempotent expansion would grow PATH without bound.
+        """
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        once = env_mod.spec_env_path("/opt/shims")
+        assert env_mod.spec_env_path(once) == once
+        assert env_mod.spec_env_path(env_mod.spec_env_path(once)) == once
+
+    def test_empty_fragment_still_yields_usable_path(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        assert "/usr/bin" in env_mod.spec_env_path("").split(os.pathsep)
+
+    def test_entries_are_unique(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        entries = env_mod.spec_env_path("/opt/a" + os.pathsep + "/opt/a").split(os.pathsep)
+        assert len(entries) == len(set(entries))
+
+    def test_relative_entries_are_dropped(self, monkeypatch) -> None:
+        """A relative entry resolves against the CHILD's cwd, from the front."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        declared = os.pathsep.join(["bin", "./tools", "/opt/real"])
+        entries = env_mod.spec_env_path(declared).split(os.pathsep)
+        assert entries[0] == "/opt/real"
+        assert "bin" not in entries
+        assert "./tools" not in entries
+
+    def test_nul_entry_is_dropped(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        entries = env_mod.spec_env_path("/opt/a\0b").split(os.pathsep)
+        assert "/opt/a\0b" not in entries
+
+    def test_non_string_degrades_to_no_override(self, monkeypatch) -> None:
+        """Runs per candidate per server per rebuild — must not raise.
+
+        One malformed value in any config file would otherwise turn a single bad
+        entry into a failed gateway start.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        expected = env_mod.spec_env_path("")
+        for bad in (None, 5, ["/opt/a", "/opt/b"], {"PATH": "/opt/a"}):
+            assert env_mod.spec_env_path(bad) == expected  # type: ignore[arg-type]
+
+    def test_trailing_separator_spelling_is_not_duplicated(self, monkeypatch) -> None:
+        """normpath-keyed dedup: /usr/bin/ and /usr/bin are one directory."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        entries = env_mod.spec_env_path("/usr/bin/").split(os.pathsep)
+        assert entries.count("/usr/bin") + entries.count("/usr/bin/") == 1
+
+
+class TestEmitEnv:
+    """emit_env is the single normalization point for every emitted spec env."""
+
+    def test_path_is_expanded(self, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PATH": "/opt/shims", "TOKEN": "x"})
+        entries = out["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+        assert "/usr/bin" in entries
+        assert out["TOKEN"] == "x"
+
+    def test_env_without_path_passes_through_equal(self, monkeypatch) -> None:
+        src = {"API_KEY": "k", "MODE": "prod"}
+        assert env_mod.emit_env(src) == src
+
+    def test_returns_a_new_dict(self) -> None:
+        """Sources are reached through shallow copies — never mutate through."""
+        src = {"PATH": "/opt/shims"}
+        out = env_mod.emit_env(src)
+        assert out is not src
+        assert src["PATH"] == "/opt/shims"
+
+    def test_malformed_path_passes_through_verbatim(self) -> None:
+        """A config error must stay visible, not hide behind a working PATH."""
+        for bad in (["/opt/a"], 5, None):
+            src = {"PATH": bad, "K": "v"}
+            out = env_mod.emit_env(src)  # type: ignore[arg-type]
+            assert out["PATH"] == bad
+            assert out["K"] == "v"
+
+    def test_empty_string_path_expands_like_the_probe(self, monkeypatch) -> None:
+        """``{"PATH": ""}`` must not emit an empty PATH while the probe and the
+        command resolver expand it — that IS the probe/session divergence."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PATH": ""})
+        assert out["PATH"] == env_mod.spec_env_path("")
+        assert "/usr/bin" in out["PATH"].split(os.pathsep)
+
+    def test_idempotent(self, monkeypatch) -> None:
+        """install_agent rewrites the config every start — re-emitting must not grow."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        once = env_mod.emit_env({"PATH": "/opt/shims"})
+        twice = env_mod.emit_env(once)
+        assert twice == once
+
+    def test_windows_path_spelling_is_canonicalized(self, monkeypatch) -> None:
+        """A Windows-authored spec says ``Path``; the expanded value is emitted
+        under the canonical ``PATH`` so the session gets the same variable the
+        probe pins. Emitting ``Path`` on POSIX would set a junk variable and
+        leave the real search path unpinned — the probe/session split again."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"Path": "/opt/shims", "K": "v"})
+        assert "Path" not in out, "the alternate-case spelling must not survive"
+        entries = out["PATH"].split(os.pathsep)
+        assert entries[0] == "/opt/shims"
+        assert "/usr/bin" in entries
+        assert out["K"] == "v"
+
+    def test_both_spellings_collapse_to_canonical_path(self, monkeypatch) -> None:
+        """Both spellings present is ambiguous: the exact key wins and the
+        alternate is dropped, so no consumer sees two competing search paths."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PATH": "/opt/exact", "Path": "/opt/other"})
+        assert "Path" not in out
+        assert out["PATH"].split(os.pathsep)[0] == "/opt/exact"
+
+    def test_malformed_alternate_case_passes_through_verbatim(self) -> None:
+        """A malformed value keeps the author's spelling: the config error must
+        stay visible rather than being reshaped into a canonical-looking key."""
+        out = env_mod.emit_env({"Path": ["/opt/a"], "K": "v"})  # type: ignore[dict-item]
+        assert out == {"Path": ["/opt/a"], "K": "v"}
+
+
+class TestSpecPathKey:
+    """The shared PATH-key lookup all three spec readers use."""
+
+    def test_exact_match(self) -> None:
+        assert env_mod.spec_path_key({"PATH": "/x"}) == "PATH"
+
+    def test_case_insensitive_match_returns_authored_spelling(self) -> None:
+        assert env_mod.spec_path_key({"Path": "/x"}) == "Path"
+        assert env_mod.spec_path_key({"path": "/x"}) == "path"
+
+    def test_absent(self) -> None:
+        assert env_mod.spec_path_key({"TOKEN": "t"}) is None
+
+    def test_exact_preferred_when_both_present(self) -> None:
+        assert env_mod.spec_path_key({"Path": "/a", "PATH": "/b"}) == "PATH"
+
+
+class TestSanitizeSpecEnv:
+    """Loader injection keys must never ride a spec env into a launcher's
+    environment — they execute in every ELF binary in the spawn chain (the
+    sandbox wrapper included), before confinement exists."""
+
+    def test_loader_keys_are_dropped(self) -> None:
+        out = env_mod.sanitize_spec_env(
+            [
+                ("LD_PRELOAD", "/tmp/evil.so"),
+                ("LD_LIBRARY_PATH", "/tmp"),
+                ("LD_AUDIT", "/tmp/audit.so"),
+                ("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
+                ("API_TOKEN", "sekret"),
+                ("PATH", "/opt/only"),
+            ]
+        )
+        assert out == {"API_TOKEN": "sekret", "PATH": "/opt/only"}
+
+    def test_python_env_is_dropped(self) -> None:
+        """PYTHON* is a launcher-execution channel here, not a server setting.
+
+        Kiro Crew's Linux sandbox launcher is itself a Python process
+        (``[sys.executable, <generated script>, *argv]``), started with the env
+        handed to ``Popen`` — so a declared ``PYTHONPATH`` carrying
+        ``sitecustomize.py`` executes at interpreter startup, before ``unshare``
+        and before the target is exec'd: arbitrary code OUTSIDE the sandbox.
+        """
+        out = env_mod.sanitize_spec_env(
+            [
+                ("PYTHONPATH", "/srv/lib"),
+                ("PYTHONSTARTUP", "/srv/rc.py"),
+                ("PYTHONHOME", "/srv"),
+                ("TOKEN", "t"),
+            ]
+        )
+        assert out == {"TOKEN": "t"}
+
+    def test_benign_env_passes_untouched(self) -> None:
+        pairs = [("TOKEN", "t"), ("MODE", "prod"), ("LANG", "C")]
+        assert env_mod.sanitize_spec_env(pairs) == dict(pairs)
+
+    def test_matching_is_case_insensitive(self) -> None:
+        """Windows env vars are case-insensitive: ``ld_preload`` reaches the
+        loader exactly like ``LD_PRELOAD`` on a case-insensitive lookup, so a
+        lowercase spelling must not slip through the filter."""
+        out = env_mod.sanitize_spec_env(
+            [("Ld_Preload", "/tmp/evil.so"), ("dyld_x", "y"), ("OK", "1")]
+        )
+        assert out == {"OK": "1"}
+
+    def test_emit_env_does_not_sanitize(self, monkeypatch) -> None:
+        """The denylist guards OUR launcher, not the emitted config.
+
+        kiro-cli spawns the server itself with no Python launcher of ours in the
+        chain, so the emitted spec keeps a declared PYTHONPATH — a legitimate
+        way to configure a Python MCP server. Pinned so a future change cannot
+        quietly extend the launcher guard into the emit path and break those
+        servers in sessions.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        out = env_mod.emit_env({"PYTHONPATH": "/srv/lib", "LD_PRELOAD": "/x.so"})
+        assert out["PYTHONPATH"] == "/srv/lib"
+        assert out["LD_PRELOAD"] == "/x.so"
+
+
+class TestDeniedSpecEnvKeys:
+    """The reporting counterpart of the sanitizer: what did policy remove?"""
+
+    def test_names_what_the_sanitizer_would_drop(self) -> None:
+        env = {"PYTHONPATH": "/srv", "LD_PRELOAD": "/x.so", "TOKEN": "t", "PATH": "/b"}
+        assert sorted(env_mod.denied_spec_env_keys(env)) == ["LD_PRELOAD", "PYTHONPATH"]
+
+    def test_matches_the_sanitizer_case_insensitively(self) -> None:
+        """Both sides must agree, or a dropped key goes unexplained."""
+        env = {"pythonpath": "/srv", "Ld_Preload": "/x.so", "ok": "1"}
+        dropped = env_mod.denied_spec_env_keys(env)
+        kept = env_mod.sanitize_spec_env([(k, str(v)) for k, v in env.items()])
+        assert sorted(dropped) == ["Ld_Preload", "pythonpath"]
+        assert set(dropped).isdisjoint(kept)
+
+    def test_clean_env_names_nothing(self) -> None:
+        assert env_mod.denied_spec_env_keys({"TOKEN": "t", "PATH": "/b"}) == []
+
+    def test_non_string_keys_are_ignored(self) -> None:
+        """Config JSON is unvalidated; a malformed key must not raise here."""
+        assert env_mod.denied_spec_env_keys({1: "x"}) == []  # type: ignore[dict-item]

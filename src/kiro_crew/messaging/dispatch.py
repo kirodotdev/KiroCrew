@@ -34,6 +34,8 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
+from kiro_crew.messaging.renderer import SilentRenderer
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -151,6 +153,52 @@ def build_auto_approve(ctx_builder: Any) -> Callable[[str], bool]:
     return _auto_approve
 
 
+def delivery_is_muted(sessions: Any, session_key: str, channel_type: str) -> bool:
+    """True when output to *channel_type* must NOT be written back for this session.
+
+    The primitive behind :func:`conversation_is_muted`, taking explicit arguments
+    because Discord and Telegram run their OWN copies of the turn loop rather
+    than going through :func:`drive_turn`, so they have no ``ChannelTurn`` to
+    pass. Every channel that can be disconnected must consult this, or the
+    dashboard control is a label with nothing behind it.
+
+    ``origin`` is resolved rather than passed because a session can hold two
+    non-Slack deliveries at once, and they mute independently: the conversation
+    it was BORN in, and an explicit mirror it was told to post to. This turn came
+    from the born-in conversation exactly when the session key IS a channel key
+    in this turn's own namespace — a channel-born session's key is its
+    conversation. Anything else arriving here is a mirror/resume binding, so it
+    reads the mirror flag.
+
+    Slack never reaches these pipelines (it drives its own gateway and is gated by
+    ``slack_mirror_is_paused``), so no Slack special-case is needed here.
+
+    Fails OPEN, matching the dashboard-side predicates: ``sessions`` is a bare
+    ``MagicMock`` across much of the suite and would return a truthy child for an
+    unstubbed accessor, which would silence every channel in the test suite. A
+    muted conversation that stays noisy is a visible bug; a live conversation
+    silently dead is a much worse one.
+    """
+    origin = is_channel_session_key(session_key) and (
+        channel_namespace_of(session_key) == channel_type
+    )
+    try:
+        return sessions.is_mirror_paused(session_key, origin=origin) is True
+    except Exception:
+        logger.debug(
+            "%s: mirror pause lookup failed session=%s",
+            channel_type,
+            session_key,
+            exc_info=True,
+        )
+        return False
+
+
+def conversation_is_muted(sessions: Any, turn: ChannelTurn) -> bool:
+    """:func:`delivery_is_muted` for a turn on the shared pipeline."""
+    return delivery_is_muted(sessions, turn.session_key, turn.channel_type)
+
+
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
     """Run one authorized inbound message end to end.
 
@@ -170,6 +218,16 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
     # session is acquired.
     if not await inbound_permitted(turn.channel_type):
         return
+    # Substituted BEFORE on_turn_start so a disconnected conversation never even
+    # shows a typing indicator, and before TurnDriver so nothing streams. The
+    # local name is what the driver and the finally's close() both use, so the
+    # real renderer is left completely untouched -- it opened nothing, so there
+    # is nothing of its own to finalize.
+    if conversation_is_muted(sessions, turn):
+        renderer = SilentRenderer(
+            getattr(renderer, "capabilities", None),
+            getattr(renderer, "channel_type", "") or turn.channel_type,
+        )
     try:
         # Typing indicator first (before the potentially slow cold start);
         # on_turn_start is idempotent so the driver's later call no-ops.

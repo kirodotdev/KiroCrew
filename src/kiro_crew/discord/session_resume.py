@@ -9,9 +9,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from kiro_crew.history import INCOGNITO_MEMORY_MODES
+from kiro_crew.history import is_incognito_transcript, needles_match_text, parse_search_query
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
-from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.link import UNBIND_REASON_USER_UNLINK, ChannelLink
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -155,7 +155,9 @@ class DiscordSessionResume:
             # the dispatcher's own sweep — clearing only *key* here would leave
             # that mirror occupying the location and reproduce the "already
             # attached" refusal after an apparently successful unlink.
-            cleared = self.sessions.clear_mirror_links_at(self.link_for(channel_id))
+            cleared = self.sessions.clear_mirror_links_at(
+                self.link_for(channel_id), reason=UNBIND_REASON_USER_UNLINK
+            )
             logger.info(
                 "discord: released resumed session %s (cleared bindings: %s)",
                 key,
@@ -205,25 +207,35 @@ class DiscordSessionResume:
                 rows = await asyncio.to_thread(
                     self.conv_log.search_sessions, query, _SEARCH_FETCH_LIMIT
                 )
-                if not rows and len(normalized_query.split()) > 1:
-                    # search_sessions now matches multi-word queries token-wise
-                    # (all tokens must appear, in the title or the content), so
-                    # out-of-order words like "specific link" DO resolve
+                fallback_needles, fallback_phrase, fallback_floor = parse_search_query(
+                    normalized_query
+                )
+                fallback_multi = [
+                    n.text for n in fallback_needles if n.required
+                ] != [fallback_phrase]
+                if not rows and fallback_multi:
+                    # search_sessions matches multi-word queries needle-wise (all
+                    # required needles must appear, in the title or the content),
+                    # so out-of-order words like "specific link" DO resolve
                     # "Link to a Specific Session". What it still cannot reach is
                     # a session older than its _SEARCH_SCAN_WINDOW most-recent
-                    # cap, so keep this unbounded all-words TITLE match as the
-                    # last resort for a long-lived install. Only on zero hits, so
-                    # the shared search stays authoritative and we are not
-                    # running two rankers in parallel.
+                    # cap, so keep this unbounded TITLE match as the last resort
+                    # for a long-lived install. Only on zero hits, so the shared
+                    # search stays authoritative and we are not running two
+                    # rankers in parallel. The gate comes from the SAME parse as
+                    # search_sessions (needles_match_text), not a second
+                    # whitespace tokenization — a spaceless CJK query has no
+                    # spaces to split on, so a word-count test never fired for
+                    # it and the fallback demanded the literal title substring.
                     listed = await asyncio.to_thread(self.conv_log.list_sessions)
-                    words = normalized_query.split()
                     rows = [
                         row
                         for row in listed
                         if isinstance(row, dict)
-                        and all(
-                            word in " ".join(str(row.get("title") or "").casefold().split())
-                            for word in words
+                        and needles_match_text(
+                            fallback_needles,
+                            " ".join(str(row.get("title") or "").casefold().split()),
+                            fallback_floor,
                         )
                     ]
             else:
@@ -246,7 +258,7 @@ class DiscordSessionResume:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if str(row.get("memory_mode", "persistent")).lower() in INCOGNITO_MEMORY_MODES:
+            if is_incognito_transcript(row.get("memory_mode")):
                 continue
             key = _history_dashboard_key(row.get("key"))
             if key is None:

@@ -185,6 +185,11 @@ def _get_vector_store(state: DashboardState):
         return mem.vector_store
     # Fallback: create standalone
     if not hasattr(state, "_standalone_vector"):
+        # Both imports resolve their target at CALL time, which is what lets a test
+        # substitute the attribute on the source module and have this function
+        # observe it. ``KiroCrewConfig`` deliberately shadows this module's own
+        # top-level binding: that binding captured the original object at import
+        # time and would not see such a substitution.
         from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
         from kiro_crew.vector_memory import VectorMemoryStore  # noqa: F811
 
@@ -1069,9 +1074,11 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
 async def api_memory_stats(request: web.Request) -> web.Response:
     """GET /api/memory/stats — memory system statistics."""
     store = _get_vector_store(request.app["state"])
-    # Offload: serializes on _db_lock (#1947) — see api_memory_semantic.
+    # Offload: serializes on _db_lock — see api_memory_semantic.
     stats = await asyncio.to_thread(store.memory_stats)
-    # Add embedding status
+    # Add embedding status. The shadowing import is deliberate: resolving
+    # ``KiroCrewConfig`` at call time is what lets a test substitute it on the
+    # source module.
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
     cfg = KiroCrewConfig.load()

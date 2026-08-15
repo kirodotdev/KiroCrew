@@ -95,6 +95,27 @@ test("describeGatewayFailure: exit code", () => {
   assert.match(describeGatewayFailure({ code: 1, signal: null }), /code 1/);
 });
 
+test("describeGatewayFailure: the disabled case names the port and both ways out", () => {
+  const s = describeGatewayFailure({ disabled: true, port: 5476 });
+  assert.match(s, /5476/);
+  assert.match(s, /set not to start one on this machine/);
+  assert.match(s, /start one here/);
+  // Must NOT send the user to Settings: that page is served by the gateway that
+  // is not running, so the instruction would be unreachable exactly when shown.
+  assert.doesNotMatch(s, /Settings/);
+  // Nothing was launched, so wording that sends the user hunting a crash or a
+  // launch log is wrong for this case.
+  assert.doesNotMatch(s, /could not be launched|exited on launch|failed to start/);
+});
+
+test("describeGatewayFailure: disabled wins over a stale error field", () => {
+  // waitForGateway hands over whatever record it was given; the deliberate
+  // no-spawn reason must not be reported as a launch failure.
+  const s = describeGatewayFailure({ disabled: true, port: 7000, error: "spawn ENOENT" });
+  assert.match(s, /7000/);
+  assert.doesNotMatch(s, /ENOENT/);
+});
+
 test("describeGatewayFailure: SIGKILL carries the Gatekeeper + xattr hint", () => {
   const s = describeGatewayFailure({ signal: "SIGKILL" });
   assert.match(s, /Gatekeeper/);

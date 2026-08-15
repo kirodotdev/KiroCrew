@@ -31,6 +31,7 @@ function stubElectron() {
     }
     setFocusable(v) { this.focusable = v; }
     setAcceptFirstMouse() {}
+    setContentProtection(v) { this.contentProtection = v; }
     setIgnoreMouseEvents(ignore, opts) { this.ignoreMouse = { ignore, opts }; }
     setVisibleOnAllWorkspaces(v, opts) { this.workspaces = { v, opts }; }
     loadURL(u) { this.loadedUrl = u; }
@@ -150,6 +151,25 @@ test("the overlay is transparent, frameless, always on top and not focusable", (
     assert.strictEqual(win.opts.webPreferences.backgroundThrottling, false);
     // Follows the user across spaces and over full-screen apps.
     assert.deepStrictEqual(win.workspaces, { v: true, opts: { visibleOnFullScreen: true } });
+  } finally {
+    stub.restore();
+  }
+});
+
+test("the overlay is excluded from screen capture", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+
+    // A display-sized window is the topmost window at every point on the screen.
+    // Without content protection the macOS screenshot window picker offers the
+    // overlay instead of the app under the cursor, and every region capture or
+    // recording has the companion baked into it.
+    for (const win of stub.created) {
+      assert.strictEqual(win.contentProtection, true);
+    }
   } finally {
     stub.restore();
   }

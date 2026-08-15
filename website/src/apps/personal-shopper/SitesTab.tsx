@@ -51,6 +51,10 @@ export function SitesTab() {
   const { data, isLoading } = useQuery({
     queryKey: ['personal-shopper', 'sites'],
     queryFn: fetchSites,
+    // add/remove send a replace-all PUT built from this cache, so a stale cache
+    // would erase a site added from another tab. Finite staleTime lets
+    // focus-refetch fire here (global default is Infinity).
+    staleTime: 30_000,
   })
 
   const mutation = useMutation({
@@ -71,12 +75,6 @@ export function SitesTab() {
   // Serializing on isPending is what keeps a rapid toggle-then-remove from
   // silently discarding the toggle.
   const busy = mutation.isPending
-
-  const toggleSite = (id: string) => {
-    if (busy) return
-    const updated = sites.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s))
-    mutation.mutate({ sites: updated })
-  }
 
   const removeSite = (id: string) => {
     if (busy) return
@@ -120,7 +118,13 @@ export function SitesTab() {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-[var(--muted)]">
+      {/* Not a footnote: this is the fact that changes how the tab is used, so
+          it gets the same visual weight as the error notice below rather than
+          11px muted text a first-time user reads past. */}
+      <p
+        role="note"
+        className="text-sm px-3 py-2 rounded-lg bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text)] leading-relaxed"
+      >
         {i18nT('apps.personalShopper.sitesTab.shopping_sources_the_advisor_can_browse_login_en')}
       </p>
 
@@ -158,36 +162,12 @@ export function SitesTab() {
             <div className="text-[11px] text-[var(--muted)] truncate">{site.url}</div>
           </div>
 
-          {/* Login status */}
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                site.loggedIn ? 'bg-[var(--ok)]' : 'bg-[var(--muted)]'
-              }`}
-            />
-            <span
-              className={`text-[11px] whitespace-nowrap ${
-                site.loggedIn ? 'text-[var(--ok)]' : 'text-[var(--muted)]'
-              }`}
-            >
-              {site.loggedIn
-                ? i18nT('apps.personalShopper.sitesTab.logged_in')
-                : i18nT('apps.personalShopper.sitesTab.not_logged_in')}
-            </span>
-          </div>
-
-          {/* Toggle */}
-          <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
-            <input
-              type="checkbox"
-              checked={site.enabled}
-              onChange={() => toggleSite(site.id)}
-              disabled={busy}
-              aria-label={i18nT('apps.personalShopper.sitesTab.toggle_site', { name: site.name })}
-              className="sr-only peer"
-            />
-            <div className="w-9 h-5 bg-[var(--border)] peer-checked:bg-[var(--accent)] peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--accent)] peer-disabled:opacity-50 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all" />
-          </label>
+          {/* No login badge and no enable toggle. Both described a mechanism
+              that no longer exists: the advisor reads public pages with no
+              store session, and it cannot read this list at all -- so an
+              "enabled" switch would gate nothing while looking like it gates
+              the agent. The list is a reference the user reads from; a store
+              is researched when they name it in the conversation. */}
 
           {/* Remove (hover) */}
           <button

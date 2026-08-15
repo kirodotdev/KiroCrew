@@ -229,11 +229,32 @@ class TestLoadTimeClamp:
 
         data = {"agent": {"tool_approval_timeout_secs": TOOL_APPROVAL_TIMEOUT_MAX * 10}}
         _clamp_security_bounds(data)
-        # Static ceiling first, then the cross-field margin.
+        # Static ceiling first, then the cross-field margin under the default
+        # turn ceiling (both 7200, so the margin binds).
         assert (
             data["agent"]["tool_approval_timeout_secs"]
             == TOOL_APPROVAL_TIMEOUT_MAX - APPROVAL_TURN_MARGIN_SECS
         )
+
+    def test_approval_max_is_decoupled_from_a_raised_turn_ceiling(self) -> None:
+        """Raising the turn ceiling must NOT raise the approval window's max.
+
+        The approval suites hold a flat 2h runtime window
+        (``DashboardState._APPROVAL_TIMEOUT``); a config max that follows the
+        24h turn-ceiling max would accept windows the runtime silently never
+        honours. So with a 24h ceiling configured, an oversized window still
+        clamps to the static 7200 — the cross-field margin (86340s) is no
+        longer the binding limit.
+        """
+        assert TOOL_APPROVAL_TIMEOUT_MAX == 7200
+        data = {
+            "agent": {
+                "tool_approval_timeout_secs": 86400,
+                "chat_turn_timeout_secs": 86400,
+            }
+        }
+        _clamp_security_bounds(data)
+        assert data["agent"]["tool_approval_timeout_secs"] == TOOL_APPROVAL_TIMEOUT_MAX
 
     def test_bool_window_is_left_to_dataclass_coercion(self) -> None:
         """``true`` is not a real window; the clamp must not arithmetic on it."""

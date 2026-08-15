@@ -11,7 +11,7 @@
 #  the Python `kiro_crew.cloud` module (testable, cross-platform). It NEVER
 #  stores AWS credentials — the aws CLI resolves them from your profile/SSO.
 #
-#  Usage (from a clone):   bash cloud-install.sh [--size <tier>] [--non-interactive]
+#  Usage (from a clone):   bash cloud-install.sh [--size <tier>] [--non-interactive] [--voice]
 # ======================================================================
 set -euo pipefail
 
@@ -24,6 +24,7 @@ unset PYTHONPATH PYTHONHOME
 
 SIZE=""
 NONINTERACTIVE=0
+WITH_VOICE=0
 # while+shift (not `for arg in "$@"`): the space-separated `--size <tier>`
 # form needs to consume the following word, which a for-loop can't do.
 while [ $# -gt 0 ]; do
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
         --size) shift; SIZE="${1:-}";;
         --size=*) SIZE="${1#*=}";;
         --non-interactive) NONINTERACTIVE=1;;
+        --voice) WITH_VOICE=1;;
         *) ;;
     esac
     shift || true
@@ -151,7 +153,12 @@ info "Installing the KiroCrew client (pip, editable)…"
 _venv="$REPO_ROOT/.venv"
 [ -x "$_venv/bin/python" ] || "$PY" -m venv "$_venv"
 "$_venv/bin/pip" install --upgrade pip -q 2>/dev/null || true
-KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$REPO_ROOT" -q && ok "KiroCrew client installed" || { warn "pip install failed"; exit 1; }
+_pip_target="$REPO_ROOT"
+if [ "$WITH_VOICE" -eq 1 ]; then
+    _pip_target="${REPO_ROOT}[voice]"
+    info "Including voice extras (.[voice])"
+fi
+KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_pip_target" -q && ok "Kiro Crew client installed" || { warn "pip install failed"; exit 1; }
 mkdir -p "$HOME/.local/bin"
 ln -sf "$_venv/bin/kirocrew" "$HOME/.local/bin/kirocrew"
 KC="$_venv/bin/kirocrew"

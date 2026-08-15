@@ -45,6 +45,7 @@ def test_script_exists_and_is_executable() -> None:
 # set. Audited 2026-08-06; extend this list when a new guard is added.
 _BACKEND_GUARDS = (
     "test/test_redaction_mirror_parity.py",
+    "test/test_theme_css_security.py",
     "test/test_dashboard_security_headers.py",
     "test/test_model_registry_parity.py",
     "test/test_builtin_app_assets.py",

@@ -3,9 +3,10 @@
 ## Overview
 
 `src/kiro_crew/cloud/` runs KiroCrew on the user's **own** AWS EC2 instance with a
-single command. It provisions a CloudFormation stack, ships the local source,
-signs `kiro-cli` in over SSM, and opens the dashboard through an SSM
-port-forward. Command surface (wired in `cli_cloud.py`, invoked via
+single command. It provisions a CloudFormation stack, ships an available local
+checkout (or clones the public repo from packaged installs), signs `kiro-cli` in
+over SSM, and opens the dashboard through an SSM port-forward. Command surface
+(wired in `cli_cloud.py`, invoked via
 `kirocrew cloud <action>`):
 
 ```
@@ -72,7 +73,7 @@ claim that a hostile in-process agent is fully contained.
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM. |
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. |
-| `source.py` | Package the local checkout (`git archive`, tarfile fallback) and upload to a per-account S3 bucket; secret-excluding filter shared by both paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
+| `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
 | `config.py` | Persisted profile / region / tag (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` — bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
 | `ui.py` / `wizard.py` | Terminal UI + the interactive launch flow. `_deploy_with_progress` runs the blocking deploy on a daemon thread and captures the `aws cloudformation deploy` child via a `proc_sink`, so a Ctrl+C on the main (poll) thread terminates it instead of orphaning it (~1800s). An unknown `--size`/`size_key` on the public `launch()` entrypoint yields a clean rc=1 + message, not an uncaught `KeyError`. Resuming a saved stack (`launch` after `stop`) first calls `_ensure_running_and_ssm_ready` — starts a `stopped` instance and waits for SSM `Online` before sign-in/tunnel (which are SSM-only and would otherwise fail); a `terminated` instance fails clean pointing at `--new`. `last_tag` is persisted (`cfg.save()`) **only after** a deploy confirms healthy — a failed first launch leaves no saved pointer, so the next `launch` retries clean instead of resuming a rolled-back/instance-less stack; `_saved_launch_is_usable` additionally ignores a stale saved tag (from an older build) whose stack is in a `_FAILED_STATES` status or has no instance. |
@@ -87,11 +88,19 @@ rollback, one-command `delete-stack` teardown. AMI resolves from the public
 failed bootstrap folds the on-box setup-log tail into the signal reason so the
 cause survives the rollback.
 
-Because the public repo is private, the box can't `git clone` it: the launcher
-packages the local checkout and uploads it to a launcher-owned bucket
+The instance bootstrap runs `install.sh --voice` on both its initial attempt and
+retry. This installs the existing `voice` extra (`boto3` and
+`amazon-transcribe`) before the gateway first imports its Transcribe provider;
+installing those SDKs after startup would otherwise require a gateway restart.
+
+When the installed module belongs to a valid source checkout, the launcher
+packages that checkout and uploads it to a launcher-owned bucket
 (`kirocrew-src-<account>-<region>`); the instance downloads it with its own IAM
-role (`s3:GetObject` scoped to the single object). A public `git clone` remains
-a fallback when no `SourceBucket` is passed.
+role (`s3:GetObject` scoped to the single object). Wheel and desktop installs
+have no checkout to package, so `ec2.deploy` omits `SourceBucket` by default and
+the template clones the public repository/ref instead. An explicit
+`ship_source=True` remains fail-closed rather than packaging an unrelated
+`site-packages` ancestor.
 
 `discover_network` is **egress-kind-aware**, not just "has a default route":
 `_subnet_egress_kinds` classifies each subnet's effective route table (explicit
@@ -366,6 +375,9 @@ exits non-zero.
 `aws` CLI + `session-manager-plugin` + Python are present, then hand off to
 `kirocrew cloud launch`. They install *client* prerequisites only — the gateway
 always runs on the Linux EC2 box, never on Windows.
+`cloud-install.sh --voice` additionally installs the existing `voice` extra in
+the launcher's managed client venv; the EC2 bootstrap includes that extra by
+default regardless of this client-side flag.
 
 `kirocrew cloud launch` runs `python -m kiro_crew`, which imports the whole CLI —
 including gateway/cron/session modules (plus `apps/bridges` and the PTY

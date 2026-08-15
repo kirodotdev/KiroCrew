@@ -7,12 +7,13 @@
 // Kinds supported: widget, html, markdown, svg, json, text (non-webapp).
 // Webapp artifacts have their own deploy flow (Artifact Deploy page).
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { AlertCircle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
 import { api, type AppPublishProvider } from '../api/client'
 import { Card, Btn } from './ui'
+import PublicPublishAckModal from './PublicPublishAckModal'
 import SimpleSelect from './SimpleSelect'
 import type { Artifact } from '../types'
 import { safeHttpUrl } from '../lib/safeUrl'
@@ -74,6 +75,12 @@ export function PublishHub({
   const [scanBlocked, setScanBlocked] = useState<{ findings: string; count: number; credential?: boolean } | null>(null)
   const [result, setResult] = useState<{ url?: string; error?: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  // Non-null while the blocking public-exposure acknowledgment is on screen.
+  // `overrideScan` remembers WHICH commit path opened it, so acknowledging
+  // resumes that path instead of collapsing both into a plain publish.
+  const [ack, setAck] = useState<{ overrideScan: boolean } | null>(null)
+  /** Latch making a confirmed publish at-most-once; see `confirmPublish`. */
+  const publishInFlight = useRef(false)
   const [ttlHours, setTtlHours] = useState<string>('Persistent (no expiry)')
   const selectedTtlHours = () => (ttlHours === '72 hours (requires reaper)' ? 72 : 0)
   // A TTL change invalidates an existing preview — the previewed TTL
@@ -123,6 +130,17 @@ export function PublishHub({
   /** Second call: confirm=true to proceed (+ optional override_scan). */
   const confirmPublish = async (overrideScan = false) => {
     if (!selected) return
+    // A confirmed publish must happen AT MOST ONCE per acknowledgment. `busy`
+    // alone cannot enforce that: the acknowledgment lives inside `Modal`'s
+    // <AnimatePresence>, so on close framer-motion keeps rendering the exiting
+    // subtree from the element it captured BEFORE `busy` flipped -- an enabled
+    // `danger` button, still hit-testable for the exit duration. A second click
+    // there would issue a second confirmed deploy of the same slug. A ref is
+    // the latch because it is written synchronously, so it is already set for a
+    // click dispatched in the same render generation (state would still read
+    // stale). Released in `finally`, so a failed publish stays retryable.
+    if (publishInFlight.current) return
+    publishInFlight.current = true
     setBusy(true)
     try {
       const endpoint = selected.app?.endpoint || '/api/deploy/deploy'
@@ -164,6 +182,7 @@ export function PublishHub({
       setResult({ error: err instanceof Error ? err.message : i18nT('components.publishHub.publish_failed') })
     } finally {
       setBusy(false)
+      publishInFlight.current = false
     }
   }
 
@@ -231,8 +250,12 @@ export function PublishHub({
             {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
           </div>
+          <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+            <AlertTriangle className="lucide-inline shrink-0" />
+            <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+          </div>
           <div className="flex gap-2">
-            <Btn primary onClick={() => confirmPublish()} disabled={busy}>
+            <Btn primary onClick={() => setAck({ overrideScan: false })} disabled={busy}>
               {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
             <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
@@ -263,8 +286,12 @@ export function PublishHub({
               <p className="text-[12px] text-muted">
                 {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
+              <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+                <AlertTriangle className="lucide-inline shrink-0" />
+                <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+              </div>
               <div className="flex gap-2">
-                <Btn danger onClick={() => { setScanBlocked(null); confirmPublish(true) }} disabled={busy}>
+                <Btn danger onClick={() => setAck({ overrideScan: true })} disabled={busy}>
                   {busy ? i18nT('components.publishHub.publishing_2') : i18nT('components.publishHub.override_publish_anyway')}
                 </Btn>
                 <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
@@ -319,6 +346,27 @@ export function PublishHub({
           <Btn onClick={() => { setResult(null); setPreview(null); setScanBlocked(null); setSelectedId(''); onClose?.() }}>{i18nT('components.publishHub.done')}</Btn>
         </div>
       )}
+
+      {/* Blocking public-exposure acknowledgment — the last thing between a
+          human and a world-readable URL, for BOTH commit paths. */}
+      <PublicPublishAckModal
+        open={!!ack}
+        target={artifact.slug}
+        ttlHours={selectedTtlHours()}
+        busy={busy}
+        onCancel={() => setAck(null)}
+        onConfirm={() => {
+          const overrideScan = !!ack?.overrideScan
+          if (overrideScan) setScanBlocked(null)
+          // The acknowledgment stays MOUNTED and `busy`-disabled until the
+          // publish settles, then closes. Closing first (the previous shape)
+          // handed the exiting <AnimatePresence> subtree an enabled confirm
+          // button for the exit duration; holding it open is what lets `busy`
+          // actually reach the buttons. `confirmPublish` also latches, so the
+          // at-most-once guarantee does not depend on this timing.
+          void confirmPublish(overrideScan).finally(() => setAck(null))
+        }}
+      />
     </Card>
   )
 }

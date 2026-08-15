@@ -257,31 +257,53 @@ def test_linux_lane_verifies_artifact_architecture_before_publishing() -> None:
     )
 
 
-def test_pr_and_release_desktop_matrices_cover_the_same_platforms() -> None:
-    """The PR gate must build every platform the release lane ships.
+def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
+    """PR desktop-build coverage policy.
 
-    ``build.yml`` is what runs on a PR; ``build-desktop.yml`` is what nightly and
-    release call. If the PR matrix is narrower, the missing platform is only ever
-    exercised AFTER it ships — which is how an unbuildable arch reaches users.
-    Linux in particular cannot be cross-compiled (``build-desktop.sh`` runs the
-    interpreter it provisions), so each arch needs its own runner in both places.
+    Linux (both arches) builds on EVERY PR -- it is comparatively cheap and
+    cannot be cross-compiled, so a broken arch must be caught before merge, not
+    only at nightly. The macos-15 leg bills at ~10x and its unique coverage is
+    macOS packaging, so on a PR it builds only when a macOS-packaging input
+    changed (the ``desktop-matrix`` job's paths filter); push / release always
+    build it. The release lane (``build-desktop.yml``) still ships every
+    platform unconditionally, so nothing macOS ever reaches users unbuilt.
     """
     pr = yaml.safe_load((WORKFLOWS / "build.yml").read_text(encoding="utf-8"))
     release = yaml.safe_load((WORKFLOWS / "build-desktop.yml").read_text(encoding="utf-8"))
 
-    pr_os = set(pr["jobs"]["build-desktop"]["strategy"]["matrix"]["os"])
+    # The release lane still ships every platform, macOS included.
     release_os = {
         entry["os"] for entry in release["jobs"]["build-desktop"]["strategy"]["matrix"]["include"]
     }
-    assert release_os <= pr_os, (
-        "build.yml's desktop matrix must cover every platform build-desktop.yml "
-        f"ships; missing from the PR gate: {sorted(release_os - pr_os)}"
-    )
-    # Both Linux arches are shipped platforms, so name them explicitly: a future
-    # edit that drops one from BOTH files would still satisfy the subset check.
-    for required in ("ubuntu-22.04", "ubuntu-22.04-arm"):
+    for required in ("macos-15", "ubuntu-22.04", "ubuntu-22.04-arm"):
         assert required in release_os, f"{required} must stay in the release desktop matrix"
-        assert required in pr_os, f"{required} must stay in the PR desktop matrix"
+
+    # The PR desktop matrix is resolved dynamically by the desktop-matrix job.
+    jobs = pr["jobs"]
+    assert "desktop-matrix" in jobs, (
+        "build.yml must resolve the desktop matrix via a desktop-matrix job so "
+        "macos-15 can be gated"
+    )
+    compute = next(
+        (s for s in jobs["desktop-matrix"]["steps"] if s.get("id") == "compute"), None
+    )
+    assert compute is not None, "desktop-matrix must have a `compute` step emitting os="
+    os_lines = [ln for ln in compute["run"].splitlines() if "os=[" in ln]
+    assert os_lines, "the compute step must emit at least one os= matrix list"
+
+    # Linux is UNCONDITIONAL: both arches appear in every branch the script emits.
+    for ln in os_lines:
+        assert '"ubuntu-22.04"' in ln and '"ubuntu-22.04-arm"' in ln, (
+            f"both Linux arches must be in every PR desktop matrix branch: {ln}"
+        )
+    # macOS is GATED: it must be buildable (packaging-relevant PR / push) but must
+    # NOT appear in every branch, or the 10x build still runs on every PR.
+    with_mac = [ln for ln in os_lines if '"macos-15"' in ln]
+    assert with_mac, "macos-15 must still build on packaging-relevant PRs and pushes"
+    assert len(with_mac) < len(os_lines), (
+        "macos-15 must be gated -- at least one branch (a non-packaging PR) must "
+        "omit it, or the 10x macOS build still runs on every PR"
+    )
 
 
 def test_pr_linux_desktop_artifacts_are_arch_qualified() -> None:

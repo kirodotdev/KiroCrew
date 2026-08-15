@@ -1451,9 +1451,30 @@ class TestKiroHooksFiltering:
         result = _kiro_hooks_only(hooks)
         assert set(result.keys()) == _VALID_HOOK_EVENTS
 
-    def test_sanitize_agent_hooks_repairs_existing_file(self, tmp_path: Path):
-        """_sanitize_agent_hooks removes invalid hook keys from existing configs."""
+    def test_bundled_defaults_hook_keys_are_classified(self):
+        """Pins the exact set of hook keys in bundled defaults.json.
+
+        _VALID_HOOK_EVENTS derives from bundled keys minus _INTERNAL_HOOK_KEYS, so
+        a new key is auto-accepted as an event by construction -- silent if it was
+        actually meant to be internal (kiro-cli would then reject the whole spec at
+        runtime). This ratchet forces an explicit choice: adding a bundled hook key
+        means updating either this set (a real event) or _INTERNAL_HOOK_KEYS
+        (Kiro-Crew-internal), never neither (#3362 fail-loud guard)."""
+        from kiro_crew.agent import _BUNDLED_CFG_DIR, _load_json
+
+        bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
+        bundled_hook_keys = set((bundled or {}).get("hooks", {}).keys())
+        assert bundled_hook_keys == {"auto_approve_tools", "postToolUse"}, (
+            f"bundled defaults.json hooks keys changed to {bundled_hook_keys} -- "
+            "classify any new key as a real kiro-cli event (covered automatically "
+            "via _VALID_HOOK_EVENTS) or Kiro-Crew-internal (add to "
+            "_INTERNAL_HOOK_KEYS), then update this pinned set."
+        )
+
+    def test_sanitize_agent_hooks_repairs_owned_files_subtractively(self, tmp_path: Path):
+        """The repair removes only Kiro Crew's legacy key from every owned spec."""
         from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks
+        from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 
         kiro_dir = tmp_path / "agents"
         kiro_dir.mkdir()
@@ -1462,17 +1483,49 @@ class TestKiroHooksFiltering:
             "hooks": {
                 "auto_approve_tools": ["kirocrew browse *"],
                 "postToolUse": [{"matcher": "execute_bash", "command": "audit.sh"}],
+                "futureHookEvent": [{"command": "future.sh"}],
             },
         }
-        (kiro_dir / "kirocrew.json").write_text(json.dumps(broken_config))
+        for filename in OWNED_KIRO_AGENT_FILES:
+            (kiro_dir / filename).write_text(json.dumps(broken_config))
 
         _hooks_sanitized_mtimes.clear()
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
             _sanitize_agent_hooks()
 
-        repaired = json.loads((kiro_dir / "kirocrew.json").read_text(encoding="utf-8"))
-        assert "auto_approve_tools" not in repaired["hooks"]
-        assert "postToolUse" in repaired["hooks"]
+        for filename in OWNED_KIRO_AGENT_FILES:
+            repaired = json.loads((kiro_dir / filename).read_text(encoding="utf-8"))
+            assert "auto_approve_tools" not in repaired["hooks"]
+            assert "postToolUse" in repaired["hooks"]
+            assert "futureHookEvent" in repaired["hooks"]
+
+    @pytest.mark.parametrize(
+        "filename", ["other-tool.json", "kirocrew-custom.json", "sample-app--worker.json"]
+    )
+    def test_sanitize_agent_hooks_does_not_touch_unowned_files(self, tmp_path: Path, filename: str):
+        """Foreign, prefix-lookalike, and app materialized specs stay byte-identical."""
+        from kiro_crew.agent import _hooks_sanitized_mtimes, _sanitize_agent_hooks
+
+        kiro_dir = tmp_path / "agents"
+        kiro_dir.mkdir()
+        original = json.dumps(
+            {
+                "name": "foreign-agent",
+                "hooks": {
+                    "auto_approve_tools": ["foreign tool"],
+                    "futureHookEvent": [{"command": "future.sh"}],
+                },
+            },
+            indent=2,
+        )
+        path = kiro_dir / filename
+        path.write_text(original, encoding="utf-8")
+
+        _hooks_sanitized_mtimes.clear()
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
+            _sanitize_agent_hooks()
+
+        assert path.read_text(encoding="utf-8") == original
 
     def test_sanitize_agent_hooks_skips_clean_file(self, tmp_path: Path):
         """_sanitize_agent_hooks does not rewrite configs that are already clean."""
@@ -4113,6 +4166,156 @@ def _run_install_mcp_merge(
             stack.enter_context(p)
         path = install_agent()
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+class TestSpecEnvPathIsExpandedOnEmit:
+    """A spec's ``env.PATH`` is written out as the full effective PATH.
+
+    The spec's ``env`` is applied per key, so a declared ``PATH`` REPLACES the
+    child's inherited one. Emitting the fragment verbatim hands the server a
+    PATH holding only the directories the user happened to name, which breaks
+    any launcher that resolves a sibling binary at runtime while the dashboard
+    probe — which merges instead of replacing — still reports it healthy.
+    """
+
+    def test_declared_path_is_expanded(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"wrapped": {"command": "/opt/wrapped", "env": {"PATH": "/opt/shims"}}},
+        )
+        emitted = config["mcpServers"]["wrapped"]["env"]["PATH"].split(os.pathsep)
+        # The declared dir stays first, and the inherited PATH survives.
+        assert emitted[0] == "/opt/shims"
+        assert "/usr/bin" in emitted
+        assert "/bin" in emitted
+
+    def test_other_env_keys_are_untouched(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={
+                "wrapped": {
+                    "command": "/opt/wrapped",
+                    "env": {"PATH": "/opt/shims", "TOKEN_FILE": "/etc/token"},
+                }
+            },
+        )
+        assert config["mcpServers"]["wrapped"]["env"]["TOKEN_FILE"] == "/etc/token"
+
+    def test_spec_without_path_is_left_alone(self, tmp_path: Path, monkeypatch) -> None:
+        """No env.PATH means the child inherits a usable PATH already.
+
+        Writing one anyway would bake this host's directory list into every
+        config that does not need it.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"plain": {"command": "/opt/plain", "env": {"TOKEN_FILE": "/etc/token"}}},
+        )
+        assert config["mcpServers"]["plain"]["env"] == {"TOKEN_FILE": "/etc/token"}
+
+    def test_empty_path_value_is_expanded(self, tmp_path: Path, monkeypatch) -> None:
+        """An empty declared PATH expands exactly like the probe expands it.
+
+        The probe and the command resolver run ``spec_env_path("")`` (the
+        augmented inherited PATH); emitting the raw empty string instead hands
+        the session a child with NO path while the probe shows green — the
+        probe/session divergence this whole emit path exists to close.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"blank": {"command": "/opt/blank", "env": {"PATH": ""}}},
+        )
+        emitted = config["mcpServers"]["blank"]["env"]["PATH"]
+        assert emitted != ""
+        assert "/usr/bin" in emitted.split(os.pathsep)
+
+    def test_non_string_path_is_left_verbatim(self, tmp_path: Path, monkeypatch) -> None:
+        """A malformed value must not be rewritten into a working-looking PATH."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"broken": {"command": "/opt/broken", "env": {"PATH": ["/opt/a"]}}},
+        )
+        assert config["mcpServers"]["broken"]["env"]["PATH"] == ["/opt/a"]
+
+    def test_command_resolves_via_the_inherited_half(self, tmp_path: Path, monkeypatch) -> None:
+        """Resolution must search more than the spec's own fragment.
+
+        The other tests in this class stub ``shutil.which`` to resolve anything,
+        so they only pin the emitted bytes. This one honours the ``path=``
+        kwarg, so it catches an expansion narrowed to the declared fragment —
+        which would leave a bare command resolvable only through the inherited
+        half silently dropped from the config.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+
+        def _path_aware(cmd, **kw):  # noqa: ANN001, ANN003 - test shim
+            if os.path.isabs(cmd):
+                return cmd
+            searched = (kw.get("path") or "").split(os.pathsep)
+            # Resolvable ONLY through the inherited half of the expansion.
+            return "/usr/bin/srv" if cmd == "srv" and "/usr/bin" in searched else None
+
+        config = _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"srv": {"command": "srv", "env": {"PATH": "/opt/shims"}}},
+            which_side_effect=_path_aware,
+        )
+        assert config["mcpServers"]["srv"]["command"] == "/usr/bin/srv"
+
+    def test_source_config_env_is_not_mutated(self, tmp_path: Path, monkeypatch) -> None:
+        """``dict(spec)`` is shallow, so the env dict must be copied before write.
+
+        Mutating through would rewrite the caller's in-memory source config and
+        leak the expanded value back into whatever else reads it.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        kiro_mcp = tmp_path / "fake_kiro_mcp.json"
+        _run_install_mcp_merge(
+            tmp_path,
+            cfg_dir,
+            cc_servers={},
+            kiro_servers={"wrapped": {"command": "/opt/wrapped", "env": {"PATH": "/opt/shims"}}},
+        )
+        on_disk = json.loads(kiro_mcp.read_text(encoding="utf-8"))
+        assert on_disk["mcpServers"]["wrapped"]["env"]["PATH"] == "/opt/shims"
+
+    def test_rebuild_is_stable(self, tmp_path: Path, monkeypatch) -> None:
+        """install_agent runs on every start; the emitted PATH must not grow."""
+        monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+        cfg_dir = _bundled_defaults(tmp_path)
+        servers = {"wrapped": {"command": "/opt/wrapped", "env": {"PATH": "/opt/shims"}}}
+        first = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
+        )["mcpServers"]["wrapped"]["env"]["PATH"]
+        second = _run_install_mcp_merge(
+            tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
+        )["mcpServers"]["wrapped"]["env"]["PATH"]
+        assert first == second
+        assert len(first.split(os.pathsep)) == len(set(first.split(os.pathsep)))
 
 
 class TestRebuildReconcileRetainsEnabledAppServers:

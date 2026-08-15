@@ -57,7 +57,7 @@ const SESSIONS_STALE_MS = 30_000
  * An EMPTY query is exempt: it is the recents/quick-switcher listing, not a
  * search, and the endpoint answers it.
  */
-const SESSIONS_MIN_QUERY_CHARS = 2
+export const SESSIONS_MIN_QUERY_CHARS = 2
 
 /**
  * One session as returned by `/api/sessions/search`. `api.sessionsSearch` is
@@ -128,6 +128,10 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
     // reads it. Satisfies `ResourceProvider.label: string`.
     get label() { return i18nT(PROVIDER_LABEL_KEY) },
     icon: sessionIcon(),
+    // Declared from the SAME constant the search short-circuit enforces below,
+    // so the palette's "keep typing" empty state and the provider's behavior
+    // cannot drift apart.
+    minQueryChars: SESSIONS_MIN_QUERY_CHARS,
     async search(query: string): Promise<Result[]> {
       const q = query.trim()
       if (q.length > 0 && q.length < SESSIONS_MIN_QUERY_CHARS) return []

@@ -586,8 +586,14 @@ async def source_counts(request: web.Request) -> web.Response:
     # holds documents -- which the list view filters out, hiding a source the user
     # cannot then see or delete. The union is over item ids, so a document held both
     # ways counts once per source and never twice.
-    where_sl = [w.replace("source_id", "i.source_id") if "source_id" in w else f"i.{w}"
-                if w != "1=1" else w for w in where]
+    where_sl: list[str] = []
+    for w in where:
+        if "source_id" in w:
+            where_sl.append(w.replace("source_id", "i.source_id"))
+        elif w == "1=1":
+            where_sl.append(w)  # the constant-true clause takes no table alias
+        else:
+            where_sl.append(f"i.{w}")
     sql = (
         f"SELECT COALESCE(NULLIF(sid, ''), '{_NO_SOURCE}') AS sid, "  # noqa: S608
         "COUNT(DISTINCT item_id) AS cnt FROM ("

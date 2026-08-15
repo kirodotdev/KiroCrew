@@ -34,6 +34,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         CredentialPolicy,
         DashboardContributor,
         EmbeddingSource,
+        ExternalAccessPolicy,
         FeatureApp,
         IdentityProvider,
         JailProvider,
@@ -287,6 +288,7 @@ class PlatformContext:
     capability_manager: "CapabilityManager"
 
     # ── install / structural extension points ──
+    external_access: "ExternalAccessPolicy"
     registry: "AppRegistryPolicy"
     apps_loader: "AppsLoader"
     package_manager: "PackageManager"  # [RESERVED] — see RESERVED_SLOTS

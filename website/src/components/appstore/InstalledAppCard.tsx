@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../api/client'
 import { Badge, Btn } from '../ui'
-import HeroCapsule from './HeroCapsule'
+import AppIconTile from './AppIconTile'
 import type { InstalledApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
 
@@ -39,7 +39,11 @@ export default function InstalledAppCard({
   const skillCount = m?.skills?.length || 0
   const cronCount = m?.crons?.length || 0
   const sopCount = m?.sops?.length || 0
-  const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
+  const uiPages = m?.ui?.pages || []
+  const pageCount = uiPages.length
+  const tags = m?.tags || []
+  const mcpTools = m?.permissions?.mcpTools || []
+  const hasUI = !!(m?.ui?.entry) || pageCount > 0
   const pageIcon = m?.ui?.pages?.[0]?.icon || ''
   const isSelfManaged = app.resources === 'app'
   const isBuiltin = app.origin === 'builtin'
@@ -47,9 +51,11 @@ export default function InstalledAppCard({
   const canUninstall = app.lifecycle !== 'locked'
   const hasOpenCommand = !!m?.openCommand
   // Derive icon URL: prefer manifest iconUrl (builtins), fallback to blob proxy (registry)
-  const iconUrl = m?.iconUrl || (m?.iconPath && m?.repo
-    ? `/api/apps/blob?repo=${encodeURIComponent(m.repo)}&path=${encodeURIComponent(m.iconPath)}`
+  const blob = (p?: string) => (p && m?.repo
+    ? `/api/apps/blob?repo=${encodeURIComponent(m.repo)}&path=${encodeURIComponent(p)}`
     : undefined)
+  const iconUrl = m?.iconUrl || blob(m?.iconPath)
+  const iconUrlDark = m?.iconUrlDark || blob(m?.iconPathDark)
 
   return (
     <div className="border border-border rounded-lg hover:border-accent/30 transition-colors overflow-hidden">
@@ -70,14 +76,14 @@ export default function InstalledAppCard({
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 flex-1 min-w-0">
-            {/* Hero capsule — same art and fallback chain as Discover's rows,
-                so one app looks like itself on both tabs. */}
-            <HeroCapsule
+            {/* Same tile and fallback chain as Discover's rows, so one app
+                looks like itself on both tabs. */}
+            <AppIconTile
               name={app.name}
-              art={{ heroImage: m?.heroImage, heroImageDark: m?.heroImageDark, screenshots: m?.screenshots, repo: m?.repo }}
               icon={pageIcon}
               iconUrl={iconUrl}
-              className="w-24 h-[54px] mt-0.5"
+              iconUrlDark={iconUrlDark}
+              className="w-11 h-11 mt-0.5"
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -116,7 +122,7 @@ export default function InstalledAppCard({
                 {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {i18nT('components.appstore.installedAppCard.agent', { count: agentCount })}</span>}
                 {skillCount > 0 && <span className="flex items-center gap-1"><Zap size={11} /> {i18nT('components.appstore.installedAppCard.skill', { count: skillCount })}</span>}
                 {cronCount > 0 && <span className="flex items-center gap-1"><Clock size={11} /> {i18nT('components.appstore.installedAppCard.cron', { count: cronCount })}</span>}
-                {hasUI && <span className="flex items-center gap-1"><Package size={11} /> {i18nT('components.appstore.installedAppCard.page', { count: m.ui!.pages!.length })}</span>}
+                {pageCount > 0 && <span className="flex items-center gap-1"><Package size={11} /> {i18nT('components.appstore.installedAppCard.page', { count: pageCount })}</span>}
               </div>
             </div>
           </div>
@@ -199,24 +205,24 @@ export default function InstalledAppCard({
       {/* Expanded details */}
       {expanded && (
         <div className="border-t border-border bg-bg-elevated/50 p-4 space-y-3 text-[13px]">
-          {(m?.tags || []).length > 0 && (
+          {tags.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <Tag size={12} className="text-muted" />
-              {m!.tags!.map(t => (
+              {tags.map(t => (
                 <span key={t} className="bg-bg-elevated border border-border px-2 py-0.5 rounded text-[11px] text-muted">{t}</span>
               ))}
             </div>
           )}
-          {(m?.permissions?.mcpTools || []).length > 0 && (
+          {mcpTools.length > 0 && (
             <div>
               <span className="text-muted">{i18nT('components.appstore.installedAppCard.mcp_tools')} </span>
-              <span className="text-text">{m!.permissions!.mcpTools!.join(', ')}</span>
+              <span className="text-text">{mcpTools.join(', ')}</span>
             </div>
           )}
-          {hasUI && m?.ui?.pages && (
+          {hasUI && pageCount > 0 && (
             <div>
               <span className="text-muted">{i18nT('components.appstore.installedAppCard.ui_pages')} </span>
-              {m.ui.pages.map(p => (
+              {uiPages.map(p => (
                 <span key={p.route} className="text-text mr-3">{p.label} ({p.route})</span>
               ))}
             </div>

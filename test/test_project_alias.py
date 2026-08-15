@@ -345,6 +345,46 @@ class TestProjectRunAlias:
         runner.status.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_status_reports_progress_from_the_live_run(self):
+        """Progress must come from the per-run payload, not the top level.
+
+        ``build_status()`` exposes only ``running``, ``agent`` and ``runs`` at
+        the top level, so reading progress there rendered every number as its
+        default and reported an executing task as idle at step 0.
+        """
+        runner = MagicMock()
+        runner.status.return_value = {
+            "running": True,
+            "agent": "kirocrew",
+            "runs": [
+                {"running": False, "status": "passed", "completed": 4, "tasks": 4, "current_task": 4},
+                {"running": True, "status": "running", "completed": 2, "tasks": 5, "current_task": 3},
+            ],
+        }
+        reply = await _handle_run_command("task run status", runner, MagicMock(), "C123", "ts")
+        assert "Status: running" in reply
+        assert "Steps: 2/5" in reply
+        assert "Current: step 3" in reply
+
+    @pytest.mark.asyncio
+    async def test_status_falls_back_to_first_run_when_none_flagged_live(self):
+        runner = MagicMock()
+        runner.status.return_value = {
+            "running": True,
+            "runs": [{"status": "planning", "completed": 0, "tasks": 7, "current_task": 1}],
+        }
+        reply = await _handle_run_command("task run status", runner, MagicMock(), "C123", "ts")
+        assert "Status: planning" in reply
+        assert "Steps: 0/7" in reply
+
+    @pytest.mark.asyncio
+    async def test_status_reports_no_task_when_idle(self):
+        runner = MagicMock()
+        runner.status.return_value = {"running": False, "runs": []}
+        reply = await _handle_run_command("task run status", runner, MagicMock(), "C123", "ts")
+        assert reply == "No task running."
+
+    @pytest.mark.asyncio
     async def test_non_matching_returns_none(self):
         result = await _handle_run_command("hello world", MagicMock(), MagicMock(), "C123", "ts")
         assert result is None

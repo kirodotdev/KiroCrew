@@ -266,6 +266,8 @@ jobs:
             --config p/typescript \
             --config p/security-audit \
             --config p/secrets \
+            --config p/owasp-top-ten \
+            --config .semgrep/ \
             --baseline-commit "$SEMGREP_BASELINE_REF" \
             --error
 

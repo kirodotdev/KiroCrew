@@ -15,7 +15,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages,
   appendMessage, appendSlotMessage, resumeFromHistory, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
   selectContinuable,
   selectTurnInterrupted,
@@ -24,7 +24,8 @@ import {
   selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion,
-  retireStatelessQuestion,
+  retireStatelessQuestion, capturePendingAskId,
+  requestSlotReveal,
   mcpAppKey,
 } from '../store/chatSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
@@ -32,6 +33,7 @@ import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistr
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { sseSlotTitle, triggerRefresh } from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import { type AutoNudgeLoop } from '../components/AutoNudgePopover'
@@ -54,7 +56,9 @@ import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
-import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment } from '../utils/fileTokens'
+import { parseFiles, prepareSendPayload, resolveFileSegment, buildFileLabels, buildRelMap, findUnreferencedAttachments, parseDirTokens, serializeDirTokens, parseDirs, resolveDirSegment, spliceDirTokens } from '../utils/fileTokens'
+import { classifyDrop } from '../utils/dropClassify'
+import { makeRelative } from '../components/FilePickerMenu'
 import { type PasteBlock, expandAll as expandPasteTokens, findTokenRanges, pruneBlocks as pruneBlocksUtil, remapCarriedBlocks, saveStoredPaste, recollapsePastes } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 /** Delay (ms) before scrolling to bottom after a state update, giving React time to commit. */
@@ -68,6 +72,7 @@ const SCROLL_AFTER_RENDER_MS = 100
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
+import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, openPanelView, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -124,6 +129,7 @@ import { PinnedMessagesPanel } from './chat/PinnedMessagesPanel'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
+import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { groupDisplayItems, applyRunningState } from './chat/groupDisplayItems'
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_FOCUS_EVENT, PREVIEW_SNIP_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
@@ -704,6 +710,35 @@ function renderFileSegment(content: string, meta: Record<string, unknown> | unde
  *  equal value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_APP_ID_SET: ReadonlySet<string> = new Set()
 
+/**
+ * Whether a shell command preview is the START of a browse.
+ *
+ * Matches the INVOCATION, not a mention: `playwright-cli` has to be the first
+ * word of a command, so `grep playwright-cli .` and `echo playwright-cli` are
+ * not browses while `cd /tmp && playwright-cli open …` is. Exported so the
+ * distinction is unit-tested rather than asserted in a comment -- a regex that
+ * merely required leading WHITESPACE matched every mention.
+ */
+export function isBrowseCommand(preview: string | undefined | null): boolean {
+  if (!preview) return false
+  // A real shell preview is the tool INPUT, which is JSON:
+  // `{"command":"playwright-cli open https://x"}`. Testing the raw string never
+  // matched, because `playwright-cli` sits behind a quote rather than at a
+  // command boundary -- so the panel never opened. Pull the command field out
+  // first, mirroring the backend's own `_extract_bash_command`, and fall back to
+  // the raw text for a preview that is already a bare command.
+  let cmd = preview
+  try {
+    const parsed: unknown = JSON.parse(preview)
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { command?: unknown }).command === 'string') {
+      cmd = (parsed as { command: string }).command
+    }
+  } catch {
+    // Not JSON: use the preview verbatim.
+  }
+  return /(^|[;&|(]\s*)playwright-cli(\s|$)/.test(cmd)
+}
+
 export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync }: { mode?: string; embedded?: boolean; embedMode?: 'chat' | 'sessions'; popout?: boolean; noUrlSync?: boolean } = {}) {
   const dispatch = useAppDispatch()
   const moveSlotToFolder = useMoveSlotToFolder()
@@ -714,12 +749,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const provider = useProvider()
   const [searchParams, setSearchParams] = useSearchParams()
   const slots = useAppSelector(s => s.dashboard.slots)
-  // Unified chat view: show both default and orchestrator slots together.
+  // Unified chat view: show default, orchestrator and crew slots together.
   // App-owned worker slots (s.app) are excluded by the sidebar itself.
   const filteredSlots = useMemo(
     () => slots.filter(s => {
       const sk = s.surface ?? s.mode ?? ''
-      return sk === '' || sk === 'orchestrator'
+      return sk === '' || sk === 'orchestrator' || sk === 'crew'
     }),
     [slots],
   )
@@ -758,10 +793,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // MCP Apps in the side panel (dashboard.mcp_app_panel, opt-in). When on, a new
   // render opens the panel to its own `app` tab instead of drawing inline in the
   // bubble — same auto-open path the web-preview marker uses.
-  const { data: appPanelCfg } = useQuery<{ mcp_app_panel?: boolean }>({
+  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean }>({
     queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000,
   })
   const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
+  // Opt-in: expand the side panel to the Git tab on sight of a git project
+  // (dashboard.auto_open_git_panel). See the git-panel effect for why it is off
+  // by default.
+  const autoOpenGitPanel = appPanelCfg?.auto_open_git_panel === true
+  // Whether that value is KNOWN yet. The git effect consumes a one-shot
+  // localStorage marker, so acting while this query is still in flight would
+  // burn the marker with the flag reading false and an opted-in user would never
+  // get the panel. A FAILED query counts as known and resolves to the documented
+  // default (off) — otherwise a config endpoint that is down would withhold the
+  // Git tab itself, which the flag does not govern.
+  const autoOpenGitPanelKnown = appPanelCfg !== undefined || appPanelCfgError
   // Tool-call ids already routed to a tab, so re-renders of the same app don't
   // yank focus back to the panel on every streaming update.
   useEffect(() => {
@@ -2895,7 +2941,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const files = Array.from(e.dataTransfer.files)
+    // Classify BEFORE acting (issue #743): a dropped folder inserts its path
+    // into the composer as an `@rel/` token — the same reference the @-picker
+    // stages — instead of taking the upload route, which cannot ingest a
+    // directory. Files keep uploading; a mixed drop takes both routes. In a
+    // plain browser no real path is visible, so classifyDrop leaves folders
+    // on the upload route there (today's behaviour) rather than inserting a
+    // misleading bare name.
+    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+    if (dirPaths.length) {
+      // Short relative form when the folder lies inside the project root,
+      // absolute otherwise — exactly the picker's own fallback convention.
+      const rels = dirPaths.map(p => makeRelative(p, currentProjectRef.current || ''))
+      const spliced = spliceDirTokens(inputRef.current, voiceCaretRef.current?.start ?? null, rels)
+      if (spliced.changed) {
+        // Arm the caret restore the same way the dictation splice does, so the
+        // cursor lands just past the inserted tokens once the value commits.
+        // Only on a real change: an all-duplicates drop leaves the value
+        // identical, React bails out of the no-op setInput, the restore effect
+        // never fires, and the armed offset would fire stale on the next
+        // unrelated edit, yanking the user's cursor.
+        voicePendingCaretRef.current = spliced.caret
+        setInput(spliced.value)
+      }
+    }
     if (files.length) {
       uploadFiles(files)
     }
@@ -3463,14 +3532,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const isStreaming = lastMsg?.role === 'streaming'
   // Follow-up options derived from the last assistant message in the current chat.
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
+  // A pending question card suppresses them: both would offer the same choices in
+  // the same band, and only the card can answer the blocked tool call.
   const { followUpOptions, followUpIsPlan } = useMemo(
-    () => deriveFollowUpOptions(messages, isStreaming),
-    [messages, isStreaming],
+    () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
+    [messages, isStreaming, pendingQuestion],
   )
   // Visual-only highlight state; text in the input is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant
   // message) or the active chat switches — both signal a fresh turn.
   const [followUpPicked, setFollowUpPicked] = useState<Set<string>>(() => new Set())
+  // Read by the option handler instead of the state: two clicks landing before a
+  // re-render would both see the same set and both take the append branch.
+  const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, activeSlot])
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
@@ -3584,6 +3658,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // would compare against the wrong baseline (fork GPT review, 995718f).
     const entrySendSlot = targetSlot ?? uiSlot
     const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, entrySendSlot)
+    // Same entry-time capture for a BLOCKING card, whose staleness is resolved
+    // over the network instead of in the store.
+    const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, entrySendSlot)
 
     // Slash command interception (e.g. /side): runs before knowledge so a
     // bare prefix like /side returns immediately without touching input parse.
@@ -3870,7 +3947,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (bubblePastes.length) meta.pastes = bubblePastes
     if (knowledgeBlock) meta.knowledge = { items: knowledgeBlock.items.length, tokens: knowledgeBlock.totalTokens, titles: knowledgeBlock.items.map(i => i.title), content: knowledgeBlock.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })) }
     if (widgetOrigin) meta.origin = 'widget'
-    const metaPayload = Object.keys(meta).length ? meta : undefined
+    // A client-generated correlation ID so the server echo can be matched
+    // to this exact optimistic bubble without relying on content equality.
+    // The server preserves meta fields on the user row it appends, so the
+    // echo carries both this sendId AND the server-minted `mid` (#2845).
+    const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    meta.sendId = sendId
+    const metaPayload = meta
     // Skip optimistic user bubble when the slot is busy (shared rule:
     // chatSlice.selectComposerBusy) — the backend sends a "queued" role
     // message instead, avoiding a duplicate. A steer-flagged send usually
@@ -3997,6 +4080,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // one is not recoverable).
         dispatch(retireStatelessQuestion({ slot, expected: cardAtSend }))
       }
+      // The user answered in the composer instead of the card; a blocking card
+      // is resolved over the network, so this cannot be a store-only retirement.
+      void resolveAskAfterSend(body, slot === entrySendSlot ? askAtSend : null, dispatch)
     } catch (e: unknown) {
       clearTimeout(timeout)
       if (e instanceof DOMException && e.name === 'AbortError') {
@@ -4088,12 +4174,19 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingModel('')
       return
     }
-    await api.chatSlotAgent(activeSlot, agentName)
-    setAgentDropdown(false)
-    // queryClient, setAgentDropdown, and the setPending* setters are all stable
-    // (react-query client / useState setters / useCallback([])), so listing them
-    // satisfies the linter without re-creating this callback.
-  }, [activeSlot, installedAgents, provider, queryClient, setAgentDropdown, setPendingAgent, setPendingModel])
+    dispatch(setAgentSwitchNotice(null))
+    try {
+      await api.chatSlotAgent(activeSlot, agentName)
+    } catch (error) {
+      // Closing the picker is the call sites' job and already happens
+      // synchronously alongside this call, so a failure surfaces as the shared
+      // notice rather than by holding the dropdown open.
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
+    }
+    // queryClient and the setPending* setters are all stable (react-query
+    // client / useState setters / useCallback([])), so listing them satisfies
+    // the linter without re-creating this callback.
+  }, [activeSlot, dispatch, installedAgents, provider, queryClient, setPendingAgent, setPendingModel])
   const switchModel = useCallback(async (modelName: string) => {
     // 'auto' is stored VERBATIM, not collapsed to ''. Both resolve to the same
     // provider behaviour server-side, but '' is also the "never chosen" state,
@@ -4326,30 +4419,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
     }
   }, [messages, activeSlot, dispatch])
-  // Auto-open the Browser panel when the agent starts browsing — the live
-  // Playwright mirror streams as `kirocrew-browser-frame` events. Open/focus the
-  // tab only at the START of a stream (new session_key, or after a >90s gap),
-  // NOT on every frame, so it can't steal focus from a tab the user switched to
-  // mid-browse.
-  const browseFrameOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
+  // Auto-open the Browser panel when the agent starts browsing. The signal is the
+  // agent's own shell call: browsing is `playwright-cli` commands, so a shell
+  // tool_call whose preview invokes it is the start of a browse. Open/focus the tab
+  // only at the START (new slot, or after a >90s gap), NOT on every command, so it
+  // cannot steal focus from a tab the user switched to mid-browse.
+  const browseOpenedRef = useRef<{ key: string | null; ts: number }>({ key: null, ts: 0 })
   useEffect(() => {
-    const onFrame = (e: Event) => {
-      const key = (e as CustomEvent<{ session_key?: string }>).detail?.session_key ?? null
-      const now = Date.now()
-      // Only auto-open the Browser tab when the browsing session IS the one on
-      // screen (the active slot). A background session's frames must not open —
-      // or, with the panel's own session gate, display in — another session's
-      // panel.
+    const onTool = (e: Event) => {
+      const d = (e as CustomEvent<{ slot?: string; is_shell?: boolean; input_preview?: string }>).detail
+      if (!d?.is_shell) return
+      if (!isBrowseCommand(d.input_preview)) return
+      const key = d.slot ?? null
+      // Only auto-open when the browsing session IS the one on screen. A background
+      // session's commands must not open another session's panel.
       if (!key || key !== activeSlotRef.current) return
-      const prev = browseFrameOpenedRef.current
+      const now = Date.now()
+      const prev = browseOpenedRef.current
       if (prev.key !== key || now - prev.ts > 90_000) {
         dispatch(openActivityPanel())
         tabsCtlRef.current.openView('browser')
       }
-      browseFrameOpenedRef.current = { key, ts: now }
+      browseOpenedRef.current = { key, ts: now }
     }
-    window.addEventListener('kirocrew-browser-frame', onFrame)
-    return () => window.removeEventListener('kirocrew-browser-frame', onFrame)
+    window.addEventListener('kirocrew-tool-call', onTool)
+    return () => window.removeEventListener('kirocrew-tool-call', onTool)
   }, [dispatch])
   // Reachability: declare open chat slots to the Electron main process so the
   // agent command channel polls for them (see listPanelIds) even before the Browser
@@ -4589,6 +4683,38 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const projectBranch = projectGitError
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
+
+  // Auto-open the Git panel when the slot has a project dir that is a git repo.
+  // OPT-IN (dashboard.auto_open_git_panel, default off) because the marker below
+  // cannot make this the once-per-project nudge it reads like: a new slot inherits
+  // `dashboard.default_project`, so keying on slot+path re-fires for every new
+  // chat in the same repo — forever. The Git TAB is still created unconditionally
+  // (same as the folder tab below), so the panel is one click away when off.
+  useEffect(() => {
+    if (!activeSlot || !_slotProject || projectGitError) return
+    if (!projectGit?.repo) return
+    // Do not consume the marker before the opt-in's value is known — see
+    // `autoOpenGitPanelKnown`.
+    if (!autoOpenGitPanelKnown) return
+    const key = `mc-git-panel-opened:${activeSlot}:${_slotProject}`
+    if (localStorage.getItem(key)) return
+    // If the marker cannot be persisted (quota), skip the auto-open entirely:
+    // opening changes tabsCtl, which re-runs this effect, and an absent marker
+    // would make it open again forever.
+    try { localStorage.setItem(key, '1') } catch { return }
+    tabsCtl.openView('git')
+    if (autoOpenGitPanel) dispatch(openActivityPanel())
+  }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
+
+  // Auto-open the folder tab for the project dir once per slot+path.
+  useEffect(() => {
+    if (!activeSlot || !_slotProject) return
+    const key = `mc-folder-panel-opened:${activeSlot}:${_slotProject}`
+    if (localStorage.getItem(key)) return
+    // Same quota guard as the git-panel effect above.
+    try { localStorage.setItem(key, '1') } catch { return }
+    tabsCtl.openFolder(_slotProject, activeSlot)
+  }, [activeSlot, _slotProject, tabsCtl])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
@@ -4597,6 +4723,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // not the reason the list is hidden (the user owns the state).
   const sidebarAutoHidden = useRef<boolean | null>(null)
   const isMobile = useIsMobile()
+  const [sidePanelDock] = useSidePanelDock()
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const v = parseInt(localStorage.getItem('mc-sidebar-width') || '', 10)
     return !isNaN(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 260
@@ -4761,8 +4888,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // selection, WITHOUT touching the main chat context (unlike handleQuote, which
   // injects into the main composer). Mirrors the /side slash command's
   // openActivityToTab('side') bridge, then hands the selection to SideChat via a
-  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab /
-  // reveal-slot — no new prop-drilling, no backend change). No transit
+  // `side-seed` CustomEvent (same event-bridge pattern as openActivityToTab —
+  // no new prop-drilling, no backend change). No transit
   // animation: the popup routes the selection straight to the Side panel
   // (matches Codex's "Ask in side chat" behavior).
   const handleAsk = useCallback((text: string) => {
@@ -5697,6 +5824,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     mo.observe(document.body, { childList: true, subtree: true })
     return () => mo.disconnect()
   }, [isMobile, embedMode])
+  /** True while the INLINE side panel (mobile / embed, no actbar column) is
+   *  mounted AND visible.
+   *
+   *  Mobile has no actbar grid column, so the panel renders as a flex sibling of
+   *  the chat pane at the full window width — it covers the content area
+   *  outright. Anything the chat pane floats over that area (the sessions FAB
+   *  below) would land on top of the panel's own controls, so it is gated on
+   *  this. Reuses the panel's own mount/visibility predicates rather than
+   *  re-deriving them from `activityOpen`, which is only one of their inputs (a
+   *  live app or browser tab keeps the panel mounted through a close, and the
+   *  find pane hides it while owning the dock). */
+  const inlineSidePanelShowing = !activitySlot
+    && shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
+    && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen })
   const openSidebar = useCallback(() => setMobileSessions(true), [])
   const closeSidebar = useCallback(() => setMobileSessions(false), [])
   useSwipeEdge(chatContainerRef, { enabled: isMobile && !mobileSessions, edge: 'left', edgeZone: 0.35, onSwipe: openSidebar })
@@ -6035,7 +6176,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             <button onClick={dismissPinStatus} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="w-4 h-4" /></button>
           </div>
         )}
-        {isMobile && !sidebarOpen && !(activeSlot && (messages.length > 0 || slotRunning)) && (
+        {/* Floating sessions opener — mobile only, and only on a chat with
+            nothing in it yet (a conversation gets the in-header control
+            instead). Suppressed while the inline side panel is showing: it is
+            `fixed` at the same top-left corner as the panel's own collapse
+            button and, carrying z-10 against that button's auto z-index, paints
+            OVER it — leaving no way to close a panel that covers the whole
+            screen. It would also be pointing at a chat pane the panel has
+            squeezed to zero width. Sessions stay reachable meanwhile via the
+            left-edge swipe (useSwipeEdge above). */}
+        {isMobile && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-[42px] left-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
@@ -6085,7 +6235,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
-                  onReveal={activeSlot ? () => { sidebarAutoHidden.current = null; if (!sidebarPinned) setSidebarPinned(true); window.dispatchEvent(new CustomEvent('reveal-slot', { detail: activeSlot })) } : undefined}
+                  onReveal={activeSlot && embedMode !== 'chat' ? () => {
+                    // The request rides the store, not a window event: with the
+                    // drawer collapsed ChatSidebar is unmounted, so an event
+                    // dispatched here (before the mount that setSidebarPinned
+                    // schedules commits) had no listener and was dropped —
+                    // the store entry survives until the sidebar consumes it
+                    // (#912). Mobile drives its own drawer state. Embed-chat
+                    // never mounts a sidebar, so the item is not offered there:
+                    // a stored request would outlive the view and fire on
+                    // whichever sidebar mounts next.
+                    sidebarAutoHidden.current = null
+                    if (isMobile) setMobileSessions(true)
+                    else if (!sidebarPinned) setSidebarPinned(true)
+                    dispatch(requestSlotReveal(activeSlot))
+                  } : undefined}
                   onRename={activeSlot ? () => { setEditingTitle(true); setTitleDraft(title) } : undefined}
                   mode={effectiveMode}
                 />
@@ -6637,6 +6801,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               contextUsedTokens={contextTokens?.used}
               contextWindowTokens={contextTokens?.window || provider.getContextWindow(shownModel)}
               showContextPct={chatConfig.showContextPct}
+              showContextTokens={chatConfig.showContextTokens}
               isRunning={composerBusy}
               /* Composed with `interrupted`, matching the ErrorCard gate above.
                  Availability alone would put a filled primary button on the
@@ -6707,12 +6872,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   return
                 }
                 // One-click: enabled + no shift + not busy + not already in multi-select
-                if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPicked.size, send)) return
+                if (tryQuickSend(o, dashCfg?.quick_send, e.shiftKey, slotRunning, followUpPickedRef.current.size, send)) return
                 // Regular options: toggle. Click unpicked → append + mark; click
                 // picked → try to remove text + unmark (if the user edited the
                 // text so it no longer matches, leave text alone — the chip
                 // still un-highlights for consistency).
-                if (followUpPicked.has(o)) {
+                if (followUpPickedRef.current.has(o)) {
+                  const next = new Set(followUpPickedRef.current); next.delete(o)
+                  followUpPickedRef.current = next
                   setInput(prev => {
                     // Order matters: try leading ", o" first so "opt, opt" + remove
                     // last "opt" doesn't match "opt, " and splice the wrong one.
@@ -6725,10 +6892,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     if (prev === o) return ''
                     return prev  // user edited — leave text, still unmark below
                   })
-                  setFollowUpPicked(prev => { const next = new Set(prev); next.delete(o); return next })
+                  setFollowUpPicked(next)
                 } else {
+                  const next = new Set(followUpPickedRef.current); next.add(o)
+                  followUpPickedRef.current = next
                   setInput(prev => prev.trim() ? prev.trimEnd() + ', ' + o : o)
-                  setFollowUpPicked(prev => new Set(prev).add(o))
+                  setFollowUpPicked(next)
                 }
               }}
               pasteBlocks={pasteBlocks}
@@ -6904,6 +7073,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               inlinePreviewPath={inlinePreviewPath} onInlinePreviewChange={setInlinePreviewPath}
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
+              canDockBottom={false}
             />
           </motion.div>
         )}
@@ -6920,11 +7090,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 'auto', opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
+              initial={sidePanelDock === 'bottom' ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
+              animate={sidePanelDock === 'bottom' ? { height: 'auto', opacity: 1 } : { width: 'auto', opacity: 1 }}
+              exit={sidePanelDock === 'bottom' ? { height: 0, opacity: 0 } : { width: 0, opacity: 0 }}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
-              className="h-full overflow-visible flex justify-end"
+              className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}
               style={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) ? { display: 'none' } : undefined}
             >
               <SidePanel

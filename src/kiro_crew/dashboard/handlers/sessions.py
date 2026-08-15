@@ -29,13 +29,9 @@ from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS, _archive_dir
+from kiro_crew.history import SEARCH_MIN_CHARS, _archive_dir, is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
-from kiro_crew.mcp_discovery import (
-    discover_servers_to_sync,
-    register_servers_for_cc,
-    sync_to_agent_config,
-)
+from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
@@ -126,6 +122,18 @@ _USAGE_REFRESH_SECS = 600  # background refresh every 10 min
 # guaranteed to release the in-flight guard instead of parking it forever.
 _USAGE_FETCH_DEADLINE_SECS = 180
 _usage_fetching = False
+_MAX_BONUS_GRANTS = 32
+_MAX_BONUS_NAME_CHARS = 100
+_MAX_BONUS_CREDITS = 1_000_000.0
+_MAX_BONUS_DAYS_LEFT = 3_650
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_BONUS_DASH_RE = re.compile(
+    r"^([\d.]+)/([\d.]+)\s+used\s+\((\d+)\s+days?\s+left\)$"
+)
+_BONUS_COLON_RE = re.compile(
+    r"^(.+?):\s*([\d.]+)/([\d.]+)\s*\(expires\s+in\s+(\d+)\s+days?\)$",
+    re.IGNORECASE,
+)
 
 # --- Text-scrape gate ------------------------------------------------------
 # The `/usage` text scrape is a REAL billed kiro-cli chat turn, unlike the
@@ -255,9 +263,17 @@ def _safe_float(text: str) -> float | None:
         return None
 
 
+def _safe_int(text: str) -> int | None:
+    """Parse a regex-constrained integer without letting huge input raise."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _parse_usage(raw: str) -> dict[str, object]:
     """Parse structured fields from kiro-cli /usage output."""
-    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw)
+    clean = _ANSI_ESCAPE_RE.sub("", raw)
     result: dict[str, object] = {"raw": ""}
 
     lines = clean.splitlines()
@@ -309,33 +325,61 @@ def _parse_usage(raw: str) -> dict[str, object]:
                 if rate is not None:
                     result["overage_rate"] = rate
 
-    # Bonus / promotional credits are a separate pool kiro-cli lists in its own
-    # section after the plan, e.g.:
-    #     Bonus Credits:
-    #       Welcome bonus: 386.34/500 (expires in 15 days)
-    # This pool is drawn down BEFORE the plan, so while it lasts the plan meter
-    # barely moves — which looked like a frozen counter until we surfaced it.
-    # Capture the first bonus line (first-wins) so the dashboard can pool it into
-    # the header total and show it in the credits modal.
-    in_bonus = False
-    for line in usage_lines:
-        if "Bonus Credits" in line:
-            in_bonus = True
+    # Kiro CLI has shipped both "name: used/total (expires in N days)" and
+    # "name - used/total used (N days left)". Parse both bounded formats and
+    # retain every active grant; one malformed line must not poison the rest.
+    bonus_credits: list[dict[str, object]] = []
+    in_bonus_section = False
+    for raw_line in usage_lines:
+        line = raw_line.strip()
+        if "bonus credits:" in line.casefold():
+            in_bonus_section = True
             continue
-        if not in_bonus or "bonus_limit" in result:
+        if not in_bonus_section:
             continue
-        m = re.search(r"([A-Za-z][A-Za-z0-9 ]*?):\s*([\d.]+)\s*/\s*([\d.]+)", line)
-        if not m:
+        if line.startswith("Credits") or line.startswith("Overages:"):
+            break
+        if not line:
             continue
-        used = _safe_float(m.group(2))
-        limit = _safe_float(m.group(3))
-        if used is not None and limit is not None and limit > 0:
-            result["bonus_label"] = m.group(1).strip()
-            result["bonus_used"] = used
-            result["bonus_limit"] = limit
-            exp = re.search(r"\(([^)]*expires[^)]*)\)", line, re.IGNORECASE)
-            if exp:
-                result["bonus_expires_label"] = exp.group(1).strip()
+        if " - " in line:
+            name, usage_text = line.rsplit(" - ", 1)
+            match = _BONUS_DASH_RE.fullmatch(usage_text.strip())
+            values = match.groups() if match else None
+        else:
+            match = _BONUS_COLON_RE.fullmatch(line)
+            if match:
+                name = match.group(1)
+                values = match.group(2), match.group(3), match.group(4)
+            else:
+                name = ""
+                values = None
+        name = name.strip()
+        if not values or not name or len(name) > _MAX_BONUS_NAME_CHARS:
+            continue
+        used = _safe_float(values[0])
+        total = _safe_float(values[1])
+        days_left = _safe_int(values[2])
+        if (
+            used is None
+            or total is None
+            or days_left is None
+            or used < 0
+            or total <= 0
+            or used > _MAX_BONUS_CREDITS
+            or total > _MAX_BONUS_CREDITS
+            or days_left > _MAX_BONUS_DAYS_LEFT
+            or not name.isprintable()
+        ):
+            continue
+        bonus_credits.append(
+            {"name": name, "used": used, "total": total, "days_left": days_left}
+        )
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
+    # Preserve an observed empty section as an explicit empty list, so callers
+    # can distinguish "no active grants" from an output format with no section.
+    if in_bonus_section:
+        result["bonus_credits"] = bonus_credits
     return result
 
 
@@ -465,6 +509,13 @@ def _redact_strings(value: object) -> object:
     if isinstance(value, list):
         return [_redact_strings(v) for v in value]
     return value
+
+
+def _publish_usage(payload: dict[str, object]) -> None:
+    """Atomically replace the cache served by ``/api/sessions/usage``."""
+    global _usage_cache, _usage_cache_ts
+    _usage_cache = payload
+    _usage_cache_ts = time.time()
 
 
 def _cache_transient_failure() -> None:
@@ -666,8 +717,7 @@ async def _fetch_usage_bg() -> None:
         if not kiro_bin:
             # kiro-cli absent (non-Kiro provider): cache an unavailable marker so
             # the dashboard hides the credit pill instead of polling forever.
-            _usage_cache = {"available": False}
-            _usage_cache_ts = time.time()
+            _publish_usage({"available": False})
             return
         # Identity FIRST, because it is the anchor for credential selection.
         # ``whoami`` is kiro-cli's own account, and it costs no credits; passing
@@ -712,8 +762,7 @@ async def _fetch_usage_bg() -> None:
                 api_usage.update(
                     {k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")}
                 )
-            _usage_cache = api_usage
-            _usage_cache_ts = time.time()
+            _publish_usage(api_usage)
             logger.info(
                 "Kiro usage refreshed (api): %s / %s credits",
                 api_usage.get("credits_used", "?"),
@@ -812,8 +861,7 @@ async def _fetch_usage_bg() -> None:
             parsed.update(
                 {k: _redact_strings(v) for k, v in fresh_identity.items() if not k.startswith("_")}
             )
-            _usage_cache = parsed
-            _usage_cache_ts = time.time()
+            _publish_usage(parsed)
             logger.info(
                 "Kiro usage refreshed (text): %s credits used",
                 parsed.get("credits_used", "?"),
@@ -990,7 +1038,7 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     meta = await loop.run_in_executor(None, log.get_metadata, key)
     # Defense in depth: never summarize an incognito/temporary session even if a
     # caller somehow passes its key.
-    if str(meta.get("memory_mode", "")).lower() in INCOGNITO_MEMORY_MODES:
+    if is_incognito_transcript(meta.get("memory_mode")):
         return ""
     # Cache: a summary persisted in a sidecar file is reusable as long as the
     # session file hasn't changed since it was generated. session_mtime advances
@@ -1177,6 +1225,24 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         slot = state._slots.pop(normalized, None)
     if slot:
         pin_slot_keys.add(slot.key)
+    # Crew persists independently of the transcript, so a permanent delete has to
+    # reach into it too: its durable queue holds the user's own request texts and
+    # its dispatched subagents keep running whether or not a tab is open. Purging
+    # every candidate key rather than just the slot's, because the slot may already
+    # be gone (closed tab, restart) while the store on disk is not.
+    crew = getattr(state, "crew", None)
+    if crew is not None:
+        # Deferred: `handlers.sessions` loads with the dashboard package, which the
+        # gateway imports on its boot path. Crew is dashboard-only, and a delete
+        # with no live crew never needs the class at all.
+        from kiro_crew.crew_chat import CrewOrchestrator
+    if crew is not None and isinstance(crew, CrewOrchestrator):
+        for candidate in pin_slot_keys:
+            try:
+                await crew.purge_slot(candidate)
+            except Exception:
+                logger.warning("History delete: crew purge failed for %s",
+                               candidate, exc_info=True)
     try:
         await state.remove_chat_pins_for_slots(pin_slot_keys)
     except Exception:
@@ -1622,8 +1688,6 @@ async def _reset_all_sessions(request: web.Request) -> int:
         if providers:
 
             async def _safe_shutdown(p: LLMProvider) -> None:
-                import kiro_crew.dashboard.handlers as _h  # noqa: F811
-
                 _timeout = _SHUTDOWN_TIMEOUT_SECS
                 try:
                     await asyncio.wait_for(p.shutdown(), timeout=_timeout)
@@ -1665,26 +1729,26 @@ async def api_sessions_restart(request: web.Request) -> web.Response:
     installed servers (e.g. via AIM) are picked up on restart.
     """
     # Sync MCP servers before restarting so new installs take effect.
-    # Run in thread — discover/sync do blocking file I/O and subprocess calls.
-    # Cap at 30s so a hung kiro-cli subprocess doesn't stall the restart.
+    # Run in thread — the sync does blocking file I/O. Cap at 30s so a hung
+    # rebuild doesn't stall the restart. sync_discovered_servers serializes
+    # against the /api/mcp/sync handler's run of the same sequence.
     synced = 0
+    sync_ok = True
     try:
-
-        async def _sync() -> int:
-            to_sync = await asyncio.to_thread(discover_servers_to_sync)
-            if to_sync:
-                ok: bool = await asyncio.to_thread(sync_to_agent_config, to_sync)
-                # Register for CC unconditionally (CC uses its own .mcp.json)
-                await asyncio.to_thread(register_servers_for_cc, to_sync)
-                if ok:
-                    return len(to_sync)
-            return 0
-
-        synced = await asyncio.wait_for(_sync(), timeout=30)
+        to_sync = await asyncio.wait_for(
+            asyncio.to_thread(sync_discovered_servers), timeout=30
+        )
+        synced = len(to_sync)
     except Exception:
+        # The restart still proceeds (it applies whatever IS on disk), but the
+        # response says the reconcile failed rather than reporting a success
+        # the on-disk config does not back.
+        sync_ok = False
         logger.warning("MCP server sync failed before restart", exc_info=True)
     count = await _reset_all_sessions(request)
-    return web.json_response({"ok": True, "sessions_reset": count, "mcp_synced": synced})
+    return web.json_response(
+        {"ok": True, "sessions_reset": count, "mcp_synced": synced, "mcp_sync_ok": sync_ok}
+    )
 
 
 async def api_session_archive_list(request: web.Request) -> web.Response:

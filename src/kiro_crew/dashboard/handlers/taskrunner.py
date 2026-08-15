@@ -420,15 +420,14 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     lines.append(run.spec_content[:3000] if run.spec_content else "(no spec)")
     lines.append("\n## Step Results\n")
     for s in run.tasks:
-        icon = (
-            "✅"
-            if s.status == TaskStatus.PASSED
-            else (
-                "❌"
-                if s.status == TaskStatus.FAILED
-                else "🔄" if s.status in (TaskStatus.IN_PROGRESS, TaskStatus.REVIEWING) else "⏭"
-            )
-        )
+        if s.status == TaskStatus.PASSED:
+            icon = "✅"
+        elif s.status == TaskStatus.FAILED:
+            icon = "❌"
+        elif s.status in (TaskStatus.IN_PROGRESS, TaskStatus.REVIEWING):
+            icon = "🔄"
+        else:
+            icon = "⏭"
         lines.append(f"{icon} **Step {s.index}: {s.title}**")
         if s.error:
             lines.append(f"  Error: {s.error[:300]}")

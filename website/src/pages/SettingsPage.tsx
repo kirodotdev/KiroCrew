@@ -113,7 +113,7 @@ export default function SettingsPage() {
   // through `getAdvertisedSurfaces()`, but this tab is the surface's only
   // advertised home (it is `hiddenFromNav`), so the gate has to be applied here
   // or an unreleased page would be listed for everyone. The hook, rather than a
-  // bare `readPreviewFlag`, so toggling it in Developer > Config updates this
+  // bare `readPreviewFlag`, so toggling it in Developer > Feature Previews updates this
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
   const allTabs = buildTabs().filter(t => t.key !== 'webhooks' || webhooksPreview)

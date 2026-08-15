@@ -241,18 +241,7 @@ class TestWindowEntryHandler:
         assert "/app-assets" in prefixes
 
 
-# ── _migrate_playwright_to_proxy / _precompute_telemetry ────────────────
-
-
-def test_migrate_playwright_delegates_to_the_owned_registration_sweep(
-    monkeypatch,
-) -> None:
-    called = MagicMock()
-    monkeypatch.setattr(srv, "migrate_owned_playwright_registration", called)
-
-    srv._migrate_playwright_to_proxy()
-
-    called.assert_called_once_with()
+# ── _precompute_telemetry ────────────────────────
 
 
 class TestPrecomputeTelemetry:

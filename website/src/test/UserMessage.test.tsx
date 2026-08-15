@@ -216,3 +216,38 @@ describe('UserMessage', () => {
     expect(second.container.querySelector(ringSelector)).toBeNull()
   })
 })
+
+describe('action footer on touch devices', () => {
+  // happy-dom does not evaluate media queries, so the hover-none utility
+  // classes themselves are pinned, the same idiom as AssistantMessage's footer.
+  const footer = () => screen.getByTitle('Copy').parentElement as HTMLElement
+
+  it('reveals the footer where the pointer cannot hover', () => {
+    render(<UserMessage content="hello" renderContent={renderContent} />)
+    expect(footer().className).toContain('[@media(hover:none)]:opacity-100')
+  })
+
+  it('keeps the footer hover-revealed for hover-capable pointers', () => {
+    render(<UserMessage content="hello" renderContent={renderContent} />)
+    const cls = footer().className
+    expect(cls).toContain('opacity-0')
+    expect(cls).toContain('group-hover/msg:opacity-100')
+    expect(cls).toContain('group-focus-within/msg:opacity-100')
+  })
+
+  it('enlarges the actions to 40px touch targets where the pointer cannot hover', () => {
+    render(<UserMessage content="hello" renderContent={renderContent} />)
+    const cls = footer().className
+    expect(cls).toContain('[@media(hover:none)]:[&_button]:p-2.5')
+    expect(cls).toContain('[@media(hover:none)]:[&_svg]:h-5')
+    expect(cls).toContain('[@media(hover:none)]:[&_svg]:w-5')
+    // Three 40px actions plus a localized timestamp can exceed a narrow
+    // phone's width, so the grown row must wrap rather than clip.
+    expect(cls).toContain('[@media(hover:none)]:flex-wrap')
+  })
+
+  it('keeps the compact sizing on the buttons for pointer devices', () => {
+    render(<UserMessage content="hello" renderContent={renderContent} />)
+    expect(screen.getByTitle('Copy').className).toContain('p-0.5')
+  })
+})

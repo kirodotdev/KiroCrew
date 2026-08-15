@@ -10,6 +10,12 @@ import McpBrowserModal from '../../components/McpBrowserModal'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
+import { fmtDateTime, fmtTime } from '../../i18n/format'
+
+/** Same calendar day as now — the boundary where a bare time stops being honest. */
+function isToday(epochSecs: number): boolean {
+  return new Date(epochSecs * 1000).toDateString() === new Date().toDateString()
+}
 import SortableHeader from '../../components/SortableHeader'
 import { connectionProviderForServer } from '../connections/registry'
 
@@ -86,6 +92,57 @@ function ScopeBadge({
       {label}
     </button>
   )
+}
+
+/**
+ * Badge label for a probe status.
+ *
+ * `needs_auth` is not a failure. The status probe runs WITHOUT the OAuth token
+ * kiro-cli holds (Kiro Crew keeps no credentials), so a remote OAuth server
+ * answers it with 401 while the agent runtime calls the same server fine —
+ * reported as "Error / HTTP 401" in #1853. The label says "Not verified" rather
+ * than naming an action, because the 401 does not distinguish a server nobody
+ * authorized from one authorized through kiro-cli: all we truthfully know is
+ * that we cannot see this server's authorization from here.
+ *
+ * An unrecognised status stays "Unknown" — a newer gateway may report a state
+ * this build predates, and inventing a label for it would be a guess.
+ */
+function mcpStatusLabel(status: string): string {
+  switch (status) {
+    case 'ok':
+      return i18nT('pages.overview.mcpTab.online')
+    case 'error':
+      return i18nT('pages.overview.mcpTab.error')
+    case 'outdated':
+      return i18nT('pages.overview.mcpTab.outdated')
+    case 'disabled':
+      return i18nT('pages.overview.mcpTab.disabled')
+    case 'needs_auth':
+      return i18nT('pages.overview.mcpTab.not_verified')
+    default:
+      return i18nT('pages.overview.mcpTab.unknown')
+  }
+}
+
+/** Only a hard failure is toned as an error; `needs_auth` rides the warn default. */
+function mcpStatusVariant(status: string): 'ok' | 'err' | 'warn' {
+  return status === 'ok' ? 'ok' : status === 'error' ? 'err' : 'warn'
+}
+
+/**
+ * Hover text explaining an unverifiable status, or `undefined` for every status
+ * whose label already says everything.
+ *
+ * A three-word badge cannot explain why the dashboard is unsure, and the badge is
+ * exactly where someone meets that surprise — so the explanation belongs here,
+ * one hover away. It reuses the Connections card's string rather than paraphrasing
+ * it: this table renders inside the Connections page, and two wordings of one
+ * limitation would drift and would cost every locale a second translation.
+ */
+function mcpStatusHint(status: string, serverName: string): string | undefined {
+  if (status !== 'needs_auth') return undefined
+  return i18nT('pages.connectionsPage.not_verified_help', { provider: serverName })
 }
 
 interface McpTabProps {
@@ -322,7 +379,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
         </div>
       </div>
       <div className="flex gap-2 flex-wrap mb-3">
-        {filtered.map(s => <Badge key={s.name} variant={s.status === 'ok' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}><Plug className="lucide-inline" /> {s.name}</Badge>)}
+        {filtered.map(s => <Badge key={s.name} variant={mcpStatusVariant(s.status)}><Plug className="lucide-inline" /> {s.name}</Badge>)}
       </div>
       {isLoading ? <ContentSkeleton rows={6} /> : (
         <div className="overflow-x-auto">
@@ -404,9 +461,32 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   </div>
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">
-                  <Badge variant={s.status === 'ok' ? 'ok' : s.status === 'error' ? 'err' : 'warn'}>
-                    {s.status === 'ok' ? i18nT('pages.overview.mcpTab.online') : s.status === 'error' ? i18nT('pages.overview.mcpTab.error') : s.status === 'outdated' ? i18nT('pages.overview.mcpTab.outdated') : s.status === 'disabled' ? i18nT('pages.overview.mcpTab.disabled') : i18nT('pages.overview.mcpTab.unknown')}
-                  </Badge>
+                  {/* A "declared" row's tool list is the package's own static
+                      declaration — nothing spawned the server. The COLOR carries
+                      that, not a tiny word next to a green badge: green asserts
+                      "it is up", and a peripheral scan of a 12-row table reads
+                      colour long before it reads 11px text. */}
+                  {s.probeMode === 'declared' && s.status === 'ok' ? (
+                    <Badge variant="warn" title={i18nT('pages.overview.mcpTab.tool_list_read_from_the_package_s_declaration_th')}>
+                      {i18nT('pages.overview.mcpTab.declared')}
+                    </Badge>
+                  ) : (
+                    <Badge variant={mcpStatusVariant(s.status)} title={mcpStatusHint(s.status, s.name)}>
+                      {mcpStatusLabel(s.status)}
+                    </Badge>
+                  )}
+                  {!!s.probedAt && (
+                    /* nowrap: the column is narrow enough that "Last probed: 7:47 PM"
+                       wraps to three lines and triples every row's height.
+                       The title carries the FULL date+time, so the hover earns
+                       its place instead of restating the visible label. */
+                    <div
+                      className="text-[11px] text-muted mt-0.5 whitespace-nowrap"
+                      title={`${i18nT('pages.overview.mcpTab.last_probed')}: ${fmtDateTime(s.probedAt * 1000)}`}
+                    >
+                      {i18nT('pages.overview.mcpTab.last_probed')}: {isToday(s.probedAt) ? fmtTime(s.probedAt * 1000) : fmtDateTime(s.probedAt * 1000)}
+                    </div>
+                  )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
                   {s.status === 'error' && s.error ? <span className="text-danger text-[12px]"><AlertTriangle className="lucide-inline" /> {s.error}</span> : s.tools?.length ? (<div>

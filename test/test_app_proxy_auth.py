@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import time
 
+import pytest
+
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 
 SECRET = "s3cret-app-key"
@@ -21,6 +23,22 @@ def _sign(method: str, target: str, body: bytes, *, ts: int | None = None) -> st
 def test_valid_signature_passes():
     hdr = _sign("GET", "/api/read?path=x", b"")
     assert verify_proxy_request(hdr, method="GET", target="/api/read?path=x", body=b"", secret=SECRET)
+
+
+@pytest.mark.parametrize(
+    "wire_target",
+    [
+        "/api/read?path=/tmp/my%20notes.md",
+        "/api/read?path=/tmp/my+notes.md",
+        "/api/read?path=/tmp/issue%23123.md",
+        "/api/read?path=/tmp/caf%C3%A9.md",
+        "/api/search?q=hello%20world&dir=/tmp/my%20folder",
+    ],
+)
+def test_wire_form_targets_verify_successfully(wire_target: str):
+    """Verify that wire-form targets (containing %20, +, %23, non-ASCII) pass HMAC verification."""
+    hdr = _sign("GET", wire_target, b"")
+    assert verify_proxy_request(hdr, method="GET", target=wire_target, body=b"", secret=SECRET)
 
 
 def test_valid_post_binds_body():
