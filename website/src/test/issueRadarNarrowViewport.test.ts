@@ -91,11 +91,56 @@ describe('Issue Radar at narrow widths', () => {
     // handle (the only other collapse affordance) hidden on touch.
     expect(s).toMatch(/onNavigate=\{listDetail\.isMobile \? rail\.collapse : undefined\}/)
     // A callback, not an effect keyed on mainView: re-tapping the section you are
-    // already on does not change mainView, so an effect would never fire and the
-    // rail would stay open.
+    // already on does not change mainView, so an effect would never fire.
+    //
+    // EVERY navigating control reports, headers AND section bodies. A partial
+    // wiring is the actual defect shape: the first pass covered the four section
+    // headers and the crew chips and missed the Dashboards header and all four
+    // section bodies, which made those taps read as dead on a phone.
     const rail = await src('components/LeftRail.tsx')
     expect((rail.match(/onNavigate\?\.\(\)/g) ?? []).length,
-      'every navigation site in the rail must report it').toBe(5)
+      'rail headers that navigate must report it').toBe(6)
+    for (const f of ['DashboardsSection', 'FiltersSection', 'PrFiltersSection', 'SettingsSection']) {
+      const body = await src(`components/${f}.tsx`)
+      expect(body, `${f} must accept the callback`).toMatch(/onNavigate\?: \(\) => void/)
+      expect(body, `${f} must report its navigation`).toMatch(/onNavigate\?\.\(\)/)
+      expect(rail, `${f} must be handed the callback`).toContain(`<${f} onNavigate={onNavigate} />`)
+    }
+  })
+
+  it('hides every main pane the full-width rail covers, dashboards included', async () => {
+    const s = await shell()
+    // The dashboards pane is the one with no list beside it, so it is easy to
+    // miss: left ungated it keeps flex-1 next to a 100%-wide rail and resolves to
+    // zero width, which is a tap that navigates to nothing.
+    expect(s).toMatch(/overflow-y-auto scrollbar-none \$\{railFull \? 'hidden' : ''\}/)
+  })
+
+  it('gives the narrow expanded rail an explicit way to close', async () => {
+    const s = await shell()
+    const rail = await src('components/LeftRail.tsx')
+    // Only while narrow AND open: on a desktop the drag handle already does this.
+    expect(s).toMatch(/onCollapse=\{railFull \? rail\.collapse : undefined\}/)
+    expect(rail).toMatch(/\{onCollapse && \(/)
+    // Reuses the app-agnostic catalog key, so no locale gains a string.
+    expect(rail).toContain("i18nT('app.collapse_sidebar')")
+  })
+
+  it('names the LIST in the Back control, not one item from it', async () => {
+    const s = await shell()
+    // `changeRequestTitle` is singular ("Pull Request") and reads as the item you
+    // are looking at; Back returns to the list, which is the plural.
+    expect(s).toContain('narrowBack(terms.changeRequestPluralTitle)')
+    expect(s).not.toContain('narrowBack(terms.changeRequestTitle)')
+  })
+
+  it('keeps the drill-down state stable enough to host in a context', async () => {
+    const hook = (await import('../hooks/useListDetailView.ts?raw')).default as string
+    // Issue Radar puts this in its context value's dependency list. A fresh object
+    // per render would recompute that memo every render, which would make the memo
+    // guarding the app's largest context dead code.
+    expect(hook).toMatch(/return useMemo\(\(\) => \(\{/)
+    expect(hook).toMatch(/\}\), \[isMobile, detailOpen, openDetail, closeDetail\]\)/)
   })
 
   it('drops the pointer-only drag handles while narrow', async () => {

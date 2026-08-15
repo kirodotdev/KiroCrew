@@ -11,7 +11,9 @@ import { i18nT } from '../../../i18n/t'
  *   • Repository settings — one row per connected repo, each opening that
  *     repo's own settings page (triage labels, good-first-issue labels, …).
  * Every row navigates the main area via `openSettings(target)`. */
-export default function SettingsSection() {
+/** `onNavigate` fires after any navigation so a narrow viewport can collapse the
+ * full-width rail — otherwise the tap navigates behind a rail still covering it. */
+export default function SettingsSection({ onNavigate }: { onNavigate?: () => void }) {
   const { repos, mainView, settingsTarget, openSettings, onAddRepo } = useIssueRadar()
   const inSettings = mainView === 'settings'
 
@@ -31,7 +33,7 @@ export default function SettingsSection() {
               icon={g.icon}
               label={g.label}
               active={inSettings && settingsTarget.kind === 'general' && (settingsTarget.anchor ?? 'account') === g.key}
-              onClick={() => openSettings({ kind: 'general', anchor: g.key })}
+              onClick={() => { openSettings({ kind: 'general', anchor: g.key }); onNavigate?.() }}
             />
           ))}
         </div>
@@ -49,7 +51,7 @@ export default function SettingsSection() {
                 inSettings && settingsTarget.kind === 'repo'
                 && settingsTarget.owner === r.owner && settingsTarget.repo === r.repo
               }
-              onClick={() => openSettings({ kind: 'repo', owner: r.owner, repo: r.repo, provider: r.provider, host: r.host })}
+              onClick={() => { openSettings({ kind: 'repo', owner: r.owner, repo: r.repo, provider: r.provider, host: r.host }); onNavigate?.() }}
             />
           ))}
           <button

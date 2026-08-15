@@ -1,4 +1,4 @@
-import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter } from 'lucide-react'
+import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter, PanelLeftClose } from 'lucide-react'
 import GithubLogo from '../../../components/icons/GithubLogo'
 import Clickable from '../../../components/Clickable'
 import { fmtNumber } from '../../../i18n/format'
@@ -6,6 +6,7 @@ import { useIssueRadar } from '../context'
 import { APP_VERSION, CREW_SORT_FIELDS, DEFAULT_RAIL_WIDTH } from '../lib/format'
 import { CREW_FILTERS, type CrewFilter } from '../lib/types'
 import AccordionSection from './Accordion'
+import { IconButton } from '../../../components/ui'
 import DashboardsSection from './DashboardsSection'
 import FiltersSection from './FiltersSection'
 import PrFiltersSection from './PrFiltersSection'
@@ -24,13 +25,16 @@ import { i18nT } from '../../../i18n/t'
  * the default is `w-72`. Dragging the handle far enough
  * past the minimum collapses the rail to `CollapsedRail`. */
 export default function LeftRail({
-  width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand, onNavigate,
+  width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand, onNavigate, onCollapse,
 }: {
   width?: number | string
   /** Called after any section navigation. The narrow-viewport shell uses it to
    * collapse the full-width rail, so a tap does not navigate to a section that
    * the rail is still covering. */
   onNavigate?: () => void
+  /** Set ONLY while narrow: renders an explicit collapse control, since the drag
+   * handle that closes the rail on a desktop is hidden on touch. */
+  onCollapse?: () => void
   collapsed?: boolean
   onExpand?: () => void
 }) {
@@ -65,6 +69,16 @@ export default function LeftRail({
 
   return (
     <aside style={{ width }} className="flex-shrink-0 flex flex-col min-h-0 py-2 gap-2">
+      {/* A narrow viewport gives the expanded rail the WHOLE screen, and its drag
+          handle is hidden on touch, so without this a user who opened the rail to
+          look at it can only leave by navigating somewhere. */}
+      {onCollapse && (
+        <div className="px-2 flex justify-end">
+          <IconButton aria-label={i18nT('app.collapse_sidebar')} onClick={onCollapse}>
+            <PanelLeftClose size={16} />
+          </IconButton>
+        </div>
+      )}
       {/* Repo switcher — top of the rail, opens downward. */}
       <div className="px-2">
         <RepoSwitcher />
@@ -77,9 +91,9 @@ export default function LeftRail({
         // Return to the dashboard you were last on, not Overview: `dashboardTab`
         // is already persisted, so resetting it here would throw away the one
         // piece of state the section is meant to remember.
-        onToggle={() => openDashboard(dashboardTab)}
+        onToggle={() => { openDashboard(dashboardTab); onNavigate?.() }}
       >
-        <DashboardsSection />
+        <DashboardsSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
@@ -100,7 +114,7 @@ export default function LeftRail({
         expanded={expanded === 'filters'}
         onToggle={() => { openIssues(); onNavigate?.() }}
       >
-        <FiltersSection />
+        <FiltersSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
@@ -109,7 +123,7 @@ export default function LeftRail({
         expanded={expanded === 'pulls'}
         onToggle={() => { openPulls(); onNavigate?.() }}
       >
-        <PrFiltersSection />
+        <PrFiltersSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
@@ -118,7 +132,7 @@ export default function LeftRail({
         expanded={expanded === 'settings'}
         onToggle={() => { openSettings(); onNavigate?.() }}
       >
-        <SettingsSection />
+        <SettingsSection onNavigate={onNavigate} />
       </AccordionSection>
 
       {/* App identity — bottom-most. */}

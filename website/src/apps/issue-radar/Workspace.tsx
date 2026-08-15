@@ -127,6 +127,7 @@ export default function Workspace() {
         collapsed={rail.collapsed}
         onExpand={rail.expand}
         onNavigate={listDetail.isMobile ? rail.collapse : undefined}
+        onCollapse={railFull ? rail.collapse : undefined}
       />
 
       {/* Drag handle — resize the left rail. Present in every main view, since
@@ -211,7 +212,7 @@ export default function Workspace() {
           )}
 
           <main className={`flex-1 min-w-0 min-h-0 flex flex-col ${showDetail ? '' : 'hidden'}`}>
-            {narrowBack(terms.changeRequestTitle)}
+            {narrowBack(terms.changeRequestPluralTitle)}
             <div className="flex-1 min-h-0">
             {activePull
               ? <PrDetail pull={activePull} />
@@ -291,7 +292,10 @@ export default function Workspace() {
           />
         </>
       ) : (
-        <main className="flex-1 min-w-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+        <main
+          className={`flex-1 min-w-0 overflow-y-auto scrollbar-none ${railFull ? 'hidden' : ''}`}
+          style={{ scrollbarWidth: 'none' }}
+        >
           <DashboardView />
         </main>
       )}
