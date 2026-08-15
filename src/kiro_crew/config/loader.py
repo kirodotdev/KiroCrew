@@ -3044,8 +3044,10 @@ class SkillsConfig:
         metadata=_meta(
             "Skill Approval Required",
             "When true, auto-generated skill candidates land in a pending queue for "
-            "human review instead of going live. Prose-only skills may auto-publish "
-            "when this is false; skills that bundle scripts ALWAYS require approval "
+            "human review instead of going live. When false, prose-only NEW skills "
+            "auto-publish and prose-only UPDATES to live auto-skills auto-apply "
+            "(the prior version is snapshotted under .versions/ for rollback); "
+            "skills or updates that bundle scripts ALWAYS require approval "
             "regardless of this flag.",
         ),
     )

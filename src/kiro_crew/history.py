@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import threading
 import time as _time
 from collections import OrderedDict
@@ -5273,6 +5274,8 @@ class HistoryConsolidator:
         triggers: str,
         procedure_md: str,
         scripts: "list[dict] | None" = None,
+        scripts_supplied: bool = False,
+        allow_auto_apply: bool = True,
     ) -> None:
         """Stage a pending UPDATE candidate for an existing auto-skill.
 
@@ -5281,7 +5284,25 @@ class HistoryConsolidator:
         90s, fail-open); (c) use the redacted merge as the proposed body, else
         fall back to the candidate's own procedure (also on oversize); (d) stage
         under ``<target-slug>-update`` with ``kind='update'`` metadata; (e) SEL
-        audit with outcome ``staged_update``."""
+        audit with outcome ``staged_update``.
+
+        When approval is disabled AND the candidate is prose-only (it supplied
+        no scripts at all — ``scripts_supplied`` mirrors the NEW-candidate rule
+        that a candidate whose scripts were ALL rejected by the validator still
+        never auto-publishes), the staged candidate is immediately promoted via
+        ``auto_apply_pending_update`` (same guards + version snapshot as a human
+        approval) and audited as ``auto_applied_update``. If that promotion
+        fails for any reason the candidate stays staged for normal review.
+
+        ``allow_auto_apply=False`` forces the staging path even when the
+        conditions above would promote: the caller passes it whenever
+        auto-refine is enabled, because the refine path writes through
+        ``update_auto_skill`` — unlocked, no version bump, no snapshot — and a
+        refine of the target can arrive from any concurrent session. A refine
+        does not advance the version frontmatter, so even a promotion
+        serialized behind it passes the stale-base check and the two writers
+        last-write-win. Left staged, the candidate is reviewed against
+        whatever body the refine left behind instead."""
         loader = self._skills_loader
         if loader is None:
             return
@@ -5382,6 +5403,20 @@ class HistoryConsolidator:
         _live_description = _frontmatter_value(live_body, "description")
         _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
         _staged_description = description or _live_description
+        # Prose-only + approval disabled → promote immediately after staging —
+        # unless the caller vetoed it (a same-result refine of this target
+        # would overwrite the promotion without a snapshot; see docstring).
+        auto_apply = (
+            allow_auto_apply
+            and not self._approval_required
+            and not scripts
+            and not scripts_supplied
+        )
+        # Collision-proof ownership token: only the .meta.json THIS call writes
+        # carries it, so the promotion step below can prove the pending entry is
+        # the one just staged (a deferred re-stage writes nothing, and an
+        # unrelated candidate staged the same second shares the timestamp).
+        stage_token = secrets.token_hex(16) if auto_apply else None
         name = loader.stage_skill_candidate(
             _update_slug,
             description=_staged_description,
@@ -5392,6 +5427,12 @@ class HistoryConsolidator:
             kind="update",
             target=target_key,
             base_version=base_version,
+            # Suppress the awaiting-review notification when this flow is about
+            # to promote the candidate itself; if the promotion fails, the
+            # review request is re-fired below so the candidate never sits
+            # invisible in the queue.
+            notify=not auto_apply,
+            stage_token=stage_token,
         )
         if name:
             logger.info("Staged skill update %s (target %s) from session %s", name, target_key, key)
@@ -5407,6 +5448,13 @@ class HistoryConsolidator:
                     "merged": used_merge,
                 },
             )
+            if auto_apply:
+                self._auto_apply_staged_update(
+                    key=key,
+                    staged_name=name,
+                    target_key=target_key,
+                    stage_token=stage_token,
+                )
         else:
             logger.info("Skill update staging rejected for target '%s'", target_key)
             sel().log_tool_invocation(
@@ -5416,6 +5464,128 @@ class HistoryConsolidator:
                 outcome="rejected",
                 metadata={"slug": _update_slug, "reason": "creation_failed"},
             )
+
+    def _auto_apply_staged_update(
+        self,
+        *,
+        key: str,
+        staged_name: str,
+        target_key: str,
+        stage_token: str | None,
+    ) -> None:
+        """Promote a just-staged prose-only update immediately (approval off).
+
+        Delegates to ``SkillsLoader.auto_apply_pending_update`` so every guard
+        of a human approval applies (staleness, layout, redaction, version
+        snapshot). Fails SAFE: any refusal or error leaves the candidate staged
+        and re-fires the awaiting-review notification that staging suppressed.
+        """
+        loader = self._skills_loader
+        if loader is None or not stage_token:
+            return
+        staged_slug = staged_name.split("/", 1)[-1]
+        # Identity check: when the pending queue already holds a candidate for
+        # every slug in the collision family, ``stage_skill_candidate`` returns
+        # the name WITHOUT staging (deferred re-stage). Promoting that slug
+        # would apply a DIFFERENT, previously-staged candidate — so only
+        # proceed when the pending entry carries the random ``stage_token``
+        # written by the staging call this flow just made. The token is only
+        # ever written when staging actually wrote the candidate, so it cannot
+        # match a deferred re-stage or an unrelated same-second candidate.
+        is_ours = False
+        lookup_failed = False
+        try:
+            pend = loader.get_pending_skill(staged_slug)
+            is_ours = (
+                pend is not None
+                and pend.get("kind") == "update"
+                and pend.get("meta", {}).get("stage_token") == stage_token
+            )
+        except Exception:
+            # Transient lookup failure — the candidate this flow just staged
+            # (with its notification suppressed) is very likely still pending,
+            # so it must not be left invisible. Distinguish from a genuine
+            # ownership mismatch, where the pre-existing candidate already
+            # fired its own notification at staging time.
+            is_ours = False
+            lookup_failed = True
+        if not is_ours:
+            # A declined promotion is a promotion decision too — audit it so
+            # the trail explains why the staged candidate was left pending.
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_apply_failed",
+                metadata={
+                    "name": staged_name,
+                    "target": target_key,
+                    "reason": "pending_lookup_failed" if lookup_failed else "ownership_mismatch",
+                },
+            )
+            if lookup_failed:
+                # Re-fire the awaiting-review notification staging suppressed:
+                # the candidate stays pending and would otherwise sit invisible
+                # in the queue. emit_pending_staged no-ops if the slug turns
+                # out not to be pending after all.
+                try:
+                    loader.emit_pending_staged(staged_slug)
+                except Exception:
+                    logger.debug("Pending-staged re-notify failed", exc_info=True)
+            return
+        applied: "tuple[str, int] | None" = None
+        try:
+            applied = loader.auto_apply_pending_update(
+                staged_slug, expected_stage_token=stage_token
+            )
+        except Exception:
+            logger.warning(
+                "Auto-apply failed for staged update %s; leaving it pending review",
+                staged_name,
+                exc_info=True,
+            )
+            applied = None
+        if applied:
+            applied_name, new_version = applied
+            logger.info(
+                "Auto-applied skill update %s -> v%d (approval disabled)",
+                applied_name,
+                new_version,
+            )
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_applied_update",
+                metadata={
+                    "name": staged_name,
+                    "target": target_key,
+                    "new_version": new_version,
+                },
+            )
+        else:
+            # Audit the failed promotion decision: the success branch records
+            # ``auto_applied_update``, so a refusal/exception must leave a SEL
+            # trace too — otherwise the decision is invisible to `security
+            # audit` and the promotion appears never to have been attempted.
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_apply_failed",
+                metadata={
+                    "name": staged_name,
+                    "target": target_key,
+                    "reason": "left_pending_for_review",
+                },
+            )
+            # The candidate is still pending, so surface the review request
+            # that staging suppressed — otherwise it sits invisible in the
+            # queue on an instance whose user never opens it.
+            try:
+                loader.emit_pending_staged(staged_slug)
+            except Exception:
+                logger.debug("Pending-staged re-notify failed", exc_info=True)
 
     def _process_auto_skills(self, result: dict, key: str) -> None:
         """Extract + write auto-generated skills from the consolidation result.
@@ -5532,6 +5702,17 @@ class HistoryConsolidator:
                 elif verdict == VERDICT_UPDATE and target:
                     # Same skill, new requirements worth folding in — stage a
                     # pending UPDATE candidate rather than dropping the learning.
+                    # Auto-apply is disabled outright whenever auto-refine is
+                    # enabled: the refine path overwrites live through
+                    # ``update_auto_skill`` — unlocked, no version bump, no
+                    # snapshot — and a refine of this target can arrive from ANY
+                    # concurrent session, not just this result (a result-scoped
+                    # veto cannot see those). Because a refine leaves the version
+                    # frontmatter unchanged, even a serialized promotion passes
+                    # the stale-base check and the two writers last-write-win,
+                    # silently discarding one side. With refine on, the update
+                    # therefore always stages for human review, where it is
+                    # applied against whatever body the refine left behind.
                     self._stage_skill_update(
                         key=key,
                         target_key=target,
@@ -5539,6 +5720,8 @@ class HistoryConsolidator:
                         triggers=triggers,
                         procedure_md=procedure_md,
                         scripts=valid_scripts or None,
+                        scripts_supplied=scripts_supplied,
+                        allow_auto_apply=not self._auto_refine_enabled,
                     )
                 else:
                     provenance = AutoSkillProvenance(

@@ -33,6 +33,9 @@ class FakeLoader:
         self._version = version
         self._find = find
         self.staged: list[dict] = []
+        self.auto_applied: list[str] = []
+        self.auto_apply_result = ("auto/deploy-helper", 4)
+        self.re_notified: list[str] = []
 
     # dedupe inputs
     def list_auto_skills(self):
@@ -64,6 +67,8 @@ class FakeLoader:
         base_version=None,
         scripts=None,
         source="consolidation",
+        notify=True,
+        stage_token=None,
     ):
         self.staged.append(
             {
@@ -75,9 +80,37 @@ class FakeLoader:
                 "target": target,
                 "base_version": base_version,
                 "scripts": scripts,
+                "notify": notify,
+                "created_at": provenance.created_at,
+                "stage_token": stage_token,
             }
         )
         return f"auto/{slug}"
+
+    # auto-apply surface (used by the approval-off flow)
+    def get_pending_skill(self, slug):
+        st = [s for s in self.staged if s["slug"] == slug]
+        if not st:
+            return None
+        return {
+            "slug": slug,
+            "kind": st[-1]["kind"],
+            "meta": {
+                "created_at": st[-1]["created_at"],
+                "stage_token": st[-1]["stage_token"],
+            },
+        }
+
+    def auto_apply_pending_update(self, slug, *, expected_stage_token=None):
+        self.auto_applied.append(slug)
+        self.auto_apply_tokens = getattr(self, "auto_apply_tokens", [])
+        self.auto_apply_tokens.append(expected_stage_token)
+        if self.auto_apply_result == "raise":
+            raise RuntimeError("boom")
+        return self.auto_apply_result
+
+    def emit_pending_staged(self, slug):
+        self.re_notified.append(slug)
 
     # new-path fallbacks (unused in these tests but referenced by the code)
     def create_auto_skill(self, *a, **k):
@@ -87,13 +120,13 @@ class FakeLoader:
         return None
 
 
-def _mk(loader, **kw):
+def _mk(loader, *, approval_required=True, **kw):
     return HistoryConsolidator(
         log=MagicMock(),
         memory=MagicMock(),
         skills_loader=loader,
         auto_skills_enabled=True,
-        approval_required=True,
+        approval_required=approval_required,
         **kw,
     )
 
@@ -938,3 +971,193 @@ async def test_base_version_is_captured_before_the_body_it_describes():
     # version live drifted to during the merge (2). The staleness guard will then
     # correctly refuse this candidate instead of silently applying it over v2.
     assert loader.staged[0]["base_version"] == 1
+
+
+# ── Auto-apply routing (approval disabled) ───────────────────────────────────
+
+
+def test_stage_update_flag_off_prose_only_auto_applies():
+    """With approval off and no scripts, the staged update is promoted through
+    the loader's auto-apply path and the review notification is suppressed."""
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=False)
+    c._event_loop = None
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.staged[0]["notify"] is False
+    assert loader.auto_applied == ["deploy-helper-update"]
+    assert loader.re_notified == []
+    ev = [r for r in recorded if r.get("outcome") == "auto_applied_update"]
+    assert ev and ev[0]["metadata"] == {
+        "name": "auto/deploy-helper-update",
+        "target": "auto/deploy-helper",
+        "new_version": 4,
+    }
+    # The stage itself is still audited.
+    assert [r for r in recorded if r.get("outcome") == "staged_update"]
+
+
+def test_stage_update_flag_off_with_scripts_does_not_auto_apply():
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=False)
+    c._event_loop = None
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+            scripts=[{"filename": "go.py", "content": "print('hi')\n"}],
+            scripts_supplied=True,
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+def test_stage_update_flag_off_rejected_scripts_does_not_auto_apply():
+    """A candidate that SUPPLIED scripts must never auto-apply, even when the
+    validator rejected all of them (scripts=None but scripts_supplied=True)."""
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=False)
+    c._event_loop = None
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+            scripts=None,
+            scripts_supplied=True,
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+def test_stage_update_flag_on_does_not_auto_apply():
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=True)
+    c._event_loop = None
+    ctx = _sel_recorder([])
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.staged[0]["notify"] is True
+    assert loader.auto_applied == []
+
+
+def test_stage_update_auto_apply_failure_re_fires_review_notification():
+    """A refused promotion fails SAFE: the candidate stays pending, so the
+    review request suppressed at staging time is re-fired."""
+    loader = FakeLoader()
+    loader.auto_apply_result = None
+    c = _mk(loader, approval_required=False)
+    c._event_loop = None
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.auto_applied == ["deploy-helper-update"]
+    assert loader.re_notified == ["deploy-helper-update"]
+    assert not [r for r in recorded if r.get("outcome") == "auto_applied_update"]
+
+
+def test_stage_update_auto_apply_exception_re_fires_review_notification():
+    loader = FakeLoader()
+    loader.auto_apply_result = "raise"
+    c = _mk(loader, approval_required=False)
+    c._event_loop = None
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.re_notified == ["deploy-helper-update"]
+    assert not [r for r in recorded if r.get("outcome") == "auto_applied_update"]
+
+
+def test_stage_update_auto_apply_skips_foreign_pending_candidate(monkeypatch):
+    """When the collision family is exhausted, stage_skill_candidate returns the
+    slug name WITHOUT staging — the pending entry under that slug is a
+    DIFFERENT, previously-staged candidate. Auto-apply must not promote it."""
+    loader = FakeLoader()
+    c = _mk(loader, approval_required=False)
+    c._event_loop = None
+    # The pending entry is foreign: even an identical same-second created_at
+    # must not count as ownership — only the random stage_token written by
+    # THIS flow's staging call does, and a foreign entry carries a different
+    # one (or none, for a deferred re-stage that wrote nothing).
+    monkeypatch.setattr(
+        loader,
+        "get_pending_skill",
+        lambda slug: {
+            "slug": slug,
+            "kind": "update",
+            "meta": {
+                "created_at": "1999-01-01T00:00:00+00:00",
+                "stage_token": "someone-elses-token",
+            },
+        },
+    )
+    recorded: list[dict] = []
+    ctx = _sel_recorder(recorded)
+    try:
+        c._stage_skill_update(
+            key="sess",
+            target_key="auto/deploy-helper",
+            description="d",
+            triggers="t",
+            procedure_md="## Steps\n1. cand\n",
+        )
+    finally:
+        ctx.stop()
+
+    assert loader.auto_applied == []
+    # Nothing of ours is pending, so no re-notification either.
+    assert loader.re_notified == []
+    assert not [r for r in recorded if r.get("outcome") == "auto_applied_update"]

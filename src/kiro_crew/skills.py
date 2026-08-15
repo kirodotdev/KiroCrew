@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import fnmatch
 import hashlib
@@ -19,6 +20,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Callable, Iterator
 
+from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
@@ -141,6 +143,22 @@ VERSIONS_DIRNAME = ".versions"
 # Cap on retained per-skill version snapshots; oldest are pruned past this.
 MAX_SKILL_VERSIONS = 20
 
+# Per-target promotion lock files. A dot-prefixed dir so it is pruned from
+# skill discovery. Layout: ``auto/.locks/<target-slug>.lock`` — one advisory
+# lock file per live auto-skill, held for the duration of a candidate
+# promotion (``approve_pending_update`` / ``auto_apply_pending_update``) so
+# two processes promoting to the SAME target serialize instead of both
+# passing the version check and last-write-winning.
+AUTO_LOCKS_DIRNAME = ".locks"
+
+# Bounded promotion-lock acquisition: poll ``LOCK_EX | LOCK_NB`` rather than
+# blocking, so a hung (alive but stuck) holder cannot stall promotion forever;
+# on timeout the promotion is REFUSED and the candidate stays pending
+# (fail-safe). A crashed holder is not a concern: ``flock`` is released by the
+# kernel when the holding process dies, so the next acquire succeeds.
+_PROMOTE_LOCK_TIMEOUT_S = 10.0
+_PROMOTE_LOCK_POLL_S = 0.05
+
 # ── Pending-staged observer hook ──────────────────────────────────────────────
 # A candidate can be staged by ANY ``SkillsLoader`` instance (consolidation uses
 # the ContextBuilder's loader; dashboard requests build their own), so the
@@ -208,6 +226,38 @@ def _emit_pending_consumed(payload: dict) -> None:
         fn(payload)
     except Exception:  # pragma: no cover - defensive
         logger.debug("pending-consumed hook failed", exc_info=True)
+
+
+# Observer for prose-only updates promoted WITHOUT review (approval disabled).
+# Separate from the pending-staged hook because the message class differs: this
+# is informational ("skill X auto-updated to vN", prior version restorable), not
+# a review request — reusing the staged hook would show "awaiting review" for a
+# candidate that already went live. Module-level for the same reason as above.
+_UPDATE_AUTO_APPLIED_HOOK: "Callable[[dict], None] | None" = None
+
+
+def set_update_auto_applied_hook(fn: "Callable[[dict], None] | None") -> None:
+    """Register (or clear, with ``None``) the update-auto-applied observer.
+
+    Called once at gateway boot, next to ``set_pending_staged_hook``. Idempotent.
+    """
+    global _UPDATE_AUTO_APPLIED_HOOK
+    _UPDATE_AUTO_APPLIED_HOOK = fn
+
+
+def _emit_update_auto_applied(payload: dict) -> None:
+    """Invoke the update-auto-applied hook, swallowing every failure.
+
+    The update is already live by the time this runs; a broken observer must
+    never turn a successful promotion into a failure.
+    """
+    fn = _UPDATE_AUTO_APPLIED_HOOK
+    if fn is None:
+        return
+    try:
+        fn(payload)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("update-auto-applied hook failed", exc_info=True)
 
 
 # Derived lifecycle states for auto-skills (not persisted — computed from
@@ -2325,6 +2375,64 @@ class SkillsLoader:
     def _pending_root(self) -> Path:
         return self._dir / AUTO_SKILL_NAMESPACE / AUTO_PENDING_DIRNAME
 
+    def _locks_root(self) -> Path:
+        return self._dir / AUTO_SKILL_NAMESPACE / AUTO_LOCKS_DIRNAME
+
+    @contextlib.contextmanager
+    def _promotion_lock(self, target_slug: str) -> Iterator[bool]:
+        """Per-target cross-process promotion lock; yields True when held.
+
+        Serializes candidate promotion onto one live auto-skill across
+        processes: an advisory ``flock(LOCK_EX)`` on
+        ``auto/.locks/<target_slug>.lock``. Two processes approving/auto-
+        applying updates to the SAME target from the same base would both pass
+        the version (stale-base) check and last-write-win; under the lock the
+        second promoter re-reads the live version after the first commits and
+        is refused as stale.
+
+        Acquisition is a bounded non-blocking poll (``LOCK_NB`` up to
+        ``_PROMOTE_LOCK_TIMEOUT_S``), never a blocking wait, so a hung holder
+        cannot stall promotion indefinitely — on timeout the context yields
+        False and the caller refuses the promotion, leaving the candidate
+        pending (fail-safe). A CRASHED holder cannot deadlock promotion at
+        all: POSIX ``flock`` locks belong to the open file description and are
+        released by the kernel when the holding process dies, and Windows
+        ``msvcrt`` region locks are likewise released on process exit. Both
+        paths go through :func:`platform_compat.try_acquire_lock`, so the lock
+        is effective cross-platform (not a Windows no-op).
+
+        The lock file itself is never deleted (unlinking a lock file while a
+        waiter holds its fd open reintroduces the race the lock closes).
+        """
+        lock_path = self._locks_root() / f"{target_slug}.lock"
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError:
+            logger.warning(
+                "Could not open promotion lock file for %r; refusing promotion", target_slug
+            )
+            yield False
+            return
+        acquired = False
+        try:
+            deadline = time.monotonic() + _PROMOTE_LOCK_TIMEOUT_S
+            while True:
+                if platform_compat.try_acquire_lock(fd, exclusive=True):
+                    acquired = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_PROMOTE_LOCK_POLL_S)
+            yield acquired
+        finally:
+            if acquired:
+                platform_compat.release_lock(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
     def stage_skill_candidate(
         self,
         slug: str,
@@ -2338,6 +2446,8 @@ class SkillsLoader:
         kind: str = "new",
         target: str | None = None,
         base_version: int | None = None,
+        notify: bool = True,
+        stage_token: str | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -2354,6 +2464,12 @@ class SkillsLoader:
         version the merge was based on. These are written into ``.meta.json``
         (``kind`` always; ``target`` / ``base_version`` only when provided) so
         existing new-candidate callers are unaffected.
+
+        ``notify=False`` suppresses the awaiting-review observer notification.
+        Pass it ONLY when the caller intends to promote the candidate in the
+        same flow (see ``auto_apply_pending_update``); if that promotion fails,
+        the caller must fire ``emit_pending_staged`` so the still-pending
+        candidate does not sit invisible in the queue.
         """
         if not _AUTO_NAME_PATTERN.match(slug):
             logger.warning("Rejected pending skill: slug %r failed validation", slug)
@@ -2432,6 +2548,14 @@ class SkillsLoader:
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if stage_token is not None:
+                # Collision-proof ownership token: written ONLY when this call
+                # actually wrote the candidate to disk. The deferred re-stage
+                # path (collision family exhausted) returns a name WITHOUT
+                # writing, so a caller that intends to promote what it just
+                # staged must verify this token — timestamps cannot distinguish
+                # an unrelated candidate staged in the same second.
+                meta["stage_token"] = stage_token
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty
@@ -2447,8 +2571,10 @@ class SkillsLoader:
         # notification + a ``skills.pending_changed`` WS event) so a candidate
         # awaiting review surfaces instead of sitting unseen in the queue. Fired
         # for BOTH new and update candidates, from every producer that stages
-        # through this choke point. Best-effort: an observer failure must never
-        # fail the staging that already succeeded on disk.
+        # through this choke point (unless the caller suppressed it with
+        # ``notify=False`` because it is about to promote the candidate itself).
+        # Best-effort: an observer failure must never fail the staging that
+        # already succeeded on disk.
         #
         # ``description``/``triggers`` ride along because the observer's only
         # other option is to re-read ``.meta.json`` off disk (a second read of
@@ -2456,19 +2582,47 @@ class SkillsLoader:
         # notification can only say THAT a skill was generated, never what it
         # does, which is the one fact a reviewer needs to decide whether to open
         # the queue at all.
+        if notify:
+            _emit_pending_staged(
+                {
+                    "name": name,
+                    "slug": slug,
+                    "kind": kind or "new",
+                    "target": target,
+                    "source": source,
+                    "has_scripts": bool(script_names),
+                    "description": description,
+                    "triggers": triggers,
+                }
+            )
+        return name
+
+    def emit_pending_staged(self, slug: str) -> None:
+        """Fire the awaiting-review notification for an already-staged candidate.
+
+        For callers that staged with ``notify=False`` intending an immediate
+        promotion that then FAILED: the candidate is still pending, so the
+        review request it would normally have raised is fired now (from the
+        on-disk ``.meta.json``, the same fields the staging-time payload
+        carries). No-op if the slug is unsafe or not pending.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return
+        if not (self._pending_root() / slug / "SKILL.md").exists():
+            return
+        meta = self._read_pending_meta(slug)
         _emit_pending_staged(
             {
-                "name": name,
+                "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{slug}"),
                 "slug": slug,
-                "kind": kind or "new",
-                "target": target,
-                "source": source,
-                "has_scripts": bool(script_names),
-                "description": description,
-                "triggers": triggers,
+                "kind": meta.get("kind", "new"),
+                "target": meta.get("target"),
+                "source": meta.get("source", ""),
+                "has_scripts": bool(meta.get("has_scripts")),
+                "description": meta.get("description", ""),
+                "triggers": meta.get("triggers", ""),
             }
         )
-        return name
 
     def _read_pending_meta(self, slug: str) -> dict:
         mf = self._pending_root() / slug / ".meta.json"
@@ -2980,8 +3134,63 @@ class SkillsLoader:
         )
         return highest + 1
 
-    def approve_pending_update(self, slug: str) -> str | None:
+    def approve_pending_update(
+        self, slug: str, *, refuse_scripts: bool = False, expected_stage_token: str | None = None
+    ) -> str | None:
         """Promote a pending UPDATE candidate over its live target auto-skill.
+
+        Thin locking wrapper: derives the promotion target from the
+        candidate's ``.meta.json`` and runs the entire promotion
+        (:meth:`_approve_pending_update_locked`) under the per-target
+        cross-process :meth:`_promotion_lock`, so concurrent promotions onto
+        the same live skill serialize — the version (stale-base) check, the
+        ``refuse_scripts`` re-check, the live overwrite/copy, and the
+        candidate delete all execute under one holder. Failing to acquire the
+        lock refuses the promotion (returns ``None``; the candidate stays
+        pending and reviewable).
+
+        ``expected_stage_token``: when set, the candidate's identity is
+        re-verified INSIDE the lock — the pending ``.meta.json`` must carry
+        this exact token or the promotion is refused. Closes the
+        check-then-promote window where a concurrent dismiss + same-slug
+        re-stage swaps in a different (unreviewed) candidate between the
+        caller's pre-lock ownership check and the locked promotion.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        meta = self._read_pending_meta(slug)
+        target = meta.get("target")
+        if not isinstance(target, str) or not target:
+            return None
+        target_slug = self._auto_slug_from_name(target)
+        if not self._is_pending_slug_safe(target_slug):
+            return None
+        with self._promotion_lock(target_slug) as acquired:
+            if not acquired:
+                logger.warning(
+                    "Refusing to approve update %s: promotion lock for %r not "
+                    "acquired within %.0fs (concurrent promotion in flight?)",
+                    slug,
+                    target_slug,
+                    _PROMOTE_LOCK_TIMEOUT_S,
+                )
+                return None
+            return self._approve_pending_update_locked(
+                slug,
+                refuse_scripts=refuse_scripts,
+                expected_stage_token=expected_stage_token,
+            )
+
+    def _approve_pending_update_locked(
+        self, slug: str, *, refuse_scripts: bool = False, expected_stage_token: str | None = None
+    ) -> str | None:
+        """Locked body of :meth:`approve_pending_update`.
+
+        MUST be called with the per-target :meth:`_promotion_lock` held: the
+        stale-base version check, the ``refuse_scripts`` re-check, and the
+        live writes below are only race-free while this process is the sole
+        promoter for the target. All candidate state is (re-)read here, under
+        the lock — nothing is trusted from before acquisition.
 
         Preconditions (all checked BEFORE any live mutation; a failure here
         leaves BOTH the live skill and the candidate untouched, returns None):
@@ -3007,8 +3216,31 @@ class SkillsLoader:
         meta = self._read_pending_meta(slug)
         if meta.get("kind") != "update":
             return None
+        if expected_stage_token is not None and meta.get("stage_token") != expected_stage_token:
+            # Identity re-check under the lock: the candidate occupying this
+            # slug is NOT the one the caller staged (concurrent dismiss +
+            # same-slug re-stage). Promoting it would ship an unreviewed
+            # replacement — refuse and leave it pending for normal review.
+            logger.warning(
+                "Refusing unattended promotion of %s: pending candidate's "
+                "stage token does not match the staging flow's token "
+                "(candidate swapped since the pre-lock check)",
+                slug,
+            )
+            return None
         target = meta.get("target")
         if not isinstance(target, str) or not target:
+            return None
+        if refuse_scripts and (meta.get("has_scripts") or (src / "scripts").exists()):
+            # Unattended promotion (approval disabled) must never ship scripts:
+            # they always require human review. This early check handles the
+            # common case cleanly (no mutation yet); the copy step below
+            # re-enforces it atomically for scripts injected mid-promotion.
+            logger.info(
+                "Refusing to auto-apply update %s: candidate bundles scripts "
+                "(scripts always require review)",
+                slug,
+            )
             return None
         target_slug = self._auto_slug_from_name(target)
         if not self._is_pending_slug_safe(target_slug):
@@ -3160,7 +3392,39 @@ class SkillsLoader:
         # and then failing on a later file would roll SKILL.md back while leaving
         # the replacement script live — an internally inconsistent skill.
         overwritten: dict[Path, tuple[bytes, int]] = {}
-        if src_scripts.is_dir():
+        if refuse_scripts and src_scripts.is_dir():
+            # TOCTOU closure: scripts appeared AFTER the entry precondition (a
+            # concurrent writer added them mid-promotion). Unattended promotion
+            # must never ship a script no human reviewed — abort and roll back
+            # the live SKILL.md written in (f), leaving the candidate pending.
+            try:
+                atomic_write(live_skill, live_prev)
+            except OSError:
+                logger.error(
+                    "Update %s aborted on late scripts AND the live SKILL.md "
+                    "could not be restored; the snapshot remains at %s",
+                    target_name,
+                    snapshot,
+                )
+            else:
+                try:
+                    snapshot.unlink()
+                except OSError:
+                    pass
+            _restore_redacted()
+            logger.warning(
+                "Refusing to auto-apply update %s: scripts appeared during "
+                "promotion (scripts always require review)",
+                target_name,
+            )
+            return None
+        # Structural closure of the remaining check-to-copy window: under
+        # ``refuse_scripts`` the copy path below is UNREACHABLE, so a script
+        # dir injected after the re-check above can never go live — at worst
+        # it is discarded with the candidate delete, never executed. The
+        # promotion lock serializes concurrent promoters; this guard also
+        # covers non-promoter writers (a staging process) racing the copy.
+        if not refuse_scripts and src_scripts.is_dir():
             live_scripts = live_dir / "scripts"
             try:
                 live_scripts.mkdir(parents=True, exist_ok=True)
@@ -3261,6 +3525,52 @@ class SkillsLoader:
                 }
             )
         return target_name
+
+    def auto_apply_pending_update(
+        self, slug: str, *, expected_stage_token: str | None = None
+    ) -> "tuple[str, int] | None":
+        """Promote a staged prose-only UPDATE candidate without human review.
+
+        Used when ``skills.approval_required`` is off: prose-only updates then
+        go live the same way prose-only NEW candidates do, instead of rotting
+        in the pending queue on an instance that opted out of review. Every
+        write and guard is delegated to ``approve_pending_update`` (staleness /
+        base_version, symlink + layout guards, redaction, version snapshot,
+        pruning, SEL audit) — this wrapper only adds the informational
+        notification; the script refusal is enforced INSIDE
+        ``approve_pending_update`` via ``refuse_scripts=True`` so it holds
+        atomically through the promotion (a concurrent writer adding scripts
+        mid-flight aborts the promotion instead of shipping them live).
+
+        Script-bearing candidates are REFUSED (returns ``None``, candidate
+        stays pending): scripts always require human review regardless of the
+        approval flag, mirroring the NEW-candidate rule.
+
+        On success emits the update-auto-applied observer notification (an
+        informational "went live" signal, NOT a review request) and returns
+        ``(target_name, new_live_version)``. Any failure returns ``None`` and
+        leaves the candidate staged for normal review.
+        """
+        if not self._is_pending_slug_safe(slug):
+            return None
+        # Read the metadata BEFORE approval deletes the pending dir.
+        meta = self._read_pending_meta(slug)
+        name = self.approve_pending_update(
+            slug, refuse_scripts=True, expected_stage_token=expected_stage_token
+        )
+        if not name:
+            return None
+        new_version = self.get_auto_skill_version(name)
+        _emit_update_auto_applied(
+            {
+                "name": name,
+                "slug": slug,
+                "target": name,
+                "new_version": new_version,
+                "description": meta.get("description", ""),
+            }
+        )
+        return name, new_version
 
     def approve_pending_skill(self, slug: str) -> str | None:
         """Promote a pending candidate to a live auto-skill.
