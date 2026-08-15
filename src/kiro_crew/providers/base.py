@@ -180,3 +180,52 @@ class LLMProvider(ABC):
         real values. Base returns (None, None) which disables abort push.
         """
         return (None, None)
+
+    # ── Turn-control and capability surface (harness-parity H14) ──
+    # The session, shutdown-drain, steer, and dashboard layers read these off a
+    # provider. Declaring them here with a safe default means a provider that
+    # lacks the capability (a non-ACP backend, a warm-pool stub) returns the
+    # default instead of forcing a ``getattr`` probe onto the Kiro path or
+    # AttributeError-ing. Concrete providers override; the caller-side
+    # ``getattr``/``hasattr`` guards remain where they additionally defend
+    # against test doubles (AsyncMock) that are not LLMProvider instances.
+
+    def has_active_turn(self) -> bool:
+        """True if a prompt is in flight and not yet cancelled. Default False."""
+        return False
+
+    def has_unfinished_turn(self) -> bool:
+        """True if a native turn has not reached its done boundary, independent
+        of cancel state (drives the shutdown drain). Default False."""
+        return False
+
+    async def wait_turn_done(self, timeout: float) -> str:
+        """Wait for the current native turn's done boundary and return its stop
+        reason. Default: no turn to wait for — return immediately with ``""``."""
+        return ""
+
+    async def steer(self, message: str) -> bool:
+        """Inject a mid-turn steer; return True if accepted. Default False for a
+        provider with no steer extension (granted by opt-in, never inherited)."""
+        return False
+
+    @property
+    def supports_steer(self) -> bool:
+        """True when the provider implements mid-turn steer. Default False."""
+        return False
+
+    @property
+    def is_session_sharing_eligible(self) -> bool:
+        """True when the provider can host multiplexed sub-agent sessions on one
+        process. Default False — session sharing is opt-in, never inherited."""
+        return False
+
+    def available_models(self) -> list[dict[str, str]]:
+        """Backend-advertised models (``[{modelId, name, ...}]``) for the model
+        picker. Default empty for a provider that advertises none."""
+        return []
+
+    def get_valid_effort_levels(self) -> list[str]:
+        """Reasoning-effort levels the provider accepts. Default empty for a
+        provider with no effort control."""
+        return []

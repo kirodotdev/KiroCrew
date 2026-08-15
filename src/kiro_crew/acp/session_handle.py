@@ -27,8 +27,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from kiro_crew import model_registry
+from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
-    _token_count,
     build_permission_event,
     classify_notification,
     parse_metadata,
@@ -2182,40 +2182,16 @@ class AcpSessionHandle:
         self.last_prompt_stats.credits += credits
 
     def _backfill_context_window(self, pct: float) -> None:
-        """Derive window/used tokens from the model registry when kiro-cli 2.10+
-        metadata gives only a percentage (no usage_update {used, size}).
+        """Derive window/used tokens from a percentage-only reading.
 
-        Mirrors AcpClient._backfill_context_window so the shared-runtime path
-        reports the same context-meter token counts. No-op once a real
-        usage_update has set the window. Keys on ``_resolved_model_id`` (kiro's
-        ``currentModelId`` from the session/new|load response, also synced by
-        set_model) first, then falls back to ``_model`` (the user-picked alias).
-        Resolves through the central ``model_registry.model_window`` authority
-        (kiro-list cache > registry > heuristic); only backfills a KNOWN window,
-        leaving 0 for a genuinely-unknown model so the frontend's own
-        authoritative window drives the meter. kiro's real usage_update.size
-        always wins when present. A surviving ``context_window_tokens`` (e.g.
-        kept across a compaction reset — the model did not change) outranks the
-        registry, since the served size can differ from the static entry.
+        Thin wrapper binding this handle's resolved model id (kiro-agent
+        ``currentModelId``, else the user-picked alias); the shared logic lives
+        on ``AcpPromptStats.backfill_context_window`` (the AcpClient path
+        delegates to the same method, so the two can no longer drift).
         """
-        if self.last_prompt_stats.context_tokens_from_usage:
-            return  # a real usage_update already set authoritative counts
-        win = self.last_prompt_stats.context_window_tokens
-        if not win or win <= 0:
-            model_id = self._resolved_model_id or self._model
-            if not model_id or not model_registry.has_known_window(model_id):
-                return
-            reg_win = model_registry.model_window(model_id)
-            if not reg_win or reg_win <= 0:
-                return
-            win = int(reg_win)
-            self.last_prompt_stats.context_window_tokens = win
-        # A malformed metadata percentage (NaN, ±inf, or a huge finite value
-        # like 1e308) would overflow ``round(win * pct / 100)`` and abort the
-        # turn. Sanitize to a sane [0, 100] before deriving used tokens (NaN
-        # -> 0); this also keeps used <= window.
-        safe_pct = 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
-        self.last_prompt_stats.context_used_tokens = round(win * safe_pct / 100.0)
+        self.last_prompt_stats.backfill_context_window(
+            pct, self._resolved_model_id or self._model
+        )
 
     def _emit_tool_interrupted_sel(self, site: str) -> None:
         """Emit a SEL audit + WARNING when kiro-cli's security filter cancels tools.
@@ -2451,43 +2427,46 @@ class AcpSessionHandle:
         are KAS's mid-turn steer echo (kiro-cli: ``session/update`` steer
         discriminants, handled by the "steer" action).
         """
-        meta = update.get("_meta")
-        kiro = meta.get("kiro") if isinstance(meta, dict) else None
-        if not isinstance(kiro, dict):
+        kiro = kas_wire.kiro_meta(update)
+        if kiro is None:
             return []
-        kind = kiro.get("kind")
-        if kind == "context_usage":
-            self._apply_kas_context_pct(kiro.get("usagePercentage"))
+        kind = kiro.get(kas_wire.FIELD_KIND)
+        if kind == kas_wire.KIND_CONTEXT_USAGE:
+            self._apply_kas_context_pct(kiro.get(kas_wire.FIELD_USAGE_PERCENTAGE))
             return []
-        if kind == "turn_completion":
+        if kind == kas_wire.KIND_TURN_COMPLETION:
             self._apply_kas_turn_completion(kiro)
             return []
-        if kind in ("summarization_started", "summarization_completed", "summarization_failed"):
-            if kind == "summarization_completed":
+        if kind in kas_wire.SUMMARIZATION_KINDS:
+            if kind == kas_wire.KIND_SUMMARIZATION_COMPLETED:
                 # Pre-compaction counts no longer describe the session — drop
                 # them so the meter resets and fresh telemetry re-derives real
                 # numbers (parity with the kiro-cli compaction handler).
                 self.last_prompt_stats.reset_after_compaction()
                 status_type = "completed"
-            elif kind == "summarization_failed":
+            elif kind == kas_wire.KIND_SUMMARIZATION_FAILED:
                 status_type = "failed"
             else:
                 status_type = "started"
             # conversationSummary is backend-echoed, LLM-influenced text that
             # reaches the dashboard — redact exfil URLs/credentials first.
-            summary = redact_text(str(kiro.get("conversationSummary", "") or ""))
+            summary = redact_text(str(kiro.get(kas_wire.FIELD_CONVERSATION_SUMMARY, "") or ""))
             return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
-        if kind in ("steering_queued", "steering_injected", "steering_cleared"):
+        if kind in kas_wire.STEERING_KINDS:
             # KAS mid-turn steer echo. kiro-cli sends these as `session/update`
             # discriminants (handled by the "steer" action); KAS instead puts the
             # kind under `_meta.kiro`, so route it here. `injected` is the
             # settling signal (→ EVENT_STEER_CONSUMED, which _settle_consumed_steers
             # consumes); queued/cleared mirror the kiro path. Never trust
             # backend-echoed steer text — redact before it reaches any surface.
-            if kind == "steering_cleared":
+            if kind == kas_wire.KIND_STEERING_CLEARED:
                 return [AcpEvent(kind=EVENT_STEER_CLEARED)]
-            text = redact_text(str(kiro.get("content") or ""))
-            steer_kind = EVENT_STEER_CONSUMED if kind == "steering_injected" else EVENT_STEER_QUEUED
+            text = redact_text(str(kiro.get(kas_wire.FIELD_CONTENT) or ""))
+            steer_kind = (
+                EVENT_STEER_CONSUMED
+                if kind == kas_wire.KIND_STEERING_INJECTED
+                else EVENT_STEER_QUEUED
+            )
             return [AcpEvent(kind=steer_kind, text=text)]
         return []
 
@@ -2499,25 +2478,24 @@ class AcpSessionHandle:
         a child nested tool or an ordinary frame that should fall through to the
         shared parser (so caches populate and tool events render).
         """
-        meta = update.get("_meta")
-        kiro = meta.get("kiro") if isinstance(meta, dict) else None
-        if not isinstance(kiro, dict):
+        kiro = kas_wire.kiro_meta(update)
+        if kiro is None:
             return None
 
-        agent_subtask_id = kiro.get("agentSubtaskId")
-        pipeline = kiro.get("pipeline")
+        agent_subtask_id = kiro.get(kas_wire.FIELD_AGENT_SUBTASK_ID)
+        pipeline = kiro.get(kas_wire.FIELD_PIPELINE)
 
         if not agent_subtask_id and not pipeline:
             return None
 
         # Pipeline frame: one entry per stage.
         if isinstance(pipeline, dict):
-            stages = pipeline.get("stages")
+            stages = pipeline.get(kas_wire.FIELD_STAGES)
             if isinstance(stages, list):
                 for stage in stages:
                     if not isinstance(stage, dict):
                         continue
-                    s_id = stage.get("agentSubtaskId")
+                    s_id = stage.get(kas_wire.FIELD_AGENT_SUBTASK_ID)
                     if not isinstance(s_id, str) or not s_id:
                         continue
                     s_status = str(stage.get("status") or "in_progress")
@@ -2535,7 +2513,7 @@ class AcpSessionHandle:
             )]
 
         # Individual agent-subtask frame (kind == "agent-subtask") → PARENT.
-        is_parent = kiro.get("kind") == "agent-subtask"
+        is_parent = kiro.get(kas_wire.FIELD_KIND) == kas_wire.KIND_AGENT_SUBTASK
 
         if is_parent:
             subtask_id = str(agent_subtask_id)
@@ -2566,15 +2544,17 @@ class AcpSessionHandle:
         Returns a list when the chunk belongs to a child sub-agent, else None
         (fall through to normal chunk handling).
         """
-        meta = update.get("_meta")
-        kiro = meta.get("kiro") if isinstance(meta, dict) else None
-        if not isinstance(kiro, dict):
+        kiro = kas_wire.kiro_meta(update)
+        if kiro is None:
             return None
-        subtask_id = kiro.get("agentSubtaskId")
+        subtask_id = kiro.get(kas_wire.FIELD_AGENT_SUBTASK_ID)
         if not isinstance(subtask_id, str) or not subtask_id:
             return None
         # Must NOT have kind:"agent-subtask" or pipeline — those are parent frames
-        if kiro.get("kind") == "agent-subtask" or kiro.get("pipeline"):
+        if (
+            kiro.get(kas_wire.FIELD_KIND) == kas_wire.KIND_AGENT_SUBTASK
+            or kiro.get(kas_wire.FIELD_PIPELINE)
+        ):
             return None
         text, _thinking = parse_text_chunk(update)
         if not text or _thinking:
@@ -2595,11 +2575,10 @@ class AcpSessionHandle:
         activity attribution is emitted BEFORE the tool events from
         ``parse_session_update``.
         """
-        meta = update.get("_meta")
-        kiro = meta.get("kiro") if isinstance(meta, dict) else None
-        if not isinstance(kiro, dict):
+        kiro = kas_wire.kiro_meta(update)
+        if kiro is None:
             return []
-        subtask_id = kiro.get("agentSubtaskId")
+        subtask_id = kiro.get(kas_wire.FIELD_AGENT_SUBTASK_ID)
         if not isinstance(subtask_id, str) or not subtask_id:
             return []
         tool_call_id = str(update.get("toolCallId") or "")
@@ -2616,21 +2595,15 @@ class AcpSessionHandle:
     def _apply_kas_context_pct(self, pct: object) -> None:
         """Apply a KAS ``context_usage`` percentage to the context meter.
 
-        Mirrors ``_track_metadata``'s pct path: a real ``usage_update`` is
-        authoritative (``context_tokens_from_usage``) and must not be clobbered,
-        and the value is sanitized to a real [0, 100] before use.
+        A real ``usage_update`` is authoritative (``context_tokens_from_usage``)
+        and must not be clobbered. ``sanitize_pct`` (shared with the kiro-cli
+        metadata path) clamps NaN/±inf/out-of-range and returns None when the
+        value is absent or unparseable, so malformed telemetry degrades to
+        "no reading" rather than aborting the active turn.
         """
-        if pct is None or self.last_prompt_stats.context_tokens_from_usage:
+        pct_f = self.last_prompt_stats.sanitize_pct(pct)
+        if pct_f is None or self.last_prompt_stats.context_tokens_from_usage:
             return
-        try:
-            pct_f = float(pct)  # type: ignore[arg-type]
-        except (TypeError, ValueError, OverflowError):
-            # OverflowError: a JSON integer beyond float range (int->float
-            # conversion) — malformed telemetry must degrade to "absent", never
-            # abort the active turn's dispatch.
-            return
-        # NaN is caught by self-inequality; ±inf/out-of-range are clamped.
-        pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
         self.last_prompt_stats.context_pct = pct_f
         self.last_prompt_stats.note_pct_reported()
         self._backfill_context_window(pct_f)
@@ -2638,27 +2611,17 @@ class AcpSessionHandle:
     def _apply_kas_turn_completion(self, kiro: dict) -> None:
         """Set per-turn credits from a KAS ``turn_completion`` frame.
 
-        ``promptTurnSummaries`` entries are ``{usage, unit, unitPlural}``; only
-        ``unit == "credit"`` contributes, mirroring the kiro-cli ``meteringUsage``
-        credit sum (value validation shared via ``_token_count``). The acp
-        provider bills in credits.
-
-        The frame carries the whole turn's summary, so the total is ASSIGNED, not
-        accumulated: a duplicate or resume-replayed ``turn_completion`` reports
-        the same total and must not inflate the displayed cost. A malformed frame
-        (no summaries list) leaves the prior value untouched rather than zeroing.
+        Delegates the ``promptTurnSummaries`` credit sum (only ``unit ==
+        "credit"`` entries count; the acp provider bills in credits) to
+        ``kas_wire.turn_credits``. The frame carries the whole turn's summary, so
+        the total is ASSIGNED, not accumulated: a duplicate or resume-replayed
+        ``turn_completion`` reports the same total and must not inflate the
+        displayed cost. A malformed frame (``turn_credits`` returns ``None``)
+        leaves the prior value untouched rather than zeroing.
         """
-        summaries = kiro.get("promptTurnSummaries")
-        if not isinstance(summaries, list):
-            return
-        total = 0.0
-        for entry in summaries:
-            if not isinstance(entry, dict) or entry.get("unit") != "credit":
-                continue
-            value = _token_count(entry.get("usage"))
-            if value is not None:
-                total += float(value)
-        self.last_prompt_stats.credits = total
+        total = kas_wire.turn_credits(kiro)
+        if total is not None:
+            self.last_prompt_stats.credits = total
 
     def _handle_update(self, msg: JsonRpcMessage) -> list[AcpEvent]:
         """Process a session/update notification and return events."""

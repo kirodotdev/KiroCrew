@@ -5553,66 +5553,29 @@ class AcpClient:
         )
 
     def _backfill_context_window(self, pct: float) -> None:
-        """Derive window/used tokens when kiro-cli 2.10+ metadata gives only a
-        percentage (no usage_update {used, size}).
+        """Derive window/used tokens from a percentage-only reading.
 
-        Resolves the window through the central ``model_registry.model_window``
-        authority (kiro-list cache > static registry > [1m] heuristic). This now
-        works for non-Anthropic kiro models too (GPT 272k, DeepSeek 164k, …) once
-        the kiro-list cache is seeded, instead of no-op'ing. Only backfills a
-        window from a KNOWN source (``has_known_window``): a genuinely-unknown
-        model returns None and we leave the window 0 so the frontend's own
-        authoritative window (from /api/models) drives the meter rather than a
-        guess. kiro's real ``usage_update.size`` always wins when present (this
-        no-ops once it has set the window).
-
-        A surviving ``context_window_tokens`` outranks the registry: after a
-        compaction reset the counts are dropped but the SERVED window is kept
-        (the model did not change), and the served size can differ from the
-        registry's static entry (e.g. opus served at [1m] vs a 200K registry
-        row). Deriving against the kept window keeps the post-compaction
-        numbers consistent with what the adapter actually serves.
+        Thin wrapper binding this client's resolved model id; the shared logic
+        lives on ``AcpPromptStats.backfill_context_window`` (the AcpSessionHandle
+        path delegates to the same method, so the two can no longer drift).
         """
-        if self.last_prompt_stats.context_tokens_from_usage:
-            return  # a real usage_update already set authoritative counts
-        win = self.last_prompt_stats.context_window_tokens
-        if not win or win <= 0:
-            model_id = self._resolved_model_id or self._model
-            if not model_id or not model_registry.has_known_window(model_id):
-                return
-            reg_win = model_registry.model_window(model_id)
-            if not reg_win or reg_win <= 0:
-                return
-            win = int(reg_win)
-            self.last_prompt_stats.context_window_tokens = win
-        # A malformed metadata percentage (NaN, ±inf, or a huge finite value
-        # like 1e308) would overflow ``round(win * pct / 100)`` and abort the
-        # turn. Sanitize to a sane [0, 100] before deriving used tokens (NaN
-        # -> 0); this also keeps used <= window.
-        safe_pct = 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
-        self.last_prompt_stats.context_used_tokens = round(win * safe_pct / 100.0)
+        self.last_prompt_stats.backfill_context_window(
+            pct, self._resolved_model_id or self._model
+        )
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:
         params = msg.params or {}
-        pct = params.get("contextUsagePercentage")
         # A real usage_update is authoritative for both the token counts AND the
         # pct derived from them. kiro's metadata percentage can measure a
         # different window, so applying it here would desync the headline % from
         # the "used / total" token text (e.g. 73% shown next to 408K / 1000K).
-        if pct is not None and not self.last_prompt_stats.context_tokens_from_usage:
-            try:
-                pct_f = float(pct)
-                # Sanitize a malformed metadata percentage (NaN/±inf/out-of-range,
-                # e.g. 1e308) at the source so context_pct is always a real
-                # [0, 100] value: keeps compaction comparisons sane and the
-                # diagnostic /api/sessions JSON standard (Infinity/NaN are not
-                # valid JSON). NaN is caught by its self-inequality.
-                pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
-                self.last_prompt_stats.context_pct = pct_f
-                self.last_prompt_stats.note_pct_reported()
-                self._backfill_context_window(pct_f)
-            except (TypeError, ValueError):
-                pass
+        # sanitize_pct is the shared coercion (the KAS usagePercentage path uses
+        # it too): it clamps NaN/±inf/out-of-range and returns None when absent.
+        pct_f = self.last_prompt_stats.sanitize_pct(params.get("contextUsagePercentage"))
+        if pct_f is not None and not self.last_prompt_stats.context_tokens_from_usage:
+            self.last_prompt_stats.context_pct = pct_f
+            self.last_prompt_stats.note_pct_reported()
+            self._backfill_context_window(pct_f)
         # kiro streams per-turn billing as meteringUsage entries (unit="credit").
         # Accumulate across the turn's metadata notifications; reset per turn by
         # the AcpPromptStats re-init in _dispatch_events/send_message_stream.
