@@ -93,19 +93,50 @@ describe('Issue Radar at narrow widths', () => {
     // A callback, not an effect keyed on mainView: re-tapping the section you are
     // already on does not change mainView, so an effect would never fire.
     //
-    // EVERY navigating control reports, headers AND section bodies. A partial
-    // wiring is the actual defect shape: the first pass covered the four section
-    // headers and the crew chips and missed the Dashboards header and all four
-    // section bodies, which made those taps read as dead on a phone.
+    // EVERY navigating control in the rail reports, and BOTH halves of that
+    // sentence are derived rather than listed. A pinned count catches a control
+    // that stops reporting; it cannot see a new navigating row in a new file,
+    // which is the omission this defect class arrived by twice.
+    const files = import.meta.glob('../apps/issue-radar/components/*.tsx', {
+      query: '?raw', import: 'default', eager: true,
+    }) as Record<string, string>
     const rail = await src('components/LeftRail.tsx')
-    expect((rail.match(/onNavigate\?\.\(\)/g) ?? []).length,
-      'rail headers that navigate must report it').toBe(6)
-    for (const f of ['DashboardsSection', 'FiltersSection', 'PrFiltersSection', 'SettingsSection']) {
-      const body = await src(`components/${f}.tsx`)
-      expect(body, `${f} must accept the callback`).toMatch(/onNavigate\?: \(\) => void/)
-      expect(body, `${f} must report its navigation`).toMatch(/onNavigate\?\.\(\)/)
-      expect(rail, `${f} must be handed the callback`).toContain(`<${f} onNavigate={onNavigate} />`)
+    // The rail's control surface = LeftRail plus the components it renders. Derived
+    // from its own imports, so a new section is in scope the moment the rail can
+    // show it — while panes that merely live in the same directory (RefLink,
+    // RefSheet, the detail panes) are structurally out of scope rather than
+    // hand-excluded. Those navigate from pane CONTENT, by which point the rail is
+    // already a 48px strip and reporting would be a no-op.
+    const railParts = new Set(
+      [...rail.matchAll(/^import (?:\{[^}]*\}|\w+)(?:, \{[^}]*\})? from '\.\/(\w+)'/gm)]
+        .map((m) => `${m[1]}.tsx`).concat(['LeftRail.tsx']),
+    )
+    // The navigator NAMES come from the context's own surface, not spelled here: a
+    // hardcoded alternation would re-arrive at this test's own critique one
+    // navigator later.
+    const ctxSource = await src('context.tsx')
+    const navigators = [...new Set(
+      [...ctxSource.matchAll(/^\s{2}(open[A-Z]\w*)\s*:\s*\(/gm)].map((m) => m[1]),
+    )]
+    expect(navigators.length, 'expected to derive the navigators from the context type')
+      .toBeGreaterThanOrEqual(4)
+    expect(railParts.size, 'expected to derive the rail surface from its imports')
+      .toBeGreaterThan(4)
+    const NAV = new RegExp(`\\b(${navigators.join('|')})\\(`)
+    const unwired: string[] = []
+    for (const [path, source] of Object.entries(files)) {
+      const name = path.split('/').pop() as string
+      if (!railParts.has(name)) continue
+      source.split('\n').forEach((line, i) => {
+        const code = line.trim()
+        // Prose mentions the navigators too; only executable lines must report.
+        if (code.startsWith('*') || code.startsWith('//') || code.startsWith('/*')) return
+        if (NAV.test(line) && !line.includes('onNavigate?.()')) {
+          unwired.push(`${name}:${i + 1}  ${code.slice(0, 80)}`)
+        }
+      })
     }
+    expect(unwired, 'every rail control that navigates must collapse the narrow rail').toEqual([])
   })
 
   it('hides every main pane the full-width rail covers, dashboards included', async () => {
@@ -141,6 +172,29 @@ describe('Issue Radar at narrow widths', () => {
     // guarding the app's largest context dead code.
     expect(hook).toMatch(/return useMemo\(\(\) => \(\{/)
     expect(hook).toMatch(/\}\), \[isMobile, detailOpen, openDetail, closeDetail\]\)/)
+  })
+
+  it('stacks the issue detail pane instead of dividing it', async () => {
+    // Both detail panes, because they carry byte-identical declarations: fixing
+    // one and leaving the other is how this defect would survive review.
+    for (const pane of ['IssueDetail', 'PrDetail']) {
+      const detail = await src(`components/${pane}.tsx`)
+      // The shell handing these panes the whole viewport exposed their OWN
+      // two-column layout: a 236px fixed sidebar beside the summary, description
+      // and timeline left that column 34px at 390px, clipping text to two or
+      // three characters a line. Nothing overflowed, so width — not overflow —
+      // is the measure that catches it.
+      expect(detail, `${pane}: the sidebar must not hold a fixed width while narrow`)
+        .toMatch(/className="w-full sm:w-\[236px\]/)
+      expect(detail, `${pane}: the body columns must stack while narrow`)
+        .toMatch(/flex flex-col sm:flex-row gap-6 px-6 py-5/)
+      // The actions are a fixed cluster; beside the title they left it ~120px
+      // and a normal title wrapped onto six lines.
+      expect(detail, `${pane}: the header actions must stack under the title`)
+        .toMatch(/flex flex-col sm:flex-row items-stretch sm:items-start gap-3/)
+      // No unguarded fixed width may come back on either column.
+      expect(detail, `${pane}: no ungated fixed sidebar width`).not.toMatch(/className="w-\[236px\]/)
+    }
   })
 
   it('drops the pointer-only drag handles while narrow', async () => {
