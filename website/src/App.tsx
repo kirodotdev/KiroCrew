@@ -1028,7 +1028,17 @@ export default function App() {
   // can never disagree about what should be on screen.
   useEffect(() => {
     if (!themeBootReady) return
-    setShowAgentImport(!importOnboarded)
+    // OPEN-ONLY for the import chapter. Deriving `false` here is what made the
+    // page close itself: Import is the one chapter with a manual entry point
+    // (the `mc-start-import` event below), and for a user who already finished
+    // it this effect's own answer is `false`. So any later run — theme boot
+    // resolving, or any flag write — drove `initialOpen` true→false, and
+    // AgentImportFlow closes on that edge. Nothing is lost by not closing here:
+    // the real completion paths (`onComplete`, `onSkipAll`) already call
+    // `setShowAgentImport(false)` themselves, so the false branch was redundant
+    // for every case except the one it broke. Same split as the `onboarded`
+    // effect above, which only ever closes the tour.
+    if (!importOnboarded) setShowAgentImport(true)
     setShowPrivacy(importOnboarded && !privacyAcked)
     setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
   }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
