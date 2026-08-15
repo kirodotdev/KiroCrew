@@ -559,6 +559,28 @@ class AcpEvent:
                     return cmd
         return None
 
+    @property
+    def child_low_fidelity(self) -> bool:
+        """True for a backend-subagent event whose SECURITY context is absent.
+
+        Gates every auto-approve path for runtime-routed child permission
+        requests. ``tool_input`` alone is NOT fidelity: an edit refinement can
+        cache a rendered diff string without ``raw_tool_params``, leaving the
+        path-scope checks blind while a truthy ``tool_input`` suggests
+        otherwise. Fidelity requires the STRUCTURED params the gates actually
+        evaluate — ``raw_tool_params`` for path/arg scopes — and, for a shell
+        tool, a recoverable command string. Non-child events are never
+        low-fidelity (their caches are slot-owned and complete by
+        construction).
+        """
+        if not self.sub_session_id:
+            return False
+        if not isinstance(self.raw_tool_params, dict):
+            return True
+        if self.is_shell and not self.shell_command:
+            return True
+        return False
+
 
 @dataclass
 class AcpPromptStats:

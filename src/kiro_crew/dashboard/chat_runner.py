@@ -152,8 +152,10 @@ from kiro_crew.hooks import (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_STOP,
     HOOK_EVENT_USER_PROMPT_SUBMIT,
+    TOOL_ALLOW,
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
+    ToolHookResult,
     _normalize_tool_name,
     _tool_matches,
     fire_tool_hooks,
@@ -5365,6 +5367,13 @@ async def _run_chat(
                     _flush_segment(state, slot, assistant_text)
                     assistant_text = ""
                 _pre_tool_hooks_fired = False
+                # Backend-subagent request whose SECURITY context is absent
+                # (structured params missing, or shell with no recoverable
+                # command — see AcpEvent.child_low_fidelity): every
+                # auto-approve gate below is skipped for it, falling through
+                # to the interactive card. A child WITH full context takes the
+                # same branches as the main agent (mode parity).
+                _child_low_fidelity = event.child_low_fidelity
                 if state.context_builder:
                     # Pass the raw shell command (not just the display title)
                     # so the security gate evaluates what actually executes.
@@ -5431,6 +5440,23 @@ async def _run_chat(
                         # fragments, paths, or credentials.
                         _refusal_reasons.append((_deny_title, _deny_msg))
                         continue
+                    if _child_low_fidelity:
+                        # Backend-subagent origin whose tool_call frames never
+                        # reached us (cache miss): command bytes are absent, so
+                        # every gate below would judge the LLM-authored title
+                        # alone. Fail closed past all auto-approve paths — the
+                        # request falls through to the interactive card. When
+                        # the child's session/update frames WERE routed (the
+                        # normal case), tool_input carries the real command
+                        # bytes and the child takes the exact same mode
+                        # branches as the main agent below.
+                        if tool_result.action == TOOL_AUTO_APPROVE:
+                            logger.info(
+                                "downgrading auto-approve to interactive card for "
+                                "low-fidelity subagent permission request (child=%s)",
+                                event.sub_session_id,
+                            )
+                            tool_result = ToolHookResult(action=TOOL_ALLOW)
                     if tool_result.action == TOOL_AUTO_APPROVE:
                         try:
                             validated_tool = _validate_tool_name(
@@ -5542,7 +5568,9 @@ async def _run_chat(
                 # parent turn. Deny-by-default (CWE-1188): with no active crew this
                 # predicate is False no matter the trust flags, so the tool falls
                 # through to the normal interactive/trust gate below.
-                if _native_crew_should_auto_approve(_native_tracker, state, slot):
+                if _native_crew_should_auto_approve(
+                    _native_tracker, state, slot
+                ) and not _child_low_fidelity:
                     logger.debug(
                         "Native crew auto-approve: %r (request_id=%s)",
                         _safe_native_crew_debug_title(event.title),
@@ -5582,7 +5610,7 @@ async def _run_chat(
                 # use event.title as it IS the provider-controlled tool name.
                 # When tool_input exists but isn't recognized as bash, skip pattern
                 # matching entirely (deny-by-default).
-                if slot._trusted_patterns:
+                if slot._trusted_patterns and not _child_low_fidelity:
                     _tp_cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
                     if _tp_cmd:
                         _tp_check_title = f"Running: {_tp_cmd}"
@@ -5764,8 +5792,13 @@ async def _run_chat(
                             metadata={"reason": "trust_reads"},
                         )
                         continue
-                # Trust mode (per-slot) or YOLO mode (global) — auto-approve
-                if slot_trusted or yolo_active:
+                # Trust mode (per-slot) or YOLO mode (global) — auto-approve.
+                # Low-fidelity child events (backend subagents whose command
+                # bytes never reached the caches) are excluded from every
+                # auto-approve path and fall through to the interactive card;
+                # children WITH cached bytes take these branches exactly like
+                # the main agent (mode parity).
+                if (slot_trusted or yolo_active) and not _child_low_fidelity:
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:

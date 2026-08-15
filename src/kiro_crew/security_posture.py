@@ -786,6 +786,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "autonudge_authz.py",
         "acp/_dispatch.py",
         "acp/client.py",
+        # Redacts the tool title in the auto-rejected-permission WARNING (a
+        # gate-side log line) and defers user-facing display to the routed
+        # permission event, whose sinks are already registered.
+        "acp/runtime.py",
         "acp/session_handle.py",
         "platform/defaults.py",
         "platform/interfaces.py",

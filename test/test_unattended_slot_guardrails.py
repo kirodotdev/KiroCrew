@@ -858,7 +858,10 @@ class TestScopedGrantIsNeverPersisted:
 
         src = inspect.getsource(chat_runner._run_chat)
         assert "slot_trusted = _slot_is_trusted(slot)" in src
-        assert "if slot_trusted or yolo_active:" in src
+        # The trust/YOLO gate still branches on _slot_is_trusted's verdict; the
+        # low-fidelity qualifier only excludes backend-subagent events whose
+        # command bytes never reached the caches (see chat_runner).
+        assert "if (slot_trusted or yolo_active) and not _child_low_fidelity:" in src
 
     def test_the_runner_writes_the_policy_through_the_helper(self) -> None:
         """Pins the call site, not just the helper.

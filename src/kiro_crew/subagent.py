@@ -5180,6 +5180,24 @@ class SubagentManager:
                         client, event.request_id, session_key, event, error="hook_deny"
                     )
                     continue
+                if event.child_low_fidelity:
+                    # Backend-internal child origin whose SECURITY context is
+                    # absent (structured params missing, or shell without a
+                    # recoverable command — AcpEvent.child_low_fidelity): any
+                    # APPROVE would rest on the LLM-authored title alone. This
+                    # consumer is headless — there is no card to downgrade to
+                    # — so fail closed before any approve branch (hook
+                    # auto-approve or parent_policy auto) can fire. A child
+                    # WITH cached bytes flows through the same pipeline as any
+                    # other tool (mode parity).
+                    await self._reject_and_log(
+                        client,
+                        event.request_id,
+                        session_key,
+                        event,
+                        error="child_origin_no_command_context",
+                    )
+                    continue
                 if tool_result.action == TOOL_AUTO_APPROVE:
                     await self._approve_and_log(
                         client,

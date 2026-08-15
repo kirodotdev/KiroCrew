@@ -2380,6 +2380,16 @@ class AcpSessionHandle:
         )
         if recorded is not None and event.request_id != "":
             self._permission_options[event.request_id] = recorded
+        # A frame the runtime routed here for a backend-internal subagent
+        # carries the CHILD's sessionId, not this handle's. Mark the origin so
+        # the policy consumer can tell reduced-fidelity requests apart: the
+        # per-toolCallId caches above only see slot-owned tool_call frames, so
+        # for a child the command/shell context is absent and an auto-approve
+        # decision would rest on the title alone (chat_runner downgrades those
+        # to the interactive card; hard denies still apply).
+        frame_sid = str((msg.params or {}).get("sessionId") or "")
+        if frame_sid and frame_sid != self._session_id:
+            event.sub_session_id = frame_sid
         return event
 
     def _handle_kas_update(self, session_update: str, update: dict) -> list[AcpEvent] | None:
@@ -2629,6 +2639,50 @@ class AcpSessionHandle:
         update = params.get("update") or {}
         if not isinstance(update, dict):
             return []
+
+        # A frame the runtime routed here for a backend-internal subagent
+        # carries the CHILD's sessionId. Its tool_call/refinement updates are
+        # parsed with the SAME shared parser and the SAME per-toolCallId
+        # caches as this handle's own tool calls — that is what gives a later
+        # child permission request real command bytes (tool_input, is_shell,
+        # raw params), so the policy gates evaluate it with main-agent
+        # fidelity instead of the LLM-authored title. The parsed events are
+        # re-tagged as subagent activity (crew monitor), NOT emitted as this
+        # session's own transcript events — a child's text chunks and tool
+        # cards must not render as parent output.
+        frame_sid = str(params.get("sessionId") or "")
+        if frame_sid and frame_sid != self._session_id:
+            child_events = parse_session_update(
+                update,
+                tool_input_cache=self._tool_call_inputs,
+                shell_cache=self._tool_call_is_shell,
+                raw_params_cache=self._tool_call_raw_params,
+                mcp_server_name_cache=self._tool_call_mcp_server,
+                tool_name_cache=self._tool_call_tool_name,
+            )
+            out: list[AcpEvent] = []
+            for ev in child_events:
+                if ev.kind == EVENT_TOOL_CALL and ev.tool_call_id:
+                    out.append(
+                        AcpEvent(
+                            kind=EVENT_SUBAGENT_ACTIVITY,
+                            sub_session_id=frame_sid,
+                            tool_call_id=ev.tool_call_id,
+                            title=ev.title,
+                        )
+                    )
+                elif ev.kind == EVENT_TEXT_CHUNK and ev.text:
+                    out.append(
+                        AcpEvent(
+                            kind=EVENT_SUBAGENT_ACTIVITY,
+                            sub_session_id=frame_sid,
+                            text=ev.text,
+                        )
+                    )
+                # Thinking chunks, tool results, and refinements update the
+                # caches above but emit nothing: the crew monitor only shows
+                # coarse activity, and the caches are the security payload.
+            return out
 
         session_update = update.get("sessionUpdate", "")
 
