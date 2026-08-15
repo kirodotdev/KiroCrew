@@ -162,11 +162,16 @@ def test_side_chat_parent_snapshot_keeps_user_text() -> None:
     assert "my own question" in _format_parent_snapshot(slot)
 
 
-def test_stage_result_capture_redacts_before_writing_to_disk(tmp_path, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_stage_result_capture_redacts_before_writing_to_disk(tmp_path, monkeypatch) -> None:
     """_capture_stage_result writes assistant text to a NEW file on disk.
 
     A gateway restart mid-orchestration leaves restored (now unredacted) turns in
     the window, so without redaction here those bytes would be written out.
+
+    Redaction runs on the event-loop thread and only the finished text is handed
+    to the worker that writes it, so the credential cannot reach disk even though
+    the write itself is off-loop.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.config_dir", lambda: tmp_path)
@@ -176,7 +181,7 @@ def test_stage_result_capture_redacts_before_writing_to_disk(tmp_path, monkeypat
     slot = _ChatSlot("chat-1-stage")
     slot.append("assistant", f"result with {SECRET}", "msg msg-a", broadcast=False)
 
-    path = _capture_stage_result(slot, 1)
+    path = await _capture_stage_result(slot, 1)
     written = pathlib.Path(path).read_text()
     assert SECRET not in written, "stage result persisted an unredacted credential"
 

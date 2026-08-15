@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,13 +129,69 @@ async def _previous_result_paths(
     return await asyncio.to_thread(_read_previous_results, recorded)
 
 
-def _capture_stage_result(
+def _write_stage_result(
+    slot_key: str,
+    stage_num: int,
+    result_text: str,
+    abandoned: threading.Event,
+) -> str | None:
+    """Write *result_text* and publish it, entirely on the worker thread.
+
+    Returns the published path, or ``None`` when the capture was abandoned
+    before publication. Takes only immutable values plus *abandoned* — never
+    the slot — so nothing the loop owns is reachable from the worker.
+
+    EVERY filesystem call lives here, ``os.replace`` included. The session
+    directory can be network-backed, where a rename is a round trip and not the
+    "metadata-only, therefore free" syscall it looks like locally; running it on
+    the loop stalls chat streaming, WebSocket frames and cron dispatch for that
+    duration, which is what ``no-blocking-call-on-event-loop`` forbids.
+
+    Publication stays SAFE without being on the loop. The payload still goes to
+    a ``uuid``-named sibling that no other writer knows, and the canonical path
+    is touched only after re-reading *abandoned* — which the caller sets when
+    its await is cancelled (stop button, slot close, slot-key reuse). So a
+    worker abandoned during the write — the long half, and the whole of the
+    window on a slow filesystem — unlinks its temp file and publishes nothing.
+
+    What this does NOT claim: the check and the rename are two operations, so a
+    cancellation landing between them still publishes. That window is one
+    already-resolved rename rather than the entire payload write, and it cannot
+    be closed from the loop side at all while the rename runs on the loop —
+    there the loop is not even free to observe the cancellation.
+    """
+    session_dir = config_dir() / "sessions" / slot_key
+    session_dir.mkdir(parents=True, exist_ok=True)
+    final = session_dir / f"stage_{stage_num}_result.md"
+    tmp = session_dir / f".stage_{stage_num}_result.{uuid.uuid4().hex}.tmp"
+    tmp.write_text(result_text, encoding="utf-8")
+    if abandoned.is_set():
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        return None
+    try:
+        os.replace(str(tmp), str(final))
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+    return str(final)
+
+
+async def _capture_stage_result(
     slot: "_ChatSlot",
     stage_num: int,
 ) -> str:
     """Extract assistant messages since stage start and write to disk.
 
     Returns the path to the result file.
+
+    The extraction stays on the event-loop thread because ``slot.messages`` is
+    live mutable state the loop owns; only the finished text crosses into the
+    worker, so a concurrent append cannot be read from another thread. The
+    filesystem half runs off-loop: ``_stage_loop`` is async and this runs at every
+    stage boundary, so a slow ``mkdir``/``write_text`` would stall chat streaming,
+    WebSocket frames and cron dispatch for its duration.
     """
     # Collect assistant text from the most recent messages (since last stage separator)
     result_parts: list[str] = []
@@ -154,11 +213,33 @@ def _capture_stage_result(
     result_parts.reverse()
     result_text = "\n\n".join(result_parts)
 
-    session_dir = config_dir() / "sessions" / slot.key
-    session_dir.mkdir(parents=True, exist_ok=True)
-    path = session_dir / f"stage_{stage_num}_result.md"
-    path.write_text(result_text, encoding="utf-8")
-    return str(path)
+    # The worker owns the whole filesystem half: payload write AND publication.
+    # Nothing here touches the disk, because the session directory can be
+    # network-backed and a rename there is a round trip, not a free
+    # metadata-only syscall.
+    #
+    # ``asyncio.to_thread`` cannot interrupt a running worker, so the orphan
+    # writer is held off with a flag instead of with placement: the worker
+    # re-reads ``abandoned`` immediately before it publishes, and this handler
+    # sets it the moment the await is cancelled. A capture abandoned during the
+    # payload write — the long half, and effectively all of the window on the
+    # slow filesystem this offload exists for — therefore unlinks its temp file
+    # and leaves ``stage_N_result.md`` alone.
+    abandoned = threading.Event()
+    try:
+        published = await asyncio.to_thread(
+            _write_stage_result, slot.key, stage_num, result_text, abandoned
+        )
+    except asyncio.CancelledError:
+        abandoned.set()
+        raise
+    if published is None:
+        # Only reachable when the worker saw ``abandoned``, which is set solely
+        # in the handler above -- so the await raised and this line did not run.
+        # Kept so the signature stays honest rather than asserting the
+        # invariant with a cast.
+        raise asyncio.CancelledError()
+    return published
 
 
 def _completion_excerpts(result_paths: tuple[tuple[int, str], ...]) -> dict[int, str]:
@@ -560,10 +641,18 @@ async def _stage_loop(
 
             # Capture result to disk
             try:
-                result_path = _capture_stage_result(slot, stage_num)
+                result_path = await _capture_stage_result(slot, stage_num)
                 tracker.record_stage_result(stage_num, result_path)
             except OSError:
                 logger.warning("Failed to capture stage %d result to disk", stage_num, exc_info=True)
+
+            # The offloaded write above is a suspension point between the
+            # loop's last stop check and the next stage. A stop that lands
+            # while the worker is writing (user cancel sets tracker.stopped
+            # and slot._auto_run, but `auto_run` below is a call-time
+            # snapshot) must not let the run advance to another stage.
+            if slot._stopping or tracker.stopped:
+                break
 
             # Gate: if not auto_run, wait for user approval
             if not auto_run:
