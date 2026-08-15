@@ -138,6 +138,24 @@ class OrchestrationTracker:
         """
         return self._stage_timeout
 
+    @stage_timeout_seconds.setter
+    def stage_timeout_seconds(self, seconds: int) -> None:
+        """Set the per-stage budget after construction.
+
+        The orchestrator builds its tracker before it knows the configured
+        value: reading the config blocks, so it is loaded on a worker, and a
+        plan cancel arriving during that load needs a tracker already published
+        to stop. The tracker therefore starts on the default above and is
+        adjusted here once the load returns.
+
+        Safe at that point, and only at that point: the budget is consulted by
+        ``is_stage_timed_out`` and by callers deriving a wait from it, all of
+        which run per stage, and ``_stage_start`` is still 0 until the first
+        round is recorded. Changing it mid-stage would move a deadline the
+        current stage is already being measured against, so callers must not.
+        """
+        self._stage_timeout = seconds
+
     @property
     def timeout_human(self) -> str:
         """Human-friendly timeout string, e.g. '30m' or '1m30s'."""

@@ -282,6 +282,54 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
     state.push_slots_update()
 
 
+async def _load_stage_budget(slot: "_ChatSlot", tracker: OrchestrationTracker) -> bool:
+    """Apply the configured stage timeout to *tracker*. False to abandon the plan.
+
+    The load stats and reads ``config.json`` plus any ``config.local.json``
+    overlay, deep-merges them and runs the full schema validation, so it runs on
+    a worker. Only the load crosses over: the value is applied and the slot read
+    back on the loop, so no live orchestration state is handed to a thread. A
+    failed load keeps the tracker's default budget, which is the same fallback
+    the inline load had.
+
+    Both cancellation channels can fire while that worker runs, and the check
+    afterwards has to survive the fact that neither necessarily leaves state a
+    plain re-read would see:
+
+    * **Plan Cancel** stops the tracker. It is published before this is called
+      precisely so that it does, which is why ``_orchestration_stopped`` is
+      enough here and no separate record is kept.
+    * **Dashboard Stop** has no ACP turn to cancel yet, so ``stop_turn`` answers
+      "idle" and the handler releases ``_stop_state`` straight back to "idle" --
+      re-reading ``slot._stopping`` afterwards would show an unstopped slot.
+      ``slot._stop_generation`` counts stop INITIATIONS and is never rewound, so
+      snapshotting it before the wait reports a Stop that fired AND resolved
+      inside it. Same reading, and the same reason, as the poisoned-conversation
+      canary in ``chat_runner``.
+
+    Returning False rather than raising keeps the caller's exit on its normal
+    path: the plan must not start, but the loop still owes the slot its cleanup.
+    """
+    _stop_generation = slot._stop_generation
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        tracker.stage_timeout_seconds = cfg.orchestrator.stage_timeout_seconds
+    except Exception:
+        logger.debug(
+            "Orchestrator config load failed for slot %s; keeping the default " "stage budget",
+            slot.key,
+            exc_info=True,
+        )
+    if slot._stop_generation != _stop_generation or _orchestration_stopped(slot, tracker):
+        logger.info(
+            "Stage loop for slot %s abandoned: a stop or plan cancel landed "
+            "while the orchestrator config was loading",
+            slot.key,
+        )
+        return False
+    return True
+
+
 async def _stage_loop(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -309,12 +357,24 @@ async def _stage_loop(
         return
 
     tracker = slot._orch_tracker
+    # Publish the tracker BEFORE the config load suspends below. That load is
+    # this loop's first await, ahead of every stage gate, and a plan Cancel
+    # landing in the window has to have something to stop: api_chat_plan_action
+    # stops slot._orch_tracker, so against a None tracker it stops nothing while
+    # still telling the user the plan was cancelled.
+    #
+    # Building it first is what lets `tracker.stopped` -- the canonical plan
+    # cancel signal every advancement gate already reads through
+    # `_orchestration_stopped` -- cover this window too, rather than a second
+    # cancellation record kept alongside it that can drift from it.
+    #
+    # It starts on OrchestrationTracker's own default budget, the same 1800s
+    # this loop fell back to when the load raised, and takes the configured
+    # value below once that is known. Nothing reads the budget until a stage
+    # records its first round, which cannot happen before the load returns.
+    _bootstrapping = tracker is None
     if tracker is None:
-        try:
-            _timeout = KiroCrewConfig.load().orchestrator.stage_timeout_seconds
-        except Exception:
-            _timeout = 1800
-        tracker = OrchestrationTracker(stage_timeout_seconds=_timeout)
+        tracker = OrchestrationTracker()
         slot._orch_tracker = tracker
 
     total = slot._plan_stage_count
@@ -349,6 +409,13 @@ async def _stage_loop(
     # finally once the plan ends.
     slot._in_stage_execution = True
     try:
+        # Inside the try, so an abort here leaves through the same `finally` as
+        # every other exit: the guard is cleared, a message the user queued
+        # while this was loading is handed off, and the slot is closed out. A
+        # bare `return` from the bootstrap would skip all of it and strand that
+        # message behind a guard nothing clears.
+        if _bootstrapping and not await _load_stage_budget(slot, tracker):
+            return
         for stage_idx in range(start_idx, total):
             if _orchestration_stopped(slot, tracker):
                 break
@@ -825,6 +892,17 @@ async def _stage_loop(
         # have already started (e.g. a refusal-recovery continuation): that live
         # task owns slot.task and will drain the queue + emit chat_done itself, so
         # we must not start a second turn or clobber/idle-close over it.
+        # `slot.running` is asking whether a turn a stage STARTED is still
+        # holding the slot: `_run_chat` publishes its own task on `slot.task`
+        # and clears it when the turn ends, and this loop must defer to one that
+        # is still live. It is not asking about this loop -- yet when no stage
+        # turn ever ran, `slot.task` is still this very task, which is alive by
+        # definition here, so the raw read reports a turn that does not exist.
+        # That silently skipped BOTH the handoff and the idle close on exactly
+        # the paths with nothing else to perform them: an abandoned bootstrap,
+        # and a plan with no stages.
+        _own_task = asyncio.current_task()
+        _turn_live = slot.running and slot.task is not _own_task
         _next_started = False
         # Before _start_next_queued_turn, not after: a held note's context half
         # drains into that successor, so flushing later would let the note shape
@@ -858,7 +936,7 @@ async def _stage_loop(
             slot._queue[:] = [e for e in slot._queue if not _is_plan_approval_entry(e)]
         if (
             not _cancelled
-            and not slot.running
+            and not _turn_live
             and not slot._last_turn_auth_required
             and state._slots.get(slot.key) is slot
             and slot._queue
@@ -866,7 +944,7 @@ async def _stage_loop(
         ):
             state.push_slots_update()
             _next_started = await _start_next_queued_turn(state, slot)
-        if not _next_started and not slot.running:
+        if not _next_started and not _turn_live:
             if not _paused:
                 slot.append("done", "", "done")
                 state.broadcast_ws("chat_done", {"slot": slot.key})
