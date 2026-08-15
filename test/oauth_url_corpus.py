@@ -11,7 +11,7 @@ contained credential or exfiltration pattern").
 
 This corpus is the contract: every entry is a *real* provider URL shape
 (host + parameter set taken from the provider's own OAuth docs) and
-``_oauth_url_contains_credential`` must return False for all of them.
+``security.oauth_url_contains_credential`` must return False for all of them.
 
 **Adding a provider:** when KiroCrew gains/observes a new MCP OAuth provider,
 add a representative authorize URL here.  If any param it uses isn't yet in

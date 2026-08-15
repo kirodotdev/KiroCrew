@@ -4624,7 +4624,7 @@ class DashboardState:
         #
         # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
         #    appends the banner with a real `oauth_url`, already gated by
-        #    _oauth_url_contains_credential — the shared security gate, which
+        #    security.oauth_url_contains_credential — the shared security gate, which
         #    exempts standard high-entropy OAuth values only at exact code-owned
         #    authorization endpoints while scanning everything else fail-closed.
         #    Running _redact_meta_for_role here would blank a genuine

@@ -419,7 +419,8 @@ def test_oauth_url_corpus_survives_the_emit_path(monkeypatch) -> None:
     """Every real provider's consent URL must survive `_prepare_messages`.
 
     This is the test whose absence let a real regression through. The repo already
-    had `test/oauth_url_corpus.py` pinning that `_oauth_url_contains_credential`
+    had `test/oauth_url_corpus.py` pinning that the OAuth banner gate (now
+    `security.oauth_url_contains_credential`)
     never rejects a real provider URL — but nothing routed that corpus through the
     DISPLAY gate, and this PR newly called `_redact_meta_for_role` from
     `_prepare_messages`.
@@ -485,7 +486,7 @@ def test_oauth_completion_preserves_a_legitimate_url() -> None:
     banner for 8 of the 9 providers in test/oauth_url_corpus.py.
 
     The lesson worth keeping: a shared helper cannot be judged safe from one call
-    site. The gate now matches `_oauth_url_contains_credential` for every caller.
+    site. The gate now matches `security.oauth_url_contains_credential` for every caller.
     """
     from kiro_crew.dashboard.chat_runner import _mark_mcp_oauth_completed
     from kiro_crew.dashboard.state import _ChatSlot

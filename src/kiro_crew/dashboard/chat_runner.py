@@ -1063,17 +1063,6 @@ def _redact_acp_string(s: str) -> str:
     return s
 
 
-def _oauth_url_contains_credential(url: str) -> bool:
-    """True if the URL embeds an actual credential or exfiltration payload.
-
-    The security module owns the exact endpoint allowlist and parameter-level
-    entropy exemption. This wrapper preserves the historical dashboard API
-    while avoiding ``redact_credentials`` here: that broader redactor includes
-    the bare-secret entropy rule that legitimate state/PKCE values trigger.
-    """
-    return oauth_url_contains_credential(url)
-
-
 def _emit_mcp_oauth_request(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -1116,7 +1105,7 @@ def _emit_mcp_oauth_request(
             },
         )
         return
-    if _oauth_url_contains_credential(oauth_url):
+    if oauth_url_contains_credential(oauth_url):
         # Legitimate OAuth consent URLs carry state/code_challenge/client_id —
         # never AKIA*/Bearer/etc.  Surface this so the user can ask the server
         # owner to fix it instead of just seeing nothing happen.
@@ -1280,9 +1269,10 @@ def _mark_mcp_oauth_completed(
     # NOT preserve realistic `oauth_url`s: it calls `redact_exfiltration_urls`,
     # whose query-length (>=200) and base64-blob heuristics blank a real Google OIDC
     # or GitHub PKCE consent URL. (Measured: those two are blanked; only a short URL
-    # survives.) The emit-path gate `_oauth_url_contains_credential` deliberately
-    # exempts OAuth params from exactly those heuristics — its docstring notes they
-    # "would reject every real OAuth URL".
+    # survives.) The emit-path gate `security.oauth_url_contains_credential`
+    # deliberately exempts OAuth params from exactly those heuristics — it is
+    # "the sole path allowed to exempt standard OAuth entropy from the generic
+    # URL heuristics" (its docstring).
     #
     # That is harmless HERE only because `oauth_url` is dead data by this point:
     # every path through this function sets `completed` or `failed`, and
