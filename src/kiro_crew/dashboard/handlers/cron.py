@@ -838,37 +838,34 @@ async def _recognize_session(
     operation: str,
     *,
     blocks_persisted_mode: Callable[[str], bool],
-    error_codes: bool = False,
 ) -> web.Response | None:
-    """Session-recognition gate shared by the lessons routes.
+    """Session-recognition gate shared by the lessons and memory routes.
 
     Applies one slot / restricted-key / channel-namespace / persisted-JSONL
-    cascade to every caller so the create and delete routes cannot diverge.
+    cascade to every caller so the mutating routes cannot diverge.
     Returns a refusal :class:`web.Response`, or ``None`` when the session is
     recognised. Every decision — allow or deny — emits a SEL audit event
     under *operation*.
 
     ``blocks_persisted_mode`` is the per-route policy for the
-    archived-session recovery path: create blocks every private mode (the
-    canonical ``history.is_incognito_transcript`` classifier); delete blocks
-    only ``temporary``. A ``None``
+    archived-session recovery path: writes block every private mode (the
+    canonical ``history.is_incognito_transcript`` classifier); lesson delete
+    blocks only ``temporary``. A ``None``
     (unreadable or ambiguous) persisted mode always fails closed regardless
-    of policy. ``error_codes`` controls whether the 400 refusal bodies carry
-    the machine-readable ``code`` field (the delete route's error contract;
-    the create route's 400 responses predate it and stay code-less); the 403
-    refusal carries ``restricted_session`` on both routes.
+    of policy. Every refusal body carries a machine-readable ``code`` field
+    (``missing_session_key`` / ``unknown_session`` on the 400s,
+    ``restricted_session`` on the 403), so clients dispatch on the
+    identifier rather than the prose.
     """
     if not sk:
         _sel().log_api_access(
             caller="anonymous", operation=operation, outcome="denied",
             source="dashboard", resources="missing_session_key",
         )
-        if error_codes:
-            return web.json_response(
-                {"error": "missing X-Session-Key", "code": "missing_session_key"},
-                status=400,
-            )
-        return web.json_response({"error": "missing X-Session-Key"}, status=400)
+        return web.json_response(
+            {"error": "missing X-Session-Key", "code": "missing_session_key"},
+            status=400,
+        )
     if sk == "dashboard:ui":
         # Browser UI's static key — implicitly trusted, but the allow
         # decision itself is still an authorization outcome and must be
@@ -932,12 +929,10 @@ async def _recognize_session(
                 caller=sk, operation=operation, outcome="denied",
                 source="dashboard", resources="unknown_session",
             )
-            if error_codes:
-                return web.json_response(
-                    {"error": "unknown session", "code": "unknown_session"},
-                    status=400,
-                )
-            return web.json_response({"error": "unknown session"}, status=400)
+            return web.json_response(
+                {"error": "unknown session", "code": "unknown_session"},
+                status=400,
+            )
         if persisted_mode is None or blocks_persisted_mode(persisted_mode):
             # Archiving a tab drops the slot AND discards its
             # ``_restricted_keys`` entry while leaving the transcript —
@@ -1142,7 +1137,6 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     refusal = await _recognize_session(
         state, sk, "lessons.delete",
         blocks_persisted_mode=_is_temporary_transcript,
-        error_codes=True,
     )
     if refusal is not None:
         return refusal

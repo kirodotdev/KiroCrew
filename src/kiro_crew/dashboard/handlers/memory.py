@@ -40,6 +40,7 @@ from kiro_crew.embeddings import (
     validate_custom_model_path,
 )
 from kiro_crew.executors import embed_executor, run_in_embed_pool
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -49,6 +50,7 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import _get_memory, _is_restricted_session
+from .cron import _recognize_session
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +231,20 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
 
 async def api_memory_semantic_write(request: web.Request) -> web.Response:
     """PUT /api/memory/semantic — create/update a semantic entry."""
-    if _is_restricted_session(request.app["state"], request):
-        sk = request.headers.get("X-Session-Key", "")
+    state: DashboardState = request.app["state"]
+    # Session-recognition gate (shared with the lessons routes, #3226): the
+    # restricted-mode check below returns False for an unknown key, so before
+    # this gate a forged or never-established X-Session-Key could write
+    # semantic memory that create-style routes would refuse. Writes block
+    # every private persisted mode, mirroring ``api_lessons_create``.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "semantic.write",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
+    if _is_restricted_session(state, request):
         _sel().log_api_access(
             caller=sk, operation="semantic.write", outcome="denied",
             source="dashboard", resources="restricted_session_block",
@@ -280,8 +294,22 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
 
 async def api_memory_semantic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/semantic/{key} — tombstone a semantic entry."""
-    if _is_restricted_session(request.app["state"], request):
-        sk = request.headers.get("X-Session-Key", "")
+    state: DashboardState = request.app["state"]
+    # Same recognition gate as the write route: without it, this DELETE was
+    # LESS protected than the lessons delete #3226 fixed — an unknown key
+    # passed the restricted-mode check (False for unrecognised sessions) and
+    # could tombstone any semantic entry. Policy for known sessions is
+    # unchanged: this route keeps blocking incognito AND temporary (the
+    # ``_is_restricted_session`` check below), so the recovery-path probe
+    # blocks every private mode to match.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "semantic.delete",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
+    if _is_restricted_session(state, request):
         _sel().log_api_access(
             caller=sk, operation="semantic.delete", outcome="denied",
             source="dashboard", resources="restricted_session_block",
@@ -1062,7 +1090,32 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
 
 async def api_memory_episodic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/episodic/{id} — tombstone an episodic memory."""
-    store = _get_vector_store(request.app["state"])
+    state: DashboardState = request.app["state"]
+    # This route had NO session check at all — not even the restricted-mode
+    # one its semantic siblings carry — so any caller, restricted or forged,
+    # could tombstone episodic memories. Apply the shared recognition gate
+    # (#3226) plus the same live-slot restricted-mode policy as
+    # ``api_memory_semantic_delete``.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "episodic.delete",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
+    if _is_restricted_session(state, request):
+        _sel().log_api_access(
+            caller=sk, operation="episodic.delete", outcome="denied",
+            source="dashboard", resources="restricted_session_block",
+        )
+        return web.json_response(
+            {
+                "error": "Memory writes are not allowed in this session mode.",
+                "code": "restricted_session",
+            },
+            status=403,
+        )
+    store = _get_vector_store(state)
     mem_id = request.match_info["id"]
     # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
     ok = await asyncio.to_thread(store.delete_episodic, mem_id)

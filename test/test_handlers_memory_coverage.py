@@ -434,14 +434,18 @@ class TestSemanticEndpoints:
     @pytest.mark.asyncio
     async def test_write_rejects_invalid_json(self) -> None:
         state = _make_state(vector_store=_store())
-        req = _make_request(state, method="PUT", json_body=_BadJSON())
+        req = _make_request(
+            state, method="PUT", json_body=_BadJSON(), session_key="dashboard:ui"
+        )
         assert (await mem_mod.api_memory_semantic_write(req)).status == 400
 
     @pytest.mark.asyncio
     async def test_write_requires_key_and_value(self) -> None:
         state = _make_state(vector_store=_store())
         for body in ({"value": "v"}, {"key": "k"}, {}):
-            req = _make_request(state, method="PUT", json_body=body)
+            req = _make_request(
+                state, method="PUT", json_body=body, session_key="dashboard:ui"
+            )
             resp = await mem_mod.api_memory_semantic_write(req)
             assert resp.status == 400
             assert _body(resp)["error"] == "key and value required"
@@ -454,6 +458,7 @@ class TestSemanticEndpoints:
             state,
             method="PUT",
             json_body={"key": "k", "value": "v", "confidence": 0.5, "source": "agent"},
+            session_key="dashboard:ui",
         )
         assert _body(await mem_mod.api_memory_semantic_write(req)) == {"ok": True}
         store.set_semantic.assert_called_once_with("k", "v", 0.5, "agent")
@@ -463,7 +468,10 @@ class TestSemanticEndpoints:
         store = _store()
         state = _make_state(vector_store=store)
         req = _make_request(
-            state, method="PUT", json_body={"key": "k", "value": "v", "confidence": "high"}
+            state,
+            method="PUT",
+            json_body={"key": "k", "value": "v", "confidence": "high"},
+            session_key="dashboard:ui",
         )
         assert (await mem_mod.api_memory_semantic_write(req)).status == 200
         assert store.set_semantic.call_args[0][2] == 1.0
@@ -475,7 +483,12 @@ class TestSemanticEndpoints:
         store = _store()
         store.set_semantic.return_value = (SemanticRejectCode.CONFLICT, "already set")
         state = _make_state(vector_store=store)
-        req = _make_request(state, method="PUT", json_body={"key": "k", "value": "v"})
+        req = _make_request(
+            state,
+            method="PUT",
+            json_body={"key": "k", "value": "v"},
+            session_key="dashboard:ui",
+        )
         resp = await mem_mod.api_memory_semantic_write(req)
         assert resp.status == 409
         assert _body(resp)["error"] == "already set"
@@ -490,7 +503,12 @@ class TestSemanticEndpoints:
             f"value too large for {_CRED}",
         )
         state = _make_state(vector_store=store)
-        req = _make_request(state, method="PUT", json_body={"key": "k", "value": "v"})
+        req = _make_request(
+            state,
+            method="PUT",
+            json_body={"key": "k", "value": "v"},
+            session_key="dashboard:ui",
+        )
         resp = await mem_mod.api_memory_semantic_write(req)
         assert resp.status == 422
         assert _CRED not in _body(resp)["error"]
@@ -509,7 +527,9 @@ class TestSemanticEndpoints:
     async def test_delete_missing_key_is_404(self) -> None:
         store = _store(delete_semantic=MagicMock(return_value=False))
         state = _make_state(vector_store=store)
-        req = _make_request(state, method="DELETE", match_info={"key": "nope"})
+        req = _make_request(
+            state, method="DELETE", match_info={"key": "nope"}, session_key="dashboard:ui"
+        )
         resp = await mem_mod.api_memory_semantic_delete(req)
         assert resp.status == 404
         assert _body(resp) == {"error": "not found"}
@@ -518,7 +538,9 @@ class TestSemanticEndpoints:
     async def test_delete_success(self) -> None:
         store = _store()
         state = _make_state(vector_store=store)
-        req = _make_request(state, method="DELETE", match_info={"key": "k"})
+        req = _make_request(
+            state, method="DELETE", match_info={"key": "k"}, session_key="dashboard:ui"
+        )
         assert _body(await mem_mod.api_memory_semantic_delete(req)) == {"ok": True}
         store.delete_semantic.assert_called_once_with("k", source="user_explicit")
 
@@ -625,7 +647,9 @@ class TestEpisodicEndpoints:
     async def test_delete_missing_id_is_404(self) -> None:
         store = _store(delete_episodic=MagicMock(return_value=False))
         state = _make_state(vector_store=store)
-        req = _make_request(state, method="DELETE", match_info={"id": "42"})
+        req = _make_request(
+            state, method="DELETE", match_info={"id": "42"}, session_key="dashboard:ui"
+        )
         resp = await mem_mod.api_memory_episodic_delete(req)
         assert resp.status == 404
         assert _body(resp) == {"error": "not found"}
@@ -634,7 +658,9 @@ class TestEpisodicEndpoints:
     async def test_delete_success(self) -> None:
         store = _store()
         state = _make_state(vector_store=store)
-        req = _make_request(state, method="DELETE", match_info={"id": "42"})
+        req = _make_request(
+            state, method="DELETE", match_info={"id": "42"}, session_key="dashboard:ui"
+        )
         assert _body(await mem_mod.api_memory_episodic_delete(req)) == {"ok": True}
         store.delete_episodic.assert_called_once_with("42")
 
