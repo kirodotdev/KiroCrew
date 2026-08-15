@@ -51,7 +51,7 @@ vi.mock('../../api/client', () => ({
 
 import { api } from '../../api/client'
 import type { GovernancePolicyData, SecurityPostureData, TrustedAppsData } from '../../api/client'
-import { SecurityPanel, trustFailureMessage } from './SecurityPanel'
+import { SecurityPanel, trustFailureMessage, humaniseScopeLeaf } from './SecurityPanel'
 import { i18nT } from '../../i18n/t'
 
 /** Copy is asserted through `i18nT`, not literal English.
@@ -565,8 +565,25 @@ describe('SecurityPanel — denied commands', () => {
   })
 })
 
-describe('SecurityPanel — governance policy viewer', () => {
-  beforeEach(() => {
+describe('humaniseScopeLeaf', () => {
+  it('title-cases each word of a snake_case or kebab-case leaf', () => {
+    expect(humaniseScopeLeaf('external_access')).toBe('External Access')
+    expect(humaniseScopeLeaf('capability_install')).toBe('Capability Install')
+    expect(humaniseScopeLeaf('theme-persona')).toBe('Theme Persona')
+    expect(humaniseScopeLeaf('cron')).toBe('Cron')
+  })
+
+  it('does not emit stray or doubled spaces from odd separators', () => {
+    // A leading/trailing/doubled separator is an operator-authored identifier we
+    // do not control, and the panel renders the result verbatim.
+    expect(humaniseScopeLeaf('_leading')).toBe('Leading')
+    expect(humaniseScopeLeaf('trailing_')).toBe('Trailing')
+    expect(humaniseScopeLeaf('double__sep')).toBe('Double Sep')
+    expect(humaniseScopeLeaf('')).toBe('')
+  })
+})
+
+describe('SecurityPanel — governance policy viewer', () => {  beforeEach(() => {
     vi.clearAllMocks()
     ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
@@ -583,6 +600,30 @@ describe('SecurityPanel — governance policy viewer', () => {
     ).toBeInTheDocument()
     // No governed rows are rendered in standalone mode.
     expect(screen.queryByText('policy ∩ profile')).not.toBeInTheDocument()
+  })
+
+  it('humanises the label of a companion-registered scope the core has no key for', async () => {
+    // A scope registered through `register_scope` by an edition reaches this panel
+    // (the snapshot endpoint iterates SCOPE_CATALOG) but can never have an i18n
+    // key, because the core does not know it exists. Governed-scope leaves are
+    // snake_case, so the raw fallback rendered `External_access` mid-panel.
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          {
+            scope: 'capabilities.external_access',
+            archetype: 'capability',
+            governed: true,
+            source: 'policy',
+            detail: { enabled: true, inner: { registry_hosts: { mode: 'allow', allow_count: 2, deny_count: 0 } } },
+          },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+
+    expect(await screen.findByText('External Access')).toBeInTheDocument()
+    expect(screen.queryByText('External_access')).not.toBeInTheDocument()
   })
 
   it('renders governed + ungoverned rows with effective state and source', async () => {
