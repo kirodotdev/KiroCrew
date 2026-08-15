@@ -41,6 +41,7 @@ from kiro_crew.discord.commands import (
 from kiro_crew.discord.renderer import (
     DiscordApprovalDecider,
     DiscordRenderer,
+    _ends_inside_fence,
     _extract_options,
     _split_markdown,
     _split_text,
@@ -485,6 +486,37 @@ class TestMidTurnOverride:
 
 # ── renderer.py helpers ──────────────────────────────────────────────────
 
+_ORACLE_CODE = "x = 1\n"
+_ORACLE_PROSE = "Ordinary prose about how chat surfaces render markdown.\n"
+
+#: Fence shapes swept by BOTH renderer oracles -- the strip/append symmetry one
+#: and the whitespace-fidelity one. Shared so neither can drift onto a corpus the
+#: other never sees. They cover the information a per-chunk fence walk cannot
+#: recover from the source: 3/4/5-backtick openers, authored inner bare ``` lines,
+#: literal backticks in prose, 4-space-indented lookalikes, info strings, and a
+#: run of blank lines at the tail.
+_FENCE_SHAPES = [
+    "```py\n" + _ORACLE_CODE * 40,  # open 3-backtick fence
+    "```py\n" + _ORACLE_CODE * 40 + "```\n",  # closed 3-backtick fence
+    "````md\n" + _ORACLE_CODE * 40,  # open 4-backtick fence
+    "````md\n" + ("```py\n" + _ORACLE_CODE + "```\n") * 25,  # inner bare closers
+    "````md\n" + ("```py\n" + _ORACLE_CODE + "```\n") * 25 + "````\n",  # …then closed
+    "`````\n" + ("```\n" + _ORACLE_CODE + "```\n") * 25,  # 5-backtick outer
+    _ORACLE_PROSE * 12,  # no fence at all
+    "You type ``` to open a block.\n" + _ORACLE_PROSE * 12,  # literal in prose
+    "You type ``` inline.\n\n```py\n" + _ORACLE_CODE * 30,  # literal, then open
+    _ORACLE_PROSE * 6 + "    ```\n" + _ORACLE_CODE * 20,  # indented lookalike
+    "   ```py\n" + _ORACLE_CODE * 40,  # 3-space indent still opens
+    "```a`b\n" + _ORACLE_CODE * 40,  # backtick in info string == inline code
+    "```py\n" + _ORACLE_CODE * 20 + "```\n\n```sh\nls\n" + _ORACLE_CODE * 20,  # two fences
+    "````md\n" + _ORACLE_CODE * 20 + "```\n" + _ORACLE_CODE * 20 + "\n\n\n",  # ws tail
+    # Blank code lines INSIDE a fence with more code after them -- the shape the
+    # remainder used to delete, swept at every limit so the cut lands on each
+    # newline of the run in turn.
+    "```py\n" + _ORACLE_CODE * 20 + "\n\n" + _ORACLE_CODE * 20,
+    "```py\n" + (_ORACLE_CODE + "\n\n\n") * 12,  # 4-newline runs throughout
+]
+
 
 class TestSplitText:
     def test_short_text_single_chunk(self) -> None:
@@ -501,10 +533,149 @@ class TestSplitText:
 
     def test_split_markdown_balances_fences(self) -> None:
         code = "```py\n" + ("x = 1\n" * 50) + "```"
-        chunks = _split_markdown(code, 120)
+        chunks, appended = _split_markdown(code, 120)
         assert len(chunks) > 1
         for ch in chunks:
             assert ch.count("```") % 2 == 0  # every chunk self-contained
+        # The source's own closer lands in the final chunk, so nothing was
+        # invented there.
+        assert appended is False
+
+    def test_split_markdown_reports_its_own_synthetic_closer(self) -> None:
+        # The flag is the splitter's record of what it appended to the FINAL
+        # chunk -- the only sound basis for the rotation's strip, since the
+        # per-chunk walk runs after a bare ``` reopen has already discarded the
+        # original opener's run length.
+        open_fence = "```py\n" + ("x = 1\n" * 50)
+        chunks, appended = _split_markdown(open_fence, 120)
+        assert len(chunks) > 1
+        assert appended is True
+        assert chunks[-1].endswith("\n```")
+        # A lone chunk is handed back untouched, so the flag alone expresses the
+        # "nothing to undo" case -- no len(chunks) guard is needed at the strip.
+        for text in ["```py\nx = 1\n", "type ``` here", "", "plain prose"]:
+            lone, lone_appended = _split_markdown(text, 1900)
+            assert len(lone) <= 1
+            assert lone_appended is False
+            assert lone == _split_text(text, 1900)
+
+    def test_inline_backticks_are_not_a_fence(self) -> None:
+        # A ``` written MID-LINE is prose about fencing, not a fence. Counting
+        # ``` substrings calls this "open" and flips every later fence decision.
+        assert not _ends_inside_fence("Type ``` to open a block.")
+        assert not _ends_inside_fence("Prose\nsay ``` here\nmore prose")
+        # ...and it must not mask a fence that really is open.
+        assert _ends_inside_fence("Type ``` first.\n\n```py\nx = 1\n")
+
+    def test_fence_state_walk_follows_commonmark(self) -> None:
+        assert _ends_inside_fence("```py\nx = 1\n")
+        assert not _ends_inside_fence("```py\nx = 1\n```")
+        assert not _ends_inside_fence("```py\nx = 1\n```\ntrailing prose")
+        # Up to 3 spaces of indent still opens; 4+ is an indented code line.
+        assert _ends_inside_fence("   ```\nx\n")
+        assert not _ends_inside_fence("    ```\nx\n")
+        # A closer may be LONGER than its opener but never shorter, and carries
+        # nothing after it -- an info string is legal only on the opener.
+        assert not _ends_inside_fence("```\nx\n`````")
+        assert _ends_inside_fence("`````\nx\n```")
+        assert _ends_inside_fence("```\nx\n``` not a closer")
+        # An info string containing a backtick is inline code, not a fence.
+        assert not _ends_inside_fence("```a`b\nx\n")
+
+    def test_continuation_preserves_leading_indentation(self) -> None:
+        # A cut landing just before an INDENTED line must not re-indent it: only
+        # newlines are stripped at the boundary, never horizontal whitespace.
+        text = "a" * 30 + "\n" + "    indented = 1\n" + "b" * 30
+        chunks = _split_text(text, 40)
+        assert len(chunks) > 1
+        assert chunks[1].startswith("    indented = 1")
+
+    def test_newline_only_remainder_keeps_blank_code_lines(self) -> None:
+        # Blank lines are CONTENT inside a fenced block. A boundary that leaves a
+        # remainder of nothing but newlines must not drop them, or the blank code
+        # lines vanish and every later code line shifts up one row.
+        text = "```py\n" + "x = 1\n" * 299 + "\n\n"
+        chunks = _split_text(text, 1800)
+        # The tail is its own chunk -- it neither vanished nor re-entered the
+        # loop unchanged. Its first newline terminates the last code line, so it
+        # is the separator this boundary represents and only it is absorbed; the
+        # two authored blank lines are what remain.
+        assert chunks[-1] == "\n\n"
+        # Exact accounting, replacing a raw total-newline count: that count came
+        # out equal only because the absorbed separator was being counted as
+        # content, which is one blank line more than the source has. Rejoining on
+        # the separator each cut consumed reproduces the source verbatim, so no
+        # newline is lost and none is invented.
+        assert "\n".join(chunks) == text
+
+    def test_all_newline_text_terminates(self) -> None:
+        # A zero-width cut on an all-newline tail must not re-enter the loop
+        # unchanged. Watchdogged so a regression fails instead of hanging.
+        done: list[list[str]] = []
+        t = threading.Thread(target=lambda: done.append(_split_text("\n\n", 1)), daemon=True)
+        t.start()
+        t.join(5.0)
+        assert done, "_split_text did not terminate on an all-newline tail"
+
+    def test_blank_code_lines_straddling_a_cut_survive(self) -> None:
+        # A blank line FOLLOWED BY CONTENT is an authored code line, not the
+        # boundary separator. The cut lands on the run, so lstrip("\n") deleted
+        # every newline in it at once and the next code line shifted up two rows.
+        text = "```py\nx = 1\n\n\ny = 2\ny = 3\n"
+        chunks = _split_text(text, 20)
+        assert len(chunks) == 2
+        assert chunks[0] == "```py\nx = 1"
+        # BOTH authored blank lines lead the continuation.
+        assert chunks[1] == "\n\ny = 2\ny = 3\n"
+        # Exactly one newline -- the separator this boundary itself represents --
+        # was absorbed, so rejoining on it reproduces the source verbatim.
+        assert "\n".join(chunks) == text
+
+    def test_prose_paragraph_gap_survives_a_cut(self) -> None:
+        # The prose twin: the blank line of a paragraph gap is equally authored.
+        text = "para one\n\npara two\n\npara three"
+        chunks = _split_text(text, 20)
+        assert chunks == ["para one\n\npara two", "\npara three"]
+        assert "\n".join(chunks) == text
+
+    def test_continuation_gains_no_leading_blank_line(self) -> None:
+        # The opposite failure mode of the widened preservation: where the source
+        # had a single separator and no blank line, the continuation must render
+        # exactly as it does today -- content first, no invented gap.
+        text = "a" * 30 + "\n" + "b" * 30
+        assert _split_text(text, 40) == ["a" * 30, "b" * 30]
+
+    def test_swept_cut_absorbs_at_most_one_newline(self) -> None:
+        """Whitespace-fidelity oracle over the same corpus as the strip sweep.
+
+        That sweep asserts only that non-whitespace survives, so it is blind to
+        blank lines -- exactly the class ``lstrip("\\n")`` deleted. Every chunk is
+        a verbatim slice of the source, so walking the slices in order exposes
+        what the splitter dropped at each cut: it must be whitespace only, and it
+        must be at most the single line separator the message boundary itself
+        represents. That bounds newline-run loss inside fences and in prose alike
+        at oracle strength, and it fails on ``lstrip("\\n")``, which drops the
+        whole run.
+        """
+        cuts = 0
+        for src in _FENCE_SHAPES:
+            for limit in list(range(40, 201, 7)) + [1900]:
+                chunks = _split_text(src, limit)
+                cuts += len(chunks) - 1
+                pos = 0
+                for ch in chunks:
+                    where = f"shape={src[:14]!r} limit={limit}"
+                    at = src.find(ch, pos)
+                    assert at >= 0, f"chunk is not a source slice: {where}"
+                    gap = src[pos:at]
+                    assert not gap.strip(), f"authored text dropped at a cut: {where}"
+                    assert gap.count("\n") <= 1, (
+                        f"cut absorbed {gap.count(chr(10))} newlines, "
+                        f"blank lines deleted: {where}"
+                    )
+                    pos = at + len(ch)
+                assert not src[pos:].strip(), f"authored tail dropped: {src[:14]!r}"
+        assert cuts > 300, cuts  # the sweep is not vacuous
 
 
 class TestOptionComponents:
@@ -1109,6 +1280,233 @@ class TestRenderer:
             assert len(text) <= 2000
         for _, text, _c in cli.edits:
             assert len(text) <= 2000
+
+    @pytest.mark.asyncio
+    async def test_rotation_mid_code_block_keeps_live_fence_open(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # Open a fence and stream past one message's worth of code so rotation
+        # fires while the model's closing ``` has NOT arrived yet.
+        await r.on_text_chunk("```py\n" + "x = 1\n" * 400)
+        # The SEALED chunk is self-contained (synthetic closer appended)…
+        sealed = cli.sent[0][0]
+        assert sealed.count("```") % 2 == 0
+        assert sealed.rstrip().endswith("```")
+        # …but the retained live buffer must keep its fence OPEN, or everything
+        # streamed afterwards renders as prose outside the code block.
+        assert "".join(r._buf).count("```") % 2 == 1
+        assert "".join(r._buf).startswith("```")  # continuation reopens the fence
+        # The model's real closer finally streams in.
+        await r.on_text_chunk("y = 2\n```")
+        await r.on_done()
+        final = cli.final_text()
+        assert final.count("```") % 2 == 0  # balanced -> no stray backticks
+        assert final.startswith("```") and final.rstrip().endswith("```")
+        assert "y = 2" in final.split("```")[1]  # post-rotation code stays inside
+
+    @pytest.mark.asyncio
+    async def test_rotation_mid_code_block_keeps_line_break(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # The retained tail's content ends with a newline; dropping the
+        # synthetic closer must not eat it, or the next streamed line lands on
+        # the previous one ("x = 1y = 2") and both code lines are corrupted.
+        await r.on_text_chunk("```py\n" + "x = 1\n" * 400)
+        assert "".join(r._buf).endswith("\n")
+        await r.on_text_chunk("y = 2\n```")
+        await r.on_done()
+        final = cli.final_text()
+        assert "x = 1y = 2" not in final
+        assert "x = 1\ny = 2" in final
+
+    @pytest.mark.asyncio
+    async def test_rotation_keeps_blank_code_lines(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # The rotation boundary lands on the blank lines the model just emitted
+        # INSIDE the open fence, leaving a newline-only remainder. Dropping it
+        # pulls the next code line up onto the last one.
+        await r.on_text_chunk("```py\n" + "x = 1\n" * 299 + "\n\n")
+        assert "".join(r._buf).endswith("\n\n\n")
+        await r.on_text_chunk("y = 2\n```")
+        await r.on_done()
+        final = cli.final_text()
+        assert "x = 1\ny = 2" not in final  # later code did not shift up
+        assert "\n\ny = 2" in final  # the blank code line survived
+
+    @pytest.mark.asyncio
+    async def test_rotation_keeps_blank_code_lines_before_more_code(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        r, cli = self._renderer()
+        monkeypatch.setattr(r, "_limit", lambda: 60)
+        await r.on_turn_start()
+        # Blank code lines straddling the rotation cut, with more code AFTER
+        # them. The all-newline-tail case is already pinned above; this is the
+        # one the round-2 remainder deleted -- the cut lands on the run, the
+        # sealed side keeps the code, and the blank lines belong to the tail.
+        await r.on_text_chunk("```py\n" + "x = 1\n" * 6 + "\n\n" + "y = 2\n" * 6)
+        sealed = cli.sent[0][0]
+        assert sealed.endswith("x = 1\n```")  # code sealed, synthetic closer on
+        # The retained tail reopens the fence and still carries BOTH blank lines.
+        assert "".join(r._buf) == "```\n" + "\n\n" + "y = 2\n" * 6
+        await r.on_text_chunk("```")
+        await r.on_done()
+        # The blank code line survived to what the user reads and the later code
+        # did not shift up. Only ONE blank line is asserted here: _strip_steering
+        # collapses every run of 3+ newlines to 2 on EVERY render, so the visible
+        # cap is that normalizer's (pre-existing, and the same before this cut
+        # changed), not the splitter's.
+        assert "\n\ny = 2" in cli.final_text()
+        assert "x = 1\ny = 2" not in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_rotation_ignores_inline_backticks_in_prose(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # Prose ABOUT fencing: the ``` sits mid-line, so it opens nothing. A
+        # ``` SUBSTRING count reads the stream as "inside a code block", so the
+        # splitter invents a closer for the sealed chunk, reopens the fence on
+        # the retained tail, and the rotation then deletes that tail's closer --
+        # leaving the live buffer inside an UNCLOSED code block, so every later
+        # sentence renders as code.
+        await r.on_text_chunk(
+            "To open a code block you type ``` at the start of a line. "
+            + ("Ordinary prose about how chat surfaces render markdown. " * 45)
+        )
+        buf = "".join(r._buf)
+        assert "```" not in buf  # no reopen, no synthetic closer
+        await r.on_text_chunk("Final sentence, outside any code block.")
+        await r.on_done()
+        # The author wrote no fence LINE anywhere, so any bare ``` line in any
+        # frame -- live or sealed -- is one this renderer invented.
+        for text in [t for t, _ in cli.sent] + [t for _, t, _c in cli.edits]:
+            assert not any(ln.strip() == "```" for ln in text.split("\n"))
+        assert "Final sentence, outside any code block." in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_rotation_strips_closer_when_inline_backticks_hide_open_fence(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # The mirror miscount: one literal ``` in the prose plus a genuinely
+        # OPEN fence makes the substring count even, so the strip never fires
+        # and the retained tail is sealed shut around a live code block.
+        await r.on_text_chunk(
+            "You type ``` to open a block, like this:\n\n```py\n" + "x = 1\n" * 400
+        )
+        buf = "".join(r._buf)
+        assert buf.startswith("```")  # continuation reopens the live fence
+        assert not buf.rstrip().endswith("```")  # synthetic closer dropped
+        await r.on_text_chunk("y = 2\n```")
+        await r.on_done()
+        final = cli.final_text()
+        assert final.count("```") % 2 == 0
+        assert "x = 1\ny = 2" in final  # post-rotation code stayed in the block
+
+    @pytest.mark.asyncio
+    async def test_authored_trailing_backticks_survive_when_nothing_split(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # Prose about fencing ends with a literal ``` and is itself UNDER the
+        # cap -- only the long [OPTIONS:] trailer pushes the buffer over it. The
+        # trailer is detached before splitting, so the splitter hands back a
+        # lone chunk and reports no synthetic closer (appended_closer False).
+        # The strip therefore never fires and the author's backticks survive.
+        body = ("To fence a block in Discord, open the line with " * 36) + "type ```"
+        assert len(body) < r._limit()
+        trailer = "\n\n[OPTIONS: " + ("Yes " * 20) + " | " + ("No " * 20) + "]"
+        await r.on_text_chunk(body + trailer)
+        await r.on_done()
+        visible = "\n".join([t for t, _ in cli.sent] + [t for _, t, _c in cli.edits])
+        assert "type ```" in visible
+
+    @pytest.mark.asyncio
+    async def test_rotation_keeps_authored_inner_fence_line_in_4_backtick_block(self) -> None:
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        # A 4-backtick block whose CONTENT is markdown containing 3-backtick
+        # examples -- how you document fencing. Per CommonMark the inner bare
+        # ``` closes nothing (a closer must be at least as long as its opener),
+        # so the source fence is still open at the cut.
+        #
+        # The splitter judges each chunk AFTER prepending a bare ``` reopen,
+        # which throws away the 4-backtick opener's run length: to the walk the
+        # tail's fence is a 3-backtick one that the authored inner ``` CLOSES,
+        # so it appends no synthetic closer. Any predicate re-derived from the
+        # source disagrees -- it still sees the 4-backtick fence open -- and the
+        # strip then deletes the author's own ``` line from the retained buffer.
+        src = "````markdown\n" + "Nest a block:\n\n```py\nx = 1\n```\n\n" * 90
+        assert len(src) > r._limit()
+        await r.on_text_chunk(src)
+        buf = "".join(r._buf)
+        assert len(buf) < len(src)  # the rotation really fired
+        # The author's inner closer is the last thing they wrote; it must still
+        # be there, with the blank line that followed it.
+        assert buf.endswith("```\n\n")
+        # Stronger: the retained tail IS the source's own tail (modulo the
+        # continuation reopen) -- not a shortened copy of it.
+        assert src.endswith(buf[4:] if buf.startswith("```\n") else buf)
+        # It survives all the way to what the user reads.
+        await r.on_text_chunk("Done.\n````")
+        await r.on_done()
+        frames = [t for t, _ in cli.sent] + [t for _, t, _c in cli.edits]
+        authored = src.count("\n```\n")
+        assert sum(f.count("\n```\n") for f in frames) >= authored
+
+    @pytest.mark.asyncio
+    async def test_rotation_strip_matches_the_splitter_in_both_directions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Swept oracle: the strip fires iff the splitter appended.
+
+        Two directions, both pinned. (a) Nothing the author wrote is ever
+        deleted -- the retained tail stays a suffix of the source and every
+        non-whitespace source character survives across the frames. (b) A
+        synthetic closer never survives into the retained tail, or the live
+        code block is sealed shut and every later token renders outside it.
+
+        Shapes cover the information the per-chunk walk cannot see from the
+        source: 3/4/5-backtick openers, authored inner bare ``` lines, literal
+        backticks in prose, 4-space-indented lookalikes, and info strings.
+        """
+        rotated = appends = 0
+        for src in _FENCE_SHAPES:
+            assert src and "[OPTIONS" not in src and "[STEERING" not in src  # no detach
+            for limit in list(range(40, 201, 7)) + [1900]:
+                chunks, appended = _split_markdown(src, limit)
+                rotated += len(chunks) > 1
+                appends += appended
+                r, cli = self._renderer()
+                monkeypatch.setattr(r, "_limit", lambda limit=limit: limit)
+                r._buf = [src]
+                await r._rotate_on_length()
+                tail = "".join(r._buf)
+                where = f"shape={src[:14]!r} limit={limit}"
+                # (b) the strip fired exactly when the splitter appended…
+                if appended:
+                    assert tail != chunks[-1], f"synthetic closer retained: {where}"
+                # …and never otherwise.
+                else:
+                    assert tail == chunks[-1], f"untouched tail was modified: {where}"
+                # (a) the retained tail is the source's own tail, modulo the
+                # bare ``` reopen a continuation chunk carries. This one does
+                # not consult the flag, so it holds the strip to the source even
+                # if the splitter's report were wrong.
+                assert src.endswith(tail[4:] if tail.startswith("```\n") else tail), (
+                    f"retained tail is not a source suffix: {where}"
+                )
+                # (a) nothing authored was dropped anywhere: every
+                # non-whitespace source character still appears, in order,
+                # across the sealed frames plus the retained tail. Synthetic
+                # backticks only ever ADD.
+                seen = "".join(t for t, _ in cli.sent) + tail
+                it = iter("".join(seen.split()))
+                assert all(c in it for c in "".join(src.split())), (
+                    f"authored characters deleted: {where}"
+                )
+        # The sweep must not go vacuous: most cases really rotate, and a large
+        # share really do get a synthetic closer on the final chunk.
+        assert rotated > 300 and appends > 100, (rotated, appends)
 
     @pytest.mark.asyncio
     async def test_tool_footer_transient(self) -> None:
