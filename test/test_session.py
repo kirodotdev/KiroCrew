@@ -201,6 +201,21 @@ class TestSessionManager:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_recycle_held_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        key = mgr._fold_key("thread1")
+        session = mgr._sessions[key]
+        mgr.enqueue(key, "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr._recycle_held(key, session, 95.0)
+
+        assert not img.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_creates_session(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, is_new, _resumed = await mgr.get_or_create("thread1")
@@ -969,6 +984,30 @@ class TestDeadProviderCleanup:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_dead_provider_removal_unlinks_temp_files_from_its_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        dead_provider = self._make_provider(alive=True)
+        call_count = 0
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return dead_provider if call_count == 1 else self._make_provider()
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        await mgr.get_or_create("sess1")
+        mgr.enqueue("sess1", "ts1", "queued", force=True, image_temp_paths=[str(img)])
+        mgr.release("sess1")
+
+        dead_provider.is_alive.return_value = False
+        dead_provider.is_process_alive.return_value = False
+        await mgr.get_or_create("sess1")
+
+        assert not img.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_dead_provider_shutdown_exception_does_not_propagate(self, cfg):
         """If shutdown() raises on a dead provider, get_or_create still succeeds."""
         dead_provider = self._make_provider(alive=True)
@@ -1693,6 +1732,25 @@ class TestDrainProviders:
         assert providers == []
 
     @pytest.mark.asyncio
+    async def test_drain_all_providers_unlinks_temp_files_from_every_queue(
+        self, cfg, tmp_path
+    ):
+        img1 = tmp_path / "img1.png"
+        img2 = tmp_path / "img2.png"
+        img1.write_bytes(b"fake")
+        img2.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img1)])
+        await mgr.get_or_create("k2")
+        mgr.enqueue("k2", "ts3", "third", force=True, image_temp_paths=[str(img2)])
+
+        await mgr.drain_all_providers()
+
+        assert not img1.exists()
+        assert not img2.exists()
+
+    @pytest.mark.asyncio
     async def test_drain_warm_pool(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Manually put items in the warm pool
@@ -1796,6 +1854,18 @@ class TestResetWithPid:
         await mgr.reset("k1")
         provider.shutdown.assert_awaited_once()
         assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_reset_unlinks_temp_files_from_the_dropped_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.reset("k1")
+
+        assert not img.exists()
 
     @pytest.mark.asyncio
     async def test_reset_with_acp_pid_dead_after_shutdown(self, cfg):
@@ -2066,6 +2136,18 @@ class TestDestroy:
         assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
+    async def test_destroy_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.destroy("k1")
+
+        assert not img.exists()
+
+    @pytest.mark.asyncio
     async def test_destroy_nonexistent_still_deletes_map(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         with patch.object(mgr._session_map, "delete") as mock_delete:
@@ -2108,6 +2190,20 @@ class TestDiscardConversation:
         mock_clear.assert_called_once_with("k1")
         mock_delete.assert_not_called()
         assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_discard_conversation_unlinks_temp_files_from_the_session_queue(
+        self, cfg, tmp_path
+    ):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.discard_conversation("k1")
+
+        assert not img.exists()
 
     @pytest.mark.asyncio
     async def test_discard_preserves_slack_linkage(self, cfg):
@@ -3597,6 +3693,18 @@ class TestRemove:
         provider.shutdown.assert_awaited_once()
         mock_delete.assert_not_called()  # remove preserves map
         assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_remove_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.remove("k1")
+
+        assert not img.exists()
 
     @pytest.mark.asyncio
     async def test_remove_missing_key_is_noop(self, cfg):
