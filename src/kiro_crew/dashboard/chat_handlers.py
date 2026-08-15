@@ -3460,7 +3460,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                     resources=f"slot={existing.key}",
                     error="app cannot access unscoped slots",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return web.json_response(
+                    {"error": "not found", "code": "slot_not_found"}, status=404
+                )
             elif request_app != existing._app:
                 sel().log_api_access(
                     caller=request_app,
@@ -3470,7 +3472,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                     resources=f"slot={existing.key}",
                     error="app does not own this slot",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return web.json_response(
+                    {"error": "not found", "code": "slot_not_found"}, status=404
+                )
         total = len(existing.messages)
         recent = existing.messages[-200:] if total > 200 else existing.messages
         prepared = _prepare_messages(recent, existing.running)
@@ -3513,26 +3517,56 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
 
+    # That same read is also authoritative for WHO MAY READ this conversation,
+    # which is why it has to happen before a slot exists. `history_key` is
+    # `body["key"]`, caller-supplied and not required to match the slot name in
+    # the URL, so it names an arbitrary conversation until something says
+    # otherwise.
+    # App Kit §5.2 on the CONVERSATION, not on the slot. The branch above can
+    # authorize against `existing._app` because that slot predates the request;
+    # here the only slot is the one this request is about to create with the
+    # caller's own identity, so checking it would let the claim stand as its own
+    # evidence. `meta["app"]` is the durable owner: the slot save is
+    # authoritative for it (`history.SLOT_OWNED_META_KEYS`) and both restore
+    # paths rebuild `slot._app` from it.
+    #
+    # Deny-by-default, and absence is a real answer rather than a gap: because
+    # `app` is a slot-owned key, an unscoped conversation's save OMITS it, which
+    # states "no app owns this" instead of "unknown". A transcript that does not
+    # exist also has no `app`, so a foreign conversation and a missing one take
+    # this same branch and are answered identically — no probing the history
+    # namespace for keys that exist.
+    request_app = request.get("app", "")
+    if request_app and meta.get("app") != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_resume",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"history={history_key}",
+            error="app does not own this conversation",
+        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
     slot = state.get_or_create_slot(
         name,
-        app=request.get("app", ""),
+        app=request_app,
         # Resuming an existing channel transcript from History is an adoption of
         # that conversation, so the tab is channel-origin even when the session
         # map can no longer name its session.
         channel_origin=is_channel_session_key(history_key),
         origin=str(meta.get("origin", "")),
     )
-    # PERSISTED METADATA IS AUTHORITATIVE for the title. The sidebar's resume
-    # call always sends a ``title`` (see website/src/api/client.ts
-    # resumeChatSlot: ``title: title || key``), and that value is client
-    # chrome — often a STALE echo of an older name (a notification deep link,
-    # a sidebar row rendered before a background refresh landed). Classifying
-    # request titles (echo vs override) is unwinnable against staleness: a
-    # stale echo is indistinguishable from a deliberate override. So the
-    # request title is used ONLY when no persisted title exists; otherwise the
-    # persisted title and its provenance are restored exactly like the
-    # chat_persistence loaders (resume is the THIRD hydration path).
-    meta = state.conversation_log.get_metadata(history_key)
+    # The same metadata also decides the title. The sidebar's resume call always
+    # sends a ``title`` (see website/src/api/client.ts resumeChatSlot: ``title:
+    # title || key``), and that value is client chrome — often a STALE echo of
+    # an older name (a notification deep link, a sidebar row rendered before a
+    # background refresh landed). Classifying request titles (echo vs override)
+    # is unwinnable against staleness: a stale echo is indistinguishable from a
+    # deliberate override. So the request title is used ONLY when no persisted
+    # title exists; otherwise the persisted title and its provenance are
+    # restored exactly like the chat_persistence loaders (resume is the THIRD
+    # hydration path).
     raw_persisted_title = meta.get("title")
     # Accept the persisted title only when it is a string: a legacy or
     # hand-corrupted JSONL could carry a non-string here, and redacting it
