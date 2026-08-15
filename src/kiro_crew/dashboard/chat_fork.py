@@ -212,7 +212,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     )
     new_slot.forked_from = effective_session_key(slot)
     new_slot.reasoning_effort = slot.reasoning_effort
-    # Inherit project folder so the fork appears next to its parent in the sidebar.
+    # Inherit the active project directory so the fork starts in the same
+    # working context as its parent (agent resolution, steering, cwd).
+    new_slot.project = slot.project
+    # Inherit the sidebar folder so the fork appears next to its parent.
     new_slot.folder_id = slot.folder_id
     parent_title = slot.title if slot._titled else "Untitled"
     parent_title, _ = redact_exfiltration_urls(parent_title)
