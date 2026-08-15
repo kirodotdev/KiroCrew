@@ -12,6 +12,7 @@
 // distance back out, so the snap has hysteresis and doesn't flicker around the
 // boundary.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useIsMobile } from './useIsMobile'
 import { usePointerDrag } from './usePointerDrag'
 
 export interface CollapseConfig {
@@ -22,6 +23,14 @@ export interface CollapseConfig {
   /** Overshoot past `min` (to collapse) / past `width` (to expand) required
    *  before the snap fires. */
   slop?: number
+  /** Opt in to starting from the strip on a narrow viewport.
+   *
+   *  Deliberately opt-in, not automatic: the strip alone is only half the
+   *  behaviour. A page also needs a drill-down for its expanded state (rail
+   *  full width, detail stepped aside, collapse on select), or its expand
+   *  button just leads back into the squeeze the strip was avoiding. Set it
+   *  when the page implements that, not merely because it can collapse. */
+  whenNarrow?: boolean
 }
 
 const DEFAULT_SLOP = 48
@@ -61,7 +70,30 @@ export function useColumnResize(
   const [openWidth, setOpenWidth] = useState<number>(load)
   const [collapsed, setCollapsed] = useState<boolean>(() => !!collapse && !!loadCollapsed?.())
   const [dragging, setDragging] = useState(false)
-  const width = collapse && collapsed ? collapse.width : openWidth
+  const isMobile = useIsMobile()
+  // A fixed-width rail cannot share a phone viewport with the pane beside it:
+  // `flex-shrink-0` plus an inline width leaves that pane a ~124px column on a
+  // 390px screen, which is not usable. So a collapsible column starts from its
+  // strip on a narrow viewport, and the user can still open it from there.
+  //
+  // Held in state rather than written through `setCollapsed`, and deliberately
+  // NOT persisted: the stored flag is a desktop layout preference, and a phone
+  // visit must not come back as a collapsed rail on the desktop next time.
+  const [openedWhileNarrow, setOpenedWhileNarrow] = useState(false)
+  const narrowMode = isMobile && !!collapse?.whenNarrow
+  // While narrow the effective state depends ONLY on the session override, never
+  // on the stored flag. Or-ing the two would freeze the column: a user who
+  // collapsed it on the desktop arrives with `collapsed` already true, and the
+  // mobile paths deliberately do not touch that flag, so no affordance could
+  // ever open it again.
+  const collapsedEffective = !!collapse && (narrowMode ? !openedWhileNarrow : collapsed)
+  const width = collapse && collapsedEffective ? collapse.width : openWidth
+
+  // Leaving the narrow viewport drops the override, so returning to it starts
+  // from the strip again instead of the width a previous phone visit opened.
+  useEffect(() => {
+    if (!narrowMode) setOpenedWhileNarrow(false)
+  }, [narrowMode])
 
   const startWRef = useRef(0)
   const startCollapsedRef = useRef(false)
@@ -70,8 +102,11 @@ export function useColumnResize(
   // usePointerDrag reads its options through a ref, but the resolver needs the
   // live values at pointer-down; keep them in refs so onStart never captures a
   // stale render.
-  const liveRef = useRef({ width, collapsed, openWidth })
-  liveRef.current = { width, collapsed, openWidth }
+  // Carries the EFFECTIVE collapsed flag, not the stored one: on a narrow
+  // viewport the column renders as its strip, so a drag has to resolve from the
+  // state the user can see or its first move would jump.
+  const liveRef = useRef({ width, collapsed: collapsedEffective, openWidth })
+  liveRef.current = { width, collapsed: collapsedEffective, openWidth }
 
   /** Where the column lands for a drag delta of `dx`, as the OPEN width plus the
    *  collapsed flag. Pure in (dx, drag start), so onMove and onEnd can never
@@ -101,20 +136,31 @@ export function useColumnResize(
 
   const apply = useCallback((dx: number) => {
     const next = resolve(dx)
-    setCollapsed(next.collapsed)
     setOpenWidth(next.openWidth)
+    if (narrowMode) {
+      // Narrow: the open/closed state lives only in this session's override, so
+      // a drag here can never touch the stored desktop flag.
+      setOpenedWhileNarrow(!next.collapsed)
+    } else {
+      setCollapsed(next.collapsed)
+    }
     return next
-  }, [resolve])
+  }, [resolve, narrowMode])
 
   const persist = useCallback((next: { openWidth: number, collapsed: boolean }) => {
     try {
       // Always the OPEN width — the collapsed strip width is never a column width.
       localStorage.setItem(storageKey, String(next.openWidth))
-      if (collapse) localStorage.setItem(collapse.storageKey, next.collapsed ? '1' : '0')
+      // The collapsed flag is a DESKTOP preference. While the viewport is narrow
+      // the column's collapsed state is ephemeral (`openedWhileNarrow`), so
+      // writing it here would let a phone visit — even a single tap on the drag
+      // handle, which resolves to the strip it is already showing — come back as
+      // a collapsed rail on the next desktop session.
+      if (collapse && !narrowMode) localStorage.setItem(collapse.storageKey, next.collapsed ? '1' : '0')
     } catch {
       /* storage blocked or full — the layout still applies for this session */
     }
-  }, [storageKey, collapse])
+  }, [storageKey, collapse, narrowMode])
 
   const handleProps = usePointerDrag({
     threshold: 0,
@@ -149,9 +195,12 @@ export function useColumnResize(
   }, [])
 
   const expand = useCallback(() => {
-    setCollapsed(false)
+    // On a narrow viewport only the session override moves: the strip's expand
+    // button must not rewrite the stored desktop flag.
+    if (narrowMode) setOpenedWhileNarrow(true)
+    else setCollapsed(false)
     persist({ openWidth: liveRef.current.openWidth, collapsed: false })
-  }, [persist])
+  }, [persist, narrowMode])
 
   /** Collapse to the icon strip, keeping the remembered open width.
    *
@@ -161,9 +210,10 @@ export function useColumnResize(
    *  `collapse` CONFIG parameter above, which it reads.  */
   const collapseColumn = useCallback(() => {
     if (!collapse) return
-    setCollapsed(true)
+    if (narrowMode) setOpenedWhileNarrow(false)
+    else setCollapsed(true)
     persist({ openWidth: liveRef.current.openWidth, collapsed: true })
-  }, [persist, collapse])
+  }, [persist, collapse, narrowMode])
 
   // Keyboard counterpart to the drag. A pointer-only handle leaves keyboard
   // users with no way to resize — or, once the rail can collapse, no way back
@@ -178,7 +228,8 @@ export function useColumnResize(
     if (collapse && live.collapsed) {
       if (dx <= 0) return
       const next = { openWidth: clamp(live.openWidth), collapsed: false }
-      setCollapsed(false)
+      if (narrowMode) setOpenedWhileNarrow(true)
+      else setCollapsed(false)
       setOpenWidth(next.openWidth)
       persist(next)
       return
@@ -189,13 +240,14 @@ export function useColumnResize(
     const next = collapse && raw < min
       ? { openWidth: live.openWidth, collapsed: true }
       : { openWidth: clamp(raw), collapsed: false }
-    setCollapsed(next.collapsed)
+    if (narrowMode) setOpenedWhileNarrow(!next.collapsed)
+    else setCollapsed(next.collapsed)
     setOpenWidth(next.openWidth)
     persist(next)
-  }, [min, max, collapse, persist])
+  }, [min, max, collapse, persist, narrowMode])
 
   return {
-    width, collapsed: !!collapse && collapsed, dragging, expand, nudge,
+    width, collapsed: collapsedEffective, dragging, expand, nudge,
     collapse: collapseColumn, handleProps,
   }
 }
