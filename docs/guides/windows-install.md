@@ -261,22 +261,74 @@ it wrong is destructive rather than merely unavailable, and that the added-line 
 check cannot see a probe which arrives by a file move or a rebase. This test reads
 the whole tree on every run.
 
+## The agent tree gets a Job object ceiling, not a cgroup scope
+
+On Linux, `sandbox.cgroup_scope_argv` bounds an agent subprocess and every
+descendant it spawns as one cgroup: `TasksMax` is the fork-bomb ceiling and
+`MemoryMax` the RSS-balloon ceiling. There is no systemd on Windows, so that
+wrapper returns argv unchanged and logs a one-time loud
+`SECURITY: cgroup v2 scope enforcement unavailable (not Linux)` — which meant the
+agent and every MCP server it spawned ran with **no fork-bomb and no memory
+ceiling at all**, a warning at boot rather than an enforced limit.
+
+A **Job object** is the native equivalent: limits apply to every process in the
+job, and a member's descendants join automatically.
+`platform_compat.apply_job_limits` maps `ActiveProcessLimit` to `TasksMax` and
+`JobMemoryLimit` to `MemoryMax`, and `sandbox.apply_windows_resource_ceiling`
+reads the **same** `resource_limits` config as the cgroup path, so one operator
+setting governs both platforms. Enforcement is by denial, matching the cgroup
+tier in practice: past the process limit the member's `CreateProcess` fails with
+`ERROR_NOT_ENOUGH_QUOTA` (1816), and an allocation past the memory limit fails.
+
+Two details are load-bearing rather than incidental:
+
+- **The child is created suspended.** A Job object cannot be an argv prefix, so
+  unlike the cgroup wrapper it has to be attached to a live pid — and job
+  membership covers a member's *future* descendants only. Attaching to an
+  already-running `kiro-cli` would leave a window in which it could spawn an MCP
+  server that escapes the ceiling. Both ACP spawn sites therefore pass
+  `creationflags |= CREATE_SUSPENDED`, apply the job, then call
+  `platform_compat.resume_process_main_thread`. A process created suspended has
+  executed no instructions, so it provably has no descendants: the window is
+  closed by construction rather than merely made small. kernel32 has no
+  `ResumeProcess`, so the resume enumerates the Toolhelp thread snapshot and
+  resumes every thread owned by that pid.
+- **`KILL_ON_JOB_CLOSE` is deliberately not set.** It would terminate the agent
+  tree as soon as the last job handle closed, turning a resource ceiling into a
+  process-lifecycle change (a gateway exit would kill running agents). Leaving it
+  off also means the handle need not be held: a job stays alive while processes
+  are assigned to it, so the limits persist after `CloseHandle` and there is no
+  handle registry or teardown to get wrong.
+
+Failure modes are asymmetric on purpose. The **ceiling** fails soft — any Win32
+error logs a SECURITY warning and returns `False`, because a missing ceiling must
+not break the gateway. The **resume** is fatal when the pid still exists: a
+process that is alive but frozen would masquerade as a running agent and hang the
+session on the ACP handshake with no diagnosis, so it is killed and the spawn
+fails loudly. If the pid is already gone there is nothing frozen, and the
+handshake reports the real error instead.
+
+`CREATE_SUSPENDED` is 0 on POSIX and both helpers return `False` there, so the
+POSIX path is a plain unsuspended spawn with the cgroup scope doing the work.
+
 ## Win32 struct layouts live at module scope
 
 Every `ctypes.Structure` subclass the Win32 helpers need is declared **once at
 module scope** — `_ProcessEntry32`, `_ProcessMemoryCounters`, `_MemoryStatusEx`,
-`_SidAndAttributes` and `_TokenUser` in `platform_compat`, plus
+`_SidAndAttributes`, `_TokenUser`, and the Job object layouts `_IoCounters`,
+`_JobObjectBasicLimitInformation`, `_JobObjectExtendedLimitInformation` and
+`_ThreadEntry32` in `platform_compat`, plus
 `_SecurityAttributes` in `mcp_gateway/transport.py` and `_VMStatistics64` in
 `subagent.py`. Declaring one inside the function that uses it is a **memory
 leak**, not a style question: `ctypes.POINTER(T)` memoises `T -> POINTER(T)` in a
 module-level dict inside ctypes that is never evicted, so a locally-declared
 Structure pins a brand-new pair of type objects on every call. The affected
 helpers are all polled — the dashboard's system-metrics endpoint, the RSS-recycle
-watchdog, the process-tree walk behind `kill_process_tree`, and the MCP pipe's
-per-connection peer check — so the gateway grew unboundedly on Windows alone
-(measured at ~8 KiB per `proc_rss_bytes` call, ~15 MiB per 2,000 calls, never
-reclaimed). POSIX is unaffected because those branches read `/proc`, `sysctl` or
-`resource` instead of calling Win32.
+watchdog, the process-tree walk behind `kill_process_tree`, the MCP pipe's
+per-connection peer check, and the per-spawn Job object ceiling — so the gateway
+grew unboundedly on Windows alone (measured at ~8 KiB per `proc_rss_bytes` call,
+~15 MiB per 2,000 calls, never reclaimed). POSIX is unaffected because those
+branches read `/proc`, `sysctl` or `resource` instead of calling Win32.
 
 Taking `ctypes.POINTER()` is what pins the type, so a struct that is only ever
 instantiated (never pointed at) does not leak — but the distinction is too subtle
