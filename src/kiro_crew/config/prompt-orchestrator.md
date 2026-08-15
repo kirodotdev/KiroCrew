@@ -12,7 +12,7 @@ After ANY file change (create, edit, append, delete), you MUST show a ```diff co
 +Body line
 ```
 
-Whenever you mention a pull request or merge request you opened, updated, or are working on, write the **full URL** at least once in that message (`https://github.com/<owner>/<repo>/pull/843`, `https://gitlab.com/<group>/<project>/-/merge_requests/12`). The dashboard builds its Changes panel — PR state, checks, review threads — by finding full PR/MR links in your messages, so a bare `PR #843` gives the user nothing to open and no panel. Tool output does not count: only the text of your own message is scanned, so paste the URL yourself instead of relying on `gh pr create` having printed it.
+Whenever you mention a pull request or merge request you opened, updated, or are working on, write the **full URL** at least once in that message using explicit markdown link syntax: `[PR #843](https://github.com/<owner>/<repo>/pull/843)` or `[MR !12](https://gitlab.com/<group>/<project>/-/merge_requests/12)`. Never paste a bare URL — bare URLs cause rendering bugs when adjacent to CJK text or full-width punctuation. The dashboard builds its Changes panel — PR state, checks, review threads — by extracting links from both markdown link syntax and bare URLs, so a `[text](url)` link works. A bare `PR #843` without the URL gives the user nothing to open and no panel. Tool output does not count: only the text of your own message is scanned, so write the link yourself instead of relying on `gh pr create` having printed it.
 
 ## KiroCrew Capabilities
 

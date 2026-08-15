@@ -44,6 +44,30 @@ describe('extractPullRequestLinks', () => {
     ])
   })
 
+  it('extracts from markdown link syntax embedded in CJK prose', () => {
+    // The prompt now instructs the agent to use [text](url) syntax to avoid the
+    // CJK autolink-greediness rendering bug. This asserts the Changes panel still
+    // surfaces the PR when the URL is wrapped in a markdown link next to
+    // full-width punctuation — the extractor must not depend on a bare URL.
+    expect(extractPullRequestLinks(messages(
+      'PR：[PR #3739](https://github.com/acme/widgets/pull/3739)（commit `e6b4bf448`）',
+    ))).toEqual([
+      { url: 'https://github.com/acme/widgets/pull/3739', provider: 'github', number: 3739, repo: 'widgets', kind: 'change' },
+    ])
+  })
+
+  it('extracts a bare URL abutted by full-width punctuation', () => {
+    // The URL candidate regex is ASCII-only, so a trailing full-width paren is a
+    // natural boundary for extraction (the rendering-side greediness is a
+    // separate GFM concern handled by fixCjkAutolinkBoundaries). This locks in
+    // that the Changes panel still works even if the agent regresses to a bare URL.
+    expect(extractPullRequestLinks(messages(
+      'PR：https://github.com/acme/widgets/pull/3739（commit e6b4bf448）',
+    ))).toEqual([
+      { url: 'https://github.com/acme/widgets/pull/3739', provider: 'github', number: 3739, repo: 'widgets', kind: 'change' },
+    ])
+  })
+
   it('does not treat lookalike hosts as providers', () => {
     expect(extractPullRequestLinks(messages(
       'https://github.com.evil.example/acme/widgets/pull/12 and https://example.com/github.com/acme/widgets/pull/13',

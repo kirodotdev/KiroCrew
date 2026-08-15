@@ -651,4 +651,30 @@ describe('fixCjkAutolinkBoundaries — rendered output', () => {
     expect(container.textContent).not.toContain('_')
     expect(container.textContent).toContain('（revision 1，还没 publish）。')
   })
+
+  it('markdown link syntax avoids autolink greediness entirely', () => {
+    // When the agent uses [text](url) syntax instead of bare URLs, GFM autolink
+    // is never triggered — the URL lives inside the parentheses of a proper link
+    // node, so CJK punctuation around it cannot be swallowed.
+    const src = 'PR：[PR #3739](https://github.com/kirodotdev/KiroCrew/pull/3739)（commit `e6b4bf448`）'
+    const { container } = renderMd(src)
+    const a = container.querySelector('a')
+    expect(a?.getAttribute('href')).toBe('https://github.com/kirodotdev/KiroCrew/pull/3739')
+    expect(a?.textContent).toBe('PR #3739')
+    // The surrounding text must NOT be swallowed into the link.
+    expect(container.textContent).toContain('（commit')
+    expect(container.textContent).toContain('e6b4bf448')
+  })
+
+  it('documents the known limitation: bare URL + （ without opener cannot be fixed', () => {
+    // This is the edge case from the bug report: bare URL immediately followed
+    // by （ with no matching opener earlier on the line. fixCjkAutolinkBoundaries
+    // cannot prove （ does not belong to the URL (it could be a path component),
+    // so it leaves it alone — GFM then swallows everything up to the next space.
+    // The fix is to use markdown link syntax (tested above), not to make this
+    // function more aggressive (which would break legitimate CJK-titled URLs).
+    const src = 'PR：https://github.com/o/r/pull/3739（commit `e6b4bf448`）'
+    // Without a matching opener, the function correctly leaves it untouched.
+    expect(fixCjkAutolinkBoundaries(src)).toBe(src)
+  })
 })
