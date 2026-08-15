@@ -213,8 +213,8 @@ async def test_completion_summary_survives_a_deleted_result_file(monkeypatch, tm
 
     real_capture = None
 
-    def _capture_then_delete_stage_1(s, stage_num):
-        path = real_capture(s, stage_num)
+    async def _capture_then_delete_stage_1(s, stage_num):
+        path = await real_capture(s, stage_num)
         if stage_num == 1:
             (tmp_path / "sessions" / s.key / "stage_1_result.md").unlink()
         return path
