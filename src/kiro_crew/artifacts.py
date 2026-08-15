@@ -983,16 +983,41 @@ def _sniff_webp_dimensions(data: bytes) -> tuple[int | None, int | None]:
 # ── Store ────────────────────────────────────────────────────────────────────
 
 
+#: One lock per resolved artifact root, shared across every ``ArtifactStore``
+#: instance pointed at that root -- not just the process-wide singleton
+#: (:func:`get_default_store`). A caller that constructs its own
+#: ``ArtifactStore()`` against the default root (as opposed to threading the
+#: singleton through) would otherwise get its own private
+#: ``threading.Lock()``, unserialized against every other instance on the
+#: same root: two writers (or a writer and a reader) could interleave their
+#: file operations, corrupting a version or serving a stale read. Keyed by
+#: the resolved root path so distinct roots (tests' isolated tmp_path stores)
+#: still get independent locks.
+_root_locks: dict[str, threading.Lock] = {}
+_root_locks_guard = threading.Lock()
+
+
+def _lock_for_root(root: Path) -> threading.Lock:
+    key = str(root)
+    with _root_locks_guard:
+        lock = _root_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _root_locks[key] = lock
+        return lock
+
+
 class ArtifactStore:
     """File-system backed store for artifacts.
 
-    Thread-safe via a coarse-grained lock; concurrent writes to the same
-    artifact are serialized.
+    Thread-safe via a coarse-grained lock, shared across every instance
+    pointed at the same root (see :func:`_lock_for_root`) -- concurrent
+    writes to the same artifact are serialized regardless of how many
+    ``ArtifactStore`` objects address it.
     """
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or (config_dir() / "artifacts")).expanduser()
-        self._lock = threading.Lock()
         # Optional change-listener fired after a content-affecting mutation
         # (create / content-update / delete). Lets the gateway observe every
         # write path — agent (MCP-proxied), dashboard, bookmark, CLI, and the
@@ -1005,6 +1030,9 @@ class ArtifactStore:
         resolved = self._root.resolve(strict=False)
         if is_sensitive_path(str(resolved)):
             raise ArtifactError(f"refusing to use sensitive path as artifact root: {resolved}")
+        # Keyed by the RESOLVED root so a symlinked alias of the same
+        # directory still shares the lock, not just a literal path match.
+        self._lock = _lock_for_root(resolved)
         self._root.mkdir(parents=True, exist_ok=True)
 
     # ── public API ────────────────────────────────────────────────────────
