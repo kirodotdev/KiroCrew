@@ -268,7 +268,29 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           {providerHookError ? (
             <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
           ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
-            <div className="overflow-x-auto">
+            // Focusable, named scrollport. This table is read-only — every cell
+            // is plain text — and its columns reserve 700px, so at phone width
+            // ~412px of the Command column is clipped and can only be reached by
+            // scrolling. Two separate problems, and the tabIndex is not the whole
+            // fix for either:
+            //   Reach. Chromium >=130 already focuses a scroller that has no
+            //   focusable children, so Chrome alone is fine. That behaviour came
+            //   through blink-dev and no other engine has shipped it, and the
+            //   accessibility rule engines (axe scrollable-region-focusable, IBM,
+            //   BrowserStack) still require the explicit stop, so we keep it.
+            //   Name. Even where the scroller IS auto-focused, it lands focus on
+            //   an anonymous <div>. role + aria-label are what stop it announcing
+            //   as nothing in particular, in every engine including Chrome.
+            // Do NOT copy this onto the hooks table above. Its rows hold tabbable
+            // controls, which is exactly the case Chromium excludes and where
+            // focus already arrives via the control; a stop there would insert a
+            // redundant Tab press between every row.
+            <div
+              className="overflow-x-auto"
+              tabIndex={0}
+              role="region"
+              aria-label={provider.labels.hooksSection}
+            >
               <table className="w-full border-collapse table-striped">
                 <thead>
                   <tr>
