@@ -227,6 +227,40 @@ entering the critical section unserialized, since proceeding lock-less is the
 exact fail-open that loses writes. Non-blocking `try_acquire_lock` already used
 `LK_NBLCK` and is unchanged.
 
+## `os.kill(pid, 0)` is a process killer here, not a liveness probe
+
+On POSIX, `os.kill(pid, 0)` is the idiomatic "does this pid exist?" test: signal 0
+runs the permission and existence check without delivering anything. On Windows
+CPython maps `os.kill(pid, sig)` onto `TerminateProcess(handle, sig)` for every
+signal except `CTRL_C_EVENT` and `CTRL_BREAK_EVENT`, so the same expression
+**terminates the process it is asking about** and then reports it alive. This is
+not a portability wart that degrades to "unavailable" — it is a silent process
+killer, and because pids are recycled the damage lands on whatever happens to own
+that number now.
+
+Route liveness through `platform_compat.pid_exists`, or `pid_liveness` when the
+caller has to tell "gone" apart from "alive but not signallable by us". Both
+preserve the POSIX semantics callers depend on — notably that EPERM means the
+process EXISTS and must never be conflated with `ProcessLookupError` — and on
+Windows they ask `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` instead of
+signalling anything.
+
+`test/test_windows_kill_probe_audit.py` enforces this as a tripwire rather than a
+convention: it walks the AST of every module under `src/kiro_crew` and fails on a
+raw signal-0 probe until the author either routes it through the shim or records
+the site in `GATED_PROBES` with a justification for why it can never execute on
+Windows. A second test rejects allowlist entries whose code has since moved or
+gone, so an exemption cannot outlive what it covered.
+
+The scope is deliberately only the signal-0 *probe* form. The tree contains many
+raw POSIX call sites — `fcntl`, `resource`, `os.killpg`, `pty`, `termios` — and
+nearly all are legitimately POSIX-gated implementation detail, so auditing them
+here would bury the signal in noise; those are governed by the shim table in
+`AGENTS.md` and by review. What makes signal-0 worth its own gate is that getting
+it wrong is destructive rather than merely unavailable, and that the added-line CI
+check cannot see a probe which arrives by a file move or a rebase. This test reads
+the whole tree on every run.
+
 ## Win32 struct layouts live at module scope
 
 Every `ctypes.Structure` subclass the Win32 helpers need is declared **once at
