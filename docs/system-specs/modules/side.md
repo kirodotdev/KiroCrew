@@ -71,8 +71,10 @@ so the two surfaces cannot drift.
 | `steer` (default) | `POST .../side/turn` with `{"steer": true}` injects the text into the RUNNING turn via the isolated session's `steer()` RPC. |
 | `queue` | The text is held on `SideState.queue` and dispatched as the next turn when the current one ends. |
 
-Which mode Enter takes is ONE user preference (`mc-busy-send-mode` in
-localStorage), shared live between the main composer and the side panel.
+Which mode Enter takes is a PER-SLOT preference (`mc-busy-send-mode:<slot>` in
+localStorage), shared live between one session's main composer and its side
+panel; other sessions keep their own mode. A slot that has never chosen a mode
+inherits the legacy unscoped `mc-busy-send-mode` value.
 
 Fall-through, not rejection: a steer is attempted only when the isolated session
 exists, reports `supports_steer`, and `has_active_turn()` is true. Any of those

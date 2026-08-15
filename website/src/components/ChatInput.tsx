@@ -970,8 +970,8 @@ function ChatInput({
     setPlusOpen(false)
   }
   // Split send button while the composer is BUSY: 'steer' (default) vs 'queue'.
-  // The mode is a shared, persisted preference — see BusySendButton.
-  const [busySendMode, setBusySendMode] = useBusySendMode()
+  // The mode is a persisted PER-SLOT preference — see BusySendButton.
+  const [busySendMode, setBusySendMode] = useBusySendMode(slotId)
   // Steer is the active Enter/send action only while the composer is busy and
   // not stopping, on a steer-capable slot, and the user hasn't switched the
   // split button to Queue. Everywhere else the composer falls back to onSend
