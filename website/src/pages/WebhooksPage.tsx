@@ -789,8 +789,17 @@ export default function WebhooksPage() {
 
       <Section title={i18nT('pages.webhooksPage.tokens')}>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* `basis-full` while narrow: this row already wraps, but a flex item
+              with a max-width and no floor shrinks toward zero BEFORE the row
+              wraps — the field crushed to about three characters beside a
+              full-size button, and naming a token is the gate on creating one
+              (the button stays disabled until the label is non-empty).
+              A whole line is deterministic where a min-width is not: it does not
+              depend on whether this particular locale's placeholder happens to
+              be long enough to force the wrap. Widest is German at 29
+              characters, Korean the shortest at 17. */}
           <Input
-            className="max-w-[260px]"
+            className="basis-full sm:basis-auto max-w-full sm:max-w-[260px]"
             placeholder={i18nT('pages.webhooksPage.label_e_g_review_bot')}
             aria-label={i18nT('pages.webhooksPage.new_token_label')}
             value={label}
