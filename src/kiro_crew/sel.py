@@ -18,7 +18,9 @@ Retention: configurable, default 365 days per Amazon Security Event Logging Stan
 
 from __future__ import annotations
 
+import asyncio
 import atexit
+import contextlib
 import hashlib
 import hmac
 import json
@@ -28,7 +30,7 @@ import queue
 import tempfile
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,7 +54,52 @@ def _default_dir() -> Path:
     return config_dir()
 
 
+def _on_event_loop() -> bool:
+    """True when called on a thread running an asyncio event loop.
+
+    Used to refuse a contended lock acquire, and to bound an otherwise unbounded
+    tail scan, so neither stalls that loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _acquire_chain_lock_on_loop(fd: int) -> bool:
+    """Try the chain lock ONCE, without blocking. False if it is contended.
+
+    Single-shot by design: there is no retry and no sleep on this path. A poll
+    spin here — however short each nap — sleeps the GATEWAY EVENT LOOP, so the
+    stall is paid by every session the loop serves, not just the caller being
+    audited. Refusing immediately keeps the loop responsive and leaves the
+    append path fail-closed: the loop-side caller raises and the action it was
+    about to audit is refused rather than proceeding unaudited. Off-loop callers
+    (the background writer, the sync path) still take the blocking cross-process
+    lock, which is where routine overlap is absorbed at no cost to the loop.
+    """
+    return platform_compat.try_acquire_lock(fd, exclusive=True)
+
+
+class _ChainTipBeyondBound(OSError):
+    """The chain tip lies past a bounded tail read.
+
+    An OSError subclass so the append path's existing fail-closed handling
+    covers it, but a distinct type so _read_last_hash's fail-soft ``except
+    OSError`` (which exists for genuine read errors and returns "") cannot
+    swallow it and hand back a genesis tip.
+    """
+
+
 _SEL_FILE = "security_events.jsonl"
+# Sidecar whose advisory lock serializes chain writes ACROSS PROCESSES. It lives
+# in _TRUST_SUBDIR, not beside the log: that directory is owner-only and inside
+# the sensitive-path floor, so the audited agent cannot unlink or hold the lock
+# out from under the writers. It is also deliberately not the log file itself —
+# msvcrt.locking() locks a byte range at offset 0 and so needs an fd whose offset
+# the caller may move freely, which the O_APPEND log fd is not.
+_SEL_LOCK_FILE = "security_events.lock"
 _RETENTION_DAYS = 365
 _HMAC_KEY_FILE = "sel_hmac.key"
 # Dedicated trust-root subdirectory (owner-only, 0o700) holding the HMAC key.
@@ -102,7 +149,9 @@ class SecurityEvent:
 class SecurityEventLog:
     """Append-only, HMAC-chained security event log.
 
-    Thread-safe. Singleton pattern — all callers share one instance.
+    Safe against concurrent writers both across threads (one singleton per
+    interpreter) and across processes (an advisory lock on a sidecar file
+    orders the chain writes of every process sharing the log).
     """
 
     _instance: SecurityEventLog | None = None
@@ -129,6 +178,7 @@ class SecurityEventLog:
         self._path = self._dir / _SEL_FILE
         # _lock guards _last_hash + the file append (held only inside the writer
         # thread and by synchronous fallbacks / prune, never by enqueuing callers).
+        # Ordering across processes is _chain_lock's job, not this lock's.
         self._lock = threading.Lock()
         self._hmac_key = self._load_or_create_hmac_key()
         self._last_hash = self._read_last_hash()
@@ -212,6 +262,91 @@ class SecurityEventLog:
             if self._pending == 0:
                 self._pending_cond.notify_all()
 
+    @contextlib.contextmanager
+    def _chain_lock(self) -> Iterator[None]:
+        """Serialize the read-tip → chain → append sequence across PROCESSES.
+
+        ``_lock`` is a ``threading.Lock``, so it only orders writers inside one
+        interpreter. The gateway and each managed MCP server are separate
+        processes sharing one log file, and each holds its own singleton with
+        its own cached tip — so two of them chain off the same ``prev_hash``,
+        and because each only ever advances its OWN cache the two lineages fork
+        permanently, making verify_integrity() report every later entry from the
+        losing process as tampered. ``O_APPEND`` guarantees no torn or
+        overwritten bytes; it guarantees nothing about the read-compute-append
+        sequence, which is what the chain depends on.
+
+        The sidecar lives in the trust subdirectory, not beside the log: that
+        directory is owner-only and inside the sensitive-path floor, whereas a
+        sibling of ``security_events.jsonl`` is not covered by its exact-leaf
+        deny-list entry. An audited agent able to unlink the sidecar mid-hold
+        would leave two writers holding locks on different inodes — the very
+        fork this serialization exists to prevent — and one able to hold it
+        could wedge every writer.
+
+        On the asyncio event-loop thread the acquire is a SINGLE nonblocking
+        attempt that then fails closed, because waiting there — even a short
+        poll spin — stalls chat and the heartbeat for every session the loop
+        serves, and ``prune`` holds this lock across a whole streaming rewrite.
+        A refused acquire raises, which ``_flush_batch`` already turns into a
+        rollback plus warning — or into a propagated error for a critical audit,
+        which is the audit-or-deny contract working rather than a stalled
+        gateway. Off the loop (the background writer thread, and ``prune`` in an
+        executor) the acquire waits normally, which is where routine overlap
+        between processes is absorbed.
+
+        Callers must take this lock BEFORE ``_lock``, in both write paths. The
+        reverse order lets a cross-process wait stall the loop indirectly: a
+        writer thread holding ``_lock`` while it waits here leaves a loop-side
+        critical audit blocking on ``_lock``, which has no fail-closed gate of
+        its own.
+        """
+        # 0o700 to match how the trust dir is created for the HMAC key: the
+        # sidecar's protection is the directory's, so a laxer mode here would
+        # quietly undo it.
+        lock_dir = self._dir / _TRUST_SUBDIR
+        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_path = lock_dir / _SEL_LOCK_FILE
+        # A sidecar that is a LINK is not a lock. If the path resolves elsewhere,
+        # replacing its target hands two writers locks on different inodes — the
+        # exact fork this serialization exists to prevent — so a link planted
+        # before this code ran must be refused, not followed. O_NOFOLLOW makes
+        # that atomic on POSIX (no TOCTOU window between checking and opening);
+        # the explicit probe carries Windows junctions, which O_NOFOLLOW does not
+        # exist for. This is the same defense _load_or_create_hmac_key already
+        # applies to this directory.
+        if platform_compat.is_link_or_junction(lock_path):
+            raise OSError(
+                f"SEL chain-lock sidecar {lock_path} is a link; refusing to lock it"
+            )
+        fd = os.open(
+            lock_path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            # A hard link makes the same inode reachable under a second name the
+            # deny-list does not cover; O_NOFOLLOW says nothing about that.
+            if os.fstat(fd).st_nlink > 1:
+                raise OSError(
+                    f"SEL chain-lock sidecar {lock_path} is hard-linked; refusing to lock it"
+                )
+            if _on_event_loop():
+                if not _acquire_chain_lock_on_loop(fd):
+                    raise OSError(
+                        "SEL chain lock is held by another writer; refusing to "
+                        "wait for it on the event-loop thread"
+                    )
+                try:
+                    yield
+                finally:
+                    platform_compat.release_lock(fd)
+            else:
+                with platform_compat.file_lock(fd, exclusive=True):
+                    yield
+        finally:
+            os.close(fd)
+
     def _flush_batch(self, events: list[SecurityEvent], *, raise_on_error: bool = False) -> None:
         """Append a batch of events under the chain lock, then forward them.
 
@@ -221,64 +356,86 @@ class SecurityEventLog:
         was about to audit. The default (async writer / best-effort) swallows
         the error and keeps the writer thread alive.
         """
-        callback: Callable[[dict], None] | None
-        with self._lock:
-            try:
-                self._dir.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                if raise_on_error:
-                    raise
-                logger.warning("SEL dir create failed for %d events", len(events), exc_info=True)
-                return
-            # Remember the chain tip so we can roll back if the append fails:
-            # we advance _last_hash per event below, but nothing is persisted
-            # until the write() succeeds. Without the rollback, a failed write
-            # would leave _last_hash pointing at a phantom hash never on disk,
-            # and the next batch would chain off it — silently corrupting the
-            # HMAC chain (verify_integrity would then report a break).
-            prev_last_hash = self._last_hash
-            lines: list[str] = []
-            for event in events:
-                event.prev_hash = self._last_hash
-                event.entry_hash = self._compute_hash(event)
-                lines.append(json.dumps(asdict(event)) + "\n")
-                self._last_hash = event.entry_hash
-            try:
-                # Use os.open with explicit 0o600 mode to prevent other users
-                # from reading the security audit log.
-                fd = os.open(
-                    self._path,
-                    os.O_CREAT | os.O_APPEND | os.O_WRONLY,
-                    0o600,
-                )
-                with os.fdopen(fd, "a", encoding="utf-8") as f:
-                    # If a crash mid-append left a truncated tail line WITHOUT a
-                    # trailing newline, writing directly (O_APPEND) would glue
-                    # this record onto the corrupt fragment, forming a single
-                    # unparseable line. _read_last_hash() recovers the correct
-                    # prev_hash from the last complete record, but that glued
-                    # line stays unreadable by verify_integrity — so the new
-                    # event, though correctly chained, is orphaned from every
-                    # parseable record. Insert a newline boundary first so the
-                    # new record starts on a fresh, parseable line. We do NOT
-                    # truncate the corrupt fragment: the SEL log is append-only
-                    # forensic evidence, and the fragment is preserved as its
-                    # own (skipped) line.
-                    if self._ends_without_newline():
-                        f.write("\n")
-                    f.write("".join(lines))
-                # Ensure permissions are correct even if file pre-existed with
-                # wrong mode (e.g. created by an older version).
-                try:
-                    os.chmod(self._path, 0o600)
-                except OSError:
-                    logger.warning("Failed to enforce 0o600 permissions on SEL audit log %s", self._path, exc_info=True)
-            except OSError:
-                self._last_hash = prev_last_hash  # nothing persisted — roll back
-                if raise_on_error:
-                    raise
-                logger.warning("SEL append failed for %d events", len(events), exc_info=True)
-            callback = self._forward_callback
+        callback: Callable[[dict], None] | None = None
+        # Chain lock FIRST, thread lock second — and in that order everywhere.
+        # The reverse order lets a cross-process wait stall the event loop
+        # indirectly: the background writer takes _lock, then blocks waiting for
+        # another process's chain lock, and a loop-side critical audit then
+        # blocks on _lock itself, which is an ordinary blocking threading.Lock.
+        # Taking the chain lock first means the loop-side path reaches its
+        # single-shot fail-closed gate (see _chain_lock) BEFORE it can wait on
+        # anything, so it raises instead of stalling. _chain_lock also creates the
+        # audit directory, so a dir-create failure surfaces through the same
+        # OSError handler below rather than needing its own branch.
+        try:
+            with self._chain_lock():
+                with self._lock:
+                    # Remember the chain tip so we can roll back if the append
+                    # fails: we advance _last_hash per event below, but nothing is
+                    # persisted until the write() succeeds. Without the rollback, a
+                    # failed write would leave _last_hash pointing at a phantom
+                    # hash never on disk, and the next batch would chain off it —
+                    # silently corrupting the HMAC chain (verify_integrity would
+                    # then report a break).
+                    prev_last_hash = self._last_hash
+                    try:
+                        # Re-read the tip from disk under the lock: another process
+                        # may have appended since this instance last wrote, and its
+                        # entry_hash — not our cached value — is what this batch
+                        # must chain from. The cached tip is only a starting guess.
+                        # Bounded on the event-loop thread so a corrupt tail cannot
+                        # turn this into an unbounded scan there (_read_last_hash).
+                        self._last_hash = self._read_last_hash(
+                            max_chunks=1 if _on_event_loop() else None
+                        )
+                        lines: list[str] = []
+                        for event in events:
+                            event.prev_hash = self._last_hash
+                            event.entry_hash = self._compute_hash(event)
+                            lines.append(json.dumps(asdict(event)) + "\n")
+                            self._last_hash = event.entry_hash
+                        # Use os.open with explicit 0o600 mode to prevent other
+                        # users from reading the security audit log.
+                        fd = os.open(
+                            self._path,
+                            os.O_CREAT | os.O_APPEND | os.O_WRONLY,
+                            0o600,
+                        )
+                        with os.fdopen(fd, "a", encoding="utf-8") as f:
+                            # If a crash mid-append left a truncated tail line
+                            # WITHOUT a trailing newline, writing directly
+                            # (O_APPEND) would glue this record onto the corrupt
+                            # fragment, forming a single unparseable line.
+                            # _read_last_hash() recovers the correct prev_hash from
+                            # the last complete record, but that glued line stays
+                            # unreadable by verify_integrity — so the new event,
+                            # though correctly chained, is orphaned from every
+                            # parseable record. Insert a newline boundary first so
+                            # the new record starts on a fresh, parseable line. We
+                            # do NOT truncate the corrupt fragment: the SEL log is
+                            # append-only forensic evidence, and the fragment is
+                            # preserved as its own (skipped) line.
+                            if self._ends_without_newline():
+                                f.write("\n")
+                            f.write("".join(lines))
+                        # Ensure permissions are correct even if the file
+                        # pre-existed with the wrong mode (e.g. an older version).
+                        try:
+                            os.chmod(self._path, 0o600)
+                        except OSError:
+                            logger.warning(
+                                "Failed to enforce 0o600 permissions on SEL audit log %s",
+                                self._path,
+                                exc_info=True,
+                            )
+                    except OSError:
+                        self._last_hash = prev_last_hash  # nothing persisted
+                        raise
+                    callback = self._forward_callback
+        except OSError:
+            if raise_on_error:
+                raise
+            logger.warning("SEL append failed for %d events", len(events), exc_info=True)
         if callback:
             for event in events:
                 self._forward_event(callback, event)
@@ -589,7 +746,7 @@ class SecurityEventLog:
         except OSError:
             return False
 
-    def _read_last_hash(self) -> str:
+    def _read_last_hash(self, *, max_chunks: int | None = None) -> str:
         """Return the entry_hash of the last COMPLETE record, or "" if none.
 
         A crash mid-append can leave a truncated/partial final line. The old
@@ -618,11 +775,27 @@ class SecurityEventLog:
                 # the last complete record.
                 buf = b""
                 skipped_corrupt = False
+                chunks_read = 0
                 while pos > 0:
+                    # ``max_chunks`` bounds how far back the scan may walk. The
+                    # append path passes 1 on the event-loop thread: a normal log
+                    # yields the tip from a single tail read, so only an already
+                    # corrupt multi-kilobyte tail could walk further, and doing
+                    # that on the loop would stall chat and the heartbeat.
+                    # Exhausting the bound raises rather than returning a guessed
+                    # tip, so the caller fails closed instead of chaining from the
+                    # wrong record. Callers off the loop pass None and recover as
+                    # far back as needed.
+                    if max_chunks is not None and chunks_read >= max_chunks:
+                        raise _ChainTipBeyondBound(
+                            "SEL chain tip lies beyond the bounded tail read "
+                            "(corrupt tail); refusing to scan further here"
+                        )
                     read_start = max(pos - 4096, 0)
                     f.seek(read_start)
                     buf = f.read(pos - read_start) + buf
                     pos = read_start
+                    chunks_read += 1
                     parts = buf.split(b"\n")
                     if pos > 0:
                         # First element may be incomplete — defer it.
@@ -669,6 +842,10 @@ class SecurityEventLog:
                         return data.get("entry_hash", "")
             # No parseable record anywhere in the file — nothing to chain from.
             return ""
+        except _ChainTipBeyondBound:
+            # Not a read failure: the bound was deliberately hit. Propagate so
+            # the caller fails closed rather than chaining from genesis.
+            raise
         except OSError:
             logger.warning(
                 "SEL: failed to read chain tip from %s", self._path, exc_info=True
@@ -968,16 +1145,19 @@ class SecurityEventLog:
         is held across the whole read+replace critical section so a concurrent
         append cannot land in the old file after the read pass and be lost by
         the replace: appends either complete before the read (and are copied)
-        or block until after the replace (and land in the new file). Appends
-        run on the background writer thread, so blocking them for the prune
-        duration never touches the event loop.
+        or block until after the replace (and land in the new file). Both the
+        cross-process chain lock and the thread lock are held, in that order —
+        a writer in ANOTHER process is ordered only by the former, and taking it
+        first is what keeps a cross-process wait off the event loop. Appends run
+        on the background writer thread, so blocking them for the prune duration
+        never touches the event loop.
         """
         self.flush()  # don't rewrite the file out from under queued appends
         cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=keep_days)
         cutoff_str = cutoff_dt.isoformat()
 
         removed = 0
-        with self._lock:
+        with self._chain_lock(), self._lock:
             if not self._path.exists():
                 return 0
             tmp_fd, tmp_path = tempfile.mkstemp(
