@@ -2253,6 +2253,7 @@
       "update_all": "Update All",
       "the_app_itself_is_managed_externally": "The app itself is managed externally.",
       "this_app_could_not_be_displayed": "This app could not be displayed.",
+      "this_section_could_not_be_displayed": "This section could not be displayed.",
       "uninstall_removes_metadata_and_source": "Installed from Apps — Kiro Crew metadata and the downloaded source code will be removed.",
       "uninstall_removes_metadata_secret_and_source": "Installed from Apps — Kiro Crew metadata, the app secret, and the downloaded source code will be removed.",
       "updating_progress": "Updating {{done}}/{{total}}…"

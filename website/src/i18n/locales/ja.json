@@ -6782,6 +6782,7 @@
       "sort_apps": "アプリを並び替え",
       "the_app_itself_is_managed_externally": "アプリ自体は外部で管理されています。",
       "this_app_could_not_be_displayed": "このアプリを表示できませんでした。",
+      "this_section_could_not_be_displayed": "このセクションを表示できませんでした。",
       "this_app_has_an_uninstall_script_that_will_run_b": "このアプリにはアンインストールスクリプトがあり、削除前に実行されます。アプリバイナリ、エージェント設定、スキル、インストール中に作成されたその他のリソースを削除する可能性があります。",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "これは自己管理型アプリです — Kiro Crew メタデータとアプリシークレットのみが削除されます。\n                    アプリ自体およびそのエージェント/スキル登録は外部で管理され、影響を受けません。\n                    アプリがまだ実行中の場合、次回起動時に再登録される可能性があります。",
       "this_will_remove_all_resources_provided_by_this": "このアプリによって提供されるすべてのリソースが削除されます：",

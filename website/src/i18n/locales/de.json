@@ -6876,6 +6876,7 @@
       "sort_apps": "Apps sortieren",
       "the_app_itself_is_managed_externally": "Die App selbst wird extern verwaltet.",
       "this_app_could_not_be_displayed": "Diese App konnte nicht angezeigt werden.",
+      "this_section_could_not_be_displayed": "Dieser Bereich konnte nicht angezeigt werden.",
       "this_app_has_an_uninstall_script_that_will_run_b": "Diese App hat ein Deinstallationsskript, das vor dem Entfernen ausgeführt wird. Es kann die App-Binärdatei, Agenten-Konfigurationen, Skills und andere während der Installation erstellte Ressourcen löschen.",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "Dies ist eine selbstverwaltete App — nur die Kiro Crew-Metadaten und das App-Secret werden entfernt.\n                    Die App selbst und ihre Agenten-/Skill-Registrierungen werden extern verwaltet und bleiben unberührt.\n                    Wenn die App noch läuft, registriert sie sich beim nächsten Start möglicherweise erneut.",
       "this_will_remove_all_resources_provided_by_this": "Dies entfernt alle von dieser App bereitgestellten Ressourcen:",

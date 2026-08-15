@@ -144,6 +144,50 @@ export function featuredBusyName(actionLoading: string | null, apps: RegistryApp
   return apps.some(a => a.name === name) ? name : null
 }
 
+/**
+ * Boundary key carrying FULL data identity (#3702).
+ *
+ * `ErrorBoundary` latches its error state, so the key must change whenever the
+ * row's data changes — that is what remounts a boundary whose card threw once
+ * the registry payload is corrected. Keying on selected fields (name, version,
+ * icon, …) is whack-a-mole: the fix re-latches whenever the crashing field is
+ * one the key does not carry (e.g. a same-version icon correction). Serializing
+ * the whole row makes "any field changed" the remount condition, and an
+ * identical refetch produces the identical string, so nothing remounts
+ * spuriously. Rows come from React Query's cache via `useMemo`, so references
+ * are stable across unrelated re-renders — the WeakMap makes the serialization
+ * once per distinct row object.
+ */
+const cardKeyCache = new WeakMap<object, string>()
+export function cardDataKey(row: object): string {
+  let key = cardKeyCache.get(row)
+  if (key === undefined) {
+    key = JSON.stringify(row)
+    cardKeyCache.set(row, key)
+  }
+  return key
+}
+
+/**
+ * Compact degraded placeholder for a Browse-tab card whose render threw
+ * (#3702). Mirrors the Library-card boundary fallback (#3689): the broken
+ * card degrades in place while its siblings and the page chrome keep
+ * rendering. Browse cards describe registry entries rather than installed
+ * apps, so unlike the Library fallback there is no management action to
+ * preserve — the card is notice-only.
+ */
+function BrowseCardFallback({ label, message, className }: { label?: string; message: string; className?: string }) {
+  return (
+    <div className={`border border-border rounded-lg p-4 flex items-center gap-3${className ? ` ${className}` : ''}`}>
+      <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)] shrink-0" />
+      <div className="min-w-0 text-sm">
+        {label && <span className="font-medium text-text">{label}</span>}
+        <span className={label ? 'text-muted ml-2' : 'text-muted'}>{message}</span>
+      </div>
+    </div>
+  )
+}
+
 export function pickFeatured(apps: RegistryApp[]): RegistryApp[] {
   const rank = (f: RegistryApp['featured']) => (typeof f === 'number' ? f : 1e9)
   // "Not external" via the server-computed field, falling back to the
@@ -791,48 +835,90 @@ export default function AppsPage() {
                   same app twice and give the curator no way to say "only these". */}
               {showEditorial && featuredSections.length > 0 ? (
                 featuredSections.map((section, position) => (
-                  <FeaturedSpotlight
-                    /* Keyed by document POSITION, not content. Two sections may
-                       legitimately agree on type and title -- the publish gate
-                       checks duplicate refs within a section, not across them --
-                       and a colliding key lets React reconcile one card against
-                       the other's fiber, resetting art-failure state or dropping
-                       a card entirely. */
-                    key={`${position}:${section.type}`}
-                    type={section.type}
-                    apps={section.apps}
-                    title={section.title}
-                    blurb={section.blurb}
-                    artwork={section.artwork}
-                    busyName={
-                      featuredBusyName(actionLoading, section.apps)
+                  <ErrorBoundary
+                    /* Keyed by document POSITION plus the section's FULL data
+                       identity (cardDataKey over the whole section: members,
+                       title, blurb, artwork). The position prefix keeps two
+                       content-identical sections from colliding -- the publish
+                       gate checks duplicate refs within a section, not across
+                       them, and a colliding key lets React reconcile one card
+                       against the other's fiber. The cardDataKey suffix gives
+                       this boundary the same "any field changed" remount
+                       contract as the other three sites, so a corrected
+                       payload -- including a section-level artwork/title/blurb
+                       fix -- clears a latched fallback. */
+                    key={`${position}:${cardDataKey(section)}`}
+                    scope={`apps:featured-section:${position}:${section.type}`}
+                    fallback={
+                      <BrowseCardFallback
+                        label={section.title}
+                        message={i18nT('pages.appsPage.this_section_could_not_be_displayed')}
+                        className="mb-6"
+                      />
                     }
-                    onGet={name => getApp(name)}
-                    onEnable={name => enableApp(name)}
-                    onOpenApp={(name, e) => openDetail(name, e)}
-                  />
+                  >
+                    <FeaturedSpotlight
+                      type={section.type}
+                      apps={section.apps}
+                      title={section.title}
+                      blurb={section.blurb}
+                      artwork={section.artwork}
+                      busyName={
+                        featuredBusyName(actionLoading, section.apps)
+                      }
+                      onGet={name => getApp(name)}
+                      onEnable={name => enableApp(name)}
+                      onOpenApp={(name, e) => openDetail(name, e)}
+                    />
+                  </ErrorBoundary>
                 ))
               ) : showEditorial && spotlight && (
                 <>
-                  <FeaturedSpotlight
-                    type="app"
-                    apps={[spotlight]}
-                    busyName={featuredBusyName(actionLoading, [spotlight])}
-                    onGet={name => getApp(name)}
-                    onEnable={name => enableApp(name)}
-                    onOpenApp={(name, e) => openDetail(name, e)}
-                  />
+                  <ErrorBoundary
+                    /* Full-data key: see cardDataKey — remounts when ANY field
+                       of the corrected payload changes, same latched-error
+                       reason as the app-list-row boundary. */
+                    key={cardDataKey(spotlight)}
+                    scope={`apps:featured-section:${spotlight.name}`}
+                    fallback={
+                      <BrowseCardFallback
+                        label={spotlight.displayName || spotlight.name}
+                        message={i18nT('pages.appsPage.this_app_could_not_be_displayed')}
+                        className="mb-6"
+                      />
+                    }
+                  >
+                    <FeaturedSpotlight
+                      type="app"
+                      apps={[spotlight]}
+                      busyName={featuredBusyName(actionLoading, [spotlight])}
+                      onGet={name => getApp(name)}
+                      onEnable={name => enableApp(name)}
+                      onOpenApp={(name, e) => openDetail(name, e)}
+                    />
+                  </ErrorBoundary>
                   {secondary.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 mb-6">
                       {secondary.map(app => (
-                        <FeatureCard
-                          key={app.name}
-                          app={app}
-                          busy={actionLoading === `${app.name}:enable`}
-                          onOpen={e => openDetail(app.name, e)}
-                          onGet={() => getApp(app.name)}
-                          onEnable={() => enableApp(app.name)}
-                        />
+                        <ErrorBoundary
+                          /* Full-data key: see cardDataKey. */
+                          key={cardDataKey(app)}
+                          scope={`apps:feature-card:${app.name}`}
+                          fallback={
+                            <BrowseCardFallback
+                              label={app.displayName || app.name}
+                              message={i18nT('pages.appsPage.this_app_could_not_be_displayed')}
+                            />
+                          }
+                        >
+                          <FeatureCard
+                            app={app}
+                            busy={actionLoading === `${app.name}:enable`}
+                            onOpen={e => openDetail(app.name, e)}
+                            onGet={() => getApp(app.name)}
+                            onEnable={() => enableApp(app.name)}
+                          />
+                        </ErrorBoundary>
                       ))}
                     </div>
                   )}
@@ -878,15 +964,31 @@ export default function AppsPage() {
                     <EmptyState icon={<ShoppingBag size={32} />} title={i18nT('pages.appsPage.no_matching_apps')} subtitle={i18nT('pages.appsPage.try_a_different_search_or_category')} />
                   ) : (
                     filteredBrowse.map(app => (
-                      <AppListRow
-                        key={app.name}
-                        app={app}
-                        busy={actionLoading === `${app.name}:enable` || !!updatingAll}
-                        onOpen={e => openDetail(app.name, e)}
-                        onGet={() => getApp(app.name)}
-                        onUpdate={() => updateApp(app.name)}
-                        onEnable={() => enableApp(app.name)}
-                      />
+                      <ErrorBoundary
+                        /* Full-data key (cardDataKey): the boundary latches
+                           its error state, so ANY corrected registry payload —
+                           including a same-version metadata fix — must remount
+                           it; a partial key would reuse the errored fiber and
+                           leave the placeholder up after the data is fixed. */
+                        key={cardDataKey(app)}
+                        scope={`apps:app-list-row:${app.name}`}
+                        fallback={
+                          <BrowseCardFallback
+                            label={app.displayName || app.name}
+                            message={i18nT('pages.appsPage.this_app_could_not_be_displayed')}
+                            className="mb-2"
+                          />
+                        }
+                      >
+                        <AppListRow
+                          app={app}
+                          busy={actionLoading === `${app.name}:enable` || !!updatingAll}
+                          onOpen={e => openDetail(app.name, e)}
+                          onGet={() => getApp(app.name)}
+                          onUpdate={() => updateApp(app.name)}
+                          onEnable={() => enableApp(app.name)}
+                        />
+                      </ErrorBoundary>
                     ))
                   )}
                 </div>

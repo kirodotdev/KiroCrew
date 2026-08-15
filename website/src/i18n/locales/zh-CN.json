@@ -6782,6 +6782,7 @@
       "sort_apps": "应用排序",
       "the_app_itself_is_managed_externally": "应用本身由外部管理。",
       "this_app_could_not_be_displayed": "无法显示此应用。",
+      "this_section_could_not_be_displayed": "无法显示此板块。",
       "this_app_has_an_uninstall_script_that_will_run_b": "此应用有一个卸载脚本，会在移除前运行。它可能会删除应用二进制文件、代理配置、技能以及安装期间创建的其他资源。",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "这是一个自管理应用 — 仅会移除 Kiro Crew 元数据和应用密钥。\n                    应用本身及其代理/技能注册由外部管理，不会受影响。\n                    如果该应用仍在运行，它可能会在下次启动时重新注册。",
       "this_will_remove_all_resources_provided_by_this": "会移除此应用提供的所有资源：",

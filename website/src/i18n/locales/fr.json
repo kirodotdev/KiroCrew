@@ -6970,6 +6970,7 @@
       "sort_apps": "Trier les applications",
       "the_app_itself_is_managed_externally": "L’application elle-même est gérée en externe.",
       "this_app_could_not_be_displayed": "Impossible d'afficher cette application.",
+      "this_section_could_not_be_displayed": "Impossible d'afficher cette section.",
       "this_app_has_an_uninstall_script_that_will_run_b": "Cette application possède un script de désinstallation qui s'exécutera avant la suppression. Il peut supprimer le binaire de l'application, les configurations d'agent, les compétences et les autres ressources créées lors de l'installation.",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "Il s'agit d'une application autogérée — seules les métadonnées Kiro Crew et le secret de l'application seront supprimés.\n                    L'application elle-même et ses enregistrements d'agent/de compétence sont gérés en externe et ne seront pas affectés.\n                    Si l'application est encore en cours d'exécution, elle peut se réenregistrer au prochain lancement.",
       "this_will_remove_all_resources_provided_by_this": "Cela supprimera toutes les ressources fournies par cette application :",

@@ -6782,6 +6782,7 @@
       "sort_apps": "앱 정렬",
       "the_app_itself_is_managed_externally": "앱 자체는 외부에서 관리됩니다.",
       "this_app_could_not_be_displayed": "이 앱을 표시할 수 없습니다.",
+      "this_section_could_not_be_displayed": "이 섹션을 표시할 수 없습니다.",
       "this_app_has_an_uninstall_script_that_will_run_b": "이 앱에는 제거 전에 실행되는 제거 스크립트가 있습니다. 앱 바이너리, 에이전트 설정, 스킬, 설치 중에 생성된 기타 리소스를 삭제할 수 있습니다.",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "이 앱은 자체 관리형 앱입니다 — Kiro Crew 메타데이터와 앱 시크릿만 제거됩니다.\n 앱 자체와 해당 에이전트/스킬 등록은 외부에서 관리되며 영향을 받지 않습니다.\n 앱이 아직 실행 중이라면 다음 실행 시 다시 등록될 수 있습니다.",
       "this_will_remove_all_resources_provided_by_this": "이 앱이 제공하는 모든 리소스가 제거됩니다:",
