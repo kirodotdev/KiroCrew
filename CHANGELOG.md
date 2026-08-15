@@ -4,6 +4,16 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **New structured lifecycle event log (foundation, parallel track).** A new
+  `kiro_crew.events` package defines a typed, append-only JSONL event stream
+  under `$KIROCREW_HOME/events/` (tolerant versioned envelope, daily shards
+  routed by append time, watermark-based incremental reader, retention
+  pruning) so later status surfaces can fold one ordered record instead of
+  polling per-feature stores. Ships with a backfill validator CLI that proves
+  the schema against existing stores (dry-run report by default; `--apply`
+  materializes). No existing store or code path is modified; live emit sites
+  and consumers (task manager, context breakdown) onboard in later PRs.
+
 - **Opted-in MCP servers no longer silently fall back to unpooled backends.**
   On one live host, 988 degradations accrued in 15 hours with no signal: 79%
   were guaranteed-ENOENT pooled spawns of bare commands the gateway daemon's
