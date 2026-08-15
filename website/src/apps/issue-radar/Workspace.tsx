@@ -99,6 +99,12 @@ export default function Workspace() {
   // restoring its 280px minimum beside a pane that then has ~110px — the strip's
   // expand button must not lead straight back into the squeeze it escaped.
   const railFull = listDetail.isMobile && !rail.collapsed
+  // Collapsed while narrow: the rail lies across the TOP rather than down the
+  // left edge. A ~48px strip costs nothing on a desktop and a tenth of the
+  // reading column on a phone, and horizontal space is the axis a phone cannot
+  // give — CJK body text pays for a squeezed column by the character, since it
+  // breaks almost anywhere and simply collapses instead of overflowing.
+  const railBar = listDetail.isMobile && rail.collapsed
   const showList = listDetail.showList && !railFull
   const showDetail = listDetail.showDetail && !railFull
   // While narrow the visible pane takes the space left beside the strip, so it
@@ -118,13 +124,14 @@ export default function Workspace() {
   const DashboardView = dashboardComponent(dashboardTab)
 
   return (
-    <div className="flex h-full bg-bg text-text">
+    <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
       {/* Collapse on select: the expanded rail owns the whole viewport while
           narrow, so navigating without collapsing would leave the user looking
           at the rail instead of the section they picked. */}
       <LeftRail
         width={railFull ? '100%' : rail.width}
         collapsed={rail.collapsed}
+        horizontal={railBar}
         onExpand={rail.expand}
         onNavigate={listDetail.isMobile ? rail.collapse : undefined}
         onCollapse={railFull ? rail.collapse : undefined}

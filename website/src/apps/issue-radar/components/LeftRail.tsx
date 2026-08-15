@@ -1,4 +1,4 @@
-import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter, PanelLeftClose } from 'lucide-react'
+import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import GithubLogo from '../../../components/icons/GithubLogo'
 import Clickable from '../../../components/Clickable'
 import { fmtNumber } from '../../../i18n/format'
@@ -26,6 +26,7 @@ import { i18nT } from '../../../i18n/t'
  * past the minimum collapses the rail to `CollapsedRail`. */
 export default function LeftRail({
   width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand, onNavigate, onCollapse,
+  horizontal = false,
 }: {
   width?: number | string
   /** Called after any section navigation. The narrow-viewport shell uses it to
@@ -36,6 +37,9 @@ export default function LeftRail({
    * handle that closes the rail on a desktop is hidden on touch. */
   onCollapse?: () => void
   collapsed?: boolean
+  /** Only meaningful with `collapsed`: lay the strip across the top instead of
+   * down the left edge, so the panes below keep the full viewport width. */
+  horizontal?: boolean
   onExpand?: () => void
 }) {
   const {
@@ -63,6 +67,7 @@ export default function LeftRail({
         repo={active.repo}
         readOnly={isReadOnly(activeEntry?.permissions)}
         onExpand={onExpand}
+        horizontal={horizontal}
       />
     )
   }
@@ -248,15 +253,20 @@ function CrewsSection({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
-/** The rail dragged shut: one vertical rounded-rect card carrying the provider
- * logo and the full `owner/repo`, with the app mark below — the same
- * elevated-pill treatment the repo switcher gets when the rail is open, so you
- * still know which repo the workspace points at while the list and detail
- * columns take the window. The repo label rotates clockwise (top-to-bottom
- * reading) so it starts next to the logo. Clicking the repo half reopens the
- * rail at its previous width (dragging the handle back out works too). */
+/** The rail dragged shut: one rounded-rect card carrying the provider logo and
+ * the full `owner/repo`, with the app mark alongside — the same elevated-pill
+ * treatment the repo switcher gets when the rail is open, so you still know
+ * which repo the workspace points at while the list and detail columns take the
+ * window. Clicking the repo half reopens the rail at its previous width
+ * (dragging the handle back out works too).
+ *
+ * Two orientations, and the axis is the whole point. Down the left edge on a
+ * desktop, where a strip's width is free. Across the TOP while narrow, where it
+ * is not: a phone can spend vertical room and has none to the side. The vertical
+ * card rotates the repo label clockwise (top-to-bottom reading) so it starts
+ * next to the logo; the bar just truncates it. */
 function CollapsedRail({
-  width, owner, repo, readOnly, onExpand,
+  width, owner, repo, readOnly, onExpand, horizontal = false,
 }: {
   // Shares LeftRail's pass-through prop, so it takes the same CSS-length type.
   // In practice this is always the numeric strip width: the string form is only
@@ -266,8 +276,48 @@ function CollapsedRail({
   repo: string
   readOnly: boolean
   onExpand?: () => void
+  /** Lay the collapsed rail across the TOP instead of down the left edge. Set
+   * while narrow, where the strip's ~48px is horizontal space the reading
+   * column cannot spare: a phone has vertical room to give and none to the
+   * side, and CJK body text pays for a squeezed column by the character. */
+  horizontal?: boolean
 }) {
   const full = `${owner}/${repo}`
+  if (horizontal) {
+    return (
+      <aside className="w-full flex-shrink-0 px-2 pt-2">
+        <div className="flex items-center overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">
+          <button
+            type="button"
+            onClick={onExpand}
+            title={i18nT('apps.issueRadar.components.leftRail.click_to_expand_the_sidebar', { name: full })}
+            aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
+            className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
+          >
+            <GithubLogo size={16} className="flex-shrink-0 text-text" />
+            {/* Truncates from the tail: the repo half of `owner/repo` is what
+                tells two workspaces apart, and it survives longest that way. */}
+            <span className="min-w-0 truncate text-[13px] font-medium tracking-[.02em] text-text">
+              {full}
+            </span>
+            {readOnly && <ReadOnlyTag />}
+            {/* Opens toward the reader, matching the expanded rail's
+                PanelLeftClose — the bar is horizontal but the panel it reveals
+                is still the left rail. */}
+            <PanelLeftOpen size={15} className="ml-auto flex-shrink-0" />
+          </button>
+          {/* Adornment, not a control: no divider and no hover, because a
+              bordered cell beside a real button reads as a second button. */}
+          <div
+            className="flex-shrink-0 flex items-center pl-1 pr-3"
+            title={i18nT('apps.issueRadar.components.leftRail.issue_radar_version', { version: APP_VERSION })}
+          >
+            <Radar size={15} className="text-accent" />
+          </div>
+        </div>
+      </aside>
+    )
+  }
   return (
     <aside style={{ width }} className="flex-shrink-0 flex flex-col min-h-0 py-2 px-1">
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">

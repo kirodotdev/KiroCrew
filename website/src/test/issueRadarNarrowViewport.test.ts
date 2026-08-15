@@ -150,4 +150,37 @@ describe('Issue Radar at narrow widths', () => {
     // none of, and a drag handle does nothing on touch.
     expect((s.match(/\{!listDetail\.isMobile && \(/g) ?? []).length).toBe(4)
   })
+
+  it('lays the collapsed rail ACROSS THE TOP while narrow, not down the side', async () => {
+    const s = await shell()
+    // The axis is the point. A ~48px strip is free on a desktop and a tenth of
+    // the reading column on a phone, and horizontal is the one axis a phone has
+    // nothing spare on — so while narrow the collapsed rail becomes a bar and
+    // the panes below take the whole width.
+    expect(s, 'expected a railBar derived from narrow AND collapsed')
+      .toMatch(/const railBar = listDetail\.isMobile && rail\.collapsed/)
+    // Direction flip on the shell is what puts the rail above the panes rather
+    // than beside them; without it `horizontal` would just be a wide strip
+    // sitting in a row, still stealing the width.
+    expect(s, 'expected the shell to stack while the bar is up')
+      .toMatch(/\$\{railBar \? 'flex-col' : ''\}/)
+    expect(s, 'expected the bar mode to reach the rail').toMatch(/horizontal=\{railBar\}/)
+  })
+
+  it('keeps the bar narrow-only, so a desktop still gets the vertical strip', async () => {
+    const s = await shell()
+    // Gated on isMobile in the SAME expression as `collapsed`: a bar leaked onto
+    // a desktop costs a whole row and buys nothing, since a strip's width is
+    // free there. Measured shapes: 48x858 strip at 1280px, 390x46 bar at 390px.
+    const decl = s.match(/const railBar = [^\n]*/)
+    expect(decl, 'expected a railBar declaration').not.toBeNull()
+    expect(decl![0]).toContain('listDetail.isMobile')
+    const rail = await src('components/LeftRail.tsx')
+    // The bar truncates the repo label; only the vertical card rotates it. A
+    // rotated label inside the bar would read sideways in a horizontal row.
+    const bar = rail.match(/if \(horizontal\) \{[\s\S]*?\n  \}/)
+    expect(bar, 'expected a horizontal branch in CollapsedRail').not.toBeNull()
+    expect(bar![0], 'the bar must not rotate its label').not.toContain('writingMode')
+    expect(bar![0], 'the bar must truncate instead').toContain('truncate')
+  })
 })

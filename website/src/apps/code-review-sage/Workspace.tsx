@@ -63,6 +63,12 @@ export default function Workspace() {
   const isMobile = useIsMobile()
   // Narrow AND expanded: the rail IS the page, so the report steps aside below.
   const mobileRailOpen = isMobile && !rail.collapsed
+  // Narrow AND collapsed: the strip lies across the TOP instead of down the left
+  // edge. Its ~44px is free on a desktop and a tenth of the reading column on a
+  // phone, and horizontal is the axis a phone has none of to spare — CJK body
+  // text pays for a squeezed column by the character, because it breaks almost
+  // anywhere and collapses rather than overflowing.
+  const railBar = isMobile && rail.collapsed
   // Collapse on select — the third leg of this pattern, and the one that makes
   // the expanded rail a drill-down instead of a one-way door. Without it, picking
   // a review from the full-width rail changes nothing visible: the rail keeps the
@@ -85,13 +91,17 @@ export default function Workspace() {
     // overflow-hidden so a mis-sized child can never grow the shell past the
     // viewport and push the rail's identity footer below the fold — each column
     // owns its own scrolling.
-    <div className="flex h-full overflow-hidden bg-bg text-text">
+    <div className={`flex h-full overflow-hidden bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
       <div
-        style={{ width: mobileRailOpen ? '100%' : rail.width }}
-        className="flex-shrink-0 min-h-0 flex"
+        style={{ width: railBar ? undefined : (mobileRailOpen ? '100%' : rail.width) }}
+        className={`flex-shrink-0 min-h-0 flex ${railBar ? 'w-full' : ''}`}
       >
         {rail.collapsed ? (
-          <div className="w-full flex flex-col items-center border-r border-border bg-bg-accent pt-2">
+          <div
+            className={`w-full flex ${railBar
+              ? 'flex-row items-center border-b border-border px-2 py-1.5'
+              : 'flex-col items-center border-r border-border pt-2'} bg-bg-accent`}
+          >
             <IconButton aria-label={i18nT('app.expand_sidebar')} onClick={rail.expand}>
               <ScanSearch size={16} className="text-accent" />
             </IconButton>

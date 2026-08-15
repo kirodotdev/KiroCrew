@@ -42,7 +42,10 @@ describe('Code Review Sage rail at narrow widths', () => {
     const src = await shell()
     expect(src).toMatch(/mobileRailOpen = isMobile && !rail\.collapsed/)
     // The anti-squeeze invariant: expanded-while-narrow is 100%, never rail.width.
-    expect(src).toMatch(/width: mobileRailOpen \? '100%' : rail\.width/)
+    // Nested inside the bar-mode branch, which releases the width entirely while
+    // COLLAPSED — the two narrow states are disjoint, so this still pins the
+    // expanded one and still fails if the 100% is dropped.
+    expect(src).toMatch(/mobileRailOpen \? '100%' : rail\.width/)
   })
 
   it('steps the report aside instead of pushing it off-screen', async () => {
@@ -84,5 +87,24 @@ describe('Code Review Sage rail at narrow widths', () => {
     // A "collapsed" width at or above the minimum would not free any room.
     expect(COLLAPSED_RAIL_WIDTH).toBeLessThan(MIN_RAIL_WIDTH)
     expect(RAIL_COLLAPSED_KEY).toMatch(/^kc:code-review-sage:/)
+  })
+
+  it('lays the collapsed strip ACROSS THE TOP while narrow', async () => {
+    const src = await shell()
+    // Even a 44px strip is a tenth of the reading column at 390px, and
+    // horizontal is the axis a phone cannot spend. Above the report it costs
+    // height, which a phone has.
+    expect(src, 'expected a railBar derived from narrow AND collapsed')
+      .toMatch(/const railBar = isMobile && rail\.collapsed/)
+    expect(src, 'expected the shell to stack while the bar is up')
+      .toMatch(/\$\{railBar \? 'flex-col' : ''\}/)
+    // The strip's own axis has to turn with it: left border and a column of
+    // controls make no sense once the element is a row across the top. And the
+    // width must be released, or the bar keeps reserving the strip's column.
+    expect(src, 'expected the strip to turn into a row').toMatch(/flex-row items-center border-b/)
+    expect(src, 'expected the vertical form to survive on a desktop')
+      .toMatch(/flex-col items-center border-r/)
+    expect(src, 'expected the bar to release the strip width')
+      .toMatch(/width: railBar \? undefined :/)
   })
 })
