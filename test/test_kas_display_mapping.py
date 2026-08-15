@@ -237,6 +237,35 @@ def test_summarization_completed_emits_compaction_and_resets() -> None:
     assert handle.last_prompt_stats.context_tokens_from_usage is False
 
 
+def test_context_usage_reapplies_after_summarization_completed() -> None:
+    # Sequencing (the KAS analog of the kiro-cli post-compaction metadata
+    # re-apply): summarization_completed resets and clears the authoritative
+    # flag, so a FOLLOWING context_usage frame must re-derive the meter. Were the
+    # reset missing, context_tokens_from_usage would stay True and the fresh
+    # percentage would be ignored — the dashboard bar frozen at the
+    # pre-compaction value forever.
+    handle = _handle(ACP_BACKEND_KAS)
+    handle.last_prompt_stats.context_pct = 80.0
+    handle.last_prompt_stats.context_tokens_from_usage = True
+    _update(
+        handle,
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {"kind": "summarization_completed", "conversationSummary": ""}},
+        },
+    )
+    assert handle.last_prompt_stats.context_tokens_from_usage is False
+    assert handle.last_prompt_stats.context_pct == 0.0
+    _update(
+        handle,
+        {
+            "sessionUpdate": "session_info_update",
+            "_meta": {"kiro": {"kind": "context_usage", "usagePercentage": 12.0}},
+        },
+    )
+    assert handle.last_prompt_stats.context_pct == 12.0
+
+
 def test_summarization_started_emits_started_status() -> None:
     handle = _handle(ACP_BACKEND_KAS)
     events = _update(handle, {"sessionUpdate": "session_info_update", "_meta": {"kiro": {"kind": "summarization_started"}}})
