@@ -9,7 +9,7 @@
  * deterministic even after the card's own null-guards are fixed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { i18nT } from '../i18n/t'
@@ -61,8 +61,10 @@ vi.mock('../components/SegmentedControl', () => ({
 // boundary normalized it).
 const cardMock = vi.hoisted(() => ({ apps: [] as { name: string; manifest?: Record<string, unknown> }[] }))
 vi.mock('../components/appstore/InstalledAppCard', () => ({
-  default: ({ app }: { app: { name: string; manifest?: Record<string, unknown> } }) => {
-    if (app.name === 'zzq-broken') throw new Error('zzq-card-render-broke')
+  default: ({ app }: { app: { name: string; manifest?: Record<string, unknown>; _newVersion?: string } }) => {
+    if (app.name === 'zzq-broken' || (app.manifest as { description?: string })?.description === 'zzq-crash') {
+      throw new Error('zzq-card-render-broke')
+    }
     cardMock.apps.push(app)
     return <div data-testid={`zzq-card-${app.name}`} />
   },
@@ -83,10 +85,10 @@ function installed(name: string) {
   }
 }
 
-function renderPage() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderPage(qc?: QueryClient) {
+  const client = qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={['/apps']}>
         <Routes>
           <Route path="/apps" element={<AppsPage />} />
@@ -131,6 +133,37 @@ describe('AppsPage per-card error boundary (#3689)', () => {
     // fallback must not be a dead end: an enabled app keeps a Disable action.
     const disable = screen.getByRole('button', { name: i18nT('components.appstore.installedAppCard.disable') })
     expect(disable).toBeInTheDocument()
+  })
+
+  it('a corrected payload clears a latched fallback without a route remount (#3719)', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    listApps.mockResolvedValue([
+      installed('zzq-healthy'),
+      {
+        ...installed('zzq-fixable'),
+        manifest: { ...installed('zzq-fixable').manifest, description: 'zzq-crash' },
+      },
+    ])
+
+    renderPage(qc)
+
+    expect(await screen.findByTestId('zzq-card-zzq-healthy')).toBeInTheDocument()
+    expect(screen.getByText('zzq-fixable')).toBeInTheDocument()
+    expect(screen.getByText(i18nT('pages.appsPage.this_app_could_not_be_displayed'))).toBeInTheDocument()
+
+    // Simulate query refetch / data correction for the installed app:
+    await act(async () => {
+      qc.setQueryData(['apps'], [
+        installed('zzq-healthy'),
+        {
+          ...installed('zzq-fixable'),
+          manifest: { ...installed('zzq-fixable').manifest, description: 'corrected' },
+        },
+      ])
+    })
+
+    expect(await screen.findByTestId('zzq-card-zzq-fixable')).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('pages.appsPage.this_app_could_not_be_displayed'))).not.toBeInTheDocument()
   })
 })
 
