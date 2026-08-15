@@ -419,6 +419,29 @@ cron/heartbeat/lesson extraction) to extract:
 - `preferences_update` → overwrites `preferences.md` if changed
 - `projects_update` → overwrites `projects.md` if changed
 
+The two `*_update` values replace the whole file, so each is gated by
+`_is_plausible_memory_file()` before writing: a value that does not start with
+the file's mandated markdown header (`# User Preferences` / `# Active
+Projects`) is discarded with a warning instead of written. This rejects
+protocol-word answers (the literal string `unchanged` and similar), which would
+otherwise destroy the file AND — because the next consolidation prompt embeds
+the file's current content — prime every later pass to echo the placeholder
+into the other memory file, keeping both destroyed until a human rebuilds them.
+The prompt sanctions omitting the key entirely when nothing changed (the write
+path treats a missing key as no-change), so a compliant model never needs to
+echo the file back — removing the temptation that produces placeholder answers
+and saving output tokens each pass; the header gate remains the backstop.
+The gate requires the exact mandated header as the first line AND a body that
+does not normalize into a known placeholder ("unchanged", "no changes needed",
+"N/A", …); markdown emphasis wrapping is stripped first so a decorated
+placeholder cannot bypass the set. An empty body after the exact header is
+accepted (deleting the last entry is a legitimate complete file), and there is
+deliberately no size floor — a legitimate memory file can be a single tiny
+bullet, and a legitimate consolidation can shrink a bloated file by half or
+more. The discard warning logs only the rejected value's length, never its
+content, because raw model output can contain anything and the log ring feeds
+the dashboard.
+
 Non-blocking via `asyncio.create_task`. Requires `SessionManager` to be passed
 at construction time; consolidation is silently skipped if no session manager
 is available.
