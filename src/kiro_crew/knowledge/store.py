@@ -466,14 +466,22 @@ class KnowledgeStore:
             json_status = props.get("sync_status")
             if (isinstance(json_status, str) and json_status != "pending"
                     and json_status in self._INITIAL_SYNC_STATUSES):
-                # Re-check the column in the UPDATE itself: a concurrent
+                # Re-check BOTH copies in the UPDATE itself: a concurrent
                 # handler may have transitioned the row between the SELECT
                 # and this write, and its live state must win over the
-                # snapshot taken above.
+                # snapshot taken above. The column alone is not enough --
+                # ``SyncScheduler._record_failure`` writes the properties copy
+                # without the column, so a failure landing in that window
+                # would leave the JSON reading 'error' under a repaired
+                # 'pending_confirmation' column and the dashboard would offer
+                # Confirm for a source the scheduler has given up on. Binding
+                # the properties blob as read makes this a compare-and-set on
+                # both; a row that moved is skipped and repaired by the next
+                # open, since this runs on every one.
                 self.db.execute(
                     "UPDATE sources SET sync_status = ? "
-                    "WHERE id = ? AND sync_status = 'pending'",
-                    (json_status, row["id"]))
+                    "WHERE id = ? AND sync_status = 'pending' AND properties = ?",
+                    (json_status, row["id"], row["properties"]))
         if "summary_topic" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN summary_topic TEXT")
         if "summary_themes" not in src_cols:

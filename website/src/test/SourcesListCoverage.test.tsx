@@ -235,6 +235,9 @@ describe('SourcesList — row actions', () => {
     // running to pause yet.
     expect(screen.queryByLabelText('Pause scan')).toBeNull()
     expect(screen.getByTitle('Awaiting confirmation')).toBeTruthy()
+    // The status badge reads the state, not the raw column enum.
+    expect(screen.getByText('Awaiting confirmation')).toBeTruthy()
+    expect(screen.queryByText('pending_confirmation')).toBeNull()
 
     fireEvent.click(screen.getByLabelText('Confirm scan'))
     await waitFor(() => expect(callsTo('/sources/f1/confirm', 'POST')).toHaveLength(1))

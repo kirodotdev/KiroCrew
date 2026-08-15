@@ -665,6 +665,60 @@ class TestKnowledgeStoreExtended:
         finally:
             reopened.close()
 
+    def test_migration_skips_a_row_whose_properties_moved_mid_repair(self, store, tmp_path):
+        """A properties-only write landing mid-repair wins over the snapshot.
+
+        The repair reads both copies, then writes. ``SyncScheduler._record_failure``
+        moves the properties copy WITHOUT the column, so comparing only the column
+        would let the repair stamp 'pending_confirmation' onto a row whose JSON now
+        reads 'error' -- the dashboard would offer Confirm for a source the
+        scheduler has given up on. Comparing the properties blob as read skips that
+        row instead; the next store open repairs it.
+        """
+        import sqlite3
+
+        db_path = str(tmp_path / "test.db")
+        sid = str(uuid4())
+        now = datetime.now().isoformat()
+        store.db.execute(
+            "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (sid, "s", "local_folder", "/tmp/race",
+             json.dumps({"sync_status": "pending_confirmation"}), "pending", now, now))
+        store.db.commit()
+        store.close()
+
+        real_loads = json.loads
+        fired: list[bool] = []
+
+        def failure_lands_mid_scan(raw):
+            parsed = real_loads(raw)
+            # Fire once, only for the row under test: the repair parses each
+            # candidate row between its SELECT and its UPDATE.
+            if (not fired and isinstance(parsed, dict)
+                    and parsed.get("sync_status") == "pending_confirmation"):
+                fired.append(True)
+                conn = sqlite3.connect(db_path, timeout=30)
+                try:
+                    conn.execute(
+                        "UPDATE sources SET properties = ? WHERE id = ?",
+                        (json.dumps({"sync_status": "error", "consecutive_failures": 3}), sid))
+                    conn.commit()
+                finally:
+                    conn.close()
+            return parsed
+
+        with patch("kiro_crew.knowledge.store.json.loads", failure_lands_mid_scan):
+            reopened = KnowledgeStore(db_path)
+        try:
+            assert fired, "the mid-scan write never landed; the test proves nothing"
+            row = reopened.db.execute(
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            assert row["sync_status"] == "pending"
+            assert json.loads(row["properties"])["sync_status"] == "error"
+        finally:
+            reopened.close()
+
     def test_update_source(self, store):
         sid = store.add_source("f", "local_file", "/tmp/f.md")
         store.update_source(sid, last_synced="2026-01-01T00:00:00")
