@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import time
 from typing import Any, Optional
 
@@ -84,9 +85,59 @@ def random_bucket_name() -> str:
     return f"{BUCKET_PREFIX}{secrets.token_hex(_BUCKET_RAND_BYTES)}"
 
 
+# Well-known AWS CLI install dirs, searched (after the inherited PATH) when
+# resolving the binary absolutely. A Finder/Dock-launched macOS gateway inherits
+# the minimal launchd PATH (``/usr/bin:/bin:/usr/sbin:/sbin``), which contains
+# neither Homebrew nor the official-pkg symlink dir — so a bare ``"aws"`` fails
+# ``execvp`` inside ``sandbox-exec`` with "No such file or directory", which is
+# exactly why the Artifact Deploy "Verify" step failed for Homebrew users until
+# the gateway was relaunched from a shell that carried the full PATH.
+_AWS_BIN_DIRS = (
+    "/opt/homebrew/bin",  # Apple Silicon Homebrew
+    "/usr/local/bin",     # Intel Homebrew + official AWS CLI v2 pkg symlink
+)
+
+
+def _resolve_aws_bin() -> str:
+    """Resolve ``aws`` to an absolute path, falling back to the bare name.
+
+    Searches the inherited ``PATH`` first, then the well-known install dirs in
+    :data:`_AWS_BIN_DIRS`, so the desktop-app gateway resolves the CLI no matter
+    how it was launched (Finder/Dock give a minimal PATH; a terminal launch does
+    not). Falling back to the bare ``"aws"`` preserves the prior behaviour — and
+    its "not found" error — when the CLI genuinely is not installed anywhere.
+
+    A hit found only through the fallback dirs (i.e. NOT reachable via the
+    inherited ``PATH``, which the pre-existing bare-argv behaviour already
+    trusted) is additionally routed through
+    :func:`kiro_crew.github_runner.validate_provider_executable` — the repo's
+    executable-provenance chokepoint — so an agent- or third-party-planted shim
+    in a user-writable install dir is refused rather than executed inside the
+    credential-bearing sandbox. On refusal we fall back to the bare name,
+    preserving the prior not-found/execvp error rather than inventing a new
+    failure mode.
+    """
+    env_path = os.environ.get("PATH", "")
+    found = shutil.which("aws", path=env_path) if env_path else None
+    if found:
+        # Same trust class as the pre-existing behaviour: execvp against the
+        # inherited PATH already executed exactly this binary.
+        return found
+    fallback = os.pathsep.join(p for p in _AWS_BIN_DIRS if p)
+    found = shutil.which("aws", path=fallback) if fallback else None
+    if found:
+        from kiro_crew.github_runner import validate_provider_executable
+
+        try:
+            return validate_provider_executable(found)
+        except ValueError:
+            logger.warning("refusing aws CLI at %s: failed provenance validation", found)
+    return "aws"
+
+
 def _aws(args: list[str], profile: str) -> list[str]:
     """Build an ``aws`` CLI argv with an optional ``--profile`` (never a raw key)."""
-    cmd = ["aws"] + list(args)
+    cmd = [_resolve_aws_bin()] + list(args)
     if profile:
         cmd += ["--profile", profile]
     return cmd

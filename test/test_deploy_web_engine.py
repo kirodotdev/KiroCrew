@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import pytest
@@ -56,6 +57,99 @@ def fake(monkeypatch):
     f = FakeAWS()
     monkeypatch.setattr(engine, "run_aws", f)
     return f
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the fallback install dirs are macOS path literals and provenance "
+    "validation needs POSIX uid semantics; the fallback branch is dead on "
+    "Windows by design (PATH-hit and bare-name behaviour are covered below)",
+)
+def test_aws_bin_resolved_absolutely_from_extra_dirs(monkeypatch, tmp_path):
+    """A Finder-launched gateway has a minimal PATH; _aws must still resolve the
+    CLI absolutely from a well-known install dir instead of emitting a bare
+    'aws' that fails execvp inside the sandbox."""
+    fake_aws = tmp_path / "aws"
+    fake_aws.write_text("#!/bin/sh\n")
+    fake_aws.chmod(0o755)
+    # Simulate the minimal launchd-style PATH *hermetically*: a PATH that does
+    # not contain aws (a literal /usr/bin would flake on hosts where the real
+    # CLI is installed there), and point the well-known dirs at our temp bin so
+    # the resolver can only find it through the fallback search.
+    empty_bin = tmp_path / "emptybin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path),))
+
+    # Isolate the provenance chokepoint (it has its own dedicated tests and its
+    # verdict depends on host /tmp ownership): assert the resolver routes the
+    # fallback hit through it and returns its canonical result.
+    from kiro_crew import github_runner
+
+    validated = []
+
+    def _passthrough(candidate):
+        validated.append(candidate)
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _passthrough)
+
+    argv = engine._aws(["sts", "get-caller-identity"], "kauai")
+
+    assert argv[0] == str(fake_aws)  # absolute, not a bare "aws"
+    assert argv[1:] == ["sts", "get-caller-identity", "--profile", "kauai"]
+    assert validated == [str(fake_aws)]  # fallback hit went through provenance
+
+
+def test_aws_bin_path_hit_wins_without_fallback(monkeypatch, tmp_path):
+    """A PATH hit is the pre-existing trust class (execvp already ran exactly
+    this binary) and resolves absolutely with no fallback-dir involvement."""
+    if os.name == "nt":
+        # Windows resolves executables by PATHEXT extension, not the exec bit.
+        fake_aws = tmp_path / "aws.cmd"
+        fake_aws.write_text("@echo off\n")
+        monkeypatch.setenv("PATHEXT", ".cmd")
+    else:
+        fake_aws = tmp_path / "aws"
+        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", ())
+
+    assert engine._resolve_aws_bin() == str(fake_aws)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_aws_bin_fallback_hit_failing_provenance_returns_bare_name(monkeypatch, tmp_path):
+    """A fallback-dir hit that fails the repo's executable-provenance check is
+    refused: fall back to the bare name (the prior not-found behaviour) instead
+    of executing a possibly planted shim inside the credential sandbox."""
+    fake_aws = tmp_path / "aws"
+    fake_aws.write_text("#!/bin/sh\n")
+    fake_aws.chmod(0o755)
+    empty_bin = tmp_path / "emptybin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path),))
+
+    from kiro_crew import github_runner
+
+    def _refuse(candidate):
+        raise ValueError("planted shim")
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+
+    assert engine._resolve_aws_bin() == "aws"
+
+
+def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
+    """When the CLI is nowhere on PATH or the extra dirs, fall back to the bare
+    'aws' so the prior 'not found' behaviour/error is preserved."""
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", ())
+
+    assert engine._resolve_aws_bin() == "aws"
+    assert engine._aws(["s3", "ls"], "")[0] == "aws"
 
 
 def test_random_bucket_name_format():
