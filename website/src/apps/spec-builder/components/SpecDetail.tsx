@@ -10,6 +10,7 @@ import { ADVANCE_PROMPT } from '../prompts'
 import { specApi, LS, phaseLabel, PHASE_BUILDING_KEY, type SpecDetail as SpecDetailData } from '../api'
 import { ACCENT, SEL_BG, SEL_BORDER, PULSE_MOTION, Btn } from './shared'
 import SegmentedControl, { type Segment } from '../../../components/SegmentedControl'
+import { useIsMobile } from '../../../hooks/useIsMobile'
 import ChatColumn from './ChatColumn'
 import DocView from './DocView'
 import { DOC_CSS } from '../inlineStyles'
@@ -69,6 +70,10 @@ export interface SpecDetailProps {
 export default function SpecDetail({ name, setErr }: SpecDetailProps) {
   const [tab, setTab] = useState<DocTabId>('requirements')
   const [expanded, setExpanded] = useState(false)
+  // Narrow: the document column steps aside and the chat takes the full width.
+  // The document is still reachable — the same fullscreen review overlay, opened
+  // from the chat header instead of from the hidden column's own header.
+  const isMobile = useIsMobile()
 
   // React Query rather than useState + setInterval, for the same reason the
   // specs list uses it: two overlapping manual polls could resolve OUT OF ORDER,
@@ -332,7 +337,7 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
   )
 
   return (
-    <div ref={bodyRef} className="flex flex-1 min-w-0 min-h-0">
+    <div ref={bodyRef} className={`flex flex-1 min-w-0 min-h-0 ${isMobile ? 'flex-col' : ''}`}>
       <style>{DOC_CSS}</style>
 
       {/* ── Chat column ──
@@ -359,6 +364,18 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
             )}
           </span>
           <span className="flex-1 min-w-0" />
+          {/* Narrow only: the document column is not on screen, and the control
+              that opens it lives in that column's own header. This is the same
+              fullscreen review overlay, reached from the header that IS visible
+              — so the document stays reachable without a second mechanism. */}
+          {isMobile && (
+            <Btn
+              onClick={() => setExpanded(true)}
+              title={i18nT('apps.specBuilder.components.specDetail.expand_for_review_esc_to_close')}
+              ariaLabel={i18nT('apps.specBuilder.components.specDetail.expand_document_for_review')}
+              label={<Maximize2 className="lucide-inline" />}
+            />
+          )}
           <span
             className="text-[11px] font-mono text-muted overflow-hidden text-ellipsis whitespace-nowrap max-w-[45%]"
             style={{ direction: 'rtl', textAlign: 'right' }}
@@ -405,25 +422,43 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
           aria-valuemax={75}
           tabIndex={0}
           title={i18nT('apps.specBuilder.components.specDetail.drag_or_use_to_resize')}
-          className="w-1.5 shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors focus-ring"
+          className={`w-1.5 shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors focus-ring ${isMobile ? 'hidden' : ''}`}
         />
         {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
         {/* ── Docs column ──
             A flush panel with a left border, not a floating card: the card
             treatment made two peer columns look like different kinds of surface
-            and left the doc header sitting below the chat's. */}
+            and left the doc header sitting below the chat's.
+
+            While narrow this column carries ONLY the pending-comment tray, as a
+            full-width row UNDER the chat. The document itself moves to the
+            fullscreen overlay, but the tray cannot: it holds comments the user
+            wrote and has not sent, and `key={sel}` unmounts this component on
+            the next spec — so hiding the whole column outright would make them
+            unreachable and then silently discard them. Rendered only when it has
+            something to show, or an empty strip would sit under every chat. */}
         <section
-          className="min-w-0 flex flex-col border-l border-border"
-          style={{ flexBasis: docPct + '%', flexGrow: 0, flexShrink: 0 }}
+          className={`min-w-0 flex flex-col ${isMobile
+            ? (comments.length > 0 ? 'w-full shrink-0 border-t border-border' : 'hidden')
+            : 'border-l border-border'}`}
+          style={isMobile ? undefined : { flexBasis: docPct + '%', flexGrow: 0, flexShrink: 0 }}
         >
-          <div className="sb-doc flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className={`sb-doc flex-1 min-h-0 flex flex-col overflow-hidden ${isMobile ? 'hidden' : ''}`}>
             {docTabsHeader(false)}
             <DocView detail={detail} tab={tab} addComment={addComment} running={running} />
           </div>
-          <SpecStatePanel
-            detail={detail}
-            sendMessage={(msg) => messageMutation.mutateAsync(msg)}
-          />
+          {/* HIDDEN, not unmounted — same reason as the pane above. This panel's
+              `sent` map is the guard against answering one decision twice while
+              the agent is still persisting the first answer (see its own comment),
+              and it lives in local state. Unmounting resets the guard, so merely
+              rotating a phone across the 768px breakpoint and back would let a
+              conflicting answer through. */}
+          <div className={isMobile ? 'hidden' : ''}>
+            <SpecStatePanel
+              detail={detail}
+              sendMessage={(msg) => messageMutation.mutateAsync(msg)}
+            />
+          </div>
           {comments.length > 0 && (
             <div
               className="mt-2.5 rounded-lg bg-bg shrink-0 max-h-[220px] flex flex-col"
