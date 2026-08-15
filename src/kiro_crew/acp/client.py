@@ -46,6 +46,7 @@ from kiro_crew.acp.liveness import VERDICT_UNKNOWN, VERDICT_WORKING, LivenessOra
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
@@ -2097,6 +2098,17 @@ class AcpClient:
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
 
+    @property
+    def _is_kiro(self) -> bool:
+        """True when this client drives kiro-cli (the AcpClient default).
+
+        AcpClient serves exactly two backends — kiro-cli and the dormant claude
+        seam — so this is the positive spelling of the sites that used to read
+        ``not self._is_claude`` (harness-parity H5). KAS runs on AcpRuntime, not
+        AcpClient, so it never reaches this property.
+        """
+        return self.backend == ACP_BACKEND_KIRO
+
     def _pooled_mcp_servers(self) -> list[dict[str, Any]]:
         """Broker-stub ``mcpServers`` entries for this session's ``session/new``.
 
@@ -2211,7 +2223,7 @@ class AcpClient:
         # instead of calling into here — otherwise the same stale setting that is
         # quietly withheld on a cold start would raise and kill a warm claim,
         # making the outcome depend on whether a pooled process happened to exist.
-        if not self._is_claude and self._model_is_unusable(model_id):
+        if self._is_kiro and self._model_is_unusable(model_id):
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
             raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
@@ -2326,7 +2338,7 @@ class AcpClient:
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             return
-        if not self._is_claude and self._model_is_unusable(self._model):
+        if self._is_kiro and self._model_is_unusable(self._model):
             _withheld_log, _ = redact_exfiltration_urls(str(self._model))
             _withheld_log, _ = redact_credentials(_withheld_log)
             logger.warning(
@@ -2627,7 +2639,7 @@ class AcpClient:
         # ONE thread hop. Guarded: the sandbox temp file is live, so a
         # cancellation here must not orphan it.
         env = await self._to_thread_guarding_sandbox(
-            functools.partial(_resolve_spawn_env, kiro_api_key=not self._is_claude), env
+            functools.partial(_resolve_spawn_env, kiro_api_key=self._is_kiro), env
         )
         # Positive-identity marker for the orphan sweep: kiro-cli and every MCP
         # server it spawns inherit this, so escaped launcher trees (``npx
@@ -3192,7 +3204,7 @@ class AcpClient:
 
         # Seek to end of JSONL so we only read new tool results.
         # claude-agent-acp stores sessions via its own SDK, not ~/.kiro/ — skip.
-        if self._session_id and not self._is_claude:
+        if self._session_id and self._is_kiro:
             _jpath = kiro_sessions_dir() / f"{self._session_id}.jsonl"
             try:
                 self._jsonl_pos = _jpath.stat().st_size if _jpath.exists() else 0
@@ -3208,7 +3220,7 @@ class AcpClient:
         #    default (broader) mode, which for a restricted agent is a privilege
         #    escalation. Self-heal (B, in _spawn) regenerates the managed default
         #    so the common case never reaches this branch.
-        if not self._is_claude:
+        if self._is_kiro:
             if not self._modes_advertised or self._agent in self._available_mode_ids:
                 await self._send_request(
                     METHOD_SET_MODE,

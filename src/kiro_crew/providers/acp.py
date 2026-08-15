@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
     EVENT_COMPACTION_STATUS,
@@ -357,7 +358,7 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
-        if not self.is_claude_backend:
+        if self.is_acp_runtime_backend:
             # Recover overlay-persisted levels (server-restart resilience) and
             # write the overlay BEFORE the first spawn so kiro-cli reads it on
             # session/new. Caller-provided overrides win — only fill gaps.
@@ -431,6 +432,19 @@ class AcpProvider(LLMProvider):
         captures every future backend.
         """
         return self._client.backend == ACP_BACKEND_KIRO
+
+    @property
+    def is_acp_runtime_backend(self) -> bool:
+        """True when this provider is served by AcpRuntime (kiro-cli or KAS).
+
+        Membership in ``ACP_BACKENDS_ACP_RUNTIME`` (harness-parity H5). Names
+        the "kiro or kas" set positively so the shared-runtime start path, the
+        cli.json overlay recovery, and the skip-live-effort branch stop being
+        spelled ``not is_claude_backend`` — which would hand the kiro-family
+        path to every harness added later. The dormant claude AcpClient seam is
+        not a member.
+        """
+        return self._client.backend in ACP_BACKENDS_ACP_RUNTIME
 
     @property
     def is_session_sharing_eligible(self) -> bool:
@@ -1035,7 +1049,7 @@ class AcpProvider(LLMProvider):
             # Roll back to the prior state before propagating to the caller.
             if _prev is None:
                 self._effort_per_model.pop(model, None)
-                if not self.is_claude_backend:
+                if self.is_acp_runtime_backend:
                     _clear_cli_overlay_effort(self._client._work_dir, model)
             else:
                 self._effort_per_model[model] = _prev
@@ -1096,7 +1110,7 @@ class AcpProvider(LLMProvider):
         self._apply_effort_overlay()
         self._apply_tool_search_overlay()
 
-        if not self.is_claude_backend:
+        if self.is_acp_runtime_backend:
             # ── Kiro unified path: AcpRuntime + AcpSessionHandle ──
             # Spawn a runtime, create/resume a session, wrap in
             # AcpSessionProvider. One process hosts parent + all subagent
@@ -1119,7 +1133,7 @@ class AcpProvider(LLMProvider):
         must not break session start. The kiro backend already gets effort
         from the cli.json overlay at spawn, so this is a no-op there.
         """
-        if not self.is_claude_backend:
+        if self.is_acp_runtime_backend:
             return
         level = self._resolve_effort()
         if not level:

@@ -165,6 +165,20 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # qualifies; a Node or Python harness does not, however it is spawned.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
+# Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
+# (kiro-cli and KAS) whose single process hosts N sessions via demux. The
+# dormant claude-agent-acp seam runs one AcpClient per session and is NOT a
+# member. Membership drives the shared runtime start path and the kiro-family
+# spawn conventions: members read the cli.json effort/tool-search overlay and
+# receive effort at spawn, whereas claude applies it via a live push after the
+# session is ready. Stated as opt-in membership (harness-parity H5/H6) so the
+# four sites that mean "kiro or kas" say so positively rather than as
+# ``not is_claude_backend`` — an inference that silently captures every harness
+# added later. This is a SUPERSET of ACP_BACKENDS_SESSION_SHARING: running on
+# AcpRuntime is necessary for session sharing but not sufficient (KAS runs here
+# yet is excluded from sharing until keep-aware teardown lands).
+ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility

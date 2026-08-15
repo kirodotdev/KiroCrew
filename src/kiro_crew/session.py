@@ -96,7 +96,11 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
-from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_DEFAULT,
+)
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
@@ -176,7 +180,7 @@ def _is_claude_backend(provider: Any) -> bool:
     if not isinstance(provider, AcpProvider):
         return False
     backend = getattr(provider.client, "backend", "")
-    return backend == "claude"
+    return backend == ACP_BACKEND_CLAUDE
 
 
 def _provider_label(provider: Any) -> str:

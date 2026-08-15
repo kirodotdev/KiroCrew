@@ -882,7 +882,7 @@ class AcpRuntime:
                 strip_kiro_cli_api_key,
             )
 
-            if self._acp_backend != ACP_BACKEND_KAS:
+            if self._acp_backend == ACP_BACKEND_KIRO:
                 inject_kiro_cli_api_key(env)
             else:
                 strip_kiro_cli_api_key(env)
