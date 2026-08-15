@@ -88,6 +88,32 @@ DEFAULT_SSM_CONNECT_TIMEOUT_SECS: float = 25.0
 # generous enough for any realistic proxy chain while still bounding the wait.
 CONNECT_TIMEOUT_CEILING_SECS: float = 120.0
 
+# How long (secs) to wait for the remote ``kirocrew token`` to return before
+# giving up on the mint. This is the *second* proxy-bound ssh child a connect
+# spawns: the readiness wait above bounds the ``ssh -L`` forward, and this bounds
+# the separate ``ssh <host> kirocrew token`` invocation. Both cross the same
+# ProxyCommand/jump host, so a host whose handshake alone eats 12-16s spends that
+# cost twice — meaning a user who had to raise ``connect_timeout_secs`` can clear
+# the forward and still time out here. Exposed as a user-tunable via
+# ``kirocrew config set instances.mint_timeout_secs <value>`` for exactly that
+# case (30s covers a direct ssh mint comfortably).
+DEFAULT_MINT_TIMEOUT_SECS: float = 30.0
+
+# SSM dispatches the mint through ``ssm send-command``, which adds the agent's
+# poll interval to the remote command's own runtime before any output comes
+# back — routinely slower than an ssh mint, hence the higher default. An explicit
+# ``mint_timeout_secs`` override wins for both transports (same convention as
+# ``connect_timeout_secs``).
+DEFAULT_SSM_MINT_TIMEOUT_SECS: float = 90.0
+
+# Upper bound (secs) on a user-configured instances.mint_timeout_secs. Higher
+# than the connect ceiling because the mint budget covers a proxy handshake AND
+# the remote gateway actually answering the token request, and because it must
+# sit above the SSM default (90s) or that transport's own default would be
+# unreachable as an explicit value. Still bounded so a pathological setting
+# cannot leave a connect attempt hanging for hours.
+MINT_TIMEOUT_CEILING_SECS: float = 300.0
+
 # Proactively re-mint each instance's dashboard token at this fraction of its
 # TTL, before the 20h cap. 0.8 = refresh at 80% elapsed.
 DEFAULT_TOKEN_REFRESH_FRACTION: float = 0.8

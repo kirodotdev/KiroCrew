@@ -234,6 +234,7 @@ cannot drift.
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
 | `instances.connect_timeout_secs` | unset (SSH `15.0`, SSM `25.0`) | How long (secs) to wait for the local forward port to accept connections before declaring a connect attempt failed. Hosts behind a ProxyCommand or jump host need longer (the proxy handshake runs before ssh begins the forward). An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above 120 are clamped to 120. |
+| `instances.mint_timeout_secs` | unset (SSH `30.0`, SSM `90.0`) | How long (secs) to wait for the remote `kirocrew token` mint to return. A connect spawns **two** proxy-bound children — the `ssh -L` forward (bounded by `connect_timeout_secs`) and this separate mint command — so a slow ProxyCommand or jump host pays its handshake cost twice, and raising only the connect timeout can still leave the connect failing with "timed out minting token". An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above `MINT_TIMEOUT_CEILING_SECS` (300) are clamped. |
 | `instances.max_recovery_attempts` | `8` | Consecutive self-heal attempts before the tunnel is left disconnected. Below 1 falls back to the default; above `MAX_RECOVERY_ATTEMPTS_CEILING` (100) is clamped with a warning, so a pathological setting cannot turn bounded self-heal into a near-infinite retry loop. |
 | `instances.recover_backoff_max_secs` | `30.0` | Cap on the per-attempt backoff. Non-positive falls back to the default; above `RECOVER_BACKOFF_MAX_CEILING_SECS` (300) is clamped, bounding the worst-case wall-clock recovery window. |
 | `instances.probe_failure_threshold` | `3` | Consecutive health-probe failures before a non-forwarding tunnel is torn down. Below 1 falls back to the default. |
@@ -242,11 +243,18 @@ cannot drift.
 kirocrew config set instances.warm_set_cap 3
 kirocrew config set instances.ssh_compression false
 kirocrew config set instances.connect_timeout_secs 45
+kirocrew config set instances.mint_timeout_secs 90
 ```
 
 Constants that are **not** user-configurable: the probe interval (30s), the token
-refresh fraction (0.8), the stored-token probe timeout (2s), and the mint
-timeout (30s).
+refresh fraction (0.8), and the stored-token probe timeout (2s).
+
+Both `ssh` budgets a connect depends on are now tunable, and they are tuned
+together: `connect_timeout_secs` bounds the `ssh -L` forward-readiness wait and
+`mint_timeout_secs` bounds the separate `ssh <host> kirocrew token` invocation.
+Because both traverse the same ProxyCommand/jump host, a host whose handshake
+alone costs 12-16s spends that twice per connect — which is why raising only the
+first one leaves the mint step as the next binding constraint.
 
 ### 5.2 `instances.ssh_compression`
 

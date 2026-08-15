@@ -69,6 +69,7 @@ from kiro_crew.instances.constants import (
     DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _MAX_RECOVERY
+from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT_SECS
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_PROBE_INTERVAL_SECS as _PROBE_INTERVAL
 from kiro_crew.instances.constants import (
@@ -77,6 +78,9 @@ from kiro_crew.instances.constants import (
 from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
 from kiro_crew.instances.constants import (
     DEFAULT_SSM_CONNECT_TIMEOUT_SECS as _DEFAULT_SSM_CONNECT_TIMEOUT_SECS,
+)
+from kiro_crew.instances.constants import (
+    DEFAULT_SSM_MINT_TIMEOUT_SECS as _DEFAULT_SSM_MINT_TIMEOUT_SECS,
 )
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_REFRESH_FRACTION as _REFRESH_FRACTION
@@ -759,6 +763,7 @@ class SshTunnelManager:
         *,
         base_port: int = DEFAULT_TUNNEL_BASE_PORT,
         connect_timeout_secs: float | None = None,
+        mint_timeout_secs: float | None = None,
         ssh_compression: bool = True,
         max_recovery_attempts: int = _MAX_RECOVERY,
         recover_backoff_max_secs: float = _RECOVER_BACKOFF_MAX_SECS,
@@ -783,6 +788,12 @@ class SshTunnelManager:
         self._parent_port = parent_port if parent_port else _LOCAL_DASHBOARD_PORT
         self._allocator = PortAllocator(base_port=base_port)
         self._connect_timeout = connect_timeout_secs
+        # Budget for the SECOND proxy-bound child a connect spawns: the remote
+        # `kirocrew token` mint. Kept separate from the forward-readiness timeout
+        # above because a slow ProxyCommand pays its handshake cost on both, so
+        # raising only one still leaves the connect failing on the other.
+        # ``None`` = use the transport-specific default (see _mint_timeout_for).
+        self._mint_timeout = mint_timeout_secs
         self._ssh_compression = ssh_compression
         # Self-heal tunables (config-tunable via instances.*): max consecutive
         # recovery attempts before give-up, the cap on the per-attempt backoff,
@@ -889,6 +900,20 @@ class SshTunnelManager:
             return _DEFAULT_SSM_CONNECT_TIMEOUT_SECS
         return _DEFAULT_CONNECT_TIMEOUT_SECS
 
+    def _mint_timeout_for(self, method: str) -> float:
+        """Token-mint budget for *method*, honoring an explicit caller override.
+
+        Mirrors :meth:`_connect_timeout_for`. The SSM default is higher because
+        ``ssm send-command`` adds the agent's poll latency on top of the remote
+        command's own runtime. A caller that passed an explicit
+        ``mint_timeout_secs`` (config, tests, tuning) wins for both transports.
+        """
+        if self._mint_timeout is not None:
+            return self._mint_timeout  # explicit override
+        if method == "ssm":
+            return _DEFAULT_SSM_MINT_TIMEOUT_SECS
+        return _DEFAULT_MINT_TIMEOUT_SECS
+
     async def _ps_lines(self) -> list[str]:
         """Return ``<pid> <command>`` lines for all processes (portable ps).
 
@@ -980,8 +1005,12 @@ class SshTunnelManager:
 
         The SSH path goes through the injectable ``self._mint_token`` seam (kept
         so the existing tests can substitute a fake mint); the SSM path calls
-        :func:`mint_remote_token_ssm`. Never logs the token.
+        :func:`mint_remote_token_ssm`. Both are given the resolved
+        ``mint_timeout_secs`` budget (see :meth:`_mint_timeout_for`) so an operator
+        on a slow-proxy host can raise it without patching the package. Never logs
+        the token.
         """
+        timeout_secs = self._mint_timeout_for(params.method)
         if params.method == "ssm":
             return await mint_remote_token_ssm(
                 params.ssm_target,
@@ -992,6 +1021,7 @@ class SshTunnelManager:
                 ttl=inst.ttl,
                 remote_port=inst.remote_port,
                 embed_parent_port=self._parent_port,
+                timeout_secs=timeout_secs,
             )
         return await self._mint_token(
             params.ssh_host,
@@ -999,6 +1029,7 @@ class SshTunnelManager:
             ttl=inst.ttl,
             remote_port=inst.remote_port,
             embed_parent_port=self._parent_port,
+            timeout_secs=timeout_secs,
         )
 
     async def connect(self, instance_id: str) -> TunnelStatus:

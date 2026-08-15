@@ -32,7 +32,7 @@ import logging
 import re
 
 from kiro_crew.cloud import ssm as cloud_ssm
-from kiro_crew.instances.constants import TTL_PATTERN
+from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS, TTL_PATTERN
 from kiro_crew.instances.token_mint import (
     TokenMintError,
     build_remote_command,
@@ -51,8 +51,10 @@ logger = logging.getLogger(__name__)
 
 # How long to wait for the SSM send-command invocation to finish. Generous vs.
 # the SSH transport's 30s timeout: send-command has its own dispatch latency
-# (agent poll interval) on top of the remote command's own runtime.
-_DEFAULT_MINT_TIMEOUT_SECS = 90
+# (agent poll interval) on top of the remote command's own runtime. Canonical
+# value (and the user-tunable `instances.mint_timeout_secs` that overrides it)
+# lives in `instances.constants`.
+_DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_SSM_MINT_TIMEOUT_SECS
 
 # Same ttl shape token_mint.py accepts (kept local rather than importing a
 # "private" helper cross-module — see module docstring).
