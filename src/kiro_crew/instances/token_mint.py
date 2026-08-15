@@ -25,7 +25,7 @@ import logging
 import re
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.instances.constants import TTL_PATTERN
+from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS, TTL_PATTERN
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,10 @@ _CLIPPED_RUN_RE = re.compile(r"^[A-Za-z0-9_\-.=+/%%:?&]{%d,}" % _CLIPPED_RUN_MIN
 _CLIPPED_MARKER = "<clipped>"
 
 # How long to wait for the remote `kirocrew token` to return before giving up.
-_DEFAULT_MINT_TIMEOUT_SECS = 30.0
+# The canonical default (and the user-tunable `instances.mint_timeout_secs` that
+# overrides it) lives in `instances.constants`; re-exported under the old private
+# name so existing callers/tests keep working.
+_DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_MINT_TIMEOUT_SECS
 
 
 class TokenMintError(Exception):

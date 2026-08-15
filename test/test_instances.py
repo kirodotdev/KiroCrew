@@ -62,6 +62,7 @@ class TestConfig:
             "tunnel_base_port": 7778,
             "ssh_compression": True,
             "connect_timeout_secs": None,
+            "mint_timeout_secs": None,
             "max_recovery_attempts": 8,
             "recover_backoff_max_secs": 30.0,
             "probe_failure_threshold": 3,
@@ -74,6 +75,7 @@ class TestConfig:
             "instances.tunnel_base_port",
             "instances.ssh_compression",
             "instances.connect_timeout_secs",
+            "instances.mint_timeout_secs",
             "instances.max_recovery_attempts",
             "instances.recover_backoff_max_secs",
             "instances.probe_failure_threshold",
@@ -85,6 +87,10 @@ class TestConfig:
         assert timeout_entry.type == "number"
         assert timeout_entry.nullable is True
         assert timeout_entry.default_value is None
+        mint_entry = next(e for e in SCHEMA_REGISTRY if e.path == "instances.mint_timeout_secs")
+        assert mint_entry.type == "number"
+        assert mint_entry.nullable is True
+        assert mint_entry.default_value is None
 
     def test_recovery_knobs_parse_from_config_file(self, tmp_path, monkeypatch):
         import json
@@ -213,6 +219,79 @@ class TestConfig:
         cfg_file.write_text(json.dumps({"instances": {"connect_timeout_secs": 15.0}}))
         cfg = KiroCrewConfig.load()
         assert cfg.instances.connect_timeout_secs == 15.0
+
+    def test_mint_timeout_default_and_clamps(self):
+        from kiro_crew.config.loader import InstancesConfig
+        from kiro_crew.instances.constants import (
+            DEFAULT_MINT_TIMEOUT_SECS,
+            DEFAULT_SSM_MINT_TIMEOUT_SECS,
+            MINT_TIMEOUT_CEILING_SECS,
+        )
+
+        # Unset remains distinguishable from an explicit value equal to the SSH
+        # default, so the manager can select the transport-specific default.
+        c = InstancesConfig()
+        assert DEFAULT_MINT_TIMEOUT_SECS == 30.0
+        assert DEFAULT_SSM_MINT_TIMEOUT_SECS == 90.0
+        assert c.mint_timeout_secs is None
+
+        c = InstancesConfig(mint_timeout_secs=DEFAULT_MINT_TIMEOUT_SECS)
+        assert c.mint_timeout_secs == DEFAULT_MINT_TIMEOUT_SECS
+
+        # Explicit override is honored.
+        c = InstancesConfig(mint_timeout_secs=90.0)
+        assert c.mint_timeout_secs == 90.0
+
+        # Below 1 falls back to the transport-specific defaults.
+        assert InstancesConfig(mint_timeout_secs=0.5).mint_timeout_secs is None
+        assert InstancesConfig(mint_timeout_secs=-10.0).mint_timeout_secs is None
+
+        # Above the ceiling is clamped; the boundary itself is left untouched. The
+        # ceiling must sit above the SSM default or that transport's own default
+        # would be unreachable as an explicit value.
+        assert MINT_TIMEOUT_CEILING_SECS == 300.0
+        assert MINT_TIMEOUT_CEILING_SECS > DEFAULT_SSM_MINT_TIMEOUT_SECS
+        assert (
+            InstancesConfig(mint_timeout_secs=99_999.0).mint_timeout_secs
+            == MINT_TIMEOUT_CEILING_SECS
+        )
+        assert (
+            InstancesConfig(mint_timeout_secs=MINT_TIMEOUT_CEILING_SECS).mint_timeout_secs
+            == MINT_TIMEOUT_CEILING_SECS
+        )
+
+    def test_mint_timeout_parses_from_config_file(self, tmp_path, monkeypatch):
+        import json
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg_file = tmp_path / "config.json"
+        monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
+
+        cfg_file.write_text(json.dumps({"instances": {"mint_timeout_secs": 90.0}}))
+        assert KiroCrewConfig.load().instances.mint_timeout_secs == 90.0
+
+        # Absent and explicit-null both mean "unset" (transport default wins).
+        cfg_file.write_text(json.dumps({"instances": {}}))
+        assert KiroCrewConfig.load().instances.mint_timeout_secs is None
+
+        cfg_file.write_text(json.dumps({"instances": {"mint_timeout_secs": None}}))
+        assert KiroCrewConfig.load().instances.mint_timeout_secs is None
+
+        # An explicit value equal to the SSH default survives as explicit.
+        cfg_file.write_text(json.dumps({"instances": {"mint_timeout_secs": 30.0}}))
+        assert KiroCrewConfig.load().instances.mint_timeout_secs == 30.0
+
+    def test_mint_timeout_constant_shared_with_both_minters(self):
+        """The minters must read the shared constant, not re-hardcode a value."""
+        from kiro_crew.instances import ssm_token_mint, token_mint
+        from kiro_crew.instances.constants import (
+            DEFAULT_MINT_TIMEOUT_SECS,
+            DEFAULT_SSM_MINT_TIMEOUT_SECS,
+        )
+
+        assert token_mint._DEFAULT_MINT_TIMEOUT_SECS == DEFAULT_MINT_TIMEOUT_SECS
+        assert ssm_token_mint._DEFAULT_MINT_TIMEOUT_SECS == DEFAULT_SSM_MINT_TIMEOUT_SECS
 
 
 # ── PortAllocator ───────────────────────────────────────────────────────────
@@ -1033,7 +1112,7 @@ class TestSshTunnelArgvCompression:
             return _FakeTunnel(*a, compression=compression, **k)
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "SECRET_TOK"
 
@@ -1231,7 +1310,7 @@ class TestSshTunnelManager:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "SECRET_TOK"
 
@@ -1300,7 +1379,7 @@ class TestSshTunnelManager:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             raise TokenMintError("nope")
 
@@ -2907,7 +2986,7 @@ class TestSelfHealRefreshRestart:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "TOK"
 
@@ -3156,7 +3235,9 @@ class TestSelfHealRefreshRestart:
         release = asyncio.Event()
         minted = 0
 
-        async def slow_mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def slow_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
+        ):
             nonlocal minted
             minted += 1
             if arm.is_set():
@@ -3212,7 +3293,7 @@ class TestSelfHealRefreshRestart:
         seen: list = []
 
         async def capturing_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             seen.append(remote_port)
             return "TOK"
@@ -3419,7 +3500,7 @@ class TestPortMirror:
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": port_free)
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "TOK"
 
@@ -3507,7 +3588,7 @@ class TestLastError:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "SECRET_TOK"
 
@@ -3542,7 +3623,7 @@ class TestLastError:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             raise TokenMintError("nope")
 
@@ -3560,7 +3641,7 @@ class TestLastError:
         calls = {"n": 0}
 
         async def flaky_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             calls["n"] += 1
             if calls["n"] == 1:
@@ -3580,7 +3661,7 @@ class TestLastError:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             raise TokenMintError("nope")
 
@@ -3609,7 +3690,7 @@ class TestStatusForRetainedError:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "SECRET_TOK"
 
@@ -3625,7 +3706,7 @@ class TestStatusForRetainedError:
         from kiro_crew.instances.token_mint import TokenMintError
 
         async def bad_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             raise TokenMintError("nope")
 
@@ -3683,7 +3764,7 @@ class TestStartupRevive:
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "SECRET_TOK"
 
@@ -3716,7 +3797,9 @@ class TestStartupRevive:
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
         from kiro_crew.instances.token_mint import TokenMintError
 
-        async def mint(host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None):
+        async def mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
+        ):
             if "bad" in host:
                 raise TokenMintError("unreachable")
             return "SECRET_TOK"
@@ -3770,6 +3853,7 @@ class TestStartupRevive:
                 tunnel_base_port=53400,
                 ssh_compression=False,
                 connect_timeout_secs=15.0,
+                mint_timeout_secs=30.0,
                 max_recovery_attempts=8,
                 recover_backoff_max_secs=30.0,
                 probe_failure_threshold=3,
@@ -4184,12 +4268,12 @@ class TestSsmTransportSelection:
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
 
-    def _mgr(self, tmp_path, *, mint=None, connect_timeout_secs=None):
+    def _mgr(self, tmp_path, *, mint=None, connect_timeout_secs=None, mint_timeout_secs=None):
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
         async def ok_mint(
-            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
         ):
             return "SSH_TOKEN"
 
@@ -4197,6 +4281,8 @@ class TestSsmTransportSelection:
         manager_kwargs = {}
         if connect_timeout_secs is not None:
             manager_kwargs["connect_timeout_secs"] = connect_timeout_secs
+        if mint_timeout_secs is not None:
+            manager_kwargs["mint_timeout_secs"] = mint_timeout_secs
         return reg, SshTunnelManager(
             reg,
             base_port=53500,
@@ -4236,6 +4322,56 @@ class TestSsmTransportSelection:
         )
         assert mgr._connect_timeout_for("ssh") == ssh_expected
         assert mgr._connect_timeout_for("ssm") == ssm_expected
+
+    @pytest.mark.parametrize(
+        ("configured", "ssh_expected", "ssm_expected"),
+        [
+            (None, 30.0, 90.0),
+            (30.0, 30.0, 30.0),
+            (120.0, 120.0, 120.0),
+            (0.0, 30.0, 90.0),
+            (99_999.0, 300.0, 300.0),
+        ],
+    )
+    def test_mint_timeout_matrix(self, tmp_path, configured, ssh_expected, ssm_expected):
+        from kiro_crew.config.loader import InstancesConfig
+
+        config = InstancesConfig(mint_timeout_secs=configured)
+        _, mgr = self._mgr(tmp_path, mint_timeout_secs=config.mint_timeout_secs)
+        assert mgr._mint_timeout_for("ssh") == ssh_expected
+        assert mgr._mint_timeout_for("ssm") == ssm_expected
+
+    @pytest.mark.asyncio
+    async def test_configured_mint_timeout_reaches_the_ssh_mint(self, tmp_path):
+        """The resolved budget must actually be handed to the minter."""
+        seen = {}
+
+        async def recording_mint(host, *, timeout_secs=None, **_kw):
+            seen["timeout_secs"] = timeout_secs
+            return "SSH_TOKEN"
+
+        reg, mgr = self._mgr(tmp_path, mint=recording_mint, mint_timeout_secs=90.0)
+        reg.add(name="Dev", ssh_host="dev-1", instance_id="dev", remote_port=53512)
+        await mgr.connect("dev")
+        assert seen["timeout_secs"] == 90.0
+        await mgr.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_default_mint_timeout_reaches_the_ssh_mint(self, tmp_path):
+        """With nothing configured, the SSH transport default is passed explicitly."""
+        from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS
+
+        seen = {}
+
+        async def recording_mint(host, *, timeout_secs=None, **_kw):
+            seen["timeout_secs"] = timeout_secs
+            return "SSH_TOKEN"
+
+        reg, mgr = self._mgr(tmp_path, mint=recording_mint)
+        reg.add(name="Dev", ssh_host="dev-1", instance_id="dev", remote_port=53513)
+        await mgr.connect("dev")
+        assert seen["timeout_secs"] == DEFAULT_MINT_TIMEOUT_SECS
+        await mgr.shutdown()
 
     @pytest.mark.asyncio
     async def test_ssh_instance_uses_ssh_transport(self, tmp_path):
