@@ -74,7 +74,7 @@ export default function SessionArchive() {
     <div className="flex gap-4 h-full text-sm">
       <div className="w-1/3 flex flex-col border border-border rounded p-2 overflow-hidden">
         <div className="flex gap-2 mb-2">
-          <input aria-label={i18nT('pages.sessionArchive.fuzzy_filter_substring_match')} className="flex-1 bg-bg-2 border border-border rounded px-2 py-1 text-[13px]" placeholder={i18nT('pages.sessionArchive.fuzzy_filter_substring_match')} value={filterKey} onChange={e => setFilterKey(e.target.value)} />
+          <input aria-label={i18nT('pages.sessionArchive.fuzzy_filter_substring_match')} className="flex-1 min-w-0 bg-bg-2 border border-border rounded px-2 py-1 text-[13px]" placeholder={i18nT('pages.sessionArchive.fuzzy_filter_substring_match')} value={filterKey} onChange={e => setFilterKey(e.target.value)} />
           <button className="px-2 py-1 bg-accent text-accent-fg rounded text-[13px]" onClick={loadList}>{i18nT('pages.sessionArchive.reload')}</button>
         </div>
         {loading && <div className="text-muted text-[13px]">{i18nT('pages.sessionArchive.loading')}</div>}
