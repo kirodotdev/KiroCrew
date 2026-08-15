@@ -39,7 +39,10 @@ export default function InstalledAppCard({
   const skillCount = m?.skills?.length || 0
   const cronCount = m?.crons?.length || 0
   const sopCount = m?.sops?.length || 0
-  const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
+  const pageCount = m?.ui?.pages?.length || 0
+  const tags = m?.tags || []
+  const mcpTools = m?.permissions?.mcpTools || []
+  const hasUI = !!(m?.ui?.entry) || pageCount > 0
   const pageIcon = m?.ui?.pages?.[0]?.icon || ''
   const isSelfManaged = app.resources === 'app'
   const isBuiltin = app.origin === 'builtin'
@@ -118,7 +121,7 @@ export default function InstalledAppCard({
                 {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {i18nT('components.appstore.installedAppCard.agent', { count: agentCount })}</span>}
                 {skillCount > 0 && <span className="flex items-center gap-1"><Zap size={11} /> {i18nT('components.appstore.installedAppCard.skill', { count: skillCount })}</span>}
                 {cronCount > 0 && <span className="flex items-center gap-1"><Clock size={11} /> {i18nT('components.appstore.installedAppCard.cron', { count: cronCount })}</span>}
-                {hasUI && <span className="flex items-center gap-1"><Package size={11} /> {i18nT('components.appstore.installedAppCard.page', { count: m.ui!.pages!.length })}</span>}
+                {pageCount > 0 && <span className="flex items-center gap-1"><Package size={11} /> {i18nT('components.appstore.installedAppCard.page', { count: pageCount })}</span>}
               </div>
             </div>
           </div>
@@ -201,18 +204,18 @@ export default function InstalledAppCard({
       {/* Expanded details */}
       {expanded && (
         <div className="border-t border-border bg-bg-elevated/50 p-4 space-y-3 text-[13px]">
-          {(m?.tags || []).length > 0 && (
+          {tags.length > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <Tag size={12} className="text-muted" />
-              {m!.tags!.map(t => (
+              {tags.map(t => (
                 <span key={t} className="bg-bg-elevated border border-border px-2 py-0.5 rounded text-[11px] text-muted">{t}</span>
               ))}
             </div>
           )}
-          {(m?.permissions?.mcpTools || []).length > 0 && (
+          {mcpTools.length > 0 && (
             <div>
               <span className="text-muted">{i18nT('components.appstore.installedAppCard.mcp_tools')} </span>
-              <span className="text-text">{m!.permissions!.mcpTools!.join(', ')}</span>
+              <span className="text-text">{mcpTools.join(', ')}</span>
             </div>
           )}
           {hasUI && m?.ui?.pages && (

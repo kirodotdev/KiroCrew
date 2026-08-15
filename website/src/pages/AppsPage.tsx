@@ -19,6 +19,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, ShoppingBag, Lock, Trash2, X, ArrowUp, Boxes,
+  AlertTriangle, PowerOff,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn, EmptyState, PageHeader, SearchInput } from '../components/ui'
@@ -39,6 +40,7 @@ import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp }
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
+import ErrorBoundary from '../components/ErrorBoundary'
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
 type RemovableDep = UninstallPreview['dependencies']['removable'][number]
@@ -924,14 +926,45 @@ export default function AppsPage() {
               )}
               <div className="space-y-3">
                 {filteredInstalled.map(app => (
-                  <InstalledAppCard
+                  <ErrorBoundary
                     key={app.name}
-                    app={{ ...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name) }}
-                    actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
-                    onAction={handleAction}
-                    onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}
-                    onDetail={() => openDetail(app.name)}
-                  />
+                    scope="apps:installed-card"
+                    fallback={
+                      <div className="border border-border rounded-lg p-4 flex items-center gap-3">
+                        <AlertTriangle aria-hidden className="lucide-inline text-[var(--warn)] shrink-0" />
+                        <div className="min-w-0 text-sm flex-1">
+                          <span className="font-medium text-text">{app.manifest?.displayName || app.name}</span>
+                          <span className="text-muted ml-2">{i18nT('pages.appsPage.this_app_could_not_be_displayed')}</span>
+                        </div>
+                        {/* The crashed card removed the app's management surface, so the
+                            fallback must keep one recovery path: quiet a broken enabled
+                            app, or remove a disabled one entirely (locked apps cannot
+                            be uninstalled). Same handlers as the healthy card. */}
+                        <div className="shrink-0">
+                          {app.enabled ? (
+                            <Btn
+                              onClick={() => handleAction(app.name, 'disable')}
+                              disabled={actionLoading === `${app.name}:disable`}
+                            >
+                              <PowerOff size={14} /> {i18nT('components.appstore.installedAppCard.disable')}
+                            </Btn>
+                          ) : app.lifecycle !== 'locked' && (
+                            <Btn danger onClick={() => handleAction(app.name, 'uninstall')}>
+                              <Trash2 size={14} /> {i18nT('components.appstore.installedAppCard.uninstall')}
+                            </Btn>
+                          )}
+                        </div>
+                      </div>
+                    }
+                  >
+                    <InstalledAppCard
+                      app={{ ...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name) }}
+                      actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
+                      onAction={handleAction}
+                      onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}
+                      onDetail={() => openDetail(app.name)}
+                    />
+                  </ErrorBoundary>
                 ))}
               </div>
             </>

@@ -6948,6 +6948,7 @@
       "sort": "Ordinamento:",
       "sort_apps": "Ordina le app",
       "the_app_itself_is_managed_externally": "L’app stessa è gestita esternamente.",
+      "this_app_could_not_be_displayed": "Impossibile visualizzare questa app.",
       "this_app_has_an_uninstall_script_that_will_run_b": "Questa app ha uno script di disinstallazione che verrà eseguito prima della rimozione. Potrebbe eliminare il binario dell'app, le configurazioni degli agenti, le skill e altre risorse create durante l'installazione.",
       "this_is_a_self_managed_app_only_kirocrew_metadat": "Questa è un'app autogestita — verranno rimossi solo i metadati di Kiro Crew e il segreto dell'app.\n                    L'app stessa e le registrazioni dei suoi agenti/skill sono gestite esternamente e non verranno modificate.\n                    Se l'app è ancora in esecuzione, potrebbe registrarsi di nuovo al prossimo avvio.",
       "this_will_remove_all_resources_provided_by_this": "Questa operazione rimuoverà tutte le risorse fornite da questa app:",
