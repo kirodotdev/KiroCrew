@@ -210,7 +210,14 @@ function SectionBlock({ section }: { section: Section }) {
           className="flex justify-between gap-3 py-1.5 border-b border-border text-[12.5px] last:border-b-0"
         >
           <span className="text-muted shrink-0">{row.label}</span>
-          <span className="text-text-strong font-mono text-right break-all">{row.value}</span>
+          {/* `break-words`, not `break-all`. `break-all` breaks between letters
+              whether or not anything would overflow, so it split values mid-digit:
+              a 5,289 MB reading rendered as `5,` / `28` / `9 MB`, and an uptime of
+              4h4m17s over three lines. A number broken across lines reads as
+              corrupted data. `break-words` breaks only where a line cannot
+              otherwise fit, which still contains a long value such as a path.
+              `tabular-nums` keeps the column from shifting as values update. */}
+          <span className="text-text-strong font-mono tabular-nums text-right break-words">{row.value}</span>
         </div>
       ))}
     </div>

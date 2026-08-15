@@ -192,7 +192,18 @@ export type FormatUnit =
 
 export function fmtUnit(value: number, unit: FormatUnit, options?: NumberOptions): string {
   if (!Number.isFinite(value)) return '—'
-  return fmtNumber(value, { style: 'unit', unit, unitDisplay: 'narrow', ...options })
+  // A quantity is one atom: never let a line break fall between the number and
+  // its unit, or inside the digit grouping. CLDR does not guarantee this for us
+  // and is not even self-consistent about it — measured with `narrow`, en emits
+  // `5,289MB` (no separator at all), fr uses U+202F, ru uses U+00A0 for bytes but
+  // a plain U+0020 for hours, and de uses U+0020 for MB yet U+00A0 for GB. zh-CN
+  // uses a plain U+0020, which is a UAX #14 break opportunity, so `1,280 GB`
+  // could render with `GB` orphaned on its own line while the same value in
+  // English could not. Promoting every plain space in the formatted quantity to
+  // U+00A0 (class GL: breaks prohibited on both sides) makes the behaviour the
+  // same in all 12 locales. Only plain spaces are touched; U+202F and U+00A0 are
+  // already non-breaking.
+  return fmtNumber(value, { style: 'unit', unit, unitDisplay: 'narrow', ...options }).replace(/ /g, '\u00A0')
 }
 
 /**
