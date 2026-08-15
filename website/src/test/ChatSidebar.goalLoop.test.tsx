@@ -213,33 +213,38 @@ describe('chat sidebar — interrupted goal loop', () => {
     expect(getByText(/Loop 47\/72 — interrupted/)).toBeTruthy()
     const pill = getByTitle(STALLED_TITLE)
     expect(pill).toBeTruthy()
-    // The pulse MEANS "work is happening" — it must be absent here.
-    expect(pill.querySelector('.animate-pulse')).toBeNull()
+    // The pulse MEANS "work is happening" — it moved from the old inline dot to
+    // the status-gutter Goal glyph, which must be STATIC (warn) here, not pulsing.
+    const glyph = container.querySelector('.lucide-goal')
+    expect(glyph).toBeTruthy()
+    expect(glyph!.classList.contains('animate-pulse')).toBe(false)
     expect(container.querySelector('[title="Goal loop · cycle 47 of 72"]')).toBeNull()
   })
 
   it('keeps the pulse mid-turn — a trailing error row is superseded once a new turn runs', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, interrupted: false }]
-    const { getByText, getByTitle } = renderSidebar(
+    const { getByText, getByTitle, container } = renderSidebar(
       slots,
       { activeSlot: 'k', goalLoops: { k: { cycle_count: 47, max_cycles: 72 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
       { activeSlotProp: 'k' },
     )
     expect(getByText('Loop 47/72')).toBeTruthy()
-    const pill = getByTitle('Goal loop · cycle 47 of 72')
-    expect(pill.querySelector('.animate-pulse')).toBeTruthy()
+    expect(getByTitle('Goal loop · cycle 47 of 72')).toBeTruthy()
+    // Pulse lives on the gutter Goal glyph now (moved off the inline subtitle dot).
+    expect(container.querySelector('.lucide-goal.animate-pulse')).toBeTruthy()
   })
 
   it('keeps the pulse while a subagent wave is executing on the loop\'s behalf', () => {
     // interrupted only describes the parent turn; children still working means
     // the loop IS working.
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, interrupted: true }]
-    const { getByText, getByTitle } = renderSidebar(slots, {
+    const { getByText, container } = renderSidebar(slots, {
       goalLoops: { k: { cycle_count: 9, max_cycles: 24 } },
       slotActivity: { k: { toolLog: [], subagents: { a: sa('running') } } },
     })
     expect(getByText(/1 agent running/)).toBeTruthy()
-    const pill = getByTitle('Goal loop · cycle 9 of 24')
-    expect(pill.querySelector('.animate-pulse')).toBeTruthy()
+    // The loop outranks the sub-agent count in the gutter, and a running child
+    // means the loop is working — so the gutter Goal glyph pulses.
+    expect(container.querySelector('.lucide-goal.animate-pulse')).toBeTruthy()
   })
 })

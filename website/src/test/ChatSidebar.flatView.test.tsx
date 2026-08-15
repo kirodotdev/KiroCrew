@@ -163,14 +163,18 @@ describe('chat sidebar — flat view (explode chats out of folders)', () => {
     expect(rows).toEqual(['k-mid-root', 'k-new-beta', 'k-old-alpha'])
   })
 
-  it('annotates foldered rows with their folder name; unfoldered rows get none', () => {
+  it('does not annotate rows with their folder name in flat view', () => {
+    // The folder-name chip was removed from the row. Flat view therefore carries
+    // no folder annotation; ordering (asserted above) is the only thing the
+    // folder data still drives. (Untagged rows lose on-row location context in
+    // flat view as a result — a known trade-off, tracked separately.)
     const { getByTestId } = renderSidebar()
     fireEvent.click(getByTestId('flat-view-toggle'))
     const lane = getByTestId('flat-view-lane')
     const rowOf = (key: string) => lane.querySelector(`[data-slot-key="${key}"]`) as HTMLElement
-    expect(within(rowOf('k-new-beta')).getByTitle('In folder: Beta')).toBeTruthy()
-    expect(within(rowOf('k-old-alpha')).getByTitle('In folder: Alpha')).toBeTruthy()
-    expect(within(rowOf('k-mid-root')).queryByTitle(/In folder:/)).toBeNull()
+    for (const key of ['k-new-beta', 'k-old-alpha', 'k-mid-root']) {
+      expect(within(rowOf(key)).queryByTitle(/In folder:/)).toBeNull()
+    }
   })
 
   it('respects active session filters inside the flat lane', () => {

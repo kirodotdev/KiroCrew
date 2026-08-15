@@ -7881,7 +7881,6 @@
       "hide_from_flat_view": "플랫 보기에서 {{name}} 숨기기",
       "hide_when_empty": "비어 있으면 숨기기",
       "hours": "시간",
-      "in_folder": "소속 폴더: {{name}}",
       "include_untagged_sessions": "태그 없는 세션 포함",
       "incognito_no_memory_writes": "시크릿 — 메모리 쓰기 없음",
       "last_30_days": "지난 30일",

@@ -7881,7 +7881,6 @@
       "hide_from_flat_view": "在平铺视图中隐藏 {{name}}",
       "hide_when_empty": "为空时隐藏",
       "hours": "小时",
-      "in_folder": "所在文件夹：{{name}}",
       "include_untagged_sessions": "包含无标签的会话",
       "incognito_no_memory_writes": "隐身 — 不写入记忆",
       "last_30_days": "最近 30 天",

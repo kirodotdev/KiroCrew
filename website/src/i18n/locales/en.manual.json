@@ -2717,7 +2717,6 @@
       "goal_loop_interrupted_title": "Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle",
       "hidden_because_parent_hidden": "{{name}} is hidden because a parent folder is hidden",
       "hide_from_flat_view": "Hide {{name}} from flat view",
-      "in_folder": "In folder: {{name}}",
       "loop": "Loop {{count}}/{{total}}",
       "loop_2": "Loop · {{count}}",
       "loop_interrupted": "interrupted",

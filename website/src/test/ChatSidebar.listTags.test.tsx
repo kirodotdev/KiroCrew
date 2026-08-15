@@ -49,7 +49,7 @@ vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, prop: string) => {
-      if (prop === 'chatTags') return vi.fn().mockResolvedValue([{ id: 't1', name: 'Alpha', color: '#ff0000', order: 0 }])
+      if (prop === 'chatTags') return vi.fn().mockResolvedValue([{ id: 't1', name: 'Alpha', color: '#ff0000', order: 0 }, { id: 't2', name: 'Beta', color: '#00ff00', order: 1 }])
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -98,14 +98,19 @@ function renderSidebar(slots: any[]) {
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.clearAllMocks())
 
-describe('chat sidebar — list-view tag pills', () => {
-  it('renders a tag pill for a slot with tags even though board view is disabled', async () => {
-    const { findByTestId } = renderSidebar([{ key: 'k1', title: 'tagged', running: false, messages: 2, tags: ['t1'] }])
-    const pill = await findByTestId('slot-tag-t1')
-    expect(pill).toHaveTextContent('Alpha')
+describe('chat sidebar — list-view tag rendering', () => {
+  it('renders every tag in the meta line in the flat list view, regardless of the board flag', async () => {
+    // tagColumnsEnabled is forced OFF (mock above). Tags still surface — now as
+    // tinted `· name` text in the row's meta line, not as bordered chips.
+    const { findByTestId, getByTestId } = renderSidebar([{ key: 'k1', title: 'tagged', running: false, messages: 2, tags: ['t1', 't2'] }])
+    const alpha = await findByTestId('slot-tag-t1')
+    expect(alpha).toHaveTextContent('Alpha')
+    expect(getByTestId('slot-tag-t2')).toHaveTextContent('Beta')
+    // No border — it is meta-line text, not a chip.
+    expect(alpha.className).not.toMatch(/\bborder\b|\bborder-|\brounded/)
   })
 
-  it('renders no pill for a slot without tags', () => {
+  it('renders no tag node for a slot without tags', () => {
     const { queryByTestId } = renderSidebar([{ key: 'k2', title: 'untagged', running: false, messages: 1 }])
     expect(queryByTestId('slot-tag-t1')).toBeNull()
   })

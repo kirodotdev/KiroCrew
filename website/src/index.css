@@ -1791,28 +1791,34 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade{outline-color:transparent}
 .session-row.session-colored{position:relative}
+/* Flush against the row's left edge, and inset vertically by exactly the row's
+   corner radius — so the bar spans (row height - 2 * radius) and its ends stop
+   where the rounded corners begin, instead of poking into the curve. The inset
+   reads --radius-md because that is what the row's own `rounded-md` resolves to;
+   a theme pack that redefines the radius therefore moves the bar's ends with it
+   rather than leaving a hardcoded 8px that no longer matches the corner. */
 .session-row.session-colored::before{
   content:"";
   position:absolute;
-  left:5px;
-  top:6px;
-  bottom:6px;
+  left:0;
+  top:var(--radius-md);
+  bottom:var(--radius-md);
   width:3px;
-  border-radius:2px;
+  border-radius:999px;
   background:var(--_sc);
 }
-/* Bar-plus-gradient idle decoration: solid 3px bar starting at 5px from the
-   row's edge, then a soft gradient extending further right to give the row a
-   "lit from the left" feel. Single pseudo-element, doesn't interact with the
-   row's main background so hover/active Tailwind tokens still win. */
+/* Bar-plus-gradient idle decoration: the same flush bar, then a soft gradient
+   extending further right to give the row a "lit from the left" feel. Single
+   pseudo-element, doesn't interact with the row's main background so hover and
+   active Tailwind tokens still win. */
 .session-row.session-colored.session-gradient::before{
   content:"";
   position:absolute;
-  left:5px;
-  top:6px;
-  bottom:6px;
+  left:0;
+  top:var(--radius-md);
+  bottom:var(--radius-md);
   width:40px;
-  border-radius:2px;
+  border-radius:999px;
   pointer-events:none;
   background:linear-gradient(
     to right,

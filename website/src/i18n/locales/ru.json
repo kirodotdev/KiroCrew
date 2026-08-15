@@ -8196,7 +8196,6 @@
       "hide_from_flat_view": "Скрыть {{name}} из плоского списка",
       "hide_when_empty": "Скрывать, когда пусто",
       "hours": "часов",
-      "in_folder": "В папке: {{name}}",
       "include_untagged_sessions": "Включать сессии без тегов",
       "incognito_no_memory_writes": "Инкогнито — без записи в память",
       "last_30_days": "Последние 30 дней",

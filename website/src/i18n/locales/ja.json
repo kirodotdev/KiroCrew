@@ -7881,7 +7881,6 @@
       "hide_from_flat_view": "フラット表示から {{name}} を非表示",
       "hide_when_empty": "空の場合は非表示",
       "hours": "時間",
-      "in_folder": "所属フォルダー：{{name}}",
       "include_untagged_sessions": "タグなしのセッションを含める",
       "incognito_no_memory_writes": "シークレット — メモリへの書き込みなし",
       "last_30_days": "過去 30 日",
