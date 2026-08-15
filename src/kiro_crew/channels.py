@@ -41,6 +41,7 @@ from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
 from kiro_crew.weixin.gateway import maybe_start_weixin
+from kiro_crew.whatsapp.gateway import maybe_start_whatsapp
 
 
 @lru_cache(maxsize=1)
@@ -54,4 +55,5 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
         ChannelDescriptor(channel_type="webex", start=maybe_start_webex),
         ChannelDescriptor(channel_type="teams", start=maybe_start_teams),
         ChannelDescriptor(channel_type="weixin", start=maybe_start_weixin),
+        ChannelDescriptor(channel_type="whatsapp", start=maybe_start_whatsapp),
     )

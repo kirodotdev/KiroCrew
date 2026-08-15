@@ -106,6 +106,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     unregister_status_delta_sink,
 )
 from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
+from kiro_crew.dashboard.handlers.whatsapp_setup import setup_whatsapp_routes
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     PROBE_PATHS,
@@ -2497,6 +2498,7 @@ async def start_dashboard(
     # Knowledge Library
     setup_knowledge_routes(app)
     setup_weixin_routes(app)
+    setup_whatsapp_routes(app)
 
     # Link previews (chat unfurl). Route is always registered; the handler gates
     # itself on cfg.dashboard.link_previews, so toggling the feature needs no

@@ -102,3 +102,10 @@ module = ["kiro_crew._vendor.*", "llama_cpp", "llama_cpp.*", "diskcache"]
 ignore_errors = true
 follow_imports = "skip"
 
+[[tool.mypy.overrides]]
+# neonize is the optional [whatsapp] extra; CI runs mypy without it installed,
+# so its imports must resolve the same way (Any) on machines that DO have it.
+module = ["neonize", "neonize.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+

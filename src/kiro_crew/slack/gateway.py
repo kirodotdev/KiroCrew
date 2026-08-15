@@ -240,6 +240,7 @@ if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
     from kiro_crew.weixin.client import WeixinClient
+    from kiro_crew.whatsapp.client import WhatsAppClient
 
 
 async def _persist_turn_row(
@@ -1039,6 +1040,12 @@ class GatewayOrchestrator:
             cfg.weixin.enabled and self._weixin_token and self._weixin_account_id
         )
         self._weixin_client: "WeixinClient | None" = None
+        # WhatsApp (QR-linked personal account) — no credential: pairing state
+        # lives in the channel's session DB, created by the Settings QR flow.
+        # Enablement is config-only; maybe_start_whatsapp reports the missing
+        # optional dependency or an unpaired session via the status badge.
+        self._whatsapp_enabled = bool(cfg.whatsapp.enabled)
+        self._whatsapp_client: "WhatsAppClient | None" = None
         # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
         # cfg.discord.bot_token; all other settings come from the typed
         # cfg.discord dataclass (mirrors the Telegram block above).

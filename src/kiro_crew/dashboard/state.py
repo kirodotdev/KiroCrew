@@ -84,6 +84,7 @@ _CHANNEL_LABELS = {
     "webex": "Webex",
     "wecom": "WeCom",
     "weixin": "WeChat",
+    "whatsapp": "WhatsApp",
 }
 
 
@@ -2358,6 +2359,14 @@ class DashboardState:
         # Short reason from the most recent Weixin start failure, empty when
         # connected or never attempted. Read by the settings badge.
         self.weixin_connect_error: str = ""
+        # True only while the WhatsApp (QR-linked personal account) client's
+        # event loop is running (set in maybe_start_whatsapp). Read by the
+        # WhatsApp settings status badge — a paired session DB on disk is NOT
+        # enough to report "connected".
+        self.whatsapp_connected: bool = False
+        # Short reason from the most recent WhatsApp start failure, empty when
+        # connected or never attempted. Read by the settings badge.
+        self.whatsapp_connect_error: str = ""
         # Live channel transports (Telegram/WeCom/...) for channel-neutral
         # cross-surface mirror delivery — registered at boot by each channel's
         # gateway via ``register_channel_transport``. Slack keeps its dedicated

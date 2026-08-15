@@ -161,6 +161,13 @@
       "summary": "Connect Kiro Crew to **personal WeChat** (\u5fae\u4fe1) through Tencent's **iLink bot API**. Sign-in is a QR scan from the dashboard; messages arrive over HTTP long-poll, so no public endpoint, webhook, or tunnel is required.",
       "doc": "weixin-integration.md",
       "mtime": 1785856770.0
+    },
+    {
+      "feature": "WhatsApp integration",
+      "title": "WhatsApp integration",
+      "summary": "Chat with your Kiro Crew agent on **WhatsApp** from your own account: scan one QR code and the gateway joins as a linked device. Your self-chat becomes the command line, the agent can send reminders on your behalf, and it can quietly help in groups you opt in \u2014 no public endpoint or webhook required.",
+      "doc": "whatsapp-integration.md",
+      "mtime": 1785856770.0
     }
   ]
 }
