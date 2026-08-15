@@ -268,7 +268,11 @@ async def test_no_worker_hop_when_no_stage_results_were_captured(monkeypatch):
 
     await _stage_loop(state, slot, auto_run=True)
 
-    assert hops == []
+    # Scoped to the completion read rather than asserting the loop makes no hop
+    # at all: `_stage_loop` legitimately offloads other blocking work (the
+    # first-entry config load), and this test's subject is only that an empty
+    # result set skips the excerpt worker.
+    assert [f for f in hops if f is chat_orchestrator._completion_excerpts] == []
     assert _completion_message(slot).splitlines() == [
         "✅ All 2 stages complete.",
         "  Stage 1: First — done",
