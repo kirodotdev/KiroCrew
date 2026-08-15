@@ -39,6 +39,12 @@ export default function AgentSessionButton({
 }) {
   const hasSession = !!record?.slot_key
   const resolved = record?.status === 'resolved'
+  // An in-progress pill is a claim that work is UNDER WAY, and only the link makes that
+  // true -- `status` alone outlives whatever it described. A record whose session never
+  // started (or was deleted) would otherwise read as permanently investigating with
+  // nothing running. A finished verdict is exempt: it stands on its own once the
+  // session it came from is gone.
+  const claimsProgress = resolved || hasSession
   const verdict = record?.findings?.verdict
   const summary = record?.findings?.summary
 
@@ -64,7 +70,7 @@ export default function AgentSessionButton({
         {hasSession ? i18nT('apps.issueRadar.components.agentSessionButton.resume') : label}
       </button>
 
-      {showStatus && record && (
+      {showStatus && record && claimsProgress && (
         <span
           title={summary || (resolved ? `${donePillLabel}` : pendingLabel)}
           className={

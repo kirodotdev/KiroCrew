@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, Handshake, type LucideIcon,
+  Bell, RefreshCw, ExternalLink, Trash2, AlertTriangle, Sparkles, ListChecks, Users, Wand2, Tags, Check, Handshake, Hammer, type LucideIcon,
 } from 'lucide-react'
 import { ProviderLogo, ProviderHostTag } from '../../components/ProviderBadge'
 import {
@@ -13,6 +13,7 @@ import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
 import CrewProtocolSettings from './CrewProtocolSettings'
+import DispatchSettings from './DispatchSettings'
 import { asArray } from '../../lib/format'
 
 import { i18nT } from '../../../../i18n/t'
@@ -503,6 +504,18 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           repoRef={repoRef}
           settings={crewSettingsQuery.data?.settings}
         />
+      </Card>
+
+      <Card
+        icon={Hammer}
+        title={i18nT('apps.issueRadar.dispatch.sectionTitle')}
+        desc={i18nT('apps.issueRadar.dispatch.sectionHint')}
+      >
+        {/* Keyed by the full repo scope for the same reason the card above is: it
+            holds an uncommitted draft that survives a failed write, and an
+            instance reused across a scope change would let a retry write one
+            repository's typed path into another's settings. */}
+        <DispatchSettings key={scopeKey} repoRef={repoRef} />
       </Card>
 
       <Card

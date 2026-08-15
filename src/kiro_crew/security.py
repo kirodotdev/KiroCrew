@@ -4522,6 +4522,40 @@ _WRITE_PROTECTED_HOME_PATHS += [
     f"{prefix}/apps/ops-mission-control/data/incidents/index.json"
     for prefix in _CREW_HOME_PREFIXES
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # Issue Radar's repo config, for the same reason and with the same read/write
+    # asymmetry: it holds no secret and the app reads it on every request, but it
+    # carries TWO inputs to an authorization decision.
+    #
+    # ``repos[]`` is the connected-repo gate every route checks (``_connected``),
+    # so an agent that could write this file could connect a repository the user
+    # never chose and then drive the provider routes against it. And
+    # ``repos[].local_path`` is the checkout the dispatch gate validates, so a
+    # written path would make readiness report "ready" for a directory the user
+    # never selected — the gate would be vouching for the agent's own choice.
+    # A gate whose input the agent can author is the same defect as rendering a
+    # check that never ran as a check that passed. Found in review (GPT 5.6).
+    #
+    # The APP DIRECTORY is named, not ``config.json`` and not ``data``, for the
+    # reason ``webhooks`` above is: protecting only an inner path leaves the store
+    # REPLACEABLE. Renaming an unprotected ANCESTOR aside and moving a prepared
+    # tree into place never names the protected path, so the rule has to sit above
+    # every directory the store lives under. The matcher is at-or-below, so naming
+    # the app root covers ``data/config.json`` and anything the app adds later.
+    #
+    # This terminates at the app root, not higher: replacing ``apps`` itself or the
+    # data home is equally unblocked, but that is a property of the whole mechanism
+    # rather than of this entry -- it defeats every protected path in the product,
+    # the keystone policy files included -- and closing it needs an ancestor rule
+    # in the shared matcher, which cannot be scoped to one app.
+    #
+    # The app's own store opens this path directly (``store.read_config`` /
+    # ``_config_lock``) and does not route through this gate, so connecting a repo
+    # and saving a checkout from the dashboard still work; only the agent's own
+    # file-edit and shell tools are refused.
+    f"{prefix}/apps/issue-radar"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 # ── Bash-layer protection for write-protected leaves ──
 # Leaf files under the crew home that a bash command must not be able to
@@ -4557,12 +4591,16 @@ _WRITE_PROTECTED_HOME_PATHS += [
 # that the migration stamps the marker only from Python, never a tool/shell.
 # Like the credential/sensitive-dir rules, the bash matcher is HOME-ANCHORED and
 # shares their intrinsic limits — a `cd <home> && touch <leaf>` bare-relative
-# write, or an unusual `${VAR}`/quoting form, can evade the regex exactly as it
-# can for `~/.aws/credentials`. Chasing shell-parser completeness here is a
-# losing game and holds the marker to a higher bar than credentials get; the
-# realistic residual threat (skipping a one-time session-data copy) is low and
-# already covered on the tool path. Widen this only via the SHARED matcher (so
-# credentials benefit too), not with marker-only special cases.
+# write evades the regex exactly as it can for `~/.aws/credentials`. Variable
+# spellings are NOT part of that residual: `$HOME`, `${HOME}`, `$KIROCREW_HOME`
+# and every default-operator form (`${KIROCREW_HOME:-$HOME/.kiro/crew}`) are
+# anchored, as are the Windows-native spellings, because the documented way to
+# name the data home IS a default expansion. Chasing shell-parser completeness
+# beyond that is a losing game and holds the marker to a higher bar than
+# credentials get; the realistic residual threat (skipping a one-time
+# session-data copy) is low and already covered on the tool path. Widen this only
+# via the SHARED matcher (so credentials benefit too), not with marker-only
+# special cases.
 #
 # ``rotation.yaml`` is the second entry, and it meets the bar the scope note sets rather than
 # being a special case: it is an INPUT TO AN AUTHORIZATION DECISION, not merely a
@@ -4589,7 +4627,40 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     ".data-home-ready",
     "apps/ops-mission-control/data/rotation.yaml",
     "apps/ops-mission-control/data/incidents/index.json",
+    # Issue Radar's repo config. Listed here as well as in
+    # ``_WRITE_PROTECTED_HOME_PATHS`` because closing only the file-edit tool gate
+    # leaves the shell form open, and the two authorization inputs it carries
+    # (``repos[]`` = the connected-repo gate, ``repos[].local_path`` = the checkout
+    # the dispatch gate validates) have no load-time clamp behind them. That is
+    # what separates it from Kiro Crew's own ``config.json``, which is deliberately
+    # NOT on this bash list: the loader neutralizes an inflated value there no
+    # matter how it was written, while nothing re-validates a stored checkout path
+    # on read. Blocking bash reads too is harmless -- no secret, and the only
+    # legitimate reader (the app's store) uses Python. The APP DIRECTORY is named,
+    # not the leaf and not ``data``, so renaming an unprotected ancestor aside and
+    # moving a prepared tree into place cannot dodge the rule. Found in review
+    # (GPT 5.6).
+    "apps/issue-radar",
 )
+
+#: The same leaves as home-relative PATHS, for the normalizer second pass.
+#: The regex above is literal, so an equivalent spelling walks straight through
+#: it: ``echo x > ~/.kiro/crew/./apps/issue-radar/data/config.json`` and
+#: ``…/apps/x/../issue-radar/…`` were both allowed while the plain form was
+#: blocked. Pass 2 is the only layer that can decide path EQUIVALENCE, and it
+#: consulted ``is_sensitive_path`` alone -- the read+write set -- so a leaf that
+#: is write-protected but not read+write sensitive had no normalized check at
+#: all. Verified inherited rather than new: the data-home marker and the Ops
+#: Mission Control leaves were bypassed by the identical trick.
+#:
+#: Deliberately NOT ``_WRITE_PROTECTED_HOME_PATHS``: that set includes the crew
+#: ``config.json``, which bash is meant to be able to READ (the loader clamps any
+#: inflated value, so only the tool-edit gate needs it). Checking the whole set
+#: here would start refusing ``cat ~/.kiro/crew/config.json``. These leaves
+#: already deny being NAMED at all, so covering them adds no new posture.
+_WRITE_PROTECTED_BASH_PATHS: list[str] = [
+    f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _WRITE_PROTECTED_BASH_LEAVES
+]
 
 # Regex for bash commands that read sensitive paths.
 # Matches: cat, head, tail, less, more, strings, xxd, base64, cp, scp, open,
@@ -4623,7 +4694,24 @@ _WRITE_CMDS = (
 _SCRIPT_OPEN = r"(?:python|ruby|perl)\S*\s.*open\s*\("
 
 
-def _build_sensitive_regex() -> re.Pattern[str]:
+def _var_spellings(name: str) -> str:
+    """Regex alternation for every POSIX-shell spelling of ``$name``'s value.
+
+    ``$NAME``, ``${NAME}``, and the brace forms carrying an operator --
+    ``${NAME:-default}``, ``${NAME-default}``, ``${NAME:=default}``,
+    ``${NAME:+alt}``. All expand to a path in the same location, so a gate that
+    accepts only the first two can be spelled around: the body of a default
+    expansion ends in ``}``, which breaks a suffix match anchored on ``/``.
+
+    The operator body excludes ``}`` only, so a nested expansion inside the
+    default (``${KIROCREW_HOME:-$HOME/.kiro/crew}``) is consumed as one unit --
+    and the inner ``$HOME`` still matches on its own via this same alternation.
+    """
+    esc = re.escape(name)
+    return rf"(?:\${esc}|\$\{{{esc}(?:[:]?[-=+][^}}]*)?\}})"
+
+
+def _build_sensitive_regex(roots: tuple[str, str | None] | None = None) -> re.Pattern[str]:
     """Build a compiled regex matching bash reads OR writes of sensitive paths.
 
     Three matching strategies, OR'd:
@@ -4642,7 +4730,14 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     """
     home = re.escape(str(Path.home()))
     tilde = re.escape("~")
-    home_var = re.escape("$HOME")
+    # ``$HOME`` plus every brace form the shell expands to the same location:
+    # ``${HOME}`` and the default/alternate operators ``${HOME:-/root}``,
+    # ``${HOME-x}``, ``${HOME:=x}``, ``${HOME:+x}``. Without the operator forms
+    # the literal ``$HOME`` inside a default -- ``${KIROCREW_HOME:-$HOME/.kiro/crew}``
+    # -- is followed by ``}`` rather than ``/``, so the fenced suffix never lines
+    # up and the whole path reads as unmatched. Same tolerance the Windows
+    # ``%USERPROFILE:~0%`` branch below already applies.
+    home_var = _var_spellings("HOME")
     # Generic home roots so a literal "/home/<user>" or "/Users/<user>" token
     # (not just the running user's resolved home) is anchored too.
     generic_home = r"/home/[^/\s]+|/Users/[^/\s]+"
@@ -4656,11 +4751,38 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # are blocked too (harmless: no secret; legitimate readers use Python).
     wp_prefixes = "|".join(re.escape(p) for p in _CREW_HOME_PREFIXES)
     wp_leaves = "|".join(re.escape(leaf) for leaf in _WRITE_PROTECTED_BASH_LEAVES)
+    # A non-default ``KIROCREW_HOME`` puts every leaf OUTSIDE the home-anchored
+    # ``<home>/<crew-prefix>/`` shape above, so the branch below would match
+    # nothing there while the tool gate (which re-anchors custom homes through
+    # ``_home_dir_targets_uncached``) still refused the same write. Anchor the
+    # resolved custom root as an additional alternative so the two layers agree.
+    # This covers EVERY write-protected leaf, not just the newest one: the
+    # data-home marker and both Ops Mission Control leaves had the same gap.
+    wp_roots = [rf"{home_alts}/(?:{wp_prefixes})"]
+    # The caller may hand in roots it already resolved. ``_get_sensitive_re``
+    # MUST: it keys its cache on the resolved crew root, and resolving here a
+    # second time let a symlink repointed between the two reads file a pattern
+    # built for root B under root A's key -- so a later write to A would be
+    # matched against B's pattern and pass. Same fail-OPEN TOCTOU that
+    # ``_home_dir_targets`` resolves once for exactly this reason.
+    _, crew_root = roots if roots is not None else _resolved_root_key()
+    if crew_root:
+        wp_roots.append(re.escape(crew_root))
+    # The UNEXPANDED env-var spellings, for the same reason ``home_alts`` already
+    # carries ``$HOME``: a command the shell would expand at runtime never
+    # contains the resolved root, so matching only the resolved form misses
+    # ``echo x > "$KIROCREW_HOME/apps/issue-radar/data/config.json"``. Listed
+    # unconditionally — the variable can be set for the agent's shell without this
+    # process having it, and over-matching a path that names the crew home is the
+    # safe direction. Every brace and default-operator spelling is covered, since
+    # the documented way to name the data home is precisely a default expansion
+    # (``${KIROCREW_HOME:-$HOME/.kiro/crew}``) and that form ends in ``}``.
+    wp_roots.append(_var_spellings("KIROCREW_HOME"))
     write_protected_path = (
         # trailing ``/`` is included so ``mkdir -p ~/.kiro/crew/.data-home-ready/x``
         # (which also MATERIALISES the marker as a directory, satisfying
         # ``marker.exists()``) is caught, not just the exact-leaf forms.
-        rf"{home_alts}/(?:{wp_prefixes})/(?:{wp_leaves})(?:/|\s|$|['\"])"
+        rf"(?:{'|'.join(wp_roots)})/(?:{wp_leaves})(?:/|\s|$|['\"])"
     )
     # Windows-native spellings of the same fenced dirs, matched in the RAW
     # command text. POSIX shlex consumes unquoted backslashes during
@@ -4715,6 +4837,34 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     win_sensitive_path = (
         rf"{win_home_alts}{win_gsep}(?:{win_dirs_pattern})(?:{win_sep}|\s|$|['\"])"
     )
+    # The same native spellings for the WRITE-PROTECTED leaves. The branch above
+    # is keyed to ``_SENSITIVE_HOME_DIRS`` only, so on Windows the crew-home
+    # leaves had no native coverage at all: a backslash spelling of the Issue
+    # Radar store, the data-home marker or the Ops Mission Control leaves reached
+    # the fenced file while the POSIX spelling of the same write was refused, and
+    # the file-edit tool gate refused both. The anchors are the crew prefixes
+    # under a Windows home, the resolved crew root, and the profile-variable
+    # spellings of ``KIROCREW_HOME`` -- ``cmd.exe`` and PowerShell both, with the
+    # same expansion-modifier tolerance the profile variable gets.
+    win_crew_prefixes = "|".join(
+        win_gsep.join(re.escape(part) for part in p.split("/")) for p in _CREW_HOME_PREFIXES
+    )
+    win_wp_leaves = "|".join(
+        win_gsep.join(re.escape(part) for part in leaf.split("/"))
+        for leaf in _WRITE_PROTECTED_BASH_LEAVES
+    )
+    win_crew_home_var = (
+        r"(?:%KIROCREW_HOME(?::[^%\s]*)?%"
+        rf"|{re.escape('$env:KIROCREW_HOME')}"
+        rf"|{re.escape('${env:KIROCREW_HOME}')})"
+    )
+    win_wp_roots = [rf"{win_home_alts}{win_gsep}(?:{win_crew_prefixes})", win_crew_home_var]
+    if crew_root:
+        win_wp_roots.append(re.escape(crew_root))
+    win_write_protected_path = (
+        rf"(?:{'|'.join(win_wp_roots)}){win_gsep}(?:{win_wp_leaves})"
+        rf"(?:{win_sep}|\s|$|['\"])"
+    )
     # ``%APPDATA%`` already points INTO ``AppData\Roaming``, so a spelling like
     # ``%APPDATA%\kiro-cli\data.sqlite3`` names a fenced store WITHOUT the
     # ``AppData\Roaming`` text the branch above anchors on. Map the variable
@@ -4756,19 +4906,37 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # tokenizing passes cannot see. (5) the %APPDATA% alias of the fenced
         # Roaming stores.
         rf"|(?:^|.*[\s'\"=:,;]){win_sensitive_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){win_write_protected_path}"
         rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path})",
         re.IGNORECASE,
     )
 
 
-_SENSITIVE_RE: re.Pattern[str] | None = None
+#: Compiled matcher, memoized per RESOLVED crew-home root. Keying it is not
+#: optional: the pattern now embeds the custom ``KIROCREW_HOME`` root, so a
+#: single cached instance would keep matching the PREVIOUS root after the env
+#: changed — a gate that fails OPEN for the new one. Same reasoning as the
+#: resolved-roots key on ``_home_targets_cache``.
+_SENSITIVE_RE_CACHE: dict[str | None, re.Pattern[str]] = {}
 
 
 def _get_sensitive_re() -> re.Pattern[str]:
-    global _SENSITIVE_RE
-    if _SENSITIVE_RE is None:
-        _SENSITIVE_RE = _build_sensitive_regex()
-    return _SENSITIVE_RE
+    # Resolved ONCE and used for both the key and the build, like
+    # ``_home_dir_targets``. Two separate resolutions race a repointed
+    # ``KIROCREW_HOME`` symlink into filing one root's pattern under the other
+    # root's key, which fails OPEN for whichever root becomes active again.
+    roots = _resolved_root_key()
+    crew_root = roots[1]
+    cached = _SENSITIVE_RE_CACHE.get(crew_root)
+    if cached is None:
+        # Bounded for the same reason ``_home_targets_cache`` is: the key space
+        # is tiny in production but a test that churns KIROCREW_HOME must not
+        # grow it without limit.
+        if len(_SENSITIVE_RE_CACHE) > 32:
+            _SENSITIVE_RE_CACHE.clear()
+        cached = _build_sensitive_regex(roots)
+        _SENSITIVE_RE_CACHE[crew_root] = cached
+    return cached
 
 
 def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
@@ -5362,6 +5530,13 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             if is_sensitive_path(cand):
                 return (
                     "Blocked: command accesses sensitive credential path "
+                    f"(resolved via normalizer: {cand[:80]})"
+                )
+            # Write-protected leaves, same normalized comparison. Pass 1 matches
+            # them literally, so only this layer sees an equivalent spelling.
+            if _path_in_home_dirs(cand, _WRITE_PROTECTED_BASH_PATHS):
+                return (
+                    "Blocked: command writes a protected authorization path "
                     f"(resolved via normalizer: {cand[:80]})"
                 )
     return None

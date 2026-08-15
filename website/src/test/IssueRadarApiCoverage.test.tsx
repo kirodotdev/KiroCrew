@@ -88,6 +88,7 @@ const ENDPOINTS: Array<{
   { name: 'disconnect', path: '/api/apps/issue-radar/repos', method: 'DELETE', run: () => issueRadarApi.disconnect(REF) },
   { name: 'getInvestigation', path: '/api/apps/issue-radar/investigation', run: () => issueRadarApi.getInvestigation(REF, 12) },
   { name: 'saveInvestigation', path: '/api/apps/issue-radar/investigation', method: 'PUT', run: () => issueRadarApi.saveInvestigation(REF, 12, {}) },
+  { name: 'getDispatchReadiness', path: '/api/apps/issue-radar/dispatch-readiness', run: () => issueRadarApi.getDispatchReadiness(REF) },
   { name: 'getRecommendations', path: '/api/apps/issue-radar/recommendations', run: () => issueRadarApi.getRecommendations(REF) },
   { name: 'generateRecommendations', path: '/api/apps/issue-radar/recommendations', method: 'POST', run: () => issueRadarApi.generateRecommendations(REF) },
   { name: 'createLabel', path: '/api/apps/issue-radar/labels/create', method: 'POST', run: () => issueRadarApi.createLabel(REF, { name: 'bug' }) },

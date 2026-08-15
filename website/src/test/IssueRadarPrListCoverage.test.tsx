@@ -1,8 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within, act } from '@testing-library/react'
-import type { Key, ReactNode } from 'react'
+import { render as rtlRender, screen, fireEvent, within, act } from '@testing-library/react'
+import type { Key, ReactElement, ReactNode } from 'react'
+import { Provider } from 'react-redux'
+import { MemoryRouter } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+import { store } from '../store'
 import type { PullRequest } from '../apps/issue-radar/api'
+
+// The row carries an interactive control that opens an agent session, so mounting
+// this column needs the app's providers (store + router for the session hook, and a
+// query client). They are supplied here rather than at each of the ~40 call sites.
+function render(ui: ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return rtlRender(
+    <Provider store={store}>
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
+      </MemoryRouter>
+    </Provider>,
+  )
+}
 
 // Behaviour pins for the pull-request LIST column (PrList.tsx) — the middle
 // column of Issue Radar's PR surface.

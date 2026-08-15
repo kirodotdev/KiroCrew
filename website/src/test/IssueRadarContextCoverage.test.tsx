@@ -27,6 +27,7 @@ const api = {
   pullsFirstPage: vi.fn(),
   searchPulls: vi.fn(),
   crews: vi.fn(),
+  getDispatchReadiness: vi.fn(),
 }
 
 vi.mock('../apps/issue-radar/api', async (importOriginal) => ({
@@ -42,6 +43,7 @@ vi.mock('../apps/issue-radar/api', async (importOriginal) => ({
     pullsFirstPage: (...a: unknown[]) => api.pullsFirstPage(...a),
     searchPulls: (...a: unknown[]) => api.searchPulls(...a),
     crews: (...a: unknown[]) => api.crews(...a),
+    getDispatchReadiness: (...a: unknown[]) => api.getDispatchReadiness(...a),
   },
 }))
 
@@ -175,9 +177,43 @@ beforeEach(() => {
     crews: CREWS, counts: { on_duty: 2, working: 1, paused: 0 },
     settings: { schema: 1, claim_ttl_hours: 4, needs_human_label: 'needs-human', commit_trailer: 'Crew' },
   })
+  api.getDispatchReadiness.mockResolvedValue({
+    ...ACTIVE, ready: true, reason: 'ok', local_path: '/repos/Kiro',
+  })
 })
 
 afterEach(() => { vi.clearAllMocks() })
+
+describe('dispatch readiness', () => {
+  // Readiness is read ONCE here rather than per row, and handed to consumers
+  // through the context. If the provider stops exposing it, every consumer sees
+  // `undefined` and fails closed -- the control would sit permanently disabled
+  // saying it is still checking, which no consumer test can distinguish from a
+  // genuinely unready repo. So the wiring is pinned here, at the real provider.
+  it('exposes the repo readiness it read', async () => {
+    renderProvider()
+    await waitFor(() => expect(ctx.dispatchReadiness?.ready).toBe(true))
+    expect(ctx.dispatchReadiness?.local_path).toBe('/repos/Kiro')
+    expect(api.getDispatchReadiness).toHaveBeenCalledWith(ACTIVE)
+  })
+
+  it('carries the refusal reason rather than collapsing it to not-ready', async () => {
+    api.getDispatchReadiness.mockResolvedValue({
+      ...ACTIVE, ready: false, reason: 'checkout_unusable', local_path: '/gone',
+    })
+    renderProvider()
+    await waitFor(() => expect(ctx.dispatchReadiness?.ready).toBe(false))
+    expect(ctx.dispatchReadiness?.reason).toBe('checkout_unusable')
+  })
+
+  it('reports null rather than throwing when the read fails', async () => {
+    api.getDispatchReadiness.mockRejectedValue(new Error('offline'))
+    renderProvider()
+    await waitFor(() => expect(ctx.repos.length).toBeGreaterThan(0))
+    expect(ctx.dispatchReadiness ?? null).toBeNull()
+  })
+
+})
 
 describe('useIssueRadar guard', () => {
   it('throws when read outside the provider', () => {

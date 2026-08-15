@@ -43,7 +43,9 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | GET | `/pull-ai` | AI summary of a PR (description + whole conversation + check state), cached against a fingerprint that hashes the conversation's CONTENT — so an edited comment invalidates it, not just a new one |
 | POST | `/labels/apply` | Apply label changes (add/remove) |
 | POST | `/issue/state` | Close/reopen an issue |
-| GET/PUT | `/investigation` | Per-issue investigation record. The PUT is the ONE app route also reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool — see [Recording findings](#recording-findings) |
+| GET/PUT | `/investigation` | Per-item investigation record, addressed by `kind` (number sequence) and optional `verb` (which job) — see [One record per item, per verb](#one-record-per-item-per-verb). The PUT is the ONE app route also reachable with the gateway internal secret (`_MIXED_INTERNAL_API_PATHS`), because it is the write behind the `issue_radar_record_investigation` MCP tool — see [Recording findings](#recording-findings) |
+| GET | `/dispatch-readiness` | Whether an issue in this repo may be handed to an implementation attempt, plus a machine-readable `reason` — see [Dispatch readiness](#dispatch-readiness) |
+| POST | `/repo/local-path` | Record a connected repo's local checkout. `local_path` is REQUIRED; an explicit `""` clears it and an omitted field is a 400. Validates and REFUSES; never falls back to a directory the user did not name |
 | GET/POST | `/recommendations` | AI label taxonomy recommendations |
 | POST | `/labels/create` | Create a new repo label |
 | GET | `/tagging` | The untagged queue (also serves `bulk_max`, the bulk-apply cap, so the client chunks on the server's real limit; and `titles` bounded to the slice a recommendation's examples can cite) (open issues with ZERO labels) plus any cached per-issue label suggestions for it. Never runs the model, so opening the Tagging dashboard costs nothing; suggestions for issues that have since been labelled elsewhere are filtered out |
@@ -58,12 +60,207 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
 | POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
 
+## Dispatch readiness
+
+Every read in this app goes through the user's own provider CLI, which is why
+connecting a repo needs one dialog and no clone. Asking an agent to *implement*
+an issue does need a working copy, so a connected repo carries an optional
+`local_path` in its `config.json` entry and dispatch is gated on it. Phase 0 of
+[the dispatch RFC](../../request-for-change/rfc-issue-radar-dispatch.md) is this
+gate alone: nothing here runs an agent or touches git.
+
+`backend/dispatch.py` owns both halves:
+
+- `resolve_checkout(raw)` returns the path as a usable git work-tree root or
+  `None`. `~` is expanded and symlinks resolved BEFORE the sensitivity test, so a
+  link planted in a benign directory cannot smuggle its target past it;
+  absoluteness is asserted on the expanded input and BEFORE `realpath`, which
+  would otherwise make every value absolute and the test vacuous; the resolved
+  path must not be sensitive per `security.is_sensitive_path`; and it must be a
+  directory holding a USABLE `.git`. `.git` may be a directory (an ordinary clone)
+  or a FILE (a linked worktree's `gitdir:` pointer), and both are validated
+  POSITIVELY rather than by existence: a clone needs `HEAD` plus an object and ref
+  store, a `commondir` may relocate those but its target is then checked too, and
+  a pointer file's target must itself hold those admin markers rather than merely
+  be a directory. An empty `.git` directory, a dangling pointer, and a pointer to
+  an ordinary directory all `exists()` while being unusable, and reporting `ready`
+  for one is the same defect as rendering a check that never ran as a check that
+  passed. The validation is filesystem-only —
+  no `git` subprocess on a per-read path — so a tree that passes these markers and
+  still fails `worktree add` fails loudly at dispatch time instead. A bare
+  repository has no work tree to edit and is refused.
+- **Every git metadata path is re-checked against `is_sensitive_path` before it is
+  read or descended into.** Refusing a sensitive ROOT does not cover the metadata,
+  because the tree names that: `.git` can be a symlink, and both `gitdir:` and
+  `commondir` name a further path in their CONTENT. A `.git` symlinked at
+  `~/.ssh/id_rsa` would otherwise be read by the validator. The bytes are
+  discarded today — only a prefix is inspected — which is why the check belongs at
+  the read rather than at a leak: a later change that logs the text would turn it
+  into one with no new mistake.
+  A value the OS cannot resolve at all (an embedded NUL, plus the
+  platform-specific shapes that raise `OSError`) is refused rather than raised,
+  so a malformed request cannot reach the route as a 500.
+- `readiness(local_path)` returns `(ready, reason)` with `reason` one of `ok`,
+  `no_local_path`, or `checkout_unusable`. The last two are deliberately
+  distinct: one asks the user to set a value, the other tells them the value they
+  set broke. An empty string cannot carry that difference, and the UI needs a
+  different sentence for each.
+
+Five properties are load-bearing rather than incidental:
+
+- **The echoed `local_path` is redacted; readiness is derived from the raw value.**
+  Both routes return the stored path so the settings field can render it, and both
+  pass it through `security.redact()` first. Nothing re-validates a stored string
+  on read and the `config.json` it comes back out of is not agent-unwritable, so
+  the echo is treated as output rather than as a value the route vouched for.
+  Redaction rewrites credential patterns only, not hex directory names, so a real
+  checkout path still round-trips. The `(ready, reason)` pair is computed from the
+  raw value, so redaction can never change a verdict.
+
+- **Readiness is re-derived on every read**, never trusted from storage. A
+  checkout deleted after it was recorded must not keep reporting ready, for the
+  same reason a check that never ran must not render as a check that passed.
+- **The write route refuses instead of falling back.** A path that does not
+  validate stores nothing, so dispatch can never be pointed at a directory the
+  user did not name. The resolved path is what gets stored, so a later readiness
+  check re-examines the directory the validator accepted.
+- **An omitted `local_path` is a bad request, not a request to clear.** Reading
+  "absent" as "clear it" let any caller that forgot the key wipe a stored path and
+  receive a 200 reporting `no_local_path` as though it had always been unset.
+  Clearing is still available, spelled `""`.
+- **A repo that disconnects mid-write is a 404, not a 200.** The connected-check
+  runs before `store.set_repo_local_path` takes the config lock, so a concurrent
+  disconnect lands in between; the store raises `KeyError` when no entry matches
+  rather than writing nothing and returning normally, and the route maps that to
+  the same `repo_not_connected` refusal the pre-check uses. Reporting a path as
+  saved that no entry holds is the same class of defect as rendering a check that
+  never ran as a check that passed.
+
+Neither route is in `_MIXED_INTERNAL_API_PATHS`. Unlike `/investigation`, nothing
+an agent runs needs to write a checkout path, and admitting the internal secret
+here would let a session choose the directory a later dispatch works in.
+
+Refusing the route is necessary but not sufficient, because the value is read back
+out of a file. `apps/issue-radar` — the APP DIRECTORY, not `data` and not just its
+`config.json` — is therefore on `security._WRITE_PROTECTED_HOME_PATHS` (the
+file-edit tool gate) **and** `_WRITE_PROTECTED_BASH_LEAVES` (the shell gate,
+matched verb-independently). Closing one and not the other leaves the same file
+reachable by the other route. The matcher is at-or-below, so protecting an inner
+path leaves the store replaceable from above: renaming an unprotected ancestor
+aside and moving a prepared tree into place never names the protected path. The
+rule sits on the app root for that reason, which also covers paths the app adds
+later.
+Reads stay allowed on the tool path (it holds no secret and the app reads it on
+every request). Two authorization inputs live in that file: `repos[]` is the
+connected-repo gate every route checks, and `repos[].local_path` is what the
+dispatch gate validates. A gate whose input the agent can author would be
+vouching for the agent's own choice. Unlike Kiro Crew's own `config.json` —
+deliberately not on the bash list because the loader clamps an inflated value at
+load time — nothing re-validates a stored checkout path on read. The store opens
+the path directly and does not route through either gate, so the dashboard's own
+writes still work. Both gates anchor a non-default `KIROCREW_HOME` as well, so the
+protection does not depend on the data home sitting at its default path.
+
+The shell gate refuses equivalent spellings of the same leaf, not just the literal
+one. Its first pass is a textual match, which a `./` segment or an `x/..` hop walks
+straight through, so a second pass normalizes each candidate and compares it against
+the bash-leaf list again. That second pass checks the write-protected leaves
+specifically rather than the read-and-write sensitive set: reads of Kiro Crew's own
+`config.json` stay allowed, so widening it to the sensitive set would start refusing
+them.
+
+Variable and platform spellings are anchored for the same reason. `$KIROCREW_HOME`,
+`${KIROCREW_HOME}` and every default-operator form —
+`${KIROCREW_HOME:-$HOME/.kiro/crew}`, which is how this repo's own scripts name the
+data home — resolve to the fence, because the body of a default expansion ends in
+`}` and would otherwise break a suffix anchored on `/`. The same tolerance applies
+to `$HOME` itself, in the shared matcher, so the credential rules gain it too. The
+Windows-native branch, previously keyed to `_SENSITIVE_HOME_DIRS` alone, now covers
+these leaves as well: a backslash spelling, `%USERPROFILE%`, `%KIROCREW_HOME%`, the
+PowerShell `$env:` forms, and an embedded interpreter literal all name the fence.
+
+The protection terminates at the app root. Replacing `apps` itself, or the data
+home, is not blocked — but that is a property of the shared matcher rather than of
+this app's entry: it defeats every protected path in the product, the keystone
+policy files included, so closing it needs an ancestor rule in
+`_path_in_home_dirs` and cannot be scoped to one app.
+
 ## Recording findings
 
 The Investigate / Review buttons open a KiroCrew chat session seeded with a
 triage prompt. When the agent concludes it writes its verdict back into the
 item's investigation record — that is what puts a verdict + summary on the
 issue's card instead of leaving it in chat scrollback.
+
+### One record per item, per verb
+
+A record holds exactly one `slot_key`, so two things address it: `kind` and
+`verb`. They are orthogonal, and both are folded into the filename.
+
+`kind` says which **number sequence** the item came from. GitHub draws issues and
+pull requests from one sequence, so `#5` is unambiguous and keeps the historical
+`investigation-<N>.json`. GitLab keeps two, so merge request `!5` gets
+`investigation-mr-<N>.json` — sharing the issue's file would make "Review MR !5"
+resume issue #5's session.
+
+`verb` says which **job** is being done on that item, for the case where a person
+runs two of them at once on one change request. An omitted verb is the item's
+primary record. An unknown verb is refused with a 400 rather than folded to the
+primary record: folding would silently produce the collision the dimension exists
+to prevent, and `store.investigation_path` raises on one too, so the route
+validation is not the only gate.
+
+Findings always belong to the primary record. Every agent-side write arrives
+through the MCP tool below, which sends no verb — so a verb record carries a
+session link and nothing else, and the browser is the only writer that names one.
+
+### Claiming the session link
+
+A record holds one `slot_key`, and a re-entry guard in one browser tab cannot see a
+click in another. So the record itself is what orders two tabs: a session-link write
+may pass `expected_slot_key`, and the store compares it to the stored link **inside
+the same exclusive lock as the read-back**, refusing with `409`
+(`investigation_slot_conflict`) when it has moved. Without that, two tabs both read
+"no session", both create one, and the later write replaces the first tab's link —
+leaving an agent running that nothing points at.
+
+The 409 carries the live record, because the loser needs the winner's `slot_key` to
+adopt that session instead of starting a second one. The dashboard's session-open path
+therefore claims **before seeding the first turn**: at that point its own slot has no
+turn yet, so losing is recoverable by removing it, whereas claiming after the seed
+would leave a running agent to either destroy or orphan. A first turn that never
+starts releases the link it claimed, or the record would point at a slot with no turn
+and every later click would resume that empty session.
+
+That release is only complete because the claim is a **pure reservation**: it writes
+link fields and no user-visible state. The lifecycle moves to `investigating` in a
+separate write, once the session is actually running. A claim that also stamped the
+lifecycle could not be fully released — clearing the link cannot restore a status the
+record may never have had, so a rejected first turn would strand a finished item
+reading as under investigation with nothing running.
+
+Recovery from a stranded reservation is **deliberately not automatic**. A reservation whose
+first turn never landed leaves the record pointing at a turn-less slot, and releasing the
+claim is not reliably possible: the release is itself a network call, and the failure that
+strands a reservation is the kind that fails it too. Repairing it forward is not possible
+either, because an empty slot is indistinguishable from one whose seed is in flight in
+another tab — both read as "no turn yet". Acting on that guess deletes a session that is
+starting, and for a verb that pushes commits and posts replies, two agents racing on one
+change request is far worse than one empty session the user clears by hand.
+
+So a linked slot that still exists is always resumed. Telling an *active* reservation from
+an *abandoned* one requires the reservation to record when it was made, so a young claim
+reads as active and an old one as abandoned — a server-side lease, not a client heuristic.
+Until that exists, a stranded reservation is a visible empty session rather than a repair
+the client cannot make safely.
+
+Naming a stale link is how a deliberate replacement is expressed — resuming a
+session whose slot was deleted rewrites the link, and the caller proves it is not
+racing by passing the value it read. Omitting the field keeps last-writer-wins,
+which is what every findings write needs: those never touch `slot_key` and must not
+fail on somebody else's session.
+
+### Why the write goes through an MCP tool
 
 That write goes through the **`issue_radar_record_investigation` MCP tool**, not
 a raw HTTP call. An agent session holds no dashboard credential:
@@ -123,6 +320,8 @@ repos/<owner>/<repo>/
   recommendations-cache.json        # AI label taxonomy
   tagging-cache.json                # Per-issue label proposals for the untagged queue
   investigation-<N>.json            # Per-issue investigation record
+  investigation-mr-<N>.json         # GitLab merge request (its own number sequence)
+  investigation-<verb>-<N>.json     # A second session verb on that item
   watch-state.json                  # Watcher high-water mark
 ```
 

@@ -1683,7 +1683,11 @@
           "search_2": "{{label}} を検索",
           "select_for_bulk": "一括操作の{{subject}} #{{number}}を選択",
           "time_since_the_pr_list_was_last_fetched_from_git": "PRリストが GitHub から最後に取得されてからの時間",
-          "updated": "更新"
+          "updated": "更新",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "{{name}}実行をキャンセル",
@@ -1730,6 +1734,11 @@
           "connect_repo": "リポジトリを接続",
           "general": "一般",
           "repository_settings": "リポジトリ設定"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {
@@ -2168,6 +2177,20 @@
         "selected_change_hidden_by_filters": "選択した {{subject}} はアクティブなフィルターによって非表示になっています。",
         "selected_issue_hidden_by_filters": "選択した Issue はアクティブなフィルターによって非表示になっています。",
         "to_see_its_details": "その詳細を表示するには"
+      },
+      "dispatch": {
+        "sectionTitle": "Working on issues",
+        "sectionHint": "Where the work would happen",
+        "fieldLabel": "Repository on this machine",
+        "fieldHint": "An absolute path to this repository on your machine. Each issue gets its own worktree branched off it, so the files you have open are never touched. Issue Radar itself reads through your provider CLI and needs no local copy; working on an issue does. Leave it empty to clear.",
+        "placeholder": "/home/you/code/widget",
+        "save": "Save",
+        "statusChecking": "Checking…",
+        "statusNoLocalPath": "Not set, so issues cannot be worked on yet.",
+        "statusCheckoutUnusable": "The saved path is missing, or is no longer a repository.",
+        "statusReady": "Ready to work on issues.",
+        "mustBeAbsolute": "Enter an absolute path, or leave it empty to clear.",
+        "refusedInvalidPath": "That is not a usable repository. Give an absolute path to a directory that holds a .git entry, and not a protected directory."
       }
     },
     "mdNotebook": {

@@ -1723,7 +1723,11 @@
           "search_2": "{{label}} durchsuchen",
           "select_for_bulk": "{{subject}} #{{number}} für eine Sammelaktion auswählen",
           "time_since_the_pr_list_was_last_fetched_from_git": "Zeit seit dem letzten Abruf der PR-Liste von GitHub",
-          "updated": "Aktualisiert"
+          "updated": "Aktualisiert",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "Den Lauf {{name}} abbrechen",
@@ -1770,6 +1774,11 @@
           "connect_repo": "Repo verbinden",
           "general": "Allgemein",
           "repository_settings": "Repository-Einstellungen"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {
@@ -2210,6 +2219,20 @@
         "selected_change_hidden_by_filters": "Das ausgewählte {{subject}} wird durch die aktiven Filter ausgeblendet.",
         "selected_issue_hidden_by_filters": "Das ausgewählte Issue wird durch die aktiven Filter ausgeblendet.",
         "to_see_its_details": "um seine Details zu sehen."
+      },
+      "dispatch": {
+        "sectionTitle": "Working on issues",
+        "sectionHint": "Where the work would happen",
+        "fieldLabel": "Repository on this machine",
+        "fieldHint": "An absolute path to this repository on your machine. Each issue gets its own worktree branched off it, so the files you have open are never touched. Issue Radar itself reads through your provider CLI and needs no local copy; working on an issue does. Leave it empty to clear.",
+        "placeholder": "/home/you/code/widget",
+        "save": "Save",
+        "statusChecking": "Checking…",
+        "statusNoLocalPath": "Not set, so issues cannot be worked on yet.",
+        "statusCheckoutUnusable": "The saved path is missing, or is no longer a repository.",
+        "statusReady": "Ready to work on issues.",
+        "mustBeAbsolute": "Enter an absolute path, or leave it empty to clear.",
+        "refusedInvalidPath": "That is not a usable repository. Give an absolute path to a directory that holds a .git entry, and not a protected directory."
       }
     },
     "mdNotebook": {

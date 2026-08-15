@@ -3531,6 +3531,69 @@ class TestHomeDirTargetsCache:
         assert len(security._home_targets_cache) <= 33
 
 
+class TestSensitiveRegexCache:
+    """The compiled bash matcher is memoized per resolved crew root, because the
+    pattern embeds that root. These pin the two properties that make caching a
+    gate's own pattern acceptable."""
+
+    @staticmethod
+    def _clear() -> None:
+        from kiro_crew import security
+
+        security._SENSITIVE_RE_CACHE.clear()
+
+    def test_roots_are_resolved_once_for_key_and_build(self, monkeypatch, tmp_path) -> None:
+        """Same fail-open TOCTOU as the target-set cache, one layer down: when the
+        key resolved the roots and the builder resolved them again, a
+        ``KIROCREW_HOME`` symlink repointed between the two reads filed a pattern
+        built for root B under root A's key -- so a later write under A was
+        matched against B's pattern and passed.
+
+        Asserts the structural property that makes the race impossible rather
+        than racing a real symlink: one resolution per cache fill, and the
+        builder receives those captured roots."""
+        from kiro_crew import security
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
+        self._clear()
+        calls: list[tuple[str, str | None]] = []
+        real_key = security._resolved_root_key
+
+        def counting_key():
+            r = real_key()
+            calls.append(r)
+            return r
+
+        seen_roots: list[object] = []
+        real_build = security._build_sensitive_regex
+
+        def spy_build(roots=None):
+            seen_roots.append(roots)
+            return real_build(roots)
+
+        monkeypatch.setattr(security, "_resolved_root_key", counting_key)
+        monkeypatch.setattr(security, "_build_sensitive_regex", spy_build)
+        security._get_sensitive_re()
+
+        assert len(calls) == 1, f"roots resolved {len(calls)}x for one fill; must be 1"
+        assert seen_roots == [calls[0]], "builder did not receive the captured roots"
+
+    def test_a_changed_data_home_is_not_served_the_previous_pattern(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The key is the resolved root, so a different home rebuilds rather than
+        reusing a pattern that anchors the old one."""
+        from kiro_crew import security
+
+        self._clear()
+        leaf = "apps/issue-radar/data/config.json"
+        for name in ("home-a", "home-b"):
+            root = tmp_path / name
+            root.mkdir()
+            monkeypatch.setenv("KIROCREW_HOME", str(root))
+            assert security.is_sensitive_bash_command(f'echo x > "{root}/{leaf}"') is not None
+
+
 class TestIsSensitiveBashCommand:
     """Tests for is_sensitive_bash_command()."""
 

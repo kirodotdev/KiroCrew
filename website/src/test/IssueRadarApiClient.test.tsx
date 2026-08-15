@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // becoming a SettingsConflictError turns every cross-tab conflict into a generic
 // failure that stops persisting edits, and an empty `numbers` array that gets
 // dropped from the body launches a whole automatic batch nobody asked for.
-const { issueRadarApi, SettingsConflictError } = await import('../apps/issue-radar/api')
+const { issueRadarApi, SettingsConflictError, InvestigationSlotConflictError } = await import('../apps/issue-radar/api')
 
 const SETTINGS = {
   triage_labels: ['from-other-tab'],
@@ -146,5 +146,73 @@ describe('issueRadarApi investigation records', () => {
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.kind).toBe('pull')
     expect(body.provider).toBe('gitlab')
+  })
+
+  // The verb is the same class of break one layer along: two JOBS on one change
+  // request share a record if it never reaches the wire, so answering the feedback
+  // on a PR would resume the review session and overwrite its link.
+  it('sends the session verb when reading a record', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.getInvestigation(GL, 5, 'pull', 'respond')
+    expect(fetchMock.mock.calls[0][0]).toContain('verb=respond')
+  })
+
+  it('sends the session verb when writing a record', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.saveInvestigation(GL, 5, { slot_key: 's1' }, 'pull', 'respond')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.verb).toBe('respond')
+  })
+
+  // A session-link claim is the only thing that can order two browser tabs: a
+  // re-entry guard lives in one tab's memory. The claim must reach the wire, and a
+  // lost race must come back TYPED with the winner's record -- a bare Error would
+  // leave the caller unable to adopt that session, so it would start a second one.
+  it('sends the claim, including the null that claims an unlinked record', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.saveInvestigation(GL, 5, { slot_key: 's1' }, 'pull', 'respond', null)
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect('expected_slot_key' in body).toBe(true)
+    expect(body.expected_slot_key).toBeNull()
+  })
+
+  it('omits the claim entirely when the caller passes none', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.saveInvestigation(GL, 5, { findings: { verdict: 'dupe' } }, 'pull')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect('expected_slot_key' in body).toBe(false)
+  })
+
+  it('surfaces a lost claim as a typed error carrying the winning record', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(409, {
+      error: 'this item already has a session',
+      code: 'investigation_slot_conflict',
+      investigation: { owner: 'group', repo: 'svc', number: 5, slot_key: 'tab-one' },
+    }))
+    await expect(
+      issueRadarApi.saveInvestigation(GL, 5, { slot_key: 'tab-two' }, 'pull', 'respond', null),
+    ).rejects.toBeInstanceOf(InvestigationSlotConflictError)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(jsonResponse(409, {
+      error: 'this item already has a session',
+      investigation: { owner: 'group', repo: 'svc', number: 5, slot_key: 'tab-one' },
+    }))
+    const err = await issueRadarApi
+      .saveInvestigation(GL, 5, { slot_key: 'tab-two' }, 'pull', 'respond', null)
+      .catch((e) => e as InstanceType<typeof InvestigationSlotConflictError>)
+    expect(err.current?.slot_key).toBe('tab-one')
+  })
+
+  // Omitted rather than sent as null/undefined: the route validates the FIELD, and
+  // findings belong on the primary record, which is what every agent write targets.
+  it('omits the verb entirely when none is given', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.saveInvestigation(GL, 5, { findings: { verdict: 'dupe' } }, 'pull')
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect('verb' in body).toBe(false)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(jsonResponse(200, { investigation: null }))
+    await issueRadarApi.getInvestigation(GL, 5, 'pull')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('verb=')
   })
 })

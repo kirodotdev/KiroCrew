@@ -774,11 +774,35 @@ export interface InvestigationRecord {
  * items that must not share one investigation record. */
 export type ItemKind = 'issue' | 'pull'
 
+/** Why dispatch cannot proceed, or `ok` when it can. Mirrors the backend's
+ *  `dispatch.REASON_*`: `no_local_path` asks the user to set a value,
+ *  `checkout_unusable` tells them the value they set broke. They are separate
+ *  because those need different sentences, and one string cannot carry both. */
+export type DispatchReason = 'ok' | 'no_local_path' | 'checkout_unusable'
+
+/** Whether an issue in this repo may be handed to an implementation attempt.
+ *  Re-derived by the server on every read, so a checkout deleted after it was
+ *  recorded stops reporting ready. */
+export interface DispatchReadiness {
+  owner: string
+  repo: string
+  ready: boolean
+  reason: DispatchReason
+  local_path: string
+}
+
+/** Which SESSION VERB a record belongs to, for the case where one change request
+ * carries two jobs at once. Orthogonal to `ItemKind`: that says which number
+ * sequence the item came from, this says which job is being done on it. Omitted
+ * means the item's primary record, which is where findings live. */
+export type RecordVerb = 'respond'
+
 export interface InvestigationResponse {
   owner: string
   repo: string
   number: number
   kind?: ItemKind
+  verb?: RecordVerb | null
   /** null when the issue has never been investigated. */
   investigation: InvestigationRecord | null
 }
@@ -794,6 +818,10 @@ export interface InvestigationPatch {
 
 export interface ApiError {
   error: string
+  /** Machine-readable refusal code, present on the routes that carry one. The
+   *  UI matches on this rather than on the message, so copy can be said in the
+   *  catalog's words instead of the server's. */
+  code?: string
 }
 
 /** Thrown by `putSettings` on a 409. Carries the settings the server currently
@@ -803,6 +831,18 @@ export class SettingsConflictError extends Error {
   constructor(message: string, current: RepoSettings) {
     super(message)
     this.name = 'SettingsConflictError'
+    this.current = current
+  }
+}
+
+/** Thrown by `saveInvestigation` when a session-link claim loses the race. Carries
+ * the record as it actually stands, so the caller can adopt the winning session
+ * instead of creating a second one nothing points at. */
+export class InvestigationSlotConflictError extends Error {
+  current: InvestigationRecord | null
+  constructor(message: string, current: InvestigationRecord | null) {
+    super(message)
+    this.name = 'InvestigationSlotConflictError'
     this.current = current
   }
 }
@@ -1568,38 +1608,99 @@ export const issueRadarApi = {
     return r.json()
   },
 
-  /** Read an issue's investigation record (`investigation` is null if the issue
-   * has never been investigated). */
+  /** Read an item's investigation record (`investigation` is null if the item has
+   * never been investigated). `verb` selects a per-session-verb record; omitted,
+   * the answer is the item's primary record. */
   getInvestigation: async (
-    ref: RepoRef, number: number, kind: ItemKind = 'issue',
+    ref: RepoRef, number: number, kind: ItemKind = 'issue', verb?: RecordVerb,
   ): Promise<InvestigationResponse> => {
     const q = new URLSearchParams({ ...repoQuery(ref), number: String(number), kind })
+    if (verb) q.set('verb', verb)
     const r = await fetch(`${API}/investigation?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },
 
-  /** Upsert an issue's investigation record — link the session (slot_key +
+  /** Upsert an item's investigation record — link the session (slot_key +
    * folder_id), bump status, or store findings. The server merges + normalizes,
    * so a partial patch (even `{}`, which just bumps the last-opened stamp on
-   * resume) is valid. */
+   * resume) is valid.
+   *
+   * `verb` addresses one session verb's record, so two verbs on one change
+   * request do not overwrite each other's `slot_key`. Findings belong on the
+   * primary record, so a findings write leaves it unset. */
   saveInvestigation: async (
-    ref: RepoRef, number: number, patch: InvestigationPatch, kind: ItemKind = 'issue',
+    ref: RepoRef, number: number, patch: InvestigationPatch,
+    kind: ItemKind = 'issue', verb?: RecordVerb,
+    expectedSlotKey?: string | null,
   ): Promise<InvestigationResponse> => {
+    // `expectedSlotKey` is sent only when the caller passes it (including as
+    // `null`, which claims an UNLINKED record) -- an absent field keeps the write
+    // last-writer-wins, which is what every findings write needs.
+    const claim = expectedSlotKey === undefined ? {} : { expected_slot_key: expectedSlotKey }
     const r = await fetch(`${API}/investigation`, {
       method: 'PUT',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...repoBody(ref), number, kind, ...patch }),
+      body: JSON.stringify({
+        ...repoBody(ref), number, kind, ...(verb ? { verb } : {}), ...claim, ...patch,
+      }),
     })
+    if (r.status === 409) {
+      const body = (await r.json().catch(() => ({}))) as {
+        error?: string
+        investigation?: InvestigationRecord | null
+      }
+      throw new InvestigationSlotConflictError(
+        body.error || 'this item already has a session',
+        body.investigation ?? null,
+      )
+    }
     if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Whether this repo can hand an issue to an implementation attempt. */
+  getDispatchReadiness: async (ref: RepoRef): Promise<DispatchReadiness> => {
+    const q = new URLSearchParams(repoQuery(ref))
+    const r = await fetch(`${API}/dispatch-readiness?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** Record this repo's local checkout, or clear it with an empty string.
+   *
+   * The server validates and REFUSES rather than falling back, so a rejected
+   * path throws here and nothing is stored — which is why the caller keeps the
+   * user's text on screen instead of snapping the field back to the saved value.
+   * A successful write answers with the same readiness shape as the GET, and the
+   * stored path is the RESOLVED one, so the response is what should be rendered
+   * rather than the string that was typed. */
+  setRepoLocalPath: async (ref: RepoRef, localPath: string): Promise<DispatchReadiness> => {
+    const r = await fetch(`${API}/repo/local-path`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), local_path: localPath }),
+    })
+    if (!r.ok) {
+      // Parsed inline rather than through parseErrorBody, which drops `code`:
+      // the refusal is shown to a user, and a raw backend sentence naming the
+      // `local_path` field is not copy. The code lets the caller say it in the
+      // catalog's words and fall back to the server's text only when the code is
+      // one it does not know.
+      let body: Partial<ApiError> = {}
+      try { body = (await r.json()) as ApiError } catch { /* non-JSON body */ }
+      const err = new Error(body.error || `HTTP ${r.status}`) as Error & { code?: string }
+      err.code = body.code
+      throw err
+    }
     return r.json()
   },
 
   /** Read the repo's cached AI label recommendations (`recommendations` is null
    * if none generated yet). Never runs the model. */
-  getRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {
-    const q = new URLSearchParams(repoQuery(ref))
+  getRecommendations: async (ref: RepoRef): Promise<RecommendationsResponse> => {    const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/recommendations?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

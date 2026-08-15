@@ -1723,7 +1723,11 @@
           "search_2": "{{label}} खोजो",
           "select_for_bulk": "थोक कार्रवाई के लिए {{subject}} #{{number}} चुनें",
           "time_since_the_pr_list_was_last_fetched_from_git": "GitHub से PR सूची अंतिम बार लाए जाने के बाद बीता समय",
-          "updated": "अपडेट किया गया"
+          "updated": "अपडेट किया गया",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "{{name}} रन रद्द करें",
@@ -1770,6 +1774,11 @@
           "connect_repo": "रिपो कनेक्ट करें",
           "general": "सामान्य",
           "repository_settings": "रिपॉज़िटरी सेटिंग"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {
@@ -2210,6 +2219,20 @@
         "selected_change_hidden_by_filters": "चयनित {{subject}} सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
         "selected_issue_hidden_by_filters": "चयनित इश्यू सक्रिय फ़िल्टर द्वारा छिपा हुआ है।",
         "to_see_its_details": "चुनें ताकि उसका विवरण दिखे।"
+      },
+      "dispatch": {
+        "sectionTitle": "Working on issues",
+        "sectionHint": "Where the work would happen",
+        "fieldLabel": "Repository on this machine",
+        "fieldHint": "An absolute path to this repository on your machine. Each issue gets its own worktree branched off it, so the files you have open are never touched. Issue Radar itself reads through your provider CLI and needs no local copy; working on an issue does. Leave it empty to clear.",
+        "placeholder": "/home/you/code/widget",
+        "save": "Save",
+        "statusChecking": "Checking…",
+        "statusNoLocalPath": "Not set, so issues cannot be worked on yet.",
+        "statusCheckoutUnusable": "The saved path is missing, or is no longer a repository.",
+        "statusReady": "Ready to work on issues.",
+        "mustBeAbsolute": "Enter an absolute path, or leave it empty to clear.",
+        "refusedInvalidPath": "That is not a usable repository. Give an absolute path to a directory that holds a .git entry, and not a protected directory."
       }
     },
     "mdNotebook": {

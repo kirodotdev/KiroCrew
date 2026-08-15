@@ -1683,7 +1683,11 @@
           "search_2": "搜索 {{label}}",
           "select_for_bulk": "选择 {{subject}} #{{number}} 以执行批量操作",
           "time_since_the_pr_list_was_last_fetched_from_git": "距上次从 GitHub 获取 PR 列表的时间",
-          "updated": "更新时间"
+          "updated": "更新时间",
+          "respond_checking": "Checking whether this repository can be worked on…",
+          "respond_no_local_path": "Set this repository's location on this machine in Settings to answer feedback",
+          "respond_checkout_unusable": "The recorded repository on this machine is no longer usable — fix it in Settings",
+          "respond_verify_failed": "Could not check this repository just now — try again"
         },
         "prRunActions": {
           "cancel_run": "取消 {{name}} 运行",
@@ -1730,6 +1734,11 @@
           "connect_repo": "连接仓库",
           "general": "通用",
           "repository_settings": "仓库设置"
+        },
+        "prRespondButton": {
+          "answer_feedback": "Answer the feedback on {{subject}}{{number}}",
+          "answer_feedback_hint": "Open an agent session that answers this {{label}}'s review feedback",
+          "lookup_failed": "Could not check for an existing session — click to try again"
         }
       },
       "connectPanel": {
@@ -2168,6 +2177,20 @@
         "selected_change_hidden_by_filters": "所选 {{subject}} 已被当前筛选条件隐藏。",
         "selected_issue_hidden_by_filters": "所选 issue 已被当前筛选条件隐藏。",
         "to_see_its_details": "以查看其详情。"
+      },
+      "dispatch": {
+        "sectionTitle": "Working on issues",
+        "sectionHint": "Where the work would happen",
+        "fieldLabel": "Repository on this machine",
+        "fieldHint": "An absolute path to this repository on your machine. Each issue gets its own worktree branched off it, so the files you have open are never touched. Issue Radar itself reads through your provider CLI and needs no local copy; working on an issue does. Leave it empty to clear.",
+        "placeholder": "/home/you/code/widget",
+        "save": "Save",
+        "statusChecking": "Checking…",
+        "statusNoLocalPath": "Not set, so issues cannot be worked on yet.",
+        "statusCheckoutUnusable": "The saved path is missing, or is no longer a repository.",
+        "statusReady": "Ready to work on issues.",
+        "mustBeAbsolute": "Enter an absolute path, or leave it empty to clear.",
+        "refusedInvalidPath": "That is not a usable repository. Give an absolute path to a directory that holds a .git entry, and not a protected directory."
       }
     },
     "mdNotebook": {
