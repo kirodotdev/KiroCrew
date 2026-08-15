@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -113,6 +114,76 @@ async def finalize(run: Project) -> str:
         except Exception:
             logger.debug("worktree cleanup failed", exc_info=True)
     return run.branch_name
+
+
+async def workspace_is_valid(run: Project) -> bool:
+    """True if a run's git worktree, when it has one, is still a registered,
+    valid git repository.
+
+    A run with no worktree (``git_enabled`` False from the start -- the
+    ordinary non-git-folder case) is trivially valid, since there is nothing
+    to check here. This exists to distinguish an ACTUALLY broken worktree
+    (still present on disk after an interrupted ``finalize()``, or removed
+    out from under the run entirely -- ``git worktree remove`` deregisters
+    and deletes in separate steps, so a failure between them can leave the
+    directory behind but already deregistered) from that ordinary case.
+    """
+    if not run.branch_name:
+        return True
+    return await _is_git_repo(run.work_dir)
+
+
+async def reinit_workspace_for_retry(run: Project) -> bool:
+    """Recreate a lost worktree before resuming a retried run.
+
+    ``init_workspace()`` cannot simply be called again here: it overwrites
+    ``run.work_dir`` with the worktree path on its original call, so a second
+    call would check git-repo-ness of the now-DEAD WORKTREE rather than the
+    original repo, and silently disable git (``git_enabled = False``) instead
+    of recovering. This uses ``run.repo_root`` instead -- set once by the
+    original ``init_workspace()`` and never overwritten -- and reuses the
+    run's EXISTING branch: ``finalize()`` only ever removes the worktree,
+    never the branch, so creating a fresh branch of the same name would fail
+    with "already exists".
+
+    Returns True if the workspace is valid to resume against afterward;
+    False means the caller must not resume and should fail the run instead
+    of continuing against a broken workspace.
+    """
+    if not run.repo_root or not await _is_git_repo(run.repo_root):
+        return False
+    if not run.branch_name:
+        return False
+    if run.worktree_path:
+        # Best-effort: drop any stale/partial registration for the old
+        # worktree path first, so re-adding at the same path doesn't fail on
+        # top of an already-broken entry. `worktree remove` only succeeds if
+        # git still recognizes the path as a (possibly broken) worktree;
+        # `prune` cleans up git's own bookkeeping either way.
+        try:
+            await _git(run.repo_root, "worktree", "remove", run.worktree_path, "--force")
+        except Exception:
+            pass
+        try:
+            await _git(run.repo_root, "worktree", "prune")
+        except Exception:
+            pass
+        # `worktree add` refuses to target a path that still exists on disk,
+        # regardless of whether git's own admin state for it was cleaned up
+        # above -- this is precisely the orphaned state being recovered from
+        # (the directory outlived its deregistration), so the leftover
+        # directory itself has to go before re-adding at the same path.
+        shutil.rmtree(run.worktree_path, ignore_errors=True)
+    wt_dir = run.worktree_path or str(Path(run.repo_root).parent / ".kirocrew-work" / run.task_id)
+    try:
+        await _git(run.repo_root, "worktree", "add", wt_dir, run.branch_name)
+    except Exception:
+        logger.debug("worktree re-add on retry failed", exc_info=True)
+        return False
+    run.work_dir = wt_dir
+    run.worktree_path = wt_dir
+    run.git_enabled = True
+    return True
 
 
 async def _is_git_repo(path: str) -> bool:
