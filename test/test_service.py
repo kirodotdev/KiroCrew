@@ -3491,13 +3491,14 @@ class TestSandboxProfileControllerDispatch:
 
 
 class TestHeadlessApiKeyDoctorReport:
-    """`doctor` must report the same dropped credential, and only when it is real.
+    """`doctor` must repeat the dropped-credential warning, advisory-only.
 
     Install-time alone misses every ordering where the service is already
-    installed. Doctor is where the operator stands and where the contradiction is
-    visible in one output, so the same helper is called there -- but only when a
+    installed, so the same helper is called from doctor -- but only when a
     service definition exists, because a foreground gateway inherits the shell
-    that runs doctor and the credential does reach it.
+    that runs doctor and the credential does reach it. The report never counts
+    as a failure: this shell cannot establish that the installed unit is the
+    gateway serving, or that the dropped variable left it signed out (#3699).
     """
 
     API_KEY = "KIRO_API_KEY"
@@ -3521,7 +3522,45 @@ class TestHeadlessApiKeyDoctorReport:
         out = capsys.readouterr().out
         assert "cannot see it" in out
         assert "Note: dropped key" in out
-        assert len(issues) == 1
+        assert issues == []
+
+    def test_healthy_host_keeps_doctor_exit_zero(self, monkeypatch, tmp_path):
+        """The warning firing must not flip `doctor`'s exit code to 1.
+
+        `_doctor` exits 1 iff `issues` is non-empty, so `issues` staying empty
+        IS the exit-code consequence — pinned here because this shell cannot
+        establish the failure the old append asserted: the service bakes HOME
+        (`service_environment()`), so the gateway resolves the `kiro-cli` login
+        credential store even without the exported key, and an installed unit
+        file does not prove that unit is the gateway serving. Regression for
+        the healthy-host case where doctor reported failure on a working
+        install (#3699).
+        """
+        from kiro_crew import cli_doctor
+
+        # Behavioural ratchet: any future append fails regardless of spelling.
+        # (`_doctor` runs dozens of live host probes, so the property is pinned
+        # at the unit level rather than end-to-end.)
+        class _NoAppend(list):
+            def append(self, item):  # pragma: no cover - failure path only
+                raise AssertionError(
+                    "_doctor_headless_auth must stay advisory-only: appending "
+                    "to `issues` makes doctor exit 1 on healthy hosts (#3699)"
+                )
+
+        monkeypatch.setattr(
+            cli_doctor.service_controller,
+            "installed_unit_path",
+            lambda: tmp_path / "kirocrew.service",
+        )
+        monkeypatch.setattr(
+            cli_doctor.common_service,
+            "headless_auth_warning",
+            lambda: "Note: dropped key",
+        )
+        issues: list = _NoAppend()
+        cli_doctor._doctor_headless_auth(issues)
+        assert list(issues) == []
 
     def test_silent_when_no_service_is_installed(self, monkeypatch, capsys):
         """A foreground gateway inherits this shell, so there is nothing wrong."""

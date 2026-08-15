@@ -903,23 +903,31 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
 def _doctor_headless_auth(issues: list[str]) -> None:
     """Report an API-key credential the INSTALLED service cannot see.
 
-    This is the one place the contradiction is visible in a single output: the
-    ``kiro login`` line above runs ``whoami`` with the inherited environment and
-    reports signed in, while the dashboard's readiness gate reads the gateway's
-    own environment and reports signed out. Install-time is too early to be the
-    only report — the symptom surfaces when the service is ALREADY installed (a
-    key added to a shell profile afterwards, a host re-provisioned from a
-    snapshot, an operator who reaches the docs only after hitting the wall), and
-    none of those orderings run ``service install`` again.
+    Install-time is too early to be the only report — the symptom surfaces when
+    the service is ALREADY installed (a key added to a shell profile afterwards,
+    a host re-provisioned from a snapshot, an operator who reaches the docs only
+    after hitting the wall), and none of those orderings run ``service install``
+    again — so doctor repeats the warning next to its ``kiro login`` line.
 
-    Gated on a service definition existing, which is what makes the claim true
-    rather than merely plausible. Without one the gateway runs in the foreground
-    and inherits this very shell, so the credential DOES reach it and warning
-    here would be a false positive on a working host.
+    Gated on a service definition existing. Without one the gateway runs in the
+    foreground and inherits this very shell, so the credential DOES reach it and
+    warning here would be a false positive on a working host.
+
+    Advisory only (never appended to ``issues``, like the pod session-bus and
+    embedding-model URL probes): this shell cannot establish the failure it
+    would assert. The service bakes ``HOME`` via ``service_environment()``, so
+    the gateway resolves the user's ``kiro-cli`` login credential store even
+    when the API key is absent from the crew ``.env``; and a unit file existing
+    does not mean that unit is the gateway currently serving — an operator
+    running the gateway in the foreground inherits this shell's credential
+    despite the installed definition. Counting an unverified condition as a
+    failure would make ``doctor`` exit 1 on healthy hosts — the same
+    contradiction-with-reality the sign-in check itself was cured of.
 
     Best-effort like the probes around it: a failure to read the environment or
     the unit path must not fail ``doctor``, whose job is to report.
     """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     try:
         if service_controller.installed_unit_path() is None:
             return
@@ -931,11 +939,6 @@ def _doctor_headless_auth(issues: list[str]) -> None:
     print("  kiro key:    ⚠️  set here, but the installed service cannot see it")
     for line in warning.splitlines():
         print(f"{_INDENT}{line.strip()}" if line.strip() else "")
-    issues.append(
-        "KIRO_API_KEY is set in this shell but absent from the crew .env, so the "
-        "installed service starts without it and the dashboard reports a "
-        "signed-out state"
-    )
 
 
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:

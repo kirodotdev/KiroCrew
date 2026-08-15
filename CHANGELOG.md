@@ -4,6 +4,22 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **`kirocrew doctor` no longer exits 1 on healthy hosts where an exported
+  `KIRO_API_KEY` is absent from the crew `.env`.** The headless API-key check
+  counted the dropped variable as a failure, but the shell running doctor
+  cannot establish the failure it asserted: the installed service bakes `HOME`,
+  so the gateway resolves the user's `kiro-cli` login credential store anyway,
+  and an installed unit file does not prove that unit is the gateway serving.
+  The check now prints the same advisory warning without failing doctor —
+  matching the pod session-bus and embedding-model URL probes — and a
+  regression test pins the exit-code consequence. Tradeoff, shared with every
+  sibling advisory probe: a host authenticating solely via the exported
+  variable (no login store) now passes doctor with only the printed warning.
+  The module spec's
+  `service_environment()` description now lists everything the baked
+  environment carries (`HOME`, `PATH`, `LANG`/`LC_ALL`, `KIROCREW_KIRO_BIN`,
+  `KIROCREW_PORT`) instead of just two keys.
+
 - **`kirocrew` commands start up to ~0.8 s faster, and each MCP stdio server
   drops ~58 MB of resident memory.** `cli.py` imported its full 132-subcommand
   dispatch table at module scope — including the Slack gateway, the dashboard
