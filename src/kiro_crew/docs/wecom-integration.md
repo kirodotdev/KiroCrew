@@ -76,6 +76,10 @@ own, and it has no buttons (so `OPTIONS` arrive as plain text).
 - `/new` (or `新对话`, `清空`) — start a fresh conversation
 - `/compact` — free up room when the context fills
 
+In a group chat, where addressing the bot is required, send the command on its
+own after the mention — `@Kiro /new`. Anything else after the mention is treated
+as an ordinary message.
+
 ## Settings & reference
 
 Everything lives in the `wecom` section of `config.json`:

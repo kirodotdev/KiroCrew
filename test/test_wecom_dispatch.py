@@ -374,6 +374,91 @@ class TestCommands:
         assert parse_command("/unlink") == "unlink"
         assert parse_command("hello") is None
 
+    def test_parse_command_after_a_group_mention(self) -> None:
+        """A group chat requires @-mentioning the bot, so the command arrives prefixed."""
+        assert parse_command("@Kiro /new") == "new"
+        assert parse_command("@Kiro /compact") == "compact"
+        assert parse_command("@Kiro 新对话") == "new"
+        assert parse_command("@Kiro 清空") == "new"
+        assert parse_command("@Kiro /link") == "link"
+        assert parse_command("@Kiro /unlink") == "unlink"
+
+    def test_mention_does_not_loosen_command_matching(self) -> None:
+        """Only ONE leading mention token in front of an EXACT command counts.
+
+        Everything here must keep reaching the model as ordinary text. The bot's
+        display name is not known to the parser, so the mention is recognized
+        structurally -- which is exactly why the rest of the match has to stay
+        exact rather than becoming a prefix or substring test.
+        """
+        for text in (
+            "@Kiro hello",  # mentioned prose
+            "@Kiro",  # bare mention, no remainder
+            "@Kiro please /new",  # command embedded in prose
+            "@Kiro /new extra",  # trailing argument
+            "@someone ordinary text",  # a mention of somebody else
+            "@a @b /new",  # only one mention token is consumed
+            "hello /new",  # command not at the start
+            "/new @Kiro",  # trailing mention
+            "/new@Kiro",  # Telegram's suffix syntax, not WeCom's
+            "@Kiro /bogus",  # unknown command stays unknown
+            "@Kiro/new",  # no separator -- not a mention token
+        ):
+            assert parse_command(text) is None, text
+
+    @pytest.mark.asyncio
+    async def test_group_mention_new_bumps_gen_and_acks(self) -> None:
+        """The reported shape: '@Kiro /new' must reset, not steer into the turn."""
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("@Kiro /new"))
+
+        assert client.replies == [("https://r", "✅ 已开始新对话")]
+        assert d._conv.current_gen("Wei") == 1
+        assert sessions.successes == []  # no LLM turn
+
+    @pytest.mark.asyncio
+    async def test_group_mention_compact_reaches_compaction(self) -> None:
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("@Kiro /compact"))
+
+        assert provider.compacted is True
+        assert client.replies == [("https://r", "🗜️ 已压缩上下文。")]
+
+    @pytest.mark.asyncio
+    async def test_mentioned_prose_still_runs_a_turn_with_text_intact(self) -> None:
+        """Ordinary inbound text is never rewritten -- the model sees the mention."""
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="sure"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        sessions = FakeSessions(provider)
+        conv = FakeConvLog()
+        d = _dispatcher(sessions, FakeCtx(), FakeClient(), conv_log=conv)
+
+        await d.handle_message(_inbound("@Kiro explain this stack trace"))
+
+        key = d._session_key("Wei")
+        assert sessions.successes == [key]
+        assert (key, "user", "@Kiro explain this stack trace") in conv.appended
+        assert d._conv.current_gen("Wei") == 0  # not treated as /new
+
+    @pytest.mark.asyncio
+    async def test_mentioned_unknown_command_still_runs_a_turn(self) -> None:
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        sessions = FakeSessions(provider)
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+
+        await d.handle_message(_inbound("@Kiro /bogus"))
+
+        assert sessions.successes == [d._session_key("Wei")]
+        assert d._conv.current_gen("Wei") == 0
+
     def test_conversation_state(self) -> None:
         s = ConversationState()
         assert s.current_gen("u") == 0
