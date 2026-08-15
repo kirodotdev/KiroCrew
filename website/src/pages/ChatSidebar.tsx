@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -499,11 +499,45 @@ const TERMINAL_SOURCE_LINK_STATES: ReadonlySet<SourceLinkState> = new Set<Source
   'closed',
 ])
 
-/** Whether a chip should show its CI rollup. An ABSENT state means the provider
- * status has not been read yet (or the payload predates the field), which is not
- * terminal — such a chip keeps rendering CI exactly as it always did. */
+/** Whether a chip should show its CI rollup or its merge state. Both are moot
+ * once the pull request is terminal, so they share one gate. An ABSENT state
+ * means the provider status has not been read yet (or the payload predates the
+ * field), which is not terminal — such a chip keeps rendering CI exactly as it
+ * always did. */
 function showsChipCi(state: SourceLinkState | undefined): boolean {
   return state === undefined || !TERMINAL_SOURCE_LINK_STATES.has(state)
+}
+
+/** The single status glyph a change chip shows, or null for none.
+ *
+ * One function rather than sibling conditionals because the interesting part is
+ * the PRECEDENCE, and precedence expressed as four independent `&&` guards is
+ * how a chip comes to render two glyphs — or none — for a state nobody
+ * enumerated.
+ *
+ * A conflict outranks a pending or passing rollup: green-check-on-unmergeable
+ * is the reason this exists, since it reads as "ready" on a branch that cannot
+ * land. It does NOT outrank a failed rollup — with both blockers live the worse
+ * outcome is the one worth surfacing, and a red chip already says "do not
+ * expect this to merge".
+ *
+ * `blocked` is deliberately not a conflict. On a repo with required reviews it
+ * is the normal state of every open pull request, so treating it as a blocker
+ * would decorate the whole session list and mean nothing.
+ */
+function chipStatusGlyph(
+  link: SidebarSourceLink,
+): 'failed' | 'conflict' | 'running' | 'passed' | null {
+  if (!showsChipCi(link.state)) return null
+  if (link.ci === 'failed') return 'failed'
+  // GitHub can settle `mergeStateStatus: dirty` while `mergeable` is still
+  // `unknown` (the two fields are recorded independently, each only once it is
+  // real), and GitLab's `conflict` normalizes into both — so either field
+  // alone is a real conflict answer.
+  if (link.mergeable === 'conflicting' || link.mergeStateStatus === 'dirty') return 'conflict'
+  if (link.ci === 'running') return 'running'
+  if (link.ci === 'passed') return 'passed'
+  return null
 }
 
 interface HistoryItem {
@@ -2808,16 +2842,33 @@ function ChatSidebar({
                         </span>
                       )}
                       {link.state === 'closed' && <span className="capitalize text-danger">{link.state}</span>}
-                      {/* CI status is moot once the PR is terminal (merged or closed) —
-                          the lifecycle glyph is the terminal signal. */}
+                      {/* One status glyph, chosen by `chipStatusGlyph` — CI is moot
+                          once the PR is terminal (merged or closed), where the
+                          lifecycle glyph is the signal, and a merge conflict
+                          outranks a pending or passing rollup. */}
                       {/* Pending CI is a STATIC amber dot (the provider's own pending
                           convention), never a spinner: an animated glyph on a session
                           card reads as "the agent is working on this session", which is
                           a stronger claim than "this PR's checks haven't finished".
                           Motion on the card stays reserved for session activity. */}
-                      {showsChipCi(link.state) && link.ci === 'running' && <Circle className="lucide-inline shrink-0 text-warn scale-75" fill="currentColor" strokeWidth={0} aria-label={i18nT('pages.chatSidebar.checks_running')} />}
-                      {showsChipCi(link.state) && link.ci === 'passed' && <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />}
-                      {showsChipCi(link.state) && link.ci === 'failed' && <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />}
+                      {(() => {
+                        switch (chipStatusGlyph(link)) {
+                          case 'running':
+                            return <Circle className="lucide-inline shrink-0 text-warn scale-75" fill="currentColor" strokeWidth={0} aria-label={i18nT('pages.chatSidebar.checks_running')} />
+                          case 'passed':
+                            return <Check className="lucide-inline shrink-0 text-ok" aria-label={i18nT('pages.chatSidebar.checks_passed')} />
+                          case 'failed':
+                            return <X className="lucide-inline shrink-0 text-danger" aria-label={i18nT('pages.chatSidebar.checks_failed')} />
+                          case 'conflict':
+                            // The panel's own conflict-banner key, reused rather than
+                            // duplicated: the chip and the banner describe one pull
+                            // request, so they must not word it differently in any
+                            // locale.
+                            return <TriangleAlert className="lucide-inline shrink-0 text-danger" aria-label={i18nT('components.pullRequestPanel.merge_conflicts')} />
+                          default:
+                            return null
+                        }
+                      })()}
                     </a>
                   ))}
                   {issueLinks.map(link => (
