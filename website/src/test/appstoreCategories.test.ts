@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { categoryFor, categoryCounts } from '../components/appstore/categories'
 import { gradientFor } from '../components/appstore/gradient'
-import { sourceLabel, isVerified, normalizeRegistryApp, type RegistryApp } from '../components/appstore/types'
+import { sourceLabel, isVerified, normalizeInstalledApp, normalizeRegistryApp, stringList, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 import { pickFeatured } from '../pages/AppsPage'
 
 const app = (over: Partial<RegistryApp>): RegistryApp => ({
@@ -244,5 +244,102 @@ describe('categoryFor — malformed tags cannot crash the storefront', () => {
     expect(categoryFor([7, null, undefined] as unknown)).toBe('Other')
     expect(categoryFor([null, 'github'] as unknown)).toBe('Developer Tools')
     expect(() => categoryCounts([{ tags: 'nope' }, { tags: [1, 2] }])).not.toThrow()
+  })
+})
+
+describe('stringList', () => {
+  it('collapses truthy non-arrays to [] and drops non-string members', () => {
+    // A mistyped truthy value ('abc' || [] yields 'abc') must never reach
+    // .map at a render site; stringList is the shared coercion for that.
+    expect(stringList('abc')).toEqual([])
+    expect(stringList({ 0: 'x' })).toEqual([])
+    expect(stringList(undefined)).toEqual([])
+    expect(stringList(['a', 7, null, 'b'])).toEqual(['a', 'b'])
+  })
+})
+
+describe('normalizeInstalledApp', () => {
+  const installed = (over: Record<string, unknown> = {}, manifest: Record<string, unknown> = {}): InstalledApp =>
+    ({
+      name: 'zzq-app', version: '1.0.0', displayName: 'Zzq App', enabled: true,
+      installedAt: '2026-08-01T00:00:00Z',
+      manifest: {
+        name: 'zzq-app', version: '1.0.0', displayName: 'Zzq App',
+        description: 'd', author: 'a', ...manifest,
+      },
+      ...over,
+    } as unknown as InstalledApp)
+
+  it('defaults every optional manifest collection to an array', () => {
+    const out = normalizeInstalledApp(installed())
+    expect(out.manifest.agents).toEqual([])
+    expect(out.manifest.skills).toEqual([])
+    expect(out.manifest.sops).toEqual([])
+    expect(out.manifest.crons).toEqual([])
+    expect(out.manifest.tags).toEqual([])
+    expect(out.manifest.jobFamilies).toEqual([])
+    expect(out.manifest.ui?.pages).toEqual([])
+  })
+
+  it('survives a record with no manifest at all (the drifted-assertion crash class)', () => {
+    const out = normalizeInstalledApp({ name: 'bare' } as unknown as InstalledApp)
+    expect(out.manifest.name).toBe('bare')
+    expect(out.manifest.displayName).toBe('bare')
+    expect(out.manifest.description).toBe('')
+    expect(out.manifest.author).toBe('')
+    expect(out.manifest.agents).toEqual([])
+    expect(out.manifest.ui?.pages).toEqual([])
+    // Enumerating a normalized manifest collection cannot throw.
+    expect(() => (out.manifest.agents ?? []).map(a => a.toLowerCase())).not.toThrow()
+  })
+
+  it('coerces mistyped collections and drops malformed members', () => {
+    const out = normalizeInstalledApp(installed({}, {
+      agents: 'not-an-array',
+      skills: ['ok', 7, null],
+      crons: [{ name: 'tick' }, { nope: true }, null, 'raw'],
+      tags: { 0: 'x' },
+    }))
+    expect(out.manifest.agents).toEqual([])
+    expect(out.manifest.skills).toEqual(['ok'])
+    expect(out.manifest.crons).toEqual([{ name: 'tick' }])
+    expect(out.manifest.tags).toEqual([])
+  })
+
+  it('keeps ui.entry and extra page keys while coercing pages', () => {
+    const out = normalizeInstalledApp(installed({}, {
+      ui: {
+        entry: 'main.js',
+        pages: [
+          { route: '/apps/zzq', label: 'Zzq', icon: 'bot', iconUrl: 'icon.svg' },
+          { label: 'no-route' },
+          null,
+        ],
+      },
+    }))
+    expect(out.manifest.ui?.entry).toBe('main.js')
+    expect(out.manifest.ui?.pages).toEqual([
+      { route: '/apps/zzq', label: 'Zzq', icon: 'bot', iconUrl: 'icon.svg' },
+    ])
+  })
+
+  it('does not invent a ui entry for an app without one', () => {
+    const out = normalizeInstalledApp(installed())
+    // hasUI/AppHost routing read entry truthiness; normalization must not
+    // change navigation eligibility, only make the pages read safe.
+    expect(out.manifest.ui?.entry).toBeUndefined()
+  })
+
+  it('fills required display strings from mistyped values', () => {
+    const out = normalizeInstalledApp(installed(
+      { displayName: 42, version: null },
+      { displayName: undefined, version: undefined, description: null, author: 9 },
+    ))
+    expect(out.displayName).toBe('zzq-app')
+    expect(out.version).toBe('0.0.0')
+    expect(out.manifest.displayName).toBe('zzq-app')
+    expect(out.manifest.version).toBe('0.0.0')
+    expect(out.manifest.description).toBe('')
+    expect(out.manifest.author).toBe('')
   })
 })

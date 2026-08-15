@@ -87,8 +87,10 @@ export function isAppNavigable(app: AppNavRecord): boolean {
  *     registered at the page's own route.
  */
 export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
-  if (!isAppNavigable(app)) return null
-  const page = app.manifest!.ui!.pages![0]
+  // `!page` re-narrows what `isAppNavigable` already guarantees, so the
+  // destination read can never drift from the eligibility check.
+  const page = app.manifest?.ui?.pages?.[0]
+  if (!isAppNavigable(app) || !page) return null
   const isBuiltin = app.origin === 'builtin'
   const orphaned = !!app.orphaned
   const appHostRouted = !isBuiltin || !!app.manifest?.ui?.entry

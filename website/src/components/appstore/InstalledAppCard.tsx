@@ -39,7 +39,8 @@ export default function InstalledAppCard({
   const skillCount = m?.skills?.length || 0
   const cronCount = m?.crons?.length || 0
   const sopCount = m?.sops?.length || 0
-  const pageCount = m?.ui?.pages?.length || 0
+  const uiPages = m?.ui?.pages || []
+  const pageCount = uiPages.length
   const tags = m?.tags || []
   const mcpTools = m?.permissions?.mcpTools || []
   const hasUI = !!(m?.ui?.entry) || pageCount > 0
@@ -218,10 +219,10 @@ export default function InstalledAppCard({
               <span className="text-text">{mcpTools.join(', ')}</span>
             </div>
           )}
-          {hasUI && m?.ui?.pages && (
+          {hasUI && pageCount > 0 && (
             <div>
               <span className="text-muted">{i18nT('components.appstore.installedAppCard.ui_pages')} </span>
-              {m.ui.pages.map(p => (
+              {uiPages.map(p => (
                 <span key={p.route} className="text-text mr-3">{p.label} ({p.route})</span>
               ))}
             </div>

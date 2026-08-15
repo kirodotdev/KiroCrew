@@ -56,9 +56,14 @@ vi.mock('../components/SegmentedControl', () => ({
 // Throw from ONE card's render. Driven by app identity (not a mutable
 // counter): React re-invokes a throwing render to rebuild the component
 // stack, so a "throw once" mock would silently pass on the retry.
+// Every other card records the `app` prop it received, so tests can assert
+// on the record AppsPage actually hands the card (e.g. that the query
+// boundary normalized it).
+const cardMock = vi.hoisted(() => ({ apps: [] as { name: string; manifest?: Record<string, unknown> }[] }))
 vi.mock('../components/appstore/InstalledAppCard', () => ({
-  default: ({ app }: { app: { name: string } }) => {
+  default: ({ app }: { app: { name: string; manifest?: Record<string, unknown> } }) => {
     if (app.name === 'zzq-broken') throw new Error('zzq-card-render-broke')
+    cardMock.apps.push(app)
     return <div data-testid={`zzq-card-${app.name}`} />
   },
 }))
@@ -126,5 +131,39 @@ describe('AppsPage per-card error boundary (#3689)', () => {
     // fallback must not be a dead end: an enabled app keeps a Disable action.
     const disable = screen.getByRole('button', { name: i18nT('components.appstore.installedAppCard.disable') })
     expect(disable).toBeInTheDocument()
+  })
+})
+
+describe('AppsPage normalizes installed apps at the query boundary (#3706)', () => {
+  beforeEach(() => {
+    sessionStorage.setItem('appstore-tab', 'library')
+    listRegistry.mockResolvedValue({ apps: [], categoryOrder: [], editorialSections: [] })
+    listRegistries.mockResolvedValue([])
+    cardMock.apps.length = 0
+  })
+  afterEach(() => {
+    sessionStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  it('hands the card a normalized record even for a manifest-less API row', async () => {
+    // A drifted record can lack the manifest entirely; the query boundary
+    // must rebuild it so no render site needs per-site null defenses.
+    listApps.mockResolvedValue([
+      { name: 'zzq-bare', enabled: true },
+      { name: 'zzq-mistyped', enabled: true, manifest: { name: 'zzq-mistyped', tags: 'not-an-array', skills: ['ok', 7] } },
+    ])
+    renderPage()
+    expect(await screen.findByTestId('zzq-card-zzq-bare')).toBeInTheDocument()
+    expect(screen.getByTestId('zzq-card-zzq-mistyped')).toBeInTheDocument()
+
+    const bare = cardMock.apps.find(a => a.name === 'zzq-bare')
+    expect(bare?.manifest).toBeTruthy()
+    expect(bare?.manifest?.agents).toEqual([])
+    expect((bare?.manifest?.ui as { pages?: unknown[] })?.pages).toEqual([])
+
+    const mistyped = cardMock.apps.find(a => a.name === 'zzq-mistyped')
+    expect(mistyped?.manifest?.tags).toEqual([])
+    expect(mistyped?.manifest?.skills).toEqual(['ok'])
   })
 })

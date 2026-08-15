@@ -183,3 +183,70 @@ export function normalizeRegistryApp(raw: RegistryApp): RegistryApp {
     tags: Array.isArray(raw?.tags) ? raw.tags.filter((t): t is string => typeof t === 'string') : [],
   }
 }
+
+/**
+ * Coerce an untrusted value to a list of strings: non-arrays collapse to
+ * ``[]`` and non-string members are dropped. Shared by the query-boundary
+ * normalizers and by render sites on fetch paths that have no normalizer
+ * (e.g. the app detail page's ``/api/apps/{name}`` payload), so a truthy
+ * non-array can never reach ``.map``.
+ */
+export function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
+}
+
+/**
+ * Normalize an installed-app record for rendering.
+ *
+ * ``GET /api/apps`` mirrors app-manager records whose manifests come from
+ * user-authored ``app.json`` files, so the optional manifest collections
+ * (``agents``, ``skills``, ``crons``, ``ui.pages``, …) can be missing or the
+ * wrong type — an entry-only UI has no ``pages`` array at all. Render sites
+ * that defend per call site with non-null assertions drift from their guards
+ * and crash the whole route, so coerce once at the query boundary instead:
+ * after this pass every enumerated collection is a well-typed array and the
+ * display strings are strings, and downstream code needs no ``!`` escapes.
+ */
+export function normalizeInstalledApp(raw: InstalledApp): InstalledApp {
+  const str = (v: unknown, fallback = '') => (typeof v === 'string' ? v : fallback)
+  // A drifted record can lack the manifest entirely even though the type
+  // declares it required; rebuild it rather than dereference it.
+  const manifest = (raw?.manifest ?? {}) as InstalledApp['manifest']
+  const ui = (manifest.ui && typeof manifest.ui === 'object' ? manifest.ui : {}) as
+    NonNullable<InstalledApp['manifest']['ui']>
+  const name = str(raw?.name)
+  const version = str(raw?.version, '0.0.0')
+  const displayName = str(raw?.displayName, name)
+  return {
+    ...raw,
+    name,
+    version,
+    displayName,
+    manifest: {
+      ...manifest,
+      name: str(manifest.name, name),
+      version: str(manifest.version, version),
+      displayName: str(manifest.displayName, displayName),
+      description: str(manifest.description),
+      author: str(manifest.author),
+      agents: stringList(manifest.agents),
+      skills: stringList(manifest.skills),
+      sops: stringList(manifest.sops),
+      tags: stringList(manifest.tags),
+      jobFamilies: stringList(manifest.jobFamilies),
+      crons: Array.isArray(manifest.crons)
+        ? manifest.crons.filter(c => !!c && typeof c.name === 'string')
+        : [],
+      // Preserve ``ui.entry`` (and any extra keys) untouched: ``hasUI`` and
+      // AppHost routing read entry truthiness, so injecting one would change
+      // eligibility. Only ``pages`` is coerced; rows without a string route
+      // are dropped because every consumer routes through ``pages[0].route``.
+      ui: {
+        ...ui,
+        pages: Array.isArray(ui.pages)
+          ? ui.pages.filter(p => !!p && typeof p.route === 'string')
+          : [],
+      },
+    },
+  }
+}

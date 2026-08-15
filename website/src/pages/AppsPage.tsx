@@ -36,7 +36,7 @@ import TrustAppModal, { isTrustDeniedError, useTrustGate, type TrustAppTarget } 
 import SourcesPopover from '../components/appstore/SourcesPopover'
 import { categoryFor, categoryCounts, mergeCategoryOrder, type Category } from '../components/appstore/categories'
 import { hasHeroArt } from '../components/appstore/useHeroArt'
-import { isVerified, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
+import { isVerified, normalizeInstalledApp, normalizeRegistryApp, type InstalledApp, type RegistryApp } from '../components/appstore/types'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from '../components/ErrorNotice'
@@ -231,6 +231,14 @@ export default function AppsPage() {
   const { data: apps = [], isLoading: appsLoading, error: appsError } = useQuery<InstalledApp[]>({
     queryKey: ['apps'],
     queryFn: () => api.listApps(),
+    // The ['apps'] cache is shared with observers that fetch it raw
+    // (MigrationCheck, the command palette's apps provider), and React Query
+    // keeps one queryFn per key — whichever observer registered last fetches.
+    // Normalization therefore lives in `select`, which runs on every read of
+    // THIS observer no matter which caller populated the cache. Manifests
+    // come from user-authored app.json files, so optional collections may be
+    // missing or mistyped (mirrors the registry normalization below).
+    select: rows => rows.map(normalizeInstalledApp),
   })
 
   const { data: registryData, isLoading: registryLoading, error: registryError } = useQuery<{
@@ -735,13 +743,13 @@ export default function AppsPage() {
                   </div>
                 )}
                 {(uninstallTarget.manifest?.agents?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallTarget.manifest.agents!.length })}</div>
+                  <div className="flex items-center gap-2"><Bot size={12} className="text-muted" /> {i18nT('pages.appsPage.agent', { count: uninstallTarget.manifest?.agents?.length || 0 })}</div>
                 )}
                 {(uninstallTarget.manifest?.skills?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallTarget.manifest.skills!.length })}</div>
+                  <div className="flex items-center gap-2"><Zap size={12} className="text-muted" /> {i18nT('pages.appsPage.skill', { count: uninstallTarget.manifest?.skills?.length || 0 })}</div>
                 )}
                 {(uninstallTarget.manifest?.crons?.length || 0) > 0 && (
-                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallTarget.manifest.crons!.length })}</div>
+                  <div className="flex items-center gap-2"><Clock size={12} className="text-muted" /> {i18nT('pages.appsPage.cron_job', { count: uninstallTarget.manifest?.crons?.length || 0 })}</div>
                 )}
               </div>
 
