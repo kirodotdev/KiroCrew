@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus } from 'lucide-react'
+import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
 import { setPendingInput, switchSlot } from '../store/chatSlice'
@@ -97,6 +97,16 @@ export default function ProjectsPage() {
   // run drops the detail back into the ~124px squeeze this page just fixed, and
   // the only ways out are a 6px drag handle or arrow keys.
   const mobileRailOpen = isMobile && !rail.collapsed
+  // Collapsed while narrow: the rail becomes a bar ACROSS THE TOP rather than a
+  // strip down the side. A left/right split has to give the information pane the
+  // FULL width on a phone: horizontal is the only axis with nothing to spare, and
+  // a strip keeps spending it, while vertical room is what a phone can give.
+  // This is a body-text rule in EVERY language, not a CJK one — the cost is
+  // measured in how much width the prose column gets. What differs is only the
+  // symptom: Latin refuses to break below its longest word and overflows, while
+  // scripts that break per character collapse into a ribbon at the same width and
+  // report no overflow at all.
+  const railBar = isMobile && rail.collapsed
   const selectRun = useCallback((next: ProjectRun | null) => {
     setSelectedRun(next)
     setEditingName(false)
@@ -398,9 +408,9 @@ export default function ProjectsPage() {
   // under the pointer the moment the first run appears, and the main column owns
   // its own padding rather than inheriting page gutters.
   return (
-    <div className="flex h-full bg-bg text-text">
+    <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
       {rail.collapsed ? (
-        <CollapsedRail width={rail.width} onExpand={rail.expand} />
+        <CollapsedRail width={rail.width} onExpand={rail.expand} horizontal={railBar} />
       ) : (
         <aside style={{ width: mobileRailOpen ? '100%' : rail.width }} className="flex-shrink-0 flex flex-col min-h-0 border-r border-border">
           <div className="shrink-0 h-11 px-3 flex items-center gap-2 border-b border-border">
@@ -516,7 +526,34 @@ export default function ProjectsPage() {
 /** The rail turned on its side: app mark plus the name rotated, and the whole
  * strip is the button that reopens it. Mirrors Issue Radar's collapsed rail so a
  * collapsed column looks the same wherever you meet one. */
-function CollapsedRail({ width, onExpand }: { width: number; onExpand?: () => void }) {
+function CollapsedRail({ width, onExpand, horizontal = false }: {
+  width: number
+  onExpand?: () => void
+  /** Lay the collapsed rail across the TOP instead of down the left edge. Set
+   * while narrow, where the strip's width is the one thing the pane beside it
+   * cannot spare. */
+  horizontal?: boolean
+}) {
+  if (horizontal) {
+    return (
+      <aside className="w-full flex-shrink-0 px-2 pt-2">
+        <div className="overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">
+          <Btn
+            onClick={onExpand}
+            title={i18nT('pages.projectsPage.expand_sidebar')}
+            aria-label={i18nT('pages.projectsPage.expand_sidebar')}
+            className="w-full justify-start gap-2 px-3 py-2 rounded-none border-none text-muted hover:text-text hover:bg-bg-hover focus-ring"
+          >
+            <ClipboardCheck size={16} className="flex-shrink-0 text-accent" />
+            <span className="min-w-0 truncate text-[13px] font-medium tracking-[.02em] text-text">
+              {i18nT('pages.projectsPage.task_runner')}
+            </span>
+            <PanelLeftOpen size={15} className="ml-auto flex-shrink-0" />
+          </Btn>
+        </div>
+      </aside>
+    )
+  }
   return (
     <aside style={{ width }} className="flex-shrink-0 flex flex-col min-h-0 py-2 px-1">
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">
