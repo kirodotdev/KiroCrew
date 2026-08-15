@@ -533,7 +533,7 @@ class TestExport:
             resp = await client.get(f"/api/knowledge/items/{item_id}/export")
             assert resp.status == 200
             assert "item.knowledge" in resp.headers["Content-Disposition"]
-            assert (await resp.json())["item"]["id"] == item_id
+            assert (await resp.json())["items"][0]["id"] == item_id
 
     @pytest.mark.asyncio
     async def test_export_all_default_filename(self, store):
@@ -606,6 +606,149 @@ class TestImportBundle:
             assert (await client.post("/api/knowledge/import", json=bundle)).status == 200
         content = store.db.execute("SELECT content FROM items").fetchone()["content"]
         assert secret not in content
+
+    @pytest.mark.asyncio
+    async def test_export_item_bundle_reimports_into_a_fresh_instance(self, store, tmp_path):
+        source_store = KnowledgeStore(str(tmp_path / "source.db"))
+        try:
+            sid = source_store.add_source("f", "local_file", "/tmp/exp.md")
+            item_id = source_store.add_item("a", "body", "note", source_id=sid)
+            eid = source_store.add_entity("Svc", "service")
+            source_store.add_mention(item_id, eid)
+            source_store.add_source_location(item_id, sid, section_title="Main")
+            async with _client(_make_app(source_store)) as export_client:
+                bundle = await (
+                    await export_client.get(f"/api/knowledge/items/{item_id}/export")
+                ).json()
+        finally:
+            source_store.close()
+
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 200
+            result = await resp.json()
+        assert result["items_imported"] == 1
+        assert store.get_item(item_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_bundle_violating_foreign_keys_is_400_not_500(self, store):
+        bundle = {"source_locations": [
+            {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        # A machine-readable code, not just prose -- the dashboard renders
+        # `error` verbatim into a localized UI (test_error_code_contract.py).
+        assert body["code"] == "malformed_knowledge_bundle"
+        assert store.db.execute("SELECT COUNT(*) c FROM source_locations").fetchone()["c"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[1, 2, 3], "just a string", 42])
+    async def test_non_object_json_is_400_not_500(self, store, payload):
+        # request.json() happily parses a bare array/string/number/null; the
+        # handler's own redaction loop then calls body.get(...) on it, an
+        # AttributeError past every try/except in the function.
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=payload)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bundle", [
+        {"items": [1]},
+        {"items": "not-a-list"},
+        {"entities": [None]},
+        {"relations": [["nested"]]},
+    ])
+    async def test_non_object_collection_items_is_400_not_500(self, store, bundle):
+        # A well-formed top-level dict whose collection isn't a list-of-objects
+        # still reaches the redaction loop's item.get(...) on a non-dict entry.
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bundle", [
+        {"sources": [1]},
+        {"source_locations": ["x"]},
+        {"mentions": [42]},
+    ])
+    async def test_non_object_source_collections_is_400_not_500(self, store, bundle):
+        # sources/source_locations/mentions are never touched by the handler's
+        # redaction loops (only items/entities/relations are), so a non-dict
+        # entry there reaches store.import_bundle() directly -- e.g. src["id"]
+        # on an int raises TypeError, which is neither a KeyError nor a
+        # sqlite3.Error.
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bundle", [
+        {"items": [{"id": "i1", "item_type": "note", "title": [1, 2]}]},
+        {"items": [{"id": "i1", "item_type": "note", "content": {"a": 1}}]},
+        {"entities": [{"id": "e1", "entity_type": "person", "name": 5}]},
+        {"relations": [{"id": "r1", "source_id": "e1", "target_id": "e1",
+                        "relation_type": ["x"]}]},
+    ])
+    async def test_non_string_redacted_field_is_400_not_500(self, store, bundle):
+        # Every field the redaction loops pass to _redact() has to be a
+        # string or null -- _redact() forwards non-empty values straight into
+        # a regex .finditer() call, which raises TypeError on anything else.
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+
+    @pytest.mark.asyncio
+    async def test_oversized_integer_field_is_400_not_500(self, store):
+        # Python ints have no size ceiling; SQLite's INTEGER column is 64-bit.
+        # Binding an oversized value raises OverflowError at bind time inside
+        # store.import_bundle(), which is neither a KeyError nor sqlite3.Error.
+        bundle = {"items": [{"id": "i1", "title": "t", "content": "c",
+                             "item_type": "note", "chunk_index": 10**101}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+        assert store.db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
+
+    @pytest.mark.asyncio
+    async def test_source_with_non_json_properties_is_400_not_500(self, store):
+        # sources.properties is a TEXT column store.import_bundle() writes
+        # through unparsed, but every consumer reads it back with
+        # json.loads() -- a non-JSON string commits cleanly (200) and only
+        # breaks a later, unrelated request (e.g. Sync).
+        bundle = {"sources": [{"id": "s1", "name": "n", "source_type": "local_file",
+                               "uri": "/tmp/x", "properties": "not-json"}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+        assert store.db.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 0
+
+    @pytest.mark.asyncio
+    async def test_entity_with_non_json_aliases_is_400_not_500(self, store):
+        # entities.aliases has the same shape of bug, with a worse blast
+        # radius: find_entity() parses every entity's aliases on every
+        # lookup, so one malformed row poisons every subsequent call.
+        bundle = {"entities": [{"id": "e1", "name": "n", "entity_type": "person",
+                                "aliases": "not-json"}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+        assert store.db.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"] == 0
 
 
 # ----------------------------------------------------------------- embeddings

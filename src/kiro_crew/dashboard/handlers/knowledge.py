@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from aiohttp import web
 
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.dashboard.handlers.files import (
@@ -70,6 +71,62 @@ def _sel_log(tool: str, **kwargs: object) -> None:
         tool_name=f"knowledge.{tool}", outcome=str(kwargs.pop("outcome", "completed")),
         resources=str(kwargs) if kwargs else "",
     )
+
+
+_BUNDLE_LIST_FIELDS = ("items", "entities", "relations", "sources", "source_locations", "mentions")
+# The fields import_bundle's redaction loops pass to _redact(); each has to be
+# a string or null before it reaches _redact() -> redact_exfiltration_urls(),
+# whose regex .finditer() raises an unhandled TypeError on anything else.
+_BUNDLE_REDACTED_FIELDS = {
+    "items": ("title", "summary", "content"),
+    "entities": ("name", "description"),
+    "relations": ("relation_type", "description"),
+}
+
+
+def _validate_knowledge_bundle(body: object) -> str | None:
+    """Return an error string if body isn't an importable bundle shape, else None.
+
+    Runs before the redaction loops and the store call so a malformed bundle
+    fails with a clean 400 instead of an unhandled AttributeError/TypeError
+    (non-dict body or entries) or a silently-committed corrupt row (non-JSON
+    sources.properties / entities.aliases, which every reader parses with
+    json.loads()).
+    """
+    if not isinstance(body, dict):
+        return "bundle must be a JSON object"
+    for field in _BUNDLE_LIST_FIELDS:
+        value = body.get(field, [])
+        if not isinstance(value, list):
+            return f"'{field}' must be a list"
+        for entry in value:
+            if not isinstance(entry, dict):
+                return f"'{field}' entries must be objects"
+    for field, keys in _BUNDLE_REDACTED_FIELDS.items():
+        for entry in body.get(field, []):
+            for key in keys:
+                value = entry.get(key)
+                if value is not None and not isinstance(value, str):
+                    return f"'{field}.{key}' must be a string or null"
+    for src in body.get("sources", []):
+        props = src.get("properties")
+        if isinstance(props, str) and props:
+            try:
+                parsed = json.loads(props)
+            except ValueError:
+                return "'sources.properties' must be valid JSON"
+            if not isinstance(parsed, dict):
+                return "'sources.properties' must be a JSON object"
+    for ent in body.get("entities", []):
+        aliases = ent.get("aliases")
+        if isinstance(aliases, str) and aliases:
+            try:
+                parsed = json.loads(aliases)
+            except ValueError:
+                return "'entities.aliases' must be valid JSON"
+            if not isinstance(parsed, list):
+                return "'entities.aliases' must be a JSON array"
+    return None
 
 
 def _store(request: web.Request):
@@ -1482,6 +1539,13 @@ async def import_bundle(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    shape_error = _validate_knowledge_bundle(body)
+    if shape_error is not None:
+        _sel_log("import", outcome="rejected", reason=shape_error)
+        return web.json_response(
+            {"error": f"malformed bundle: {shape_error}", "code": "malformed_knowledge_bundle"},
+            status=400,
+        )
     # Redact imported text fields (may contain LLM-derived content from another instance)
     for item in body.get("items", []):
         redacted_title = _redact(item.get("title"))
@@ -1497,7 +1561,18 @@ async def import_bundle(request: web.Request) -> web.Response:
         redacted_type = _redact(rel.get("relation_type"))
         rel["relation_type"] = redacted_type if redacted_type is not None else ""
         rel["description"] = _redact(rel.get("description"))
-    result = _store(request).import_bundle(body)
+    try:
+        result = _store(request).import_bundle(body)
+    except (KeyError, sqlite3.Error, OverflowError) as exc:
+        # OverflowError: a bundle integer field (e.g. chunk_index) too large
+        # for SQLite's 64-bit INTEGER, raised at bind time inside the store
+        # call -- neither a KeyError nor a sqlite3.Error, so it needs its own
+        # arm or it leaks through as an unhandled 500.
+        _sel_log("import", outcome="rejected", reason=str(exc))
+        return web.json_response(
+            {"error": f"malformed bundle: {exc}", "code": "malformed_knowledge_bundle"},
+            status=400,
+        )
     _sel_log("import", **result)
     return web.json_response(result)
 
