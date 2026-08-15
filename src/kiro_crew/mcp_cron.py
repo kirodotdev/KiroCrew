@@ -1325,6 +1325,8 @@ def _render_cron_list_full(jobs: list[Any]) -> str:
             j.last_status == "ok"
             and (j.script or j.command)
             and j.last_result
+            # Registries written before result_produced existed persist a literal
+            # "ok" sentinel, which would render as though it were real output.
             and j.last_result != "ok"
         ):
             san_res = _sanitize(j.last_result)[:_RESULT_PREVIEW_LEN]

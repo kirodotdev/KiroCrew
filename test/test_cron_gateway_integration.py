@@ -5,6 +5,9 @@ including delivery, concurrency guard, timeout handling, and Report().
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,18 +67,23 @@ def _make_command_job(**overrides):
     return CronJob(**defaults)
 
 
-async def _run_script_callback(gw, job, script_result, vet_reason=None):
+async def _run_script_callback(gw, job, script_result=None, vet_reason=None, side_effect=None):
     """Run the cron callback with a mocked run_script_sandboxed result.
 
     ``vet_reason`` feeds the fire-time governance gate (None = job may run);
     patching vet_job_at_fire_time also stands in for the script-path
     resolution it performs, which the removed gateway-level
     resolve_script_path call used to cover.
+
+    Pass ``side_effect`` to make the mocked call raise instead of returning.
     """
     captured_cb = None
+    mock_kw = (
+        {"side_effect": side_effect} if side_effect is not None else {"return_value": script_result}
+    )
 
     with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_crew.slack.gateway.run_script_sandboxed", return_value=script_result) as mock_run, \
+         patch("kiro_crew.slack.gateway.run_script_sandboxed", **mock_kw) as mock_run, \
          patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=vet_reason), \
          patch("kiro_crew.slack.gateway.sel"):
 
@@ -97,12 +105,27 @@ async def _run_script_callback(gw, job, script_result, vet_reason=None):
         return await _init_and_run(), mock_run
 
 
-async def _run_command_callback(gw, job, cmd_result):
-    """Run the cron callback with a mocked run_command_sandboxed result."""
+async def _run_command_callback(gw, job, cmd_result=None, side_effect=None, vet_reason=None):
+    """Run the cron callback with a mocked run_command_sandboxed result.
+
+    Pass ``side_effect`` to make the mocked call raise instead of returning.
+    ``vet_reason`` feeds the fire-time governance gate (None = job may run),
+    mirroring _run_script_callback.
+    """
     captured_cb = None
+    mock_kw = (
+        {"side_effect": side_effect} if side_effect is not None else {"return_value": cmd_result}
+    )
+    # Only stand in for the gate when simulating a denial: other tests here drive
+    # the REAL gate, and patching it unconditionally would silence them.
+    gate = (
+        patch("kiro_crew.slack.gateway.vet_job_at_fire_time", return_value=vet_reason)
+        if vet_reason is not None else nullcontext()
+    )
 
     with patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls, \
-         patch("kiro_crew.slack.gateway.run_command_sandboxed", return_value=cmd_result) as mock_run, \
+         patch("kiro_crew.slack.gateway.run_command_sandboxed", **mock_kw) as mock_run, \
+         gate, \
          patch("kiro_crew.slack.gateway.sel"):
 
         def capture_cron(on_job=None, **kw):
@@ -303,6 +326,167 @@ class TestCommandExecution:
         job = _make_command_job()
         result, _ = await _run_command_callback(gw, job, {"status": "ok", "output": "", "exit_code": 0})
         assert result is None  # no output = no delivery
+
+    @pytest.mark.asyncio
+    async def test_silent_success_overwrites_stale_result(self):
+        """A silent success must not leave the previous run's failure in last_result.
+
+        The dashboard and the cron_list renderers read last_result to show "what
+        this job last produced", so a stale value is presented as this run's
+        output on a job the same view reports as OK. Cleared rather than marked
+        with a literal: last_status already carries the verdict, and any literal
+        stored here is also legal job output, so no reader could tell the two
+        apart.
+        """
+        gw = _make_gw()
+        job = _make_command_job(last_result="⚠️ Exit code 1\n\nstderr:\nboom")
+        result, _ = await _run_command_callback(
+            gw, job, {"status": "ok", "output": "", "exit_code": 0}
+        )
+        assert result is None
+        assert job.last_status == "ok"
+        assert job.last_result == ""
+        assert "Exit code 1" not in job.last_result
+
+    @pytest.mark.asyncio
+    async def test_report_of_exactly_ok_is_kept_as_a_result(self):
+        """A job whose reported text happens to be "ok" still has a result.
+
+        Pinned alongside the clearing tests because the two are only one string
+        apart: clearing on silence is correct, and dropping this value is not.
+        """
+        gw = _make_gw()
+        job = _make_script_job()
+        result, _ = await _run_script_callback(gw, job, {"status": "report", "message": "ok"})
+        assert result == "ok"
+        assert job.last_status == "ok"
+        assert job.last_result == "ok"
+        assert job.result_produced is True
+
+    @pytest.mark.asyncio
+    async def test_silent_failure_clears_stale_result(self):
+        """A silent failure must not present the PREVIOUS failure's text as this run's.
+
+        Cleared rather than sentinel-marked: an empty result lets a reader fall
+        back to last_error, which carries this run's actual reason.
+        """
+        gw = _make_gw()
+        job = _make_command_job(last_result="⚠️ Exit code 1\n\nstderr:\nold failure")
+        result, _ = await _run_command_callback(
+            gw, job, {"status": "timeout", "output": "", "exit_code": None}
+        )
+        assert result is None
+        assert job.last_status == "error"
+        assert job.last_result == ""
+        assert "old failure" not in job.last_result
+        assert "no output" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_timeout_clears_stale_result(self):
+        """A timed-out run must not present the previous run's output as its own."""
+        gw = _make_gw()
+        job = _make_command_job(last_result="42 widgets")
+        result, _ = await _run_command_callback(gw, job, side_effect=asyncio.TimeoutError())
+        assert result is None
+        assert job.last_status == "error"
+        assert job.last_result == ""
+        assert "42 widgets" not in job.last_result
+        assert "timeout" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_raising_command_clears_stale_result(self):
+        """Same for a raising run: last_error must be the only text left to read."""
+        gw = _make_gw()
+        job = _make_command_job(last_result="42 widgets")
+        result, _ = await _run_command_callback(gw, job, side_effect=RuntimeError("boom"))
+        assert result is None
+        assert job.last_status == "error"
+        assert job.last_result == ""
+        assert "boom" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_script_timeout_clears_stale_result(self):
+        """The script branch's timeout path carries the same invariant."""
+        gw = _make_gw()
+        job = _make_script_job(last_result="42 widgets")
+        result, _ = await _run_script_callback(gw, job, side_effect=asyncio.TimeoutError())
+        assert result is None
+        assert job.last_status == "error"
+        assert job.last_result == ""
+        assert "42 widgets" not in job.last_result
+        assert "timeout" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_raising_script_clears_stale_result(self):
+        """Same for a raising script run: last_error must be the only text left."""
+        gw = _make_gw()
+        job = _make_script_job(last_result="42 widgets")
+        result, _ = await _run_script_callback(gw, job, side_effect=RuntimeError("boom"))
+        assert result is None
+        assert job.last_status == "error"
+        assert job.last_result == ""
+        assert "boom" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_command_fire_time_deny_clears_stale_result(self):
+        """A governance denial is result-less, so it must not wear the last run's output."""
+        gw = _make_gw()
+        job = _make_command_job(last_result="42 widgets")
+        result, mock_run = await _run_command_callback(
+            gw, job, {"status": "ok", "output": "unused", "exit_code": 0},
+            vet_reason="command not permitted at fire time",
+        )
+        assert result is None
+        mock_run.assert_not_called()
+        assert job.last_status == "error"
+        assert job.last_result == "", "a denied run must not display the previous run's output"
+        assert "not permitted" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_script_fire_time_deny_clears_stale_result(self):
+        """Same denial path on the script side."""
+        gw = _make_gw()
+        job = _make_script_job(last_result="42 widgets")
+        result, mock_run = await _run_script_callback(
+            gw, job, {"status": "ok"}, vet_reason="script changed on disk",
+        )
+        assert result is None
+        mock_run.assert_not_called()
+        assert job.last_status == "error"
+        assert job.last_result == ""
+        assert "changed on disk" in job.last_error
+
+    @pytest.mark.asyncio
+    async def test_script_skip_clears_stale_result(self):
+        """A Skip is a result-less success -- carrying prior output reads as produced."""
+        gw = _make_gw()
+        job = _make_script_job(last_result="42 widgets")
+        await _run_script_callback(gw, job, {"status": "skip"})
+        assert job.last_result == "", "a Skip must not present the previous run's output"
+
+    @pytest.mark.asyncio
+    async def test_silent_script_ok_leaves_no_sentinel(self):
+        """A silent ok clears rather than writing the literal ok sentinel.
+
+        The sentinel existed only to be non-empty, and two mcp_cron readers had to
+        filter it back out; clearing removes the writer and both filters.
+        """
+        gw = _make_gw()
+        job = _make_script_job(last_result="42 widgets")
+        await _run_script_callback(gw, job, {"status": "ok"})
+        assert job.last_status == "ok"
+        assert job.last_result == "", "no sentinel, and no stale carry either"
+
+    @pytest.mark.asyncio
+    async def test_nonempty_output_still_stored(self):
+        """Negative control: the change must not suppress a real result."""
+        gw = _make_gw()
+        job = _make_command_job(last_result="stale")
+        await _run_command_callback(
+            gw, job, {"status": "ok", "output": "42 widgets\n", "exit_code": 0}
+        )
+        assert "42 widgets" in job.last_result
+        assert job.last_result != ""
 
     @pytest.mark.asyncio
     async def test_timeout_passed_to_subprocess(self):
@@ -1079,3 +1263,41 @@ class TestCronUsageRow:
             )
 
         persist.assert_not_awaited()
+
+
+def test_shutdown_cancel_keeps_the_last_completed_result(tmp_path) -> None:
+    """A shutdown cancel must not wipe the previous run's result.
+
+    stop() cancels the in-flight task but never adds the job to _cancelled_jobs,
+    so the funnel's result-less clear would otherwise run on every gateway stop
+    and persist an empty result over the last completed run's output.
+    """
+    import asyncio
+
+    from kiro_crew.cron import CronJob, CronSchedule, CronService
+
+    async def _hang(*args, **kwargs):
+        await asyncio.sleep(9999)
+
+    async def _drive() -> CronJob:
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="test",
+            message="go",
+            command="echo hi",
+            schedule=CronSchedule(kind="every", every_secs=60),
+            last_result="42 widgets",
+        )
+        svc._jobs = [job]
+        svc._save()
+        with patch.object(svc, "_execute", side_effect=_hang):
+            task = asyncio.create_task(svc._run_job_isolated(job))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        return job
+
+    job = asyncio.run(_drive())
+    assert job.last_result == "42 widgets", "a shutdown cancel wiped a completed result"

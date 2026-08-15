@@ -2311,6 +2311,9 @@ class GatewayOrchestrator:
                         # auto-pause the job after _AUTO_PAUSE_THRESHOLD fires,
                         # and a paused job never fires again — breaking the
                         # documented resume-on-policy-loosening semantic.
+                        # A denial is result-less: without this the run shows a
+                        # PREVIOUS run's output beside this run's error status.
+                        job.clear_carried_result()
                         job.last_status = "error"
                         job.last_error = redact(gate_reason)
                         job.fire_time_denied = True
@@ -2345,10 +2348,15 @@ class GatewayOrchestrator:
                     output = result.get("output", "")
                     if not output.strip():
                         if result.get("status") == "ok":
+                            # Cleared, not marked: last_status already says the run
+                            # succeeded, so last_result carries produced text only.
+                            job.clear_carried_result()
                             job.last_status = "ok"
                             job.last_error = ""
                             job.record_success()
                         else:
+                            # Cleared so displays fall back to last_error below.
+                            job.clear_carried_result()
                             job.last_status = "error"
                             job.last_error = (
                                 f"non-ok status with no output (status={result.get('status')})"
@@ -2377,6 +2385,7 @@ class GatewayOrchestrator:
                         )
                     return job.last_result
                 except asyncio.TimeoutError:
+                    job.clear_carried_result()
                     job.last_error = f"timeout ({cmd_timeout + 5}s)"
                     job.last_status = "error"
                     job.record_failure()
@@ -2394,6 +2403,7 @@ class GatewayOrchestrator:
                     return None
                 except Exception as exc:
                     logger.exception("Command cron '%s' failed: %s", job.name, exc)
+                    job.clear_carried_result()
                     err_str = redact(str(exc))
                     job.last_error = err_str[:200]
                     job.last_status = "error"
@@ -2442,6 +2452,9 @@ class GatewayOrchestrator:
                     if gate_reason:
                         # No record_failure() — see the command-path deny above:
                         # a policy denial must not feed the auto-pause counter.
+                        # A denial is result-less: without this the run shows a
+                        # PREVIOUS run's output beside this run's error status.
+                        job.clear_carried_result()
                         job.last_status = "error"
                         job.last_error = redact(gate_reason)
                         job.fire_time_denied = True
@@ -2477,7 +2490,7 @@ class GatewayOrchestrator:
                         # bookkeeping/history — no failure counting, no delivery.
                         return None
                     if status == "ok":
-                        job.set_run_result("ok")
+                        job.clear_carried_result()
                         job.last_error = ""
                         job.last_status = "ok"
                         job.record_success()
@@ -2503,6 +2516,9 @@ class GatewayOrchestrator:
                         # by the _cancelled_jobs cancel-race check. Resetting in
                         # this branch would bypass that guard and could re-enable
                         # a job cancelled mid-tick.
+                        # Result-less like the deny paths: a Skip that carried the
+                        # previous run's output read as though it had produced it.
+                        job.clear_carried_result()
                         try:
                             sel().log_tool_invocation(
                                 session_key=f"cron:{job.id}",
@@ -2564,6 +2580,7 @@ class GatewayOrchestrator:
                     logger.warning(
                         "Script cron '%s' timed out after %ds", job.name, script_timeout + 5
                     )
+                    job.clear_carried_result()
                     job.last_error = f"timeout ({script_timeout + 5}s)"
                     job.last_status = "error"
                     job.record_failure()
@@ -2588,6 +2605,7 @@ class GatewayOrchestrator:
                     return None
                 except Exception as exc:
                     logger.exception("Script cron '%s' failed: %s", job.name, exc)
+                    job.clear_carried_result()
                     err_str = redact(str(exc))
                     job.last_error = err_str
                     job.last_status = "error"

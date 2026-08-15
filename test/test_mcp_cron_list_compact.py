@@ -113,6 +113,23 @@ class TestCronListCompact:
         out = _call_tool_inner("cron_list", {})
         assert "result=computed 42 widgets" in out
 
+    def test_a_legacy_ok_sentinel_is_not_shown_as_a_result(self, home):
+        """Registries predating result_produced persist last_result == "ok".
+
+        That is a synthetic marker, not output, so rendering it would tell the
+        operator a silent script produced something when it produced nothing.
+        """
+        svc = CronService(base_dir=home)
+        job = svc.add_job(name="legacy", message="ignored", every_secs=300)
+        job.script = "x.py:f"
+        job.last_status = "ok"
+        job.last_result = "ok"
+        svc._save()
+        compact = _call_tool_inner("cron_list", {})
+        assert "result=ok" not in compact
+        full = _call_tool_inner("cron_list", {"verbose": True})
+        assert "last result: ok" not in full
+
     def test_compact_collapses_message_newlines(self, home):
         """Embedded newlines collapsed so each job stays a single block."""
         svc = CronService(base_dir=home)

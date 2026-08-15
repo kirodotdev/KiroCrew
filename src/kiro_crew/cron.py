@@ -244,12 +244,15 @@ class CronJob:
     fire_time_denied: bool = False
     last_result: str | None = None
     # Runtime-only (never serialized): True once THIS run produced a result
-    # via set_run_result(). ``last_result`` is a cross-run context-carry
-    # field that result-less runs (timeout, callback exception, no-output
-    # command, script Skip) deliberately leave in place for the next run's
-    # prompt dedup, so the history recorder needs this marker — not the
-    # value — to decide attribution. Identity/equality checks on the string
-    # cannot do that job: CPython interns equal literals and caches
+    # via set_run_result(). For AGENT jobs ``last_result`` is a cross-run
+    # context-carry field that result-less runs deliberately leave in place
+    # for the next run's prompt dedup, so the history recorder needs this
+    # marker — not the value — to decide attribution. Command and script
+    # jobs instead clear it on every result-less exit: the prompt built for
+    # them is discarded (the command branch never reads it, the script
+    # branch reassigns the variable), so a carried-over value could only
+    # ever misreport a finished run's result. Identity/equality checks on
+    # the string cannot do that job: CPython interns equal literals and caches
     # single-character latin-1 strings, so a run re-producing the same text
     # is indistinguishable from a run that produced nothing. Reset at the
     # start of every run by _run_job_isolated.
@@ -312,6 +315,18 @@ class CronJob:
         """
         self.last_result = value
         self.result_produced = True
+
+    def clear_carried_result(self) -> None:
+        """Drop a PREVIOUS run's result when this run produced none.
+
+        Result-less command/script exits must not display the last run's
+        output beside this run's status. Guarded on ``result_produced`` so a
+        run that produced and delivered a result and then failed during
+        cleanup keeps it. Assigns directly rather than via set_run_result()
+        so a cleared field is never marked as produced by this run.
+        """
+        if not self.result_produced:
+            self.last_result = ""
 
     def _audit_pause_change(self, outcome: str) -> None:
         """Emit a SEL audit event for an auto-pause permission transition.
@@ -2502,11 +2517,11 @@ class CronService:
         # Provisional; refined once the jitter sleep completes. Only read on
         # the history path, which a cancelled-during-jitter run never reaches.
         exec_started_at = started_at
-        # ``last_result`` is a cross-run context-carry field (see
-        # build_cron_session_context): runs that end without producing a
-        # result — timeout, callback exception, no-output command, script
-        # Skip — deliberately leave the previous run's value in place so the
-        # next run's prompt keeps its dedup context. The history recorder in
+        # ``last_result`` is a cross-run context-carry field for AGENT jobs
+        # (see build_cron_session_context): result-less runs leave the
+        # previous value in place so the next run's prompt keeps its dedup
+        # context. Command and script jobs have theirs cleared once in the
+        # finally below, because the prompt built for them is never dispatched. The history recorder in
         # the finally block must NOT attribute that carried-over value to
         # THIS run, so clear the freshness marker here; executor callbacks
         # set it via CronJob.set_run_result() when the run actually produces
@@ -2515,6 +2530,7 @@ class CronService:
         # a run re-producing the previous text looks identical to one that
         # produced nothing.)
         job.result_produced = False
+        being_cancelled = False
         try:
             # The jitter sleep MUST live inside this try: hourly/daily jobs
             # sleep up to 59 min here, and a user cancel() during that window
@@ -2535,6 +2551,11 @@ class CronService:
             except Exception:
                 logger.debug("push_refresh failed on job start", exc_info=True)
             await self._execute_with_timeout(job)
+        except asyncio.CancelledError:
+            # stop() cancels this task WITHOUT marking _cancelled_jobs, so the
+            # finally must know not to clear the last completed run's result.
+            being_cancelled = True
+            raise
         finally:
             finished_at = time.time()
             self._job_start_times.pop(job.id, None)
@@ -2556,6 +2577,10 @@ class CronService:
             if not reaped and not cancelled and job.schedule.kind == "every":
                 job.last_run_ts = started_at
             if not reaped and not cancelled:
+                # One clear per result-less run. Scattering it over exit sites is
+                # what let the fire-time deny and script Skip paths keep a result.
+                if (job.command or job.script) and not being_cancelled:
+                    job.clear_carried_result()
                 try:
                     # Offload the lock+sync+save merge to a worker thread:
                     # _merge_job_result enters the bounded sync _file_lock,

@@ -355,22 +355,28 @@ class TestCronScriptMode:
 
     @pytest.mark.asyncio
     async def test_ok_status_records_success(self):
+        """An ok status records success without inventing a result string.
+
+        The status is the signal and there is no output to show, so a carried
+        result is cleared rather than replaced with an "ok" sentinel that every
+        reader then had to filter out.
+        """
         orch = _make_orchestrator()
-        job = _job(script="probes.py:check", consecutive_failures=1)
+        job = _job(script="probes.py:check", consecutive_failures=1, last_result="42 widgets")
         async with _cron_cb(orch, sel_obj=_blind_sel(), script_result={"status": "ok"}) as cb:
             assert await cb(job) == "ok"
         assert job.last_status == "ok"
-        assert job.last_result == "ok"
+        assert job.last_result == ""
         assert job.consecutive_failures == 0
 
     @pytest.mark.asyncio
     async def test_skip_status_delivers_nothing(self):
-        """A Skip is a deliberate no-op: no result, no status change."""
+        """A Skip is result-less, so it must not present the PREVIOUS run's output."""
         orch = _make_orchestrator()
-        job = _job(script="probes.py:check")
+        job = _job(script="probes.py:check", last_result="42 widgets")
         async with _cron_cb(orch, sel_obj=_blind_sel(), script_result={"status": "skip"}) as cb:
             assert await cb(job) is None
-        assert job.last_result is None
+        assert job.last_result == ""
 
     @pytest.mark.asyncio
     async def test_unknown_status_is_an_error(self):
