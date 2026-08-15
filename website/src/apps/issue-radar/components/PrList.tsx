@@ -123,7 +123,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
   const {
     filteredPulls, sortedPulls, pullsLoading, pullsError, pullsPartial,
     prStateFilter, colorByName,
-    selectedPull, setSelectedPull, refreshPulls, pullsRefreshing,
+    selectedPull, setSelectedPull, refreshPulls, pullsRefreshing, listDetail,
     prQuery, setPrQuery, pullsUpdatedAt, prPersonFilterActive, prSearchTruncatedAt,
     active, canWrite, checkedPulls, togglePullChecked, clearCheckedPulls,
   } = useIssueRadar()
@@ -301,7 +301,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
                   >
                     {row(pr, (
                       <button
-                        onClick={() => setSelectedPull(pr.number)}
+                        onClick={() => { setSelectedPull(pr.number); listDetail.openDetail() }}
                         className={cardClass(selectedPull === pr.number)}
                       >
                         {cardInner(pr)}
@@ -324,7 +324,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
                 <div className="pb-2">
                   {row(pr, (
                     <button
-                      onClick={() => setSelectedPull(pr.number)}
+                      onClick={() => { setSelectedPull(pr.number); listDetail.openDetail() }}
                       className={cardClass(selectedPull === pr.number)}
                     >
                       {cardInner(pr)}

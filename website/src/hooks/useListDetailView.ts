@@ -36,3 +36,8 @@ export function useListDetailView() {
     closeDetail,
   }
 }
+
+/** The shape {@link useListDetailView} returns. Named so a shell that hosts the
+ * state in its own context (Issue Radar, whose row handlers live in child list
+ * components) can declare the field without restating the members. */
+export type ListDetailView = ReturnType<typeof useListDetailView>

@@ -32,7 +32,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
   const {
     filteredIssues, sortedIssues, issuesLoading, issuesError, issuesPartial,
     stateFilter, issues, colorByName,
-    selectedIssue, setSelectedIssue, refresh, refreshing,
+    selectedIssue, setSelectedIssue, refresh, refreshing, listDetail,
     query, setQuery, issuesUpdatedAt,
   } = useIssueRadar()
 
@@ -136,7 +136,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
                       duration: 0.18,
                       ease: [0.16, 1, 0.3, 1],
                     }}
-                    onClick={() => setSelectedIssue(iss.number)}
+                    onClick={() => { setSelectedIssue(iss.number); listDetail.openDetail() }}
                     className={cardClass(selectedIssue === iss.number)}
                   >
                     {cardInner(iss)}
@@ -157,7 +157,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
               itemContent={(_i, iss) => (
                 <div className="pb-2">
                   <button
-                    onClick={() => setSelectedIssue(iss.number)}
+                    onClick={() => { setSelectedIssue(iss.number); listDetail.openDetail() }}
                     className={cardClass(selectedIssue === iss.number)}
                   >
                     {cardInner(iss)}

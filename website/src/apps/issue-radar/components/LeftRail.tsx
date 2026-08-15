@@ -24,9 +24,13 @@ import { i18nT } from '../../../i18n/t'
  * the default is `w-72`. Dragging the handle far enough
  * past the minimum collapses the rail to `CollapsedRail`. */
 export default function LeftRail({
-  width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand,
+  width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand, onNavigate,
 }: {
-  width?: number
+  width?: number | string
+  /** Called after any section navigation. The narrow-viewport shell uses it to
+   * collapse the full-width rail, so a tap does not navigate to a section that
+   * the rail is still covering. */
+  onNavigate?: () => void
   collapsed?: boolean
   onExpand?: () => void
 }) {
@@ -85,16 +89,16 @@ export default function LeftRail({
         // Return to the crews page you were last on — `crewView` is persisted, so
         // resetting it here would discard the one thing the section remembers.
         // Same contract as Dashboards above.
-        onToggle={() => openCrews()}
+        onToggle={() => { openCrews(); onNavigate?.() }}
       >
-        <CrewsSection />
+        <CrewsSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
         title={i18nT('apps.issueRadar.components.leftRail.issues')}
         icon={CircleDot}
         expanded={expanded === 'filters'}
-        onToggle={() => openIssues()}
+        onToggle={() => { openIssues(); onNavigate?.() }}
       >
         <FiltersSection />
       </AccordionSection>
@@ -103,7 +107,7 @@ export default function LeftRail({
         title={terms.changeRequestPluralTitle}
         icon={GitPullRequest}
         expanded={expanded === 'pulls'}
-        onToggle={() => openPulls()}
+        onToggle={() => { openPulls(); onNavigate?.() }}
       >
         <PrFiltersSection />
       </AccordionSection>
@@ -112,7 +116,7 @@ export default function LeftRail({
         title={i18nT('apps.issueRadar.components.leftRail.settings')}
         icon={Settings}
         expanded={expanded === 'settings'}
-        onToggle={() => openSettings()}
+        onToggle={() => { openSettings(); onNavigate?.() }}
       >
         <SettingsSection />
       </AccordionSection>
@@ -135,7 +139,7 @@ export default function LeftRail({
  * The roster itself is deliberately absent here. Column 2 is where a crew's state
  * is read, and the rail is the surface that has to stay legible at 220px — a
  * second copy of one list, without the state, is the worse of the two. */
-function CrewsSection() {
+function CrewsSection({ onNavigate }: { onNavigate?: () => void }) {
   const {
     openCrews, crewCounts,
     crewFilter, setCrewFilter, crewSortKey, crewSortDir, cycleCrewSort,
@@ -212,7 +216,7 @@ function CrewsSection() {
             return (
               <Clickable
                 key={key}
-                onClick={() => { setCrewFilter(key); openCrews() }}
+                onClick={() => { setCrewFilter(key); openCrews(); onNavigate?.() }}
                 data-testid={`crew-filter-${key}`}
                 aria-pressed={isActive}
                 className={rowClass(isActive)}
@@ -240,7 +244,10 @@ function CrewsSection() {
 function CollapsedRail({
   width, owner, repo, readOnly, onExpand,
 }: {
-  width: number
+  // Shares LeftRail's pass-through prop, so it takes the same CSS-length type.
+  // In practice this is always the numeric strip width: the string form is only
+  // used for the full-width narrow-viewport rail, which is the EXPANDED branch.
+  width: number | string
   owner: string
   repo: string
   readOnly: boolean

@@ -63,6 +63,9 @@ beforeEach(() => {
     crewsError: null,
     crewView: { kind: 'crew', id: 'c1' },
     setCrewView,
+    // Selecting a row also drills into the detail on a narrow viewport, so the
+    // fake context has to carry the pane state the real one hosts.
+    listDetail: { isMobile: false, showList: true, showDetail: true, openDetail: vi.fn(), closeDetail: vi.fn() },
     crewFilter: 'all',
     setCrewFilter,
     // The sort controls live in the rail; this column only applies the result.
