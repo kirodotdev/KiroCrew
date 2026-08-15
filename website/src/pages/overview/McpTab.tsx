@@ -501,9 +501,22 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {i18nT('pages.overview.mcpTab.declared')}
                     </Badge>
                   ) : (
-                    <Badge variant={mcpStatusVariant(s.status)} title={mcpStatusHint(s.status, s.name)}>
-                      {mcpStatusLabel(s.status)}
-                    </Badge>
+                    /* The needs_auth hint is the only default-reachable
+                       explanation of the OAuth probe limitation, so it cannot
+                       live in `title` alone: a native tooltip is hover-only and
+                       so unreachable by keyboard, touch, and AT (#3626). The
+                       badge keeps its `title` for pointer users; InfoTip adds a
+                       focusable, tappable affordance beside it. Only for
+                       needs_auth — every other status's hint is advisory
+                       detail, not the sole explanation of the state. */
+                    <span className="inline-flex items-center gap-1.5">
+                      <Badge variant={mcpStatusVariant(s.status)} title={mcpStatusHint(s.status, s.name)}>
+                        {mcpStatusLabel(s.status)}
+                      </Badge>
+                      {s.status === 'needs_auth' && (
+                        <InfoTip text={mcpStatusHint(s.status, s.name) || ''} placement="top" />
+                      )}
+                    </span>
                   )}
                   {!!s.probedAt && (
                     /* nowrap: the column is narrow enough that "Last probed: 7:47 PM"

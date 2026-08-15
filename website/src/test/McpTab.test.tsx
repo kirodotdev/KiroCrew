@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { McpServer } from '../types'
 
@@ -116,17 +116,22 @@ describe('McpTab needs_auth status', () => {
     expect(screen.queryByText('Unknown')).not.toBeInTheDocument()
   })
 
-  it('explains the unverifiable status on hover, naming the server', async () => {
+  it('makes the unverifiable status explanation keyboard and touch reachable', async () => {
     mockApi.mcpServers.mockResolvedValue([remote('needs_auth')])
     renderTab()
 
     const badge = await screen.findByText('Not verified')
-    const hint = badge.getAttribute('title') || ''
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    const hint = trigger.getAttribute('title') || ''
     // Says who holds the token and that a working server is still working —
     // the two facts that make the badge honest instead of alarming.
     expect(hint).toContain('atlassian')
     expect(hint).toContain('Kiro CLI')
     expect(hint).toMatch(/cannot see the authorization/)
+    expect(badge).not.toHaveAttribute('title')
+
+    fireEvent.click(trigger)
+    expect(await screen.findByText(/cannot see the authorization/i)).toBeInTheDocument()
   })
 
   it('leaves every other status without a hover explanation', async () => {
