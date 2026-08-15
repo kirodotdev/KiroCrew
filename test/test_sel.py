@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import inspect
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict
@@ -16,6 +20,7 @@ import pytest
 
 import kiro_crew.sel as sel_mod
 from kiro_crew import platform_compat
+from kiro_crew import sel as kiro_crew_sel
 from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel, sel_hmac_key_path
 
 
@@ -422,6 +427,715 @@ class TestThreadSafety:
         # All lines should be valid JSON
         for line in lines:
             json.loads(line)
+
+
+class TestCrossProcessSafety:
+    """Two PROCESSES sharing one log must produce one contiguous HMAC chain.
+
+    TestThreadSafety above only exercises threads inside one interpreter, which
+    a threading.Lock already orders. The gateway and each managed MCP server are
+    separate processes sharing this file, and each holds its own singleton with
+    its own cached chain tip — the case a thread lock cannot cover.
+    """
+
+    _CHILD = '''
+import sys
+import time
+from pathlib import Path
+
+from kiro_crew.sel import SecurityEvent, SecurityEventLog
+
+sel_dir, sync_dir, tag, count = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+log = SecurityEventLog(base_dir=sel_dir, sync=True)
+
+# Announce readiness, then wait for the parent's start signal, so both children
+# hold a chain tip they read BEFORE either has written.
+(sync_dir / ("ready-" + tag)).write_text("1", encoding="utf-8")
+deadline = time.monotonic() + 60
+while not (sync_dir / "go").exists():
+    if time.monotonic() > deadline:
+        raise SystemExit("barrier timeout")
+    time.sleep(0.005)
+
+for i in range(count):
+    log.log(SecurityEvent(
+        event_id=tag + "-" + str(i),
+        timestamp="2026-01-01T00:00:00+00:00",
+        event_type="tool_invocation",
+        caller_identity="dashboard:" + tag,
+        agent="kirocrew",
+        source="dashboard",
+        operation="op-" + tag + "-" + str(i),
+    ))
+log.flush()
+'''
+
+    def test_concurrent_processes_keep_one_unbroken_chain(self, tmp_path):
+        sel_dir = tmp_path / "sel"
+        sync_dir = tmp_path / "sync"
+        sync_dir.mkdir()
+        events_per_child = 12
+        tags = ("alpha", "beta")
+
+        # Materialize the HMAC key up front so the children share one key: two
+        # processes racing to create it would sign with different keys, which
+        # would fail this test for a reason that is not the chain ordering.
+        SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert (sel_dir / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._HMAC_KEY_FILE).exists()
+
+        child = tmp_path / "sel_child.py"
+        child.write_text(self._CHILD, encoding="utf-8")
+
+        env = dict(os.environ)
+        # parents[1] is the src/ root holding kiro_crew, so the children import
+        # the same tree as this test rather than any installed copy.
+        env["PYTHONPATH"] = str(Path(kiro_crew_sel.__file__).parents[1])
+
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(child), str(sel_dir), str(sync_dir), tag, str(events_per_child)],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                cwd=tmp_path,
+            )
+            for tag in tags
+        ]
+        try:
+            deadline = time.monotonic() + 60
+            while not all((sync_dir / f"ready-{tag}").exists() for tag in tags):
+                assert time.monotonic() < deadline, "children never became ready"
+                for proc in procs:
+                    assert proc.poll() is None, f"child exited early: {proc.communicate()}"
+                time.sleep(0.01)
+            (sync_dir / "go").write_text("1", encoding="utf-8")
+
+            for proc in procs:
+                out, err = proc.communicate(timeout=60)
+                assert proc.returncode == 0, f"child failed: {out}\n{err}"
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    # Reap the killed child: without the wait() the zombie
+                    # lingers for the rest of the test run and the ResourceWarning
+                    # from Popen.__del__ can fail an unrelated -W error test.
+                    proc.wait()
+
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        verifier = SecurityEventLog(base_dir=sel_dir, sync=True)
+        total, valid = verifier.verify_integrity()
+
+        expected = len(tags) * events_per_child
+        assert total == expected, f"expected {expected} entries on disk, found {total}"
+        # Pre-fix, each process chains every entry off the tip it cached at
+        # construction, so the two lineages fork and verify_integrity reports
+        # the breaks: valid < total.
+        assert valid == total, f"HMAC chain broken: only {valid}/{total} entries verify"
+
+    def test_lock_sidecar_lives_in_the_protected_trust_dir(self, tmp_path):
+        """The sidecar must sit where the agent cannot reach it.
+
+        A sibling of security_events.jsonl is NOT covered: the sensitive-path
+        floor lists that log by exact leaf name. An agent able to unlink the
+        sidecar mid-hold leaves two writers holding locks on different inodes —
+        the fork this serialization prevents — and one able to hold it wedges
+        every writer.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="lockloc-1"))
+
+        expected = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+        assert expected.exists(), "lock sidecar was not created under the trust dir"
+        assert not list(tmp_path.glob("*.lock")), "a lock file sits beside the log"
+
+    def test_appends_survive_when_the_trust_dir_is_uncreatable(self, tmp_path):
+        """A legacy install that cannot create trust/ must keep auditing.
+
+        When the key loader falls back to the deny-list-protected legacy key
+        (read-only config dir, uncreatable trust dir), the chain lock must
+        follow it there — locking the legacy key file itself — instead of
+        retrying the mkdir on every append, which would drop every best-effort
+        audit and deny every critical action on an install that is otherwise
+        signing fine.
+        """
+        legacy = tmp_path / kiro_crew_sel._HMAC_KEY_FILE
+        legacy.write_bytes(os.urandom(64))
+        trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
+
+        real_mkdir = Path.mkdir
+
+        def uncreatable_trust(self, *args, **kwargs):
+            if self == trust:
+                raise PermissionError("read-only config dir")
+            return real_mkdir(self, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", uncreatable_trust):
+            log = SecurityEventLog(base_dir=tmp_path, sync=True)
+            assert log._hmac_key_file == legacy, "precondition: fallback not taken"
+            log.log(_make_event(event_id="legacy-lock-crit"), critical=True)
+            log.log(_make_event(event_id="legacy-lock-soft"))
+
+        body = log._path.read_text(encoding="utf-8")
+        assert "legacy-lock-crit" in body and "legacy-lock-soft" in body
+        total, valid = log.verify_integrity()
+        assert (total, valid) == (2, 2)
+        # The key bytes are untouched: the lock fd is never written through.
+        assert legacy.read_bytes() == log._hmac_key
+
+    def test_fresh_sidecar_is_primed_for_byte_range_locking(self, tmp_path):
+        """A fresh sidecar must not be empty after its first use.
+
+        Windows locks a byte RANGE (msvcrt.locking on byte 0), so an empty
+        sidecar has nothing to lock -- best-effort audits would vanish and
+        critical actions would be denied on every fresh Windows install. Same
+        priming the rotation lock already does for itself.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="prime-1"))
+        sidecar = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+        assert sidecar.stat().st_size >= 1, "sidecar left empty; unlockable on Windows"
+
+    @pytest.mark.asyncio
+    async def test_loop_critical_audit_does_not_wait_for_a_blocked_writer_drain(self):
+        """``flush()``'s backlog wait must never run on the event-loop thread.
+
+        With the background writer parked on another process's chain lock and
+        events pending, a loop-side critical audit that drains first sits out
+        ``flush()``'s full timeout ON THE LOOP -- the same cross-process wait
+        the single-shot acquire keeps off the loop, re-imported one level up
+        through ``_pending``. It must reach its fail-closed gate immediately
+        instead; the wait could not have helped anyway, because the inline
+        append fails closed at that gate while the sibling holds the lock.
+
+        Uses the SESSION-scoped SEL default directory, not a per-test tmp dir:
+        this test needs the ASYNC writer, and a daemon writer bound to a
+        per-test directory outlives its test and re-creates the deleted path on
+        its next flush (see the rootdir ``_isolate_sel_default_dir`` fixture).
+        """
+        log = SecurityEventLog()  # async writer in the session-scoped dir
+        log.log(_make_event(event_id="drain-preheat"))
+        log.flush()
+        lock_path = log._dir / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        # Stand in for another process holding the chain lock (e.g. prune).
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        assert platform_compat.try_acquire_lock(holder, exclusive=True)
+        try:
+            # Queue a normal event; the writer dequeues it and blocks on the
+            # chain lock, leaving _pending nonzero either way.
+            log.log(_make_event(event_id="drain-queued"))
+            await asyncio.sleep(0.3)
+
+            started = time.monotonic()
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="drain-critical"), critical=True)
+            elapsed = time.monotonic() - started
+            assert elapsed < 2.0, (
+                f"loop-side critical audit waited {elapsed:.2f}s on the writer's "
+                "backlog (flush timeout is 5s); it must fail closed immediately"
+            )
+        finally:
+            platform_compat.release_lock(holder)
+            os.close(holder)
+        # Once the holder releases, the queued event drains normally.
+        log.flush()
+        assert "drain-queued" in log._path.read_text(encoding="utf-8")
+        # Stop THIS test's writer deterministically. The session directory is
+        # shared by every later test in this worker, and flock treats each
+        # instance's fd as its own holder -- so a leftover live writer here can
+        # hold the chain lock at the very instant a LATER test's loop-side
+        # critical audit takes its single shot, denying it spuriously
+        # (measured: the issue-radar trust re-establishment tests). The writer
+        # loop exits on its None sentinel.
+        log._queue.put(None)
+        writer = log._writer
+        if writer is not None:
+            writer.join(timeout=10)
+            assert not writer.is_alive(), "sel-writer did not stop"
+
+    @pytest.mark.asyncio
+    async def test_loop_critical_audit_joins_its_own_processes_hold(self, tmp_path):
+        """Own-process contention must JOIN the hold, not fail closed.
+
+        flock is per open file description, so a second fd in the same process
+        reads as a foreign writer -- and the loop-side single shot would then
+        deny a critical action because our own background writer was flushing a
+        batch at the same instant (measured: the fingerprint read's terminal
+        audit racing the writer flushing the same call's earlier best-effort
+        event). The flock excludes OTHER processes; threads of this process are
+        serialized by ``_lock``, so joining is safe, and the joiner's wait is
+        bounded local append work.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="join-preheat"))
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            with log._chain_lock():  # this process's own append-kind hold
+                entered.set()
+                release.wait(10)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        try:
+            assert entered.wait(5)
+            # Pre-fix: single-shot flock attempt on a second fd fails closed.
+            # The join waits its turn at the hold's gate, so release the holder
+            # on a short timer and assert the critical write went through
+            # promptly rather than being refused.
+            threading.Timer(0.3, release.set).start()
+            started = time.monotonic()
+            log.log(_make_event(event_id="join-critical"), critical=True)
+            assert time.monotonic() - started < 5.0
+        finally:
+            release.set()
+            t.join(timeout=10)
+        body = log._path.read_text(encoding="utf-8")
+        assert "join-critical" in body
+        total, valid = log.verify_integrity()
+        assert valid == total
+
+    @pytest.mark.asyncio
+    async def test_loop_critical_audit_does_not_join_its_own_prune(self, tmp_path):
+        """prune's hold spans a whole streaming rewrite -- joining it from the
+        loop is the stall the single-shot gate exists to prevent, so that one
+        own-process hold is refused, exactly like a foreign holder."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="prune-hold-preheat"))
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            with log._chain_lock(kind="prune"):
+                entered.set()
+                release.wait(10)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        try:
+            assert entered.wait(5)
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="prune-hold-critical"), critical=True)
+        finally:
+            release.set()
+            t.join(timeout=10)
+        assert "prune-hold-critical" not in log._path.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_a_joining_prune_is_visible_to_loop_side_callers(self, tmp_path):
+        """A prune that JOINS an append-kind hold must promote the hold's kind.
+
+        Without the promotion, the shared kind stays "append" and a loop-side
+        critical audit arriving mid-rewrite joins and waits behind the whole
+        streaming rewrite -- the exact stall the prune-kind refusal exists for.
+        The promotion happens when the prune joins (before it waits its turn at
+        the hold's gate), so it is observable while the append holder is still
+        inside.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="promote-preheat"))
+        key = str(log._chain_lock_path())
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def append_holder():
+            with log._chain_lock():
+                entered.set()
+                release.wait(10)
+
+        def prune_joiner():
+            entered.wait(5)
+            with log._chain_lock(kind="prune"):
+                pass
+
+        t1 = threading.Thread(target=append_holder, daemon=True)
+        t2 = threading.Thread(target=prune_joiner, daemon=True)
+        t1.start()
+        t2.start()
+        try:
+            assert entered.wait(5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                with kiro_crew_sel._CHAIN_HOLDS_MUTEX:
+                    hold = kiro_crew_sel._CHAIN_HOLDS.get(key)
+                    if hold is not None and hold.kind == "prune":
+                        break
+                time.sleep(0.01)
+            else:
+                pytest.fail("prune join never promoted the hold's kind")
+            # Pre-fix: the hold still reads "append", so this JOINS -- and in
+            # production would wait behind the streaming rewrite.
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="promote-critical"), critical=True)
+        finally:
+            release.set()
+            t1.join(timeout=10)
+            t2.join(timeout=10)
+        assert "promote-critical" not in log._path.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_rotation_inside_an_append_hold_refuses_loop_side_joins(self, tmp_path):
+        """The rotation step inside an append hold must not be joinable from the loop.
+
+        The writer's hold is append-kind, but while it runs rotation's scan +
+        rename + retention sweep, a joining loop-side critical audit would
+        block on ``_lock`` for that whole step. The hold is relabeled for
+        exactly the step's duration, and joins work again afterwards.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="rot-preheat"))
+
+        in_rotation = threading.Event()
+        leave_rotation = threading.Event()
+        after_rotation = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            with log._chain_lock():  # the writer's ordinary append-kind hold
+                with log._chain_hold_relabel("rotation"):
+                    in_rotation.set()
+                    leave_rotation.wait(10)
+                after_rotation.set()
+                release.wait(10)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        try:
+            assert in_rotation.wait(5)
+            # During the rotation step: fail closed, do not join.
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="rot-critical"), critical=True)
+            leave_rotation.set()
+            assert after_rotation.wait(5)
+            # After the step the hold reads "append" again: the join works.
+            # It waits its turn at the gate, so release the holder on a short
+            # timer and assert the write went through promptly.
+            threading.Timer(0.3, release.set).start()
+            started = time.monotonic()
+            log.log(_make_event(event_id="rot-after"), critical=True)
+            assert time.monotonic() - started < 5.0
+        finally:
+            leave_rotation.set()
+            release.set()
+            t.join(timeout=10)
+        body = log._path.read_text(encoding="utf-8")
+        assert "rot-critical" not in body
+        assert "rot-after" in body
+
+    @pytest.mark.asyncio
+    async def test_loop_critical_audit_joins_a_sibling_instances_hold(self, tmp_path):
+        """Two instances on one directory are still ONE process.
+
+        flock is per open file description, so a second SecurityEventLog
+        instance (test suites churn the singleton) contending on its own fd
+        reads its own process as a foreign writer -- the loop-side single shot
+        then denies a critical audit because a SIBLING instance's writer was
+        mid-append (measured: the issue-radar trust tests failing whenever the
+        session directory carried another instance's live writer). The hold
+        registry is keyed by lock path at module level, so the sibling joins
+        and waits its bounded turn instead.
+        """
+        log_a = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log_a.log(_make_event(event_id="xinst-preheat"))
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        log_b = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert log_a is not log_b
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def holder():
+            with log_a._chain_lock():  # sibling instance's hold
+                entered.set()
+                release.wait(10)
+
+        t = threading.Thread(target=holder, daemon=True)
+        t.start()
+        try:
+            assert entered.wait(5)
+            threading.Timer(0.3, release.set).start()
+            started = time.monotonic()
+            # Pre-fix: refused with "held by another writer".
+            log_b.log(_make_event(event_id="xinst-critical"), critical=True)
+            assert time.monotonic() - started < 5.0
+        finally:
+            release.set()
+            t.join(timeout=10)
+        assert "xinst-critical" in log_b._path.read_text(encoding="utf-8")
+
+    @pytest.mark.asyncio
+    async def test_contended_lock_fails_closed_on_the_event_loop(self, tmp_path):
+        """On the loop thread a held lock must refuse, not wait.
+
+        prune holds this lock across a whole streaming rewrite, so waiting here
+        would stall chat and the heartbeat for that entire duration. Refusing
+        surfaces as OSError, which a critical audit turns into audit-or-deny.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="preheat-1"))  # materialize dir + sidecar
+        lock_path = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+
+        # A second open file description contends with the writer's own, so this
+        # stands in for another process holding the lock.
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        assert platform_compat.try_acquire_lock(holder, exclusive=True)
+        try:
+            before = log._path.read_text(encoding="utf-8")
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="contended-1"), critical=True)
+            assert log._path.read_text(encoding="utf-8") == before, "wrote while locked out"
+        finally:
+            platform_compat.release_lock(holder)
+            os.close(holder)
+
+        # Once the holder releases, the same instance appends normally again.
+        log.log(_make_event(event_id="after-release-1"))
+        assert "after-release-1" in log._path.read_text(encoding="utf-8")
+
+    def test_symlinked_sidecar_is_refused(self, tmp_path):
+        """A planted link is not a lock — following it defeats serialization.
+
+        If the sidecar resolves elsewhere, replacing its target hands two writers
+        locks on different inodes, which is the fork this serialization prevents.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
+        trust.mkdir(mode=0o700, parents=True, exist_ok=True)
+        elsewhere = tmp_path / "planted-target"
+        elsewhere.write_text("", encoding="utf-8")
+        (trust / kiro_crew_sel._SEL_LOCK_FILE).symlink_to(elsewhere)
+
+        with pytest.raises(OSError):
+            log.log(_make_event(event_id="symlink-1"), critical=True)
+        assert not log._path.exists() or "symlink-1" not in log._path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_hard_linked_sidecar_is_refused(self, tmp_path):
+        """A second name for the same inode is outside the deny-list's reach."""
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
+        trust.mkdir(mode=0o700, parents=True, exist_ok=True)
+        sidecar = trust / kiro_crew_sel._SEL_LOCK_FILE
+        sidecar.write_text("", encoding="utf-8")
+        os.link(sidecar, tmp_path / "second-name")
+
+        with pytest.raises(OSError):
+            log.log(_make_event(event_id="hardlink-1"), critical=True)
+
+    @pytest.mark.asyncio
+    async def test_corrupt_tail_does_not_scan_the_log_on_the_event_loop(self, tmp_path):
+        """On the loop the tip read is bounded, so it fails closed instead of scanning.
+
+        A corrupt tail with no newline would otherwise walk the whole file, and
+        doing that under a synchronous critical audit stalls chat and the
+        heartbeat.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="preheat-2"))
+        # A single unterminated record longer than the bounded tail read, so the
+        # last COMPLETE record lies more than one chunk back.
+        with open(log._path, "a", encoding="utf-8") as f:
+            f.write("x" * 9000)
+
+        with pytest.raises(OSError):
+            log.log(_make_event(event_id="onloop-corrupt-1"), critical=True)
+
+        # Off the loop the same log still recovers: the unbounded scan walks past
+        # the corrupt tail to the last complete record.
+        assert log._read_last_hash() != ""
+
+    @pytest.mark.asyncio
+    async def test_loop_is_not_blocked_by_a_writer_waiting_cross_process(self, tmp_path):
+        """A writer waiting on the chain lock must not stall a loop-side audit.
+
+        With the thread lock taken first, a background writer blocked on another
+        process's chain lock would hold _lock, and a loop-side critical audit
+        would then block on _lock — an ordinary blocking lock with no fail-closed
+        gate. Taking the chain lock first means the loop-side path reaches its
+        single-shot gate before it can wait on anything.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="order-preheat"))
+        lock_path = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+
+        # Stand in for another process holding the sidecar (e.g. tail recovery).
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        assert platform_compat.try_acquire_lock(holder, exclusive=True)
+        released = threading.Event()
+
+        def _release_holder():
+            if released.is_set():
+                return
+            released.set()
+            platform_compat.release_lock(holder)
+
+        # Watchdog: with the lock order reversed this test would DEADLOCK (the
+        # loop-side audit blocks on _lock, so the release below is never
+        # reached). Releasing from a timer converts that into a clean, fast
+        # assertion failure on the elapsed time rather than a CI timeout.
+        watchdog = threading.Timer(5.0, _release_holder)
+        watchdog.daemon = True
+        watchdog.start()
+
+        writer_reached_wait = threading.Event()
+        writer_done = threading.Event()
+
+        def _blocked_writer():
+            # Off the loop, so this waits on the chain lock the way the real
+            # background writer would.
+            writer_reached_wait.set()
+            log.log(_make_event(event_id="order-writer"))
+            writer_done.set()
+
+        t = threading.Thread(target=_blocked_writer, daemon=True)
+        t.start()
+        try:
+            assert writer_reached_wait.wait(5)
+            # Give the writer time to actually enter its wait.
+            await asyncio.sleep(0.2)
+            assert not writer_done.is_set(), "writer should still be waiting"
+
+            # The loop-side audit must fail fast, not block behind the writer.
+            started = time.monotonic()
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="order-loop"), critical=True)
+            assert time.monotonic() - started < 2.0, "loop-side audit blocked"
+        finally:
+            watchdog.cancel()
+            _release_holder()
+            os.close(holder)
+            t.join(timeout=10)
+
+        assert writer_done.is_set(), "writer never completed after release"
+        body = log._path.read_text(encoding="utf-8")
+        assert "order-writer" in body
+        assert "order-loop" not in body
+
+    @pytest.mark.asyncio
+    async def test_on_loop_contention_makes_exactly_one_nonblocking_attempt(
+        self, tmp_path, monkeypatch
+    ):
+        """The loop-side acquire must try ONCE and refuse — never poll.
+
+        A retry spin, however short each nap, sleeps the gateway event loop, so
+        the stall is paid by every session it serves. This pins the contract:
+        one ``try_acquire_lock`` call, an immediate fail-closed raise, and no
+        sleep anywhere on the path.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="single-shot-preheat"))
+        lock_path = tmp_path / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+
+        # Stand in for a sibling process holding the sidecar.
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        assert platform_compat.try_acquire_lock(holder, exclusive=True)
+
+        attempts = []
+        real_try = platform_compat.try_acquire_lock
+
+        def _counting_try(fd: int, *, exclusive: bool = False) -> bool:
+            attempts.append(fd)
+            return real_try(fd, exclusive=exclusive)
+
+        monkeypatch.setattr(
+            kiro_crew_sel.platform_compat, "try_acquire_lock", _counting_try
+        )
+        try:
+            started = time.monotonic()
+            with pytest.raises(OSError):
+                log.log(_make_event(event_id="single-shot-critical"), critical=True)
+            elapsed = time.monotonic() - started
+        finally:
+            platform_compat.release_lock(holder)
+            os.close(holder)
+
+        assert len(attempts) == 1, f"on-loop acquire polled {len(attempts)} times"
+        assert elapsed < 0.05, f"on-loop acquire took {elapsed:.3f}s"
+        assert "single-shot-critical" not in log._path.read_text(encoding="utf-8")
+
+    def test_on_loop_acquire_helper_never_sleeps(self):
+        """No sleep may reappear in the on-loop acquire, in any form.
+
+        A source-level assertion rather than a timing one: a future poll spin
+        would be reintroduced as a sleep call, and a wall-clock bound alone
+        would tolerate a short one.
+        """
+        src = inspect.getsource(kiro_crew_sel._acquire_chain_lock_on_loop)
+        body = src.split('"""')[-1]
+        assert "sleep" not in body, "on-loop chain-lock acquire sleeps on the event loop"
+        assert not hasattr(kiro_crew_sel, "time"), (
+            "kiro_crew.sel imports time again — the on-loop path must not sleep"
+        )
+
+    @pytest.mark.asyncio
+    async def test_loop_joiner_fails_closed_when_the_hold_is_promoted_mid_wait(
+        self, tmp_path
+    ):
+        """A join admitted under "append" must not wait through a promotion.
+
+        The label check in ``_try_join_chain_hold`` runs before the gate wait,
+        so rotation's relabel (or a prune joining) can land AFTER a loop-side
+        joiner was admitted -- and a plain blocking gate acquire would then
+        stall the event loop for the heavy step's whole duration. The wait
+        must re-read the label and raise once the hold stops being an append.
+        """
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        log.log(_make_event(event_id="promote-preheat"))
+        key = str(log._chain_lock_path())
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _holder() -> None:
+            with log._chain_lock():
+                entered.set()
+                release.wait(timeout=10)
+
+        holder = threading.Thread(target=_holder)
+        holder.start()
+        assert entered.wait(timeout=5), "holder never took the chain lock"
+
+        def _promote_soon() -> None:
+            # Give the loop-side joiner time to be admitted and start waiting
+            # on the gate, then promote the hold the way rotation's relabel
+            # does. 0.2s spans several poll slices.
+            release.wait(timeout=0.2)
+            with kiro_crew_sel._CHAIN_HOLDS_MUTEX:
+                hold = kiro_crew_sel._CHAIN_HOLDS.get(key)
+                if hold is not None:
+                    hold.kind = "rotation"
+
+        promoter = threading.Thread(target=_promote_soon)
+        promoter.start()
+        try:
+            started = time.monotonic()
+            with pytest.raises(OSError, match="promoted"):
+                log.log(_make_event(event_id="promoted-critical"), critical=True)
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            promoter.join(timeout=5)
+            holder.join(timeout=5)
+
+        assert elapsed < 5, f"loop joiner waited {elapsed:.3f}s through the promotion"
+        assert "promoted-critical" not in log._path.read_text(encoding="utf-8")
+        # The refused joiner must have left the hold: once the holder exits,
+        # the registry entry is gone and a fresh append works normally.
+        with kiro_crew_sel._CHAIN_HOLDS_MUTEX:
+            assert key not in kiro_crew_sel._CHAIN_HOLDS, "hold leaked after refusal"
+        log.log(_make_event(event_id="after-promotion-1"))
+        assert "after-promotion-1" in log._path.read_text(encoding="utf-8")
 
 
 class TestInferSource:
@@ -1952,12 +2666,30 @@ class TestRotationIsSerializedAcrossProcesses:
 
         Parking that caller on another process's rotation is the
         no-blocking-call-on-event-loop hazard, and rotation is deferrable while an
-        audit write is not -- so the blocking lock helper must not be used here.
+        audit write is not -- so the blocking lock helper must not be used for
+        ROTATION. The cross-process CHAIN lock is the one sanctioned exception:
+        off the event loop it blocks by design (the background writer absorbs
+        contention there), and its on-loop path is a single nonblocking attempt
+        covered by TestCrossProcessSafety -- so the guard here permits exactly
+        the chain-lock sidecar's fd and nothing else.
         """
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        sidecar = sel_dir / kiro_crew_sel._TRUST_SUBDIR / kiro_crew_sel._SEL_LOCK_FILE
+        real_file_lock = platform_compat.file_lock
+
+        def rotation_must_not_block(fd, *, exclusive):
+            st = os.fstat(fd)
+            try:
+                side = sidecar.stat()
+            except OSError:
+                side = None
+            if side is None or (st.st_dev, st.st_ino) != (side.st_dev, side.st_ino):
+                raise AssertionError("blocking lock helper used on the audit path")
+            return real_file_lock(fd, exclusive=exclusive)
+
         with patch(
             "kiro_crew.sel.platform_compat.file_lock",
-            side_effect=AssertionError("blocking lock helper used on the audit path"),
+            side_effect=rotation_must_not_block,
         ):
             _fill(log, 200)
         assert log._segments_oldest_first(), "precondition: rotation happened"
@@ -3220,7 +3952,25 @@ class TestSegmentDirIsNotFollowedThroughALink:
         """
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 200)
-        with patch("kiro_crew.sel.platform_compat.is_link_or_junction", return_value=True):
+        # Answer "link" only for rotation's paths (the segment dir and its
+        # rotation lock). A blanket True would also condemn the chain-lock
+        # sidecar in trust/, whose refusal correctly drops best-effort appends
+        # -- a different, deliberate behavior with its own test
+        # (test_symlinked_sidecar_is_refused) -- and this test is about
+        # rotation refusing while audit records still land.
+        real_probe = platform_compat.is_link_or_junction
+        segment_dir = log._segment_dir
+
+        def rotation_paths_are_links(path):
+            p = Path(path)
+            if p == segment_dir or p.parent == segment_dir:
+                return True
+            return real_probe(path)
+
+        with patch(
+            "kiro_crew.sel.platform_compat.is_link_or_junction",
+            side_effect=rotation_paths_are_links,
+        ):
             with patch(
                 "kiro_crew.sel.platform_compat.unlink_link_or_junction",
                 side_effect=OSError("read-only"),
