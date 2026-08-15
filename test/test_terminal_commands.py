@@ -365,6 +365,10 @@ class TestSanitizedPath:
         assert resolved[0] == str(real)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
+    @pytest.mark.skipif(
+        os.path.exists("/usr/bin") and os.stat("/usr/bin").st_uid != 0,
+        reason="system directories not root-owned on this host",
+    )
     def test_a_system_directory_is_trusted_without_any_config(self):
         # `/usr/bin` must work out of the box or the tier ships dead. Deliberately
         # NOT `/usr/local/bin`: CI runners hand that to the build user, so asserting

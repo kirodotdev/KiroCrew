@@ -21,7 +21,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.dashboard import stt_stream
+pytest.importorskip("amazon_transcribe", reason="STT stream tests require amazon-transcribe-streaming-sdk")
+
+from kiro_crew.dashboard import stt_stream  # noqa: E402
 
 
 def _fake_ws(*, closed: bool = False, close_raises: bool = False):

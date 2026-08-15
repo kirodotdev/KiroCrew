@@ -49,6 +49,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestCaptureProfile:
     def test_a_capture_writes_a_tree_the_endpoints_can_read(self, repo: Path) -> None:
         prof = build_profile({"clone": str(repo), "branch": "main"})

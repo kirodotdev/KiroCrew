@@ -157,6 +157,7 @@ def supervisor() -> R.RunSupervisor:
 # ── refusals ────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestStartRefusals:
     def test_refuses_without_a_configured_repository(self, supervisor: R.RunSupervisor) -> None:
         with pytest.raises(ValueError, match="no repository configured"):
@@ -396,6 +397,7 @@ class TestSingleton:
 # ── end to end, with a fake agent ───────────────────────────────────────────
 
 
+@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestBoundedRunWithFakeAgent:
     """One real spine cycle, bounded, with the agent runner INJECTED as a fake."""
 

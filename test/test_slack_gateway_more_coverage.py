@@ -561,6 +561,7 @@ class TestAutoMigrateMemory:
         assert reconcile.call_count == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.xdist_group("caplog_slack_gw")
     async def test_download_error_and_unready_model_defer_the_sweep(self, caplog):
         orch = _make_orchestrator()
         store = MagicMock()
@@ -586,6 +587,7 @@ class TestAutoMigrateMemory:
         assert "deferring" in caplog.text
 
     @pytest.mark.asyncio
+    @pytest.mark.xdist_group("caplog_slack_gw")
     async def test_missing_store_is_a_no_op(self, caplog):
         orch = _make_orchestrator()
         orch.vector_memory = None
@@ -634,6 +636,7 @@ class TestInitCrew:
 class TestInitMcpDiscovery:
     """Configured MCP servers are logged at boot for diagnosability."""
 
+    @pytest.mark.xdist_group("caplog_slack_gw")
     def test_configured_servers_are_listed(self, caplog):
         orch = _make_orchestrator()
         servers = [SimpleNamespace(name="builder-mcp"), SimpleNamespace(name="playwright-mcp")]
@@ -747,6 +750,7 @@ class TestPersistSlotTitle:
 class TestRememberOptions:
     """Recording a posted OPTIONS control is best-effort."""
 
+    @pytest.mark.xdist_group("caplog_slack_gw")
     def test_record_failure_is_swallowed(self, caplog):
         orch = _make_orchestrator()
         orch.dashboard_state = _mock_dashboard_state()
@@ -781,6 +785,7 @@ class TestDeliverCronResponse:
         assert "no channel resolved" in caplog.text
 
     @pytest.mark.asyncio
+    @pytest.mark.xdist_group("caplog_slack_gw")
     async def test_options_post_failure_still_delivers_text(self, caplog):
         orch = _make_orchestrator()
         slack = _mock_slack()

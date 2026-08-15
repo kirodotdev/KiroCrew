@@ -7732,6 +7732,7 @@ async def test_squash_merge_ref_deletion():
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group("caplog_dev_fleet")
 async def test_toctou_clean_unmerged_force_omits_git_force(caplog):
     """TOCTOU regression: when force=True overrides ONLY because the unmerged
     tree verified clean, the removal command must NOT contain --force. This way
@@ -7790,7 +7791,7 @@ async def test_toctou_clean_unmerged_force_omits_git_force(caplog):
         "clean-unmerged force path must NOT include --force in the git command"
     )
     # Verify the audit action was logged (regression: the action proves
-    # the code explicitly set force_use_git_force = False on this path)
+    # the code explicitly set force_use_git_force = False on this path).
     audit_msgs = [
         r.message for r in caplog.records
         if "unmerged_clean_no_git_force" in r.message

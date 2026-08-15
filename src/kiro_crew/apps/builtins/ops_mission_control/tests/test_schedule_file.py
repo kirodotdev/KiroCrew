@@ -29,8 +29,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import schedule_file
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import ShiftStatus
+
+_needs_sandbox = pytest.mark.skipif(
+    not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(),
+    reason="requires unprivileged user namespaces (sandbox backend)",
+)
 
 
 class _Env(unittest.TestCase):
@@ -284,6 +291,7 @@ class TestAdapterContract(_Env):
         self.assertEqual(schedule_file.ScheduleFileRotationSource().secret_fields, ())
 
 
+@_needs_sandbox
 class TestLoginResolution(_Env):
     def test_configured_login_wins_over_shelling_out(self) -> None:
         """An operator who set a login must not pay a `gh` spawn per rotation tick."""

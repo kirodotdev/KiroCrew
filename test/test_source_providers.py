@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import tempfile
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -399,6 +402,13 @@ def test_provider_executable_rejects_relative_override(monkeypatch) -> None:
         source._resolve_provider_executable("gh")
 
 
+_tmp_owner_ok = (
+    sys.platform == "win32"
+    or os.stat(tempfile.gettempdir()).st_uid in (0, os.geteuid())
+)
+
+
+@pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
 def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -> None:
     """The default policy accepts the user's own gh — the Homebrew case that
     previously forced a `sudo cp` into a root-owned directory."""
@@ -412,6 +422,7 @@ def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -
     assert source._resolve_provider_executable("gh") == str(executable.resolve())
 
 
+@pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
 def test_provider_executable_accepts_symlinked_install(monkeypatch, tmp_path) -> None:
     """Homebrew's layout (bin/gh -> ../Cellar/gh/<v>/bin/gh) resolves through the
     symlink instead of being refused for not being canonical."""

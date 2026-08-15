@@ -42,6 +42,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(),
+    reason="requires unprivileged user namespaces (sandbox backend)",
+)
+
 
 def _git(cwd: Path, *args: str) -> str:
     proc = subprocess.run(

@@ -1483,6 +1483,10 @@ class TestBootSkillReconcile:
 
 
 class TestBuiltinSecretForMcpServers:
+    @pytest.fixture(autouse=True)
+    def _clean_port_env(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+
     def _register_only(self, monkeypatch, apps):
         """Run register_builtin_apps() with exactly `apps` as the builtin set."""
         from kiro_crew.apps import manager

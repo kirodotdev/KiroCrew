@@ -15,9 +15,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo.profile import (
     _ANSI_RE,
     PytestBugRunner,
+)
+
+_needs_sandbox = pytest.mark.skipif(
+    not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(),
+    reason="requires unprivileged user namespaces (sandbox backend)",
 )
 
 
@@ -85,6 +92,7 @@ class TestLintFindingParse:
         assert _parse(PytestBugRunner(), "src/pkg/mod.py:1:1:\n") == {"src/pkg/mod.py:?"}
 
 
+@_needs_sandbox
 class TestLintFindingsOnDisk:
     def test_findings_from_a_real_tree_carry_codes(self, tmp_path: Path) -> None:
         """End-to-end through the real linter when one is installed: every token must
