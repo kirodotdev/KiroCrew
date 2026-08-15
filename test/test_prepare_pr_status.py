@@ -280,6 +280,198 @@ def test_resolved_closing_reference_silences_the_notice() -> None:
     assert module.closing_link_reason("Fixes #7", [{"number": 7}]) is None
 
 
+def _assert_host_closure_is_unconfirmed(module: ModuleType, body: str, number: int = 7) -> None:
+    reason = module.closing_link_reason(body, [{"number": number}])
+    assert reason is not None
+    assert "no explicit closing trailer" in reason
+    assert "#{}".format(number) in reason
+
+
+def test_backtick_fenced_trailer_does_not_confirm_host_closure() -> None:
+    module = _load_script()
+    body = "```markdown\nFixes #7\n```\nVisible prose accidentally fixes #7."
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_tilde_fenced_trailer_does_not_confirm_host_closure() -> None:
+    module = _load_script()
+    body = "~~~markdown\nFixes #7\n~~~\nVisible prose accidentally fixes #7."
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_indented_variable_length_fences_mask_their_contents() -> None:
+    module = _load_script()
+    bodies = (
+        "   ````markdown\nFixes #7\n```\n   `````\nVisible prose fixes #7.",
+        "  ~~~~~text\nFixes #7\n  ~~~~~~\nVisible prose fixes #7.",
+    )
+
+    for body in bodies:
+        _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_crlf_fenced_trailer_does_not_confirm_host_closure() -> None:
+    module = _load_script()
+    body = "```markdown\r\nFixes #7\r\n```\r\nVisible prose fixes #7."
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_multiline_html_commented_trailer_does_not_confirm_host_closure() -> None:
+    module = _load_script()
+    body = "<!-- example\nFixes #7\n-->\nVisible prose accidentally fixes #7."
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_single_line_html_commented_trailer_does_not_confirm_host_closure() -> None:
+    module = _load_script()
+    body = "<!-- Fixes #7 -->\nVisible prose accidentally fixes #7."
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_visible_trailer_after_fence_still_confirms_host_closure() -> None:
+    module = _load_script()
+    body = "```markdown\nFixes #99\n```\nFixes #7"
+    assert module.closing_link_reason(body, [{"number": 7}]) is None
+
+
+def test_visible_trailer_with_trailing_html_comment_still_confirms() -> None:
+    module = _load_script()
+    body = "Fixes #7 <!-- this explanation is not part of the trailer -->"
+    assert module.closing_link_reason(body, [{"number": 7}]) is None
+
+
+def test_fenced_opt_out_example_does_not_silence_notice() -> None:
+    module = _load_script()
+    body = "```markdown\nno linked issue: example only\n```"
+    reason = module.closing_link_reason(body, [])
+    assert reason is not None
+    assert "no issue link" in reason
+
+
+def test_html_commented_opt_out_example_does_not_silence_notice() -> None:
+    module = _load_script()
+    body = "<!--\nno linked issue: example only\n-->"
+    reason = module.closing_link_reason(body, [])
+    assert reason is not None
+    assert "no issue link" in reason
+
+
+def test_fence_markers_inside_html_comment_do_not_hide_visible_trailer() -> None:
+    module = _load_script()
+    body = "<!--\n```markdown\nFixes #99\n```\n-->\nFixes #7"
+    assert module.closing_link_reason(body, [{"number": 7}]) is None
+
+
+def test_html_comment_markers_inside_fence_do_not_hide_visible_trailer() -> None:
+    module = _load_script()
+    body = "```markdown\n<!--\nFixes #99\n-->\n```\nFixes #7"
+    assert module.closing_link_reason(body, [{"number": 7}]) is None
+
+
+def test_each_host_closure_requires_a_visible_matching_trailer() -> None:
+    module = _load_script()
+    body = (
+        "Fixes #7\n"
+        "```markdown\n"
+        "Fixes #3257\n"
+        "```\n"
+        "Visible prose accidentally fixes #3257."
+    )
+    reason = module.closing_link_reason(body, [{"number": 7}, {"number": 3257}])
+    assert reason is not None
+    assert "#3257" in reason
+    assert "#7" not in reason
+
+
+def test_hidden_issue_examples_do_not_trigger_specific_no_host_warning() -> None:
+    module = _load_script()
+    bodies = (
+        "```markdown\nFixes #7\n```",
+        "<!-- Fixes #7 -->",
+        "The literal example is `Fixes #7`.",
+        "```markdown\n#7\n```",
+    )
+
+    for body in bodies:
+        reason = module.closing_link_reason(body, [])
+        assert reason is not None
+        assert "no issue link" in reason
+
+
+def test_multiline_inline_code_trailer_does_not_confirm_host_closure() -> None:
+    module = _load_script()
+    body = "`\nFixes #7\n`\nVisible prose accidentally fixes #7."
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_comment_like_fence_info_does_not_hide_visible_trailer() -> None:
+    module = _load_script()
+    body = "```text <!-- example\nFixes #99\n```\nFixes #7"
+    assert module.closing_link_reason(body, [{"number": 7}]) is None
+
+
+def test_empty_or_null_body_stays_advisory() -> None:
+    module = _load_script()
+    for body in (None, ""):
+        reason = module.closing_link_reason(body, [])
+        assert reason is not None
+        assert "no issue link" in reason
+
+
+def test_unterminated_fence_masks_through_end_of_body() -> None:
+    module = _load_script()
+    body = "```markdown\nFixes #7"
+    _assert_host_closure_is_unconfirmed(module, body)
+
+
+def test_visible_prose_mask_preserves_offsets_and_line_boundaries() -> None:
+    module = _load_script()
+    body = "before\r\n```markdown\r\nFixes #7\r\n```\r\nFixes #8"
+    masked = module._visible_markdown_prose(body)
+
+    assert len(masked) == len(body)
+    assert [i for i, char in enumerate(masked) if char == "\n"] == [
+        i for i, char in enumerate(body) if char == "\n"
+    ]
+    assert "Fixes #7" not in masked
+    assert masked.endswith("Fixes #8")
+
+
+def test_oversized_explicit_trailer_degrades_to_advisory() -> None:
+    module = _load_script()
+    runtime = __import__("sys")
+    get_digit_limit = getattr(runtime, "get_int_max_str_digits", None)
+    previous_digit_limit = get_digit_limit() if get_digit_limit is not None else None
+
+    # Python 3.10 has no integer-string digit limit. Disable the 3.11+ limit
+    # while exercising this path so the regression cannot pass merely because
+    # an interpreter-level ValueError happens to protect the parser.
+    if previous_digit_limit is not None:
+        runtime.set_int_max_str_digits(0)
+    try:
+        oversized_number = "9" * 5000
+        body = "Fixes #7\nFixes #{}".format(oversized_number)
+        reason = module.closing_link_reason(body, [{"number": 7}])
+    finally:
+        if previous_digit_limit is not None:
+            runtime.set_int_max_str_digits(previous_digit_limit)
+
+    assert reason is not None
+    assert "malformed explicit closing trailer" in reason
+
+
+def test_malformed_host_issue_numbers_stay_unconfirmed() -> None:
+    module = _load_script()
+    malformed_numbers = (None, "not-a-number", " 7 ", 7.5, True, [], {})
+
+    for malformed_number in malformed_numbers:
+        reason = module.closing_link_reason(
+            "Fixes #7",
+            [{"number": malformed_number}],
+        )
+        assert reason is not None, repr(malformed_number)
+
+
 def test_bare_reference_without_a_verb_is_reported() -> None:
     """The exact shape that merged in #2433/#2439 and closed nothing.
 
@@ -308,16 +500,70 @@ def test_no_reference_at_all_is_reported_with_the_opt_out_named() -> None:
     assert "no linked issue" in reason
 
 
+def test_safe_explicit_opt_out_silences_notice_when_reason_names_an_issue() -> None:
+    module = _load_script()
+    body = (
+        "A follow-up that deliberately closes nothing.\n\n"
+        "no linked issue: #3257 is resolved by the release, not this change."
+    )
+    assert module.closing_link_reason(body, []) is None
+
+
 def test_explicit_opt_out_silences_the_notice() -> None:
     module = _load_script()
     body = "A pure refactor.\n\nno linked issue: no ticket exists for this cleanup."
     assert module.closing_link_reason(body, []) is None
 
 
+def test_host_closure_without_an_explicit_trailer_is_reported() -> None:
+    module = _load_script()
+    body = "no issue closed: #3257 is resolved by the release, not this change."
+    reason = module.closing_link_reason(body, [{"number": 3257}])
+    assert reason is not None
+    assert "no explicit closing trailer" in reason
+
+
+def test_each_host_closure_requires_a_matching_explicit_trailer() -> None:
+    module = _load_script()
+    body = (
+        "Fixes #7\n\n"
+        "no issue closed: #3257 is resolved by the release, not this change."
+    )
+    reason = module.closing_link_reason(body, [{"number": 7}, {"number": 3257}])
+    assert reason is not None
+    assert "#3257" in reason
+    assert "#7" not in reason
+
+    explicit_body = "Fixes #7\nResolves: #3257"
+    assert (
+        module.closing_link_reason(explicit_body, [{"number": 7}, {"number": 3257}])
+        is None
+    )
+
+
+def test_same_number_in_different_repositories_stays_unconfirmed() -> None:
+    module = _load_script()
+    body = "Fixes #7\n\nThe release fixes other/repo#7, not this change."
+    closing_refs = [
+        {
+            "number": 7,
+            "repository": {"name": "repo", "owner": {"login": "example"}},
+        },
+        {
+            "number": 7,
+            "repository": {"name": "repo", "owner": {"login": "other"}},
+        },
+    ]
+    reason = module.closing_link_reason(body, closing_refs)
+    assert reason is not None
+    assert "multiple repositories" in reason
+    assert "#7" in reason
+
+
 def test_opt_out_must_be_a_trailer_not_a_mention() -> None:
     """Prose that merely discusses the check must NOT read as a declaration.
 
-    An unanchored substring match let any body containing the phrase pass —
+    An unanchored substring match lets any body containing the phrase pass —
     including a body that only explains what the phrase is for.
     """
     module = _load_script()
