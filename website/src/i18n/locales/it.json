@@ -7147,6 +7147,7 @@
       "content_copied_from_v": "contenuto copiato da v",
       "copied": "Copiato",
       "copy_content": "Copia contenuto",
+      "copy_failed": "Copia non riuscita",
       "could_not_overwrite": "Impossibile sovrascrivere.",
       "created": "Creato",
       "discard_unsaved_changes": "Scartare le modifiche non salvate?",

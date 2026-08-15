@@ -2293,6 +2293,7 @@
       "comment_marked_for_review": "Comment marked for review",
       "comment_removed": "Comment removed",
       "comment_resolved": "Comment resolved",
+      "copy_failed": "Copy failed",
       "could_not_overwrite": "Could not overwrite.",
       "document_type": "Document type",
       "edit": "Edit",

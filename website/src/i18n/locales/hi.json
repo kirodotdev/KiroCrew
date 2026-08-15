@@ -7051,6 +7051,7 @@
       "content_copied_from_v": "सामग्री इससे कॉपी की गई: v",
       "copied": "कॉपी हो गया",
       "copy_content": "सामग्री कॉपी करें",
+      "copy_failed": "कॉपी विफल",
       "could_not_overwrite": "ओवरराइट नहीं हो सका।",
       "created": "बनाया गया",
       "discard_unsaved_changes": "बिना सहेजे गए बदलाव छोड़ दें?",

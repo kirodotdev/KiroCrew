@@ -7051,6 +7051,7 @@
       "content_copied_from_v": "Inhalt kopiert von v",
       "copied": "Kopiert",
       "copy_content": "Inhalt kopieren",
+      "copy_failed": "Kopieren fehlgeschlagen",
       "could_not_overwrite": "Überschreiben nicht möglich.",
       "created": "Erstellt",
       "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",

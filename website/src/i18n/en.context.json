@@ -110,6 +110,7 @@
     "pages.appDetailPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.appsPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.artifactDeployPage.aws": "The literal name of the AWS CLI executable, `aws`. Do not translate: the user types it.",
+    "pages.artifactDetailPage.copy_failed": "Brief error status on the artifact content copy button after a clipboard write fails. A past outcome, not a command.",
     "pages.artifactDetailPage.tag_2": "Noun: a label attached to an artifact. Not the verb.",
     "pages.artifactDetailPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.artifactsPage.all": "Filter option meaning no filter — show every item. A quantifier over the list beside it, not the adjective \"whole\".",

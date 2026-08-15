@@ -1,4 +1,4 @@
-import { safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
@@ -94,6 +94,22 @@ function isoToTs(iso: string): number {
 // star and Actions columns are controls, not data, and stay unsortable.
 type SortKey = 'name' | 'slug' | 'kind' | 'source' | 'version' | 'tags' | 'updated'
 type SortState = { key: SortKey; dir: 'asc' | 'desc' } | null
+
+const ARTIFACT_SORT_STORAGE_KEY = 'mc-artifacts-sort'
+const SORT_KEYS = new Set<SortKey>(['name', 'slug', 'kind', 'source', 'version', 'tags', 'updated'])
+
+function readPersistedSort(): SortState {
+  try {
+    const value: unknown = JSON.parse(safeGetItem(ARTIFACT_SORT_STORAGE_KEY) ?? 'null')
+    if (!value || typeof value !== 'object') return null
+    const { key, dir } = value as { key?: unknown; dir?: unknown }
+    return typeof key === 'string' && SORT_KEYS.has(key as SortKey) && (dir === 'asc' || dir === 'desc')
+      ? { key: key as SortKey, dir }
+      : null
+  } catch {
+    return null
+  }
+}
 
 /** Type-aware comparator: numeric for version, chronological for updated,
  * locale-collated natural string for the rest (compareText names the active
@@ -1512,17 +1528,18 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [view, setView] = useState<'grid' | 'table'>(
     () => (localStorage.getItem('mc-artifacts-view') === 'table' ? 'table' : 'grid'),
   )
-  // Table column sort — session-local; null renders the server's order.
-  const [sort, setSort] = useState<SortState>(null)
+  // Table column sort persists beside the view choice; null renders the
+  // server's order, and stale storage safely falls back to that default.
+  const [sort, setSort] = useState<SortState>(readPersistedSort)
   const handleSort = useCallback((key: SortKey) => {
-    setSort((prev) =>
-      prev?.key !== key
-        ? { key, dir: 'asc' }
-        : prev.dir === 'asc'
-          ? { key, dir: 'desc' }
-          : null,
-    )
-  }, [])
+    const next: SortState = sort?.key !== key
+      ? { key, dir: 'asc' }
+      : sort.dir === 'asc'
+        ? { key, dir: 'desc' }
+        : null
+    setSort(next)
+    safeSetItem(ARTIFACT_SORT_STORAGE_KEY, JSON.stringify(next))
+  }, [sort])
 
   // ── Folder browse scope ──────────────────────────────────────
   // The open folder rides the URL (?folder=<id>) so gallery navigation is

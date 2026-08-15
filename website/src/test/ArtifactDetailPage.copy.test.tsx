@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent } from '@testing-library/react'
 import { Routes, Route } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders } from './helpers'
@@ -47,6 +47,7 @@ const copyBtn = () => screen.getByRole('button', { name: 'Copy content' })
 describe('ArtifactDetailPage copy content', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.removeItem('mc-reading-width')
     vi.mocked(copyToClipboard).mockResolvedValue(undefined)
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact())
     vi.mocked(api).artifactVersions = vi
@@ -60,6 +61,7 @@ describe('ArtifactDetailPage copy content', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -71,6 +73,99 @@ describe('ArtifactDetailPage copy content', () => {
     expect(copyToClipboard).toHaveBeenCalledWith(RAW)
     // Brief confirmation: the control flips to its "Copied" state.
     expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+  })
+
+  it('aligns the copy control with the reading-width card and follows full width', async () => {
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    const toolbar = copyBtn().parentElement as HTMLElement
+
+    expect(toolbar.style.maxWidth).toBe('var(--mc-content-width, 900px)')
+    expect(toolbar.style.margin).toBe('0px auto')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Medium width' }))
+    expect(toolbar.style.maxWidth).toBe('')
+    expect(toolbar.style.margin).toBe('')
+  })
+
+  it('keeps iframe artifacts and their copy control full width', async () => {
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(
+      mkArtifact({ kind: 'html', content: '<main>Full-width report</main>' }),
+    )
+    const { container } = renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+    const toolbar = copyBtn().parentElement as HTMLElement
+    expect(toolbar.style.maxWidth).toBe('')
+    expect(toolbar.style.margin).toBe('')
+    expect(screen.queryByRole('button', { name: 'Medium width' })).toBeNull()
+
+    const iframe = await waitFor(() => {
+      const node = container.querySelector('iframe')
+      expect(node).not.toBeNull()
+      return node as HTMLIFrameElement
+    })
+    expect((iframe.parentElement as HTMLElement).style.maxWidth).toBe('')
+  })
+
+  it('shows a brief accessible failure state when clipboard copying rejects', async () => {
+    vi.mocked(copyToClipboard).mockRejectedValueOnce(new Error('clipboard unavailable'))
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    vi.useFakeTimers()
+
+    fireEvent.click(copyBtn())
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const failed = screen.getByRole('button', { name: 'Copy failed' })
+    expect(failed).toHaveAttribute('aria-live', 'polite')
+    expect(failed).toHaveClass('text-danger')
+
+    act(() => vi.advanceTimersByTime(1500))
+    expect(copyBtn()).toBeInTheDocument()
+  })
+
+  it('lets a retry own the status and timeout after a copy failure', async () => {
+    vi.mocked(copyToClipboard)
+      .mockRejectedValueOnce(new Error('clipboard unavailable'))
+      .mockResolvedValueOnce(undefined)
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+    vi.useFakeTimers()
+
+    fireEvent.click(copyBtn())
+    await act(async () => { await Promise.resolve() })
+    const failed = screen.getByRole('button', { name: 'Copy failed' })
+
+    fireEvent.click(failed)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+
+    act(() => vi.advanceTimersByTime(1499))
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+    act(() => vi.advanceTimersByTime(1))
+    expect(copyBtn()).toBeInTheDocument()
+  })
+
+  it('ignores an older copy attempt that settles after the latest attempt', async () => {
+    let rejectFirst: ((reason?: unknown) => void) | undefined
+    let resolveSecond: (() => void) | undefined
+    vi.mocked(copyToClipboard)
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecond = resolve }))
+    renderRoute()
+    await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
+
+    fireEvent.click(copyBtn())
+    fireEvent.click(copyBtn())
+    await act(async () => { resolveSecond?.() })
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+
+    await act(async () => { rejectFirst?.(new Error('late failure')) })
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
   })
 
   it('copies the selected historical version, not live', async () => {

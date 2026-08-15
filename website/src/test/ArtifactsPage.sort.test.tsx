@@ -54,6 +54,7 @@ describe('ArtifactsPage table sorting', () => {
     vi.clearAllMocks()
     localStorage.setItem('mc-artifacts-view', 'table')
     localStorage.setItem('mc-artifacts-pinned-only', '0')
+    localStorage.removeItem('mc-artifacts-sort')
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: ARTIFACTS })
     vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({ docs: [] })
   })
@@ -113,5 +114,51 @@ describe('ArtifactsPage table sorting', () => {
     fireEvent.click(header('Kind'))
     expect(nameTh?.getAttribute('aria-sort')).toBeNull()
     expect(header('Kind').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  })
+
+  it('restores the persisted sort and persists each step of the header cycle', async () => {
+    localStorage.setItem('mc-artifacts-sort', JSON.stringify({ key: 'updated', dir: 'desc' }))
+    const { unmount } = renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument())
+
+    expect(rowNames()).toEqual(['item-2', 'alpha', 'item-10'])
+    expect(header('Updated').closest('th')?.getAttribute('aria-sort')).toBe('descending')
+
+    fireEvent.click(header('Updated'))
+    expect(rowNames()).toEqual(['item-10', 'item-2', 'alpha'])
+    expect(localStorage.getItem('mc-artifacts-sort')).toBe('null')
+
+    unmount()
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument())
+    expect(rowNames()).toEqual(['item-10', 'item-2', 'alpha'])
+
+    fireEvent.click(header('Name'))
+    expect(JSON.parse(localStorage.getItem('mc-artifacts-sort') ?? '')).toEqual({
+      key: 'name',
+      dir: 'asc',
+    })
+  })
+
+  it('restores an ascending persisted sort', async () => {
+    localStorage.setItem('mc-artifacts-sort', JSON.stringify({ key: 'name', dir: 'asc' }))
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument())
+
+    expect(rowNames()).toEqual(['alpha', 'item-2', 'item-10'])
+    expect(header('Name').closest('th')?.getAttribute('aria-sort')).toBe('ascending')
+  })
+
+  it.each([
+    ['malformed JSON', '{'],
+    ['an unknown column', JSON.stringify({ key: 'starred', dir: 'asc' })],
+    ['an invalid direction', JSON.stringify({ key: 'updated', dir: 'sideways' })],
+  ])('ignores %s in persisted sort state', async (_case, stored) => {
+    localStorage.setItem('mc-artifacts-sort', stored)
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('alpha')).toBeInTheDocument())
+
+    expect(rowNames()).toEqual(['item-10', 'item-2', 'alpha'])
+    expect(screen.getAllByRole('columnheader').some((th) => th.hasAttribute('aria-sort'))).toBe(false)
   })
 })

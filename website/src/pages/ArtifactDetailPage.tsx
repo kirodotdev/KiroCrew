@@ -1256,6 +1256,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
   const usesIframe = artifact?.kind === 'widget' || artifact?.kind === 'html'
+  // HTML/widget artifacts own a full-width iframe surface. Reading width only
+  // constrains native document bodies, and the copy control follows whichever
+  // width the active body actually uses.
+  const contentWidthStyle = usesIframe ? undefined : mdPreviewStyle
   const exportSrcdoc = useMemo(
     () => artifact?.content && usesIframe
       ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme })
@@ -1319,22 +1323,40 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // Copies the stored source (markdown/HTML/JSON/text as-is) of the version
   // currently on screen — `artifact` already resolves to the selected
   // snapshot, so a historical view copies that snapshot's content. The button
-  // swaps to a check for a moment as the success confirmation (the same
-  // pattern chat messages and diff blocks use).
-  const [copied, setCopied] = useState(false)
+  // swaps to a check or warning for a moment as the result confirmation (the
+  // same success pattern chat messages and diff blocks use).
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyAttemptRef = useRef(0)
   useEffect(() => () => {
+    copyAttemptRef.current += 1
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
   }, [])
   const handleCopyContent = useCallback(() => {
+    const attempt = ++copyAttemptRef.current
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+    setCopyStatus('idle')
     copyToClipboard(artifact?.content ?? '')
       .then(() => {
-        setCopied(true)
-        if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
-        copiedTimerRef.current = setTimeout(() => setCopied(false), 1500)
+        if (attempt !== copyAttemptRef.current) return
+        setCopyStatus('copied')
+        copiedTimerRef.current = setTimeout(() => {
+          if (attempt === copyAttemptRef.current) setCopyStatus('idle')
+        }, 1500)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (attempt !== copyAttemptRef.current) return
+        setCopyStatus('failed')
+        copiedTimerRef.current = setTimeout(() => {
+          if (attempt === copyAttemptRef.current) setCopyStatus('idle')
+        }, 1500)
+      })
   }, [artifact])
+  const copyLabel = copyStatus === 'copied'
+    ? i18nT('pages.artifactDetailPage.copied')
+    : copyStatus === 'failed'
+      ? i18nT('pages.artifactDetailPage.copy_failed')
+      : i18nT('pages.artifactDetailPage.copy_content')
 
   const downloadAsHtml = () => {
     if (!artifact) return
@@ -1682,7 +1704,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               </>
             )}
 
-            {(!editing || previewDuringEdit) && (
+            {(!editing || previewDuringEdit) && !usesIframe && (
               <ReadingWidthToggle value={readingWidth} onToggle={toggleReadingWidth} />
             )}
             {/* Comments toggle, Publish, Full screen, Download — icon-only to
@@ -1808,16 +1830,23 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 text) and webapp (deploy card has its own affordances), and
                 while the editor owns the surface. */}
             {artifact.kind !== 'webapp' && artifact.kind !== 'image' && !editing && (
-              <div className="flex justify-end mb-1.5">
-                <Btn
-                  type="button"
-                  onClick={handleCopyContent}
-                  className="p-1.5 rounded-md border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
-                  title={copied ? i18nT('pages.artifactDetailPage.copied') : i18nT('pages.artifactDetailPage.copy_content')}
-                  aria-label={copied ? i18nT('pages.artifactDetailPage.copied') : i18nT('pages.artifactDetailPage.copy_content')}
-                >
-                  {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
-                </Btn>
+              <div className="mb-1.5">
+                <div className="flex justify-end" style={contentWidthStyle}>
+                  <Btn
+                    type="button"
+                    onClick={handleCopyContent}
+                    className={`p-1.5 rounded-md border border-border hover:border-border-strong cursor-pointer transition-all ${copyStatus === 'failed' ? 'text-danger hover:text-danger' : 'text-muted hover:text-text'}`}
+                    title={copyLabel}
+                    aria-label={copyLabel}
+                    aria-live="polite"
+                  >
+                    {copyStatus === 'copied'
+                      ? <Check size={13} className="text-ok" />
+                      : copyStatus === 'failed'
+                        ? <AlertCircle size={13} aria-hidden="true" />
+                        : <Copy size={13} />}
+                  </Btn>
+                </div>
               </div>
             )}
             {artifact.kind === 'webapp' ? (
@@ -1829,7 +1858,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 <ArtifactBodyIframe
                   artifact={artifact}
                   slug={slug}
-                  previewStyle={mdPreviewStyle}
                   comments={durableComments}
                   onSelect={(sel: IframeSelection) => setPopover({ x: sel.x, y: sel.y, anchor: sel.quote, prefix: sel.prefix, suffix: sel.suffix })}
                   onOpenThread={(id: string, rect) => openThreadHandler(id, rect)}
@@ -1850,7 +1878,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               <div
                 ref={bodyRef}
                 className="relative"
-                style={mdPreviewStyle}
+                style={contentWidthStyle}
                 onMouseDown={() => { selectingRef.current = true }}
                 onMouseUp={() => { selectingRef.current = false; handleMouseUp() }}
               >
