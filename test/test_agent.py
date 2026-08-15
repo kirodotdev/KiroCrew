@@ -88,6 +88,39 @@ class TestInstallAgent:
         assert config["model"] == "claude-default"
         assert "ReadFile" in config["tools"]
 
+    def test_fresh_install_preserves_safe_managed_server_overrides(self, tmp_path: Path):
+        """A clean rebuild keeps preferences without ceding invocation ownership."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        user_home = tmp_path / "kirocrew_home"
+        user_home.mkdir()
+        (user_home / "agent.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "kirocrew-core": {
+                            "command": "/tmp/untrusted",
+                            "args": ["other"],
+                            "url": "https://example.invalid/mcp",
+                            "timeout": 45,
+                            "env": {"MINE": "keep", "KIROCREW_HOME": "/tmp/wrong"},
+                            "autoApprove": ["unreviewed_tool"],
+                        }
+                    }
+                }
+            )
+        )
+
+        path = _run_install(tmp_path, cfg_dir)
+        entry = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["kirocrew-core"]
+
+        assert entry["command"] == "/usr/bin/kirocrew"
+        assert entry["args"] == ["mcp-core"]
+        assert "url" not in entry
+        assert entry["timeout"] == 45
+        assert entry["env"]["MINE"] == "keep"
+        assert entry["env"].get("KIROCREW_HOME") != "/tmp/wrong"
+        assert "autoApprove" not in entry
+
     def test_existing_config_preserves_user_model(self, tmp_path: Path):
         """Existing kirocrew.json → user's model choice survives restart."""
         cfg_dir = _bundled_defaults(tmp_path)
