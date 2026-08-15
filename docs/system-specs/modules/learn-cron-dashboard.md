@@ -76,6 +76,7 @@ Scheduled job execution with three schedule types: `every` (interval, min 60s), 
 - Handler intercepts cron commands before ACP (no LLM round-trip needed)
 - CLI: `kirocrew cron {list|add|update|remove|pause|resume|trigger}`. `add` and `update` accept `--every`, `--cron`, `--channel`, `--agent`, `--approval-mode`. CLI flags mirror the corresponding `cron_add`/`cron_update` MCP tool parameters.
 - Update: `CronService.update_job(job_id, **kwargs)` for partial updates (name, message, schedule, agent, channel, approval_mode, silent) with file locking and cron expression validation
+- Message cap: the cron `message` has its own `MAX_CRON_MESSAGE` (50 000) cap — a cron message is a task prompt, so it does not borrow the shared `MAX_MEDIUM_STRING` (5 000). Enforced on the MCP `cron_add`/`cron_update` schemas, `POST /api/crons` and `PATCH /api/crons/{id}` (PATCH routes `message` through `validate_string_field`, 400 `code: "invalid_message"` on non-string/oversize — it was previously unvalidated on that surface), and at the `CronService` persistence chokepoint (`_build_job`/`_update_job_locked` raise `ValueError`), so the CLI and apps-SDK paths cannot admit a value the validated surfaces would reject
 - Async stop: `stop()` is now async, cancels and awaits `_running_tasks` before returning
 
 ### Per-Job Timezone

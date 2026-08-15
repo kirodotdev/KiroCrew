@@ -40,6 +40,14 @@ MAX_TOOL_NAME_LEN = 256
 MAX_SHORT_STRING = 500  # names, IDs, categories
 MAX_MEDIUM_STRING = 5_000  # messages, rules
 MAX_LONG_STRING = 50_000  # task specs, inline content
+# A cron job's message IS a task prompt (real dispatched task specs routinely
+# exceed 5k chars), so it gets its own cap at task-spec scale instead of
+# borrowing MAX_MEDIUM_STRING — raising that shared constant would widen ~20
+# unrelated fields. Enforced at every create/update surface (MCP schemas,
+# dashboard REST) AND at the CronService persistence chokepoint
+# (_build_job/update_job), so the CLI and apps SDK cannot admit a larger value
+# than the validated surfaces.
+MAX_CRON_MESSAGE = 50_000
 MAX_RESPONSE_LEN = 100_000  # truncate tool responses
 
 # Allowed categories for lessons
@@ -2080,7 +2088,7 @@ CRON_ADD_SCHEMA = ToolSchema(
     tool_name="cron_add",
     fields=[
         FieldSpec("name", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("message", str, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("message", str, max_len=MAX_CRON_MESSAGE),
         FieldSpec("every", int, min_val=60, max_val=86400 * 30),
         FieldSpec("cron_expr", str, max_len=100),
         FieldSpec("at", (int, float), min_val=0, max_val=4102444800),  # up to 2100
@@ -2460,7 +2468,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
         fields=[
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
             FieldSpec("name", str, max_len=MAX_SHORT_STRING),
-            FieldSpec("message", str, max_len=MAX_MEDIUM_STRING),
+            FieldSpec("message", str, max_len=MAX_CRON_MESSAGE),
             FieldSpec("cron_expr", str, max_len=100),
             FieldSpec("every", int, min_val=60, max_val=86400 * 30),
             FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),

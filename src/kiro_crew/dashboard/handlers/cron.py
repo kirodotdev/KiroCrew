@@ -29,7 +29,7 @@ from kiro_crew.validation import (
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
     LEARN_ADD_SCHEMA,
-    MAX_MEDIUM_STRING,
+    MAX_CRON_MESSAGE,
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
     ValidationError,
@@ -194,7 +194,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # CRON_ADD_SCHEMA so the REST + tool paths validate identically.
     try:
         name = validate_string_field(body, "name", required=True, max_len=MAX_SHORT_STRING)
-        message = validate_string_field(body, "message", max_len=MAX_MEDIUM_STRING)
+        message = validate_string_field(body, "message", max_len=MAX_CRON_MESSAGE)
         schedule = validate_string_field(body, "schedule", max_len=100)
         cron_expr = validate_string_field(body, "cron", max_len=100) or None
         channel = validate_string_field(body, "channel", max_len=CHANNEL_MAX_LEN) or None
@@ -405,6 +405,19 @@ async def api_cron_update(request: web.Request) -> web.Response:
     ):
         if key in body:
             kwargs[key] = body[key]
+    # message routes through the same validator as POST (type check +
+    # sanitize_string + length cap) so the two REST surfaces cannot diverge:
+    # PATCH previously passed it through entirely unvalidated. Sanitizing here
+    # also keeps length measured post-normalization, matching create.
+    if "message" in kwargs:
+        try:
+            kwargs["message"] = validate_string_field(
+                body, "message", max_len=MAX_CRON_MESSAGE
+            )
+        except ValidationError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_message"}, status=400
+            )
     # folder_id must be a string (or null → ""): a non-string JSON value
     # would be persisted verbatim into the schema and corrupt reads.
     if "folder_id" in kwargs:

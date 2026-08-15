@@ -52,6 +52,7 @@ from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.resource_status import admission_check
+from kiro_crew.validation import MAX_CRON_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -1366,6 +1367,18 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+        # Message cap enforced HERE, at the persistence owner, for the same
+        # reason as timezone/skip_dates below: every create path (MCP, apps
+        # SDK, dashboard, CLI) shares one check, so no surface can admit a
+        # message the others would reject. Uses the cron-specific cap, not
+        # MAX_MEDIUM_STRING — a cron message is a task prompt (see
+        # validation.MAX_CRON_MESSAGE). Type-checked first: len() succeeds on
+        # a list, and a non-str message would be persisted into crons.json and
+        # only blow up at fire time inside _build_prompt.
+        if not isinstance(message, str):
+            raise ValueError("message must be a string")
+        if len(message) > MAX_CRON_MESSAGE:
+            raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -1578,6 +1591,15 @@ class CronService:
                     if kwargs["approval_mode"] not in valid_approval_modes:
                         raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
                 # Validate before any mutations
+                if "message" in kwargs and kwargs["message"]:
+                    # Same chokepoint rationale as _build_job: every update
+                    # surface (MCP, dashboard PATCH, CLI) funnels here. Type
+                    # first — len() succeeds on a list, which would then be
+                    # persisted and only raise at fire time in _build_prompt.
+                    if not isinstance(kwargs["message"], str):
+                        raise ValueError("message must be a string")
+                    if len(kwargs["message"]) > MAX_CRON_MESSAGE:
+                        raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
                 if (
                     "cron_expr" in kwargs
                     and kwargs["cron_expr"]
