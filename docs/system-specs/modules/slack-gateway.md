@@ -18,7 +18,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 |------|---------|
 | `slack/__init__.py` | Package (no eager imports to avoid aiohttp at import time) |
 | `slack/client.py` | `SlackClientOps` ABC + `RealSlackClient` (slack-sdk wrapper) |
-| `slack/files.py` | Non-audio file attachment processing — images (download → temp → ACP base64 inline), text (download → content inject), unsupported (metadata note). Size limits, mimetype allowlist, credential redaction, SEL audit |
+| `slack/files.py` | Slack adapter over shared attachment ingestion — authenticated downloads, inlineable images/text/documents, and byte-identical opaque files with local path + metadata; caller-owned cleanup and SEL audit |
 | `slack/format.py` | Markdown → Slack mrkdwn conversion (headings, links, strike, tables, mermaid, ANSI strip, truncation) |
 | `slack/handler.py` | `handle_message()` — streams ACP response, `handle_interaction()` — button clicks (with None provider guard) |
 | `slack/gateway.py` | `GatewayOrchestrator` — service lifecycle, cron/heartbeat/secretary/subagent/task callbacks, shutdown, auto-update. Entry point: `run_gateway()` |
@@ -248,10 +248,10 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 
 ### Images (`files.py`)
 - **Mimetypes**: `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp` (aligned with `AcpClient._send_prompt()` regex)
-- **Size limit**: 10 MB (checked from Slack metadata before download)
+- **Size limit**: 10 MB (checked from Slack metadata before download and actual bytes after download)
 - **Flow**: Download to temp file → inject local path into message text → `_send_prompt()` detects path, base64-encodes, sends as `{"type": "image"}` content block to kiro-cli
 - **Temp lifecycle**: Caller (`_route_message`) owns cleanup. Done callback on `handle_message` task cleans up after `_send_prompt()` reads the file. Early-return paths and `create_task` failures also clean up. Queued messages carry their paths in the entry's `image_temp_paths` kwargs; `_dispatch_queued` unlinks after the turn consumes them, and the queue-discard paths — `cancel_queued`, `clear_queue`, `dequeue`'s cancelled-skip, and the `_pending_queue` drops in `_handle_message_deleted` and the `!stop` handler — unlink via `session.unlink_queued_temp_paths()` so entries that never dispatch don't leak files. Known gap: session-teardown paths (restart/remove/destroy/idle sweep) drop `session.queue` without unlinking.
-- **Unsupported image types** (`image/svg+xml`, `image/tiff`, etc.) fall through to unsupported handler — metadata note only, no download
+- **Non-inlineable images** (`image/svg+xml`, `image/tiff`, etc.) use the opaque-file path below; they are never injected as ACP image blocks
 
 ### Text / Code Files (`files.py`)
 - **Mimetypes**: `text/*`, `application/json`, `application/xml`, `application/javascript`
@@ -259,13 +259,16 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - **Flow**: Download to temp → read with `errors="replace"` → redact credentials/URLs → inject as `[File: name]\ncontent\n[End of file]`
 - **Temp lifecycle**: Always cleaned in `finally` block (text content is read into memory, file not needed after)
 
-### Unsupported Types
-- All other mimetypes: no download, inject `[Attached file: name (mimetype, size) — unsupported type]` metadata note
-- SEL audit logged with `operation="slack.file_skip"`
+### Opaque Files
+- **Mimetypes**: `video/*` and every format not handled as inlineable image, text/code, document, or audio; this includes ZIP, binary payloads, SVG, and TIFF
+- **Size limit**: 50 MB per file, checked against Slack metadata before download and authoritative bytes after download
+- **Flow**: Stream authenticated bytes to a randomized `tempfile.mkstemp()` path → inject the bare local path plus `[Attached file: name]` metadata (original mimetype and actual byte count) → expose the complete file to agent tools
+- **Integrity and lifecycle**: Bytes are not transformed. The current or queued turn owns the path and unlinks it after the agent turn completes, or when a queued entry is discarded; early-return and task-creation failures also clean it up
+- **Passive by default**: Opaque content is never automatically parsed, extracted, or executed. An inlineable image suffix (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) is stripped from the temporary path, because the ACP encoder types a path by suffix alone — otherwise a file named `photo.png` but declared `application/octet-stream` would be inlined as an image without passing content-signature validation. Agent tool access remains subject to normal permissions and hooks
+- SEL audit logs successful downloads, pre/post-limit skips, and failures
 
 ### Safety Controls
-- Mimetype allowlist — only known-safe types processed
-- File size checked from Slack metadata *before* download
+- Type-specific size limits are checked from Slack metadata *before* download and against actual bytes *after* download
 - Filetype suffix sanitized to alphanumeric only (prevents path traversal)
 - `tempfile.mkstemp()` for all downloads — never uses original Slack filename
 - `redact_credentials()` + `redact_exfiltration_urls()` on all text content

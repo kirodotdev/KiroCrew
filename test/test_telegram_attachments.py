@@ -289,25 +289,33 @@ class TestProcessTelegramAttachments:
         assert result.image_paths == []
 
     @pytest.mark.asyncio
-    async def test_video_rejected(self):
-        """Video attachments produce a rejection, not a download."""
+    async def test_video_preserved_as_opaque_file(self):
+        """Video bytes are available to agent tools until caller cleanup."""
+        payload = b"\x00\x00\x00\x18ftypmp42telegram video"
         client = MagicMock()
-        client.download_file = AsyncMock()
 
+        async def fake_download(file_id: str, dest: str) -> None:
+            with open(dest, "wb") as f:
+                f.write(payload)
+
+        client.download_file = AsyncMock(side_effect=fake_download)
         attachments = [
             {
                 "file_id": "vid1",
                 "file_unique_id": "u3",
                 "file_name": "clip.mp4",
                 "mime_type": "video/mp4",
-                "file_size": 500000,
+                "file_size": len(payload),
             }
         ]
         result = await process_telegram_attachments(client, attachments)
-        assert result.image_paths == []
-        assert len(result.rejections) == 1
-        assert "video" in result.rejections[0].lower()
-        client.download_file.assert_not_called()
+        assert len(result.file_paths) == 1
+        with open(result.file_paths[0], "rb") as f:
+            assert f.read() == payload
+        assert "[Attached file: clip.mp4]" in result.text_blocks[0]
+        client.download_file.assert_awaited_once()
+        cleanup(result.temp_paths)
+        assert not any(os.path.exists(p) for p in result.temp_paths)
 
     @pytest.mark.asyncio
     async def test_voice_transcribed_when_available(self):

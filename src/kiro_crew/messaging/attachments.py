@@ -17,10 +17,8 @@ IMAGE        a local path the ACP prompt path inlines as an image block
 TEXT         redacted, truncated text inlined into the prompt
 DOCUMENT     text extracted via :mod:`kiro_crew.doc_parser`, then as TEXT
 AUDIO        a local path for the caller to transcribe (opt-in)
-VIDEO        rejected with a visible reason -- kiro-cli advertises
-             ``promptCapabilities.image`` only, and the models behind it do
-             not accept video
-OTHER        rejected with a visible reason
+VIDEO        complete temporary file + path metadata for agent tools
+OTHER        complete temporary file + path metadata for agent tools
 ===========  =========================================================
 
 **Why rejections are returned rather than swallowed.** Silently dropping an
@@ -100,6 +98,7 @@ class IngestLimits:
     max_text_bytes: int = 512 * 1024
     max_document_bytes: int = 20 * 1024 * 1024
     max_audio_bytes: int = 25 * 1024 * 1024
+    max_opaque_bytes: int = 50 * 1024 * 1024
     #: Characters of extracted text injected into the prompt.
     max_text_inject: int = 50 * 1024
     #: Per-message attachment cap. Slack had none, so a single message could
@@ -132,11 +131,13 @@ class IngestResult:
     text_blocks: list[str] = field(default_factory=list)
     #: Human-readable reasons an attachment was not ingested. Surface these.
     rejections: list[str] = field(default_factory=list)
+    #: Byte-identical opaque files for agent tools. Caller deletes after the turn.
+    file_paths: list[str] = field(default_factory=list)
 
     @property
     def temp_paths(self) -> list[str]:
         """Every path the caller is responsible for cleaning up."""
-        return [*self.image_paths, *self.audio_paths]
+        return [*self.image_paths, *self.audio_paths, *self.file_paths]
 
 
 def safe_suffix(hint: str, default: str = "bin") -> str:
@@ -213,6 +214,14 @@ _MIME_SUFFIX = {
     "image/webp": ".webp",
     "image/bmp": ".bmp",
 }
+
+#: Suffixes the ACP encoder inlines as an image, deriving mimeType from the
+#: suffix alone. An opaque file must never keep one: the sender picks name and
+#: mimetype independently, so ``photo.png`` declared ``application/octet-stream``
+#: would reach the image sink without passing :func:`sniff_image_mime`. Kept in
+#: sync with ``acp.prompt_blocks.IMAGE_MEDIA_TYPES`` by a contract test rather
+#: than an import, so this module's dependency surface stays unchanged.
+_INLINEABLE_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 
 def _audit(source: str, operation: str, outcome: str, name: str, error: str = "") -> None:
@@ -314,33 +323,13 @@ async def ingest_attachments(
             _audit(source, f"{source}.attachment_skip", "skipped", att.name, "no url")
             continue
 
-        if kind == VIDEO:
-            out.rejections.append(
-                f"[Attachment {att.name} — video is not supported; "
-                "send a screenshot or a text summary instead]"
-            )
-            _audit(source, f"{source}.attachment_skip", "skipped", att.name, "video unsupported")
-            continue
-
-        if kind == OTHER:
-            out.rejections.append(
-                f"[Attached file: {att.name} ({att.mimetype or 'unknown type'}, "
-                f"{att.size} bytes) — unsupported type]"
-            )
-            _audit(
-                source,
-                f"{source}.attachment_skip",
-                "skipped",
-                att.name,
-                f"unsupported mimetype: {att.mimetype}",
-            )
-            continue
-
         cap = {
             IMAGE: lim.max_image_bytes,
             TEXT: lim.max_text_bytes,
             DOCUMENT: lim.max_document_bytes,
             AUDIO: lim.max_audio_bytes,
+            VIDEO: lim.max_opaque_bytes,
+            OTHER: lim.max_opaque_bytes,
         }[kind]
 
         # Pre-download check on channel-reported size. Cheap, but advisory only:
@@ -412,6 +401,41 @@ async def ingest_attachments(
 
             elif kind == AUDIO:
                 out.audio_paths.append(dest)
+                dest = ""
+                _audit(source, f"{source}.attachment_download", "success", att.name)
+
+            elif kind in (VIDEO, OTHER):
+                # Strip an inlineable image suffix: the ACP encoder types a path
+                # by suffix alone, so keeping it would route unvalidated bytes to
+                # the image sink under a sender-supplied mimeType. Fail CLOSED --
+                # emitting the original path when the rename did not happen would
+                # leave exactly the hole this guards, so drop the attachment and
+                # let the finally below unlink it.
+                if os.path.splitext(dest)[1].lower() in _INLINEABLE_IMAGE_SUFFIXES:
+                    neutral = os.path.splitext(dest)[0] + ".bin"
+                    try:
+                        os.replace(dest, neutral)
+                    except OSError:
+                        logger.debug("%s: could not retype %s", source, dest, exc_info=True)
+                        out.rejections.append(
+                            f"[Attachment {att.name} — could not be stored safely]"
+                        )
+                        _audit(
+                            source,
+                            f"{source}.attachment_skip",
+                            "skipped",
+                            att.name,
+                            "suffix_neutralize_failed",
+                        )
+                        continue
+                    dest = neutral
+                out.file_paths.append(dest)
+                out.text_blocks.append(
+                    f"[Attached file: {att.name}]\n"
+                    f"Type: {att.mimetype or 'unknown'}\n"
+                    f"Size: {actual} bytes\n"
+                    "[End of attached file]"
+                )
                 dest = ""
                 _audit(source, f"{source}.attachment_download", "success", att.name)
 
@@ -535,16 +559,18 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
 def append_attachment_context(text: str, result: IngestResult) -> str:
     """Append prompt-ready attachment material to the user's message text.
 
-    Image paths are appended as bare lines (the ACP encoder's path regex picks
-    them up and inlines each as a base64 image content block). Text and
-    rejection blocks follow, separated by blank lines for prompt readability.
+    Image and opaque-file paths are appended as bare lines. The ACP encoder
+    inlines recognized image paths as image content blocks; every other path remains
+    text for agent file tools. Text, metadata and rejection blocks follow, separated
+    by blank lines for prompt readability.
 
     Channel-neutral: every transport that ingests attachments uses this same
     layout, so the model sees a consistent attachment presentation regardless
     of whether the user sent from Slack, Discord, or Telegram.
     """
-    if result.image_paths:
-        paths_text = "\n".join(result.image_paths)
+    paths = [*result.image_paths, *result.file_paths]
+    if paths:
+        paths_text = "\n".join(paths)
         text = f"{text}\n{paths_text}" if text else paths_text
 
     blocks = [*result.text_blocks, *result.rejections]
