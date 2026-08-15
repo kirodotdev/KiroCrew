@@ -47,7 +47,38 @@ describe('PerformanceTab stats grid', () => {
     expect(el, 'expected the stats grid to start at grid-cols-1').not.toBeNull()
     expect(el![0]).toContain('sm:grid-cols-2')
     expect(el![0]).toContain('lg:grid-cols-3')
-    // An unqualified grid-cols-2 is the defect: it applies at every width.
-    expect(src).not.toMatch(/className="grid grid-cols-2/)
+    // An unqualified two-column stats grid is the defect: it applies at every
+    // width. Matched by the stats grid's own `gap-x-6` rather than by a bare
+    // `grid grid-cols-2`, because the resource rail below is legitimately 2x2
+    // while narrow and would otherwise trip this.
+    expect(src).not.toMatch(/className="grid grid-cols-2 gap-x-6/)
   })
 })
+
+describe('PerformanceTab resource rail', () => {
+  it('applies the fixed 196px rail only from sm up, as a class', async () => {
+    const src = await read('../pages/system/PerformanceTab.tsx?raw')
+    const el = src.match(/className="grid gap-4 sm:grid-cols-\[196px_minmax\(0,1fr\)\]"/)
+    expect(el, 'expected the pane to be one column until sm').not.toBeNull()
+  })
+
+  it('does not set the pane columns inline, which would apply at every width', async () => {
+    const src = await read('../pages/system/PerformanceTab.tsx?raw')
+    // Same false-positive guard as above: the comment quotes what it forbids.
+    const code = src.replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    expect(code).not.toMatch(/gridTemplateColumns/)
+    // The 196px literal must not reappear as an unconditional inline value.
+    expect(code).not.toMatch(/style=\{\{[^}]*196px/)
+  })
+
+  it('lays the four tiles out 2x2 while narrow instead of stacking them', async () => {
+    const src = await read('../pages/system/PerformanceTab.tsx?raw')
+    const nav = src.match(/className="grid grid-cols-2 gap-1\.5 sm:flex sm:flex-col"/)
+    expect(nav, 'expected the rail to be 2x2 below sm and a column above').not.toBeNull()
+    // Stacking all four sparkline tiles costs 362px of rail before the graph;
+    // 2x2 is 178px. An unconditional flex-col is that regression.
+    expect(src).not.toMatch(/className="flex flex-col gap-1\.5"/)
+  })
+})
+
+
