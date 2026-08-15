@@ -201,7 +201,47 @@ async def api_chat_folders(request: web.Request) -> web.Response:
     return web.json_response(folders)
 
 
-def _validate_project_dir(raw: str) -> tuple[str, str | None]:
+# ── SEL attribution for folder writes ────────────────────────────
+#
+# ``caller``/``source`` on a folder-mutation audit event name WHO made the write,
+# and they are derived from the identity the auth middleware VERIFIED:
+# ``request["app"]`` (app-token auth) or ``request["internal_auth"]`` (the
+# loopback internal caller). They are deliberately NOT inferred from the
+# presence of a transport credential: ``X-Internal-Secret`` says a request came
+# from inside this machine, not WHICH component sent it, so reading it as "the
+# MCP server" mislabels the first internal caller that is not MCP — quietly, with
+# no test failing. Internal callers therefore name themselves in
+# ``X-Internal-Caller``; that header is only consulted AFTER the middleware
+# verified the secret, so only a process already holding it can set it. A caller
+# that does not name itself, or names something not on this list, is recorded as
+# ``INTERNAL_UNKNOWN`` — explicitly unknown, never a specific component.
+_KNOWN_INTERNAL_CALLERS = frozenset({"mcp", "cli", "cron"})
+
+INTERNAL_UNKNOWN = "internal:unknown"
+
+
+def _audit_origin(request: web.Request) -> tuple[str, str]:
+    """Return ``(caller, source)`` for a folder-mutation SEL event.
+
+    - app token → ``(<app id>, "app")``
+    - internal loopback caller naming itself → ``(<name>, <name>)``
+    - internal loopback caller unnamed/unrecognized → ``("internal", INTERNAL_UNKNOWN)``
+    - browser (cookie auth) → ``("dashboard", "dashboard")``
+    """
+    app = str(request.get("app") or "")
+    if app:
+        return app, "app"
+    if request.get("internal_auth") is True:
+        named = str(request.headers.get("X-Internal-Caller") or "").strip().lower()[:32]
+        if named in _KNOWN_INTERNAL_CALLERS:
+            return named, named
+        return "internal", INTERNAL_UNKNOWN
+    return "dashboard", "dashboard"
+
+
+def _validate_project_dir(
+    raw: str, request: web.Request | None = None
+) -> tuple[str, str | None]:
     """Validate and normalize project_dir. Returns (resolved_path, error_msg)."""
     if not raw:
         return "", None
@@ -209,9 +249,10 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
         return "", "project_dir must be an absolute path"
     resolved = os.path.realpath(os.path.expanduser(raw))
     if is_sensitive_path(resolved):
+        caller, source = _audit_origin(request) if request is not None else ("dashboard", "dashboard")
         sel().log_api_access(
-            caller="dashboard", operation="chat.folder_project_dir",
-            outcome="denied", resources=resolved, error="sensitive path",
+            caller=caller, operation="chat.folder_project_dir",
+            outcome="denied", source=source, resources=resolved, error="sensitive path",
         )
         return "", "project_dir refers to a sensitive path"
     if not os.path.isdir(resolved):
@@ -251,7 +292,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     if parent_id and not any(f["id"] == parent_id for f in state._folders):
         return web.json_response({"error": "parent folder not found"}, status=400)
     project_dir = str(body.get("project_dir") or "").strip()
-    project_dir, err = _validate_project_dir(project_dir)
+    project_dir, err = _validate_project_dir(project_dir, request)
     if err:
         return web.json_response({"error": err}, status=400)
     default_agent = str(body.get("default_agent") or "").strip()
@@ -295,9 +336,10 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             status=400,
         )
     state.push_slots_update()
+    _caller, _source = _audit_origin(request)
     sel().log_api_access(
-        caller="dashboard", operation="chat.folder_create",
-        outcome="allowed", source="dashboard", resources=str(folder["id"]),
+        caller=_caller, operation="chat.folder_create",
+        outcome="allowed", source=_source, resources=str(folder["id"]),
     )
     return web.json_response(folder, status=201)
 
@@ -367,7 +409,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
-        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
+        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip(), request)
         if err:
             return web.json_response({"error": err}, status=400)
         changes["project_dir"] = pd
@@ -424,9 +466,10 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             status=409,
         )
     state.push_slots_update()
+    _caller, _source = _audit_origin(request)
     sel().log_api_access(
-        caller="dashboard", operation="chat.folder_update",
-        outcome="allowed", source="dashboard", resources=fid,
+        caller=_caller, operation="chat.folder_update",
+        outcome="allowed", source=_source, resources=fid,
     )
     return web.json_response(folder)
 
@@ -485,9 +528,10 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         state.push_slots_update()
         raise
     state.push_slots_update()
+    _caller, _source = _audit_origin(request)
     sel().log_api_access(
-        caller="dashboard", operation="chat.folder_delete",
-        outcome="allowed", source="dashboard", resources=fid,
+        caller=_caller, operation="chat.folder_delete",
+        outcome="allowed", source=_source, resources=fid,
     )
     return web.json_response({"ok": True})
 
@@ -523,9 +567,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         )
     await save_slot_off_loop(state, slot, force=True)
     state.push_slots_update()
+    _caller, _source = _audit_origin(request)
     sel().log_api_access(
-        caller="dashboard", operation="chat.slot_folder",
-        outcome="allowed", source="dashboard", resources=name,
+        caller=_caller, operation="chat.slot_folder",
+        outcome="allowed", source=_source, resources=name,
     )
     return web.json_response({"ok": True, "folder_id": slot.folder_id})
 
