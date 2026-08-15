@@ -103,9 +103,32 @@ class _Record:
 class HazardLedger:
     """Per-server hazard observations, persisted as one small JSON object.
 
-    Not thread-safe by design: gatewayd records from its event loop, and the
-    dashboard only ever reads. A reader that races a writer sees either the old
-    or the new file because the write is atomic — never a torn one.
+    ``record``/``clear`` run on gatewayd's event loop; ``flush`` runs off it
+    (offloaded via ``asyncio.to_thread``) and reads the same ``_records``
+    state while building its payload — genuinely concurrent OS threads, not
+    just interleaved coroutines. Rather than share a lock between them (which
+    would make the event-loop side wait, however briefly, on whatever the
+    worker-thread side happens to be doing), ``_records`` and every
+    ``_Record`` are copy-on-write: ``record``/``clear`` never mutate an
+    existing dict or ``_Record`` in place, they build new ones and swap in a
+    new ``self._records`` with a single attribute assignment — atomic under
+    the GIL, so no reader ever observes a partially-updated structure and no
+    lock is needed for that swap. ``flush`` reads ``self._records`` into a
+    local variable ONCE at the very top (also just an atomic reference read)
+    and iterates that frozen snapshot; a concurrent ``record`` cannot mutate
+    the dict/set objects that snapshot points to, because it never mutates
+    ANY existing dict/set -- it only ever builds new ones and moves
+    ``self._records`` to point at them. So ``record``/``clear`` take no lock
+    at all, and can never block on anything ``flush`` is doing, I/O included.
+
+    ``_flush_lock`` is the one lock left, and only ``flush`` ever touches it:
+    it serializes concurrent flushers against EACH OTHER (the periodic sweep
+    and the shutdown flush can overlap) across the whole call, disk write
+    included -- unrelated to the record/flush relationship above, and never a
+    concern for the event-loop side. The dashboard only ever reads the
+    persisted file, never this in-memory state; a reader that races a writer
+    there sees either the old or the new file because the write is atomic —
+    never a torn one.
     """
 
     def __init__(self, path: Path) -> None:
@@ -117,14 +140,19 @@ class HazardLedger:
         # let a late frame from the draining backend overwrite the new build's
         # evidence, which reads as "nothing observed" for the build actually
         # being kept — the permissive direction.
+        #
+        # Copy-on-write: record()/clear() never mutate this dict, any
+        # per-identity dict inside it, or any _Record's `codes` set in place
+        # -- see the class docstring. Only ever reassign the whole attribute.
         self._records: dict[str, dict[str, _Record]] = {}
         self._dirty = False
         # Bumped by every ``record``. ``flush`` captures it alongside the payload
         # so a concurrent observation cannot be marked persisted.
         self._generation = 0
-        # Held across a whole flush. More than one caller flushes (the periodic
-        # sweep and the shutdown path), both from worker threads, so without this
-        # the later WRITE can carry the earlier READ and revert what is on disk.
+        # Serializes flush() against ANOTHER flush() (the periodic sweep and
+        # the shutdown path both run in worker threads and can overlap) --
+        # see the class docstring for why record()/clear() need no lock at
+        # all and never touch this one.
         self._flush_lock = threading.Lock()
 
     # -- writer side (gatewayd) ------------------------------------------
@@ -151,12 +179,21 @@ class HazardLedger:
             return False
         if not server_name:
             return False
-        per_identity = self._records.setdefault(server_name, {})
-        rec = per_identity.setdefault(identity, _Record())
-        is_new = code not in rec.codes
-        rec.codes.add(code)
-        rec.count += 1
-        rec.last_seen = time.time()
+        # Copy-on-write, not an in-place mutation: build a new record, a new
+        # per-identity dict, and a new top-level dict, then swap the whole
+        # attribute in one atomic assignment. Lets this run lock-free on the
+        # event loop -- see the class docstring for why that matters.
+        records = self._records
+        per_identity = records.get(server_name, {})
+        old_rec = per_identity.get(identity)
+        is_new = old_rec is None or code not in old_rec.codes
+        new_rec = _Record(
+            codes=(old_rec.codes | {code}) if old_rec else {code},
+            count=(old_rec.count if old_rec else 0) + 1,
+            last_seen=time.time(),
+        )
+        new_per_identity = {**per_identity, identity: new_rec}
+        self._records = {**records, server_name: new_per_identity}
         self._dirty = True
         self._generation += 1
         return is_new
@@ -177,8 +214,12 @@ class HazardLedger:
         observed. Every invalidation here is tied to something real changing —
         the program, or a human saying the record is wrong.
         """
-        if self._records.pop(server_name, None) is None:
+        records = self._records
+        if server_name not in records:
             return False
+        new_records = dict(records)
+        del new_records[server_name]
+        self._records = new_records
         self._dirty = True
         self._generation += 1
         return True
@@ -186,14 +227,19 @@ class HazardLedger:
     def flush(self) -> None:
         """Persist if anything changed. Safe to call often; cheap when clean.
 
-        Serialized end to end, because there is more than one flush caller and
-        they run in worker threads. The periodic sweep and the shutdown flush can
-        overlap — cancellation starts the second while the first is mid-write —
-        and each builds its payload from the in-memory records before writing. Two
-        unsynchronised flushes therefore race, and the one that happens to write
-        last wins even if it read an OLDER snapshot, silently reverting an
-        observation that was already on disk. Holding the lock across build AND
-        write makes the last writer the last reader too.
+        Serialized end to end (via ``_flush_lock``, held across the disk write
+        too), because there is more than one flush caller and they run in
+        worker threads. The periodic sweep and the shutdown flush can overlap
+        — cancellation starts the second while the first is mid-write — and
+        each builds its payload from the in-memory records before writing.
+        Two unsynchronised flushes therefore race, and the one that happens to
+        write last wins even if it read an OLDER snapshot, silently reverting
+        an observation that was already on disk. Holding ``_flush_lock``
+        across build AND write makes the last writer the last reader too.
+        This is the ONLY lock ``flush`` takes -- ``self._records`` is read
+        into ``records`` below with a single attribute access, safe without
+        any lock against a concurrent ``record``/``clear`` because of the
+        copy-on-write discipline described in the class docstring.
 
         The generation guard inside handles the other direction: ``record`` runs
         ON the event loop while this runs off it, so an observation can land
@@ -205,6 +251,7 @@ class HazardLedger:
             if not self._dirty:
                 return
             generation = self._generation
+            records = self._records  # frozen snapshot; see class docstring
             payload: dict[str, Any] = {
                 "schema": _SCHEMA,
                 "servers": {
@@ -231,7 +278,7 @@ class HazardLedger:
                             default=0.0,
                         ),
                     }
-                    for name, per_identity in sorted(self._records.items())
+                    for name, per_identity in sorted(records.items())
                 },
             }
             try:
