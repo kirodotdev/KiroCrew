@@ -501,7 +501,10 @@ class TestApplyRefusals:
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(plain))
         resp = await updates.api_update_apply(_request({}))
         assert resp.status == 409
-        assert "Not a git checkout" in json.loads(resp.body.decode())["error"]
+        error = json.loads(resp.body.decode())["error"]
+        assert "Not a git checkout" in error
+        assert "kirocrew update" in error
+        assert "cloud launch" not in error
 
     @pytest.mark.asyncio
     async def test_a_pinned_remote_is_refused_before_any_spinner_is_shown(
