@@ -132,6 +132,19 @@ export default [
       // keep both modules parser-facing only.
       'src/lib/widgetSrcdoc.ts',
       'src/lib/mcpAppSrcdoc.ts',
+      // Per-app scoped CSS, injected as `<style>{APP_CSS}</style>`. Each module is
+      // ONE template literal of stylesheet text handed to the CSS parser -- selectors,
+      // lengths and `var(--…)` references. None of it is read as words, and the
+      // diff-scoped `added-lines` check reports the whole template against whoever
+      // touches a rule inside it, so any narrow-viewport or theming edit to an app's
+      // stylesheet trips a zero-tolerance gate it can never satisfy.
+      //
+      // Stated as a false-negative class, per this file's convention: user-visible
+      // copy added to one of these modules will not be reported -- keep them
+      // stylesheet-only, and put anything a person reads in the component with
+      // `i18nT`. Verified copy-free rather than assumed: none of them imports
+      // `i18nT` or `useTranslation`.
+      'src/apps/*/styles.ts',
       // The PPTX Maker board-preview builder — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared glob. Every literal in it is handed to a PARSER: the

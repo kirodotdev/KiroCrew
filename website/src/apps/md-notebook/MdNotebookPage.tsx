@@ -5,6 +5,7 @@
  * Search swaps the tree for flat ranked results; clearing restores the tree.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import type { CSSProperties } from 'react'
@@ -158,6 +159,18 @@ export default function MdNotebookPage() {
     loadPref<'folders' | 'list'>('mdnb-list-view', 'folders'),
   )
   const [panelOpen, setPanelOpen] = useState(() => loadPref<boolean>(LS.panelOpen, true))
+  const isMobile = useIsMobile()
+  // The panel is a fixed 260px `flexShrink: 0` column, so at 390px it left the
+  // editor 130px. `panelOpen` already exists but is a stored DESKTOP preference,
+  // so it arrives open on a phone. While narrow the panel is a drawer that starts
+  // closed and owns the pane when opened -- derived, never written back, or a
+  // phone visit would silently change what the desktop shows.
+  const [narrowPanelOpen, setNarrowPanelOpen] = useState(false)
+  // With no note open the pane has nothing to show but the list, and the empty
+  // state's copy points at the + button INSIDE the drawer -- so a closed drawer
+  // there instructs an action whose control is off-screen. Forced open until a
+  // note is picked, which is also when `openNote` closes it again.
+  const panelShown = isMobile ? (narrowPanelOpen || !activePath) : panelOpen
   const [panelW, setPanelW] = useState(() => {
     const w = loadPref<number>(LS.panelWidth, PANEL_DEFAULT_WIDTH)
     return w >= PANEL_MIN_WIDTH && w <= PANEL_MAX_WIDTH ? w : PANEL_DEFAULT_WIDTH
@@ -426,6 +439,8 @@ export default function MdNotebookPage() {
       if (dirtyRef.current) return
       pathRef.current = path
       setActivePath(path)
+      // Close the drawer on pick, or the full-width list is a one-way door.
+      if (isMobile) setNarrowPanelOpen(false)
       savePref(LS.openNote, path)
       setContent(doc.content)
       contentRef.current = doc.content
@@ -439,7 +454,7 @@ export default function MdNotebookPage() {
       if (openSeqRef.current !== seq) return
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [flushSave])
+  }, [flushSave, isMobile])
 
   // Load the note list whenever the vault changes, then restore the open note.
   useEffect(() => {
@@ -1110,11 +1125,12 @@ export default function MdNotebookPage() {
   )
 
   const togglePanel = useCallback(() => {
+    if (isMobile) { setNarrowPanelOpen(v => !v); return }
     setPanelOpen(v => {
       savePref(LS.panelOpen, !v)
       return !v
     })
-  }, [])
+  }, [isMobile])
 
   const startResize = useCallback(
     (e: React.PointerEvent) => {
@@ -1252,7 +1268,7 @@ export default function MdNotebookPage() {
         className="pi-morph mdnb-collapse"
         onClick={togglePanel}
         aria-label={
-          panelOpen
+          panelShown
             ? i18nT('apps.mdNotebook.panel.hide')
             : i18nT('apps.mdNotebook.panel.show')
         }
@@ -1281,13 +1297,13 @@ export default function MdNotebookPage() {
           transition: 'color .15s, background .15s',
         }}
       >
-        {panelOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
+        {panelShown ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
       </button>
 
-      {panelOpen && (
+      {panelShown && (
         <div
           style={{
-            width: `${panelW}px`,
+            width: isMobile ? '100%' : `${panelW}px`,
             flexShrink: 0,
             position: 'relative',
             display: 'flex',

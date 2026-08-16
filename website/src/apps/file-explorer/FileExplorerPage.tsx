@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useQuery, useQueryClient, useMutation, useQueries } from '@tanstack/react-query'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
-import { AlertTriangle, MessageSquare, Eye, CornerDownRight, Copy, ArrowUpFromLine } from 'lucide-react'
+import { AlertTriangle, MessageSquare, Eye, CornerDownRight, Copy, ArrowUpFromLine, ChevronDown, ChevronUp } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../store'
 import { setPendingInput } from '../../store/chatSlice'
-import { Skeleton } from '../../components/ui'
+import { Skeleton, Btn } from '../../components/ui'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from '../../components/ui/context-menu'
 import { fileExplorerApi } from './api'
 import { basename, dirname, loadState, saveState, isShortcut } from './utils'
@@ -41,6 +42,15 @@ export default function FileExplorerPage() {
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [leftWidth, setLeftWidth] = useState(280)
+  const isMobile = useIsMobile()
+  // The tree is a fixed 280px `flex-shrink:0` pane, so at 390px it left the
+  // viewer 106px inside a `overflow:hidden` split -- unreadable and impossible
+  // to scroll into view. While narrow it becomes a drawer reached from a bar at
+  // the TOP, so the viewer owns the full width. Drawer-only state: the desktop
+  // always shows the tree, and `leftWidth` stays the user's desktop preference.
+  const [treeOpen, setTreeOpen] = useState(false)
+  const treeBar = isMobile && !treeOpen
+  const treeFull = isMobile && treeOpen
   const [contextNode, setContextNode] = useState<TreeEntry | null>(null)
   const [initialized, setInitialized] = useState(false)
 
@@ -169,13 +179,16 @@ export default function FileExplorerPage() {
 
   const openFile = useCallback(async (path: string, _opts: { reveal?: boolean } = {}) => {
     if (!activeFolder) return
+    // Close the drawer on pick, or the full-width tree is a one-way door: the
+    // file opens behind it with nothing on screen to say so.
+    if (isMobile) setTreeOpen(false)
     const folderId = activeFolder.id
     const existing = fileTabsRef.current.find((ft) => ft.path === path && ft.folderId === folderId)
     if (existing) { setActiveFileId(existing.id); return }
     const ft = newFileTab(path, folderId)
     setFileTabs((tabs) => [...tabs, ft])
     setActiveFileId(ft.id)
-  }, [activeFolder])
+  }, [activeFolder, isMobile])
 
   const reloadFile = useCallback(() => {
     if (!activeFile) return
@@ -351,8 +364,25 @@ export default function FileExplorerPage() {
       />
       {healthError && <div className="mc-fe-banner"><AlertTriangle size={12} /> {i18nT('apps.fileExplorer.fileExplorerPage.backend_not_reachable')} {(healthError as Error).message}</div>}
       <PathBar rootPath={activeFolder.rootPath} gitInfo={rootGitInfo} onChangeRoot={changeRoot} onNavigate={openMaybe} />
-      <div className="mc-fe-split">
-        <div className="mc-fe-left" style={{ width: leftWidth }}>
+      <div className={`mc-fe-split${isMobile ? ' is-stacked' : ''}`}>
+        {/* Narrow: the control that reaches the tree sits at the TOP, so no
+            horizontal space is reserved for it and the viewer gets the full
+            width. Hidden rather than absent on a desktop, where the tree pane
+            is always on screen. */}
+        {isMobile && (
+          <Btn
+            onClick={() => setTreeOpen(!treeOpen)}
+            className="mc-fe-treebar"
+            aria-expanded={treeOpen}
+          >
+            {treeOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {activeFolder.label || basename(activeFolder.rootPath) || activeFolder.rootPath}
+          </Btn>
+        )}
+        <div
+          className={`mc-fe-left${treeBar ? ' is-hidden' : ''}`}
+          style={{ width: treeFull ? '100%' : leftWidth }}
+        >
           <ContextMenu onOpenChange={(open) => { if (!open) setContextNode(null) }}>
             <ContextMenuTrigger asChild>
               {treeRoot ? (
@@ -396,10 +426,11 @@ export default function FileExplorerPage() {
           </ContextMenu>
         </div>
         {/* Pane splitter: mouse-drag-only resize affordance; role=separator is
-            correct for a window splitter but is non-interactive per jsx-a11y. */}
-        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-        <div className="mc-fe-resizer" aria-label={i18nT('apps.fileExplorer.fileExplorerPage.resize_panel')} aria-orientation="vertical" role="separator" tabIndex={-1} style={{ touchAction: 'none' }} {...leftResize} />
-        <div className="mc-fe-right">
+            correct for a window splitter but is non-interactive per jsx-a11y.
+            Absent while narrow -- it is pointer-only, so on touch it would cost
+            width and buy nothing. */}
+        {!isMobile && <div className="mc-fe-resizer" aria-label={i18nT('apps.fileExplorer.fileExplorerPage.resize_panel')} aria-orientation="vertical" role="separator" tabIndex={-1} style={{ touchAction: 'none' }} {...leftResize} />}
+        <div className={`mc-fe-right${treeFull ? ' is-hidden' : ''}`}>
           {showSearch ? (
             <SearchPanel
               rootPath={activeFolder.rootPath}
