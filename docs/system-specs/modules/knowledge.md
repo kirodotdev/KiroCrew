@@ -14,6 +14,26 @@ files / uploads / artifacts / URLs
    → local_knowledge_search (MCP) / dashboard Knowledge tab
 ```
 
+### LLM worker-pool policy
+
+Knowledge ingestion and URL-content acquisition use separate long-lived worker
+pools. The extraction pool uses `knowledge.extraction_pool_size` and requests
+Knowledge-specific reasoning effort `high`; the URL-fetch pool has one worker and
+sends no explicit effort, so it retains the provider default. Both pools drive the
+same `kirocrew-knowledge` agent and preserve the existing model resolution:
+`knowledge.extraction_model` → `agent.model` → provider/`auto`.
+
+The extraction effort is a Knowledge policy, independent of
+`agent.role_efforts.background`, which controls other background workers. For the
+Kiro ACP backend, the worker applies the requested level through the `/effort`
+command; Claude ACP uses its advertised session config option. Capability
+negotiation may select the highest supported level at or below `high`, while an
+unsupported model or rejected command falls back to provider default.
+
+Separate pools make the different workload policies structural for long-lived
+sessions rather than relying on a worker being reused by only one workload by
+convention.
+
 ## Role & boundary
 
 The Knowledge Library is the agent's **precise-recall complement to memory** — it is defined as much by the two things it is *not*:

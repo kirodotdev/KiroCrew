@@ -718,31 +718,48 @@ class TestAcpWorker:
         assert unregistered == [100]
 
 
-def _mock_effort_client(levels: list[str], *, supports: bool = True) -> AsyncMock:
+def _mock_effort_client(
+    levels: list[str], *, supports: bool = True, claude: bool = False
+) -> AsyncMock:
     client = AsyncMock()
     client.is_ready = True
     client._pid = None
+    client._is_claude = claude
     client.is_process_alive = lambda: True
     client.supports_config_option = MagicMock(return_value=supports)
     client.get_valid_effort_levels = MagicMock(return_value=levels)
+    client.send_command = AsyncMock()
     client.set_config_option = AsyncMock()
     return client
 
 
 class TestAcpWorkerEffort:
     @pytest.mark.asyncio
-    async def test_applies_effort_after_ready_before_use(self, tmp_path):
+    async def test_applies_kiro_effort_after_ready_before_use(self, tmp_path):
         client = _mock_effort_client(["low", "medium", "high"])
         events: list[str] = []
         client.ensure_ready.side_effect = lambda: events.append("ready")
-        client.set_config_option.side_effect = lambda *_args: events.append("set")
+        client.send_command.side_effect = lambda *_args, **_kwargs: events.append("set")
         with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
             worker = AcpWorker(effort="high")
             await worker.start()
 
         assert events == ["ready", "set"]
+        client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+        client.set_config_option.assert_not_awaited()
+        assert worker._effective_effort == "high"
+
+    @pytest.mark.asyncio
+    async def test_applies_claude_effort_via_config_option(self, tmp_path):
+        client = _mock_effort_client(["low", "medium", "high"], claude=True)
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
         client.set_config_option.assert_awaited_once_with("effort", "high")
+        client.send_command.assert_not_awaited()
         assert worker._effective_effort == "high"
 
     @pytest.mark.asyncio
@@ -755,8 +772,8 @@ class TestAcpWorkerEffort:
             await worker.start()
             await worker.start()
 
-        first.set_config_option.assert_awaited_once_with("effort", "high")
-        second.set_config_option.assert_awaited_once_with("effort", "high")
+        first.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+        second.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
 
     @pytest.mark.asyncio
     async def test_downgrades_to_highest_supported_lower_level(self, tmp_path, caplog):
@@ -766,21 +783,39 @@ class TestAcpWorkerEffort:
             worker = AcpWorker(effort="high")
             await worker.start()
 
-        client.set_config_option.assert_awaited_once_with("effort", "medium")
+        client.send_command.assert_awaited_once_with("/effort", args={"level": "medium"})
         assert worker._effective_effort == "medium"
         assert "downgraded" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_uses_provider_default_when_effort_is_unsupported(self, tmp_path, caplog):
-        client = _mock_effort_client([], supports=False)
+    async def test_uses_provider_default_when_claude_effort_is_unsupported(
+        self, tmp_path, caplog
+    ):
+        client = _mock_effort_client([], supports=False, claude=True)
         with patch("pathlib.Path.home", return_value=tmp_path), \
              patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
             worker = AcpWorker(effort="high")
             await worker.start()
 
         client.set_config_option.assert_not_awaited()
+        client.send_command.assert_not_awaited()
         assert worker._effective_effort is None
         assert "unsupported" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_uses_provider_default_when_kiro_effort_command_fails(
+        self, tmp_path, caplog
+    ):
+        client = _mock_effort_client(["low", "medium", "high"])
+        client.send_command.side_effect = RuntimeError("effort command rejected")
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+        assert worker._effective_effort is None
+        assert "could not apply effort=high" in caplog.text
 
 
 class TestLLMPoolEffort:

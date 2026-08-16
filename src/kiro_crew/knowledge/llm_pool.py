@@ -1,7 +1,8 @@
 """Unified LLM worker pool for Knowledge Library.
 
 Provider-agnostic bounded pool of long-lived workers (CC or ACP).
-Both entity extraction and URL fetch acquire workers from this pool.
+Knowledge extraction and URL fetch use separate instances of this pool so their
+workload policies and session state remain isolated.
 """
 from __future__ import annotations
 
@@ -321,7 +322,8 @@ class AcpWorker(Worker):
         if client is None or requested is None:
             return
         try:
-            if not client.supports_config_option("effort"):
+            is_claude = bool(getattr(client, "_is_claude", False))
+            if is_claude and not client.supports_config_option("effort"):
                 logger.warning(
                     "AcpWorker: effort=%s unsupported; using provider default",
                     requested,
@@ -338,7 +340,10 @@ class AcpWorker(Worker):
                     requested,
                 )
                 return
-            await client.set_config_option("effort", effective)
+            if is_claude:
+                await client.set_config_option("effort", effective)
+            else:
+                await client.send_command("/effort", args={"level": effective})
         except Exception:
             logger.warning(
                 "AcpWorker: could not apply effort=%s; using provider default",
