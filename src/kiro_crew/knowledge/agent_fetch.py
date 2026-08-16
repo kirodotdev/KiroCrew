@@ -1,6 +1,6 @@
 """Agent-assisted content fetch for Knowledge Library.
 
-Fetches content from URLs using the unified LLM pool. The pool worker uses
+Fetches content from URLs using the dedicated URL-fetch LLM pool. The pool worker uses
 whatever web/URL-fetch tool its backend exposes (configure the allowed tools
 via KIROCREW_KNOWLEDGE_FETCH_TOOLS). If the backend has no fetch tool available,
 the fetch fails gracefully and the caller falls back to local readers.
@@ -40,11 +40,12 @@ _ERROR_INDICATORS = (
 
 
 async def fetch_url_content(url: str, pool: "LLMPool") -> str:
-    """Fetch content from a URL using the shared LLM pool.
+    """Fetch content from a URL using the dedicated URL-fetch pool.
 
-    Acquires a worker, sends the fetch prompt, releases the worker. The worker
-    uses whatever URL-fetch tool its backend exposes (configurable via
-    KIROCREW_KNOWLEDGE_FETCH_TOOLS); if none is available the fetch fails.
+    Acquires a worker from the caller-supplied URL-fetch pool, sends the fetch
+    prompt, and releases the worker. The worker uses whatever URL-fetch tool its
+    backend exposes (configurable via KIROCREW_KNOWLEDGE_FETCH_TOOLS); if none is
+    available the fetch fails.
 
     Returns the fetched text content.
     Raises RuntimeError on failure.

@@ -48,7 +48,7 @@ from kiro_crew.knowledge.ingestion import (
     rebuild_embeddings,
     start_rebuild_job,
 )
-from kiro_crew.knowledge.llm_pool import LLMPool
+from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.spend import source_spend
@@ -973,7 +973,10 @@ async def sync_source(request: web.Request) -> web.Response:
     pipeline = _pipeline(request)
     if not pipeline:
         return web.json_response({"error": "pipeline not configured"}, status=503)
-    pool = request.app["knowledge_llm_pool"]
+    pool = request.app.get("knowledge_fetch_pool")
+    if pool is None:
+        # Compatibility for minimal callers that predate workload-isolated pools.
+        pool = request.app["knowledge_llm_pool"]
     task = asyncio.create_task(_background_agent_sync(source_id, url, source["name"], store, pipeline, pool))
     app_tasks = request.app.setdefault("_bg_tasks", set())
     app_tasks.add(task)
@@ -1764,16 +1767,51 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def _shutdown_knowledge_pools(app: web.Application) -> None:
+    """Shut down each workload pool once, including the legacy alias."""
+    seen: set[int] = set()
+    for key in (
+        "knowledge_extraction_pool",
+        "knowledge_fetch_pool",
+        "knowledge_llm_pool",
+    ):
+        pool = app.get(key)
+        if pool is None or id(pool) in seen:
+            continue
+        seen.add(id(pool))
+        try:
+            await pool.shutdown()
+        except Exception:
+            logger.exception("Knowledge pool shutdown failed: %s", key)
+
+
 def setup_knowledge_routes(app: web.Application) -> None:
     # Initialize pipeline and sync scheduler if not already set
     if "knowledge_pipeline" not in app:
         store = app["state"].knowledge_store
-        pool = LLMPool()
+        cfg = KiroCrewConfig.load()
+        extraction_pool = LLMPool(
+            pool_size=cfg.knowledge.extraction_pool_size,
+            effort=DEFAULT_EXTRACTION_EFFORT,
+            use_config_pool_size=False,
+        )
+        fetch_pool = LLMPool(
+            pool_size=1,
+            use_config_pool_size=False,
+        )
         embedder = _create_embedder(app)
-        pipeline = IngestionPipeline(store=store, extractor=EntityExtractor(pool=pool),
-                                     chunker=HeadingAwareChunker(), reader=FileReader(),
-                                     embedder=embedder)
-        app["knowledge_llm_pool"] = pool
+        pipeline = IngestionPipeline(
+            store=store,
+            extractor=EntityExtractor(pool=extraction_pool),
+            chunker=HeadingAwareChunker(),
+            reader=FileReader(),
+            embedder=embedder,
+        )
+        app["knowledge_extraction_pool"] = extraction_pool
+        app["knowledge_fetch_pool"] = fetch_pool
+        # Keep the old key as an extraction-only compatibility alias. Production
+        # URL sync uses knowledge_fetch_pool above.
+        app["knowledge_llm_pool"] = extraction_pool
         app["knowledge_embedder"] = embedder
         connectors: dict[str, "BaseConnector"] = {}
         # Local folder connector (always available)
@@ -1849,12 +1887,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/search-for-context", search_for_context)
 
     # Pool lifecycle: lazy start on first request, shutdown on app exit
-    async def _shutdown_pool(app: web.Application) -> None:
-        pool = app.get("knowledge_llm_pool")
-        if pool:
-            await pool.shutdown()
-
-    app.on_cleanup.append(_shutdown_pool)
+    app.on_cleanup.append(_shutdown_knowledge_pools)
 
     async def _stop_watcher(app: web.Application) -> None:
         watcher = app.get("knowledge_watcher")

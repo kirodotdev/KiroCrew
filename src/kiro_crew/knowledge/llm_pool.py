@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
 
 try:
@@ -45,6 +46,9 @@ DEFAULT_POOL_SIZE = 3
 DEFAULT_TIMEOUT = 60.0
 FETCH_TIMEOUT = 120.0
 AGENT_NAME = "kirocrew-knowledge"
+# Knowledge extraction is deliberately high-effort by default. URL fetching uses
+# a separate pool and passes no explicit effort, so it retains provider default.
+DEFAULT_EXTRACTION_EFFORT = "high"
 
 # Seconds the pool may sit FULLY idle (no worker checked out) before it is
 # scaled to zero — all workers shut down, freeing ~1GB of held process trees.
@@ -179,6 +183,34 @@ def _get_pool_size(config: Optional[dict] = None) -> int:
     return DEFAULT_POOL_SIZE
 
 
+def _normalize_effort(value: object) -> Optional[str]:
+    """Return a valid explicit effort level, or ``None`` for provider default."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str) and is_valid_effort(value):
+        return value
+    logger.warning("Ignoring invalid Knowledge worker effort: %r", value)
+    return None
+
+
+def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
+    """Select the highest advertised effort no higher than ``requested``."""
+    supported_levels = {
+        level for level in supported
+        if isinstance(level, str) and is_valid_effort(level)
+    }
+    if not supported_levels:
+        # An advertised option without a usable level is treated like a lazy
+        # backend: attempt the requested value and let ACP confirm it.
+        return requested
+    requested_index = EFFORT_LEVELS.index(requested)
+    eligible = [
+        level for level in EFFORT_LEVELS
+        if level in supported_levels and EFFORT_LEVELS.index(level) <= requested_index
+    ]
+    return eligible[-1] if eligible else None
+
+
 class Worker(ABC):
     """Abstract base for a long-lived LLM worker."""
 
@@ -225,11 +257,18 @@ class Worker(ABC):
 class AcpWorker(Worker):
     """Long-lived AcpClient session with kirocrew-knowledge agent."""
 
-    def __init__(self, *, sandbox_mode: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        *,
+        sandbox_mode: Optional[str] = None,
+        effort: Optional[str] = None,
+    ) -> None:
         self._client: Optional[AcpClient] = None
         # Pre-resolved by the caller (off the event loop). ``None`` -> resolve
         # lazily in ``start`` (direct construction outside the pool / tests).
         self._sandbox_mode = sandbox_mode
+        self._effort = _normalize_effort(effort)
+        self._effective_effort: Optional[str] = None
         # PID currently shielded from the gateway orphan sweep (see module note).
         self._protected_pid: Optional[int] = None
 
@@ -262,7 +301,9 @@ class AcpWorker(Worker):
         self._client = AcpClient(
             agent=AGENT_NAME, sandbox_mode=sandbox_mode, audit_source="subagent"
         )
+        self._effective_effort = None
         await self._client.ensure_ready()
+        await self._apply_effort()
         # Shield the live worker PID from the periodic orphan sweep for as long
         # as it runs. Paired with unregister in shutdown() and on respawn above.
         pid = getattr(self._client, "_pid", None)
@@ -272,6 +313,46 @@ class AcpWorker(Worker):
         else:
             self._protected_pid = None
         logger.info("AcpWorker: ready (agent=%s, pid=%s)", AGENT_NAME, getattr(self._client, '_pid', 'unknown'))
+
+    async def _apply_effort(self) -> None:
+        """Apply the requested effort without breaking provider-default fallback."""
+        client = self._client
+        requested = self._effort
+        if client is None or requested is None:
+            return
+        try:
+            if not client.supports_config_option("effort"):
+                logger.warning(
+                    "AcpWorker: effort=%s unsupported; using provider default",
+                    requested,
+                )
+                return
+            supported = client.get_valid_effort_levels()
+            if not isinstance(supported, list):
+                supported = []
+            effective = _select_effort_level(requested, supported)
+            if effective is None:
+                logger.warning(
+                    "AcpWorker: no supported effort at or below %s; "
+                    "using provider default",
+                    requested,
+                )
+                return
+            await client.set_config_option("effort", effective)
+        except Exception:
+            logger.warning(
+                "AcpWorker: could not apply effort=%s; using provider default",
+                requested,
+                exc_info=True,
+            )
+            return
+        self._effective_effort = effective
+        if effective != requested:
+            logger.warning(
+                "AcpWorker: effort=%s downgraded to supported effort=%s",
+                requested,
+                effective,
+            )
 
     async def send_message(self, prompt: str, timeout: float = DEFAULT_TIMEOUT) -> str:
         if self._client is None or not self._client.is_ready:
@@ -464,13 +545,22 @@ class CCWorker(Worker):
 class LLMPool:
     """Bounded pool of long-lived LLM workers.
 
-    Both extraction and URL fetch acquire workers from this pool.
+    Callers may bind a pool to one workload's effort profile. Extraction and URL
+    fetch use separate instances so an effort setting cannot leak between them.
     If all workers are busy, callers wait on the semaphore.
     Dead workers are replaced transparently on acquire.
     """
 
-    def __init__(self, pool_size: int = DEFAULT_POOL_SIZE):
+    def __init__(
+        self,
+        pool_size: int = DEFAULT_POOL_SIZE,
+        *,
+        effort: Optional[str] = None,
+        use_config_pool_size: bool = True,
+    ):
         self._pool_size = pool_size
+        self._effort = _normalize_effort(effort)
+        self._use_config_pool_size = use_config_pool_size
         self._semaphore = asyncio.Semaphore(pool_size)
         self._workers: list[Worker] = []
         self._available: asyncio.Queue[int] = asyncio.Queue()
@@ -511,7 +601,11 @@ class LLMPool:
             configured_size = _get_pool_size(config)
             explicit = "extraction_pool_size" in (_section(
                 config, "knowledge") if config else {})
-            if explicit and configured_size != self._pool_size:
+            if (
+                self._use_config_pool_size
+                and explicit
+                and configured_size != self._pool_size
+            ):
                 self._pool_size = configured_size
                 self._semaphore = asyncio.Semaphore(configured_size)
             self._idle_ttl = _get_idle_ttl(config)
@@ -545,7 +639,10 @@ class LLMPool:
         if self._provider_type == "claude_code":
             worker: Worker = CCWorker()
         else:
-            worker = AcpWorker(sandbox_mode=self._sandbox_mode)
+            worker = AcpWorker(
+                sandbox_mode=self._sandbox_mode,
+                effort=self._effort,
+            )
         await worker.start()
         return worker
 

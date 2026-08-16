@@ -5,7 +5,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -716,6 +716,116 @@ class TestAcpWorker:
             await worker.start()     # stale-drop: unregister 100, then register 200
         assert registered == [100, 200]
         assert unregistered == [100]
+
+
+def _mock_effort_client(levels: list[str], *, supports: bool = True) -> AsyncMock:
+    client = AsyncMock()
+    client.is_ready = True
+    client._pid = None
+    client.is_process_alive = lambda: True
+    client.supports_config_option = MagicMock(return_value=supports)
+    client.get_valid_effort_levels = MagicMock(return_value=levels)
+    client.set_config_option = AsyncMock()
+    return client
+
+
+class TestAcpWorkerEffort:
+    @pytest.mark.asyncio
+    async def test_applies_effort_after_ready_before_use(self, tmp_path):
+        client = _mock_effort_client(["low", "medium", "high"])
+        events: list[str] = []
+        client.ensure_ready.side_effect = lambda: events.append("ready")
+        client.set_config_option.side_effect = lambda *_args: events.append("set")
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        assert events == ["ready", "set"]
+        client.set_config_option.assert_awaited_once_with("effort", "high")
+        assert worker._effective_effort == "high"
+
+    @pytest.mark.asyncio
+    async def test_reapplies_effort_after_respawn(self, tmp_path):
+        first = _mock_effort_client(["low", "medium", "high"])
+        second = _mock_effort_client(["low", "medium", "high"])
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+            await worker.start()
+
+        first.set_config_option.assert_awaited_once_with("effort", "high")
+        second.set_config_option.assert_awaited_once_with("effort", "high")
+
+    @pytest.mark.asyncio
+    async def test_downgrades_to_highest_supported_lower_level(self, tmp_path, caplog):
+        client = _mock_effort_client(["low", "medium"])
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        client.set_config_option.assert_awaited_once_with("effort", "medium")
+        assert worker._effective_effort == "medium"
+        assert "downgraded" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_uses_provider_default_when_effort_is_unsupported(self, tmp_path, caplog):
+        client = _mock_effort_client([], supports=False)
+        with patch("pathlib.Path.home", return_value=tmp_path), \
+             patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client):
+            worker = AcpWorker(effort="high")
+            await worker.start()
+
+        client.set_config_option.assert_not_awaited()
+        assert worker._effective_effort is None
+        assert "unsupported" in caplog.text
+
+
+class TestLLMPoolEffort:
+    @pytest.mark.asyncio
+    async def test_passes_effort_to_acp_worker(self):
+        pool = LLMPool(pool_size=1, effort="high")
+        pool._provider_type = "acp"
+        pool._sandbox_mode = "auto"
+        fake_worker = AsyncMock()
+        with patch("kiro_crew.knowledge.llm_pool.AcpWorker", return_value=fake_worker) as worker_type:
+            result = await pool._create_worker()
+
+        worker_type.assert_called_once_with(sandbox_mode="auto", effort="high")
+        assert result is fake_worker
+
+    @pytest.mark.asyncio
+    async def test_default_pool_does_not_pass_effort(self):
+        pool = LLMPool(pool_size=1)
+        pool._provider_type = "acp"
+        pool._sandbox_mode = "auto"
+        fake_worker = AsyncMock()
+        with patch("kiro_crew.knowledge.llm_pool.AcpWorker", return_value=fake_worker) as worker_type:
+            await pool._create_worker()
+
+        worker_type.assert_called_once_with(sandbox_mode="auto", effort=None)
+
+    @pytest.mark.asyncio
+    async def test_fetch_sized_pool_ignores_extraction_size_config(self):
+        pool = LLMPool(pool_size=1, use_config_pool_size=False)
+        created: list[FakeWorker] = []
+
+        async def _mock_create():
+            worker = FakeWorker()
+            created.append(worker)
+            return worker
+
+        pool._create_worker = _mock_create  # type: ignore[assignment]
+        with patch(
+            "kiro_crew.knowledge.llm_pool._read_config",
+            return_value={"knowledge": {"extraction_pool_size": 3}},
+        ):
+            await pool.start()
+
+        assert pool._pool_size == 1
+        assert len(created) == 1
 
 
 # ---------------------------------------------------------------------------
