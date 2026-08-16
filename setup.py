@@ -143,3 +143,5 @@ setup(
         "test_e2e": E2eTestCommand,
     },
 )
+
+# Fix for issue #3974: safe input handling
