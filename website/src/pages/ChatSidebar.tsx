@@ -75,7 +75,7 @@ import { compareBySort, comparePinnedThenSort, fmtRelativeTime, slotActivityTs }
 import type { SortKey } from './chat/sessionOrder'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateFields } from '../i18n/format'
+import { fmtDateFields, fmtList } from '../i18n/format'
 
 /** Max height (px) of the inline session-rename <textarea> before it scrolls.
  *  ~6 lines at the row's `ROW_TITLE_CLS` type. Shared by the auto-grow hook
@@ -661,6 +661,30 @@ function readStoredHiddenFolders(): Set<string> {
   }
 }
 
+/** Tag ids the list is filtered DOWN TO, as a JSON array under this key.
+ *
+ *  Inclusive, unlike the folder filter above, which stores the ids it HIDES.
+ *  The asymmetry is deliberate and follows what a new item should do by default:
+ *  a newly created folder must stay visible, whereas a newly created tag must
+ *  not silently start narrowing the list. So empty here means "no tag filter",
+ *  and selecting Blocked means "show only Blocked". */
+const TAG_FILTER_LS_KEY = 'mc-session-tag-filter'
+
+/** Read the persisted tag-filter ids. Runs in a useState initializer during
+ *  render, so a throwing localStorage (private mode / disabled storage) or a
+ *  hand-corrupted value must fall back to "no filter", never crash. */
+function readStoredTagFilter(): Set<string> {
+  try {
+    const raw = localStorage.getItem(TAG_FILTER_LS_KEY)
+    if (!raw) return new Set()
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((id): id is string => typeof id === 'string'))
+  } catch {
+    return new Set()
+  }
+}
+
 interface SessionFilterDef {
   key: SessionFilterKey
   storageKey: string
@@ -1148,6 +1172,22 @@ function ChatSidebar({
   const showAllFolders = useCallback(() => {
     setFilterHiddenFolders(new Set())
     safeSetItem(HIDDEN_FOLDERS_LS_KEY, '[]')
+  }, [])
+  /** Tag ids the list is narrowed to. Selecting several is a UNION ("Blocked or
+   *  Waiting"), matching how a board column with several tags already behaves, so
+   *  the two surfaces cannot disagree about what a multi-tag selection means. */
+  const [filterTagIds, setFilterTagIds] = useState<Set<string>>(() => readStoredTagFilter())
+  const toggleTagFilter = useCallback((id: string) => {
+    setFilterTagIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      safeSetItem(TAG_FILTER_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
+  const clearTagFilter = useCallback(() => {
+    setFilterTagIds(new Set())
+    safeSetItem(TAG_FILTER_LS_KEY, '[]')
   }, [])
   // Shelved = the Folders section is rolled up to its heading, so a long folder
   // list stops crowding the Filter and Sort rows. Purely cosmetic: shelving
@@ -1641,6 +1681,38 @@ function ChatSidebar({
     for (const t of tags) m[t.id] = t
     return m
   }, [tags])
+  /** Selected ids narrowed to tags that STILL EXIST. Deleting a tag leaves its id
+   *  in localStorage, and an unresolvable id matches no session — so without this
+   *  guard, deleting the last selected tag would hide every session with no
+   *  control left on screen to explain why. Unresolvable ids are ignored rather
+   *  than pruned: the tag list is a server query, so an id absent from a slow or
+   *  failed fetch must not silently destroy a valid selection. */
+  const activeTagIds = useMemo(
+    () => new Set([...filterTagIds].filter(id => tagById[id])),
+    [filterTagIds, tagById],
+  )
+  /** Rows for the filter menu's Tags section, in the tag vocabulary's own order.
+   *  Counts come from `enrichedSlots`, NOT `filteredSlots`, so they describe the
+   *  vocabulary rather than the current selection — otherwise every unselected tag
+   *  would read 0 the moment any tag was selected, which is the number a user
+   *  consults precisely when deciding what to select next. */
+  const tagFilterRows = useMemo(
+    () => [...tags]
+      .sort((a, b) => a.order - b.order)
+      .map(t => ({
+        tag: t,
+        count: enrichedSlots.filter(s => (s.tags ?? []).includes(t.id)).length,
+        selected: filterTagIds.has(t.id),
+      })),
+    [tags, enrichedSlots, filterTagIds],
+  )
+  /** Names of the selected tags, in vocabulary order. Disjunction, not a comma
+   *  join: selection is a union, so a screen reader should hear "Blocked or
+   *  Idea", and `fmtList` is what makes that read correctly in every language. */
+  const activeTagNames = useMemo(
+    () => tagFilterRows.filter(({ tag: t }) => activeTagIds.has(t.id)).map(({ tag: t }) => t.name),
+    [tagFilterRows, activeTagIds],
+  )
   // Sidebar column layout (flat list; empty = legacy single-lane UX)
   const { data: rawColumns = [] } = useQuery<TagColumn[]>({ queryKey: ['tag-columns'], queryFn: () => api.tagColumns() })
   const [tagColumnsEnabled, setTagColumnsEnabled] = useState(() => loadChatConfig().tagColumnsEnabled)
@@ -1808,6 +1880,9 @@ function ChatSidebar({
     const next = enrichedSlots
       .filter(slot => {
         if (activeFilterDefs.length > 0 && !activeFilterDefs.some(filterDef => slot[filterDef.key])) return false
+        // Unlike the folder filter this does NOT go inert while searching: it is a
+        // session property, so it behaves like the Unread/Pinned filters above.
+        if (activeTagIds.size > 0 && !(slot.tags ?? []).some(id => activeTagIds.has(id))) return false
         if (!slotFilter) return true
         // Scoped to title: that is the field a rename mutates, and widening it to
         // key/agent appends rows the backend's content search deliberately excluded.
@@ -1821,7 +1896,7 @@ function ChatSidebar({
     frozenSlotsRef.current = next
     return next
   },
-    [enrichedSlots, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters, dragFrozen]
+    [enrichedSlots, slotFilter, slotSearchRanks, pinned, sortKey, activeFilters, activeTagIds, dragFrozen]
   )
 
   // Folder IDs whose sessions are excluded from the flat lane because the
@@ -1856,6 +1931,10 @@ function ChatSidebar({
   // reach every match, so an unchecked folder can never become a search dead
   // end. Everything that consults the filter routes through this flag.
   const folderFilterActive = slotFilter.trim() === '' && filterHiddenFolders.size > 0
+
+  // Is the list narrowed at all? A new filter dimension must be added here too,
+  // or the folder lane strands its folders as empty "New chat in <name>" shells.
+  const listNarrowed = Boolean(slotFilter) || activeFilters.size > 0 || activeTagIds.size > 0
 
   // List view (the folder tree) drops an unchecked folder's whole block —
   // header and sessions together. Only the folder's OWN id is checked here:
@@ -2090,6 +2169,9 @@ function ChatSidebar({
     // A live sidebar search or status filter can exclude the target row from
     // the list entirely (#912 D5) — reveal is an explicit "show me this row",
     // so drop the filters that hide it rather than scrolling to nothing.
+    // Outside the filteredSlots check: while the tag query is in flight nothing
+    // is filtered, so the row reads present and is re-hidden when it resolves.
+    if (filterTagIds.size > 0 && !(slot.tags ?? []).some(id => filterTagIds.has(id))) clearTagFilter()
     if (!filteredSlots.some(s => s.key === key)) {
       if (slotFilter) setSlotFilter('')
       if (activeFilters.size > 0) {
@@ -2173,7 +2255,7 @@ function ChatSidebar({
       revealFlashTimersRef.current = [t1, t2]
     }
     tryScroll()
-  }, [revealRequest, dispatch, slots, folders, filteredSlots, filterHiddenSubtree, slotFilter, activeFilters, updateFolderMutation])
+  }, [revealRequest, dispatch, slots, folders, filteredSlots, filterHiddenSubtree, slotFilter, activeFilters, filterTagIds, clearTagFilter, updateFolderMutation])
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)
@@ -3516,8 +3598,8 @@ function ChatSidebar({
       const showDivider = i < childSlots.length - 1 && !isActive && !nextIsActive
       childNodes.push(renderSessionRow(s, depth + 1, showDivider))
     })
-    // Hide folders with no matching children when searching or filtering unreads
-    if ((slotFilter || activeFilters.size > 0) && childNodes.length === 0) return []
+    // Hide folders with no matching children while the list is narrowed
+    if (listNarrowed && childNodes.length === 0) return []
     // Wrap children in a bordered container so the folder's extent is visually
     // clear when multiple folders are open. Only wrap when there's content,
     // otherwise the FolderBody would render an empty 1px-tall strip with a line.
@@ -3525,7 +3607,7 @@ function ChatSidebar({
       <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
         {childNodes}
       </div>
-    ) : !(slotFilter || activeFilters.size > 0) ? (
+    ) : !listNarrowed ? (
       // Empty-folder affordance: a newly created (or emptied) expanded folder
       // would otherwise render nothing, leaving the hover ⊕ on the header as
       // the only (invisible-at-rest) way to start a session in it.
@@ -3992,6 +4074,47 @@ function ChatSidebar({
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
                   </DropdownMenuItem>
                 ))}
+                {/* Tags. Placed above Folders and NOT gated on the lane: tags are
+                    a property of the session, so they mean the same thing in the
+                    flat list, the folder tree and the board — and the board is
+                    exactly where a phone user is most likely to want this, since
+                    the columns scroll sideways there. Folders, by contrast, are a
+                    list-view structure and stay hidden on the board. */}
+                {tagFilterRows.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em]">
+                      {i18nT('pages.chatSidebar.tags')}
+                    </DropdownMenuLabel>
+                    {tagFilterRows.map(({ tag: t, count, selected }) => (
+                      <DropdownMenuItem
+                        key={t.id}
+                        title={selected
+                          ? i18nT('pages.chatSidebar.stop_filtering_by_tag', { name: t.name })
+                          : i18nT('pages.chatSidebar.show_only_sessions_tagged', { name: t.name })}
+                        // Keep the menu open so several tags can be selected.
+                        onSelect={e => { e.preventDefault(); toggleTagFilter(t.id) }}
+                        data-testid={`tag-filter-${t.id}`}
+                        role="menuitemcheckbox"
+                        aria-checked={selected}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
+                          style={selected
+                            ? { borderColor: t.color, background: t.color }
+                            : { borderColor: 'var(--border)', background: 'transparent' }}
+                        >
+                          {selected && <Check size={10} strokeWidth={3} style={{ color: t.color === '#ffffff' ? '#000' : '#fff' }} />}
+                        </span>
+                        <span className="flex-1 truncate">{t.name}</span>
+                        {/* 0 is rendered, not omitted: a zero-count tag is exactly
+                            the one that blanks the list when selected. */}
+                        <span className="text-muted text-[11px] shrink-0">{count}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
                 {/* Folders sit LAST on purpose: the list grows with the user's
                     folder count, so anything below it would get pushed out of
                     easy reach. Being last, it can simply overflow into the
@@ -4063,6 +4186,38 @@ function ChatSidebar({
           </div>
         </div>
       </div>
+      {/* One aggregate chip in its OWN row, never per-tag chips in the row below.
+          AUTOSDE max-two-buttons-per-row grandfathers that row's existing filter
+          chips but forbids growing it, and per-tag chips grow it without bound.
+          Tag colours survive as spans inside this single control. */}
+      {activeTagIds.size > 0 && (
+        <div className="px-3 pb-1">
+          <button
+            type="button"
+            data-testid="tag-filter-chip"
+            className="inline-flex items-center gap-1 max-w-full pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors bg-bg-elevated/60 border border-border text-muted hover:text-text"
+            onClick={clearTagFilter}
+            title={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
+            aria-label={i18nT('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeTagNames, { type: 'disjunction' }) })}
+          >
+            {/* Swatch carries the colour, the name stays in body text: a pale
+                tag on this surface can fall near 2:1 contrast at 11px. */}
+            <span className="truncate inline-flex items-center gap-1.5">
+              {tagFilterRows.filter(({ tag: t }) => activeTagIds.has(t.id)).map(({ tag: t }) => (
+                <span key={t.id} className="inline-flex items-center gap-1">
+                  <span
+                    aria-hidden="true"
+                    className="w-2 h-2 shrink-0 rounded-full border border-border"
+                    style={{ background: t.color }}
+                  />
+                  {t.name}
+                </span>
+              ))}
+            </span>
+            <X size={11} className="shrink-0" />
+          </button>
+        </div>
+      )}
       {activeFilters.size > 0 && (
         <div className="px-3 pb-1 flex items-center gap-1.5 flex-wrap">
           {SESSION_FILTERS.filter(filterDef => activeFilters.has(filterDef.key)).map(filterDef => {
@@ -4183,6 +4338,12 @@ function ChatSidebar({
                      *  is the sidebar's own bottom, which is exactly the "single
                      *  footer row" shape — the nested case is what needs depth. */}
                     {renderHiddenReveal('root', hiddenByContainer.get('root') ?? [], 0)}
+                    {/* Every folder block and the ungrouped bucket read
+                        filteredSlots, so an empty one means nothing can render
+                        below — say so rather than leaving a blank lane. */}
+                    {filteredSlots.length === 0 && listNarrowed && (
+                      <div className="px-3 py-4 text-[12px] text-muted">{i18nT('pages.chatSidebar.no_sessions_match')}</div>
+                    )}
                     {/* Ungrouped sessions live in a headerless droppable bucket
                      *  (folderId: null) that fills the remaining height below the
                      *  folders, so the whole empty lower area is a drop target —
