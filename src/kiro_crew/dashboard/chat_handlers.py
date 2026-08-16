@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -46,6 +47,7 @@ from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
     _run_chat,
     _start_next_queued_turn,
+    context_entry_expired,
     schedule_eager_spawn,
 )
 from kiro_crew.dashboard.chat_summary import generate_session_summary
@@ -70,7 +72,6 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import (
-    _MAX_PENDING_CONTEXT,
     DashboardState,
     _ChatSlot,
     _mark_permission_resolved,
@@ -3449,6 +3450,22 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # instant is persisted as closed_at for the same teardown-window
         # reason as the single-tab path.
         closed_at = note_slot_closed(state, name)
+        # Cancel BEFORE the flush, mirroring the single-tab close at :3271-3276.
+        # The flush promotes a held note's context half into ``_pending_context``,
+        # and the save below is an await a still-running turn resumes across: it
+        # drains and CLEARS that queue, then is cancelled, so the context reaches
+        # nobody. Bounded and shielded; a task outliving the timeout still leaves
+        # ``running`` true, so the collect branch below hands it to the one
+        # batched wait rather than serialising a hung turn's full teardown here.
+        _turn_killed = False
+        if removed.running and removed.task is not None:
+            removed.task.cancel()
+            _turn_killed = True
+            try:
+                await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
+        removed.flush_deferred_notes()
         try:
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
@@ -3456,6 +3473,22 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         except Exception:
             logger.error("Cleanup: failed to archive slot %s", name, exc_info=True)
             state._slots[name] = removed
+            # Restoring the slot does not undo the cancel above, and ``running`` is
+            # derived from the task, so a cancel that already completed reads False:
+            # the tab returns looking idle and dispatchable with that turn's output
+            # silently gone. Report it as an error row instead, and drop the dead
+            # task so nothing downstream treats it as this slot's live turn. A task
+            # that outlived the shielded wait is still running, so the restore loses
+            # nothing there and this stays quiet.
+            if _turn_killed and removed.task is not None and removed.task.done():
+                removed.task = None
+                removed.append(
+                    "error",
+                    "⚠️ Archiving this tab failed after its running turn was "
+                    "cancelled. The tab was kept, but that turn did not finish "
+                    "-- re-send to continue.",
+                    "msg msg-err",
+                )
             failed.append(name)
             continue
         else:
@@ -5467,6 +5500,361 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
 
 
 _MAX_CONTEXT_PER_SOURCE = 10
+_MAX_CONTEXT_CONTENT = 40000
+# Default expiry for a note's context half: if the user never sends a follow-up
+# within 24h, the stale entry is dropped at drain rather than attaching itself to
+# some far-future unrelated message. The visible transcript line has no maxAge.
+_NOTE_CONTEXT_MAX_AGE = 86400
+# Bounds the visible lines a caller can park on one in-flight turn. Matches the
+# per-source context cap so neither half of /note outlives the other by much.
+_MAX_DEFERRED_NOTES = 10
+
+# Distinguishes "key absent" from an explicit JSON null, which `body.get("maxAge")`
+# alone cannot: both yield None, so the two cannot mean different things without it.
+_UNSET = object()
+
+# Source label bounds. The label is interpolated into the
+# ``[Background context from "{source}"]`` prompt frame at drain, so disallow
+# control chars and newlines to keep a crafted label from breaking out of the
+# frame line, and cap the length. Defense-in-depth: the real free-form surface
+# is ``content``, not ``source``.
+_MAX_SOURCE_LEN = 64
+_SOURCE_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _validate_content(content: object) -> web.Response | None:
+    """Shared content validation for /context and /note.
+
+    Validating at the request boundary in ONE place is what keeps the two entry
+    points from drifting. Returns a 400 response on a bad value, else None.
+    """
+    if not isinstance(content, str):
+        return web.json_response(
+            {"error": "content must be a string", "code": "invalid_content"},
+            status=400,
+        )
+    if not content:
+        return web.json_response(
+            {"error": "content is required", "code": "empty_content"},
+            status=400,
+        )
+    if len(content) > _MAX_CONTEXT_CONTENT:
+        return web.json_response(
+            {
+                "error": f"content exceeds {_MAX_CONTEXT_CONTENT} char limit",
+                "code": "content_too_long",
+            },
+            status=400,
+        )
+    return None
+
+
+def _normalize_source(source: object) -> str:
+    """Trim a caller source to its stored form: a stripped str.
+
+    Non-str / None / blank collapse to ``""`` and the caller then applies its own
+    default. Shared by validation and the /note default so a whitespace-only
+    label cannot produce a blank drain frame, and so a padded label shares one
+    per-source cap bucket with its trimmed form.
+    """
+    if not isinstance(source, str):
+        return ""
+    return source.strip()
+
+
+def _validate_source(source: object) -> web.Response | None:
+    """Shared source-label validation.
+
+    Returns a 400 response on a bad value, else None. An empty, absent, or
+    whitespace-only source is allowed here; the caller defaults it.
+    """
+    if source is not None and not isinstance(source, str):
+        return web.json_response(
+            {"error": "source must be a string", "code": "source_not_a_string"},
+            status=400,
+        )
+    # Checked BEFORE the strip, which would otherwise silently drop a leading or
+    # trailing tab/newline the documented contract says is a 400.
+    if isinstance(source, str) and _SOURCE_CTRL_RE.search(source):
+        return web.json_response(
+            {
+                "error": "source must not contain control characters or newlines",
+                "code": "invalid_source",
+            },
+            status=400,
+        )
+    normalized = _normalize_source(source)
+    if normalized == "":
+        return None
+    if len(normalized) > _MAX_SOURCE_LEN:
+        return web.json_response(
+            {"error": f"source exceeds {_MAX_SOURCE_LEN} char limit", "code": "source_too_long"},
+            status=400,
+        )
+    if _SOURCE_CTRL_RE.search(normalized):
+        return web.json_response(
+            {
+                "error": "source must not contain control characters or newlines",
+                "code": "invalid_source",
+            },
+            status=400,
+        )
+    return None
+
+
+def _validate_max_age(max_age: object) -> web.Response | None:
+    """Shared maxAge validation. Returns a 400 response on a bad value, else None.
+
+    ``drain_pending_context`` computes ``injected_at + max_age``, so a
+    non-numeric value raises a TypeError on the user's NEXT send -- far from the
+    request that introduced it. Rejecting it here turns that into a 400 at the
+    boundary. Both callers validate UNCONDITIONALLY, not only when an entry is
+    actually enqueued, so a visible-only note with a malformed maxAge is a 400
+    rather than a silent ignore.
+
+    ``bool`` is rejected because ``isinstance(True, int)`` is True but a boolean
+    TTL is a caller bug. ``None`` is allowed, and both callers reach it from an
+    omitted key as well as an explicit null -- they tell those apart themselves.
+    """
+    if max_age is None:
+        return None
+    if isinstance(max_age, bool) or not isinstance(max_age, (int, float)):
+        return web.json_response(
+            {"error": "maxAge must be a number (seconds) or omitted", "code": "invalid_max_age"},
+            status=400,
+        )
+    # NaN and Infinity are floats that slip past the <= 0 check (NaN <= 0 is
+    # False) and then make injected_at + max_age non-comparable at drain, so the
+    # entry would never expire. Reject them at the boundary.
+    # An arbitrary-precision int passes the isinstance check above, then
+    # OverflowErrors inside isfinite's float conversion — same 400, not a 500.
+    try:
+        finite = math.isfinite(max_age)
+    except OverflowError:
+        finite = False
+    if not finite:
+        return web.json_response(
+            {"error": "maxAge must be a finite number", "code": "non_finite_number"},
+            status=400,
+        )
+    if max_age <= 0:
+        return web.json_response(
+            {"error": "maxAge must be positive", "code": "value_out_of_range"},
+            status=400,
+        )
+    return None
+
+
+def _check_slot_app_ownership(
+    slot: _ChatSlot, name: str, request_app: str, operation: str
+) -> web.Response | None:
+    """App ownership gate (App Kit §5.2). Returns a 404 response if denied, else None.
+
+    Apps can only touch slots they own; dashboard users (empty ``request_app``)
+    can touch everything. The denial is a 404 rather than a 403 so a non-owning
+    app token cannot use the status code to probe which slots exist -- the SEL
+    event still records the real reason.
+
+    Owning the slot is not sufficient, because it does not imply owning the
+    session the write lands on. ``get_or_create_slot`` sets ``_app`` from its
+    caller and, for a name shaped like a channel session stem, resolves
+    ``linked_session_key`` from the session map in the same call -- so an app
+    that names a live channel thread ends up owning a slot bound to a
+    conversation it has no claim on. Both callers of
+    this gate write into that session: the visible row lands in the channel's
+    own transcript and the queued half drains into its next turn. Ownership
+    alone would turn a slot binding into capability escalation, which is the
+    same second condition ``_app_cancel_denied`` already applies to /stop.
+
+    That session check cannot fire for an UNBOUND channel slot, and the write
+    does not follow the session there. When ``surface_channel_session`` cannot
+    resolve a thread's key it surfaces the slot with ``linked_session_key``
+    empty and ``channel_origin`` set, so ``effective_session_key`` falls back to
+    ``_history_key_for`` and the condition above compares a value against
+    itself. ``slot_history_key`` does not: it resolves a ``channel_origin`` slot
+    through ``slot_transcript_key``, onto the channel's own transcript. So the
+    visible row lands in a foreign conversation while the slot's session
+    identity stays local and every session-shaped check passes. The third
+    condition therefore tests the TRANSCRIPT key -- the thing the write actually
+    addresses -- which is the discipline ``_app_cancel_denied`` states at
+    :2299-2301: authorize the key the caller will really act on, so
+    authorization and action cannot disagree.
+
+    The denials are single-sourced through :func:`_slot_not_found` so the four
+    cannot drift apart -- byte-identity is the property being defended.
+    """
+    if not request_app:
+        return None
+    if not slot._app:
+        sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app cannot access unscoped slots",
+        )
+        return _slot_not_found()
+    if request_app != slot._app:
+        sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app does not own this slot",
+        )
+        return _slot_not_found()
+    if effective_session_key(slot) != _history_key_for(slot.key):
+        sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app does not own the session this slot is linked to",
+        )
+        return _slot_not_found()
+    if slot_history_key(slot) != _history_key_for(slot.key):
+        sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app does not own the transcript this slot writes to",
+        )
+        return _slot_not_found()
+    return None
+
+
+def _reauthorize_after_await(
+    state: DashboardState, slot: _ChatSlot, name: str, request_app: str, operation: str
+) -> web.Response | None:
+    """Re-authorize *slot* after an await, immediately before touching it.
+
+    The ownership gate necessarily runs before the request body is read, and
+    that ``await`` is a window rather than a formality: ``linked_session_key``
+    is rebound on ALREADY-LIVE slots with no ``running`` gate -- a cron
+    completion (``cron_inject.py:96``), a workflow injection
+    (``workflow_inject.py:156``) -- so a slow caller can be authorized against
+    its own session and land on somebody else's conversation. The same identity
+    check ``_app_cancel_denied`` makes for /stop, moved to the point of use.
+
+    Requires the same slot OBJECT, not just the same name: a delete and
+    re-create under one name would pass an ownership re-check while being a
+    different conversation. Callers must run this before the first read of slot
+    state too, since ``running`` and the hold queue belong to whichever
+    conversation the slot now routes to.
+    """
+    if state._slots.get(name) is not slot:
+        if request_app:
+            sel().log_api_access(
+                caller=request_app,
+                operation=operation,
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={name}",
+                error="slot was replaced while the request body was read",
+            )
+        return _slot_not_found()
+    return _check_slot_app_ownership(slot, name, request_app, operation)
+
+
+def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
+    """True if ``source`` already holds the max pending context entries.
+
+    An empty source is uncapped (it shares no bucket). Shared by
+    ``_enqueue_pending_context`` and the /note handler, which uses it to keep the
+    visible transcript line independent of the context-queue cap.
+
+    Expired entries do not count. They are dropped by ``drain_pending_context``
+    but stay in the list until the next drain, so counting them would let ten
+    already-dead notes lock a source out of fresh context indefinitely -- and the
+    caller is told nothing, because the note still returns 200 with
+    ``contextSkipped``. The same predicate decides both, so a count and a drain
+    cannot disagree about which entries are live.
+
+    Entries HELD for the deferred-note flush count as well. They are not in the
+    queue yet, so a cap that read the queue alone admitted every one of them:
+    ten same-source notes posted during one turn each saw a clear cap, and the
+    flush then promoted all ten at once, past the per-source ceiling and into
+    the FIFO eviction that drops other sources' context.
+    """
+    if not source:
+        return False
+    now = time.time()
+    held = [n["context"] for n in slot._deferred_notes if n.get("context") is not None]
+    pending = sum(
+        1
+        for e in (*slot._pending_context, *held)
+        if e.get("source") == source and not context_entry_expired(e, now)
+    )
+    return pending >= _MAX_CONTEXT_PER_SOURCE
+
+
+def _enqueue_pending_context(
+    slot: _ChatSlot,
+    content: str,
+    source: str,
+    ephemeral: bool,
+    max_age: int | float | None,
+) -> web.Response | None:
+    """Build, cap, and append a ``_pending_context`` entry.
+
+    Returns a 4xx response on a bad request (429 per-source cap, 400 invalid
+    ``max_age``) WITHOUT mutating the queue, else None on success. The entry is
+    consumed on the next user-initiated message via ``drain_pending_context``.
+
+    ``max_age`` is the resolved seconds-to-live, or None for no expiry. HTTP
+    callers already validate it via ``_validate_max_age``; the same guard runs
+    again here so a direct (non-HTTP) caller cannot slip a non-numeric TTL
+    through to the drain.
+
+    """
+    entry, err = _build_pending_context_entry(slot, content, source, ephemeral, max_age)
+    if err is not None:
+        return err
+    assert entry is not None
+    slot.append_pending_context(entry)
+    return None
+
+
+def _build_pending_context_entry(
+    slot: _ChatSlot,
+    content: str,
+    source: str,
+    ephemeral: bool,
+    max_age: int | float | None,
+) -> tuple[dict[str, object] | None, web.Response | None]:
+    """Validate and build one context entry WITHOUT touching the queue.
+
+    Returns ``(entry, None)`` or ``(None, 4xx response)``. Split from the append
+    so /note can run every rejection synchronously -- the caller still gets its
+    400 or 429 on the POST -- while HOLDING the entry until the running turn
+    ends. Queueing it at the POST instead would hand it to the turn already in
+    flight, since that turn drains the queue after its task is assigned.
+    """
+    bad_age = _validate_max_age(max_age)
+    if bad_age is not None:
+        return None, bad_age
+    if _source_cap_reached(slot, source):
+        return None, web.json_response(
+            {
+                "error": f"source {source!r} has {_MAX_CONTEXT_PER_SOURCE} pending entries",
+                "code": "capacity_reached",
+            },
+            status=429,
+        )
+    entry: dict[str, object] = {
+        "content": content,
+        "source": source,
+        "ephemeral": ephemeral,
+        "injectedAt": time.time(),
+    }
+    if max_age is not None:
+        entry["maxAge"] = max_age
+    return entry, None
 
 
 async def api_chat_slot_context(request: web.Request) -> web.Response:
@@ -5493,75 +5881,52 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "slot not found"}, status=404)
+        # Same body as the ownership denial below: two shapes would let an app
+        # token tell "not mine" from "does not exist" and enumerate slot names.
+        return _slot_not_found()
 
-    # App ownership check (App Kit §5.2): deny-by-default for app tokens.
-    # Apps can only access slots they own. Dashboard users (empty request_app)
-    # can access everything.
     request_app = request.get("app", "")
-    if request_app:
-        if not slot._app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="context_inject",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app cannot access unscoped slots",
-            )
-            return web.json_response({"error": "not found"}, status=404)
-        elif request_app != slot._app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="context_inject",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app does not own this slot",
-            )
-            return web.json_response({"error": "not found"}, status=404)
+    denied = _check_slot_app_ownership(slot, name, request_app, "context_inject")
+    if denied is not None:
+        return denied
 
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-
-    content = body.get("content", "")
-    if not content:
-        return web.json_response({"error": "content is required"}, status=400)
-
-    # Content size limit (40,000 chars — same as message limit)
-    max_context_content = 40000
-    if len(content) > max_context_content:
+    if not isinstance(body, dict):
         return web.json_response(
-            {"error": f"content exceeds {max_context_content} char limit"}, status=400
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
         )
 
-    entry: dict[str, object] = {
-        "content": content,
-        "source": body.get("source", ""),
-        "ephemeral": body.get("ephemeral", True),
-        "injectedAt": time.time(),
-    }
-    max_age = body.get("maxAge")
-    if max_age is not None:
-        entry["maxAge"] = max_age
+    content = body.get("content", "")
+    bad = (
+        _validate_content(content)
+        or _validate_source(body.get("source"))
+        or _validate_max_age(body.get("maxAge"))
+    )
+    if bad is not None:
+        return bad
 
-    # Per-source cap: prevent one app from evicting all others' context
-    source = body.get("source", "")
-    if source:
-        source_count = sum(1 for e in slot._pending_context if e.get("source") == source)
-        if source_count >= _MAX_CONTEXT_PER_SOURCE:
-            return web.json_response(
-                {"error": f"source {source!r} has {_MAX_CONTEXT_PER_SOURCE} pending entries"},
-                status=429,
-            )
+    # Same window as /note: authorized before the body read, so re-decide against
+    # the slot as it is now, ahead of the only write.
+    stale = _reauthorize_after_await(state, slot, name, request_app, "context_inject")
+    if stale is not None:
+        return stale
 
-    # FIFO eviction: cap pending queue at the shared ceiling
-    while len(slot._pending_context) >= _MAX_PENDING_CONTEXT:
-        slot._pending_context.pop(0)
-
-    slot._pending_context.append(entry)  # type: ignore[arg-type]
+    # Normalize the source the same way /note does, so a whitespace-padded label
+    # renders a clean drain frame and shares one cap bucket with its trimmed
+    # form. /context keeps empty-source-uncapped and applies no default label: a
+    # sourceless context injection is intentionally bucket-free.
+    err = _enqueue_pending_context(
+        slot,
+        content,
+        _normalize_source(body.get("source")),
+        body.get("ephemeral", True),
+        body.get("maxAge"),
+    )
+    if err is not None:
+        return err
 
     # SEL audit logging
     sel().log_api_access(
@@ -5573,3 +5938,215 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     )
 
     return web.json_response({"ok": True, "pending": len(slot._pending_context)})
+
+
+async def api_chat_slot_note(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/note — visible transcript line + silent next-turn context.
+
+    A background actor (a cron, an app) uses this to drop a short, DECLARATIVE
+    note into a chat that is both (a) visible in the transcript right away and
+    (b) known to the agent if the user later asks about it -- WITHOUT firing an
+    LLM turn.
+
+    A plain transcript append is not enough on its own: a live provider holds its
+    own in-memory conversation state and a normal send forwards only the new user
+    message, so a row written via ``slot.append()`` alone is never seen by the
+    model. The channel that IS seen is ``_pending_context``, which is drained and
+    prepended to the next user message. So the endpoint does two writes against
+    the same slot:
+
+    1. visible line -- ``slot.append(role="inject", cls="reconcile-note")`` so it
+       renders in the transcript and persists.
+    2. context entry -- a ``_pending_context`` entry (the same channel
+       ``/context`` uses) drained onto the user's next manual message exactly
+       once, then cleared.
+
+    Both writes always happen. A context-only write is ``POST /context``, which
+    already exists; there is no visible-only mode, because no caller wanted one.
+
+    A session reset in between can replay the transcript row into the new
+    session, so the model may see the note twice in one prompt. The queued copy
+    is kept regardless: the replay is char-budget bounded, so dropping it would
+    lose an older note the replay had already trimmed away.
+
+    Notes are meant to be declarative -- state what happened, never ask. An
+    interrogative note rides along as background context and may get answered on
+    the next unrelated turn. The context half defaults to a 24h ``maxAge`` so a
+    never-followed-up note self-expires; the visible line is permanent.
+
+    Body::
+
+        {
+            "content": "...",         // required, declarative, non-empty string
+            "source": "board-sync",   // optional frame label + per-source cap bucket;
+                                      //   <=64 chars, no control chars; empty -> "note"
+            "maxAge": 86400,          // optional seconds; omitted -> 24h default.
+                                      //   Explicit null -> no expiry, as on /context.
+            "ephemeral": true         // optional, default true (passed to the context entry)
+        }
+
+    Returns ``{"ok", "appended", "visibleDeferred", "contextSkipped", "pending"}``.
+    If the source's per-source context cap is already full the visible line is
+    still written and ``contextSkipped`` is true: the cap protects the context
+    queue, not the transcript, so the call is NOT 429'd.
+
+    When a turn is already running BOTH halves are held and written at that
+    turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
+    order is preserved and it is not dropped while this gateway stays up -- the
+    hold is in memory, so a 200 means accepted for this gateway lifetime, not
+    durable delivery.
+    Appending mid-turn would take the row the replay path skips and cause the
+    user's own request to be replayed; queueing the context mid-turn would let
+    the turn already in flight drain it, so the note would shape the request it
+    was written after and the next turn would find nothing. Every rejection
+    still happens on the POST. ``pending`` counts held entries too, so it always
+    reports what the model will receive. Holding more than
+    ``_MAX_DEFERRED_NOTES`` on one turn is a 429 ``deferred_notes_full``.
+    """
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        # Byte-identical to the ownership denial below, or an app token could tell
+        # "not mine" from "does not exist" and enumerate foreign slot names.
+        return _slot_not_found()
+
+    request_app = request.get("app", "")
+    denied = _check_slot_app_ownership(slot, name, request_app, "note_post")
+    if denied is not None:
+        return denied
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    # A scalar or array parses cleanly and then makes `.get` raise past the
+    # except above into a 500, so the SHAPE needs its own rejection.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+
+    content = body.get("content", "")
+    bad = (
+        _validate_content(content)
+        or _validate_source(body.get("source"))
+        or _validate_max_age(body.get("maxAge"))
+    )
+    if bad is not None:
+        return bad
+
+    # Default an empty, absent, or whitespace-only source to "note" so the drain
+    # frame reads [Background context from "note"] rather than empty quotes.
+    source = _normalize_source(body.get("source")) or "note"
+
+    # Ownership was decided before the body read. Re-decide it here, against the
+    # slot as it is NOW, because that await is long enough for a rebind.
+    stale = _reauthorize_after_await(state, slot, name, request_app, "note_post")
+    if stale is not None:
+        return stale
+
+    # A turn in flight owns the tail of the transcript: the replay path skips
+    # exactly one recall-eligible row to drop the current-turn user message, and
+    # an `inject` row appended now would take that slot and get skipped in its
+    # place, replaying the user's request twice. So the visible line is HELD and
+    # written at the turn's end, which is why `appended` is reported separately.
+    # This is decided BEFORE either write: a note rejected for a full hold must
+    # not leave its context half behind to reach the next turn anyway.
+    deferred = slot.running or slot._in_stage_execution
+    if deferred and len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
+        return web.json_response(
+            {
+                "error": f"slot already holds {_MAX_DEFERRED_NOTES} deferred notes",
+                "code": "deferred_notes_full",
+            },
+            status=429,
+        )
+
+    # The per-source cap protects the context QUEUE, not the transcript. So when
+    # the context half is capped we still write the VISIBLE line -- the audit
+    # record the caller came for -- and report contextSkipped=true, rather than
+    # 429-ing the whole request and losing the visible note too. This matters
+    # most for the default source="note" bucket, which every sourceless caller
+    # shares. An omitted maxAge takes this endpoint's 24h default; an explicit
+    # null means no expiry, the same as it does on /context.
+    context_skipped = False
+    context_entry: dict[str, object] | None = None
+    if _source_cap_reached(slot, source):
+        context_skipped = True
+    else:
+        max_age = body.get("maxAge", _UNSET)
+        if max_age is _UNSET:
+            max_age = _NOTE_CONTEXT_MAX_AGE
+        context_entry, err = _build_pending_context_entry(
+            slot, content, source, body.get("ephemeral", True), max_age
+        )
+        if err is not None:
+            return err
+        assert context_entry is not None
+        # A held note's context is queued by the flush, not here. The drain runs
+        # inside the turn and after its task is assigned, so an entry queued now
+        # is read by the turn already running -- the note would shape the request
+        # it was written after, and the next turn would find nothing.
+        if not deferred:
+            # Both immediate halves resolve their destination LATE, so each
+            # records the session it was authorized against -- same reason the
+            # deferred arm below does, and checked at those later seams.
+            context_entry["noteSession"] = effective_session_key(slot)
+            slot.append_pending_context(context_entry)
+
+    # Caller-controlled content reaching the visible transcript (SSE plus the
+    # on-disk JSONL). Redact at this sink so a secret or exfil URL cannot land
+    # in user-visible history. The context half stays raw: that is the
+    # trusted-caller boundary inherited from /context. Order matters -- exfil
+    # URLs first, since that pass collapses the whole URL.
+    visible_content, _ = redact_exfiltration_urls(content)
+    visible_content, _ = redact_credentials(visible_content)
+    if deferred:
+        slot._deferred_notes.append(
+            {
+                "content": visible_content,
+                "cls": "reconcile-note",
+                "context": context_entry,
+                # The session this note was authorized against. The gate above
+                # only admits a slot that still routes to its own session, but
+                # an unbound slot can acquire a foreign binding while the note
+                # is held, and the flush resolves its target late.
+                "session": effective_session_key(slot),
+            }
+        )
+    else:
+        slot.append(
+            role="inject",
+            content=visible_content,
+            cls="reconcile-note",
+            broadcast=True,
+            meta={"noteSession": effective_session_key(slot)},
+        )
+
+    sel().log_api_access(
+        caller=request_app or request.get("user", "dashboard"),
+        operation="note_post",
+        outcome="ok",
+        source="app_kit",
+        resources=f"slot={name}",
+    )
+
+    # A hold is delivered only if the slot still routes to the same session at
+    # flush; a rebind during the hold drops it. An IMMEDIATE note is equally
+    # conditional while the slot is UNBOUND, because both halves resolve their
+    # destination late and every binding site claims an EMPTY binding
+    # (``if not slot.linked_session_key``) -- so an already-bound slot cannot be
+    # re-claimed and its immediate note is genuinely unconditional.
+    delivery_conditional = deferred or not slot.linked_session_key
+    return web.json_response(
+        {
+            "ok": True,
+            "appended": not deferred,
+            "visibleDeferred": deferred,
+            "deliveryConditional": delivery_conditional,
+            "contextSkipped": context_skipped,
+            "pending": len(slot._pending_context) + slot.deferred_context_count(),
+        }
+    )

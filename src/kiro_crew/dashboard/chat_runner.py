@@ -137,6 +137,7 @@ from kiro_crew.dashboard.state import (
     build_refusal_recovery_prompt,
     build_stale_recovery_prompt,
     build_tool_stall_recovery_prompt,
+    context_entry_expired,
     is_read_only_bash,
     parse_hook_continuations,
     should_queue_hook_continuation,
@@ -285,16 +286,16 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
     rather than duplicated inline where a key rename could silently break a
     consumer while its producer's own tests stay green.
     """
+    # A note's halves resolve their destination here, not at the POST, so a slot
+    # rebound since the write must not hand its content to the new session.
+    slot.drop_foreign_authorized_notes()
     if not slot._pending_context:
         return ""
     now = time.time()
     ctx_parts: list[str] = []
     for entry in slot._pending_context:
-        max_age = entry.get("maxAge")
-        if max_age is not None:
-            injected_at = entry.get("injectedAt", 0)
-            if injected_at + max_age < now:
-                continue  # expired — silently discard
+        if context_entry_expired(entry, now):
+            continue  # expired — silently discard
         # `or "app"` (not a dict default): api_chat_slot_context always writes
         # the key — as "" when the caller omitted it — so a plain .get() default
         # never fires and the header would render [Background context from ""],
@@ -3710,6 +3711,20 @@ def _arm_queued_delivery_settlement(
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
+    # Above the dequeue, so a held note's visible line lands before this turn's
+    # user row: its context half drains inside _run_chat via drain_pending_context.
+    # Withheld when the next queued item carries a structural origin tag -- a cron
+    # notification or a runner-injected recovery prompt -- for the same reason
+    # _finish_queue_cycle withholds from synthesis: a note is owed to the next
+    # USER turn, and that cycle's own flush delivers it afterwards.
+    # A plan is withheld from for that same reason, and the check sits HERE rather
+    # than reusing the `in_stage` read below because this flush runs above it: a
+    # plain user message carries no `kind`, so this site would release the note
+    # into stage N+1 before the dequeue gate ever holds that message back.
+    # _stage_loop's exit flush is the seam that delivers it.
+    if not slot._in_stage_execution and not (slot._queue and slot._queue[0].get("kind")):
+        slot.flush_deferred_notes()
+
     if not slot._queue:
         return False
 
@@ -3954,15 +3969,30 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     """Start synthesis when eligible, otherwise mark a queue cycle idle."""
 
-    if not slot._queue:
-        slot._stopping = False
-    if (
+    will_synthesize = (
         slot._pending_synthesis
         and not slot._synthesis_inflight
+        # A slot gone from the registry is being torn down, so it has no next
+        # user turn to owe a held note to -- withholding there would lose it.
+        and state._slots.get(slot.key) is slot
         and state.subagents is not None
         and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
         and slot._subagent_deliveries_inflight == 0
-    ):
+    )
+
+    # Before any successor is dispatched. A held note's CONTEXT half drains into
+    # the next turn, so flushing after that turn started would let the note shape
+    # a turn its visible line appears below. Two automatic successors are withheld
+    # from, since a note is owed to the next USER turn: synthesis, and the next
+    # stage of a plan -- this function runs per stage, from inside each stage's own
+    # _run_chat finally, while _in_stage_execution is still set. Each has a later
+    # seam that flushes: the cycle after synthesis, _stage_loop's exit for a plan.
+    if not will_synthesize and not slot._in_stage_execution:
+        slot.flush_deferred_notes()
+
+    if not slot._queue:
+        slot._stopping = False
+    if will_synthesize:
         slot._synthesis_inflight = True
         task = asyncio.create_task(_run_pending_synthesis(state, slot))
         slot.task = task

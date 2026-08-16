@@ -332,6 +332,12 @@ async def _stage_loop(
                 "Stage %d/%d: context=%d chars, messages=%d",
                 stage_num, total, len(context), len(slot.messages),
             )
+            # NOT flushed here: a stage turn is automatic (`auto-go`), and a held
+            # note is owed to the next USER turn, so feeding it to a stage would
+            # spend it on a turn nobody asked for. The loop-exit flush below is
+            # the delivery point -- it sits in this function's `finally`, where
+            # `slot.task` is this loop's own task, so it fires on the completed,
+            # paused and cancelled paths alike.
             slot.append("user", context, "msg msg-u auto-go")
             try:
                 # `_bounded_turn`, NOT `asyncio.wait_for`. `_run_chat` CATCHES
@@ -683,6 +689,16 @@ async def _stage_loop(
         # task owns slot.task and will drain the queue + emit chat_done itself, so
         # we must not start a second turn or clobber/idle-close over it.
         _next_started = False
+        # Before _start_next_queued_turn, not after: a held note's context half
+        # drains into that successor, so flushing later would let the note shape
+        # a turn its visible line appears below. Skipped while a turn runs, since
+        # that turn drains AFTER its task is assigned and would consume a note
+        # written after it began; it flushes at its own completion instead.
+        # ``slot.running`` cannot express that: inside this finally it names THIS
+        # loop's own task, so defer only to a live task that is someone else's.
+        _note_owner = slot.task
+        if _note_owner is None or _note_owner is asyncio.current_task() or _note_owner.done():
+            slot.flush_deferred_notes()
         if (
             not _cancelled
             and not slot.running

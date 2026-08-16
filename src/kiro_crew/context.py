@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import logging
@@ -52,6 +53,11 @@ logger = logging.getLogger(__name__)
 _memory_stores: dict[str, MemoryStore] = {}
 # Lazy cache of LessonStore instances keyed by workspace name.
 _lesson_stores: dict[str, LessonStore] = {}
+
+# Message roles included in session replay, thread-history compression, and the
+# context-builder recent-message path. "inject" is included so cron results and
+# /note breadcrumbs survive a session boundary and can still be recalled.
+RECALL_ROLES: frozenset[str] = frozenset({"user", "assistant", "inject"})
 # Serializes lazy store creation: build_message runs on worker threads
 # (run_in_embed_pool at every async call site), so two threads can race the
 # check-then-insert for the same workspace key. Double-checked with the lock.
@@ -1335,10 +1341,13 @@ async def compress_thread_history(
 
     compressed_cap = _resolve_caps(model_window).compressed_history
 
-    recent = conversation_log.recent(
+    # Off-thread because the per-role quota needs the WHOLE file: a tail slice
+    # cannot bound each role, so this read cannot be the cheap one.
+    recent = await asyncio.to_thread(
+        _recall_rows,
+        conversation_log,
         session_key,
-        max_messages=_COMPRESSION_MAX_MESSAGES,
-        roles={"user", "assistant"},
+        conv_max=_COMPRESSION_MAX_MESSAGES,
         exclude_last_n=exclude_last_n,
     )
     if not recent:
@@ -1399,6 +1408,112 @@ _REPLAY_BUDGET_CHARS = (
     80_000  # 80K chars ≈ 20K tokens — fits alongside system context in 200K window
 )
 
+# Per-row ceiling for ``inject`` content inside a replay. Conversation rows are
+# uncapped here: they are the signal the replay exists to carry. An inject row
+# only has to say that a cron ran or a note was left, so a breadcrumb is enough,
+# and without a ceiling one chatty producer spends the whole tail-heavy budget on
+# itself and evicts real history. Sized above the p75 real inject row so typical
+# breadcrumbs pass through whole and only the outsized dumps are clipped.
+_REPLAY_INJECT_CAP_CHARS = 2_000
+
+# Share of the replay budget ``inject`` rows may spend between them. Conversation
+# keeps the rest, which the per-row ceiling above cannot guarantee: it clips one
+# row's content while leaving the total unbounded, so a tail of capped inject rows
+# could spend the whole budget and leave no room for a single user turn.
+_REPLAY_INJECT_BUDGET_DIVISOR = 4
+
+# Row quota for ``inject`` rows, kept SEPARATE from the conversation quota because
+# the row bound is applied by the query before any budgeting runs. Derived from the
+# share above: at the per-row ceiling this many rows exactly fill it, so admitting
+# more could never surface additional content.
+_REPLAY_INJECT_MAX_ROWS = (
+    _REPLAY_BUDGET_CHARS // _REPLAY_INJECT_BUDGET_DIVISOR
+) // _REPLAY_INJECT_CAP_CHARS
+
+_REPLAY_CONVERSATION_MAX_ROWS = 500
+
+
+def _replay_rows(
+    conversation_log: "ConversationLog",
+    session_key: str,
+    *,
+    exclude_last_n: int = 0,
+) -> list[dict]:
+    """Tail of the chain under per-role quotas, in chronological order.
+
+    Conversation rows get the full quota whatever the inject volume, which a
+    single bounded query cannot guarantee.
+    """
+    messages = conversation_log.read_messages_chained(session_key)
+    if exclude_last_n > 0:
+        messages = messages[:-exclude_last_n]
+    kept: list[dict] = []
+    conv = inj = 0
+    for m in reversed(messages):
+        role = m["role"]
+        if role == "inject":
+            if inj >= _REPLAY_INJECT_MAX_ROWS:
+                continue
+            inj += 1
+        elif role in RECALL_ROLES:
+            if conv >= _REPLAY_CONVERSATION_MAX_ROWS:
+                if inj >= _REPLAY_INJECT_MAX_ROWS:
+                    break
+                continue
+            conv += 1
+        else:
+            continue
+        kept.append({"role": role, "content": m["content"]})
+    kept.reverse()
+    return kept
+
+
+# Conversation rows admitted by the bounded recall sites. Mirrors ``recent()``'s
+# own ``max_messages`` default so the fallback keeps the window it always had.
+_RECALL_FALLBACK_MAX_ROWS = 20
+
+
+def _recall_rows(
+    conversation_log: "ConversationLog",
+    session_key: str,
+    *,
+    conv_max: int,
+    inject_max: int = _REPLAY_INJECT_MAX_ROWS,
+    exclude_last_n: int = 0,
+) -> list[dict]:
+    """Bounded recall under per-role quotas, in chronological order.
+
+    ``recent()`` role-filters and then takes a plain tail slice, so a run of
+    ``inject`` rows longer than the bound is the entire read and conversation
+    disappears. Quotas are counted separately here, so notes reach the model
+    without competing with user/assistant turns for the same slots.
+
+    ``exclude_last_n`` drops trailing raw entries BEFORE role filtering, matching
+    ``recent()``.
+    """
+    messages = conversation_log.read_messages(session_key)
+    if exclude_last_n > 0:
+        messages = messages[:-exclude_last_n]
+    kept: list[dict] = []
+    conv = inj = 0
+    for m in reversed(messages):
+        role = m["role"]
+        if role == "inject":
+            if inj >= inject_max:
+                continue
+            inj += 1
+        elif role in RECALL_ROLES:
+            if conv >= conv_max:
+                if inj >= inject_max:
+                    break
+                continue
+            conv += 1
+        else:
+            continue
+        kept.append({"role": role, "content": m["content"]})
+    kept.reverse()
+    return kept
+
 
 def build_session_replay(
     conversation_log: "ConversationLog",
@@ -1425,30 +1540,42 @@ def build_session_replay(
     window). ``None`` ⇒ the 1M reference (unchanged default). The budget is
     scaled by the same factor as the section caps and floored to one message.
     """
-    messages = conversation_log.recent_chained(
-        session_key,
-        max_messages=500,
-        roles={"user", "assistant"},
-        exclude_last_n=exclude_last_n,
-    )
+    messages = _replay_rows(conversation_log, session_key, exclude_last_n=exclude_last_n)
     if not messages:
         return None
 
     # Scale the replay budget by the resolved window factor (base/reference).
     caps = _resolve_caps(model_window)
     replay_budget = round(_REPLAY_BUDGET_CHARS * caps.base / _CONTEXT_BUDGET_BASE)
+    # Scaled by the same factor, and bounded by the budget so a tiny window still
+    # admits one row rather than clipping every inject row to nothing.
+    inject_cap = max(
+        1, min(replay_budget, round(_REPLAY_INJECT_CAP_CHARS * caps.base / _CONTEXT_BUDGET_BASE))
+    )
+
+    # Reserved so conversation cannot be starved by breadcrumbs: inject rows spend
+    # their own share and older ones are skipped, while the scan keeps looking for
+    # user/assistant rows rather than stopping at the first inject row that spills.
+    inject_budget = max(1, replay_budget // _REPLAY_INJECT_BUDGET_DIVISOR)
 
     # Build lines from most recent to oldest, stop when budget exhausted
     lines: list[str] = []
     total = 0
+    inject_total = 0
     for m in reversed(messages):
         role = m["role"].title()
         content = m.get("content", "")
+        if m["role"] == "inject" and len(content) > inject_cap:
+            content = content[:inject_cap] + "…[truncated]"
         line = f"{role}: {content}"
+        if m["role"] == "inject" and inject_total + len(line) > inject_budget and lines:
+            continue
         if total + len(line) > replay_budget and lines:
             break
         lines.append(line)
         total += len(line) + 2  # +2 for separator
+        if m["role"] == "inject":
+            inject_total += len(line) + 2
 
     lines.reverse()
     replay = "\n\n".join(lines)
@@ -2039,8 +2166,11 @@ class ContextBuilder:
                 )
                 parts.append(_history_header + compressed_history + "\n[End of thread history]\n\n")
             else:
-                recent = self.conversation_log.recent(
-                    session_key, roles={"user", "assistant"}, exclude_last_n=exclude_last_n
+                recent = _recall_rows(
+                    self.conversation_log,
+                    session_key,
+                    conv_max=_RECALL_FALLBACK_MAX_ROWS,
+                    exclude_last_n=exclude_last_n,
                 )
                 logger.info(
                     "🔍 build_session_context: session_key=%s resumed=%s "
@@ -2057,18 +2187,36 @@ class ContextBuilder:
                     # scaled history budget and drop ALL history. Bounding it at
                     # the budget guarantees at least the newest message fits.
                     per_message_cap = min(caps.per_message, budget)
+                    # The row quota alone cannot protect conversation here: this
+                    # loop spends the budget newest-first, and notes are the newest
+                    # rows, so a few large ones exhaust it before any user or
+                    # assistant turn is reached. Reserve a share for notes and skip
+                    # the ones that spill, exactly as the replay path does, so the
+                    # scan keeps looking for conversation instead of stopping.
+                    inject_cap = max(1, min(budget, _REPLAY_INJECT_CAP_CHARS))
+                    inject_budget = max(1, budget // _REPLAY_INJECT_BUDGET_DIVISOR)
+                    inject_spent = 0
                     history_lines: list[str] = []
                     for m in reversed(recent):
                         content = _MODE_IDENTITY_RE.sub("", m["content"])
                         if m["role"] == "assistant":
                             content = _compress_assistant_message(content)
-                        if len(content) > per_message_cap:
-                            content = content[:per_message_cap] + "…[truncated]"
+                        row_cap = inject_cap if m["role"] == "inject" else per_message_cap
+                        if len(content) > row_cap:
+                            content = content[:row_cap] + "…[truncated]"
                         line = f"{m['role'].title()}: {content}"
+                        if (
+                            m["role"] == "inject"
+                            and inject_spent + len(line) > inject_budget
+                            and history_lines
+                        ):
+                            continue
                         if budget - len(line) < 0:
                             break
                         history_lines.append(line)
                         budget -= len(line)
+                        if m["role"] == "inject":
+                            inject_spent += len(line)
                     if history_lines:
                         history_lines.reverse()
                         history_block = "\n".join(history_lines)

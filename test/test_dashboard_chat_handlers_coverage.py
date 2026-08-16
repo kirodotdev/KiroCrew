@@ -705,7 +705,9 @@ class TestSlotContextInject:
     async def test_unknown_slot_is_404(self, _sel):
         status, body = await self._post(_state(), "missing", {"content": "x"})
         assert status == 404
-        assert body["error"] == "slot not found"
+        # Must match the ownership denial exactly, or the pair becomes an oracle
+        # an app token can use to enumerate foreign slot names.
+        assert body == {"error": "not found", "code": "slot_not_found"}
 
     @pytest.mark.asyncio
     async def test_app_token_cannot_reach_an_unscoped_slot(self, _sel):

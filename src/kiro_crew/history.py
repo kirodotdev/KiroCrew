@@ -19,6 +19,7 @@ import threading
 import time as _time
 from collections import OrderedDict
 from collections.abc import Callable, Container, Iterator
+from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar
@@ -2877,7 +2878,7 @@ class ConversationLog:
         self,
         key: str,
         max_messages: int = 20,
-        roles: set[str] | None = None,
+        roles: AbstractSet[str] | None = None,
         *,
         exclude_last_n: int = 0,
     ) -> list[dict]:
@@ -2914,7 +2915,7 @@ class ConversationLog:
         self,
         key: str,
         max_messages: int = 20,
-        roles: set[str] | None = None,
+        roles: AbstractSet[str] | None = None,
         *,
         exclude_last_n: int = 0,
     ) -> list[dict]:
@@ -4857,7 +4858,7 @@ class ConversationLog:
     _TAIL_MAX_GROWTHS = 6
 
     def _recent_via_tail(
-        self, key: str, max_messages: int, roles: set[str] | None
+        self, key: str, max_messages: int, roles: AbstractSet[str] | None
     ) -> list[dict] | None:
         """Return the formatted recent window via a tail read, or None to defer.
 
@@ -4911,7 +4912,7 @@ class ConversationLog:
         return [dict(m) for m in formatted]
 
     @staticmethod
-    def _recent_cache_key(key: str, max_messages: int, roles: set[str] | None) -> str:
+    def _recent_cache_key(key: str, max_messages: int, roles: AbstractSet[str] | None) -> str:
         """Build a stable ``_recent_cache`` key from the recent() parameters.
 
         ``\\x00`` cannot appear in a session key, so it is an unambiguous field
@@ -4922,7 +4923,7 @@ class ConversationLog:
         return f"{key}\x00{max_messages}\x00{roles_part}"
 
     def _read_tail_messages(
-        self, path: Path, max_messages: int, roles: set[str] | None
+        self, path: Path, max_messages: int, roles: AbstractSet[str] | None
     ) -> list[dict]:
         """Read the last *max_messages* messages by seeking to the file tail.
 

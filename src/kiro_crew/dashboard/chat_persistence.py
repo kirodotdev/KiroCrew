@@ -23,10 +23,16 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
+    effective_session_key,
     slot_history_key,
     slot_transcript_key,
 )
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _normalize_slot_key
+from kiro_crew.dashboard.state import (
+    DashboardState,
+    _ChatSlot,
+    _normalize_slot_key,
+    _note_authorized_elsewhere,
+)
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
     SLOT_OWNED_META_KEYS,
@@ -39,6 +45,7 @@ from kiro_crew.history import (
 )
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
@@ -1720,6 +1727,58 @@ def _save_slot_to_history(
         else:
             disk_older = slot._disk_older_count
             window = list(slot.messages)
+    # Filter the SNAPSHOT, never slot.messages: this may run in the flush
+    # executor thread, where mutating the live window is exactly the race the
+    # snapshot above exists to avoid. A note row whose slot was rebound after
+    # the write must not be persisted into the session it now routes to; the
+    # drain drops it from the live window on the event loop.
+    #
+    # Authorization and the write target must come from ONE observation of the
+    # routing. Both keys derive from ``slot.linked_session_key``, which the event
+    # loop rebinds with no running gate, so reading it per row -- or again when
+    # the write target is resolved -- authorizes rows against one session and
+    # then writes the file of another. Snapshot-then-confirm with the same
+    # bounded retry this function already uses for the window pair. The two keys
+    # stay DISTINCT: collapsing them would send a channel-born slot the
+    # dashboard could not bind to the phantom file ``slot_history_key`` exists
+    # to avoid.
+    for _ in range(_FLUSH_SNAPSHOT_RETRIES):
+        routing = getattr(slot, "linked_session_key", "")
+        note_auth_key = effective_session_key(slot)
+        history_key = slot_history_key(slot)
+        if getattr(slot, "linked_session_key", "") == routing:
+            break
+    kept = [
+        m for m in window if not _note_authorized_elsewhere(m.get("meta"), note_auth_key)
+    ]
+    dropped_notes = len(window) - len(kept)
+    window = kept
+    if dropped_notes:
+        # Count-gated exactly like the drain's own denial at state.py:2320. This is
+        # the PERIODIC save path, so an ungated emit would record a denial on every
+        # save of every slot, and the same row would re-emit on each one until the
+        # loop-side drain removes it from slot.messages. ``critical`` stays default
+        # False: a denial must never be able to fail a save that is otherwise
+        # correct. Nothing raises or returns early here either, so the authorized
+        # remainder still persists. Called directly rather than through loop
+        # plumbing because sel is pure threading -- unlike the asyncio lock named
+        # above, it is safe from this executor thread. Only the slot key and a count
+        # are recorded; note content never enters the audit line.
+        sel().log_api_access(
+            caller="dashboard",
+            operation="note_save_drop",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot.key} dropped={dropped_notes}",
+            error="slot was rebound to another session after the note was written",
+        )
+        logger.warning(
+            "Slot %s dropped %d note row(s) from a save: authorized elsewhere, "
+            "slot now routes to %s",
+            slot.key,
+            dropped_notes,
+            note_auth_key,
+        )
     if not window:
         return
     # Skip a pure no-op: a freshly resumed slot with no new AND no edited
@@ -1737,7 +1796,6 @@ def _save_slot_to_history(
         and not rewrite
     ):
         return
-    history_key = slot_history_key(slot)
     try:
         # Hold the SAME per-session cross-process lock that ``append`` /
         # ``append_off_loop`` / rotate / rewrite / metadata mutations take, across

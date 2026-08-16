@@ -408,6 +408,26 @@ Silent background context for LLM — content appears in the next user-initiated
 
 Options: `{ source?: string, ephemeral?: boolean, maxAge?: number }`
 
+**Constraints** (400 on violation):
+- `source`: ≤64 chars, no control characters or newlines; whitespace-trimmed (a padded label and its bare form share one per-source cap bucket)
+- `maxAge`: must be a finite positive number (rejects boolean, NaN, Infinity, ≤0); omit or pass null for no expiry
+- `content`: must be a non-empty string, ≤40,000 chars
+
+**Ownership** (404 on refusal; applies to app callers — a dashboard caller is unrestricted):
+- An app may only target a slot it owns, and a slot carrying no app scope is refused as well.
+- Owning the slot is not sufficient: an app is refused when the slot's session is linked elsewhere — a cron result or workflow injection holding that binding — because both writes land in the linked session, so slot ownership alone would otherwise reach a conversation the app has no claim on.
+- Every refusal returns the same body as a genuinely missing slot, so no response an unauthorized caller can reach distinguishes "not yours" from "does not exist". The specific reason is recorded in the security-event log instead.
+
+### Notes
+
+`POST /api/chat/slots/{slot}/note` drops a short declarative line into a chat that is both visible in the transcript immediately and known to the agent on the user's next message — without firing an LLM turn. Context injection alone is silent; a transcript append alone is invisible to the model, because a live provider forwards only the new user message. The note endpoint does both writes against one slot.
+
+Body: `{ content, source?, maxAge?, ephemeral? }`. A note always does both writes -- there is no visible-only or context-only mode. The visible line is appended as `role: "inject"` with `cls: "reconcile-note"`, and its content is redacted (credentials, exfiltration URLs) before it reaches the transcript. `maxAge` defaults to 24h for the context half when the key is omitted, so a note nobody follows up on expires instead of attaching to an unrelated message later. An explicit null means no expiry, the same as it does on `/context` — the two endpoints share the field and do not give it opposite meanings. The same `source`/`maxAge`/`content` constraints above apply.
+
+Returns `{ ok, appended, visibleDeferred, deliveryConditional, contextSkipped, pending }`. When the source's per-source context cap is full the request is **not** rejected: the visible line is still written and `contextSkipped` is true, because the cap protects the context queue rather than the transcript. If a turn is already running the note is held until that turn ends -- `appended` is false and `visibleDeferred` is true -- so that it lands on the next turn rather than the one it was written during. Ordering is preserved, and `deliveryConditional` is true whenever a note is held -- because a hold is delivered only if the slot still routes to the SAME session when the turn ends. An unbound slot can acquire a foreign binding while the note waits (a cron result or workflow injection claims an empty `linked_session_key` with no running gate), and both the transcript path and the next turn's session resolve that binding at flush time rather than at the POST. When that happens BOTH halves of the note are dropped rather than retargeted, because writing them would surface content authorized for one conversation inside another; the drop is recorded in the security-event log. So a 200 with `visibleDeferred: true` promises ordering against the running turn, not that the note will certainly be written. `pending` counts held entries as well as queued ones.
+
+**A 200 means "accepted for this gateway lifetime", not durable delivery.** Both halves of a note live in memory only -- the held visible line and the queued context, the latter exactly as `/context`'s queue has always behaved -- so a gateway restart between the acknowledgement and the next turn drops them. A caller that needs a note to survive a restart must re-post it; `visibleDeferred: true` promises ordering against the running turn, not persistence.
+
 ### Proxy Authentication (Server-side)
 
 Verify that an incoming request was signed by the KiroCrew gateway reverse proxy. Use in app backends to authenticate proxied requests.

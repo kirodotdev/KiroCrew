@@ -58,7 +58,15 @@ class TestPrepareMirrorMsg:
                     "content": "SECRET BRIEFING: investigate ticket V123",
                     "source": "ticket-dispatch",
                 }
-            ]
+            ],
+            # The drain also asks the slot to shed note content authorized
+            # against a session it has since left. Nothing here is note content,
+            # so the stand-in reports zero dropped — matching the real
+            # ``_ChatSlot.drop_foreign_authorized_notes`` return type. Satisfied
+            # here rather than guarded in the drain: that call is a fail-closed
+            # authorization filter, so making it tolerate a slot without the
+            # method would silently skip it for every such caller.
+            drop_foreign_authorized_notes=lambda: 0,
         )
         context_block = drain_pending_context(slot)
         message = context_block + "\n" + message

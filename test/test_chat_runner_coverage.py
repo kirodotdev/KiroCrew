@@ -1446,6 +1446,67 @@ class TestStartNextQueuedTurn:
         assert any("Session reset" in err for err in _errors(slot))
         assert slot._stopping is False
 
+    @pytest.mark.asyncio
+    async def test_a_held_note_lands_above_the_successors_own_row(self, tmp_path):
+        """A note held mid-turn must be written before the next turn's user row.
+
+        The note's context half drains inside that turn's ``_run_chat``, so
+        flushing after it started would put the visible line below the response
+        the note shaped. Only ``_finish_queue_cycle`` used to flush, and the main
+        dispatch path calls it AFTER this function.
+        """
+        state, slot = _state(tmp_path), _slot()
+        slot._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
+        slot.queue_append("next please")
+        state.subagents = None
+
+        with patch.object(
+            chat_runner, "spawn_guarded_turn", return_value=MagicMock()
+        ), patch.object(chat_runner, "_run_chat", return_value=MagicMock()):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        roles = [m["role"] for m in slot.messages]
+        contents = [m["content"] for m in slot.messages]
+        assert "held" in contents
+        assert "user" in roles
+        assert contents.index("held") < roles.index("user")
+        assert slot._deferred_notes == []
+
+    @pytest.mark.asyncio
+    async def test_a_held_note_is_withheld_from_a_plans_next_stage(self, tmp_path):
+        """A plain user message queued during a plan must not release the note.
+
+        This is the flush that leaks FIRST. A queued user message carries no
+        ``kind``, so the origin-tag guard admits the flush -- and it runs ABOVE the
+        ``in_stage`` dequeue gate that then holds that message back. So the note
+        was released while no user turn started at all, and the next stage drained
+        its context half. ``_stage_loop``'s exit flush is the seam that owes it
+        delivery, so withholding delays rather than loses it.
+        """
+        state, slot = _state(tmp_path), _slot()
+        slot._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
+        slot.queue_append("a plain user message")  # carries no `kind`
+        slot._in_stage_execution = True
+        state.subagents = None
+
+        assert await chat_runner._start_next_queued_turn(state, slot) is False
+
+        assert len(slot._queue) == 1, "fixture: the user message must be held back"
+        assert len(slot._deferred_notes) == 1, "the note was released into the next stage"
+        assert "held" not in [m["content"] for m in slot.messages]
+
+        # Control: the same fixture with the plan gate CLEAR does flush, so the
+        # assertion above measures the stage guard rather than the dequeue hold.
+        state2, slot2 = _state(tmp_path), _slot()
+        slot2._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
+        slot2.queue_append("a plain user message")
+        state2.subagents = None
+        with patch.object(
+            chat_runner, "spawn_guarded_turn", return_value=MagicMock()
+        ), patch.object(chat_runner, "_run_chat", return_value=MagicMock()):
+            assert await chat_runner._start_next_queued_turn(state2, slot2) is True
+        assert slot2._deferred_notes == [], "control: the note should flush off-plan"
+
 
 class TestRunPendingSynthesis:
     @pytest.mark.asyncio
@@ -1593,6 +1654,7 @@ class TestFinishQueueCycle:
     @pytest.mark.asyncio
     async def test_eligible_synthesis_is_started_instead_of_going_idle(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot  # a live slot is registered
         slot._pending_synthesis = True
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
@@ -1604,6 +1666,106 @@ class TestFinishQueueCycle:
         assert not any(m.get("role") == "done" for m in slot.messages)
         if slot.task is not None:
             slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_held_note_is_withheld_from_an_automatic_synthesis_turn(self, tmp_path):
+        """A note is owed to the next USER turn, so synthesis must not drain it.
+
+        Synthesis is dispatched from this same function, so flushing here would
+        hand the held context to a turn the user never asked for. The user-turn
+        seams flush on their own, so withholding cannot lose the note.
+        """
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot  # a live slot is registered
+        slot._pending_synthesis = True
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+
+        with patch.object(
+            type(slot), "flush_deferred_notes", return_value=0
+        ) as flush, patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
+            chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+
+        assert slot._synthesis_inflight is True
+        flush.assert_not_called()
+        if slot.task is not None:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_held_note_is_withheld_from_a_plans_next_stage(self, tmp_path):
+        """This function runs per stage, so a flush here feeds stage N+1.
+
+        Each stage of a plan is its own ``_run_chat``, and this is called from that
+        turn's ``finally`` while ``_in_stage_execution`` is still set -- so the note
+        reached the next stage instead of the next USER turn. Distinct from the
+        synthesis case above: here ``will_synthesize`` is False, which is exactly
+        why the old guard admitted the flush.
+        """
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._in_stage_execution = True
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+
+        with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
+            chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+        flush.assert_not_called()
+        if slot.task is not None:
+            slot.task.cancel()
+
+        # Control: identical state with the plan gate clear DOES flush, so the
+        # assertion above cannot pass for some reason unrelated to the stage.
+        state2, slot2 = _state(tmp_path), _slot()
+        state2._slots[slot2.key] = slot2
+        state2.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+
+        with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
+            chat_runner._finish_queue_cycle(state2, slot2)
+            await asyncio.sleep(0)
+        flush2.assert_called_once()
+        if slot2.task is not None:
+            slot2.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_closing_slot_does_not_lose_its_held_note_to_synthesis(self, tmp_path):
+        """A slot already removed from the registry has no next USER turn.
+
+        The withhold above is scoped to WHICH successor drains the note, and it
+        assumes a successor exists. A slot gone from ``state._slots`` is being
+        torn down, so withholding there discards the note the POST acknowledged.
+        """
+        state, slot = _state(tmp_path), _slot()
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        slot._pending_synthesis = True
+        slot._deferred_notes.append({"content": "held across the close", "cls": "reconcile-note"})
+        # The teardown already dropped it from the registry.
+        assert state._slots.get(slot.key) is None
+
+        with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
+            chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+
+        assert slot._deferred_notes == [], "the held note was discarded on close"
+        assert any(
+            m.get("role") == "inject" and "held across the close" in m.get("content", "")
+            for m in slot.messages
+        )
+        if slot.task is not None:
+            slot.task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_cycle_with_no_synthesis_still_flushes(self, tmp_path):
+        """The withhold is scoped to synthesis; every other cycle still flushes."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = False
+
+        with patch.object(
+            type(slot), "flush_deferred_notes", return_value=0
+        ) as flush, patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()):
+            chat_runner._finish_queue_cycle(state, slot)
+            await asyncio.sleep(0)
+
+        flush.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_idle_cycle_emits_done_and_refreshes_the_sidebar(self, tmp_path):

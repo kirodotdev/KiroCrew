@@ -943,6 +943,33 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
 _MAX_PENDING_CONTEXT = 50
 
+
+def context_entry_expired(entry: dict, now: float) -> bool:
+    """True if a pending-context entry's TTL has elapsed.
+
+    Shared by the drain, the per-source cap count, and the deferred-note
+    promotion so they cannot disagree about which entries are still live. It
+    lives here rather than in chat_runner because ``_ChatSlot`` itself needs it.
+    """
+    max_age = entry.get("maxAge")
+    if max_age is None:
+        return False
+    return entry.get("injectedAt", 0) + max_age < now
+
+
+def _note_authorized_elsewhere(stamped: object, live_session: str) -> bool:
+    """True when note content records a session other than *live_session*.
+
+    Reads the same ``session`` stamp off a pending-context entry or off a
+    transcript row's ``meta``. Absent stamp means not note content that carries
+    an authorizing session, so it is never dropped.
+    """
+    if not isinstance(stamped, dict):
+        return False
+    authorized = stamped.get("noteSession")
+    return authorized is not None and authorized != live_session
+
+
 # Bare chat-N label matcher used by DashboardState.resolve_slot() for prefix fallback.
 # Gates the prefix lookup to prevent broad matches (e.g. bare "chat" binding to any slot).
 _CHAT_N_RE = re.compile(r"chat-\d+")
@@ -1462,6 +1489,7 @@ class _ChatSlot:
         "memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_deferred_notes",
         "_app",
         "_human_seen",
         "_origin",
@@ -1812,6 +1840,7 @@ class _ChatSlot:
         self.memory_mode: str = memory_mode
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
+        self._deferred_notes: list[dict[str, Any]] = []
         self._app: str = ""  # App identity tag (App Kit §5.2)
         # FIX 1 (unattended approval park). Evidence that a HUMAN has driven
         # this slot through a dashboard-user route (typed a message, answered an
@@ -2403,6 +2432,154 @@ class _ChatSlot:
         """
         self.messages = [m for m in self.messages if m.get("role") != "chunk"]
         return self.release_pending_chunks()
+
+    def append_pending_context(self, entry: dict[str, Any]) -> None:
+        """Append one built context entry, pruning and FIFO-evicting first.
+
+        Shared by /context, /note, and the deferred-note promotion so the three
+        cannot drift on the ceiling. Expired entries are pruned BEFORE the
+        eviction because FIFO evicts by POSITION: without the prune a live entry
+        at index 0 is dropped while newer already-dead ones survive. An entry
+        that arrives already expired is dropped outright rather than seated.
+        """
+        now = time.time()
+        # A held note's maxAge can elapse while its turn runs, so an entry can
+        # arrive dead; seating it would evict a live one the drain would keep.
+        if context_entry_expired(entry, now):
+            return
+        self._pending_context[:] = [
+            e for e in self._pending_context if not context_entry_expired(e, now)
+        ]
+        while len(self._pending_context) >= _MAX_PENDING_CONTEXT:
+            self._pending_context.pop(0)
+        self._pending_context.append(entry)
+
+    def drop_foreign_authorized_notes(self) -> int:
+        """Discard note content authorized against a session this slot has left.
+
+        An immediate note is written while the slot routes to one session, but
+        BOTH halves resolve their destination late -- the queued half at the
+        next turn's drain, the visible row at the next save. An unbound slot can
+        acquire a foreign binding in between (a cron result or workflow
+        injection claims an empty ``linked_session_key`` with no running gate),
+        so content authorized for one conversation would otherwise be read as
+        belonging to another. Same rule the deferred flush applies, moved to the
+        seams the immediate writes actually resolve at. Returns the count
+        dropped. Unstamped entries are left alone: ``/context`` and the Slack
+        backfill share this queue and record no session.
+        """
+        # circular import: chat_utils imports state at module scope
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        live = effective_session_key(self)
+        dropped = 0
+        keep_ctx = [e for e in self._pending_context if not _note_authorized_elsewhere(e, live)]
+        if len(keep_ctx) != len(self._pending_context):
+            dropped += len(self._pending_context) - len(keep_ctx)
+            self._pending_context[:] = keep_ctx
+        keep_msgs = [m for m in self.messages if not _note_authorized_elsewhere(m.get("meta"), live)]
+        if len(keep_msgs) != len(self.messages):
+            dropped += len(self.messages) - len(keep_msgs)
+            self.messages[:] = keep_msgs
+        if dropped:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="note_rebind_drop",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={self.key} dropped={dropped}",
+                error="slot was rebound to another session after the note was written",
+            )
+            logger.warning(
+                "Slot %s dropped %d note item(s): authorized elsewhere, slot now routes to %s",
+                self.key,
+                dropped,
+                live,
+            )
+        return dropped
+
+    def deferred_context_count(self) -> int:
+        """Held notes whose context half has not reached the queue yet."""
+        return sum(1 for n in self._deferred_notes if n.get("context") is not None)
+
+    def flush_deferred_notes(self) -> int:
+        """Append notes that were held while a turn ran. Returns the count written.
+
+        A ``/note`` visible line must not land while a turn is in flight. The
+        replay path drops ``exclude_last_n=1`` to skip the current-turn user
+        message, and that count assumes exactly one recall-eligible row was
+        appended before the turn started. ``inject`` IS recall-eligible, so a
+        mid-turn note becomes the last such row and the exclusion falls on the
+        note instead -- replaying the user's request and sending it twice.
+
+        A note is owed to the next USER turn, so an AUTOMATIC successor is
+        withheld from rather than fed: synthesis (``_finish_queue_cycle``), a
+        queued item carrying a structural origin tag such as a cron
+        notification (``_start_next_queued_turn``), and every stage of a plan
+        (the stage loop, which does not flush at all). Each of those is followed
+        by a seam that DOES flush, so withholding delays delivery rather than
+        losing it -- ``_finish_queue_cycle`` for the queued and synthesis cases,
+        the stage loop's own exit for a plan, and the bulk-cleanup archive for a
+        slot torn down before any of them run.
+
+        Where it IS called above a turn's own user row, ordering is why: the
+        note's context half drains inside ``_run_chat``, so flushing after the
+        successor began would let the note shape a turn its visible line appears
+        below. The stage loop's exit also covers the paused and cancelled paths.
+        Idempotent -- a no-op when nothing is held.
+        """
+        if not self._deferred_notes:
+            return 0
+        # circular import: chat_utils imports state at module scope
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        held = self._deferred_notes[:]
+        self._deferred_notes.clear()
+        live_session = effective_session_key(self)
+        written = 0
+        for note in held:
+            # A held note carries the session it was authorized against. An
+            # unbound slot can acquire a foreign binding while the note waits
+            # (a cron result or workflow injection claims an empty
+            # linked_session_key with no running gate), and both the transcript
+            # path and the next turn's session resolve that binding HERE, not at
+            # the POST. Writing anyway would surface content authorized for one
+            # conversation inside another, so a rebound slot drops the note and
+            # its context together rather than retargeting them.
+            authorized = note.get("session")
+            if authorized is not None and authorized != live_session:
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="note_flush",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={self.key}",
+                    error="slot was rebound to another session while the note was held",
+                )
+                logger.warning(
+                    "Slot %s dropped a held note: authorized for %s, slot now routes to %s",
+                    self.key,
+                    authorized,
+                    live_session,
+                )
+                continue
+            # The context half is promoted HERE, not at the POST, because the
+            # drain runs inside the turn: an entry queued while that turn was
+            # starting is consumed by it, so the note shapes the request it was
+            # written after and the next turn never sees it at all.
+            ctx = note.get("context")
+            if ctx is not None:
+                ctx["noteSession"] = live_session
+                self.append_pending_context(ctx)
+            self.append(
+                role="inject",
+                content=note["content"],
+                cls=note["cls"],
+                broadcast=True,
+                meta={"noteSession": live_session},
+            )
+            written += 1
+        return written
 
     def mark_permission_resolved(self, approval_id: str, decision: str = "approved") -> None:
         """Update stored permission message cls JSON with resolved flag."""

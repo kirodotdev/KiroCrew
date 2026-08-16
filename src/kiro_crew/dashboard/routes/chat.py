@@ -58,9 +58,7 @@ def register(app: web.Application) -> None:
     # Same path, POST: reading a summary must stay free of side effects, so
     # generating one is a separate verb rather than a query flag on the GET.
     app.router.add_post("/api/chat/slots/{slot}/summary", chat.api_chat_slot_summary_generate)
-    app.router.add_get(
-        "/api/chat/slots/{slot}/source-links", chat.api_chat_slot_source_links
-    )
+    app.router.add_get("/api/chat/slots/{slot}/source-links", chat.api_chat_slot_source_links)
     app.router.add_post("/api/chat/slots/{slot}/stop", chat.api_chat_slot_stop)
     app.router.add_post("/api/chat/slots/{slot}/interrupt", chat.api_chat_slot_interrupt)
     app.router.add_post("/api/chat/slots/{slot}/end-wait", chat.api_chat_slot_end_wait)
@@ -91,6 +89,8 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/chat/slots/{slot}/color", chat.api_chat_slot_color)
     # Context injection (App Kit — silent background context)
     app.router.add_post("/api/chat/slots/{slot}/context", chat.api_chat_slot_context)
+    # Note — visible transcript line + silent next-turn context, no LLM turn
+    app.router.add_post("/api/chat/slots/{slot}/note", chat.api_chat_slot_note)
     app.router.add_post("/api/chat/slots/{slot}/fork", chat.api_chat_slot_fork)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
