@@ -123,6 +123,10 @@ const INPUT_DEFAULT_MAX_H = 140
 const INPUT_PREFILL_MAX_H = 320
 const INPUT_DRAG_MIN_H = 93
 const FILE_PREVIEW_H = 81 // h-16 (64px) + py-2 (16px) + border-t (1px)
+/** Same strip once any staged image carries a resize pill: the pill sits in flow
+ *  under its thumbnail, so the tallest chip grows by gap-0.5 (2px) + the pill's
+ *  own 18px. Keep in sync with ResizeBadge and FilePreviewStrip. */
+const FILE_PREVIEW_H_RESIZED = 101
 /** Height of the staged-session-reference strip: one chip row (py-1 + 12px text
  *  ≈ 26px) + py-2 (16px) + border-t (1px). Keep in sync with SessionRefStrip. */
 const SESSION_REF_STRIP_H = 43
@@ -410,7 +414,7 @@ interface ChatInputProps {
   onOptimizeResult?: (slotId: string | null, optimized: string) => void
 }
 
-/** Accent pill on a downscaled attachment chip. Hover (or focus) shows a
+/** Accent pill under a downscaled attachment chip. Hover (or focus) shows a
  *  styled tooltip with the resize details, portal-rendered above the chip so
  *  the strip's overflow-x-auto can't clip it. */
 function ResizeBadge({ resize }: { resize: ResizeInfo }) {
@@ -423,11 +427,21 @@ function ResizeBadge({ resize }: { resize: ResizeInfo }) {
   const hide = () => setTip(null)
   return (
     <>
+      {/* In flow under the thumbnail, not overlaid on it. The chip's width comes
+          from the image's aspect ratio, so an overlaid pill has no width to fit
+          into: a phone screenshot gives it a 48px chip, while the widest catalog
+          values need 105px (bn) and 104px (de). Overlaid, that ends as one of
+          two defects — an unbreakable Latin word spilling sideways onto the
+          neighbouring chip, or a per-character-breaking script stacking down and
+          covering the thumbnail. In flow, the chip is simply as wide as the
+          wider of image and pill, so each locale pays only its own width and the
+          thumbnail is never covered in any of them. `whitespace-nowrap` is what
+          makes the chip grow instead of the pill wrapping. */}
       <span
         ref={ref}
         tabIndex={0}
         aria-label={i18nT('components.chatInput.resized_to_fit_model_limits_2', { fromW: resize.fromW, fromH: resize.fromH, toW: resize.toW, toH: resize.toH })}
-        className="absolute bottom-1 left-1 z-10 px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default"
+        className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent text-accent-fg shadow-sm cursor-default whitespace-nowrap"
         onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}
       >{i18nT('components.chatInput.resized')}</span>
       {tip && createPortal(
@@ -450,13 +464,23 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
   const nonImgs = files.filter(p => !IMG_EXT.test(p))
   if (!imgs.length && !nonImgs.length && !dirs.length) return null
   return (
-    // NOTE: rendered height must match FILE_PREVIEW_H constant, update both together
-    <div className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-end" data-image-scope="">
+    // NOTE: rendered height must match FILE_PREVIEW_H / FILE_PREVIEW_H_RESIZED,
+    // update them together.
+    // items-start, not items-end: a chip carrying a resize pill is taller than a
+    // plain one, and bottom-alignment would spend that difference staggering the
+    // THUMBNAILS (the thing being compared) instead of letting the pills hang.
+    <div className="flex gap-2 px-5 py-2 border-t border-border bg-chrome/50 overflow-x-auto items-start" data-image-scope="">
       {imgs.map((path, i) => {
         const src = `/api/file-raw?path=${encodeURIComponent(path)}`
         const resize = resizedInfo?.[path]
         return (
-          <div key={path} className="relative group/preview shrink-0" title={path}>
+          <div key={path} className="group/preview shrink-0 flex flex-col items-start gap-0.5" title={path}>
+            {/* The corner controls anchor to the IMAGE, not to the chip: the chip
+                is as wide as the wider of image and resize pill, so a locale
+                whose pill is wider than the thumbnail (de: 104px pill, 48px
+                image) would otherwise strand the remove button 52px out in the
+                empty space beside the thumbnail it removes. */}
+            <div className="relative">
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
             <button
               type="button"
@@ -464,10 +488,19 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
               className="block cursor-pointer"
               onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
             >
-              <img src={src} alt={path} className="h-16 rounded border border-border object-contain hover:opacity-80 transition-opacity"
+              {/* min-w: the chip's height is fixed and its width follows the
+                  aspect ratio, so a 1170x2532 phone screenshot renders 31px
+                  wide — too narrow to tell one screenshot from another. This is
+                  a floor on recognisability, not part of the overlap fix: with
+                  the pill in flow the overlap is 0 at any width. bg-bg-hover
+                  backs the letterbox bands the floor creates, so the border
+                  reads as a tile rather than a partly-empty frame; it applies to
+                  every image chip, including transparent PNGs. No ceiling: a
+                  panorama makes a wide chip and scrolls its siblings out of view
+                  in this overflow-x-auto strip, but nobody has reported that. */}
+              <img src={src} alt={path} className="h-16 min-w-12 rounded border border-border object-contain bg-bg-hover hover:opacity-80 transition-opacity"
                 data-lightbox-image="" />
             </button>
-            {resize && <ResizeBadge resize={resize} />}
             {onRemove && (
               <button
                 aria-label={i18nT('components.chatInput.remove')}
@@ -475,6 +508,8 @@ function FilePreviewStrip({ files, dirs = [], resizedInfo, onRemove, onRemoveDir
                 onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')}
               ><X className="lucide-inline" /></button>
             )}
+            </div>
+            {resize && <ResizeBadge resize={resize} />}
           </div>
         )
       })}
@@ -2051,12 +2086,16 @@ function ChatInput({
   // compensation must key off both staged families — otherwise a dirs-only
   // strip appears with no wrapper expansion and eats into the textarea.
   const hasFiles = pendingFiles.length > 0 || pendingDirs.length > 0
+  // A resize pill makes the strip taller, so the compensation has to know about
+  // it — otherwise the extra row eats into the textarea.
+  const hasResizedFile = pendingFiles.some(p => IMG_EXT.test(p) && !!resizedInfo?.[p])
   const hasSessionRefs = pendingSessions.length > 0
   /** Combined height of every strip currently stacked above the textarea. The
    *  manual-resize floor and the transient height adjustment below both work off
    *  this total, so adding a strip can never leave one of them counting only
    *  attachments. */
-  const stripH = (hasFiles ? FILE_PREVIEW_H : 0) + (hasSessionRefs ? SESSION_REF_STRIP_H : 0)
+  const stripH = (hasFiles ? (hasResizedFile ? FILE_PREVIEW_H_RESIZED : FILE_PREVIEW_H) : 0)
+    + (hasSessionRefs ? SESSION_REF_STRIP_H : 0)
   const prevStripH = useRef(stripH)
   const dragMinH = INPUT_DRAG_MIN_H + stripH
   const dragMinHRef = useRef(dragMinH)
