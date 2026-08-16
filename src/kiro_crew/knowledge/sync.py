@@ -71,15 +71,23 @@ class SyncScheduler:
         updates = {"properties": props}
         if failures >= MAX_FAILURES:
             props["sync_status"] = "error"
+            # Write the column too, so the reader below (and the dashboard, which
+            # reads the column) observes the error regardless of which store it checks.
+            updates["sync_status"] = "error"
             logger.warning("Source %s reached %d failures, marking as error", source_id, failures)
         self.store.update_source(source_id, **updates)
 
     async def sync_all(self) -> list[dict]:
-        rows = self.store.db.execute("SELECT id, properties FROM sources").fetchall()
+        rows = self.store.db.execute(
+            "SELECT id, properties, sync_status FROM sources").fetchall()
         results = []
         for row in rows:
+            # sync_status lives in two stores: KnowledgeIngestion writes the COLUMN,
+            # while _record_failure historically wrote only the properties JSON. Treat
+            # an 'error' value in EITHER store as errored so both writers are observed
+            # and legacy JSON-only rows are still skipped.
             props = json.loads(row["properties"] or "{}")
-            if props.get("sync_status") == "error":
+            if row["sync_status"] == "error" or props.get("sync_status") == "error":
                 continue
             results.append(await self.sync_source(row["id"]))
         return results

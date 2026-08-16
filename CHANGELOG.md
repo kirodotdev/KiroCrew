@@ -4,6 +4,18 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **A knowledge source that errored during ingestion is no longer re-synced on
+  every sweep.** `KnowledgeIngestion` marks failure in the `sync_status`
+  **column**, but `SyncScheduler.sync_all`'s skip predicate read only the
+  `sync_status` copy inside the properties JSON, which the ingestion path never
+  sets. So an ingestion-errored source (bad credentials, deleted remote,
+  unparseable content) was retried on every sweep forever, flooding logs with
+  the same failing network call and giving the user no way to quiesce it short
+  of deleting the source. `sync_all` now treats an `'error'` value in EITHER
+  store as errored (legacy JSON-only rows are still skipped), and
+  `_record_failure` writes the column alongside the properties copy it keeps for
+  `consecutive_failures`.
+
 - **`test_redaction_timing_scales_linearly` no longer fails CI
   intermittently** (observed "Redaction scaled super-linearly: 3.2x, limit
   3.0x" on an otherwise-healthy matcher). The test took ONE

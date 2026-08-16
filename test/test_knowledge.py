@@ -19,6 +19,7 @@ from kiro_crew.knowledge.extractor import EntityExtractor
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever, _bytes_to_floats
 from kiro_crew.knowledge.store import KnowledgeStore, SimpleDiGraph
+from kiro_crew.knowledge.sync import SyncScheduler
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1888,3 +1889,59 @@ class TestEntityExtractorNonceDelimiters:
             nonces.append(nonce)
         # Per-chunk uuid: the two chunks must NOT share a nonce.
         assert nonces[0] != nonces[1], "each chunk must get a distinct per-chunk nonce"
+
+
+# ---------------------------------------------------------------------------
+# SyncScheduler.sync_all -- errored sources must be quiesced (issue #3946)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestSyncAllSkipsErroredSources:
+    """sync_all must skip a source marked errored by EITHER writer.
+
+    KnowledgeIngestion marks failure in the sync_status COLUMN, while
+    SyncScheduler._record_failure historically wrote only the properties JSON.
+    sync_all must observe both so an errored source is never re-synced forever.
+    """
+
+    def _scheduler(self, store):
+        scheduler = SyncScheduler(store, pipeline=None, connectors={})
+        attempted: list[str] = []
+
+        async def _spy(source_id: str) -> dict:
+            attempted.append(source_id)
+            return {"synced": False, "items_created": 0, "error": None}
+
+        scheduler.sync_source = _spy  # type: ignore[method-assign]
+        return scheduler, attempted
+
+    async def test_column_only_error_is_skipped(self, store):
+        # A healthy source that should still be attempted.
+        ok_id = store.add_source("Healthy", "local_file", "/tmp/ok")
+        # A source errored the way ingestion.py does it: COLUMN only, no
+        # sync_status entry in the properties JSON.
+        err_id = store.add_source("Dead", "local_file", "/tmp/dead")
+        store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (err_id,))
+        store.db.commit()
+        # Guard: the failing writer really left the JSON untouched.
+        row = store.db.execute("SELECT properties FROM sources WHERE id = ?", (err_id,)).fetchone()
+        assert json.loads(row["properties"] or "{}").get("sync_status") is None
+
+        scheduler, attempted = self._scheduler(store)
+        await scheduler.sync_all()
+
+        assert err_id not in attempted, "column-only errored source must be skipped"
+        assert ok_id in attempted, "healthy source must still be synced"
+
+    async def test_legacy_json_only_error_is_still_skipped(self, store):
+        # A source errored the old way: sync_status lives only in the
+        # properties JSON, column falls back to its 'pending' default.
+        err_id = store.add_source("LegacyDead", "local_file", "/tmp/legacy",
+                                  properties={"sync_status": "error"})
+        col = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (err_id,)).fetchone()
+        assert col["sync_status"] != "error", "column should be pending for the legacy case"
+
+        scheduler, attempted = self._scheduler(store)
+        await scheduler.sync_all()
+
+        assert err_id not in attempted, "legacy JSON-only errored source must still be skipped"
