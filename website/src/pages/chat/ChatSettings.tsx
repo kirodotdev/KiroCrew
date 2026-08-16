@@ -49,7 +49,16 @@ export type FollowUpLayout = 'multiline' | 'scroll'
 export type StreamMode = 'immediate' | 'smooth'
 
 const LS_KEY = 'mc-chat-config'
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: true, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true }
+/** `tagColumnsEnabled` MUST default to false: board-vs-list is derived from
+ *  this client-only flag AND the server-side column list, so a default of true
+ *  means any client with no stored config (a new user, a second browser, a
+ *  fresh Electron profile, a synced instance that inherited tag_boards.json,
+ *  or a client whose quota-safe write was dropped) opens straight into board
+ *  view the moment one column exists on the gateway — without anyone choosing
+ *  it. The sidebar's view toggle persists this flag BEFORE creating its first
+ *  column, so a deliberate board user always has an explicit `true` stored and
+ *  is unaffected by the default. */
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])

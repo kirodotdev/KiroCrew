@@ -12,6 +12,13 @@ async function primeBrowser(page: Page, width = 1400) {
     window.localStorage.setItem('mc-onboarded', '1')
     window.localStorage.setItem('mc-sidebar-width', String(w))
     window.localStorage.removeItem('mc-session-tag-filter')
+    // Board view is opt-in, so a spec that seeds columns over the API and then
+    // asserts on the rendered board must state that precondition itself. The
+    // two toggle specs below overwrite this back to false in their own
+    // addInitScript, which runs after this one.
+    const cfg = JSON.parse(localStorage.getItem('mc-chat-config') || '{}')
+    cfg.tagColumnsEnabled = true
+    localStorage.setItem('mc-chat-config', JSON.stringify(cfg))
   }, width)
   await page.setViewportSize({ width: 1800, height: 1000 })
 }

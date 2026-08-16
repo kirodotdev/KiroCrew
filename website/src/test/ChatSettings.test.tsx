@@ -23,6 +23,18 @@ describe('loadChatConfig', () => {
     expect(loadChatConfig().confirmCloseSession).toBe(false)
   })
 
+  // Board view is opt-in: a client with no stored config must not inherit it,
+  // or a gateway that already holds one tag column puts every fresh client
+  // (new user, second browser, synced instance) into board view unasked.
+  it('leaves board view off by default', () => {
+    expect(loadChatConfig().tagColumnsEnabled).toBe(false)
+  })
+
+  it('respects a stored board-view opt-in', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ tagColumnsEnabled: true }))
+    expect(loadChatConfig().tagColumnsEnabled).toBe(true)
+  })
+
   it('respects stored confirmCloseSession=true', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ confirmCloseSession: true }))
     expect(loadChatConfig().confirmCloseSession).toBe(true)
