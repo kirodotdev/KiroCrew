@@ -1609,7 +1609,20 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    contents adapt to it. */
 .tb-left,.tb-right{container-type:inline-size;min-width:0;display:flex;align-items:center;overflow:hidden}
 .tb-left{justify-content:flex-start;gap:.5rem}
-.tb-right{justify-content:flex-end;gap:.375rem}
+/* The actions group ends flush with the header's own padding edge, and the
+   notification bell's unread badge is deliberately offset 4px past the button's
+   top-right corner (`-top-1 -right-1` in App.tsx). `overflow:hidden` clipped
+   exactly that overhang, squaring the badge's right edge off and cutting into a
+   two-digit count.
+   The padding reserves the overhang INSIDE the clip box (which is the padding
+   box), and the equal negative margin puts the outer box back where it was, so
+   the bell does not move, the header does not change height, and the group's
+   CONTENT box -- what the @container ladder below queries -- keeps the width the
+   track gives it. Deliberately NOT `overflow-clip-margin`: WebKit does not
+   implement it, so on every iOS browser that spelling would leave the badge
+   clipped exactly as before. Keep both values equal to the badge's offset: less
+   re-clips it, more lets real content escape into the header's padding. */
+.tb-right{justify-content:flex-end;gap:.375rem;padding:4px 4px 0 0;margin:-4px -4px 0 0}
 
 /* …except where the track asks the group for a size. The containment above is
    sound while both side tracks are `minmax(0,1fr)`, because the window sizes them
