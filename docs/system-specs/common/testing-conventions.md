@@ -175,6 +175,13 @@ silently gone, and two of the defaults are load-bearing:
   20 minutes of zero progress and an empty log. Two replacements absorb a genuine
   one-off crash; past that the run is not going to finish.
 
+When worker replacement itself ends in an xdist INTERNALERROR (exit 3, no
+`short test summary info` at all -- the scheduler can die with a `KeyError` on a
+replaced node), `test/conftest.py`'s `pytest_internalerror` hook prints an
+`xdist run ABANDONED` banner to stderr replaying the crashed workers and the
+tests they were running, so the red stays diagnosable. The run still exits
+non-zero; the banner only preserves the report the crash would otherwise erase.
+
 So any override that still runs MANY tests must carry
 `-n auto --dist loadgroup --max-worker-restart=2`:
 
