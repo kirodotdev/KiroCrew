@@ -24,6 +24,9 @@ import pytest
 
 from kiro_crew.apps.manager import AppResult
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 DENIAL_CODE = "app_execution_denied"
 
 
@@ -152,5 +155,5 @@ def test_denial_code_matches_the_open_command_route():
     place, this fails rather than leaving the affordance silently dead on the
     other paths.
     """
-    src = Path("src/kiro_crew/apps/routes.py").read_text(encoding="utf-8")
+    src = (_REPO_ROOT / "src/kiro_crew/apps/routes.py").read_text(encoding="utf-8")
     assert f'"code": "{DENIAL_CODE}"' in src

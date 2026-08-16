@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
@@ -16,6 +17,9 @@ from kiro_crew.apps.manifest import (
     SetupConfig,
 )
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -707,11 +711,10 @@ class TestDependencies:
         silent, so the useful thing to pin is the general property.
         """
         import json
-        from pathlib import Path
 
         from kiro_crew.apps.manifest import AppManifest
 
-        builtins = Path("src/kiro_crew/apps/builtins")
+        builtins = _REPO_ROOT / "src/kiro_crew/apps/builtins"
         for app_json in sorted(builtins.glob("*/app.json")):
             raw = json.loads(app_json.read_text(encoding="utf-8"))
             declared = raw.get("dependencies") or {}
@@ -981,7 +984,6 @@ class TestRequiresDesktopApp:
 
     def test_mochi_builtin_declares_it(self):
         """Mochi is the first consumer: its panel needs the Electron shell."""
-        from pathlib import Path
 
         import kiro_crew.apps.builtins as builtins_pkg
 

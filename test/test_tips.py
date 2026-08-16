@@ -29,6 +29,8 @@ from kiro_crew.tips import (
 )
 from kiro_crew.tips_text import truncate_summary
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 class TestCatalogParsing:
     def test_scan_docs_catalog_finds_entries(self) -> None:
@@ -719,7 +721,7 @@ class TestCatalogAllowlist:
         """Catch allowlist drift: every listed doc must exist in the docs dir."""
         from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
-        docs_dir = Path("src/kiro_crew/docs")
+        docs_dir = _REPO_ROOT / "src/kiro_crew/docs"
         if not docs_dir.is_dir():  # running from an installed package
             import kiro_crew
 

@@ -17,6 +17,8 @@ from kiro_crew.dashboard.handlers.agents import (
 )
 from kiro_crew.mcp_provenance import without_marker
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture()
 def mcp_env(tmp_path: Path):
@@ -1260,10 +1262,9 @@ class TestOffloadedSyncHoldsTheConfigLock:
     """
 
     def test_every_offloaded_sync_is_under_the_config_lock(self) -> None:
-        from pathlib import Path
 
         lines = (
-            Path("src/kiro_crew/dashboard/handlers/mcp.py").read_text(encoding="utf-8").splitlines()
+            (_REPO_ROOT / "src/kiro_crew/dashboard/handlers/mcp.py").read_text(encoding="utf-8").splitlines()
         )
         offenders: list[str] = []
         for i, ln in enumerate(lines):

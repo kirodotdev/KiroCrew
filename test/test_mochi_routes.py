@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,6 +17,8 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.backend import routes
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Ctx:
@@ -897,7 +900,6 @@ class TestNoLockingCallRunsOnTheEventLoop:
 
     def test_every_locking_call_in_async_code_is_offloaded(self) -> None:
         import ast
-        from pathlib import Path
 
         locking = {
             "add_pin",
@@ -914,7 +916,7 @@ class TestNoLockingCallRunsOnTheEventLoop:
             "cancel_watch_item",
             "remove_watch_item",
         }
-        root = Path("src/kiro_crew/apps/builtins/mochi")
+        root = _REPO_ROOT / "src/kiro_crew/apps/builtins/mochi"
         offenders: list[str] = []
         scanned = 0
         for path in sorted(root.rglob("*.py")):
@@ -967,10 +969,9 @@ class TestTheOwnerLoopNeverBlocksOnDisk:
 
     def test_every_disk_bound_tick_is_offloaded(self) -> None:
         import ast
-        from pathlib import Path
 
         tree = ast.parse(
-            Path("src/kiro_crew/apps/builtins/mochi/hooks.py").read_text(encoding="utf-8")
+            (_REPO_ROOT / "src/kiro_crew/apps/builtins/mochi/hooks.py").read_text(encoding="utf-8")
         )
 
         def receiver(call: ast.Call) -> tuple[str, str] | None:
@@ -1018,10 +1019,9 @@ class TestSettingsAndDisplayWritesAreOffloaded:
 
     def test_no_bare_blocking_write_on_an_async_route(self) -> None:
         import re
-        from pathlib import Path
 
         lines = (
-            Path("src/kiro_crew/apps/builtins/mochi/backend/routes.py")
+            (_REPO_ROOT / "src/kiro_crew/apps/builtins/mochi/backend/routes.py")
             .read_text(encoding="utf-8")
             .splitlines()
         )
@@ -1194,7 +1194,6 @@ class TestQueueFilenameHasOneDefinition:
 
     def test_no_module_redefines_the_literal(self):
         """A future copy-paste must fail here rather than drift silently."""
-        from pathlib import Path
 
         from kiro_crew.apps.builtins.mochi import queue_file
 

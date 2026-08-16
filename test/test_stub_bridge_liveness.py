@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,8 @@ from kiro_crew.mcp_gateway.stub import (
     BridgeLivenessFailure,
     run_bridge,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Pin to one xdist worker (requires --dist loadgroup) alongside the other
 # mcp_gateway suites.
@@ -393,9 +396,7 @@ class TestLivenessIsNegotiated:
         session's tools are lost either way, and exec would additionally discard
         the socket a future reconnect could reuse.
         """
-        from pathlib import Path
-
-        src = Path("src/kiro_crew/mcp_gateway/stub.py").read_text(encoding="utf-8")
+        src = (_REPO_ROOT / "src/kiro_crew/mcp_gateway/stub.py").read_text(encoding="utf-8")
         marker = "if liveness_failure is not None:"
         assert marker in src
         tail = src[src.index(marker):]

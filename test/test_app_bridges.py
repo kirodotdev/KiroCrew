@@ -36,6 +36,9 @@ from kiro_crew.apps.bridges import (
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -2575,7 +2578,6 @@ class TestBuiltinAgentNamesAreNamespaced:
     """
 
     def _builtin_dirs(self):
-        from pathlib import Path
 
         import kiro_crew.apps.builtins as builtins_pkg
 
@@ -2725,7 +2727,6 @@ class TestUserAgentEditsSurviveRefresh:
         anywhere says so.
         """
         import json
-        from pathlib import Path
 
         from kiro_crew.apps.bridges import _FRAMEWORK_OWNED_AGENT_KEYS
 
@@ -2743,7 +2744,7 @@ class TestUserAgentEditsSurviveRefresh:
         preferences = {
             "description", "model", "toolsSettings", "$schema", "welcomeMessage", "skills",
         }
-        root = Path("src/kiro_crew/apps/builtins")
+        root = _REPO_ROOT / "src/kiro_crew/apps/builtins"
         templates = sorted(root.glob("*/agents/*.json"))
         if not templates:
             # Same reasoning as the namespacing guard above: nothing ships an
@@ -3173,9 +3174,8 @@ class TestMcpEnableHandlersOffloadTheSync:
 
     def test_handlers_offload_sync_to_agent(self) -> None:
         import re
-        from pathlib import Path
 
-        src = Path("src/kiro_crew/dashboard/handlers/mcp.py").read_text(encoding="utf-8")
+        src = (_REPO_ROOT / "src/kiro_crew/dashboard/handlers/mcp.py").read_text(encoding="utf-8")
         # No bare synchronous call to a PUBLIC sync-to-agent function inside an
         # async handler: every such invocation is wrapped in asyncio.to_thread.
         # The `_unlocked` variants are the sync locking-wrapper's own delegation
