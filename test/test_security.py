@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import random
+import re
 import string
 import sys
 from pathlib import Path
@@ -5885,3 +5886,240 @@ class TestDashboardLinkTokenAcrossHostForms:
 
         assert scan_exfiltration_urls(f"http://localhost:7778/?token={self._TOKEN}") == []
         assert scan_exfiltration_urls(f"http://127.0.0.1:7778/?token={self._TOKEN}") != []
+
+
+class TestSelSegmentDirectoryIsSensitive:
+    """Sealed SEL segments live in ``<crew>/sel/`` and are read+write blocked.
+
+    Rotation turns ``security_events.jsonl`` into a family of files that all hold
+    real audit history. They are sealed into a SUBDIRECTORY, so one registered
+    entry covers the family and, unlike an enumeration of existing siblings, it
+    also covers a member created after the gate was built.
+    """
+
+    # Names rotation produces, plus one number this release has never emitted --
+    # that last case is the point of a directory entry over an enumeration.
+    MEMBERS = (
+        "security_events.jsonl.1",
+        "security_events.jsonl.2",
+        "security_events.jsonl.5",
+        "security_events.jsonl.999999",
+        "evicted",
+    )
+
+    def test_segment_dir_is_derived_from_crew_home_prefixes(self):
+        """The entry must be DERIVED, not a hardcoded home-relative literal.
+
+        A literal that did not match the real home would silently un-protect the
+        whole audit family and nothing would fail.
+        """
+        assert "sel" in security._CREW_SECRET_LEAVES
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert f"{prefix}/sel" in security._SENSITIVE_HOME_DIRS
+        # Covers the current home AND the not-yet-migrated legacy home.
+        assert ".kiro/crew/sel" in security._SENSITIVE_HOME_DIRS
+        assert ".kirocrew/sel" in security._SENSITIVE_HOME_DIRS
+
+    def test_base_file_still_blocked(self):
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert is_sensitive_path(f"~/{prefix}/security_events.jsonl") is True
+
+    def test_segment_dir_itself_is_blocked(self):
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert is_sensitive_path(f"~/{prefix}/sel") is True
+
+    @pytest.mark.parametrize("member", MEMBERS)
+    def test_member_is_read_blocked(self, member):
+        for prefix in security._CREW_HOME_PREFIXES:
+            path = f"~/{prefix}/sel/{member}"
+            assert is_sensitive_path(path) is True, path
+
+    @pytest.mark.parametrize("member", MEMBERS)
+    def test_member_is_write_blocked(self, member):
+        for prefix in security._CREW_HOME_PREFIXES:
+            path = f"~/{prefix}/sel/{member}"
+            assert security.is_sensitive_write_path(path) is True, path
+
+    @pytest.mark.parametrize("member", MEMBERS)
+    def test_member_blocked_via_absolute_home_path(self, member):
+        home = str(Path.home())
+        for prefix in security._CREW_HOME_PREFIXES:
+            path = f"{home}/{prefix}/sel/{member}"
+            assert is_sensitive_path(path) is True, path
+
+    def test_a_never_before_seen_name_is_covered(self):
+        """The property an enumeration could not have.
+
+        A hide-set or matcher built by listing existing siblings covers only the
+        names present when it was built. A directory entry covers whatever appears
+        later, which is what closes the window where a segment sealed moments after
+        the snapshot was readable.
+        """
+        for prefix in security._CREW_HOME_PREFIXES:
+            for name in ("a-name-no-release-emits", "nested/deeper/file"):
+                path = f"~/{prefix}/sel/{name}"
+                assert is_sensitive_path(path) is True, path
+
+    def test_non_dotted_sibling_of_the_base_file_is_not_blocked(self):
+        """NEGATIVE CONTROL: the gate must not swallow a merely-similar name."""
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert is_sensitive_path(f"~/{prefix}/security_events.jsonl2") is False
+            assert is_sensitive_path(f"~/{prefix}/security_events.jsonlX") is False
+
+    def test_a_similarly_named_sibling_directory_is_not_blocked(self):
+        """NEGATIVE CONTROL: the entry is a path boundary, not a string prefix."""
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert is_sensitive_path(f"~/{prefix}/sel2/anything") is False
+            assert is_sensitive_path(f"~/{prefix}/selfie.txt") is False
+
+    def test_unrelated_home_file_is_not_blocked(self):
+        """NEGATIVE CONTROL: the entry must not widen the gate generally."""
+        assert is_sensitive_path("~/notes.txt") is False
+
+
+class TestSelSegmentDirectoryBashMatcher:
+    """The bash-command matchers must see the segment directory too."""
+
+    MEMBERS = ("security_events.jsonl.1", "security_events.jsonl.2", "evicted")
+
+    @pytest.mark.parametrize("member", MEMBERS)
+    def test_read_verb_on_a_member_is_flagged(self, member):
+        for prefix in security._CREW_HOME_PREFIXES:
+            cmd = f"cat ~/{prefix}/sel/{member}"
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    @pytest.mark.parametrize("member", MEMBERS)
+    def test_home_var_spelling_is_flagged(self, member):
+        for prefix in security._CREW_HOME_PREFIXES:
+            cmd = f"cat $HOME/{prefix}/sel/{member}"
+            assert is_sensitive_bash_command(cmd) is not None, cmd
+
+    def test_redirect_write_to_a_member_is_flagged(self):
+        cmd = "echo forged > ~/.kiro/crew/sel/security_events.jsonl.1"
+        assert is_sensitive_bash_command(cmd) is not None
+
+    def test_verb_independent_token_is_flagged(self):
+        """A novel verb the allowlist never saw must still be caught."""
+        cmd = "some-unknown-tool --in ~/.kiro/crew/sel/security_events.jsonl.3"
+        assert is_sensitive_bash_command(cmd) is not None
+
+    def test_windows_native_spelling_is_flagged(self):
+        cmd = r"type C:\Users\someone\.kiro\crew\sel\security_events.jsonl.1"
+        assert is_sensitive_bash_command(cmd) is not None
+
+    def test_relative_traversal_symlink_staging_is_flagged(self):
+        cmd = "ln -sf ../../.kiro/crew/sel/security_events.jsonl.1 link"
+        assert is_sensitive_bash_command(cmd) is not None
+
+    def test_similar_sibling_directory_is_not_flagged(self):
+        """NEGATIVE CONTROL for the matcher's path boundary."""
+        assert is_sensitive_bash_command("cat ~/.kiro/crew/sel2/x") is None
+
+    def test_benign_command_is_not_flagged(self):
+        """NEGATIVE CONTROL: the alternation must not match everything."""
+        assert is_sensitive_bash_command("cat ~/notes.txt") is None
+        assert is_sensitive_bash_command("ls ~/") is None
+
+
+class TestSelSegmentDirectoryHomeOverride:
+    """A custom KIROCREW_HOME must relocate the segment directory with the log."""
+
+    def test_segment_dir_is_reanchored_under_kirocrew_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        assert is_sensitive_path(str(tmp_path / "security_events.jsonl")) is True
+        for member in ("security_events.jsonl.1", "evicted", "security_events.jsonl.999"):
+            path = str(tmp_path / "sel" / member)
+            assert is_sensitive_path(path) is True, path
+            assert security.is_sensitive_write_path(path) is True, path
+
+    def test_similar_sibling_under_override_is_not_blocked(self, tmp_path, monkeypatch):
+        """NEGATIVE CONTROL under the override path."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        assert is_sensitive_path(str(tmp_path / "security_events.jsonl2")) is False
+        assert is_sensitive_path(str(tmp_path / "sel2" / "x")) is False
+
+
+class TestSensitivePathListInvariants:
+    def test_sensitive_dir_list_is_non_empty(self):
+        """An empty alternation silently disables detection — guard it."""
+        assert security._SENSITIVE_HOME_DIRS
+
+    def test_no_entry_needs_the_appdata_alias_branch(self):
+        """The %APPDATA% branch only covers AppData/Roaming/ entries.
+
+        If a crew leaf ever lands under that prefix, the appdata alternation must
+        be extended too. Assert none does, so the omission stays correct rather
+        than becoming a silent hole.
+        """
+        crew_entries = [
+            f"{prefix}/{leaf}"
+            for prefix in security._CREW_HOME_PREFIXES
+            for leaf in security._CREW_SECRET_LEAVES
+        ]
+        assert [d for d in crew_entries if d.startswith("AppData/Roaming/")] == []
+
+    def test_containing_directory_is_still_reported_sensitive(self):
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert security.path_contains_sensitive(f"~/{prefix}") is True
+
+
+class TestSelSegmentDirPosixBranchIsPinned:
+    """The POSIX alternation must carry the segment directory in its OWN right.
+
+    Behaviourally the entry is matched even with the POSIX branch removed, because
+    ``win_sep`` is ``[\\\\/]`` — it accepts a FORWARD slash, so the Windows-native
+    branch also matches POSIX spellings and shadows the POSIX one. That shadowing
+    is incidental, not designed: tightening the Windows matcher to backslash-only
+    (the obvious "correct" change for a Windows-only branch) would silently drop
+    POSIX coverage, and no behavioural test would notice.
+    """
+
+    def test_posix_alternation_contains_the_segment_dir(self):
+        pattern = security._build_sensitive_regex().pattern
+        for prefix in security._CREW_HOME_PREFIXES:
+            assert re.escape(f"{prefix}/sel") in pattern, prefix
+
+    def test_windows_branch_still_uses_a_permissive_separator(self):
+        """Documents the shadowing precondition, so a change to it is visible."""
+        pattern = security._build_sensitive_regex().pattern
+        assert r"[\\/]" in pattern
+
+
+class TestSensitivePathAlternationSourcesAreNeverEmpty:
+    """Guards the fail-OPEN that an empty regex alternation would cause.
+
+    ``_SENSITIVE_HOME_DIRS`` is joined with `"|".join` into an alternation. An
+    empty list collapses to `""`, and `(?:)` matches the empty string, so the
+    matcher stops keying on any specific path. Retiring the SEL prefix family left
+    this as the single alternation source, which is why it is the only one pinned
+    here. This lives in a test rather than an import-time `raise` because the list
+    is a non-empty literal built in the module, so a runtime check could not fire
+    in any shipped build — it only ever guarded a future source edit.
+    """
+
+    PROBE = "cat ~/.kiro/crew/sel/security_events.jsonl.1"
+
+    def test_alternation_source_is_non_empty(self):
+        assert security._SENSITIVE_HOME_DIRS, "empty alternation disables path detection"
+
+    def test_the_probe_is_matched_while_the_source_is_populated(self):
+        """Positive control: the probe must match NORMALLY, else the test below is vacuous."""
+        assert security._build_sensitive_regex().search(self.PROBE) is not None
+
+    def test_an_empty_source_degrades_the_alternation(self, monkeypatch):
+        """Proves the invariant is load-bearing, in the direction that is measurable.
+
+        Measured: with the list emptied the probe stops matching ENTIRELY. That is
+        a stronger, cleaner fail-open demonstration than the prefix-family layout
+        allowed -- there, an empty family branch plus the shared terminator left a
+        bare `~/.kiro/` satisfiable, so the matcher kept matching something and the
+        test could only assert that WHAT matched had changed.
+        """
+        normal = security._build_sensitive_regex().search(self.PROBE)
+        assert normal is not None and "/sel/" in normal.group(0), (
+            "positive control: normally the segment directory itself is matched"
+        )
+        monkeypatch.setattr(security, "_SENSITIVE_HOME_DIRS", [])
+        assert security._build_sensitive_regex().search(self.PROBE) is None, (
+            "emptying the alternation source must stop matching the segment path"
+        )

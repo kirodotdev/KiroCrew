@@ -132,10 +132,17 @@ class TestDerivation:
 
     def test_sensitive_paths_tracks_the_live_blocklist(self, snapshot):
         control = self._control(snapshot, "sensitive_paths")
+        # ONE source again. Sealed SEL segments are covered by the `sel` directory
+        # entry inside sensitive_home_dirs(), so this surface no longer merges a second
+        # accessor with different semantics -- the split that let two consumers miss
+        # the segments in the first place.
         assert control["count"] == len(security.sensitive_home_dirs())
         labels = {i["label"] for i in control["items"]}
         assert "~/.aws" in labels
         assert "~/.ssh" in labels
+        assert any(
+            label.endswith("/sel") for label in labels
+        ), "the sealed-segment directory is not shown on the posture surface"
 
     def test_write_protected_paths_tracks_the_live_list(self, snapshot):
         control = self._control(snapshot, "write_protected_paths")

@@ -1285,3 +1285,131 @@ class TestSandboxRefusalIsReportedNotSwallowed:
         assert wrap.call_count == 1
         # `strict`, not a weaker tier chosen to make the spawn succeed.
         assert _spawn_mode(wrap) == "strict"
+
+
+class TestSealedAuditSegmentsAreHiddenFromTheCompiler:
+    """Sealed SEL segments must be unreadable to the TeX compiler.
+
+    They live in `<crew>/sel/`, which `sensitive_home_dirs()` lists, and the sandbox
+    hides a directory as a whole. That is what covers a segment sealed AFTER the
+    hide-set was built; an earlier revision enumerated dot-suffixed siblings, which
+    could only ever hide the names that existed at snapshot time.
+    """
+
+    def test_the_segment_directory_is_in_the_hide_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        from kiro_crew.config.loader import config_dir
+
+        crew = Path(config_dir())
+        crew.mkdir(parents=True, exist_ok=True)
+        base = crew / "security_events.jsonl"
+        base.write_text("{}\n", encoding="utf-8")
+        segdir = crew / "sel"
+        segdir.mkdir(parents=True, exist_ok=True)
+
+        hidden = set(latex._sensitive_hidden_dirs())
+
+        # Control: the base log is covered either way, so its presence proves the
+        # hide-set resolved this data home at all and a miss below is the segments'.
+        assert str(base) in hidden, "control failed: even the base audit log is not hidden"
+        assert str(segdir) in hidden, (
+            "the sealed-segment directory is not hidden from the compiler, so a "
+            "hostile document could read rotated audit history"
+        )
+
+    def test_a_segment_sealed_after_the_snapshot_is_still_covered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property an enumeration could not provide.
+
+        The hide-set names the DIRECTORY, so it does not need rebuilding when a new
+        segment appears. Building the set BEFORE the segment exists and finding it
+        covered afterwards is what distinguishes this from a sibling glob.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        from kiro_crew.config.loader import config_dir
+
+        crew = Path(config_dir())
+        crew.mkdir(parents=True, exist_ok=True)
+        (crew / "security_events.jsonl").write_text("{}\n", encoding="utf-8")
+        segdir = crew / "sel"
+        segdir.mkdir(parents=True, exist_ok=True)
+
+        hidden = set(latex._sensitive_hidden_dirs())
+        # Sealed only NOW, after the hide-set was built.
+        later = segdir / "security_events.jsonl.7"
+        later.write_text("x", encoding="utf-8")
+        assert str(segdir) in hidden
+        assert str(later).startswith(str(segdir) + os.sep)
+
+    def test_an_unrelated_sibling_directory_is_not_hidden(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NEGATIVE CONTROL: the entry is a path boundary, not a string prefix."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        from kiro_crew.config.loader import config_dir
+
+        crew = Path(config_dir())
+        (crew / "sel2").mkdir(parents=True, exist_ok=True)
+        hidden = set(latex._sensitive_hidden_dirs())
+        assert str(crew / "sel2") not in hidden
+
+
+class TestHideSetIsBuiltOffTheEventLoop:
+    """`_sensitive_hidden_dirs()` globs the audit-segment family, so it is filesystem
+    I/O and must not run on the loop.
+
+    The trap is that only a `functools.partial`'s TARGET is deferred to the executor
+    — the expressions building its arguments run on the calling thread. So passing
+    `extra_hidden_dirs=_sensitive_hidden_dirs()` into the partial put the scan on the
+    loop even though the spawn itself was correctly offloaded.
+    """
+
+    def test_the_partial_defers_the_hide_set_computation(self) -> None:
+        """Structural: the executor target must COMPUTE the hide-set, not receive it.
+
+        Asserted on the source of `_run` rather than by timing, because a timing
+        assertion on a fast local filesystem would pass either way.
+        """
+        import inspect
+
+        src = inspect.getsource(latex._run)
+        assert "_sensitive_hidden_dirs()" not in src, (
+            "the hide-set is computed in _run, so it is evaluated on the loop as a "
+            "partial argument rather than inside the executor"
+        )
+        assert "_spawn_strict_sync" in src, "the executor target was not routed via the helper"
+        # Positive control: the helper it defers to is the thing that computes it.
+        helper_src = inspect.getsource(latex._spawn_strict_sync)
+        assert "_sensitive_hidden_dirs()" in helper_src
+        assert "sandboxed_spawn_argv" in helper_src, "the helper no longer spawns"
+
+    def test_the_helper_preserves_the_hide_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Moving the call must not drop coverage -- that would be a silent regression
+        on a sensitive-path surface, which is worse than the latency it fixes."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        from kiro_crew.config.loader import config_dir
+
+        crew = Path(config_dir())
+        crew.mkdir(parents=True, exist_ok=True)
+        (crew / "security_events.jsonl").write_text("{}\n", encoding="utf-8")
+        segdir = crew / "sel"
+        segdir.mkdir(parents=True, exist_ok=True)
+
+        captured: dict[str, object] = {}
+
+        def fake_spawn(argv, mode, *, env, extra_hidden_dirs):
+            captured["hidden"] = extra_hidden_dirs
+            return ("argv", "scrubbed", None)
+
+        monkeypatch.setattr(latex, "sandboxed_spawn_argv", fake_spawn)
+        latex._spawn_strict_sync(["pdflatex"], {})
+
+        assert str(segdir) in set(captured["hidden"]), (
+            "the sealed-segment directory is missing from the hide-set the spawn "
+            "receives"
+        )

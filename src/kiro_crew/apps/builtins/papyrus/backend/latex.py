@@ -314,6 +314,12 @@ def _sensitive_hidden_dirs() -> tuple[str, ...]:
     home = os.path.expanduser("~")
     rels = security.sensitive_home_dirs()
     paths = [os.path.join(home, rel) for rel in rels]
+    # NOTE on why there is no sibling enumeration here. SEL's sealed segments live in
+    # a subdirectory that `sensitive_home_dirs()` already lists, and the sandbox hides
+    # a directory as a whole -- so a segment created AFTER this hide-set is built is
+    # covered too. Enumerating dot-suffixed siblings, as an earlier revision did,
+    # could only ever hide the names that happened to exist at snapshot time, which
+    # left a file sealed moments later readable by the TeX compiler.
     # RE-ANCHOR the data-home leaves under the LIVE data home as well.
     #
     # `sensitive_home_dirs()` returns paths relative to `$HOME`, so its `.kiro/crew/*`
@@ -334,6 +340,21 @@ def _sensitive_hidden_dirs() -> tuple[str, ...]:
         if normalized.startswith(prefix):
             paths.append(os.path.join(data_home, normalized[len(prefix):]))
     return tuple(dict.fromkeys(paths))
+
+
+def _spawn_strict_sync(argv: list[str], env: dict[str, str]):
+    """Build the hide-set and spawn, both OFF the event loop.
+
+    ``_sensitive_hidden_dirs()`` globs the audit-segment family, so it does real
+    filesystem work. Evaluated as a ``functools.partial`` argument it would run on the
+    calling thread — the loop — because only the partial's TARGET is deferred to the
+    executor, not the expressions building its arguments. Computing it here means the
+    scan lands in the executor alongside the spawn, which is the same reason the
+    chokepoint itself is called off the loop (see :func:`_run`).
+    """
+    return sandboxed_spawn_argv(
+        argv, "strict", env=env, extra_hidden_dirs=_sensitive_hidden_dirs()
+    )
 
 
 async def _run(
@@ -385,13 +406,7 @@ async def _run(
     try:
         wrapped, scrubbed, cleanup = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
-            functools.partial(
-                sandboxed_spawn_argv,
-                argv,
-                "strict",
-                env=env,
-                extra_hidden_dirs=_sensitive_hidden_dirs(),
-            ),
+            functools.partial(_spawn_strict_sync, argv, env),
         )
     except SandboxUnavailableError as exc:
         # Fail-closed is CORRECT here and is deliberately not bypassed: this

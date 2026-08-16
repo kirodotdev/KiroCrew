@@ -4317,6 +4317,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # this gate.
     "trust",
     "security_events.jsonl",
+    # Sealed SEL segments and the eviction marker live in this SUBDIRECTORY, so
+    # one entry covers the whole rotation family: the exact-entry match below
+    # already treats a registered path as a subtree (``cand == base`` or
+    # ``cand.startswith(base + os.sep)``), which means a segment number this
+    # release has never emitted is protected the moment it is created. It
+    # replaces a prefix-family regex that had to be injected into four separate
+    # matchers and could only ever cover names that already existed.
+    "sel",
     "app_admission.json",
     "security_policy.json",
     "profiles",
@@ -4449,6 +4457,14 @@ _CREW_SECRET_LEAVES: list[str] = [
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
 ]
+
+
+# Both lists are joined into regex alternations ("|".join), and an empty list
+# collapses to "", where "(?:)" matches the empty string and silently removes the
+# credential-read protection. Both are non-empty literals built a few lines above,
+# so that state is unreachable in a shipped build; the invariant is pinned by
+# test_sensitive_path_alternation_sources_are_never_empty rather than by an
+# import-time check that can never fire.
 
 # ── Write-protected paths (block modification, allow reads) ──
 # Runtime config files carry security-relevant resource ceilings (concurrent
@@ -4840,7 +4856,8 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # plain separator, so ``%APPDATA%\.\kiro-cli\data.sqlite3`` and
     # ``...\AppData\Roaming\..\Roaming\kiro-cli\...`` still name the store.
     win_sensitive_path = (
-        rf"{win_home_alts}{win_gsep}(?:{win_dirs_pattern})(?:{win_sep}|\s|$|['\"])"
+        rf"{win_home_alts}{win_gsep}(?:{win_dirs_pattern})"
+        rf"(?:{win_sep}|\s|$|['\"])"
     )
     # ``%APPDATA%`` already points INTO ``AppData\Roaming``, so a spelling like
     # ``%APPDATA%\kiro-cli\data.sqlite3`` names a fenced store WITHOUT the
@@ -5286,7 +5303,6 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
 
     candidates = _candidate_forms(path_str, base_dir)
     sensitive_targets = _home_dir_targets(home_dirs)
-
     # Case-fold both sides for the membership test.  On a case-insensitive
     # filesystem (macOS APFS/HFS+ default — a supported platform) the OS opens
     # ``~/.kirocrew/Security_Policy.json`` and ``~/.kirocrew/security_policy.json``
@@ -5440,7 +5456,9 @@ _SENSITIVE_SEGMENT_ALT_ANYSEP = "|".join(
     for d in _SENSITIVE_HOME_DIRS
 )
 _RELATIVE_SENSITIVE_RE = re.compile(
-    rf"(?:^|[\s'\"=:,;])(?:\.\.?[\\/])+(?:{_SENSITIVE_SEGMENT_ALT_ANYSEP})(?:[\\/]|\s|$|['\"])",
+    rf"(?:^|[\s'\"=:,;])(?:\.\.?[\\/])+"
+    rf"(?:{_SENSITIVE_SEGMENT_ALT_ANYSEP})"
+    rf"(?:[\\/]|\s|$|['\"])",
     re.IGNORECASE,
 )
 
