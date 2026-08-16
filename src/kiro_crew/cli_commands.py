@@ -10,6 +10,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -74,7 +75,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.validation import _AGENT_NAME_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN, WORKSPACE_NAME_RE
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
 # working state, so letting --dir escape would let it be pointed at ~/.ssh or the
@@ -83,6 +84,14 @@ from kiro_crew.vector_memory import VectorMemoryStore
 _WS_DIR_OUTSIDE_HOME = (
     "Error: --dir must resolve inside the KiroCrew data home ({home}); got {given!r}. "
     "Pass a relative directory name (e.g. 'workspace-myproject')."
+)
+
+# Strip ANSI escape sequences and C0/C1 control characters from lesson text
+# before printing to the terminal, preventing OSC-based clipboard/title attacks.
+_TERMINAL_CTRL_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"  # CSI sequences
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences
+    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0/C1 controls (keep \n \t)
 )
 
 
@@ -1429,15 +1438,26 @@ def _learn(args: argparse.Namespace) -> None:
             if vs_lessons:
                 for e in vs_lessons:
                     val = json.loads(e["value_json"])
-                    print(f"  [knowledge] {val}")
+                    # Rendered text for either storage shape: mapping-shaped rows
+                    # (write_lesson's format and the onboarding import's) would
+                    # otherwise print as a Python dict repr.
+                    #
+                    # The label reads the row's own category so this surface agrees
+                    # with the dashboard's lessons panel; a legacy string row
+                    # carries none, and "knowledge" is the store's own default.
+                    category = val.get("category") if isinstance(val, dict) else None
+                    if not isinstance(category, str) or not category.strip():
+                        category = "knowledge"
+                    text = _TERMINAL_CTRL_RE.sub("", _lesson_display_text(val) or str(val))
+                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}")
             else:
                 lessons = jsonl_store.load_all()
                 if not lessons:
                     print("No lessons.")
                     return
                 for le in lessons:
-                    neg = f" — {le.negative}" if le.negative else ""
-                    print(f"  [{le.category}] {le.rule}{neg}")
+                    neg = f" — {_TERMINAL_CTRL_RE.sub('', str(le.negative))}" if le.negative else ""
+                    print(f"  [{_TERMINAL_CTRL_RE.sub('', str(le.category))}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}")
 
         elif action == "remove":
             if vs.get_lessons() and vs.delete_lesson(args.query):
@@ -1471,7 +1491,13 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                     val = json.loads(e["value_json"])
                 except Exception:
                     val = e["value_json"]
-                print(f"  {e['key']}: {val}  (confidence={e['confidence']}, source={e['source']})")
+                # A lesson row stores its rule and NOT-clause as separate fields,
+                # so printing the decoded value would show a Python dict repr on
+                # this surface while every other reader shows the prose.
+                if str(e["key"]).startswith("lesson."):
+                    val = _lesson_display_text(val) or val
+                safe_val = _TERMINAL_CTRL_RE.sub("", str(val))
+                print(f"  {e['key']}: {safe_val}  (confidence={e['confidence']}, source={e['source']})")
 
         elif action == "search":
             results = store.search_episodic(query_text=args.query, limit=10)

@@ -1220,17 +1220,52 @@ async def api_lessons(request: web.Request) -> web.Response:
         )
         return web.json_response({"lessons": []})
     workspace = request.query.get("workspace")
+
+    def _safe_lesson(rule: object, category: object, ts: object) -> dict:
+        """One sanitization chokepoint for every branch of this endpoint.
+
+        Lesson rows can carry consolidation (LLM) or import output: enforce a
+        string category so a malformed row cannot ship an object to the React
+        panel, and redact BOTH prose fields like every other agent-derived
+        string this handler returns -- an imported row can carry a credential
+        in either field. The JSONL store loads ``rule`` without type
+        validation, so a malformed row can carry a non-string here; stringify
+        before the regex redaction rather than crashing the endpoint.
+        """
+        if not isinstance(rule, str):
+            rule = str(rule)
+        safe_rule = redact_credentials(redact_exfiltration_urls(rule)[0])[0]
+        if isinstance(category, str) and category.strip():
+            safe_category = redact_credentials(redact_exfiltration_urls(category)[0])[0]
+        else:
+            safe_category = "knowledge"
+        return {"rule": safe_rule, "category": safe_category, "ts": ts}
+
     # Read from vector store if it has lessons, else JSONL
     vs = _get_memory(state).vector_store
     vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
+        # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
+        # optional numpy/faiss imports, and this helper is the handler's only
+        # use of it, on one dashboard read path.
+        from kiro_crew.vector_memory import _lesson_display_text
+
         data = []
         for e in vs_lessons[-50:]:
             try:
-                rule = json.loads(e["value_json"])
+                decoded = json.loads(e["value_json"])
             except (json.JSONDecodeError, TypeError):
                 continue
-            data.append({"rule": rule, "category": "knowledge", "ts": e.get("updated_at", "")})
+            # Rendered text for either storage shape: mapping-shaped rows
+            # (write_lesson's format and the onboarding import's) would otherwise
+            # ship a nested object where the dashboard expects a string. A row with
+            # no lesson shape falls back to str() rather than being dropped, so it
+            # stays listed and therefore deletable -- delete_lesson needs a
+            # substring, and this list is the only surface that can show it. The
+            # memory graph applies the same policy for the same reason.
+            rule = _lesson_display_text(decoded) or str(decoded)
+            raw_category = decoded.get("category") if isinstance(decoded, dict) else None
+            data.append(_safe_lesson(rule, raw_category, e.get("updated_at", "")))
     else:
         # Merge global + workspace-scoped lessons
         global_lessons = state.lessons.load_all()
@@ -1241,7 +1276,5 @@ async def api_lessons(request: web.Request) -> web.Response:
             for le in ws_lessons:
                 if le.rule.lower().strip() not in seen:
                     global_lessons.append(le)
-        data = [
-            {"rule": le.rule, "category": le.category, "ts": le.ts} for le in global_lessons[-50:]
-        ]
+        data = [_safe_lesson(le.rule, le.category, le.ts) for le in global_lessons[-50:]]
     return web.json_response({"lessons": data})

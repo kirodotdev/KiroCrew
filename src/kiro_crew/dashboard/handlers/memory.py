@@ -1343,6 +1343,11 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         try:
             for entry in vs.get_all_semantic():
                 key = entry.get("key", "")
+                # Lesson rows are rendered as prose by the lessons loop below;
+                # adding them here too would show each lesson twice, once as a
+                # dict repr of its stored mapping.
+                if str(key).startswith("lesson."):
+                    continue
                 val = entry.get("value_json", "")
                 if isinstance(val, str):
                     try:
@@ -1362,6 +1367,11 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         except Exception:
             pass
         if lessons_data:
+            # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
+            # optional numpy/faiss imports, and this helper is the handler's
+            # only use of it, on one search path.
+            from kiro_crew.vector_memory import _lesson_display_text
+
             for entry in lessons_data:
                 rule = entry.get("value_json", "")
                 if isinstance(rule, str):
@@ -1369,7 +1379,10 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
                         rule = json.loads(rule)
                     except Exception:
                         pass
-                _add("lesson", str(rule)[:80], "lesson", str(rule))
+                # Rendered text for either storage shape; fall back to str() so a
+                # malformed row still surfaces in search rather than vanishing.
+                text = _lesson_display_text(rule) or str(rule)
+                _add("lesson", text[:80], "lesson", text)
         else:
             for le in lessons:
                 _add("lesson", le.rule[:80], "lesson", le.rule)

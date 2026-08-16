@@ -4914,10 +4914,29 @@ class HistoryConsolidator:
                 # holding the lock (backfill's FAISS rebuild, reconcile's bulk
                 # UPDATEs) would otherwise block the whole loop here.
                 current_semantic = await asyncio.to_thread(self._vector_store.get_all_semantic)
+
+                def _prompt_value(e: dict) -> object:
+                    # A lesson row stores a mapping; the consolidation model
+                    # should read the rule prose, not a JSON envelope whose
+                    # field names dilute the instruction it is weighing.
+                    if str(e.get("key", "")).startswith("lesson."):
+                        from kiro_crew.vector_memory import _lesson_display_text
+
+                        try:
+                            decoded = json.loads(e["value_json"])
+                        except Exception:
+                            return e["value_json"]
+                        return _lesson_display_text(decoded) or e["value_json"]
+                    return e["value_json"]
+
                 semantic_json = (
                     json.dumps(
                         [
-                            {k: e[k] for k in ("key", "value_json", "confidence")}
+                            {
+                                "key": e["key"],
+                                "value_json": _prompt_value(e),
+                                "confidence": e["confidence"],
+                            }
                             for e in current_semantic
                         ],
                         indent=1,
