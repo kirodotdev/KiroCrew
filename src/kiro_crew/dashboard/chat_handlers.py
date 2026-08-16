@@ -4549,35 +4549,17 @@ def _resume_session_identity(state: DashboardState, history_key: str) -> str:
     return _history_key_for(history_key)
 
 
-async def api_chat_slot_resume(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/resume — load a history session into a slot."""
-    state: DashboardState = request.app["state"]
-    # Fold the requested name with the function that keys the slot table, so
-    # every spelling of one slot resolves to that slot: a caller may hold a
-    # filename stem, a session key (a notification deep link carries the
-    # conversation's own ``slack:<ts>``), or a display-style name. A partial
-    # fold leaves the lookup below missing an open tab and falls through to the
-    # create path, which re-reads the transcript into the slot it should have
-    # returned.
-    name = _normalize_slot_key(request.match_info["slot"])
-    if not state.conversation_log:
-        return web.json_response({"error": "no conversation log"}, status=400)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    history_key = body.get("key", name)
+async def _live_slot_resume_response(
+    state, request: web.Request, history_key: str, name: str
+) -> web.Response | None:
+    """Answer a resume that a live slot already satisfies, else return None.
 
-    # If slot already exists (active session), just return it — no duplicate.
-    # Check both by slot name AND by canonical session key to prevent two
-    # slots sharing the same kiro-cli process.
-    #
-    # INVARIANT: both sides of this comparison derive identity through the same
-    # rule. A slot answers with ``effective_session_key``, which for a
-    # channel-born tab is the channel's own key — so the requested key resolves
-    # the same way, via the session map. Two rules in play and a channel
-    # transcript matches nothing here: it gets a second tab, so one conversation
-    # shows as two sidebar rows backed by two kiro-cli processes.
+    Returns 404 when the caller's app does not own the slot, otherwise the
+    dedup early-return. Called on BOTH sides of the threaded transcript read:
+    that await lets a concurrent resume publish the slot in between, and
+    ``get_or_create_slot`` would then hand it back having never applied this
+    ownership gate for the second caller's app.
+    """
     canonical = _resume_session_identity(state, history_key)
     existing = state._slots.get(name)
     if not existing:
@@ -4659,7 +4641,49 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 "surface": existing.mode,
             }
         )
+    return None
 
+
+async def api_chat_slot_resume(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/resume — load a history session into a slot."""
+    state: DashboardState = request.app["state"]
+    # Fold the requested name with the function that keys the slot table, so
+    # every spelling of one slot resolves to that slot: a caller may hold a
+    # filename stem, a session key (a notification deep link carries the
+    # conversation's own ``slack:<ts>``), or a display-style name. A partial
+    # fold leaves the lookup below missing an open tab and falls through to the
+    # create path, which re-reads the transcript into the slot it should have
+    # returned.
+    name = _normalize_slot_key(request.match_info["slot"])
+    if not state.conversation_log:
+        return web.json_response({"error": "no conversation log"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    history_key = body.get("key", name)
+
+    # If slot already exists (active session), just return it — no duplicate.
+    # Check both by slot name AND by canonical session key to prevent two
+    # slots sharing the same kiro-cli process.
+    #
+    # INVARIANT: both sides of this comparison derive identity through the same
+    # rule. A slot answers with ``effective_session_key``, which for a
+    # channel-born tab is the channel's own key — so the requested key resolves
+    # the same way, via the session map. Two rules in play and a channel
+    # transcript matches nothing here: it gets a second tab, so one conversation
+    # shows as two sidebar rows backed by two kiro-cli processes.
+    resume_resp = await _live_slot_resume_response(state, request, history_key, name)
+    if resume_resp is not None:
+        return resume_resp
+
+    # Boundary for the compare-and-clear below, captured BEFORE the metadata read
+    # it is compared against. Everything from here to the ``clear_closed`` call is
+    # a window in which this session can be closed by somebody else -- including
+    # deleted, recreated and closed again -- and the clear must not erase a
+    # ``closed`` that landed inside it. Anchored to this read specifically, since
+    # ``meta["closed"]`` is the snapshot the clear acts on.
+    resume_started_at = time.time()
     # Read the history metadata BEFORE creating the slot: this endpoint RESUMES a
     # persisted conversation, so its origin is a property of that conversation,
     # not of whoever is resuming it. Deriving it from the request would label a
@@ -4669,6 +4693,159 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
+
+    # Read the transcript BEFORE publishing the slot: this await would otherwise
+    # expose an empty slot by name, and a concurrent append would land ahead of it.
+    all_messages = await asyncio.to_thread(
+        state.conversation_log.read_messages_chained, history_key
+    )
+
+    # Every remaining await in this handler runs BEFORE the slot is published: one
+    # after it would expose an empty slot, and a concurrent append there is ordered
+    # ahead of the history the hydrate loop restores further down. They are placed
+    # ahead of the re-check too, so nothing can suspend between it and the publish.
+    folder_unhidden = True
+    # Record WHICH folder that verdict is about. Hoisting this call above the
+    # publish is what keeps the window closed, but it also moved it onto the
+    # PRE-read ``meta``, while the hydrate below binds ``folder_id`` from the
+    # snapshot re-read after the last await. A channel reconciliation landing
+    # during the transcript read makes those two ids differ, and an existence
+    # verdict earned by the OLD folder says nothing about the NEW one.
+    folder_checked_id = ""
+    if meta.get("folder_id"):
+        folder_checked_id = meta["folder_id"]
+        folder_unhidden = await _unhide_folder(state, folder_checked_id)
+    if meta.get("closed"):
+        # Clear the closed flag so the session restores on the next gateway restart.
+        # Offloaded because clear_closed takes the per-session cross-process lock,
+        # which fails fast on the loop under contention. Best-effort: resume anyway.
+        #
+        # COMPARE-AND-CLEAR, not an unconditional clear. We are acting on the
+        # ``meta`` snapshot above, and by the time this call takes the lock the
+        # session may have been closed again by someone else -- or deleted,
+        # recreated and closed, in which case the flag we would drop belongs to a
+        # DIFFERENT conversation that the identity re-check below is about to
+        # refuse with a 409. Clearing it anyway reopens a replacement the user
+        # closed. ``only_if_closed_before`` moves the comparison inside the store's
+        # own lock, so there is no window between the check and the write; a close
+        # instant at or after our boundary leaves the flag standing.
+        try:
+            await asyncio.to_thread(
+                state.conversation_log.clear_closed,
+                history_key,
+                only_if_closed_before=resume_started_at,
+            )
+        except Exception:
+            logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
+
+    # Re-check after the await: a concurrent resume can publish the slot while we
+    # are suspended, and the publish below would skip the ownership gate above.
+    resume_resp = await _live_slot_resume_response(state, request, history_key, name)
+    if resume_resp is not None:
+        return resume_resp
+
+    # Re-check DELETION in the same window and for the same reason. The transcript
+    # loaded above can be permanently deleted while we are suspended, and
+    # ``delete_session`` leaves NO tombstone -- its own docstring notes that once
+    # the delete releases the lock "a concurrent writer can recreate the session".
+    # So publishing a slot from content we already hold rewrites, on its next
+    # flush, a file the user permanently deleted.
+    #
+    # ``get_metadata_status``, never ``get_metadata``: the latter returns ``{}`` for
+    # BOTH "deleted" and "unreadable", and reading an unreadable metadata line as a
+    # deletion would discard a LIVE session -- its docstring says to prefer this
+    # wherever an empty result triggers something destructive.
+    #
+    # Synchronous, like the ``get_metadata`` above it, so this adds no suspension
+    # point between the re-checks and the publish -- the property the comment on
+    # the awaits above depends on.
+    post_read_meta, meta_readable = state.conversation_log.get_metadata_status(history_key)
+    # Did this session exist when we looked? Both re-checks below need that, and
+    # ``all_messages`` alone is the wrong witness: a METADATA-ONLY session -- a
+    # metadata line with no messages, which ``update_metadata`` creates on upsert --
+    # has an empty transcript, so gating on it silently disabled both guards for
+    # exactly the sessions least able to survive it. The pre-read ``meta`` is the
+    # right witness, and it costs nothing: it is already read synchronously above,
+    # so consulting it adds no suspension point.
+    #
+    # A UNION rather than a swap, so the witness is never narrower than it was: a
+    # transcript we managed to read is also evidence of prior existence, even where
+    # the metadata line was unreadable at pre-read time and ``meta`` came back empty.
+    #
+    # This is ONE term used by BOTH arms deliberately. They previously carried the
+    # same predicate separately, which is how the empty-transcript hole reached two
+    # sites at once; a single binding means a future change cannot fix one and leave
+    # the other behind.
+    session_existed = bool(meta or all_messages)
+    # Resuming a session that never existed stays untouched: no metadata and no
+    # transcript leaves this false, so an absent key is treated as a new
+    # conversation rather than a deletion. A legitimately empty session that is
+    # still PRESENT is protected by the other terms instead -- ``post_read_meta``
+    # is non-empty below, and the identity arm needs two DIFFERING stamps.
+    if meta_readable and not post_read_meta and session_existed:
+        logger.info(
+            "chat resume: session %s was deleted during the transcript read; "
+            "refusing to publish a slot that would resurrect it",
+            history_key,
+        )
+        return web.json_response(
+            {
+                "error": "the session was deleted while it was being resumed",
+                "code": "resume_session_deleted",
+            },
+            status=409,
+        )
+    # IDENTITY, not merely existence. The arm above fires on metadata being
+    # ABSENT, which the delete-then-RECREATE interleaving does not produce: the
+    # delete leaves no tombstone, so a writer that recreates the session inside
+    # this same window leaves ``post_read_meta`` a NON-EMPTY dict belonging to the
+    # NEW conversation. Existence reads that as "still here" and publishes a slot
+    # holding the OLD transcript, whose next flush overwrites a session the user
+    # is actively using -- the opposite error to the one above, and worse, because
+    # the data destroyed is live rather than already-deleted.
+    #
+    # ``created_at`` is the discriminator because every path that MINTS a metadata
+    # line stamps it (``append`` when the file does not exist,
+    # ``_update_metadata_locked`` when the line is missing) while
+    # ``_rewrite_session_locked`` carries it through verbatim. So a rewrite,
+    # compaction or rename does NOT move it and is not refused here; a differing
+    # value means this is a different file than the one we read.
+    #
+    # ABSENT on either side means we cannot compare, and we FALL THROUGH rather
+    # than refuse. Refusing would reject legitimate resumes of any transcript
+    # whose metadata predates the field -- a visible break for real users -- to
+    # close a narrow race. It also neuters the one false positive available here:
+    # ``_rewrite_session_locked`` mints a fresh ``created_at`` only when the
+    # original lacked one, which is exactly the case this skips. The residual is
+    # that a recreate of such a transcript stays undetected; the durable fix for
+    # that is a tombstone in ``history.delete_session``, which is out of scope.
+    pre_identity = meta.get("created_at")
+    post_identity = post_read_meta.get("created_at")
+    if (
+        meta_readable
+        and post_read_meta
+        and session_existed
+        and pre_identity
+        and post_identity
+        and pre_identity != post_identity
+    ):
+        logger.info(
+            "chat resume: session %s was deleted and recreated during the "
+            "transcript read; refusing to publish a slot whose flush would "
+            "overwrite the replacement",
+            history_key,
+        )
+        # Same code as the plain-delete arm: from the resumer's point of view the
+        # session it asked for was deleted. That it was then recreated does not
+        # change what happened to the conversation being resumed, and one code
+        # keeps the client contract single-valued.
+        return web.json_response(
+            {
+                "error": "the session was deleted while it was being resumed",
+                "code": "resume_session_deleted",
+            },
+            status=409,
+        )
 
     slot = state.get_or_create_slot(
         name,
@@ -4735,7 +4912,18 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # visible until the user hides it again. A folder deleted since this
         # session was last saved leaves the stored id dangling; drop it so the
         # resumed session is plainly unfiled instead of pointing at nothing.
-        if not await _unhide_folder(state, meta["folder_id"]):
+        #
+        # Only when the verdict is ABOUT this folder. ``_unhide_folder`` reports
+        # existence from inside the folder-store lock precisely because a check
+        # made outside it can go stale, so re-deriving one here against
+        # ``state._folders`` is the race its own docstring warns about; and it
+        # cannot simply be re-run, because a second await here would reopen the
+        # publish-to-hydrate window this ordering exists to close. Holding no
+        # verdict for a newly filed id, we KEEP it: a dangling id is visible and
+        # self-corrects on the next folder operation, whereas erasing a live
+        # filing is silent and indistinguishable from the user unfiling the
+        # session -- and the dirty-slot flush would then persist that erasure.
+        if not folder_unhidden and meta["folder_id"] == folder_checked_id:
             slot.folder_id = ""
     if meta.get("pinned"):
         slot.pinned = True
@@ -4775,18 +4963,6 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         state._restricted_keys.discard(f"dashboard:{name}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
-    # Clear closed flag so session restores on next gateway restart
-    if meta.get("closed"):
-        # Offload to a worker thread: clear_closed takes the per-session
-        # cross-process lock (so it can't race an append / rewrite and lose
-        # data), and on the event loop that lock fails fast under contention —
-        # the patient off-loop acquire path avoids both a loop-blocking disk
-        # write and a dropped edit. Best-effort: resume proceeds regardless.
-        try:
-            await asyncio.to_thread(state.conversation_log.clear_closed, history_key)
-        except Exception:
-            logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
-    all_messages = state.conversation_log.read_messages_chained(history_key)
     disk_total = len(all_messages)
     max_resume = 500
     messages = all_messages[-max_resume:] if disk_total > max_resume else all_messages

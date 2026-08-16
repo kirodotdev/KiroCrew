@@ -2228,6 +2228,32 @@ class ConversationLog:
         #: event loop may mark it stale — an unsynchronized rebuild/read/clear
         #: produced a transient empty index or ``AttributeError``.
         self._tab_id_index: dict[str, list[str]] | None = None
+        #: session key → (mtime, tab_id) memo feeding the rebuild above.
+        #: Deliberately an unbounded plain dict, NOT an _LRUCache: the rebuild is
+        #: a cyclic scan over every dashboard file, and a bounded cache under a
+        #: cyclic scan larger than the bound has a 0% hit rate (see
+        #: _SearchTextCache's docstring). Values are 12-char ids, so 1k sessions
+        #: is tens of KB.
+        #:
+        #: TWO guards, and neither is sufficient alone. The explicit pop in
+        #: _invalidate_cache covers writes THROUGH this class from THIS instance:
+        #: those restore the pre-write mtime (_restore_mtime), so a stamp alone
+        #: would not see them. The stamp covers rewrites that never reach that
+        #: pop -- a hand-edited tab_id, or a write through ANOTHER instance,
+        #: whose pop lands on its own memo and leaves ours intact.
+        #:
+        #: The stamp is (st_mtime_ns, st_size, st_ino), all from one stat. Size
+        #: rides along because timestamp granularity is coarse (worse on
+        #: Windows). ns rather than float seconds, and st_ino as well, because
+        #: another instance's equal-length tab_id rewrite preserves mtime and
+        #: size both -- see the cross-instance test.
+        self._tab_id_by_key: dict[str, tuple[tuple[int, int, int], str]] = {}
+        #: Bumped by _invalidate_cache. The rebuild samples it before reading a
+        #: file's metadata and declines to memoize if it moved, so a store cannot
+        #: land after a concurrent writer's pop and resurrect a stale id.
+        #: _invalidate_cache deliberately does not take self._lock, so the
+        #: rebuild cannot exclude it.
+        self._tab_id_generation = 0
         #: Coarse instance lock protecting the lazily-built ``_tab_id_index``
         #: rebuild/read/clear. The message/metadata/recent LRUs are each
         #: internally locked; this guards the shared mutable state that lives
@@ -4132,18 +4158,102 @@ class ConversationLog:
 
         Caller MUST hold ``self._lock`` — this replaces the shared
         ``_tab_id_index`` mapping.
+
+        Each file's tab_id is memoized in ``_tab_id_by_key`` under a
+        ``(st_mtime_ns, st_size, st_ino)`` stamp, so a file unchanged since the last rebuild
+        costs a ``stat`` instead of an ``open`` + ``readline`` + ``json.loads``.
+        A rebuild still runs on the first chained read, and whenever
+        ``note_tab_id`` falls back to invalidating instead of updating one entry
+        in place (no tab_id, an already-stale index, or a tab_id whose first
+        file this save just created), so the memo pays for itself on those.
+        Before that in-place update landed, ``append`` invalidated the index
+        unconditionally and one sent message re-read every session file on the
+        event loop.
+
+        TWO guards, because neither is sufficient alone. A write THROUGH this
+        class from THIS instance restores the pre-write mtime (see
+        :func:`_restore_mtime`, which exists so housekeeping does not reorder
+        ``list_sessions``), so the stamp cannot see it — ``_invalidate_cache``
+        pops the memo instead, on the line after the restore. Anything that
+        never reaches that pop is the stamp's job: a write AROUND the class, and
+        a write through ANOTHER instance of this class, whose pop lands on its
+        own memo and leaves ours untouched. That last case is why the stamp
+        carries ``st_mtime_ns`` and ``st_ino`` and not just ``(mtime, size)`` —
+        an equal-length ``tab_id`` rewrite preserves both mtime and size. Either
+        guard alone would keep serving a stale tab_id and silently drop that
+        session from its chain — the same vanished-history failure the removed
+        ``[]`` sentinel used to cause.
         """
         index: dict[str, list[str]] = {}
         for path in sorted(self._dir.glob(_TAB_ID_INDEX_GLOB)):
+            # Both derivations come from main's shared helpers rather than being
+            # respelled here: ``key`` feeds the memo AND the index append below,
+            # and ``note_tab_id`` looks entries up through the same helper, so a
+            # second copy would drift and its lookup would silently miss an
+            # entry that is really present.
+            key = _index_key_for_stem(path.stem)
             try:
-                with path.open(encoding="utf-8") as f:
-                    first_line = f.readline()
-                m = json.loads(first_line)
-                tid = m.get("tab_id")
-                if tid:
-                    index.setdefault(tid, []).append(_index_key_for_stem(path.stem))
-            except Exception:
+                st = path.stat()
+            except OSError:
                 continue
+            # Three terms, all off the one stat above, because the pop below
+            # only ever reaches the memo of the instance that did the writing:
+            # another instance's write restores the mtime AND leaves the size
+            # identical (a tab_id is fixed-length), so mtime+size alone serve a
+            # stale id. mtime_ns rather than mtime because _restore_mtime puts
+            # the time back through a float, which cannot carry ns; st_ino moves
+            # too, since a metadata rewrite is atomic_write (temp + os.replace),
+            # and it holds even if _restore_mtime later becomes ns-exact.
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+            cached = self._tab_id_by_key.get(key)
+            if cached is not None and cached[0] == stamp:
+                tid = cached[1]
+            else:
+                # Sample the generation BEFORE the read: if a writer pops this key
+                # while we are reading, the value we got is already stale and must
+                # not be memoized. stamp is also the pre-read one, so a write that
+                # lands mid-read leaves a value that fails the guard next time.
+                generation = self._tab_id_generation
+                # We are on the MISS path, so this file changed since we
+                # memoized it -- or we never memoized it at all. _meta_cache is
+                # keyed on float mtime ALONE, which is strictly weaker than our
+                # stamp: a rewrite that restores the mtime and keeps the size
+                # compares EQUAL there and hands back the pre-write line, so
+                # widening the stamp alone would still serve a stale tab_id from
+                # this second layer. Pop UNCONDITIONALLY, because the cold-memo
+                # case is the dangerous one: get_metadata and the consolidation
+                # counters warm _meta_cache without ever touching this memo, and
+                # a stale line served there gets memoized below under the NEW,
+                # correct-looking stamp -- after which the warm path never
+                # re-reads it and the session stays off its chain for good.
+                # Costs one reread for a file warm here but cold in the memo; the
+                # warm path (stamp hit) returns above, so the win is unaffected.
+                self._meta_cache.pop(key, None)
+                try:
+                    meta, readable = self._read_metadata_status(key)
+                except Exception:
+                    continue
+                # _read_metadata_status, NOT _read_metadata: the latter drops the
+                # readability flag, so a transient failure (an AV scanner holding
+                # a freshly appended file, where stat succeeds but open does not)
+                # arrives as {} and would be memoized below as a definitive "no
+                # tab_id" against an unchanged stamp -- dropping the session from
+                # its chain until its next write. Retry on the next rebuild.
+                if not readable:
+                    continue
+                raw = meta.get("tab_id")
+                # "" memoizes "no tab_id at this stamp". Without it a session
+                # lacking one is re-read every rebuild and re-enters _meta_cache,
+                # evicting what other code paths in this process warmed (it is
+                # per-instance, not process-shared). A non-str tab_id reaches
+                # here only from corrupt metadata (and unhashable would abort the
+                # rebuild), so it folds into the same sentinel.
+                tid = raw if isinstance(raw, str) else ""
+                if self._tab_id_generation == generation:
+                    self._tab_id_by_key[key] = (stamp, tid)
+            if not tid:
+                continue
+            index.setdefault(tid, []).append(key)
         self._tab_id_index = index
 
     def invalidate_tab_id_cache(self) -> None:
@@ -5051,6 +5161,13 @@ class ConversationLog:
         for ident in idents:
             self._msg_cache.pop(ident, None)
             self._meta_cache.pop(ident, None)
+            # The tab_id memo's mtime guard cannot see a write that goes through
+            # this class, because those restore the pre-write mtime. This pop is
+            # what does -- under every spelling, for the same reason as the rest:
+            # the rebuild keys its memo off the sanitized filename stem, so a
+            # single-spelling pop would leave an alias-keyed memo serving a stale
+            # tab_id under the restored mtime.
+            self._tab_id_by_key.pop(ident, None)
             # The folded search blob is derived from the messages, so it goes
             # stale exactly when they do. Its own mtime guard is not enough
             # here: the housekeeping rewrites below restore the pre-write
@@ -5068,6 +5185,10 @@ class ConversationLog:
             # _restore_mtime, so the recent cache's mtime guard alone would let
             # a stale window survive a content change.
             self._recent_cache.pop_prefix(f"{ident}\x00")
+        # Sampled by the rebuild before it reads a file's metadata, so a store
+        # cannot land after the pops above and resurrect a stale id. Bumped once
+        # per invalidation: it is a single counter, not per-identity.
+        self._tab_id_generation += 1
 
     #: Bytes read from the end of a session file for the last-message preview.
     #: One tail block comfortably covers several trailing JSONL lines without

@@ -145,8 +145,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 # found for ts" — the message exists but is out of reach.
                 if disk_older > 0 and state.conversation_log is not None:
                     try:
-                        chained = state.conversation_log.read_messages_chained(
-                            slot_history_key(slot)
+                        chained = await asyncio.to_thread(
+                            state.conversation_log.read_messages_chained,
+                            slot_history_key(slot),
                         )
                     except Exception:
                         logger.debug("rewind: chained scan for ts failed", exc_info=True)
