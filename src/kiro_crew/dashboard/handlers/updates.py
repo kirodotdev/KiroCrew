@@ -1364,30 +1364,28 @@ class _RingLogHandler(logging.Handler):
         self._ring = ring
         self._max = max_size
         self._state: DashboardState | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
 
     def set_state(self, state: DashboardState) -> None:
         """Attach DashboardState for WS log broadcasting."""
         self._state = state
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = None
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
             data = json.dumps({"level": record.levelname, "msg": msg})
             self._ring.append(data)
-            # Push to WS log subscribers (thread-safe via call_soon_threadsafe)
-            if self._state and self._loop and self._state._ws_log_subscribers:
+            # Push to WS log subscribers. emit() runs on ARBITRARY threads (any
+            # logger call anywhere), so the send is handed to the dashboard's one
+            # serving loop rather than to a copy latched by this handler.
+            loop = self._state.serving_loop if self._state else None
+            if self._state and loop and self._state._ws_log_subscribers:
                 ws_msg = json.dumps(
                     {"type": "log", "data": {"level": record.levelname, "msg": msg}}
                 )
                 for ws in list(self._state._ws_log_subscribers):
                     try:
-                        self._loop.call_soon_threadsafe(
-                            self._loop.create_task,
+                        loop.call_soon_threadsafe(
+                            loop.create_task,
                             _safe_ws_send(ws, ws_msg, self._state),
                         )
                     except RuntimeError:

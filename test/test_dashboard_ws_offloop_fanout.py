@@ -106,7 +106,7 @@ async def test_unknown_serving_loop_drops_frame_but_keeps_client(tmp_path) -> No
     state = _make_state(tmp_path)
     ws = _FakeWS()
     state._ws_clients.append(ws)
-    state._ws_send_loop = None
+    state._serving_loop = None
 
     await asyncio.to_thread(state._send_ws_all, "ping", {}, "frame")
     await _drain()
@@ -176,9 +176,9 @@ async def test_register_ws_latches_serving_loop_for_first_offloop_frame(tmp_path
     """
     state = _make_state(tmp_path)
     ws = _FakeWS()
-    state._ws_send_loop = None
+    state._serving_loop = None
     state.register_ws(ws)  # on the serving loop, as api_ws does
-    assert state._ws_send_loop is not None, "registration did not latch the serving loop"
+    assert state._serving_loop is not None, "registration did not latch the serving loop"
 
     # No prior on-loop send: this is the connection's very first frame.
     await asyncio.to_thread(state._send_ws_all, "notification", {}, "first-frame")
@@ -257,7 +257,7 @@ async def test_offloop_fanout_leaves_no_unawaited_coroutine(tmp_path) -> None:
     state = _make_state(tmp_path)
     ws = _AbandonProbeWS()
     state._ws_clients.append(ws)
-    state._ws_send_loop = None  # nothing to hand the send to
+    state._serving_loop = None  # nothing to hand the send to
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

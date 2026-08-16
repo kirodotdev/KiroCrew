@@ -2082,11 +2082,6 @@ async def start_dashboard(
         # call ``asyncio.ensure_future``, which RAISES off-loop — and
         # ``_send_ws_all`` treats that raise as a dead socket and EVICTS every
         # connected client. Marshal the emit back onto the loop instead.
-        try:
-            _gw_loop: "asyncio.AbstractEventLoop | None" = asyncio.get_running_loop()
-        except RuntimeError:  # pragma: no cover - sync/embedded launch
-            _gw_loop = None
-
         def _on_pending_skill_staged(info: dict) -> None:
             try:
                 name = str(info.get("name") or info.get("slug") or "skill")
@@ -2154,11 +2149,12 @@ async def start_dashboard(
                     except Exception:
                         logger.debug("pending-skill notification failed", exc_info=True)
 
-                if _gw_loop is not None and not _gw_loop.is_closed():
+                loop = state.serving_loop
+                if loop is not None and not loop.is_closed():
                     # Safe from the loop thread too — call_soon_threadsafe just
                     # schedules. RuntimeError means the loop is shutting down.
                     try:
-                        _gw_loop.call_soon_threadsafe(_emit)
+                        loop.call_soon_threadsafe(_emit)
                     except RuntimeError:  # pragma: no cover - loop closing
                         pass
                 else:
@@ -2193,9 +2189,10 @@ async def start_dashboard(
                     except Exception:
                         logger.debug("pending-skill notification resolve failed", exc_info=True)
 
-                if _gw_loop is not None and not _gw_loop.is_closed():
+                loop = state.serving_loop
+                if loop is not None and not loop.is_closed():
                     try:
-                        _gw_loop.call_soon_threadsafe(_resolve)
+                        loop.call_soon_threadsafe(_resolve)
                     except RuntimeError:  # pragma: no cover - loop closing
                         pass
                 # Without a loop there is no serving dashboard (sync/embedded
@@ -2350,6 +2347,12 @@ async def start_dashboard(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
+    # Bind the serving loop once, here: this runs ON that loop, so every
+    # surface that later hands work in from a foreign thread -- slots
+    # coalescing, an off-loop websocket send, the log handler's fan-out --
+    # resolves the same loop instead of each latching its own copy from
+    # whichever thread happens to arrive first.
+    state.bind_serving_loop(asyncio.get_running_loop())
     # Voice settings live in slack/handler's module state and are otherwise
     # loaded only on the Slack startup path (set_orch_cfg) — without this a
     # dashboard-only gateway (no Slack tokens) resets TTS to defaults on
@@ -3312,6 +3315,12 @@ async def start_api_server(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
+    # Bind the serving loop once, here: this runs ON that loop, so every
+    # surface that later hands work in from a foreign thread -- slots
+    # coalescing, an off-loop websocket send, the log handler's fan-out --
+    # resolves the same loop instead of each latching its own copy from
+    # whichever thread happens to arrive first.
+    state.bind_serving_loop(asyncio.get_running_loop())
     # Voice settings live in slack/handler's module state and are otherwise
     # loaded only on the Slack startup path (set_orch_cfg) — without this a
     # dashboard-only gateway (no Slack tokens) resets TTS to defaults on

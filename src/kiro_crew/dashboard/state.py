@@ -2440,14 +2440,15 @@ class DashboardState:
     # __init__ installs the real per-instance lock.
     _slots_broadcast_lock: "threading.Lock | None" = None
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
-    _slots_broadcast_loop: "asyncio.AbstractEventLoop | None" = None
     _slots_broadcast_last: float = 0.0
-    # The loop the websockets are served on, latched when a client registers (and
-    # again by any send issued from it). A fan-out reached from a worker thread
-    # has no running loop of its own and hands the send to this one; see
-    # _spawn_ws_send. Class-level None so a __new__-built state answers "unknown"
-    # instead of raising.
-    _ws_send_loop: "asyncio.AbstractEventLoop | None" = None
+    # The one loop this dashboard is served on. Every surface that hands work in
+    # from a foreign thread -- the coalesced slots broadcast, an off-loop
+    # websocket send, the log handler's fan-out -- resolves it through
+    # :attr:`serving_loop` rather than keeping a copy of its own: two copies are
+    # two answers to one question and can disagree, and a caller that finds its
+    # own copy unset drops the work silently. Bound at app startup; the property
+    # latches lazily so a ``__new__``-built state still resolves one.
+    _serving_loop: "asyncio.AbstractEventLoop | None" = None
     # Keys the last open-tab restore could not read (not keys it proved absent).
     # _persist_open_slots folds these back into the snapshot so a transient read
     # failure cannot erase the reopen seed. The class-level baseline is an
@@ -5527,8 +5528,9 @@ class DashboardState:
             return
 
         with lock:
-            if self._slots_broadcast_loop is None:
-                self._slots_broadcast_loop = self._running_loop()
+            # Resolved once here, at the top of the lock, so the timer branch
+            # below and any later cross-thread caller agree on one loop.
+            serving = self.serving_loop
 
             elapsed = now - self._slots_broadcast_last
             if elapsed >= _SLOTS_BROADCAST_INTERVAL_S:
@@ -5538,9 +5540,9 @@ class DashboardState:
                     self._slots_broadcast_timer = None
                 broadcast_now = True
             elif self._slots_broadcast_timer is None:
-                # Scheduling onto the captured loop is preferred over broadcasting
+                # Scheduling onto the serving loop is preferred over broadcasting
                 # from a foreign thread; a closed loop falls back to an immediate send.
-                loop = self._slots_broadcast_loop
+                loop = serving
                 remaining = _SLOTS_BROADCAST_INTERVAL_S - elapsed
                 try:
                     if loop is None:
@@ -5568,6 +5570,33 @@ class DashboardState:
             return asyncio.get_running_loop()
         except RuntimeError:
             return None
+
+    def bind_serving_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Record the loop this dashboard is served on, before any request runs.
+
+        Called from an app startup hook: that is the earliest point the loop
+        exists, so every later reader finds it already bound instead of racing to
+        latch a copy from whichever thread happens to arrive first.
+        """
+        self._serving_loop = loop
+
+    @property
+    def serving_loop(self) -> "asyncio.AbstractEventLoop | None":
+        """The loop to hand cross-thread work to, or None when it is unknowable.
+
+        Prefers the loop bound at startup. When nothing bound one -- a
+        ``__new__``-built state, a unit test, a process whose startup hook has not
+        run -- it latches the running loop the first time it is read FROM that
+        loop, so an off-loop caller arriving later still has a target. ``None``
+        means this state has never seen a loop, and the caller owns the decision
+        about what to do with the work rather than being handed a guess.
+        """
+        loop = self._serving_loop
+        if loop is None:
+            loop = self._running_loop()
+            if loop is not None:
+                self._serving_loop = loop
+        return loop
 
     def _schedule_trailing_flush(self, delay: float) -> None:
         """Arm the trailing flush. Must run ON the event loop."""
@@ -5814,7 +5843,7 @@ class DashboardState:
         """
         loop = self._running_loop()
         if loop is None:
-            target = self._ws_send_loop
+            target = self.serving_loop
             if target is not None and not target.is_closed():
                 try:
                     target.call_soon_threadsafe(self._spawn_ws_send, ws, msg)
@@ -5832,7 +5861,11 @@ class DashboardState:
                 close()
             logger.debug("WS send dropped: no serving loop to run it on")
             return
-        self._ws_send_loop = loop
+        # Latch through the accessor, never by assigning the field: the read
+        # records this loop only when nothing bound one, so a loop bound at
+        # startup stays authoritative and bind_serving_loop remains the only
+        # writer that can override. The send below runs on the loop we are on.
+        self.serving_loop
         task = asyncio.ensure_future(ws.send_str(msg))
         self._background_tasks.add(task)
         task.add_done_callback(self._on_ws_send_done)
@@ -6319,9 +6352,9 @@ class DashboardState:
         self._ws_clients.append(ws)
         if owner:
             self._owner_ws_clients.add(ws)
-        loop = self._running_loop()
-        if loop is not None:
-            self._ws_send_loop = loop
+        # Same one-sink rule as _spawn_ws_send: reading the accessor latches
+        # this loop when nothing bound one and leaves a startup bind alone.
+        self.serving_loop
 
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         """Remove a WebSocket client on disconnect."""

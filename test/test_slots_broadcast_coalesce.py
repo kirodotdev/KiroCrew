@@ -38,7 +38,7 @@ def state(monkeypatch, tmp_path, loop):
     s.is_yolo_active = lambda: False
     # Production captures this on the first call from the loop thread; pinning it
     # here keeps each test's timing independent of construction order.
-    s._slots_broadcast_loop = loop
+    s._serving_loop = loop
     return s
 
 
@@ -170,7 +170,7 @@ class TestNonEventLoopThread:
 
         dead = asyncio.new_event_loop()
         dead.close()
-        state._slots_broadcast_loop = dead
+        state._serving_loop = dead
         state._slots_broadcast_last = time.monotonic()
 
         state.push_slots_update()
