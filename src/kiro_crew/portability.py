@@ -360,17 +360,16 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
                 continue
 
         # Rule 3: anything that EXECUTES arrives paused, awaiting a human.
-        if command or script:
-            if not job.get("user_paused", False):
-                job["user_paused"] = True
-                job["enabled"] = False
-                changed = True
-                paused.append(_name_of(job))
-                _log_cron_denial(
-                    "settings_import",
-                    "Error: an imported job that runs a command or script is "
-                    "restored paused until it is enabled by hand",
-                )
+        if (command or script) and not job.get("user_paused", False):
+            job["user_paused"] = True
+            job["enabled"] = False
+            changed = True
+            paused.append(_name_of(job))
+            _log_cron_denial(
+                "settings_import",
+                "Error: an imported job that runs a command or script is "
+                "restored paused until it is enabled by hand",
+            )
         kept.append(job)
 
     if changed:

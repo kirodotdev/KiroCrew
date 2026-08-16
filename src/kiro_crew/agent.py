@@ -2932,10 +2932,9 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         ]
         for mcp_name in _register_names:
             ref = f"@{mcp_name}"
-            if mcp_name in valid_servers:
-                if ref not in config.get("tools", []):
-                    config.setdefault("tools", []).append(ref)
-                    added_refs.append(ref)
+            if mcp_name in valid_servers and ref not in config.get("tools", []):
+                config.setdefault("tools", []).append(ref)
+                added_refs.append(ref)
         if added_refs:
             sel().log_api_access(
                 caller="system",

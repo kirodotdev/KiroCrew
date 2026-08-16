@@ -844,13 +844,11 @@ def _cron(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        if channel:
-
-            if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
-                print(
-                    f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
-                )
-                return
+        if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
+            print(
+                f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
+            )
+            return
         if cron_expr:
             job = svc.add_job(
                 name=args.name,

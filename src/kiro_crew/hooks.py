@@ -2274,8 +2274,6 @@ def safe_copy_file_nolink(raw: str, dest_dir: str) -> str | None:
     the inode actually opened and copied, so no check-to-use window remains.
     If the fd's real path cannot be determined, fail closed.
     """
-    import tempfile
-
     path = validate_file_path(raw)
     if path is None:
         return None
