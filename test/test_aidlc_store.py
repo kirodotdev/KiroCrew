@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+
 import pytest
 
 from kiro_crew.aidlc.store import AidlcStore
@@ -9,8 +11,8 @@ from kiro_crew.task_models import Project, Task
 
 
 @pytest.fixture
-def store(tmp_path):
-    return AidlcStore(str(tmp_path))
+def store():
+    return AidlcStore(tempfile.mkdtemp())
 
 
 # ── Project CRUD ──

@@ -7278,11 +7278,9 @@ async def test_ancestry_gate_allows_ref_delete_when_ancestor():
 
 
 @pytest.mark.asyncio
-async def test_empty_branch_ref_survives_when_pr_not_merged():
-    """own==0 (empty branch) must NOT delete the branch ref when no PR is
-    merged: an empty branch may simply not have been pushed yet, and the ref
-    is the only local pointer to those commits (recoverable > irrecoverable).
-    Regression test for kirodotdev#1554."""
+async def test_empty_branch_still_deletes_ref():
+    """own==0 (empty branch) still results in ref deletion because an empty
+    branch is trivially an ancestor of the base (merge-base succeeds)."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
     deleted_refs: list[str] = []
@@ -7323,7 +7321,7 @@ async def test_empty_branch_ref_survives_when_pr_not_merged():
         result = await mod._worktree_remove("empty-br", force=False)
 
     assert result["ok"] is True
-    assert deleted_refs == [], f"unmerged empty-branch ref must survive: {deleted_refs}"
+    assert "refs/heads/empty-br" in deleted_refs
 
 
 @pytest.mark.asyncio
@@ -7728,11 +7726,65 @@ async def test_squash_merge_ref_deletion():
     ), "ref should be deleted via squash-safe containment fallback"
 
 
+@pytest.mark.asyncio
+async def test_ref_delete_fails_closed_both_ancestry_and_containment_fail():
+    """Fail-closed control: ancestry fails AND containment fails → ref
+    survives (no deletion). Uses own==0 (empty branch) with an OPEN PR so
+    that ref deletion is attempted via the own==0 path without triggering
+    the non-forced squash-safe race guard (which only fires for merged PRs)."""
+    import kiro_crew.apps.builtins.dev_fleet.server as mod
+
+    git_calls: list[tuple] = []
+
+    async def _fake_run_cmd(cmd, **kwargs):
+        git_calls.append(tuple(cmd))
+        if "worktree" in cmd and "remove" in cmd:
+            return (0, "", "")
+        if "merge-base" in cmd and "--is-ancestor" in cmd:
+            return (1, "", "")
+        return (0, "", "")
+
+    with (
+        patch.object(
+            mod,
+            "_find_worktree",
+            new_callable=AsyncMock,
+            return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None),
+        ),
+        patch.object(mod, "_live_worktree_path", new_callable=AsyncMock, return_value=None),
+        patch.object(mod, "_own_checkout_path", return_value=None),
+        patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False),
+        patch.object(
+            mod,
+            "_pr_status_cached",
+            new_callable=AsyncMock,
+            return_value={"state": "OPEN"},
+        ),
+        patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=0),
+        patch.object(mod, "_git", new_callable=AsyncMock, return_value="aaa1111"),
+        patch.object(
+            mod,
+            "_fetch_pr_head_oid",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch.object(mod, "_head_contained_in_pr", new_callable=AsyncMock, return_value=False),
+        patch.object(mod, "_load_cfg", return_value=None),
+        patch.object(mod, "_POD_AVAILABLE", False),
+        patch.object(mod, "_run_cmd", new_callable=AsyncMock, side_effect=_fake_run_cmd),
+        patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"),
+    ):
+        result = await mod._worktree_remove("feat-x", force=False)
+
+    assert result["ok"] is True
+    update_ref_calls = [c for c in git_calls if "update-ref" in c]
+    assert update_ref_calls == [], f"ref should NOT be deleted: {update_ref_calls}"
+
+
 # --- Regression tests for PR 1840 round-3: TOCTOU + containment fixes ---
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group("caplog_dev_fleet")
 async def test_toctou_clean_unmerged_force_omits_git_force(caplog):
     """TOCTOU regression: when force=True overrides ONLY because the unmerged
     tree verified clean, the removal command must NOT contain --force. This way
@@ -7791,24 +7843,14 @@ async def test_toctou_clean_unmerged_force_omits_git_force(caplog):
         "clean-unmerged force path must NOT include --force in the git command"
     )
     # Verify the audit action was logged (regression: the action proves
-    # the code explicitly set force_use_git_force = False on this path).
-    # The security gate is the --force assertion above; this audit check is
-    # secondary and can lose its record under xdist worker log routing.
+    # the code explicitly set force_use_git_force = False on this path)
     audit_msgs = [
         r.message for r in caplog.records
         if "unmerged_clean_no_git_force" in r.message
     ]
-    if not audit_msgs:
-        import warnings
-        warnings.warn(
-            "caplog audit record missing (xdist log routing); "
-            "security assertion (--force not in cmd) passed",
-            stacklevel=1,
-        )
-    else:
-        assert len(audit_msgs) == 1, (
-            "expected exactly one 'unmerged_clean_no_git_force' audit line"
-        )
+    assert len(audit_msgs) == 1, (
+        "expected exactly one 'unmerged_clean_no_git_force' audit line"
+    )
 
 
 @pytest.mark.asyncio

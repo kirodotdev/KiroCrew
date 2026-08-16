@@ -71,7 +71,7 @@ ENV_FILE="$ACTIVE_HOME/.env"
 # key added to one without the other fails CI. Replace-or-append line-wise so
 # operator-added lines and comments in .env survive; grep -v (not sed) avoids
 # escaping issues with arbitrary secret bytes.
-CRED_KEYS="SLACK_BOT_TOKEN SLACK_APP_TOKEN KIROCREW_OWNER_ID DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN WECOM_BOT_ID WECOM_SECRET WEBEX_BOT_TOKEN MICROSOFT_APP_ID MICROSOFT_APP_PASSWORD MICROSOFT_APP_TENANT_ID WEIXIN_TOKEN JIRA_API_TOKEN KIRO_API_KEY"
+CRED_KEYS="SLACK_BOT_TOKEN SLACK_APP_TOKEN KIROCREW_OWNER_ID DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN WECOM_BOT_ID WECOM_SECRET WEBEX_BOT_TOKEN MICROSOFT_APP_ID MICROSOFT_APP_PASSWORD MICROSOFT_APP_TENANT_ID WEIXIN_TOKEN KIRO_API_KEY"
 for KEY in $CRED_KEYS; do
     VAL=$(eval "printf '%s' \"\${$KEY:-}\"")
     if [ -n "$VAL" ]; then
@@ -104,11 +104,7 @@ for KEY in $CRED_KEYS; do
     fi
 done
 
-# Scrub per-host Jira tokens (JIRA_TOKEN_<hex>) — dynamic keys not in the
-# static CRED_KEYS list above. Same scrub pattern: move to .env, unset from env.
-for KEY in $(env | grep -o '^JIRA_TOKEN_[^=]*' 2>/dev/null || true); do
-    unset "$KEY"
-done
+# ── 2. Sandbox posture (first run only) ──────────────────────────────────
 # Signal to the gateway's load_credentials() that credentials were
 # deliberately scrubbed from the process environ and must NOT be
 # re-injected (which would leak into /proc/<pid>/environ).

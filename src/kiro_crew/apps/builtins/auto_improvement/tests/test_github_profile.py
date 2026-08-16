@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from kiro_crew.apps.builtins.auto_improvement.profiles import build_profile
 from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as gp
 from kiro_crew.apps.builtins.auto_improvement.spine.contracts import TRACK_BUG, TRACK_PERF
@@ -180,7 +178,6 @@ class TestEditFence:
         assert fence.allows_changes([("A", "src/pkg/brand_new.py")])[0]
 
 
-@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestIsolation:
     """The push-disable predicate and the pollute path set."""
 
@@ -283,7 +280,6 @@ class TestFactory:
         assert p.calibration.canary_id
 
 
-@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestRepoRootFallback:
     """The spine appends ``src`` unconditionally; every layout must still be runnable.
 
@@ -340,7 +336,6 @@ class TestRepoRootFallback:
         assert gp.PytestBugRunner().run_suite(src=tmp_path / "src") == (True, [])
 
 
-@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestSuiteMeasurement:
     """The ruler against a real (tiny) pytest suite — the one place we spawn pytest."""
 
@@ -476,7 +471,6 @@ class TestSuiteMeasurement:
         assert any("test_boom" in t for t in result.failing_tests)
 
 
-@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestBugRunnerPrimitives:
     """The RED/GREEN primitives. The three-way ``run_reproducing_test`` return is the
     load-bearing part: a test that cannot RUN must not count as a valid RED."""
@@ -721,7 +715,6 @@ class TestMeasureEnvDoesNotUndoTheSandboxScrub:
         assert sorted(out) == ["LANG", "PATH"]
 
 
-@pytest.mark.skipif(not __import__('kiro_crew.sandbox', fromlist=['userns_available']).userns_available(), reason="requires unprivileged user namespaces (sandbox backend)")
 class TestGateChildEnvironmentMeasuredEndToEnd:
     """Runs a real child through the gate's own ``_run`` and reads its environment.
 

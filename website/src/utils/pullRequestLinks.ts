@@ -54,13 +54,7 @@ interface AttributedLink extends PullRequestLink {
 function emitChangeSources(found: Map<string, AttributedLink>): PullRequestLink[] {
   const out: PullRequestLink[] = []
   for (const link of found.values()) {
-    // Changes (PRs/MRs) and GitHub/GitLab issues are only surfaced when the
-    // agent mentions them — a user pasting a URL is context, not a "source"
-    // the panel should track. Jira issues are the exception: users paste
-    // Jira URLs as the primary interaction pattern (there is no agent-side
-    // Jira integration that would mention them first), so they are always
-    // surfaced regardless of who mentioned them.
-    if (link.mentionedBy === 'user' && !(link.kind === 'issue' && link.provider === 'jira')) continue
+    if (link.mentionedBy === 'user') continue
     out.push({
       url: link.url,
       provider: link.provider,

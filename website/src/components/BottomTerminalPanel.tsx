@@ -1,23 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import { useLocation } from 'react-router-dom'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from './ui/dropdown-menu'
 import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from './CliPanel'
 import { useTerminalTitle, disposeTerminalConnection } from '../utils/terminalRegistry'
-import { useAppSelector } from '../store'
-import { selectActiveSlotProject } from '../store/chatSlice'
+import { usePanelTabs } from '../hooks/usePanelTabs'
+import { useAppSelector, useAppDispatch } from '../store'
+import { openActivityPanel, selectActiveSlotProject } from '../store/chatSlice'
 import { openPopout as openTerminalPopout, isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout, bringBack as bringBackTerminalPopout, returnSelfToMain } from '../utils/terminalPopout'
 import {
   useBottomTerminal, addTab, removeTab, setActiveTab, setTabsOrder,
   closeBottomTerminal, setBottomTerminalHeight, setBottomTerminalWidth,
-  toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH, MAX_VH, MAX_VW,
+  toggleTerminalPosition, MAX_TERMINALS, MIN_WIDTH,
   type TermTab,
 } from '../hooks/useBottomTerminal'
 
 import { i18nT } from '../i18n/t'
+/** Fraction of the viewport the panel may grow to via the resize grip. */
+const MAX_VH = 0.72
+/** Fraction of the viewport width the right-docked panel may grow to. */
+const MAX_VW = 0.55
 
 /** Live terminal tab title — the running command / cwd basename pushed by the
  *  backend poller; falls back to "Terminal" until the first frame arrives. */
@@ -27,17 +33,21 @@ function TerminalTitle({ sessionId }: { sessionId: string }) {
 }
 
 /** A terminal tab chip — mirrors the activity-bar SidePanel TabChip design */
-function TabChip({ tab, active, onSelect, onClose }: {
+function TabChip({ tab, active, onSelect, onClose, onTransfer, canTransfer, showTransfer }: {
   tab: TermTab; active: boolean; onSelect: () => void; onClose: () => void
+  onTransfer: () => void; canTransfer: boolean; showTransfer: boolean
 }) {
+  const transferCls = canTransfer
+    ? `pi-morph shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`
+    : 'shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded-full bg-transparent border-none text-muted opacity-30 cursor-not-allowed'
   return (
     <div
       role="tab"
       aria-selected={active}
       tabIndex={0}
       onClick={onSelect}
-      // Guard on e.target so Enter/Space on the nested close button
-      // activates it natively instead of also selecting the tab.
+      // Guard on e.target so Enter/Space on the nested transfer/close buttons
+      // activates them natively instead of also selecting the tab.
       onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onSelect() } }}
       onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); onClose() } }}
       className={`group relative flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full cursor-pointer shrink-0 max-w-[240px] select-none border transition-colors ${
@@ -49,6 +59,17 @@ function TabChip({ tab, active, onSelect, onClose }: {
         <TerminalTitle sessionId={tab.id} />
       </span>
       <div className="flex items-center gap-0.5 shrink-0">
+        {showTransfer && (
+          <button
+            onClick={(e) => { e.stopPropagation(); if (canTransfer) onTransfer() }}
+            disabled={!canTransfer}
+            className={transferCls}
+            title={canTransfer ? i18nT('components.bottomTerminalPanel.move_to_side_panel') : i18nT('components.bottomTerminalPanel.open_a_chat_page_to_move_this_terminal_there')}
+            aria-label={i18nT('components.bottomTerminalPanel.move_to_side_panel')}
+          >
+            <PanelRight size={12} />
+          </button>
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); onClose() }}
           className={`shrink-0 -ml-0.5 flex items-center justify-center w-[18px] h-[18px] rounded-full transition-all bg-transparent border-none cursor-pointer text-muted hover:text-text hover:bg-bg-hover ${active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70'}`}
@@ -77,9 +98,16 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
   const { tabs, activeId, position } = useBottomTerminal()
   const del = useDeleteTerminalSession()
 
+  // Move-to-chat is only offered while the user is actually ON the chat page
+  // with a slot active
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // New tabs spawn in the selected session's project directory when one is
   // set; otherwise the backend's default cwd applies.
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
+  const chatTabs = usePanelTabs(activeSlot)
+  const dispatch = useAppDispatch()
+  const location = useLocation()
+  const canTransferToChat = variant === 'dock' && activeSlot != null && location.pathname.startsWith('/chat')
 
   /** Close a tab: kill its backend PTY (best-effort), tear down local WS +
    *  xterm, then drop it from the store (which hides the panel if it was last). */
@@ -88,6 +116,19 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
     disposeTerminalSession(id)
     removeTab(id)
   }, [del])
+
+  // Move a terminal OUT of the app-wide panel into the active chat's activity
+  // bar. Non-disposing (mirror of the chat→bottom transfer): the PTY/xterm live
+  // in terminalRegistry/termCache keyed by session id and re-attach in the
+  // chat. Open the chat's activity panel so the moved tab is visible; only drop
+  // it from the bottom panel once the chat accepts it.
+  const transferToChat = useCallback((id: string, cwd?: string) => {
+    if (!canTransferToChat) return
+    if (chatTabs.adoptTerminal(id, cwd)) {
+      dispatch(openActivityPanel())
+      removeTab(id)
+    }
+  }, [canTransferToChat, chatTabs, dispatch])
 
   /** Detach the WHOLE panel into its own browser window. Order matters, twice
    *  over: `openPopout` must run synchronously in the click (window.open needs
@@ -134,6 +175,9 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
                 active={t.id === activeId}
                 onSelect={() => setActiveTab(t.id)}
                 onClose={() => closeTab(t.id)}
+                onTransfer={() => transferToChat(t.id, t.cwd)}
+                canTransfer={canTransferToChat}
+                showTransfer={false}
               />
             </Reorder.Item>
           ))}
@@ -255,8 +299,6 @@ export default function BottomTerminalPanel() {
   const { open, height, width, position } = useBottomTerminal()
   const [dragging, setDragging] = useState(false)
 
-  const isRight = position === 'right'
-
   /* ── Top grip resize (drag up → taller, for bottom position) ── */
   const startHRef = useRef(0)
   const gripResizeBottom = usePointerDrag({
@@ -306,42 +348,66 @@ export default function BottomTerminalPanel() {
     document.body.style.cursor = ''
   }, [])
 
-  // Orientation-parameterized layout: one tree, axis-driven props.
-  const grip = isRight ? gripResizeRight : gripResizeBottom
-  const dimension = isRight ? width : height
-  const motionProp = isRight ? { width: dimension } : { height: dimension }
-  const motionKey = isRight ? 'right-terminal' : 'bottom-terminal'
+  if (position === 'right') {
+    return (
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="right-terminal"
+            className="shrink-0 overflow-hidden border-l border-border bg-bg"
+            initial={{ width: 0 }}
+            animate={{ width }}
+            exit={{ width: 0 }}
+            transition={{ duration: dragging ? 0 : 0.22, ease: 'easeOut' }}
+            style={{ willChange: 'width' }}
+          >
+            <div className="flex flex-row h-full" style={{ width }}>
+              <div
+                {...gripResizeRight}
+                className="relative shrink-0 w-[6px] cursor-col-resize group/drag"
+                style={{ touchAction: 'none' }}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={i18nT('components.bottomTerminalPanel.resize_terminal_panel')}
+              >
+                <div className={`absolute inset-y-0 left-0 w-[2px] transition-colors duration-200 ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`} />
+              </div>
+              <div className="flex-1 min-w-0 min-h-0">
+                <TerminalTabsView variant="dock" />
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    )
+  }
 
   return (
     <AnimatePresence initial={false}>
       {open && (
         <motion.div
-          key={motionKey}
-          className={`shrink-0 overflow-hidden bg-bg ${isRight ? 'border-l border-border' : 'border-t border-border'}`}
-          initial={isRight ? { width: 0 } : { height: 0 }}
-          animate={motionProp}
-          exit={isRight ? { width: 0 } : { height: 0 }}
+          key="bottom-terminal"
+          className="shrink-0 overflow-hidden border-t border-border bg-bg"
+          initial={{ height: 0 }}
+          animate={{ height }}
+          exit={{ height: 0 }}
           transition={{ duration: dragging ? 0 : 0.22, ease: 'easeOut' }}
-          style={{ willChange: isRight ? 'width' : 'height' }}
+          style={{ willChange: 'height' }}
         >
-          <div className={isRight ? 'flex flex-row h-full' : 'flex flex-col'} style={motionProp}>
-            <div
-              {...grip}
-              className={`relative shrink-0 group/drag ${isRight ? 'w-[6px] cursor-col-resize' : 'h-[6px] cursor-row-resize'}`}
-              style={{ touchAction: 'none' }}
-              role="separator"
-              aria-orientation={isRight ? 'vertical' : 'horizontal'}
-              aria-label={i18nT('components.bottomTerminalPanel.resize_terminal_panel')}
-            >
-              <div className={`absolute transition-colors duration-200 ${
-                isRight
-                  ? `inset-y-0 left-0 w-[2px] ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`
-                  : `inset-x-0 top-0 h-[2px] ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`
-              }`} />
-            </div>
-            <div className={isRight ? 'flex-1 min-w-0 min-h-0' : 'flex-1 min-h-0'}>
-              <TerminalTabsView variant="dock" />
-            </div>
+          <div className="flex flex-col" style={{ height }}>
+          <div
+            {...gripResizeBottom}
+            className="relative shrink-0 h-[6px] cursor-row-resize group/drag"
+            style={{ touchAction: 'none' }}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label={i18nT('components.bottomTerminalPanel.resize_terminal_panel')}
+          >
+            <div className={`absolute inset-x-0 top-0 h-[2px] transition-colors duration-200 ${dragging ? 'bg-accent' : 'bg-transparent group-hover/drag:bg-accent'}`} />
+          </div>
+          <div className="flex-1 min-h-0">
+            <TerminalTabsView variant="dock" />
+          </div>
           </div>
         </motion.div>
       )}

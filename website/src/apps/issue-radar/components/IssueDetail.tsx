@@ -724,10 +724,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     <article className="h-full flex flex-col">
       {/* ── Header (does not scroll) ── */}
       <header className="px-6 pt-5 pb-4 border-b border-border">
-        {/* Stacked while narrow: the actions are ~150px of fixed width, and
-            holding them beside the title left it ~120px on a phone, which wrapped
-            a normal issue title onto six lines. Label above content, not beside. */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3">
+        <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
             {awaitingFirstPaint ? <HeaderSkeleton /> : (<>
             <h1 className="text-[27px] font-bold leading-tight text-text-strong break-words">
@@ -800,22 +797,10 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
       {/* ── Scroll area: timeline + sidebar ── */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {/* Stacked while narrow. Side by side, the 236px sidebar took the width
-            out of the column holding the summary, description and timeline: at
-            390px that column measured 34px and clipped its text to two or three
-            characters a line. The metadata reads fine full-width underneath. */}
-        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 h-full sm:items-stretch overflow-y-auto sm:overflow-visible">
+        <div className="flex gap-6 px-6 py-5 h-full items-stretch">
           {/* Main column — AI summary, the pinned description, linked refs,
               then the activity timeline (newest-first). */}
-          {/* Scroll ownership is transferred WHOLE at the breakpoint. Keeping an
-              unconditional flex-1 + overflow-y-auto here would clamp this column
-              to the space a shrink-0 metadata block left over and then hide the
-              overflow behind scrollbar-none: on an issue with tall metadata the
-              description and timeline collapse into a near-zero inner window that
-              scrolls invisibly, and the wrapper scroller never engages because the
-              children already sum to the container. While narrow this takes its
-              natural height and the wrapper is the single scroller. */}
-          <main className="min-w-0 sm:flex-1 sm:overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+          <main className="flex-1 min-w-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
             <AiSummaryCard
               summary={aiQuery.data?.summary ?? ''}
               fromCache={aiQuery.data?.from_cache ?? false}
@@ -876,7 +861,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
           </main>
 
           {/* Sidebar — most triage-useful GitHub metadata. */}
-          <aside className="w-full sm:w-[236px] shrink-0 sm:overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
+          <aside className="w-[236px] flex-shrink-0 overflow-y-auto scrollbar-none text-[12.5px]" style={{ scrollbarWidth: 'none' }}>
             <Section title={i18nT('apps.issueRadar.components.issueDetail.assignees')} icon={<Users size={12} />}>
               {assignees.length > 0 ? (
                 <div className="flex flex-col gap-1">

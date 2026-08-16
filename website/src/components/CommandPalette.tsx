@@ -576,12 +576,7 @@ export default function CommandPalette({
             }}
             placeholder={scopeLabel ? i18nT('components.commandPalette.search_scope', { scope: scopeLabel.toLowerCase() }) : i18nT('components.commandPalette.search_for_anything')}
             aria-label={i18nT('components.commandPalette.search_everywhere')}
-            // min-w-0 defeats the input's `min-width: auto` intrinsic floor (~20
-            // characters). Without it this flex item refuses to shrink, so on a
-            // narrow viewport the row overflows instead and the modal's
-            // overflow-hidden clips whatever trails the input — the Tab hint and,
-            // worse, the close button.
-            className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] text-text placeholder:text-muted"
+            className="flex-1 bg-transparent border-none outline-none text-[14px] text-text placeholder:text-muted"
           />
           {scopeHint && (
             <span className="shrink-0 flex items-center gap-1 text-[11px] text-muted">

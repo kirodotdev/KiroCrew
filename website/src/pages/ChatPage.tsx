@@ -6184,15 +6184,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             OVER it — leaving no way to close a panel that covers the whole
             screen. It would also be pointing at a chat pane the panel has
             squeezed to zero width. Sessions stay reachable meanwhile via the
-            left-edge swipe (useSwipeEdge above).
-
-            Suppressed when EMBEDDED for the same reason it is suppressed
-            behind the side panel: `fixed` anchors it to the VIEWPORT, not to
-            the host's pane, so it lands on whatever the host put in that
-            corner -- in Papyrus, on the toolbar's back button, giving two
-            overlapping tap targets on the app's primary exit. A host that
-            embeds one scoped conversation has no sessions list to open. */}
-        {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
+            left-edge swipe (useSwipeEdge above). */}
+        {isMobile && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-[42px] left-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
@@ -6237,7 +6230,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
                   </button>
                 )}
-                <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">
+                <div className="group/header flex items-stretch gap-0.5 pointer-events-auto">
                 <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
@@ -6262,17 +6255,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 />
                 </div>
               {editingTitle ? (
-                <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
+                <div className="flex w-fit items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
                   {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                   {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
-                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} onBlur={() => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitle(false) }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => { composingRef.current = true; setTimeout(() => { composingRef.current = false }, 50) }} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && !composingRef.current) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { cancelTitleRef.current = true; setEditingTitle(false) } }} />
+                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 flex-none outline-none max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} onBlur={() => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitle(false) }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => { composingRef.current = true; setTimeout(() => { composingRef.current = false }, 50) }} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && !composingRef.current) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { cancelTitleRef.current = true; setEditingTitle(false) } }} />
                 </div>
               ) : (
-                <div className="cursor-text flex min-w-0 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md group-hover/header:bg-bg-hover transition-colors">
-                  <Clickable className="flex min-w-0 items-center gap-1" onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; setEditingTitle(true); setTitleDraft(title) }}>
+                <div className="cursor-text flex items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md group-hover/header:bg-bg-hover transition-colors">
+                  <Clickable className="flex items-center gap-1" onClick={() => { if (activeSlot && generatingTitleSlots.has(activeSlot)) return; setEditingTitle(true); setTitleDraft(title) }}>
                     {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                     {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
-                    <TypewriterText text={title} className="session-header-title text-sm font-semibold text-muted font-body truncate min-w-0 md:max-w-[50vw]" />
+                    <TypewriterText text={title} className="session-header-title text-sm font-semibold text-muted font-body truncate max-w-[50vw]" />
                     <Pen size={13} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-60 transition-opacity" />
                   </Clickable>
                   {activeSlot && (generatingTitleSlots.has(activeSlot) ? <Loader size={16} className="shrink-0 text-accent animate-spin" /> : <Btn aria-label={i18nT('pages.chatPage.regenerate_title_with_llm')} className="shrink-0 text-muted opacity-0 group-hover/header:opacity-40 hover:!opacity-100 hover:text-accent transition-all cursor-pointer bg-transparent border-none p-0" title={i18nT('pages.chatPage.regenerate_title_with_llm')} onClick={e => { e.stopPropagation(); if (!activeSlot || generatingTitleSlots.has(activeSlot)) return; const slot = activeSlot; setGeneratingTitleSlots(prev => new Set(prev).add(slot)); api.generateTitle(slot).then(r => { /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */ if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title })) }).catch(e => {
@@ -6287,7 +6280,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Trailing controls grouped under a single ml-auto so multiple
                   right-aligned items don't each absorb free space (two ml-auto
                   siblings split the gap, parking the split icon mid-header). */}
-              <div className="ml-auto flex shrink-0 items-center gap-1.5 pointer-events-none">
+              <div className="ml-auto flex items-center gap-1.5 pointer-events-none">
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -6468,15 +6461,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <div className="h-16" />
               {/* Top sentinel: drives upward window expansion via virtualizer's IO. */}
               <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />
-              {/* top-16 matches the h-16 header spacer above, so the pinned spinner
-                  clears the overlay header instead of sitting under it.
-                  overflow-anchor:none so appearing/vanishing here cannot become the
-                  browser's scroll anchor and jump the list mid-fetch. */}
-              {loadingOlder && (
-                <div className="sticky top-16 z-[1] flex justify-center py-2" data-testid="older-messages-loading" role="status" aria-label={i18nT('pages.chatPage.loading_earlier_messages')} style={{ overflowAnchor: 'none', background: 'var(--bg)' }}>
-                  <Loader size={16} className="animate-spin text-muted" />
-                </div>
-              )}
               {/* Top spacer — reserves the height of all items above the mounted
                   window so the scrollbar stays accurate while only the window
                   renders real DOM (keeps fast scroll cheap — O(window) nodes).

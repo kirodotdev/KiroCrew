@@ -159,7 +159,7 @@ export function featuredBusyName(actionLoading: string | null, apps: RegistryApp
  * once per distinct row object.
  */
 const cardKeyCache = new WeakMap<object, string>()
-function cardDataKey(row: object): string {
+export function cardDataKey(row: object): string {
   let key = cardKeyCache.get(row)
   if (key === undefined) {
     key = JSON.stringify(row)
@@ -461,15 +461,8 @@ export default function AppsPage() {
     [registry],
   )
   const installedApps = useMemo(
-    () =>
-      apps
-        .filter(a => !(a.origin === 'builtin' && !a.enabled))
-        .map(a => ({
-          ...a,
-          updateAvailable: updateMap.has(a.name),
-          _newVersion: updateMap.get(a.name),
-        })),
-    [apps, updateMap],
+    () => apps.filter(a => !(a.origin === 'builtin' && !a.enabled)),
+    [apps],
   )
   const filteredInstalled = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -1044,11 +1037,7 @@ export default function AppsPage() {
               <div className="space-y-3">
                 {filteredInstalled.map(app => (
                   <ErrorBoundary
-                    /* Full-data key (cardDataKey): the boundary latches
-                       its error state, so remount when the installed app or its
-                       update availability changes — e.g. when an updated payload
-                       fixes a broken card (#3719). */
-                    key={cardDataKey(app)}
+                    key={app.name}
                     scope="apps:installed-card"
                     fallback={
                       <div className="border border-border rounded-lg p-4 flex items-center gap-3">
@@ -1079,7 +1068,7 @@ export default function AppsPage() {
                     }
                   >
                     <InstalledAppCard
-                      app={app}
+                      app={{ ...app, updateAvailable: updateMap.has(app.name), _newVersion: updateMap.get(app.name) }}
                       actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
                       onAction={handleAction}
                       onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}

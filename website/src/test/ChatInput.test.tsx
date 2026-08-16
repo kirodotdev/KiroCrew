@@ -1279,9 +1279,7 @@ describe('ChatInput', () => {
       renderWithProviders(<ChatInput {...p} />)
       fireEvent.click(screen.getByTestId('busy-send-caret'))
       fireEvent.click(screen.getByTestId('busy-send-mode-queue'))
-      // The test store has no active slot, so the write lands on the slot-less
-      // sentinel key; the unscoped legacy key is a read-only migration source.
-      expect(localStorage.getItem('mc-busy-send-mode:no-slot')).toBe('queue')
+      expect(localStorage.getItem('mc-busy-send-mode')).toBe('queue')
       const main = screen.getByTestId('busy-send-button')
       expect(main).toHaveAttribute('aria-label', 'Queue message')
       fireEvent.click(main)

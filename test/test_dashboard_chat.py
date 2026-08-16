@@ -7406,8 +7406,7 @@ class TestPythonStageLoop:
             content = path.read_text(encoding="utf-8")
             assert "Result for stage" in content
 
-    @pytest.mark.asyncio
-    async def test_build_stage_context_includes_goal_and_status(self):
+    def test_build_stage_context_includes_goal_and_status(self):
         """_build_stage_context includes goal, status summary, and stage instruction."""
         from kiro_crew.context_management import OrchestrationTracker
         from kiro_crew.dashboard.chat import _build_stage_context
@@ -7418,14 +7417,13 @@ class TestPythonStageLoop:
         tracker = OrchestrationTracker()
         slot._orch_tracker = tracker
 
-        ctx = await _build_stage_context(slot, tracker, stage_idx=0)
+        ctx = _build_stage_context(slot, tracker, stage_idx=0)
         assert "Build feature X" in ctx
         assert "▶️ Stage 1: Research — execute now" in ctx
         assert "⬜ Stage 2: Implement — pending" in ctx
         assert "Stage 1 of 3" in ctx
 
-    @pytest.mark.asyncio
-    async def test_build_stage_context_includes_previous_results(self, tmp_path, monkeypatch):
+    def test_build_stage_context_includes_previous_results(self, tmp_path, monkeypatch):
         """_build_stage_context includes paths to previous stage results."""
         monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
         from kiro_crew.context_management import OrchestrationTracker
@@ -7442,7 +7440,7 @@ class TestPythonStageLoop:
         result_file.write_text("Stage 1 completed successfully")
         tracker.record_stage_result(1, str(result_file))
 
-        ctx = await _build_stage_context(slot, tracker, stage_idx=1)
+        ctx = _build_stage_context(slot, tracker, stage_idx=1)
         assert "Stage 1 completed successfully" in ctx
         assert str(result_file) in ctx
         assert "✅ Stage 1: A — completed" in ctx
@@ -7597,8 +7595,7 @@ class TestPythonStageLoop:
         ctx = run_chat_mock.call_args[0][2]
         assert "▶️ Stage 2" in ctx
 
-    @pytest.mark.asyncio
-    async def test_previous_result_paths_compaction(self, tmp_path, monkeypatch):
+    def test_previous_result_paths_compaction(self, tmp_path, monkeypatch):
         """Long stage results are truncated with tail bias (30% head, 70% tail)."""
         monkeypatch.setattr("kiro_crew.dashboard.chat.is_sensitive_path", lambda p: False)
         from kiro_crew.context_management import OrchestrationTracker
@@ -7621,7 +7618,7 @@ class TestPythonStageLoop:
         result_file.write_text(large_content)
         tracker.record_stage_result(1, str(result_file))
 
-        loaded = await _previous_result_paths(tracker, 1)
+        loaded = _previous_result_paths(tracker, 1)
         # Should be truncated (2000 chars max per stage + header + path)
         assert len(loaded) < 3000
         assert "...[truncated]..." in loaded

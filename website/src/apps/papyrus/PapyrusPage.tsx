@@ -21,10 +21,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, FileDown, Loader2, MessageSquare, Play, Sparkles, TerminalSquare, X, ChevronDown, ChevronUp } from 'lucide-react'
+import {
+  AlertTriangle, ArrowDownToLine, ArrowLeft, ArrowUpFromLine, FileDown, Loader2,
+  MessageSquare, Play, Sparkles, TerminalSquare, X,
+} from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Btn } from '../../components/ui'
-import { useIsMobile } from '../../hooks/useIsMobile'
 import SearchableSelect from '../../components/SearchableSelect'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { addSlotOptimistic, fetchSlots } from '../../store/dashboardSlice'
@@ -112,15 +114,6 @@ export default function PapyrusPage() {
   const [compileMs, setCompileMs] = useState<number | null>(null)
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
   const [chatOpen, setChatOpen] = useState(false)
-  const isMobile = useIsMobile()
-  // Four surfaces competed for one row: a 50% source column holding a 176px
-  // `w-44` file tree beside the editor, a PDF column, and a 420px co-author
-  // panel that alone exceeds a phone viewport. At 390px the editor -- the pane
-  // that carries the text being written -- measured 19px. While narrow the row
-  // becomes a column, the tree becomes a drawer reached from a bar at the TOP,
-  // and the co-author panel owns the pane when it is open.
-  const [treeOpen, setTreeOpen] = useState(false)
-  const narrowChat = isMobile && chatOpen
   const [slotKey, setSlotKey] = useState<string | null>(null)
   const [slotCreating, setSlotCreating] = useState(false)
   const [error, setError] = useState('')
@@ -525,16 +518,13 @@ export default function PapyrusPage() {
   const [compiling, setCompiling] = useState(false)
 
   const openFile = useCallback(async (path: string) => {
-    // Close the drawer on pick, or the full-width tree is a one-way door:
-    // the file opens behind it with nothing on screen to say so.
-    if (isMobile) setTreeOpen(false)
     if (!project || path === bufferFileRef.current) return
     // Flush the outgoing buffer before switching, so an unsaved edit is not lost
     // by the act of navigating away from it.
     if (!(await flushBuffer())) return
     setDirty(false)
     setCurrentFile(path)
-  }, [project, flushBuffer, isMobile])
+  }, [project, flushBuffer])
 
   const createFileMutation = useMutation({
     // Flush FIRST: on success this switches `currentFile` to the new file, which
@@ -973,31 +963,14 @@ export default function PapyrusPage() {
       )}
 
       {/* Workspace */}
-      <div className={`flex flex-1 min-h-0 ${isMobile ? 'flex-col' : ''}`}>
+      <div className="flex flex-1 min-h-0">
         {/* Source column: file tree + editor + status bar (+ diagnostics) */}
         <div
-          className={`flex flex-col min-h-0 min-w-0 ${isMobile ? 'flex-1' : ''} ${narrowChat ? 'hidden' : ''}`}
-          style={{ width: isMobile ? '100%' : `${SOURCE_PANE_PERCENT}%` }}
+          className="flex flex-col min-h-0 min-w-0"
+          style={{ width: `${SOURCE_PANE_PERCENT}%` }}
         >
-          {/* Narrow: the tree is reached from the TOP, so it reserves no
-              horizontal space and the editor gets the full width. */}
-          {isMobile && (
-            <Btn
-              onClick={() => setTreeOpen(!treeOpen)}
-              aria-expanded={treeOpen}
-              className="shrink-0 w-full justify-start gap-1.5 rounded-none border-x-0 border-t-0"
-            >
-              {treeOpen ? <ChevronUp className="lucide-inline" /> : <ChevronDown className="lucide-inline" />}
-              {i18nT('apps.papyrus.fileTree.files')}
-            </Btn>
-          )}
-          <div className={`flex flex-1 min-h-0 ${isMobile ? 'flex-col' : ''}`}>
-            {/* Height-bounded while stacked, or the tree pushes the editor off
-                the pane. `vh` rather than a percentage: no ancestor here has a
-                definite height, so a percentage max-height would not resolve. */}
-            <div className={`min-h-0 ${isMobile
-              ? `w-full shrink-0 max-h-[40vh] overflow-y-auto ${treeOpen ? '' : 'hidden'}`
-              : 'w-44 shrink-0'}`}>
+          <div className="flex flex-1 min-h-0">
+            <div className="w-44 shrink-0 min-h-0">
               <FileTree
                 files={files}
                 currentFile={currentFile}
@@ -1096,12 +1069,8 @@ export default function PapyrusPage() {
           </AnimatePresence>
         </div>
 
-        {/* PDF column. Stacked under the source while narrow, with a `vh` height
-            bound so it cannot push the editor off the pane -- a percentage would
-            not resolve against these ancestors. The divider turns with the axis. */}
-        <div className={`flex flex-col min-w-0 min-h-0 ${isMobile
-          ? `w-full shrink-0 max-h-[45vh] border-t border-border ${narrowChat ? 'hidden' : ''}`
-          : 'flex-1 border-l border-border'}`}>
+        {/* PDF column */}
+        <div className="flex flex-col flex-1 min-w-0 min-h-0 border-l border-border">
           <PdfPreview src={pdfSrc} downloadName={`${project}.pdf`} />
         </div>
 
@@ -1111,16 +1080,12 @@ export default function PapyrusPage() {
             <motion.div
               key="co-author"
               initial={{ width: 0, opacity: 0 }}
-              animate={{ width: isMobile ? '100%' : CHAT_PANEL_WIDTH, opacity: 1 }}
+              animate={{ width: CHAT_PANEL_WIDTH, opacity: 1 }}
               exit={{ width: 0, opacity: 0 }}
               transition={{ duration: 0.18 }}
-              className={`min-h-0 overflow-hidden ${isMobile ? 'flex-1' : 'shrink-0'}`}
+              className="shrink-0 min-h-0 overflow-hidden"
             >
-              {/* BOTH widths have to move together. This wrapper is animated and
-                  content-sized, so a percentage on the child alone resolves
-                  against a box that hugs its own content -- the panel would come
-                  out narrower than the pixel width it replaced, not wider. */}
-              <div style={{ width: isMobile ? '100%' : CHAT_PANEL_WIDTH }} className="h-full min-h-0">
+              <div style={{ width: CHAT_PANEL_WIDTH }} className="h-full min-h-0">
                 <CoAuthorPanel
                   slotKey={slotKey}
                   creating={slotCreating}

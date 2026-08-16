@@ -165,20 +165,6 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # qualifies; a Node or Python harness does not, however it is spawned.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
-# Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
-# (kiro-cli and KAS) whose single process hosts N sessions via demux. The
-# dormant claude-agent-acp seam runs one AcpClient per session and is NOT a
-# member. Membership drives the shared runtime start path and the kiro-family
-# spawn conventions: members read the cli.json effort/tool-search overlay and
-# receive effort at spawn, whereas claude applies it via a live push after the
-# session is ready. Stated as opt-in membership (harness-parity H5/H6) so the
-# four sites that mean "kiro or kas" say so positively rather than as
-# ``not is_claude_backend`` — an inference that silently captures every harness
-# added later. This is a SUPERSET of ACP_BACKENDS_SESSION_SHARING: running on
-# AcpRuntime is necessary for session sharing but not sufficient (KAS runs here
-# yet is excluded from sharing until keep-aware teardown lands).
-ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
-
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility
@@ -559,28 +545,6 @@ class AcpEvent:
                     return cmd
         return None
 
-    @property
-    def child_low_fidelity(self) -> bool:
-        """True for a backend-subagent event whose SECURITY context is absent.
-
-        Gates every auto-approve path for runtime-routed child permission
-        requests. ``tool_input`` alone is NOT fidelity: an edit refinement can
-        cache a rendered diff string without ``raw_tool_params``, leaving the
-        path-scope checks blind while a truthy ``tool_input`` suggests
-        otherwise. Fidelity requires the STRUCTURED params the gates actually
-        evaluate — ``raw_tool_params`` for path/arg scopes — and, for a shell
-        tool, a recoverable command string. Non-child events are never
-        low-fidelity (their caches are slot-owned and complete by
-        construction).
-        """
-        if not self.sub_session_id:
-            return False
-        if not isinstance(self.raw_tool_params, dict):
-            return True
-        if self.is_shell and not self.shell_command:
-            return True
-        return False
-
 
 @dataclass
 class AcpPromptStats:
@@ -669,67 +633,6 @@ class AcpPromptStats:
         what the compacted transcript actually costs.
         """
         self.context_pct_unknown = False
-
-    @staticmethod
-    def sanitize_pct(value: object) -> float | None:
-        """Coerce a raw context-usage percentage to a real [0, 100] float.
-
-        Both the kiro-cli ``contextUsagePercentage`` and the KAS
-        ``usagePercentage`` fields feed this. Returns ``None`` for a missing or
-        unparseable value (the caller leaves the meter untouched). A malformed
-        number (NaN, ±inf, or a huge finite like 1e308) is clamped — NaN via its
-        self-inequality — so ``context_pct`` is always valid JSON and never
-        overflows the downstream ``round(win * pct / 100)``.
-        """
-        if value is None:
-            return None
-        try:
-            pct = float(value)  # type: ignore[arg-type]
-        except (TypeError, ValueError, OverflowError):
-            # OverflowError: a JSON integer beyond float range — malformed
-            # telemetry must degrade to "absent", never abort the active turn.
-            return None
-        return 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
-
-    def backfill_context_window(self, pct: float, model_id: str) -> None:
-        """Derive window/used tokens from the model registry when only a
-        percentage is available.
-
-        kiro-cli 2.10+ metadata and KAS ``context_usage`` both give a percentage
-        with no ``usage_update {used, size}``. Shared by the AcpClient and
-        AcpSessionHandle paths (previously two verbatim copies) so both report
-        the same context-meter token counts. No-op once a real usage_update has
-        set authoritative counts. ``model_id`` is the caller's resolved id (the
-        kiro-agent ``currentModelId``, else the user-picked alias). Resolves the
-        window through ``model_registry.model_window`` (kiro-list cache >
-        registry > heuristic) and only backfills a KNOWN window, leaving 0 for a
-        genuinely-unknown model so the frontend's own authoritative window drives
-        the meter. A real ``usage_update.size`` always wins. A surviving
-        ``context_window_tokens`` (e.g. kept across a compaction reset — the
-        model did not change) outranks the registry, since the served size can
-        differ from the static entry.
-        """
-        if self.context_tokens_from_usage:
-            return  # a real usage_update already set authoritative counts
-        win = self.context_window_tokens
-        if not win or win <= 0:
-            if not model_id:
-                return
-            # Deferred import: model_registry is a leaf module, but importing it
-            # at module scope would drag it into the very early types import.
-            from kiro_crew import model_registry
-
-            if not model_registry.has_known_window(model_id):
-                return
-            reg_win = model_registry.model_window(model_id)
-            if not reg_win or reg_win <= 0:
-                return
-            win = int(reg_win)
-            self.context_window_tokens = win
-        # sanitize_pct already clamps live telemetry, but a caller may pass a raw
-        # pct here; guard the multiply so a stray NaN/inf can never overflow.
-        safe_pct = 0.0 if pct != pct else min(max(pct, 0.0), 100.0)
-        self.context_used_tokens = round(win * safe_pct / 100.0)
 
     def reset_after_compaction(self) -> None:
         """Drop the usage counts after a successful compaction.

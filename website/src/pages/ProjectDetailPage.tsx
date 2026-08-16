@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useIsMobile } from '../hooks/useIsMobile'
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -45,7 +44,6 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
 
   const tasks = useMemo(() => (run.task_details || []).map(t => savedOverrides[t.index] ? { ...t, ...savedOverrides[t.index] } : t), [run.task_details, savedOverrides]);
   const idea = run.spec_content || run.original_input || '';
-  const isMobile = useIsMobile()
   const selected = selectedTask !== null ? tasks.find(t => t.index === selectedTask) : null;
 
   // Poll pending approvals for force_approval gates
@@ -163,10 +161,7 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
-      {/* The panel owns the pane while narrow, so the task view steps aside.
-          Hidden rather than unmounted: the view holds scroll position and the
-          DAG's own layout, and rotating a phone crosses the breakpoint. */}
-      <div className={`flex-1 min-w-0 flex flex-col min-h-0 ${isMobile && selected ? 'hidden' : ''}`}>
+      <div className="flex-1 min-w-0 flex flex-col min-h-0">
         {/* Tab bar */}
         <div className="px-4 py-2 border-b border-border flex gap-1 items-center shrink-0">
           <button onClick={() => setTab('idea')} className={tabCls(tab === 'idea')}>{i18nT('pages.projectDetailPage.idea')}</button>
@@ -242,13 +237,10 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
           <motion.div
             key="task-panel"
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: isMobile ? '100%' : 'auto', opacity: 1 }}
+            animate={{ width: 'auto', opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
-            // This wrapper is the other half of the fix. `width: 'auto'` with
-            // `shrink-0` is a box that hugs its content, so the panel's own
-            // full-width class would resolve against a 42px box at a 390px row.
-            className={`overflow-hidden h-full ${isMobile ? 'flex-1 min-w-0' : 'shrink-0'}`}
+            className="shrink-0 overflow-hidden h-full"
           >
             <TaskDetailPanel task={selected} allTasks={tasks} onClose={() => setSelectedTask(null)} onRetry={onRetry} onApprove={approvalMap[selected.index] ? handleApprove : undefined} onToggleApproval={editable ? handleToggleApproval : undefined} editable={editable && ((run.status === 'running' || run.status === 'paused') ? selected.status === 'pending' : true)} onSave={handleSaveTask} pendingEdits={pendingEdits} onEdit={handleEdit} />
           </motion.div>

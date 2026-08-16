@@ -124,14 +124,13 @@ describe('Jira link extraction', () => {
   })
 
   describe('first-mention attribution', () => {
-    it('user-mentioned Jira issues ARE included (Jira-specific exemption)', () => {
+    it('user-mentioned Jira issues are excluded from agent sources', () => {
       const result = extractPullRequestLinks([
         ...userMessages('Working on https://acme.atlassian.net/browse/PROJ-50'),
         ...messages('I see PROJ-50, also https://acme.atlassian.net/browse/PROJ-51'),
       ])
-      // Both are emitted — Jira issues are surfaced regardless of who mentioned first
+      // Only PROJ-51 is emitted (agent-first); PROJ-50 was user-first
       expect(result).toEqual([
-        { url: 'https://acme.atlassian.net/browse/PROJ-50', provider: 'jira', number: 50, repo: 'PROJ', kind: 'issue' },
         { url: 'https://acme.atlassian.net/browse/PROJ-51', provider: 'jira', number: 51, repo: 'PROJ', kind: 'issue' },
       ])
     })

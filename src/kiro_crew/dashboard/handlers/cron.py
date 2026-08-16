@@ -5,27 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
-from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import model_registry
-from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import CronStoreBusy, is_valid_timezone
-from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin
-from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -34,11 +28,10 @@ from kiro_crew.validation import (
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
     LEARN_ADD_SCHEMA,
-    MAX_CRON_MESSAGE,
+    MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
     ValidationError,
-    normalize_lesson_category,
     validate_string_field,
     validate_tool_args,
 )
@@ -50,7 +43,6 @@ from ._shared import (
     _get_memory,
     _is_restricted_session,
     _probe_persisted_session,
-    _redact_memory_field,
 )
 
 logger = logging.getLogger(__name__)
@@ -201,7 +193,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # CRON_ADD_SCHEMA so the REST + tool paths validate identically.
     try:
         name = validate_string_field(body, "name", required=True, max_len=MAX_SHORT_STRING)
-        message = validate_string_field(body, "message", max_len=MAX_CRON_MESSAGE)
+        message = validate_string_field(body, "message", max_len=MAX_MEDIUM_STRING)
         schedule = validate_string_field(body, "schedule", max_len=100)
         cron_expr = validate_string_field(body, "cron", max_len=100) or None
         channel = validate_string_field(body, "channel", max_len=CHANNEL_MAX_LEN) or None
@@ -412,19 +404,6 @@ async def api_cron_update(request: web.Request) -> web.Response:
     ):
         if key in body:
             kwargs[key] = body[key]
-    # message routes through the same validator as POST (type check +
-    # sanitize_string + length cap) so the two REST surfaces cannot diverge:
-    # PATCH previously passed it through entirely unvalidated. Sanitizing here
-    # also keeps length measured post-normalization, matching create.
-    if "message" in kwargs:
-        try:
-            kwargs["message"] = validate_string_field(
-                body, "message", max_len=MAX_CRON_MESSAGE
-            )
-        except ValidationError as exc:
-            return web.json_response(
-                {"error": str(exc), "code": "invalid_message"}, status=400
-            )
     # folder_id must be a string (or null → ""): a non-string JSON value
     # would be persisted verbatim into the schema and corrupt reads.
     if "folder_id" in kwargs:
@@ -664,153 +643,6 @@ async def api_cron_history_detail(request: web.Request) -> web.Response:
     return web.json_response(detail)
 
 
-# Ceiling on the script source returned by GET /api/crons/{id}/script. Cron
-# scripts are hand- or LLM-authored helpers of a few KB; anything near this
-# ceiling is not a cron script, so the view truncates rather than streaming an
-# unbounded file into the dashboard.
-_SCRIPT_SOURCE_MAX_BYTES = 256 * 1024
-
-# The read below traverses the O_NOFOLLOW + fd-real-path chokepoint in hooks
-# (safe_read_file_bytes_nolink), which has no Windows implementation
-# (_fd_real_path returns None there -> fail-closed on every read). Gate with an
-# honest 501 rather than an opaque refusal, mirroring the theme-pack routes.
-_SCRIPT_SOURCE_WIN_UNSUPPORTED = os.name == "nt"
-
-
-def _read_script_source_sync(script_spec: object) -> tuple[dict[str, Any] | None, tuple[str, str] | None]:
-    """Resolve a job's stored ``script`` spec and read its source (blocking).
-
-    Returns ``(payload, None)`` on success or ``(None, (message, code))`` on
-    refusal. Runs in a worker thread — resolution stats the filesystem and the
-    read is synchronous file IO, neither of which may run on the event loop.
-
-    The path is derived exclusively from the job's own stored ``script`` field
-    (never from the client), re-validated by ``resolve_script_path`` (existence,
-    sensitivity, containment under ``<config_dir>/crons/``), and then read
-    through ``safe_read_file_bytes_nolink`` pinned to that same root so a
-    symlink or hardlink swapped in after the by-name check is rejected, never
-    dereferenced.
-
-    INVARIANT: no persisted job state may produce a 500 from this endpoint.
-    ``script_spec`` comes from ``crons.json``, which is agent- and hand-editable
-    JSON — its value can be any JSON type and any string shape. Every failure
-    to resolve it, of any kind, is therefore a 4xx refusal, never a crash:
-    the spec is validated as a string up front, and the resolution step is
-    wrapped fail-closed (``FileNotFoundError`` stays distinct only to give the
-    honest 404).
-    """
-    if not isinstance(script_spec, str):
-        # Truthy non-string ``script`` in crons.json (number, list, object):
-        # the handler's ``if not job.script`` gate passes it through, and the
-        # resolver would crash on it. Refuse, same code as any bad path.
-        return None, ("script path refused", "script_path_refused")
-    try:
-        file_path, func_name = resolve_script_path(script_spec)
-    except FileNotFoundError:
-        return None, ("script file not found", "script_not_found")
-    except Exception:
-        # Fail-closed catch-all, deliberate: malformed spec (ValueError), a
-        # path escaping the crons root (PermissionError), symlink-loop
-        # resolution failures (RuntimeError on some Python versions,
-        # OSError/ELOOP on others), and any failure mode not yet enumerated —
-        # the spec is untrusted persisted data, so an unanticipated exception
-        # type must degrade to the same refusal as an anticipated one, never
-        # to a 500. The refusal does not echo resolution detail (the spec
-        # string is already visible on the job record; the resolved path is
-        # not the client's business).
-        return None, ("script path refused", "script_path_refused")
-    crons_root = str((config_dir() / "crons").resolve())
-    truncated = False
-    try:
-        data = safe_read_file_bytes_nolink(
-            file_path, within_root=crons_root, max_bytes=_SCRIPT_SOURCE_MAX_BYTES
-        )
-    except FileTooLargeError:
-        data = safe_read_file_bytes_nolink(
-            file_path,
-            within_root=crons_root,
-            max_bytes=_SCRIPT_SOURCE_MAX_BYTES,
-            allow_truncate=True,
-        )
-        truncated = True
-    if data is None:
-        # Fail-closed refusal from the chokepoint (swapped symlink, hardlink,
-        # non-regular file, unverifiable containment). 4xx, never a 500.
-        return None, ("script unreadable", "script_read_refused")
-    # Scripts under crons/ are LLM-writeable by design, so treat their content
-    # like any other agent-influenced text shown in the dashboard: strip raw
-    # credential patterns and exfiltration URLs before it leaves the backend.
-    # The file and function names come from the same stored spec, so they get
-    # the identical treatment — a credential-shaped name must not ride out on
-    # the metadata fields either.
-    source = redact_credentials(redact_exfiltration_urls(data.decode("utf-8", errors="replace"))[0])[0]
-    file_name = redact_credentials(redact_exfiltration_urls(os.path.basename(file_path))[0])[0]
-    func = redact_credentials(redact_exfiltration_urls(func_name)[0])[0]
-    return {
-        "source": source,
-        "file": file_name,
-        "function": func,
-        "truncated": truncated,
-    }, None
-
-
-async def api_cron_script_source(request: web.Request) -> web.Response:
-    """GET /api/crons/{id}/script — read-only source of a script cron's callable.
-
-    The job id is the only caller-supplied input; the file path is derived
-    server-side from the stored job record (see ``_read_script_source_sync``).
-    """
-    state: DashboardState = request.app["state"]
-    job_id = request.match_info["job_id"]
-    # Freshness-guaranteed lookup, same rationale as api_cron_run: the job may
-    # have been minted by another process and not yet be in the cache snapshot.
-    job = await state.crons.get_job_async(job_id)
-    if not job:
-        return web.json_response({"error": "job not found", "code": "job_not_found"}, status=404)
-    if not job.script:
-        return web.json_response(
-            {"error": "job has no script", "code": "no_script"}, status=404
-        )
-    if _SCRIPT_SOURCE_WIN_UNSUPPORTED:
-        return web.json_response(
-            {
-                "error": "script source view is not yet supported on Windows",
-                "code": "unsupported_platform",
-            },
-            status=501,
-        )
-    payload, err = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), _read_script_source_sync, job.script
-    )
-    if err is not None:
-        message, code = err
-        # SEL audit: a refused read of an on-disk script is a guarded-path
-        # permission decision (containment escape, symlink swap, unresolvable
-        # spec) and must leave an audit record, same as an allowed read below.
-        _sel().log_api_access(
-            caller="dashboard",
-            operation="cron.script_source",
-            outcome="denied",
-            source="api_cron_script_source",
-            resources=f"job_id={job_id} code={code}",
-        )
-        # Literal statuses per branch (not a computed ``status=`` expression) so
-        # the error-code contract ratchet can see each site is coded.
-        if code == "script_not_found":
-            return web.json_response({"error": message, "code": code}, status=404)
-        return web.json_response({"error": message, "code": code}, status=422)
-    # _read_script_source_sync returns exactly one of (payload, err) non-None.
-    assert payload is not None
-    _sel().log_api_access(
-        caller="dashboard",
-        operation="cron.script_source",
-        outcome="ok",
-        source="api_cron_script_source",
-        resources=f"job_id={job_id} truncated={payload['truncated']}",
-    )
-    return web.json_response(payload)
-
-
 async def api_cron_history_all(request: web.Request) -> web.Response:
     """GET /api/crons/history — unified history across all jobs, enriched with job_name."""
     state: DashboardState = request.app["state"]
@@ -838,167 +670,6 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
     return web.json_response({"runs": runs, "total": total})
 
 
-# Delete-route policy for the archived-session recovery path: only a temporary
-# session is blocked from deleting; incognito may delete (an active user
-# action), mirroring the live-slot ``_blocks_reads_session`` policy. The create
-# route blocks every private mode via the canonical
-# ``history.is_incognito_transcript`` classifier instead.
-def _is_temporary_transcript(persisted_mode: str) -> bool:
-    return persisted_mode == "temporary"
-
-
-async def _recognize_session(
-    state: DashboardState,
-    sk: str,
-    operation: str,
-    *,
-    blocks_persisted_mode: Callable[[str], bool],
-) -> web.Response | None:
-    """Session-recognition gate shared by the lessons and memory routes.
-
-    Applies one slot / restricted-key / channel-namespace / persisted-JSONL
-    cascade to every caller so the mutating routes cannot diverge.
-    Returns a refusal :class:`web.Response`, or ``None`` when the session is
-    recognised. Every decision — allow or deny — emits a SEL audit event
-    under *operation*.
-
-    ``blocks_persisted_mode`` is the per-route policy for the
-    archived-session recovery path: writes block every private mode (the
-    canonical ``history.is_incognito_transcript`` classifier); lesson delete
-    blocks only ``temporary``. A ``None``
-    (unreadable or ambiguous) persisted mode always fails closed regardless
-    of policy. Every refusal body carries a machine-readable ``code`` field
-    (``missing_session_key`` / ``unknown_session`` on the 400s,
-    ``restricted_session`` on the 403), so clients dispatch on the
-    identifier rather than the prose.
-    """
-    if not sk:
-        _sel().log_api_access(
-            caller="anonymous", operation=operation, outcome="denied",
-            source="dashboard", resources="missing_session_key",
-        )
-        return web.json_response(
-            {"error": "missing X-Session-Key", "code": "missing_session_key"},
-            status=400,
-        )
-    if sk == "dashboard:ui":
-        # Browser UI's static key — implicitly trusted, but the allow
-        # decision itself is still an authorization outcome and must be
-        # audited (every permission decision emits a SEL event).
-        _sel().log_api_access(
-            caller=sk, operation=operation, outcome="allowed",
-            source="dashboard", resources="dashboard_ui",
-        )
-        return None
-    slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
-    in_slots = slot_name in state._slots
-    in_restricted = sk in state._restricted_keys
-    # A channel-originated session (Slack, Telegram, Discord, Webex,
-    # WeCom, …) is a legitimate established session: its key is namespaced
-    # ``{channel}:{conversation_id}`` and the transport publishes
-    # ``session_pid`` so the gateway resolves this X-Session-Key (#232).
-    # Recognise the WHOLE channel-namespace family via the canonical
-    # ``is_channel_session_key`` — not just Slack. Two reasons this is the
-    # right gate, both already true for Slack:
-    #   * the first memory call in a fresh channel thread races the JSONL
-    #     flush (which only lands after the LLM turn completes), so a
-    #     namespace fast-path avoids a spurious HTTP 400 until the
-    #     transcript is on disk; and
-    #   * the ``_probe_persisted_session`` fallback below cannot
-    #     rescue a channel key anyway — ``slot_name`` is
-    #     ``sk.split(":", 1)[-1]`` (inner colons kept, channel prefix
-    #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
-    #     colons folded to ``_``, so no probed name ever matches (and a
-    #     colon is now rejected outright by ``_persisted_session_path``).
-    # Before this, only ``slack:`` was accepted, so learn_add failed with
-    # HTTP 400 "unknown session" from every OTHER channel (Telegram /
-    # Discord / Webex / WeCom) even though the session is fully identified
-    # (#1268). The bare Slack thread_ts shim stays for legacy native-Slack
-    # keys. Incognito/temporary sessions are still blocked by each route's
-    # live-slot policy check (Slack is the only channel with that concept),
-    # so widening the namespace does not widen memory writes to ephemeral
-    # sessions.
-    is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
-    # Only consult the on-disk JSONL when the cheaper in-memory checks all
-    # fail. ``_probe_persisted_session()`` performs synchronous filesystem
-    # I/O (path resolution plus a bounded metadata head read), so it runs
-    # via ``asyncio.to_thread`` — never on the event loop (AUTOSDE
-    # ``no-blocking-call-on-event-loop``) — and only on this rare recovery
-    # path, leaving the common live-slot path free of both I/O and a thread
-    # hop. One composed call answers BOTH questions (does the session
-    # exist, and may it touch memory) from a single path resolution, so the
-    # two decisions can never be made about different files.
-    if not (in_slots or in_restricted or is_channel_ns):
-        exists, persisted_mode = await asyncio.to_thread(
-            _probe_persisted_session, slot_name
-        )
-        if not exists:
-            # Slot may have been evicted from memory (idle sweep,
-            # gateway restart) while the MCP subprocess keeps its
-            # original KIROCREW_SESSION_KEY. No session JSONL means
-            # the key genuinely does not belong to any established
-            # session. (Presence does NOT imply the session is
-            # non-ephemeral — every memory_mode writes a transcript —
-            # which is what ``persisted_mode`` below settles.)
-            _sel().log_api_access(
-                caller=sk, operation=operation, outcome="denied",
-                source="dashboard", resources="unknown_session",
-            )
-            return web.json_response(
-                {"error": "unknown session", "code": "unknown_session"},
-                status=400,
-            )
-        if persisted_mode is None or blocks_persisted_mode(persisted_mode):
-            # Archiving a tab drops the slot AND discards its
-            # ``_restricted_keys`` entry while leaving the transcript —
-            # and its ``memory_mode`` marker — on disk, so the two
-            # in-memory checks above cannot see that this session is
-            # ephemeral. The persisted mode is the only remaining
-            # evidence. ``None`` means the header was unreadable, which
-            # is NOT evidence that the call is allowed: append() writes
-            # the metadata line at file creation, so a normal session
-            # always has one. Fail closed.
-            _sel().log_api_access(
-                caller=sk, operation=operation, outcome="denied",
-                source="dashboard", resources="restricted_session_block",
-            )
-            return web.json_response(
-                {
-                    "error": "Memory writes are not allowed in this session mode.",
-                    # Machine-readable per the error-code contract; matches
-                    # the code already used for this condition at
-                    # handlers/memory.py's restricted-session refusal.
-                    "code": "restricted_session",
-                },
-                status=403,
-            )
-        # JSONL-fallback is the sole reason the call is permitted.
-        # Audit it as an allow decision so session-recovery
-        # authorization is traceable alongside the deny path above.
-        _sel().log_api_access(
-            caller=sk, operation=operation, outcome="allowed",
-            source="dashboard", resources="jsonl_fallback_recovery",
-        )
-    elif in_slots:
-        # Live in-memory slot — the common happy path. Audit so that
-        # every permission decision on this branch is traceable.
-        _sel().log_api_access(
-            caller=sk, operation=operation, outcome="allowed",
-            source="dashboard", resources="live_slot",
-        )
-    elif in_restricted:
-        _sel().log_api_access(
-            caller=sk, operation=operation, outcome="allowed",
-            source="dashboard", resources="restricted_key",
-        )
-    else:  # is_channel_ns
-        _sel().log_api_access(
-            caller=sk, operation=operation, outcome="allowed",
-            source="dashboard", resources="channel_namespace",
-        )
-    return None
-
-
 async def api_lessons_create(request: web.Request) -> web.Response:
     """POST /api/lessons — add a lesson (vector store or JSONL fallback)."""
     from kiro_crew.learn import Lesson  # noqa: F811
@@ -1012,12 +683,125 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
     # Block lesson writes from restricted (incognito/temporary/guest) sessions.
     sk = request.headers.get("X-Session-Key", "")
-    refusal = await _recognize_session(
-        state, sk, "learn_add",
-        blocks_persisted_mode=is_incognito_transcript,
-    )
-    if refusal is not None:
-        return refusal
+    if not sk:
+        _sel().log_api_access(
+            caller="anonymous", operation="learn_add", outcome="denied",
+            source="dashboard", resources="missing_session_key",
+        )
+        return web.json_response({"error": "missing X-Session-Key"}, status=400)
+    if sk != "dashboard:ui":
+        slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
+        in_slots = slot_name in state._slots
+        in_restricted = sk in state._restricted_keys
+        # A channel-originated session (Slack, Telegram, Discord, Webex,
+        # WeCom, …) is a legitimate established session: its key is namespaced
+        # ``{channel}:{conversation_id}`` and the transport publishes
+        # ``session_pid`` so the gateway resolves this X-Session-Key (#232).
+        # Recognise the WHOLE channel-namespace family via the canonical
+        # ``is_channel_session_key`` — not just Slack. Two reasons this is the
+        # right gate, both already true for Slack:
+        #   * the first learn_add in a fresh channel thread races the JSONL
+        #     flush (which only lands after the LLM turn completes), so a
+        #     namespace fast-path avoids a spurious HTTP 400 until the
+        #     transcript is on disk; and
+        #   * the ``_probe_persisted_session`` fallback below cannot
+        #     rescue a channel key anyway — ``slot_name`` is
+        #     ``sk.split(":", 1)[-1]`` (inner colons kept, channel prefix
+        #     dropped) while the file is ``dashboard_<safe_key>.jsonl`` with
+        #     colons folded to ``_``, so no probed name ever matches (and a
+        #     colon is now rejected outright by ``_persisted_session_path``).
+        # Before this, only ``slack:`` was accepted, so learn_add failed with
+        # HTTP 400 "unknown session" from every OTHER channel (Telegram /
+        # Discord / Webex / WeCom) even though the session is fully identified
+        # (#1268). The bare Slack thread_ts shim stays for legacy native-Slack
+        # keys. Incognito/temporary sessions are still blocked below by
+        # ``_is_restricted_session`` (Slack is the only channel with that
+        # concept), so widening the namespace does not widen memory writes to
+        # ephemeral sessions.
+        is_channel_ns = is_channel_session_key(sk) or bool(SLACK_THREAD_TS_RE.match(sk))
+        # Only consult the on-disk JSONL when the cheaper in-memory checks all
+        # fail. ``_probe_persisted_session()`` performs synchronous filesystem
+        # I/O (path resolution plus a bounded metadata head read), so it runs
+        # via ``asyncio.to_thread`` — never on the event loop (AUTOSDE
+        # ``no-blocking-call-on-event-loop``) — and only on this rare recovery
+        # path, leaving the common live-slot path free of both I/O and a thread
+        # hop. One composed call answers BOTH questions (does the session
+        # exist, and may it write memory) from a single path resolution, so the
+        # two decisions can never be made about different files.
+        if not (in_slots or in_restricted or is_channel_ns):
+            exists, persisted_mode = await asyncio.to_thread(
+                _probe_persisted_session, slot_name
+            )
+            if not exists:
+                # Slot may have been evicted from memory (idle sweep,
+                # gateway restart) while the MCP subprocess keeps its
+                # original KIROCREW_SESSION_KEY. No session JSONL means
+                # the key genuinely does not belong to any established
+                # session. (Presence does NOT imply the session is
+                # non-ephemeral — every memory_mode writes a transcript —
+                # which is what ``persisted_mode`` below settles.)
+                _sel().log_api_access(
+                    caller=sk, operation="learn_add", outcome="denied",
+                    source="dashboard", resources="unknown_session",
+                )
+                return web.json_response({"error": "unknown session"}, status=400)
+            if persisted_mode is None or is_incognito_transcript(persisted_mode):
+                # Archiving a tab drops the slot AND discards its
+                # ``_restricted_keys`` entry while leaving the transcript —
+                # and its ``memory_mode`` marker — on disk, so the two
+                # in-memory checks above cannot see that this session is
+                # ephemeral. The persisted mode is the only remaining
+                # evidence. ``None`` means the header was unreadable, which
+                # is NOT evidence that writes are allowed: append() writes
+                # the metadata line at file creation, so a normal session
+                # always has one. Fail closed.
+                _sel().log_api_access(
+                    caller=sk, operation="learn_add", outcome="denied",
+                    source="dashboard", resources="restricted_session_block",
+                )
+                return web.json_response(
+                    {
+                        "error": "Memory writes are not allowed in this session mode.",
+                        # Machine-readable per the error-code contract; matches
+                        # the code already used for this condition at
+                        # handlers/memory.py's restricted-session refusal.
+                        "code": "restricted_session",
+                    },
+                    status=403,
+                )
+            # JSONL-fallback is the sole reason the call is permitted.
+            # Audit it as an allow decision so session-recovery
+            # authorization is traceable alongside the deny path above.
+            _sel().log_api_access(
+                caller=sk, operation="learn_add", outcome="allowed",
+                source="dashboard", resources="jsonl_fallback_recovery",
+            )
+        elif in_slots:
+            # Live in-memory slot — the common happy path. Audit so that
+            # every ``learn_add`` permission decision on this branch is
+            # traceable.
+            _sel().log_api_access(
+                caller=sk, operation="learn_add", outcome="allowed",
+                source="dashboard", resources="live_slot",
+            )
+        elif in_restricted:
+            _sel().log_api_access(
+                caller=sk, operation="learn_add", outcome="allowed",
+                source="dashboard", resources="restricted_key",
+            )
+        else:  # is_channel_ns
+            _sel().log_api_access(
+                caller=sk, operation="learn_add", outcome="allowed",
+                source="dashboard", resources="channel_namespace",
+            )
+    else:
+        # Browser UI's static key — implicitly trusted, but the allow
+        # decision itself is still an authorization outcome and must be
+        # audited (every permission decision emits a SEL event).
+        _sel().log_api_access(
+            caller=sk, operation="learn_add", outcome="allowed",
+            source="dashboard", resources="dashboard_ui",
+        )
     if _is_restricted_session(state, request):
         sk = request.headers.get("X-Session-Key", "")
         logger.warning("Blocked learn_add from restricted session %s", sk)
@@ -1133,31 +917,10 @@ async def api_lessons_create(request: web.Request) -> web.Response:
 async def api_lessons_delete(request: web.Request) -> web.Response:
     """DELETE /api/lessons — remove lessons by substring."""
     state: DashboardState = request.app["state"]
-    # Require the SAME session recognition as ``api_lessons_create``, via the
-    # shared ``_recognize_session`` gate. Before this gate, deleting a lesson
-    # was LESS protected than adding one: a key that create rejects with HTTP
-    # 400 "unknown session" (forged, or a fresh background session whose
-    # transcript hasn't flushed yet) could still substring-delete any durable
-    # lesson. That asymmetry also breaks the remove-then-re-add consolidation
-    # pattern non-atomically — the destructive remove succeeds, then the
-    # re-add is refused, and the lesson is lost. Gating delete the same way
-    # makes the pattern fail closed at step one.
-    #
-    # Policy differences from create are carried by the gate's parameters:
-    # incognito sessions MAY delete (an active user action), only temporary
-    # sessions are blocked — both for live slots (``_blocks_reads_session``
-    # below) and, on the archived-session recovery path, via the persisted
-    # memory-mode probe.
-    sk = request.headers.get("X-Session-Key", "")
-    refusal = await _recognize_session(
-        state, sk, "lessons.delete",
-        blocks_persisted_mode=_is_temporary_transcript,
-    )
-    if refusal is not None:
-        return refusal
-    # Block lesson deletes from live temporary sessions only.
+    # Block lesson deletes from temporary sessions only.
     # Incognito allows learn_remove (active user action).
     if _blocks_reads_session(state, request):
+        sk = request.headers.get("X-Session-Key", "")
         _sel().log_api_access(
             caller=sk,
             operation="lessons.delete",
@@ -1381,52 +1144,17 @@ async def api_lessons(request: web.Request) -> web.Response:
         )
         return web.json_response({"lessons": []})
     workspace = request.query.get("workspace")
-
-    def _safe_lesson(rule: object, category: object, ts: object) -> dict:
-        """One sanitization chokepoint for every branch of this endpoint.
-
-        Lesson rows can carry consolidation (LLM) or import output: normalize
-        the category through the shared helper (display policy, strict=False)
-        so this surface cannot drift from the write-path rules, and redact
-        BOTH prose fields via the shared chain like every other agent-derived
-        string this handler returns -- an imported row can carry a credential
-        in either field. The JSONL store loads ``rule`` without type
-        validation, so a malformed row can carry a non-string here; stringify
-        before the redaction rather than crashing the endpoint.
-        """
-        if not isinstance(rule, str):
-            rule = str(rule)
-        safe_rule = _redact_memory_field(rule)
-        safe_category = _redact_memory_field(
-            normalize_lesson_category(category, strict=False)
-        )
-        return {"rule": safe_rule, "category": safe_category, "ts": ts}
-
     # Read from vector store if it has lessons, else JSONL
     vs = _get_memory(state).vector_store
     vs_lessons = await asyncio.to_thread(vs.get_lessons) if vs else None
     if vs_lessons:
-        # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
-        # optional numpy/faiss imports, and this helper is the handler's only
-        # use of it, on one dashboard read path.
-        from kiro_crew.vector_memory import _lesson_display_text
-
         data = []
         for e in vs_lessons[-50:]:
             try:
-                decoded = json.loads(e["value_json"])
+                rule = json.loads(e["value_json"])
             except (json.JSONDecodeError, TypeError):
                 continue
-            # Rendered text for either storage shape: mapping-shaped rows
-            # (write_lesson's format and the onboarding import's) would otherwise
-            # ship a nested object where the dashboard expects a string. A row with
-            # no lesson shape falls back to str() rather than being dropped, so it
-            # stays listed and therefore deletable -- delete_lesson needs a
-            # substring, and this list is the only surface that can show it. The
-            # memory graph applies the same policy for the same reason.
-            rule = _lesson_display_text(decoded) or str(decoded)
-            raw_category = decoded.get("category") if isinstance(decoded, dict) else None
-            data.append(_safe_lesson(rule, raw_category, e.get("updated_at", "")))
+            data.append({"rule": rule, "category": "knowledge", "ts": e.get("updated_at", "")})
     else:
         # Merge global + workspace-scoped lessons
         global_lessons = state.lessons.load_all()
@@ -1437,5 +1165,7 @@ async def api_lessons(request: web.Request) -> web.Response:
             for le in ws_lessons:
                 if le.rule.lower().strip() not in seen:
                     global_lessons.append(le)
-        data = [_safe_lesson(le.rule, le.category, le.ts) for le in global_lessons[-50:]]
+        data = [
+            {"rule": le.rule, "category": le.category, "ts": le.ts} for le in global_lessons[-50:]
+        ]
     return web.json_response({"lessons": data})

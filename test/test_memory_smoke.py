@@ -298,9 +298,7 @@ class TestCrossSessionMemory:
         s2.init()
         lessons = s2.get_lessons()
         assert len(lessons) == 1
-        decoded = json.loads(lessons[0]["value_json"])
-        # write_lesson stores the mapping shape; the rule survives as its own field.
-        assert "type hints" in decoded["rule"]
+        assert "type hints" in json.loads(lessons[0]["value_json"])
 
 
 # ── MMR diversity reranking ──

@@ -17,7 +17,7 @@ import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check, Video, X,
-  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle, ShieldAlert,
+  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 
@@ -669,9 +669,8 @@ export default function DevFleetPage() {
   // checkout, so the restart confirm must say so — that hazard does not
   // depend on whether the pointer-only cancel is available.
   const pendingStage = (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
-  const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string; dirty?: boolean }[]; scanned: number } | null>(null)
+  const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
-  const [pruneForceSelected, setPruneForceSelected] = useState<Set<string>>(new Set())
   const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
   const askConfirm = (title: string, desc: ReactNode, opts?: { confirmLabel?: string; cancelLabel?: string; danger?: boolean; width?: number }) => new Promise<boolean>((resolve) => setConfirmReq({ title, desc, ...(opts || {}), resolve }))
   const settleConfirm = (val: boolean) => setConfirmReq((c) => { if (c) c.resolve(val); return null })
@@ -1006,29 +1005,26 @@ export default function DevFleetPage() {
       const kept = r.kept || []
       if (!cands.length && !kept.length) { notify(i18nT('pages.devFleetPage.nothing_to_prune'), { type: 'info' }); return }
       setPruneSelected(new Set(cands.map((c: { name: string }) => c.name)))
-      setPruneForceSelected(new Set())
       setPruneDialog({ candidates: cands, kept, scanned: r.scanned || 0 })
     } catch (e: unknown) { notify((e as Error)?.message || String(e), { type: 'error' }) }
     finally { setFlag('__prune', false) }
   }
 
-  async function pruneExecute(rawNames: string[], rawForceNames: string[] = []) {
+  async function pruneExecute(rawNames: string[]) {
     // Mirror the backend's order-preserving dedup: a duplicate would render
     // duplicate checklist rows and inflate the total for a batch the server
     // processes once.
     const names = Array.from(new Set(rawNames))
-    const forceNames = Array.from(new Set(rawForceNames))
-    const allNames = Array.from(new Set([...names, ...forceNames]))
-    if (!allNames.length) { notify(i18nT('pages.devFleetPage.nothing_selected'), { type: 'info' }); return }
+    if (!names.length) { notify(i18nT('pages.devFleetPage.nothing_selected'), { type: 'info' }); return }
     setPruneDialog(null)
     const seed: Record<string, { status: string; error?: string | null }> =
-      Object.fromEntries(allNames.map((n) => [n, { status: 'pending', error: null }]))
-    setPruneProgress({ names: allNames, items: seed, done: 0, total: allNames.length, running: true })
+      Object.fromEntries(names.map((n) => [n, { status: 'pending', error: null }]))
+    setPruneProgress({ names, items: seed, done: 0, total: names.length, running: true })
     try {
       // A rejected run ("prune already running") comes back ok:false with
       // HTTP 200 — starting the poll loop anyway would track the OTHER run's
       // items and render every row as a misleading "Pending".
-      const start = await api.post<{ ok?: boolean; error?: string }>('/prune-run', { names, force_names: forceNames })
+      const start = await api.post<{ ok?: boolean; error?: string }>('/prune-run', { names })
       if (!start || start.ok === false) {
         notify(start?.error || i18nT('pages.devFleetPage.prune_failed_to_start'), { type: 'error' })
         setPruneProgress(null)
@@ -1612,28 +1608,8 @@ export default function DevFleetPage() {
   )
 
   const pruneReviewDialog = pruneDialog && (() => {
-    // Determine which kept worktrees are guarded (main or live — cannot be force-removed).
-    const liveWt = fleet?.worktrees?.find((w) => w.is_live)
-    const isGuarded = (name: string) => {
-      const wt = fleet?.worktrees?.find((w) => w.name === name)
-      return !!(wt?.is_main || wt?.is_live || wt?.is_staged || (liveWt && liveWt.name === name))
-    }
-    const hasForceSelected = pruneForceSelected.size > 0
-    const handleRemove = async () => {
-      const regularNames = pruneDialog.candidates.filter((c) => pruneSelected.has(c.name)).map((c) => c.name)
-      const forceNames = Array.from(pruneForceSelected)
-      if (forceNames.length > 0) {
-        const confirmed = await askConfirm(
-          i18nT('pages.devFleetPage.force_remove_confirm_title'),
-          i18nT('pages.devFleetPage.force_remove_confirm_desc', { count: forceNames.length }),
-          { confirmLabel: i18nT('pages.devFleetPage.delete_anyway'), danger: true }
-        )
-        if (!confirmed) return
-      }
-      pruneExecute(regularNames, forceNames)
-    }
     return (
-      <Modal open={true} onClose={() => setPruneDialog(null)} title={i18nT('pages.devFleetPage.prune_worktrees')} maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn danger onClick={handleRemove}>{i18nT('pages.devFleetPage.remove_selected')}</Btn></>}>
+      <Modal open={true} onClose={() => setPruneDialog(null)} title={i18nT('pages.devFleetPage.prune_worktrees')} maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn danger onClick={() => pruneExecute(pruneDialog.candidates.filter((c) => pruneSelected.has(c.name)).map((c) => c.name))}>{i18nT('pages.devFleetPage.remove_selected')}</Btn></>}>
         <div style={{ maxHeight: 360, overflowY: 'auto' }}>
           {pruneDialog.candidates.length > 0 && (
             <div style={{ marginBottom: 10 }}>
@@ -1650,33 +1626,16 @@ export default function DevFleetPage() {
           {pruneDialog.kept.length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.kept')}</div>
-              {pruneDialog.kept.some((k) => !isGuarded(k.name) && !k.dirty && k.code !== 'dirty_check_failed') && <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>{i18nT('pages.devFleetPage.kept_force_hint')}</p>}
-              {pruneDialog.kept.map((k) => {
-                const guarded = isGuarded(k.name)
-                // Disable force-checkbox for worktrees the backend refuses
-                // force=True on: dirty=True (uncommitted changes) OR
-                // code=dirty_check_failed (git status failed / unverifiable).
-                const cannotForce = !!k.dirty || k.code === 'dirty_check_failed'
-                const disabled = guarded || cannotForce
-                const checked = pruneForceSelected.has(k.name)
-                return (
-                  <label key={k.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.6 : 1 }}>
-                    {guarded
-                      ? <span style={{ width: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><ShieldAlert size={13} style={{ color: 'var(--muted)' }} /></span>
-                      : <Checkbox checked={checked} disabled={cannotForce} onChange={(e) => setPruneForceSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(k.name); else next.delete(k.name); return next })} aria-label={i18nT('pages.devFleetPage.force_remove', { name: k.name })} />
-                    }
-                    <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, color: checked ? 'var(--danger)' : guarded ? 'var(--muted)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{k.name}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }} title={pruneVerdictLabel(k.code)}>
-                      {guarded && i18nT('pages.devFleetPage.protected_worktree')}
-                      {!guarded && pruneVerdictLabel(k.code)}
-                    </span>
-                  </label>
-                )
-              })}
-              {hasForceSelected && <p style={{ fontSize: 11, color: 'var(--danger)', margin: '6px 0 0' }}>{i18nT('pages.devFleetPage.force_remove_warning')}</p>}
+              {pruneDialog.kept.map((k) => (
+                <div key={k.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
+                  <span style={{ width: 13 }} />
+                  <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{k.name}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{pruneVerdictLabel(k.code)}</span>
+                </div>
+              ))}
             </div>
           )}
-          {pruneDialog.candidates.length === 0 && !pruneDialog.kept.length && <p style={{ fontSize: 12, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.no_candidates_found')}</p>}
+          {pruneDialog.candidates.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>{i18nT('pages.devFleetPage.no_candidates_found')}</p>}
           <p style={{ fontSize: 11, color: 'var(--muted)', margin: '8px 0 0' }}>{i18nT('pages.devFleetPage.removes_worktrees_and_stops_pods_cannot_be_undon')}</p>
         </div>
       </Modal>

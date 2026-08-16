@@ -31,7 +31,7 @@ import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, SquareTerminal, Bot } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -109,7 +109,7 @@ import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
 
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
-import { fmtCompact, fmtPercent } from './i18n/format'
+import { fmtCompact } from './i18n/format'
 
 const MAX_KIRO_BONUS_GRANT_NAME_CHARS = 100
 const MAX_KIRO_BONUS_CREDITS = 1_000_000
@@ -173,15 +173,36 @@ export function metricColor(pct: number): string {
 }
 export const memColorClass = metricColor
 
-// The top-bar search is laid out by CSS, not measured here: `.topbar` in
-// index.css is a three-track grid whose centre track is
-// `clamp(240px, 22vw, 480px)` and whose side tracks are equal `minmax(0,1fr)`
-// remainders, so the search is window-centred by construction and each side
-// group adapts its own contents with a container query. The previous
-// implementation centred an absolutely-positioned overlay on `50vw`, which
-// forced it to reserve `max(left, right)` on BOTH sides and drop itself entirely
-// once that mirrored gutter fell under a floor — on an asymmetric header that
-// discarded twice the difference between the two clusters.
+// Geometry for the centered top-bar search overlay. It is absolutely
+// positioned and centered on the VIEWPORT (left: 50vw), not flowed between the
+// brand and actions clusters, so it cannot be squeezed by its siblings — this
+// function has to keep it inside the gutter instead.
+//
+// Both inputs are the space a cluster CONSUMES from its side of the viewport
+// (`brand.right`, and `viewportWidth - actions.left`), not the cluster's bare
+// width: the header has its own horizontal padding, so measuring width alone
+// under-counts the occupied space and ate the whole TOPBAR_SEARCH_GAP.
+//   - `gutter` is the reserved space on EACH side (the larger of the two
+//     clusters plus the gap, mirrored because the overlay is center-anchored).
+//   - `width` is the resolved px width: a third of the viewport, but never
+//     wider than the space the clusters leave. It used to be a fixed
+//     `33.3333vw - 40px` in CSS, which sat UNDER a wide actions cluster
+//     (metrics capsule + usage pill) on narrower windows.
+//   - `visible` is only the floor: below TOPBAR_SEARCH_MIN_WIDTH the overlay is
+//     dropped rather than shrunk further, so `width` is never below the floor
+//     while the overlay is on screen.
+const TOPBAR_SEARCH_GAP = 12
+const TOPBAR_SEARCH_MIN_WIDTH = 240
+// Actions-cluster reach assumed for the first paint, before the clusters have
+// been measured. Chosen to reproduce the long-standing 360px initial gutter.
+const TOPBAR_SEARCH_ASSUMED_ACTIONS = 348
+
+export function calculateTopbarSearchLayout(brandEdge: number, actionsEdge: number, viewportWidth: number) {
+  const gutter = Math.ceil(Math.max(brandEdge, actionsEdge)) + TOPBAR_SEARCH_GAP
+  const available = viewportWidth - (gutter * 2)
+  const width = Math.max(TOPBAR_SEARCH_MIN_WIDTH, Math.min(Math.round(viewportWidth / 3) - 40, available))
+  return { gutter, width, visible: available >= TOPBAR_SEARCH_MIN_WIDTH }
+}
 
 // Apps-nav fetch resilience (see refreshAppNav). The dashboard loads
 // `/api/apps` once on mount; right after a `kirocrew update` the gateway is
@@ -1007,17 +1028,7 @@ export default function App() {
   // can never disagree about what should be on screen.
   useEffect(() => {
     if (!themeBootReady) return
-    // OPEN-ONLY for the import chapter. Deriving `false` here is what made the
-    // page close itself: Import is the one chapter with a manual entry point
-    // (the `mc-start-import` event below), and for a user who already finished
-    // it this effect's own answer is `false`. So any later run — theme boot
-    // resolving, or any flag write — drove `initialOpen` true→false, and
-    // AgentImportFlow closes on that edge. Nothing is lost by not closing here:
-    // the real completion paths (`onComplete`, `onSkipAll`) already call
-    // `setShowAgentImport(false)` themselves, so the false branch was redundant
-    // for every case except the one it broke. Same split as the `onboarded`
-    // effect above, which only ever closes the tour.
-    if (!importOnboarded) setShowAgentImport(true)
+    setShowAgentImport(!importOnboarded)
     setShowPrivacy(importOnboarded && !privacyAcked)
     setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
   }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
@@ -1700,12 +1711,39 @@ export default function App() {
   useEffect(() => {
     setRailWidth(railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
   }, [isMobile, effectiveCollapsed])
-  // The header's three grid tracks (see `.topbar` in index.css) size themselves:
-  // the search width is a function of the window, the two side groups split the
-  // remainder, and each group re-lays-out its own contents with a container
-  // query. Nothing measures a cluster any more — the drag-region reporter
-  // addresses the header itself and the layout tests match the group classes, so
-  // the two cluster refs this used to keep are gone with the measurement.
+  const topbarBrandRef = useRef<HTMLDivElement>(null)
+  const topbarActionsRef = useRef<HTMLDivElement>(null)
+  const [topbarSearchLayout, setTopbarSearchLayout] = useState(() =>
+    calculateTopbarSearchLayout(0, TOPBAR_SEARCH_ASSUMED_ACTIONS, typeof window === 'undefined' ? 1440 : window.innerWidth))
+  useEffect(() => {
+    if (isMobile) return
+    const brand = topbarBrandRef.current
+    const actions = topbarActionsRef.current
+    if (!brand || !actions) return
+    const update = () => {
+      const brandRect = brand.getBoundingClientRect()
+      const actionsRect = actions.getBoundingClientRect()
+      // Only the actions cluster proves layout has happened. The brand cluster
+      // is LEGITIMATELY 0-wide in the common single-instance desktop case —
+      // InstanceTabBar renders nothing without a remote instance and the brand
+      // itself moved to the sidebar — so bailing on `brandWidth <= 0` skipped
+      // every measurement, froze this state on its optimistic initial value,
+      // and let the centered search overlay run under the capsule. The actions
+      // cluster always holds at least the capsule's connection dot.
+      if (actionsRect.width <= 0) return
+      const next = calculateTopbarSearchLayout(brandRect.right, window.innerWidth - actionsRect.left, window.innerWidth)
+      setTopbarSearchLayout(current => current.gutter === next.gutter && current.width === next.width && current.visible === next.visible ? current : next)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(brand)
+    observer.observe(actions)
+    window.addEventListener('resize', update)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [isMobile])
   const closeMobileNav = isMobile ? () => setMobileNavOpen(false) : undefined
   const activePath = location.pathname
   const isChat = activePath === '/chat' || activePath.startsWith('/chat/') || activePath === '/'
@@ -1814,20 +1852,22 @@ export default function App() {
 
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
-      <header className="topbar topbar-glass relative pl-3 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
+      <header className="topbar topbar-glass relative flex items-center pl-3 pr-3 z-[45]" style={{ gridArea: 'topbar' }}>
         {/* Left: mobile menu toggle + inline instance selector. The brand now
             lives in the sidebar (item 1.1). The selector reuses InstanceTabBar's
             visibility rule — it renders nothing unless >=1 remote instance
             exists, so the common single-instance header-left is empty (only the
             macOS traffic-light clearance remains). */}
-        <div className={`tb-left relative h-full ${isMobile ? 'px-2' : ''}`}>
+        <div
+          ref={topbarBrandRef}
+          className={`relative flex items-center h-full shrink-0 gap-2 ${isMobile ? 'px-2' : ''}`}
+        >
           {/* Windows only: the application menu shares this cluster. It needs no
-              width reservation of its own: the identity group is sized by its own
-              grid track, and the menu growing from the hamburger to its six
-              labels therefore consumes the GROUP's width -- which its container
-              query responds to -- instead of eating the centred search's. */}
+              width reservation of its own — the effect above measures this
+              cluster's real right edge, and a ResizeObserver on it re-measures
+              when the menu grows from the hamburger to its six labels, so the
+              centered command palette shrinks (or drops) to keep clear. */}
           {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
-
           {isMobile && (
             <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               <Menu size={20} />
@@ -1835,61 +1875,35 @@ export default function App() {
           )}
           {!isMobile && <InstanceTabBar variant="inline" />}
         </div>
-        {/* Centre track: the ⌘K trigger. A flow item, not an overlay — its width
-            is the track's width, so it can never sit under a sibling cluster and
-            never has to be dropped to stay clear of one. On mobile the centre
-            track holds nothing and the trigger moves into the actions group. */}
-        {!isMobile && (
+        {!isMobile && topbarSearchLayout.visible && (
           <button
             type="button"
             data-topbar-overlay
             onClick={commandPalette.openPalette}
-            className="h-7 w-full px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            className="absolute h-7 px-3 rounded-md border border-border bg-card text-muted hover:text-text hover:border-border-hover transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-none"
+            style={{ left: '50vw', transform: 'translateX(-50%)', width: topbarSearchLayout.width }}
             aria-label={i18nT('app.search_sessions_files_and_commands')}
             title={i18nT('app.search_everywhere_k')}
           >
             <span className="text-[13px] truncate min-w-0">{i18nT('app.k_search_for_anything')}</span>
           </button>
         )}
-        {/* Mobile centre track: the same trigger in its icon-only form. A grid
-            child of its own, not a third sibling inside the actions group --
-            three action controls in one horizontal row is what
-            website/AUTOSDE.yaml's max-two-buttons-per-row forbids. */}
-        {isMobile && (
-          <button
-            type="button"
-            onClick={commandPalette.openPalette}
-            className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center cursor-pointer shrink-0"
-            aria-label={i18nT('app.search_sessions_files_and_commands')}
-            // Not the "(⌘K)" title the desktop trigger carries: this form only
-            // renders below 768px, where advertising a chord to a touch surface
-            // names a gesture the device may have no way to produce.
-            title={i18nT('app.search_sessions_files_and_commands')}
-          >
-            <SearchIcon size={14} />
-          </button>
-        )}
         {/* Theme decoration: the active theme's center top-bar element (e.g. a
             scanner sweep), chosen by resolved mode. Absent unless a registered
-            theme declares one. It renders as a BACKGROUND layer rather than a
-            grid cell: the header's three tracks are load-bearing now (sides are
-            pure remainder), so a fourth flow item would land in an implicit
-            column and shift the search off centre. A sweep/scanline is visually
-            a backdrop anyway, so it is inert to pointers and sits behind the
-            controls. Wrapped in a slot-level ErrorBoundary (fallback=null) so a
-            faulty registered extension disables only itself instead of crashing
-            the whole shell via the root boundary. */}
+            theme declares one; the flex:1 spacer keeps the actions right-aligned.
+            Wrapped in a slot-level ErrorBoundary (fallback=null) so a faulty
+            registered extension disables only itself instead of crashing the
+            whole shell via the root boundary. */}
         {(() => {
           if (branding?.topBarHideOnMobile && isMobile) return null
           const TB = resolvedMode === 'light' ? branding?.topBar?.light : branding?.topBar?.dark
           return TB ? (
             <ErrorBoundary key={`${colorTheme}:${resolvedMode}`} scope="theme-topbar" fallback={null}>
-              <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true"><TB /></div>
+              <div className="flex-1 min-w-0 h-full"><TB /></div>
             </ErrorBoundary>
           ) : null
         })()}
-        <div className="tb-right relative">
-
+        <div ref={topbarActionsRef} className="flex items-center gap-1.5 relative ml-auto">
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
           {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
             <ErrorBoundary key={`${colorTheme}:${resolvedMode}`} scope="theme-aside" fallback={null}>
@@ -1948,7 +1962,7 @@ export default function App() {
             if (!capsuleCollapsed) {
             if (!isMobile) {
               if (!metricsOpen) {
-                segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
+                segments.push(<button key="metrics" className={`${seg} text-muted hover:text-text`} onClick={() => { setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} title={i18nT('app.system_metrics')} aria-label={i18nT('app.system_metrics')}><AudioWaveform size={12} /></button>)
               } else if (!sysMetrics) {
                 if (sysMetricsError) segments.push(<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
               } else {
@@ -1960,41 +1974,10 @@ export default function App() {
                 const dskValid = m.diskTotal > 0
                 const cpuValid = typeof m.cpuPct === 'number' && Number.isFinite(m.cpuPct)
                 const staleTitle = sysMetricsStale ? ` ${i18nT('app.stale_fetch_failing')}` : ''
-                // The container query can collapse this button to a bare icon, and
-                // the per-value tooltips ride on the spans it hides — so the
-                // readings have to live on the BUTTON's own title or they become
-                // unreachable on any window narrow enough to trip the rung.
-                // fmtPercent localizes the digits and the unit, and already
-                // renders a non-finite ratio as an em dash, which is what the
-                // invalid branches would otherwise hand-write.
-                const readings = [
-                  `${i18nT('app.cpu')} ${fmtPercent(cpuValid ? m.cpuPct / 100 : NaN)}`,
-                  `${i18nT('app.mem')} ${fmtPercent(memValid ? memPct : NaN)}`,
-                  `${i18nT('app.dsk')} ${fmtPercent(dskValid ? dskPct : NaN)}`,
-                ].join(' · ')
-                const metricsHint = sysMetricsStale ? i18nT('app.metrics_are_stale_latest_fetch_failed') : i18nT('app.click_to_hide')
-                segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={`${readings} — ${metricsHint}`} aria-pressed={true} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
-                  {/* Both forms are rendered and the container query picks one:
-                      the rung has to fire on the GROUP's width, which no JS
-                      branch here can see. Collapsing to the icon (rather than
-                      hiding the button) keeps the toggle reachable. The label is
-                      sr-only rather than an aria-label so it NAMES the control in
-                      both forms without suppressing the readings themselves from
-                      the accessible name — on the narrow rung every visible text
-                      node is display:none, which would otherwise leave an
-                      unnamed icon-only button. */}
-                  <span className="sr-only">{i18nT('app.system_metrics')}</span>
-                  {/* Accent-tinted, unlike the off state's muted icon: collapsed,
-                      the two forms are otherwise the same glyph with the same
-                      name, so clicking the toggle would produce no perceivable
-                      change while still writing the preference. `aria-pressed`
-                      carries the same distinction to assistive tech. */}
-                  <AudioWaveform size={12} className="tb-narrow-only text-accent" />
-                  <span className="tb-drop-metrics flex items-center gap-2">
+                segments.push(<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} title={sysMetricsStale ? i18nT('app.metrics_are_stale_latest_fetch_failed') : i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
                   <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'} title={cpuValid ? `CPU: ${m.cpuPct.toFixed(0)}%${staleTitle}` : i18nT('app.cpu_unavailable')}>{i18nT('app.cpu')} {cpuValid ? `${m.cpuPct.toFixed(0)}%` : '—'}</span>
                   <span className={memValid ? metricColor(memPct) : 'text-muted'} title={memValid ? `Memory: ${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB${staleTitle}` : i18nT('app.memory_unavailable')}>{i18nT('app.mem')} {memValid ? `${(memPct * 100).toFixed(0)}%` : '—'}</span>
                   <span className={dskValid ? metricColor(dskPct) : 'text-muted'} title={dskValid ? `Disk: ${dskUsed.toFixed(0)}/${m.diskTotal.toFixed(0)} GB${staleTitle}` : i18nT('app.disk_unavailable')}>{i18nT('app.dsk')} {dskValid ? `${(dskPct * 100).toFixed(0)}%` : '—'}</span>
-                  </span>
                 </button>)
               }
             }
@@ -2015,7 +1998,7 @@ export default function App() {
                 const limitStr = fmtCompact(totalLimit)
                 const title = i18nT('components.kiroAccountModal.kiro_credit_usage')
                 segments.push(<button key="usage" className={kiroUsage.stale ? `${seg} opacity-60` : seg} onClick={() => setKiroUsageOpen(true)} title={title} aria-label={title}>
-                  <Coins size={12} /> {!isMobile && <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
+                  <Coins size={12} /> {!isMobile && <span className="font-mono text-[11px] whitespace-nowrap tabular-nums">{usedStr}<span className="text-muted">/{limitStr}</span></span>}
                 </button>)
               }
             }
@@ -2049,7 +2032,7 @@ export default function App() {
               <motion.div
                 layout
                 transition={{ layout: { duration: capsuleLayoutPulse ? 0.25 : 0, ease: 'easeOut' } }}
-                className={`tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl transition-colors duration-300 ${offline ? 'bg-danger-subtle' : 'bg-card'}`}
+                className={`flex items-center gap-2 h-7 px-2.5 rounded-xl transition-colors duration-300 ${offline ? 'bg-danger-subtle' : 'bg-card'}`}
               >
                 {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
               </motion.div>
@@ -2070,12 +2053,10 @@ export default function App() {
               bordered pill (28px tall, 12px radius), separated from the readout
               capsule (item 2.3). */}
           {!isMobile && (
-            <span className="tb-drop-feedback flex items-center">
-              <FeedbackPill
-                onRequestFeature={requestFeature}
-                onReportProblem={() => setReportProblemOpen(true)}
-              />
-            </span>
+            <FeedbackPill
+              onRequestFeature={requestFeature}
+              onReportProblem={() => setReportProblemOpen(true)}
+            />
           )}
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,

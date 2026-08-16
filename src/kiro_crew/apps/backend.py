@@ -34,11 +34,9 @@ from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.sandbox import (
-    RLIMIT_PROFILE_BUILD,
-    RLIMIT_PROFILE_TOOL,
+    build_resource_limit_preexec,
     cgroup_scope_argv,
-    popen_limited,
-    run_limited,
+    resource_limit_preexec,
     wrap_argv,
 )
 from kiro_crew.sel import sel
@@ -701,9 +699,10 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     [sys.executable, "-m", "venv", str(venv_dir)], mode="standard"
                 )
                 venv_cmd = cgroup_scope_argv(venv_cmd)  # cgroup DoS ceiling
-                run_limited(
+                subprocess.run(
                     venv_cmd,
                     check=True, capture_output=True, timeout=60, env=_env,
+                    preexec_fn=resource_limit_preexec(),
                 )
             # Invoke pip through the venv's own interpreter: `.venv/bin/pip` is
             # POSIX-only (Windows venvs ship Scripts\), and `<venv python> -m pip`
@@ -716,9 +715,10 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                  "--disable-pip-version-check", "-r", str(req_file)], mode="standard"
             )
             pip_cmd = cgroup_scope_argv(pip_cmd)  # cgroup DoS ceiling
-            run_limited(
+            subprocess.run(
                 pip_cmd,
                 capture_output=True, timeout=60, env=_env,
+                preexec_fn=resource_limit_preexec(),
             )
         except Exception as exc:
             logger.warning("Failed to install deps for app %s: %s", app_name, exc)
@@ -823,9 +823,10 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                     sandboxed_npm = cgroup_scope_argv(
                         sandboxed_npm
                     )  # cgroup DoS ceiling
-                    run_limited(
+                    subprocess.run(
                         sandboxed_npm,
                         cwd=str(root), env=env, capture_output=True, timeout=120,
+                        preexec_fn=resource_limit_preexec(),
                     )
                 except Exception as exc:
                     logger.warning("Failed to install npm deps for app %s: %s", app_name, exc)
@@ -931,7 +932,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         # overload resolution on the build fleet): start_new_session=True is a
         # no-op on Windows, creationflags resolves to 0 (no-op) on POSIX.
         try:
-            proc = popen_limited(
+            proc = subprocess.Popen(
                 sandboxed_cmd,
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
@@ -944,9 +945,9 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 # ceiling: the backend is the ANCESTOR of its build workloads
                 # (vite/pip) and a 1024 hard cap starves every descendant.
                 # All other apps keep the standard configured policy.
-                profile=(RLIMIT_PROFILE_BUILD
-                         if app_name in _BUILD_CAPABLE_APPS
-                         else RLIMIT_PROFILE_TOOL),
+                preexec_fn=(build_resource_limit_preexec()
+                            if app_name in _BUILD_CAPABLE_APPS
+                            else resource_limit_preexec()),
             )
         except OSError:
             log_fh.close()

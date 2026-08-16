@@ -235,75 +235,6 @@ def _fmt_message(m: dict) -> str:
     return f"[{m.get('ts', '?')[:16]}] {m['role'].upper()}{tools}: {m['content']}"
 
 
-# Normalized placeholder bodies a model emits instead of a real file body.
-# Compared after lowercasing and stripping surrounding whitespace/punctuation,
-# so e.g. "Unchanged.", "(no changes)" and "N/A" all normalize into this set.
-_PLACEHOLDER_BODIES = frozenset(
-    {
-        "unchanged",
-        "no change",
-        "no changes",
-        "no change needed",
-        "no changes needed",
-        "no changes required",
-        "no update",
-        "no updates",
-        "no update needed",
-        "no updates needed",
-        "nothing changed",
-        "nothing to update",
-        "nothing to change",
-        "none",
-        "n/a",
-        "na",
-        "empty",
-        "same",
-        "same as before",
-        "as before",
-        "see above",
-        "content unchanged",
-        "file unchanged",
-    }
-)
-
-
-def _is_plausible_memory_file(content: str, header: str) -> bool:
-    """Gate a consolidation ``*_update`` value before it overwrites a memory file.
-
-    The consolidation prompt asks for the COMPLETE updated file, but a model
-    sometimes answers with a protocol word instead — the literal string
-    ``unchanged``, ``(empty)``, ``no changes needed`` and similar. Writing that
-    placeholder destroys the file, and because the next consolidation prompt
-    embeds the file's current content verbatim, the placeholder then reads as a
-    valid example body and gets echoed into the other memory file on every
-    subsequent pass — a self-reinforcing loop that keeps both files destroyed
-    until a human rebuilds them.
-
-    Two gates:
-
-    1. The first line must be exactly the markdown header the prompt mandates
-       (not merely a prefix — ``# User Preferences (unchanged)`` is not a file).
-    2. The body below the header must not normalize into a known placeholder
-       word/phrase. Markdown emphasis wrapping (``**unchanged**``,
-       ``_unchanged_``, ``~~unchanged~~``) is stripped before the comparison so
-       a decorated placeholder cannot bypass the set. An EMPTY body after the
-       exact header is accepted: it is the legitimate COMPLETE file when the
-       last entry is deleted (e.g. the final project goes inactive), and
-       rejecting it would pin the stale entry in persistent memory forever.
-       There is deliberately no size floor either — a legitimate memory file
-       can be a single tiny bullet (``- Vim``), and rejecting it here would
-       silently lose the learned preference while the consolidation marker
-       advances past it.
-    """
-    first_line, _, body = content.strip().partition("\n")
-    if first_line.strip() != header:
-        return False
-    normalized = body.strip().lower().strip(" \t\"'`*_~.,!()[]")
-    if normalized in _PLACEHOLDER_BODIES:
-        return False
-    return True
-
-
 _SESSION_MAX_BYTES = 2 * 1024 * 1024  # 2MB
 _SESSION_KEEP_LINES = 200
 # Bounded cross-process lock acquisition. The per-session sidecar ``flock`` is
@@ -4983,29 +4914,10 @@ class HistoryConsolidator:
                 # holding the lock (backfill's FAISS rebuild, reconcile's bulk
                 # UPDATEs) would otherwise block the whole loop here.
                 current_semantic = await asyncio.to_thread(self._vector_store.get_all_semantic)
-
-                def _prompt_value(e: dict) -> object:
-                    # A lesson row stores a mapping; the consolidation model
-                    # should read the rule prose, not a JSON envelope whose
-                    # field names dilute the instruction it is weighing.
-                    if str(e.get("key", "")).startswith("lesson."):
-                        from kiro_crew.vector_memory import _lesson_display_text
-
-                        try:
-                            decoded = json.loads(e["value_json"])
-                        except Exception:
-                            return e["value_json"]
-                        return _lesson_display_text(decoded) or e["value_json"]
-                    return e["value_json"]
-
                 semantic_json = (
                     json.dumps(
                         [
-                            {
-                                "key": e["key"],
-                                "value_json": _prompt_value(e),
-                                "confidence": e["confidence"],
-                            }
+                            {k: e[k] for k in ("key", "value_json", "confidence")}
                             for e in current_semantic
                         ],
                         indent=1,
@@ -5042,22 +4954,15 @@ class HistoryConsolidator:
             # Markdown memory (backward compat when not migrated)
             if not self._migrated:
                 keys.append(
-                    '"preferences_update": The COMPLETE updated preferences file, '
-                    "included ONLY if the file needs changes. Merge duplicates, keep "
-                    "only newest if contradicted, remove stale one-off observations. "
-                    "Keep '# User Preferences' header. If nothing changed, OMIT this "
-                    "key entirely — never echo the file back and never answer with a "
-                    "placeholder word like 'unchanged': the value overwrites the file, "
-                    "so when present it must be the full file body."
+                    '"preferences_update": The COMPLETE updated preferences file. '
+                    "Merge duplicates, keep only newest if contradicted, remove stale "
+                    "one-off observations. Keep '# User Preferences' header. "
+                    "Return existing content exactly if nothing changed."
                 )
                 keys.append(
-                    '"projects_update": The COMPLETE updated projects file, included '
-                    "ONLY if the file needs changes. Only active projects, remove "
-                    "stale entries, update facts. Keep '# Active Projects' header. "
-                    "If nothing changed, OMIT this key entirely — never echo the file "
-                    "back and never answer with a placeholder word like 'unchanged': "
-                    "the value overwrites the file, so when present it must be the "
-                    "full file body."
+                    '"projects_update": The COMPLETE updated projects file. '
+                    "Only active projects, remove stale entries, update facts. "
+                    "Keep '# Active Projects' header. Return existing if unchanged."
                 )
 
             if include_history:
@@ -5136,32 +5041,14 @@ class HistoryConsolidator:
             if self._vector_store:
                 await run_in_embed_pool(self._write_structured_memory, result, key)
 
-            # Markdown writes (backward compat — skip if migrated). Each value
-            # replaces the whole file, so a non-file answer (e.g. the literal
-            # word "unchanged") must be discarded, not written: once written it
-            # re-enters the next prompt as the file's current content and primes
-            # every later pass to repeat it (see _is_plausible_memory_file).
+            # Markdown writes (backward compat — skip if migrated)
             if not self._migrated:
                 if prefs := result.get("preferences_update"):
-                    if not _is_plausible_memory_file(prefs, "# User Preferences"):
-                        logger.warning(
-                            "Discarding implausible preferences_update from "
-                            "consolidation (missing '# User Preferences' header "
-                            "or placeholder body; %d chars)",
-                            len(prefs),
-                        )
-                    elif prefs.strip() != current_prefs.strip():
+                    if prefs.strip() != current_prefs.strip():
                         memory.write_preferences(prefs)
 
                 if projects := result.get("projects_update"):
-                    if not _is_plausible_memory_file(projects, "# Active Projects"):
-                        logger.warning(
-                            "Discarding implausible projects_update from "
-                            "consolidation (missing '# Active Projects' header "
-                            "or placeholder body; %d chars)",
-                            len(projects),
-                        )
-                    elif projects.strip() != current_projects.strip():
+                    if projects.strip() != current_projects.strip():
                         memory.write_projects(projects)
 
             # Lesson extraction: _save_lessons calls write_lesson which embeds
@@ -5416,8 +5303,6 @@ class HistoryConsolidator:
         if isinstance(semantic_items, list):
             written = 0
             deleted = 0
-            skipped = 0
-            refused = 0
             for item in semantic_items[:_MAX_SEMANTIC_PER_CONSOLIDATION]:
                 if not isinstance(item, dict) or "key" not in item:
                     continue
@@ -5426,43 +5311,20 @@ class HistoryConsolidator:
                     if self._vector_store.delete_semantic(item["key"], source):
                         deleted += 1
                     continue
-                if "value" not in item or item["value"] is None:
-                    # Counted and logged here because this path returns before set_semantic, so
-                    # the VALUE_EMPTY reject event never fires for the omission that motivated it.
-                    skipped += 1
-                    logger.warning(
-                        "Semantic consolidation skipped %r: item carries no value", item["key"]
-                    )
-                    continue
                 conf = float(item.get("confidence", 0.5))
                 # Confidence 1.0 means user explicitly stated it — escalate source
                 # so it can overwrite previous user_explicit entries
                 item_source = "user_explicit" if conf >= 1.0 else source
                 err = self._vector_store.set_semantic(
                     key=item["key"],
-                    value=item["value"],
+                    value=item.get("value"),
                     confidence=conf,
                     source=item_source,
                 )
                 if err is None:
                     written += 1
-                else:
-                    # Counted apart from `skipped`: several reject causes reach here and only
-                    # VALUE_EMPTY is a missing value, so a shared label names the wrong cause.
-                    reject_code, _reason = err
-                    refused += 1
-                    logger.warning(
-                        "Semantic consolidation refused %r: %s", item["key"], reject_code.value
-                    )
-            if written or deleted or skipped or refused:
-                logger.info(
-                    "Semantic consolidation: %d written, %d deleted, %d skipped (no value), "
-                    "%d refused",
-                    written,
-                    deleted,
-                    skipped,
-                    refused,
-                )
+            if written or deleted:
+                logger.info("Semantic consolidation: %d written, %d deleted", written, deleted)
 
         # Episodic entries
         episodic_items = result.get("episodic")

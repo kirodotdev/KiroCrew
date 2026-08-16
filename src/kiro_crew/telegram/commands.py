@@ -43,59 +43,12 @@ _STOP_ALIASES = frozenset(("/stop", "/cancel"))
 _MODEL_ALIASES = frozenset(("/model", "/models"))
 _YOLO_ALIASES = frozenset(("/yolo",))
 
-# Telegram bot usernames: 5-32 chars, alphanumeric + underscore, by convention
-# ending in "bot" -- but any alnum/underscore run after @ is accepted here
-# rather than hardcoding that suffix, since the client appends whatever the
-# bot's actual registered username is. Captured (not just matched) so the
-# caller can check it against the bot's OWN username before stripping.
-_BOT_MENTION_RE = re.compile(r"@([A-Za-z0-9_]+)$")
 
-
-def _strip_bot_mention(cmd: str, bot_username: str) -> str:
-    """Strip a trailing ``@BotUsername`` from a command token -- but ONLY when
-    it names *this* bot.
-
-    Telegram's own clients (mobile/desktop) append ``@BotUsername`` to a slash
-    command in any chat with more than one participant/bot -- e.g.
-    ``/new@KiroCrewBot`` instead of bare ``/new``. This is standard,
-    documented Bot API client behavior triggered by registering a command
-    menu (``set_my_commands``, called at gateway startup), not something this
-    codebase's UI controls. Every alias set in this module is defined without
-    the suffix, so without any stripping every command silently fell through
-    to being sent to the LLM as ordinary chat text in exactly the multi-user
-    surface (a Telegram forum-topic supergroup) this integration exists to
-    support.
-
-    Telegram delivers a command addressed to another bot in the same group to
-    every bot present in it (Bot API convention: a bot ignores what is not
-    addressed to it). Stripping any mention unconditionally would let a
-    command meant for a DIFFERENT bot -- e.g. ``/yolo@OtherBot on`` -- match
-    this bot's own alias set and execute here instead of being ignored. The
-    mention is stripped only when it case-insensitively matches
-    *bot_username*; any other mention (or no *bot_username*, e.g. before
-    ``getMe`` has resolved at startup) is left attached, so the token fails
-    every alias match and falls through as an ordinary, unrecognized message
-    rather than being guessed at.
-    """
-    m = _BOT_MENTION_RE.search(cmd)
-    if not m or not bot_username or m.group(1).lower() != bot_username.lower():
-        return cmd
-    return cmd[: m.start()]
-
-
-def parse_command(text: str, bot_username: str = "") -> str | None:
-    """Return the command name for *text*, or None when it is not a command.
-
-    *bot_username* (this bot's own registered username, from ``getMe``) gates
-    ``@BotUsername`` suffix stripping -- see :func:`_strip_bot_mention`.
-    """
+def parse_command(text: str) -> str | None:
+    """Return the command name for *text*, or None when it is not a command."""
     stripped = text.strip()
     # Telegram commands always start with /
-    cmd = (
-        _strip_bot_mention(stripped.split()[0].lower(), bot_username)
-        if stripped.startswith("/")
-        else ""
-    )
+    cmd = stripped.split()[0].lower() if stripped.startswith("/") else ""
     if cmd in _NEW_ALIASES:
         return "new"
     if cmd in _COMPACT_ALIASES:
@@ -125,7 +78,7 @@ _QUEUE_ALIASES = frozenset(("/queue",))
 _STEER_ALIASES = frozenset(("/steer",))
 
 
-def parse_mid_turn_override(text: str, bot_username: str = "") -> tuple[str | None, str]:
+def parse_mid_turn_override(text: str) -> tuple[str | None, str]:
     """Detect a per-message mid-turn override.
 
     ``/queue <msg>`` forces the message to be queued (answered after the current
@@ -134,14 +87,11 @@ def parse_mid_turn_override(text: str, bot_username: str = "") -> tuple[str | No
     ``(mode, rest)`` with the directive stripped -- ``mode`` is ``"queue"`` or
     ``"steer"`` -- or ``(None, text)`` when there is no directive (or the
     directive carries no message body, e.g. a bare ``/queue``).
-
-    *bot_username* gates ``@BotUsername`` suffix stripping -- see
-    :func:`_strip_bot_mention`.
     """
     parts = text.lstrip().split(None, 1)
     if len(parts) != 2:  # needs a directive AND a message body
         return None, text
-    cmd, rest = _strip_bot_mention(parts[0].lower(), bot_username), parts[1]
+    cmd, rest = parts[0].lower(), parts[1]
     if cmd in _QUEUE_ALIASES:
         return "queue", rest
     if cmd in _STEER_ALIASES:
@@ -149,21 +99,16 @@ def parse_mid_turn_override(text: str, bot_username: str = "") -> tuple[str | No
     return None, text
 
 
-def is_bare_mid_turn_override(text: str, bot_username: str = "") -> bool:
+def is_bare_mid_turn_override(text: str) -> bool:
     """True for a lone ``/queue`` / ``/steer`` carrying no message body.
 
     Those two are prefixes, not standalone commands, so the bare token matches
     neither :func:`parse_command` nor :func:`parse_mid_turn_override` and would
     otherwise reach the model as ordinary chat text — the user sees an answer to
     the literal string "/queue" instead of being told they left the message off.
-
-    *bot_username* gates ``@BotUsername`` suffix stripping -- see
-    :func:`_strip_bot_mention`.
     """
     parts = text.strip().split()
-    return len(parts) == 1 and _strip_bot_mention(parts[0].lower(), bot_username) in (
-        _QUEUE_ALIASES | _STEER_ALIASES
-    )
+    return len(parts) == 1 and parts[0].lower() in (_QUEUE_ALIASES | _STEER_ALIASES)
 
 
 # ── Command catalogue (help card + Bot API menu) ──

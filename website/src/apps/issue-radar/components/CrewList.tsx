@@ -99,7 +99,7 @@ export default function CrewList({ onCreate }: CrewListProps) {
   const { t } = useTranslation()
   const {
     crews, crewsLoading, crewsError,
-    crewView, setCrewView, crewFilter, crewSortKey, crewSortDir, listDetail,
+    crewView, setCrewView, crewFilter, crewSortKey, crewSortDir,
   } = useIssueRadar()
 
   /** The rows the active filter shows.
@@ -195,7 +195,7 @@ export default function CrewList({ onCreate }: CrewListProps) {
             key={c.id}
             crew={c}
             selected={crewView.kind === 'crew' && crewView.id === c.id}
-            onSelect={() => { setCrewView({ kind: 'crew', id: c.id }); listDetail.openDetail() }}
+            onSelect={() => setCrewView({ kind: 'crew', id: c.id })}
             cardClass={cardClass}
           />
         ))}

@@ -72,8 +72,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
-    is_stop_event_row,
-    is_turn_interrupted,
+    parse_cls_meta,
     request_slot_origin,
 )
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
@@ -2008,22 +2007,73 @@ def _has_conversation(slot: _ChatSlot) -> bool:
 def _is_stop_event(m: dict) -> bool:
     """True when *m* is the card recorded because the user pressed Stop.
 
-    Thin alias over ``state.is_stop_event_row`` — the predicate lives there
-    (next to ``parse_cls_meta``, its one dependency) so the slot-summary
-    builder can share it without importing this handler module.
+    Three carriers, and the in-memory one is the easy miss: the stop is appended
+    as ``slot.append("system", stop_msg, stop_msg)`` with **no** ``meta=`` kwarg,
+    so ``_ChatSlot.append`` never creates a ``meta`` key and the discriminator
+    exists ONLY inside the JSON-encoded ``cls``/``content``. ``parse_cls_meta()``
+    is what unpacks it, and it runs on the way OUT to a client
+    (``_prepare_messages`` / ``_broadcast_chat_message``) — which is why the
+    frontend sees ``meta.kind`` while this module, reading the live window, does
+    not. Checking only ``kind``/``meta.kind`` here therefore matched a restored
+    row but never a freshly-stopped one, silently diverging from the frontend
+    mirror in exactly the case the two must agree on.
+
+    Mirrors ``isStopEvent`` in ``website/src/store/chatSlice.ts``.
     """
-    return is_stop_event_row(m)
+    if m.get("kind") == "stop_event":
+        return True
+    meta = m.get("meta") or {}
+    if meta.get("kind") == "stop_event":
+        return True
+    # Live window: the discriminator is still JSON inside `cls`.
+    parsed = parse_cls_meta(m.get("cls") or "")
+    return bool(parsed and parsed.get("kind") == "stop_event")
 
 
 def _is_interrupted(slot: _ChatSlot) -> bool:
     """True when the transcript shows a turn that ended without a reply.
 
-    Thin adapter over ``state.is_turn_interrupted``, which owns the scan and
-    its contract (see its docstring). Shared with the slot-summary builder so
-    the Continue endpoint, the composer's Resume gate, and the sidebar's
-    ``interrupted`` field can never disagree about what an interruption is.
+    Two shapes qualify: the last conversational row is the USER's (nothing came
+    back at all — a gateway restart mid-turn leaves exactly this), or it is the
+    ASSISTANT's but an error row follows it (the turn streamed partway then died,
+    which is otherwise shape-identical to a clean completion).
+
+    One shape is explicitly excluded: a trailing ``stop_event``. The user pressing
+    Stop is a deliberate ending, not an interruption, and stopping before the
+    reply emitted any text produces the same ``[user, ...]`` tail as a crash.
+
+    Still selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
+    ``_MANUAL_CONTINUE_MSG``), and on the dashboard it now also gates whether the
+    composer offers the control at all — see the ``continuable && interrupted``
+    composition in ``website/src/pages/ChatPage.tsx``. A False result means "as
+    far as the transcript shows, the last turn finished or was ended on purpose",
+    NOT "there is nothing to do": a force-quit runs no ``finally``, so the error
+    row that would have proved an interruption was never written.
+
+    Deliberately does not distinguish "produced some output" from "produced
+    none": ``_MANUAL_RESUME_MSG`` is worded to hold in both cases, so the
+    distinction would buy a branch and nothing else.
     """
-    return is_turn_interrupted(slot.messages)
+    saw_trailing_error = False
+    for m in reversed(slot.messages):
+        role = m.get("role")
+        meta = m.get("meta") or {}
+        # A deliberate Stop ENDS the turn; it does not interrupt it. Tested
+        # before the user/assistant branch because stopping before the reply
+        # emitted any text leaves ``[user, stop_event]`` -- shape-identical to
+        # "the gateway died before anything came back". See ``_is_stop_event``
+        # for why the discriminator has to be resolved from three carriers.
+        # Only the NEWEST turn's terminator reaches here -- an older stop card
+        # is never scanned, because a later user/assistant row returns first.
+        if _is_stop_event(m):
+            return False
+        if role == "assistant" and meta.get("kind") == "compaction":
+            continue
+        if role in ("user", "assistant") and m.get("content"):
+            return True if role == "user" else saw_trailing_error
+        if role == "error":
+            saw_trailing_error = True
+    return False
 
 
 async def api_chat_slot_end_wait(request: web.Request) -> web.Response:

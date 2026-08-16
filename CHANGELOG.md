@@ -4,58 +4,6 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
-- **`test_redaction_timing_scales_linearly` no longer fails CI
-  intermittently** (observed "Redaction scaled super-linearly: 3.2x, limit
-  3.0x" on an otherwise-healthy matcher). The test took ONE
-  `perf_counter` sample per input size, so it billed itself for whatever
-  the OS gave the core to the sibling pytest-xdist workers — and one
-  unlucky reading of the SMALL input, the ratio's denominator, was enough
-  to push it over the bound. It now measures with `time.thread_time()`
-  (redaction is single-threaded pure-regex work, so per-thread CPU is its
-  complete cost) and takes best-of-3 per size, since scheduler noise only
-  ever adds and the minimum is the closest estimate of the true cost —
-  the same two techniques `TestIsDeniedReDoSResistance` already uses for
-  this class of assertion. The 3.0x bound is unchanged and detection is
-  intact: a genuinely quadratic implementation still measures ~4.3x.
-
-- **Opted-in MCP servers no longer silently fall back to unpooled backends.**
-  On one live host, 988 degradations accrued in 15 hours with no signal: 79%
-  were guaranteed-ENOENT pooled spawns of bare commands the gateway daemon's
-  systemd PATH cannot resolve, and 20% were crash-loops of servers whose
-  declared `env` the shared backend deliberately withholds
-  (`mcp_gateway.forward_declared_env` off). The rewriter now resolves bare
-  commands through the same augmented search path the MCP probe uses and
-  refuses to emit a stub it can prove will degrade — such servers are left
-  for the session to launch directly, with a warning naming the fix (absolute
-  path / the forwarding knob). The fallback audit log gains the reader it
-  never had: gatewayd's `stats` reply now carries per-server fallback counts
-  for the last 24 h, and the log rotates at 1 MiB instead of growing without
-  bound. (#3495)
-
-- **`TestIsDeniedReDoSResistance::test_cpu_cost_is_immune_to_other_threads_where_process_time_is_not`
-  no longer intermittently fails CI** (observed "process_time did not exceed
-  thread_time under a 2-spinner burst"). The test's 5-sample loop required
-  every single process-time/thread-time comparison to succeed, so one sample
-  where a shared CI runner's scheduler didn't interleave the burst threads
-  within the narrow measurement window failed the whole test even though the
-  invariant it checks — that `_cpu_cost` doesn't see other threads' CPU —
-  held on every other sample. Now tolerates a minority (≤1 of 5) of failed
-  samples; a genuine break in `_cpu_cost` still fails every sample. (The
-  companion flake in `test_mid_dotstar_chain_spam_stays_linear`, tracked in
-  the same upstream issue kirodotdev/KiroCrew#3080, was independently fixed
-  by #3692 while this PR was open — this change covers the one flaky
-  assertion #3692 didn't touch.)
-
-- **The instance token-mint timeout is now user-configurable.** The remote
-  `kirocrew token` mint ran with a hardcoded 30s budget, so a user behind a
-  slow ProxyCommand/jump host timed out in the mint step even when the ssh
-  forward itself came up (the connect flow spawns two proxy-bound ssh
-  children, and the mint is the second one). A new
-  `instances.mint_timeout_secs` (unset by default: SSH 30s, SSM 90s; clamped
-  to [10, 120]) now threads through the tunnel manager to both the SSH and
-  SSM mint paths; an explicit value applies to both transports, including a
-  value equal to either transport's default. (#3566)
-
 - **A Teams answer no longer gets silently truncated by a rate-limited
   chunk.** The Bot Framework Connector API enforces per-bot rate limits and
   can return HTTP 429, but the Teams outbound send raised immediately with
@@ -64,67 +12,6 @@ All notable changes to KiroCrew are documented in this file.
   stops at its first failed chunk, so a throttled chunk dropped it and
   everything after it, with only a backend log line. Outbound sends now
   retry once on 429, honoring the Connector API's `Retry-After` header. (#3738)
-
-- **Telegram slash commands (`/new`, `/compact`, `/model`, `/yolo`, `/link`,
-  `/unlink`, `/stop`, `/help`, `/queue`, `/steer`) no longer silently break
-  in a group or forum-topic chat — without executing a command addressed to
-  a different bot in the same group.** Telegram's own clients append
-  `@BotUsername` to a slash command in any chat with more than one
-  participant/bot — standard client behavior triggered by registering a
-  command menu, not something the bot's UI controls — but the command
-  parser matched the raw token verbatim against alias sets defined without
-  that suffix. In the forum-topic supergroups this integration explicitly
-  supports, every command fell through to being sent to the LLM as ordinary
-  chat text with no error. A trailing `@BotUsername` is now stripped before
-  alias matching — but only when it names THIS bot: Telegram fans a command
-  addressed to a different bot in the same group out to every bot present
-  (Bot API convention is to ignore what isn't addressed to you), so
-  stripping any mention unconditionally would let e.g. `/yolo@OtherBot on`
-  match this bot's own alias and enable auto-approval here. The gateway now
-  resolves its own username via `getMe` at startup and only strips a mention
-  that matches it (case-insensitively); any other mention, or none resolved
-  yet, is left attached and falls through as unrecognized. (#3734)
-
-- **`agent.dangerously_skip_permissions` no longer treats a string value as an
-  affirmative grant.** The config loader coerced this field with a bare
-  `bool(...)`, so a plausible config shape like `"dangerously_skip_permissions":
-  "false"` (any non-empty string is truthy in Python) silently activated the
-  standing, unattended tool-auto-approve grant this key controls — every tool
-  call gets auto-approved with no confirmation prompt — instead of the
-  explicit disable the value said. Now requires a real boolean, matching
-  every other boolean field in the loader; a non-bool value falls through to
-  the next accepted spelling instead of being read as a grant. (#3730)
-
-- **A session no longer risks two interleaved turns after a mid-turn reset.**
-  `record_failure`'s circuit breaker calls `reset(key)` while the failing
-  caller still nominally holds that session's turn semaphore; `reset` pops the
-  session and tears it down without touching the semaphore. If a concurrent
-  `get_or_create` for the same key registered a replacement session in that
-  window, the original caller's later `release(key)` — a fresh lookup by key,
-  not the specific session object it acquired — released the REPLACEMENT's
-  semaphore instead, an over-release that could hand out a surplus permit and
-  let a third message start a turn while a second was still in flight on the
-  same live provider session. The per-session semaphore is now a
-  `BoundedSemaphore`, so a stray release beyond its one permit raises instead
-  of silently succeeding; `release()` catches that specific error and logs a
-  warning rather than propagating into a caller's `finally`. (#3749)
-
-- **Notes: a failed GitHub token Save/Clear in Settings no longer gets stuck
-  disabled with no explanation.** Neither the Save/Clear button handlers nor
-  the `savePat` action they call had any error handling, so a rejected
-  request (an invalid token, a transient network error) left `busy` stuck
-  `true` — the button permanently disabled — with neither the success
-  confirmation nor any error shown, an unhandled promise rejection, and the
-  only recovery being to close and reopen Settings. Failures are now caught
-  and reported inline next to the button, styled like the sibling per-vault
-  knowledge-toggle error state, and the button always recovers. A review
-  pass caught a sibling with the same root cause: the vault Remove confirm
-  button's `onForget` call still swallowed its failure into the shared
-  `error` banner, which only renders in the main-editor branch and is
-  invisible while Settings is open — the confirm bar also dismissed itself
-  immediately, so nothing indicated the removal was even attempted. Remove
-  now catches inline too, keeps the confirm bar up on failure so the user
-  can retry without reopening it, and clears on success. (#3743)
 
 - **A folder knowledge source added from the dashboard can now be started.**
   The row's `sync_status` was stored twice — as a table column and inside the
@@ -312,33 +199,6 @@ All notable changes to KiroCrew are documented in this file.
   deliberately: restoring an approval from a file the agent can write would
   bypass the PreToolUse gate. The two in-process checks are kept as defence in
   depth for a mid-session disable. (#3482)
-
-- **Folder-write audit lines now name the internal component that made the
-  write, instead of inferring the caller's identity from the internal secret's
-  presence.** Every MCP stdio server now declares its component name on
-  loopback gateway requests (`X-Internal-Caller`, attached centrally by the
-  shared request helpers), and the folder endpoints validate it against a
-  known-caller set before trusting it into the security event log's `caller`
-  field — `source` stays in SEL's interface vocabulary (`mcp`), so operator
-  queries over `source == "mcp"` keep matching folder writes. The old
-  inference was correct only while exactly one internal caller existed — a
-  second internal caller would have silently inherited the same label. An
-  authenticated internal write with a missing or unrecognized caller name is
-  audited as `caller="unknown-internal"` with a warning, so a new caller shows
-  up loudly until it is added to the known set alongside its own test. Browser
-  writes still audit as `dashboard`; the caller header alone grants nothing.
-  (#3503)
-
-- **`kirocrew policy show` no longer hides the 139 built-in denied-command
-  rules from the agent.** The rules are visible and configurable to the
-  user (Settings → Security), but the agent's only way to discover them was
-  to attempt a command and be refused — so it could plan multi-step work
-  that turned out to be impossible from the first step, walking the user
-  through setup effort (e.g. exporting AWS credentials) for a task a
-  hard-denied command would block later anyway. `policy show` now prints
-  the rule count grouped by category on every install, enterprise policy or
-  not; `--ids` lists each category's rule ids for citing a specific rule
-  when relaying a refusal. (#3454)
 
 - **Side-panel oversize-question refusal now reports an accurate character
   target for every script, not just emoji.** The refusal derived its

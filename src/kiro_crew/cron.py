@@ -51,8 +51,6 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.resource_status import admission_check
-from kiro_crew.validation import MAX_CRON_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -690,11 +688,6 @@ class CronService:
         # a completed one-shot is always
         # eventually removed and can never re-fire in the meantime.
         self._pending_removals: set[str] = set()
-        # True while a critical-posture episode is deferring scheduled
-        # firings (see _on_timer). Log-throttle state only: the INFO line
-        # fires once per deferral episode, not once per deferred tick.
-        self._admission_deferring: bool = False
-        self._admission_last_log: float = 0.0
         # job_id → active session_key for the in-flight run.
         # Populated by the dispatcher (gateway callback) so the reaper can
         # target per-run ephemeral keys when persistent_session=False.
@@ -1367,18 +1360,6 @@ class CronService:
         valid_approval_modes = ("", "auto")
         if approval_mode not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
-        # Message cap enforced HERE, at the persistence owner, for the same
-        # reason as timezone/skip_dates below: every create path (MCP, apps
-        # SDK, dashboard, CLI) shares one check, so no surface can admit a
-        # message the others would reject. Uses the cron-specific cap, not
-        # MAX_MEDIUM_STRING — a cron message is a task prompt (see
-        # validation.MAX_CRON_MESSAGE). Type-checked first: len() succeeds on
-        # a list, and a non-str message would be persisted into crons.json and
-        # only blow up at fire time inside _build_prompt.
-        if not isinstance(message, str):
-            raise ValueError("message must be a string")
-        if len(message) > MAX_CRON_MESSAGE:
-            raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -1591,15 +1572,6 @@ class CronService:
                     if kwargs["approval_mode"] not in valid_approval_modes:
                         raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
                 # Validate before any mutations
-                if "message" in kwargs and kwargs["message"]:
-                    # Same chokepoint rationale as _build_job: every update
-                    # surface (MCP, dashboard PATCH, CLI) funnels here. Type
-                    # first — len() succeeds on a list, which would then be
-                    # persisted and only raise at fire time in _build_prompt.
-                    if not isinstance(kwargs["message"], str):
-                        raise ValueError("message must be a string")
-                    if len(kwargs["message"]) > MAX_CRON_MESSAGE:
-                        raise ValueError(f"message exceeds max length {MAX_CRON_MESSAGE}")
                 if (
                     "cron_expr" in kwargs
                     and kwargs["cron_expr"]
@@ -2302,15 +2274,6 @@ class CronService:
         delay = self._next_wake_secs()
         if delay is None:
             return _TIMER_POLL_SECS
-        if self._admission_deferring and delay < _TIMER_POLL_SECS:
-            # A critical-posture episode leaves deferred ``every``/``at``
-            # jobs overdue (``last_run_ts`` untouched by design), which
-            # would otherwise re-arm the timer at zero delay — a busy loop
-            # of scans and admission probes on a host already under memory
-            # pressure. Back off to the poll cadence: the episode is
-            # re-evaluated (and deferred jobs fire) within one poll of
-            # posture recovery.
-            return _TIMER_POLL_SECS
         return min(delay, _TIMER_POLL_SECS)
 
     def _arm_timer(self) -> None:
@@ -2419,88 +2382,6 @@ class CronService:
             for j in snapshot
             if j.enabled and j.id not in self._executing and self._is_due(j, now)
         ]
-
-        # An empty due-scan can only end the tick when no deferral episode is
-        # in progress: the recovery log (below) must still fire on a quiet
-        # tick, otherwise an episode that ends during a lull is never closed.
-        if not due and not self._admission_deferring:
-            return
-
-        # Posture-gated admission: while host memory is CRITICAL, defer this
-        # tick's ``every``/``at`` firings instead of admitting more work onto
-        # a host that cannot absorb it. The verdict is computed off-loop
-        # (config + procfs reads must not stall the event loop). Deferral is
-        # deliberately STATELESS and only applies to schedule kinds that stay
-        # due on their own (``last_run_ts`` untouched, so a deferred job fires
-        # on the first admitted tick). A cron-expression job is only due while
-        # its expression matches the current minute, so it cannot be deferred
-        # statelessly: an in-memory catch-up marker loses the occurrence on
-        # gateway restart, and dropping it silently loses the occurrence
-        # outright — so cron-expression jobs run normally even under critical
-        # posture (persisted deferral markers are a possible follow-up).
-        # Manual runs (run_job / cron_trigger) never pass through this scan
-        # and are not deferred. Fails open on unknown posture. The INFO log
-        # fires once per deferral episode and re-fires every 15 minutes so a
-        # long suspension stays diagnosable.
-        decision = await asyncio.to_thread(admission_check)
-
-        # The admission await yielded the loop, so the due snapshot may be
-        # stale: a manual run (run_job / cron_trigger) can have claimed — or
-        # even completed — a job meanwhile, and a job can have been edited,
-        # disabled, or queued for removal. Rebuild the due list from the LIVE
-        # job objects and re-run the due check BEFORE the deferral partition
-        # below: classifying by the stale snapshot's schedule kind would let
-        # an interval job edited into a matching cron expression during the
-        # await be deferred-and-dropped (its occurrence lost), and dispatching
-        # the snapshot object would execute a stale definition. An id-only
-        # check would double-fire a job whose manual run already finished.
-        # The re-check deliberately reuses the scan-time ``now``: a live
-        # ``last_run_ts`` advanced by a finished manual run still fails it
-        # (interval math for ``every``/``at``, the same-minute guard for cron
-        # expressions), while a minute boundary crossed during the await
-        # cannot drop a cron-expression occurrence that was genuinely due at
-        # scan time.
-        live_by_id = {j.id: j for j in self._jobs if j.enabled}
-        due = [
-            live_by_id[j.id]
-            for j in due
-            if j.id in live_by_id
-            and j.id not in self._executing
-            and j.id not in self._pending_removals
-            and self._is_due(live_by_id[j.id], now)
-        ]
-
-        if not decision.admitted:
-            deferred = [j for j in due if j.schedule.kind != "cron"]
-            due = [j for j in due if j.schedule.kind == "cron"]
-            now_mono = time.monotonic()
-            if not self._admission_deferring:
-                self._admission_deferring = True
-                self._admission_last_log = now_mono
-                logger.info(
-                    "Cron: deferring interval/one-shot firings (%d deferred "
-                    "this tick; cron-expression jobs run normally) — %s "
-                    "(re-logged every 15 min while the episode lasts)",
-                    len(deferred),
-                    decision.reason,
-                )
-            elif now_mono - self._admission_last_log >= 900.0:
-                self._admission_last_log = now_mono
-                logger.info(
-                    "Cron: STILL deferring interval/one-shot firings (%d "
-                    "deferred this tick) — %s",
-                    len(deferred),
-                    decision.reason,
-                )
-            else:
-                logger.debug(
-                    "Cron: still deferring %d scheduled job(s)", len(deferred)
-                )
-        elif self._admission_deferring:
-            self._admission_deferring = False
-            logger.info(
-                "Cron: memory posture recovered — resuming scheduled firings"
-            )
 
         if not due:
             return

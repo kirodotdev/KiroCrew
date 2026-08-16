@@ -1491,7 +1491,6 @@
         "recording": "Recording…",
         "remove": "Remove",
         "removeConfirm": "Remove this vault from the app? Your files are left untouched on disk — only the connection is forgotten.",
-        "removeFailed": "Could not remove the vault: {{message}}",
         "removeIt": "Remove it",
         "reset": "Reset",
         "save": "Save",
@@ -1503,11 +1502,9 @@
         "syncSection": "Sync",
         "title": "Settings",
         "tokenCleared": "Token cleared.",
-        "tokenClearFailed": "Could not clear the token: {{message}}",
         "tokenPlaceholderEmpty": "github_pat_…",
         "tokenPlaceholderStored": "Replace stored token…",
         "tokenSaved": "Token saved.",
-        "tokenSaveFailed": "Could not save the token: {{message}}",
         "vaultsSection": "Vaults"
       },
       "sort": {
@@ -1794,6 +1791,7 @@
         "pins": "Pins",
         "preview": "Preview",
         "remove_screenshot": "Remove screenshot",
+        "reveal_in_finder": "Show in file manager",
         "screenshot": "Screenshot",
         "watchlist": "Watchlist"
       },
@@ -3473,6 +3471,7 @@
       "pop_out_to_window": "Pop out to window",
       "close_terminal": "Close terminal",
       "hide_terminal_panel": "Hide terminal panel",
+      "move_to_side_panel": "Move to side panel",
       "new_terminal": "New terminal",
       "resize_terminal_panel": "Resize terminal panel",
       "move_panel_to_right": "Move panel to right",
@@ -5899,6 +5898,7 @@
         "skip": "Skip",
         "source_name": "Source name",
         "source_name_optional": "Source name (optional)",
+        "supports_markdown_plain_text_code_files_html_jso": "Supports: Markdown, plain text, code files, HTML, JSON, YAML, CSV, DOCX, Org Mode, PDF. Max 50 MB per file.",
         "sync": "Sync",
         "sync_source": "Sync source",
         "type_new_to_create": "Type new to create",

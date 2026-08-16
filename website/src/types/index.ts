@@ -544,11 +544,6 @@ export interface ChatSlot {
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
    * and separate from `pending_approval` (a tool gate). */
   needs_input?: boolean
-  /** The transcript shows the last turn ending without a reply (trailing error
-   * row or unanswered user row) — the state behind the composer's Resume
-   * button. Always false while `running`. Lets the sidebar stop rendering a
-   * goal-loop session as actively working when it is actually stalled. */
-  interrupted?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** In-flight `wait` tool sleep, absent when nothing is sleeping. `deadline_ts`
@@ -626,13 +621,8 @@ export interface IssueComment {
 }
 
 /** A pull request / merge request the provider reports as linked to the issue. */
-/** A linked change: a pull request (GitHub/GitLab) or a linked issue (Jira). */
 export interface IssueLinkedChange {
-  provider: 'github' | 'gitlab' | 'jira'; url: string; number: number; title: string; state: string
-  /** Jira link relationship label (e.g. "blocks", "is blocked by"). */
-  relation?: string
-  /** Full Jira issue key (e.g. "PROJ-123"). */
-  issueKey?: string
+  provider: 'github' | 'gitlab'; url: string; number: number; title: string; state: string
 }
 
 /** Reaction tallies. Null on providers (or issues) that report none. */
@@ -642,7 +632,7 @@ export interface IssueReactions {
 }
 
 export interface IssueSource {
-  provider: 'github' | 'gitlab' | 'jira'
+  provider: 'github' | 'gitlab'
   /** Always the validated request url, never the provider's echo of it. */
   url: string
   number: number

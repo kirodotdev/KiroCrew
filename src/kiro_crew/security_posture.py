@@ -778,10 +778,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
         "apps/builtins/mochi/redact.py",
-        # Same shape: hosts _redact_memory_field, the shared recursive scrubber
-        # for memory fields. It owns no output of its own — the handler modules
-        # that call it (memory.py, cron.py) are the covered surfaces.
-        "dashboard/handlers/_shared.py",
         # Same shape: applies a redactor the CALLER injects, to scan the form a
         # platform will actually render (markup collapsed, ANSI stripped). It owns
         # no output of its own -- the registered sinks are the modules that call
@@ -790,19 +786,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "autonudge_authz.py",
         "acp/_dispatch.py",
         "acp/client.py",
-        # Redacts the tool title in the auto-rejected-permission WARNING (a
-        # gate-side log line) and defers user-facing display to the routed
-        # permission event, whose sinks are already registered.
-        "acp/runtime.py",
         "acp/session_handle.py",
         "platform/defaults.py",
         "platform/interfaces.py",
-        # Inbound sanitization: the browser MCP tool redacts UNTRUSTED native-panel
-        # content (a page's text/console output) before it returns into the agent's
-        # context. It scrubs what comes IN from an untrusted web page, not an output
-        # bound for a third party -- so it is defensive input hygiene, not an egress
-        # sink.
-        "mcp_tools/browser.py",
         # Comparison-only: applies the redactors to compute a match identity and
         # discards the result. The two files being merged can hold the same
         # message with and without redaction, so a raw comparison would keep both
@@ -874,11 +860,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "knowledge/ingestion.py",
         "mcp_core.py",
         "mcp_cron.py",
-        # Same class as mcp_core.py: an MCP stdio server redacts tool RESULTS and
-        # agent-authored names before they are persisted or returned, but the
-        # egress boundary itself is the transport the result crosses, not this
-        # module.
-        "mcp_dashboard.py",
         "mcp_gateway/backend.py",
         # The kirocrew-core tool handlers, moved out of mcp_core.py into their
         # domain modules. Same classification as mcp_core.py above for the same
@@ -1177,7 +1158,6 @@ _SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
     "MCP_CORE_SCHEMAS",
     "MCP_CRON_SCHEMAS",
     "MCP_COMPUTER_SCHEMAS",
-    "MCP_DASHBOARD_SCHEMAS",
 )
 
 

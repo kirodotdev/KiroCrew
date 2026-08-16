@@ -295,3 +295,25 @@ describe('ChatInput paste: strip trailing blank lines', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 })
+
+describe('ChatInput paste: browser "Copy image"', () => {
+  it('uploads the image when clipboard has an <img> text/html rendering but NO text/plain content', () => {
+    const onUploadFiles = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} onUploadFiles={onUploadFiles} />,
+    )
+    const file = new File(['px'], 'image.png', { type: 'image/png' })
+    // Chrome/Safari "Copy image": html flavor present, text/plain empty.
+    fireEvent.paste(screen.getByRole('textbox'), {
+      clipboardData: {
+        types: ['text/html', 'Files'],
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+        getData: (t: string) => (t === 'text/html' ? '<img src="https://x/y.png">' : ''),
+      },
+    })
+    expect(onUploadFiles).toHaveBeenCalledTimes(1)
+    const [uploaded] = onUploadFiles.mock.calls[0][0] as File[]
+    expect(uploaded.name).toMatch(/^pasted-image-\d{8}-\d{9}\.png$/)
+    expect(uploaded.type).toBe('image/png')
+  })
+})

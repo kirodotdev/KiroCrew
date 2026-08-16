@@ -1366,18 +1366,7 @@ Examples:
         "policy", help="Inspect the governance security policy + profiles"
     )
     policy_sub = policy_parser.add_subparsers(dest="policy_action")
-    policy_show = policy_sub.add_parser("show", help="Show the effective enterprise security policy")
-    policy_show.add_argument(
-        "--ids",
-        action="store_true",
-        # NOT named --verbose: the top-level parser already defines --verbose/-v
-        # as an int `count` (log level). A same-named store_true on this
-        # subparser would collide in the merged Namespace via argparse's
-        # parent/subparser default-override gotcha (see the --no-jail comment
-        # above) -- whichever parser's default applies last silently
-        # overwrites the other's value.
-        help="List each denied-command category's rule ids (default: counts only)",
-    )
+    policy_sub.add_parser("show", help="Show the effective enterprise security policy")
     policy_sub.add_parser("validate", help="Validate the policy + all profiles (load-check)")
     explain_parser = policy_sub.add_parser(
         "explain", help="Explain a tool/scope decision for a surface"
@@ -1819,11 +1808,6 @@ Examples:
     # A THIN SHIM: it forwards to the gateway over loopback, where the
     # fail-closed governance gate and all accessibility work live.
     sub.add_parser("mcp-computer", help=argparse.SUPPRESS)
-
-    # mcp-dashboard (MCP server — spawned by the agent backend, not user-facing).
-    # Mounted only for an agent whose spec grants it, so an unassigned set costs
-    # a session nothing: kiro-cli loads a server only when `tools` names it.
-    sub.add_parser("mcp-dashboard", help=argparse.SUPPRESS)
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing)
     for _bname in _BUILTIN_NAMES:
@@ -2299,11 +2283,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.mcp_computer import run_mcp_server as run_mcp_computer_server
 
         run_mcp_computer_server()
-    elif args.command == "mcp-dashboard":
-        # Loaded through importlib in the branch, like the builtin-app servers
-        # below: `kirocrew gateway` boots through this module, and a default-off
-        # optional subsystem must not be imported to start it.
-        importlib.import_module("kiro_crew.mcp_dashboard").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         _mod = importlib.import_module(f"kiro_crew.apps.builtins.{args.command[4:]}.mcp_server")
         _mod.run_mcp_server()

@@ -7,8 +7,6 @@ import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
 import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
-import ListDetailBack from '../../components/ListDetailBack'
-import { useListDetailView } from '../../hooks/useListDetailView'
 import type { SteeringFile, SteeringList } from '../../types'
 
 import { i18nT } from '../../i18n/t'
@@ -55,19 +53,6 @@ function newTemplate(): string {
 /** Textarea styling matches SkillForm's raw-markdown editor. */
 const EDITOR_CLASS =
   'w-full h-full min-h-[320px] bg-bg-elevated border border-border rounded-md p-3 text-text font-mono text-[13px] outline-none resize-none focus-ring'
-
-/**
- * The list-detail shell's height.
- *
- * `svh` (the viewport with browser chrome SHOWING) rather than `vh`: `vh`
- * resolves against the large viewport, so on a phone the pane runs under the
- * address bar and its bottom edge — which while narrow holds the only visible
- * pane — is unreachable. `svh` also does not re-resolve as the URL bar
- * animates, unlike `dvh`. Identical to `vh` on a desktop, where there is no
- * dynamic chrome. The `vh` declaration stays as the fallback for browsers
- * without `svh`, matching the shell's own `supports-[height:100dvh]` pattern.
- */
-const PANE_SHELL_CLASS = 'flex gap-3 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 export default function SteeringTab() {
   const queryClient = useQueryClient()
@@ -144,9 +129,6 @@ export default function SteeringTab() {
 
   const selected = useMemo(() => files.find(f => f.key === selectedKey) ?? null, [files, selectedKey])
 
-  // Narrow viewport shows one pane at a time; a desktop shows both.
-  const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
-
   // Keep a valid selection; suspended while editing so an unsaved draft is
   // never discarded by a background refetch reordering the list.
   useEffect(() => {
@@ -158,7 +140,7 @@ export default function SteeringTab() {
   // Default the create dialog to the scope that exists.
   useEffect(() => { setNewSource(hasProject ? 'workspace' : 'user') }, [hasProject])
 
-  const select = (f: SteeringFile) => { setSelectedKey(f.key); setEditing(false); openDetail() }
+  const select = (f: SteeringFile) => { setSelectedKey(f.key); setEditing(false) }
 
   const renderRow = (f: SteeringFile) => {
     const isSel = f.key === selectedKey
@@ -291,7 +273,7 @@ export default function SteeringTab() {
       )}
 
       {isLoading ? (
-        <div className={PANE_SHELL_CLASS}>
+        <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
           <div className="w-[240px] shrink-0 space-y-1">{Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="h-[52px] rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5, animationDelay: `${i * 80}ms` }} />
           ))}</div>
@@ -304,37 +286,24 @@ export default function SteeringTab() {
           subtitle={i18nT('pages.overview.steeringTab.steering_files_looked_in', { path: rootHint || '~/.kiro/steering' })}
         />
       ) : (
-        <div className={PANE_SHELL_CLASS}>
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
+        <div className="flex gap-3 h-[calc(100vh-260px)] min-h-[420px]">
+          <div className="w-[240px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2" role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
             {filtered.map(renderRow)}
             {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match_query', { query: filter })}</div>}
-          </div>}
+          </div>
 
-          {showDetail && <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">
+          <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">
             {!selected ? (
               <div className="flex items-center justify-center h-full text-muted text-[13px]">{i18nT('pages.overview.steeringTab.select_a_steering_file_to_view_it')}</div>
             ) : (
               <div className="flex flex-col h-full min-h-0">
-                {/* Wraps rather than shrinks: at 390px the title, scope chip and
-                    the Edit/Delete pair do not fit on one line, and squeezing
-                    them onto one overlapped the two buttons. */}
-                {/* Own row: this header's action slot already holds either
-                    Cancel+Save or Edit+Delete, so Back would be a third. */}
-                {isMobile && (
-                  <div className="px-4 pt-2.5 shrink-0">
-                    <ListDetailBack label={i18nT('pages.overview.steeringTab.steering_files')} onBack={closeDetail} />
-                  </div>
-                )}
-                <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5 border-b border-border shrink-0">
+                <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-border shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-bold text-text-strong truncate">{selected.rel}</span>
                     <span className="text-[11px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
                       {sourceLabel(selected.source)}
                     </span>
-                    {/* The absolute path is reference detail, not identity: it
-                        never fits beside the name on a phone and would push the
-                        actions off the row. */}
-                    {!isMobile && <span className="text-[11px] text-muted font-mono truncate">{selected.path}</span>}
+                    <span className="text-[11px] text-muted font-mono truncate">{selected.path}</span>
                   </div>
                   <div className="flex gap-2 shrink-0">
                     {editing ? (<>
@@ -355,7 +324,7 @@ export default function SteeringTab() {
                 </div>
               </div>
             )}
-          </div>}
+          </div>
         </div>
       )}
     </Card>

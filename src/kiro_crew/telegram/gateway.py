@@ -104,13 +104,8 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         token_ok = False
         startup_error = ""
         try:
-            me = await client.get_me()
+            await client.get_me()
             token_ok = True
-            # Gates @BotUsername suffix stripping in command parsing (see
-            # telegram/commands.py._strip_bot_mention): without this, a
-            # command addressed to a DIFFERENT bot in the same group would be
-            # mistaken for ours.
-            dispatcher.bot_username = me.get("username", "") or ""
         except TelegramAuthError:
             raise
         except Exception as exc:

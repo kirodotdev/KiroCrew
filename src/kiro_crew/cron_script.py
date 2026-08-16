@@ -43,8 +43,7 @@ from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     SandboxUnavailableError,
     cgroup_scope_argv,
-    popen_limited,
-    run_limited,
+    resource_limit_preexec,
     wrap_argv,
 )
 from kiro_crew.security import is_sensitive_path, redact
@@ -370,12 +369,13 @@ class McpToolClient:
             mode="w+", prefix="mcp-stderr-", suffix=".log", delete=False
         )
         try:
-            self._proc = popen_limited(
+            self._proc = subprocess.Popen(
                 sandboxed_argv,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr_file,
                 text=True,
+                preexec_fn=resource_limit_preexec(),
             )
         except Exception:
             self._stderr_file.close()
@@ -641,9 +641,10 @@ def run_script_sandboxed(
         clean_env["_KIROCREW_SECRET_FILE"] = secret_path
 
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
-        proc = popen_limited(
+        proc = subprocess.Popen(
             sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=clean_env, start_new_session=True,
+            preexec_fn=resource_limit_preexec(),
         )
         _register_proc(job_id, proc)
         try:
@@ -772,15 +773,16 @@ def _shell_is_posix_strict(shell: str) -> bool:
         # Same discipline as every other sandbox-routed spawn in this module
         # (test_every_routed_spawn_applies_resource_limits / _cgroup_scope): the
         # probe is a child process, so it observes the same fork-bomb / RSS
-        # ceilings as a real command cron. run_limited applies them after exec,
-        # and is a no-op on Windows where there are no POSIX rlimits.
+        # ceilings as a real command cron. resource_limit_preexec is POSIX-only
+        # and returns None on Windows (harmless).
         argv = cgroup_scope_argv(argv)
-        proc = run_limited(
+        proc = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=5,
             env=_clean_cron_env(),
+            preexec_fn=resource_limit_preexec() if platform_compat.IS_POSIX else None,
         )
         result = proc.returncode == 0 and proc.stdout.strip() == "x.{a,a}"
     except (OSError, subprocess.SubprocessError, SandboxUnavailableError):
@@ -836,9 +838,10 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
         sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
-        proc = popen_limited(
+        proc = subprocess.Popen(
             sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=clean_env, start_new_session=True,
+            preexec_fn=resource_limit_preexec(),
         )
         if job_id:
             _register_proc(job_id, proc)

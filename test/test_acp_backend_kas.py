@@ -55,21 +55,18 @@ class TestBackendPredicates:
         assert provider.is_kiro_backend is True
         assert provider.is_kas_backend is False
         assert provider.is_claude_backend is False
-        assert provider.is_acp_runtime_backend is True
 
     def test_kas_backend(self):
         provider = _build_provider(ACP_BACKEND_KAS)
         assert provider.is_kas_backend is True
         assert provider.is_kiro_backend is False
         assert provider.is_claude_backend is False
-        assert provider.is_acp_runtime_backend is True
 
     def test_claude_backend_unchanged(self):
         provider = _build_provider(ACP_BACKEND_CLAUDE)
         assert provider.is_claude_backend is True
         assert provider.is_kiro_backend is False
         assert provider.is_kas_backend is False
-        assert provider.is_acp_runtime_backend is False
 
     @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
     def test_exactly_one_predicate_holds_for_every_known_backend(self, backend):
@@ -80,14 +77,6 @@ class TestBackendPredicates:
             provider.is_kas_backend,
         ]
         assert sum(held) == 1
-
-    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
-    def test_acp_runtime_backend_is_the_positive_form_of_not_claude(self, backend):
-        # The four provider sites that used to read ``not is_claude_backend``
-        # now read ``is_acp_runtime_backend``; the two must stay equivalent for
-        # every known backend so the conversion is behavior-preserving.
-        provider = _build_provider(backend)
-        assert provider.is_acp_runtime_backend is (not provider.is_claude_backend)
 
 
 class TestUnknownBackendRejected:

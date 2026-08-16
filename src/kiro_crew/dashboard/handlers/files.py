@@ -32,7 +32,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.hooks import safe_read_prefix
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
 from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
     is_sensitive_path,
@@ -2804,9 +2804,10 @@ def _run_git_bounded(
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         try:
-            proc = popen_limited(
+            proc = subprocess.Popen(
                 argv, cwd=cwd, env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                preexec_fn=resource_limit_preexec(),
             )
         except OSError:
             # The cwd (project dir) can vanish between the handler's isdir

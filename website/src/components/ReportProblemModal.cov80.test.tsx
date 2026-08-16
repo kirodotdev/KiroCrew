@@ -70,13 +70,8 @@ describe('ReportProblemModal', () => {
       screen.getByRole('link', { name: i18nT('components.reportProblemModal.open_github_issue') }),
     ).toHaveAttribute('href', 'https://example.invalid/zzq-issue')
 
-    // The reveal delivery names the GATEWAY host's file manager. This render
-    // seeds no platform, so it is the generic arm; the per-platform arms live in
-    // test/ReportProblemModal.test.tsx.
     fireEvent.click(
-      screen.getByRole('button', {
-        name: i18nT('components.reportProblemModal.show_in_file_manager'),
-      }),
+      screen.getByRole('button', { name: i18nT('components.reportProblemModal.show_in_finder') }),
     )
     expect(revealPath).toHaveBeenCalledWith('/zzq/tmp/zzq-bundle.zip')
   })

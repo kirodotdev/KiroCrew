@@ -985,13 +985,6 @@
       "row": {
         "deleteConfirm": "You can restore it from <trash>.trash</trash>. Trashed notes aren't synced to the remote."
       }
-    },
-    "mochi": {
-      "chatPanel": {
-        "open_in_file_explorer": "Open in File Explorer",
-        "open_in_finder": "Open in Finder",
-        "show_in_file_manager": "Show in file manager"
-      }
     }
   },
   "components": {
@@ -1119,13 +1112,13 @@
     },
     "autoNudgePopover": {
       "goal_active_cycle": "Goal active (cycle {{cycle}})",
-      "goal_interrupted_cycle": "Goal loop armed (cycle {{cycle}}) — last turn was interrupted; resume the chat or wait for the next cycle",
       "never": "never",
       "save": "Save",
       "start_loop": "Start loop"
     },
     "bottomTerminalPanel": {
       "maximum_terminals": "Maximum {{n}} terminals",
+      "open_a_chat_page_to_move_this_terminal_there": "Open a chat page to move this terminal there",
       "terminal": "Terminal"
     },
     "chatInput": {
@@ -1455,11 +1448,8 @@
       "reaction_minus1": "Thumbs down",
       "reaction_plus1": "Thumbs up",
       "reaction_rocket": "Rocket",
-      "open_in_jira": "Open in Jira",
-      "provider_github": "GitHub",
-      "provider_jira": "Jira",
-      "provider_gitlab": "GitLab",
-      "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN in your .env file."
+      "jira_open_in_browser": "Jira issue — open in browser to view details.",
+      "open_in_jira": "Open in Jira"
     },
     "jobForm": {
       "add": "Add",
@@ -1556,8 +1546,6 @@
       "open_artifact": "Open artifact {{name}}",
       "open_as_artifact": "Open as artifact",
       "open_folder": "Open folder {{path}}",
-      "open_in_file_explorer": "Open in File Explorer",
-      "open_in_finder": "Open in Finder",
       "open_with_default_app": "Open with default app",
       "path_copied_to_clipboard_no_desktop_available": "Path copied to clipboard (no desktop available)",
       "preview": "Preview",
@@ -1576,11 +1564,7 @@
       "view_source": "View Source"
     },
     "markdownRenderer": {
-      "click_to_browse_shift_click_to_open_in_file_explorer": "Click to browse / Shift+click to open in File Explorer",
       "click_to_browse_shift_click_to_reveal_in_finder": "Click to browse / Shift+click to reveal in Finder",
-      "click_to_browse_shift_click_to_show_in_file_manager": "Click to browse / Shift+click to show in file manager",
-      "click_to_open_shift_click_to_open_in_file_explorer": "Click to open / Shift+click to open in File Explorer",
-      "click_to_open_shift_click_to_show_in_file_manager": "Click to open / Shift+click to show in file manager",
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
       "zoom_out": "Zoom out (-)"
@@ -2072,12 +2056,10 @@
       "done": "Done",
       "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
       "saved_to": "Saved to",
+      "show_in_finder": "Show in Finder",
       "download_zip": "Download zip",
       "open_github_issue": "Open GitHub issue",
-      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it.",
-      "open_in_finder": "Open in Finder",
-      "open_in_file_explorer": "Open in File Explorer",
-      "show_in_file_manager": "Show in file manager"
+      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
     },
     "trustDropdown": {
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
@@ -2406,8 +2388,7 @@
       "start_a_new_blank_document_in_the_library": "Start a new blank document in the library",
       "table": "Table",
       "this_folder_is_empty_drag_artifacts_onto_it_to_f": "This folder is empty. Drag artifacts onto it to file them here.",
-      "untitled_artifact_name": "Untitled",
-      "more_actions": "More actions"
+      "untitled_artifact_name": "Untitled"
     },
     "capabilitiesPage": {
       "crews_label": "Agents",
@@ -2510,11 +2491,9 @@
       "folderPanel": {
         "empty_folder": "Empty folder",
         "loading": "Loading…",
-        "open_in_file_explorer": "Open in File Explorer",
-        "open_in_finder": "Open in Finder",
         "parent_folder": "Parent folder",
         "refresh": "Refresh",
-        "show_in_file_manager": "Show in file manager",
+        "reveal_in_finder": "Reveal in Finder",
         "unable_to_list_folder": "Unable to list folder"
       },
       "knowledgePicker": {
@@ -2720,8 +2699,7 @@
       "unknown_error": "unknown error",
       "upload_failed_check_file_type_and_size_max_50_mb": "Upload failed — check file type and size (max 50 MB)",
       "upload_failed_error": "Upload failed: {{error}}",
-      "worktree_creation_returned_no_path": "Worktree creation returned no path",
-      "loading_earlier_messages": "Loading earlier messages…"
+      "worktree_creation_returned_no_path": "Worktree creation returned no path"
     },
     "chatSidebar": {
       "default_agent": "Default agent: {{name}}",
@@ -2731,12 +2709,11 @@
       "folder_options_for": "Folder options for {{name}}",
       "goal_loop_cycle": "Goal loop · cycle {{count}} of {{total}}",
       "goal_loop_cycle_no_cap": "Goal loop · cycle {{count}} (no cap)",
-      "goal_loop_interrupted_title": "Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle",
       "hidden_because_parent_hidden": "{{name}} is hidden because a parent folder is hidden",
       "hide_from_flat_view": "Hide {{name}} from flat view",
+      "in_folder": "In folder: {{name}}",
       "loop": "Loop {{count}}/{{total}}",
       "loop_2": "Loop · {{count}}",
-      "loop_interrupted": "interrupted",
       "running_queued": "{{started}} running · {{queued}} queued",
       "show_in_flat_view": "Show {{name}} in flat view",
       "streaming": "Streaming",
@@ -2872,10 +2849,6 @@
       "failed_to_load_logs": "Failed to load logs",
       "fetches_latest_main_and_replays_refused_if_dirty": "Fetches latest main and replays. Refused if dirty; on conflict rebase is aborted.",
       "finished": "Finished",
-      "force_remove_confirm_desc": "{{count}} worktree(s) have unmerged or uncommitted work. Removing them permanently deletes all local changes. This cannot be undone.",
-      "force_remove_confirm_title": "Force remove worktrees?",
-      "force_remove_warning": "Selected worktrees have unmerged work — removal is permanent and cannot be undone.",
-      "force_remove": "Force remove {{name}}",
       "gateway_did_not_come_back_within_60s_reload_the": "Gateway did not come back within 60s — reload the page manually, or check `kirocrew logs`.",
       "gateway_restarted_mid_sync_run_lost_check_git_st": "gateway restarted mid-sync — run lost; check git state and re-run Pull+Build",
       "git_status_failed": "git status failed",
@@ -2883,7 +2856,6 @@
       "hide_legacy_worktrees": "Hide {{n}} legacy worktrees",
       "hide_logs": "Hide logs",
       "just_now": "just now",
-      "kept_force_hint": "Check to force remove — deletes unmerged work.",
       "legacy_worktrees_hidden_show": "{{n}} legacy worktrees hidden · Show",
       "load_pod_logs": "Load pod logs",
       "loading": "Loading…",
@@ -2909,7 +2881,6 @@
       "pr_merged_safe_to_remove_runs_git_worktree_remov": "PR merged — safe to remove. Runs `git worktree remove`. Cannot be undone.",
       "pr_merged_uncommitted_changes": "PR merged, uncommitted changes",
       "pr_open_or_unmerged_commits": "PR open or unmerged commits",
-      "protected_worktree": "Protected — main or currently live",
       "provision_failed_to_start": "Provision failed to start",
       "provision_polling_timed_out_check_pod_logs": "Provision polling timed out — check pod logs",
       "provision_timed_out": "Provision timed out",
@@ -3080,7 +3051,6 @@
         "copied": "Copied!",
         "copy_content": "Copy Content",
         "embeddings_loading": "embeddings loading",
-        "embeddings_count": "embeddings ({{value}})",
         "graph_view": "Graph View",
         "list_view": "List View",
         "sources_tab": "Sources",
@@ -3117,19 +3087,16 @@
         "files_indexed": "{{done}}/{{total}} files indexed",
         "files_with_no_extension_e_g_readme_are_ingested": "Files with no extension (e.g. README) are ingested as plain text — drag-and-drop them here, since the file picker cannot list extensionless files.",
         "folder": "folder",
-        "indexing_uses_kiro_requests_each_source_costs_mo": "Indexing uses Kiro requests in proportion to each source's size, and a watched folder keeps spending as files arrive — spread out over time rather than charged all at once.",
-        "kiro_requests_left": "~{{calls}} Kiro requests to finish",
-        "max_file_size": "Max 50 MB per file.",
+        "indexing_uses_kiro_requests_each_source_costs_mo": "Indexing uses Kiro requests: each source costs requests in proportion to its size, and a watched folder keeps spending as files arrive. The cost is spread out over time rather than charged all at once.",
+        "kiro_requests_left": "~{{calls}} Kiro requests left",
         "opening": "Opening...",
         "paused": "Paused",
         "paused_2": "paused",
         "pending": "pending",
-        "show_failed_files": "Show which files failed",
         "start_scanning": "Start Scanning",
         "starting": "Starting...",
         "supported_file_found_one": "{{count}} supported file found",
         "supported_file_found_other": "{{count}} supported files found",
-        "supports_formats": "Supports: {{formats}}.",
         "this_folder_will_be_watched_any_supported_files": "This folder will be watched. Any supported files added here will be auto-ingested on the next scan cycle (~5 min).",
         "this_folder_will_be_watched_continuously_new_fil": "This folder will be watched continuously. New files added here will be auto-ingested on the next scan cycle (~5 min).",
         "watch_anyway": "Watch Anyway",
@@ -3142,6 +3109,7 @@
         "months_ago": "{{n}}mo ago",
         "search_across_all_knowledge_filter_by_type_or_ex": "Search across all knowledge, filter by type, or explore the entity graph",
         "supported_formats": "Supported formats: {{formats}}",
+        "supported_formats_list": "Markdown, Plain text, Code files (.py, .ts, .java, .go, .rs, etc.), HTML, JSON, YAML, CSV, DOCX, Org Mode (.org), PDF",
         "weeks_ago": "{{n}}w ago",
         "welcome_to_the_knowledge_library": "Welcome to the Knowledge Library",
         "your_centralized_knowledge_base_with_entity_extr": "Your centralized knowledge base with entity extraction, graph relationships, and full-text search."
@@ -3550,11 +3518,7 @@
       "browse_schedule_templates": "Browse schedule templates",
       "writes_badge_tooltip": "This template's job pushes branches, opens PRs, or edits issues. Its guardrails are instructions to the agent, not enforced policy.",
       "writes_notice": "This template's job pushes branches, opens PRs, or edits issues in your repos. The prompt's limits (for example “never push to the default branch”) are instructions to the agent, not enforced policy — review the prompt before saving.",
-      "writes_to_your_repos": "Writes to your repos",
-      "script_source": "Script source",
-      "script_source_download": "Download script",
-      "script_source_failed": "Could not load the script source.",
-      "script_source_truncated": "Truncated — the script is larger than the preview limit."
+      "writes_to_your_repos": "Writes to your repos"
     },
     "sessionArchive": {
       "no_matches_for_query": "No matches for \"{{query}}\".",

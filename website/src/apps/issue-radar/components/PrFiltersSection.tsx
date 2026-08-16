@@ -11,9 +11,7 @@ import { i18nT } from '../../../i18n/t'
  * (open / merged / closed) + draft / mine / review toggles, and the label
  * palette — the PR analogue of FiltersSection. Reads and drives everything
  * through the shared context (the PR-scoped slice). */
-/** `onNavigate` fires after any navigation so a narrow viewport can collapse the
- * full-width rail — otherwise the tap navigates behind a rail still covering it. */
-export default function PrFiltersSection({ onNavigate }: { onNavigate?: () => void }) {
+export default function PrFiltersSection() {
   const {
     prSortKey, prSortDir, cyclePrSort,
     prStateFilter, setPrStateFilter, setSelectedPull, openPulls,
@@ -39,7 +37,7 @@ export default function PrFiltersSection({ onNavigate }: { onNavigate?: () => vo
   )
 
   const setState = (s: 'open' | 'closed' | 'merged') => {
-    setPrStateFilter(s); setSelectedPull(null); openPulls(); onNavigate?.()
+    setPrStateFilter(s); setSelectedPull(null); openPulls()
   }
 
   return (

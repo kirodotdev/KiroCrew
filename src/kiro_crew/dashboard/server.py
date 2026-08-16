@@ -995,7 +995,6 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/crons/{job_id}/ack", handlers.api_cron_ack)
     app.router.add_get("/api/crons/{job_id}/history", handlers.api_cron_history)
     app.router.add_get("/api/crons/{job_id}/history/{run_id}", handlers.api_cron_history_detail)
-    app.router.add_get("/api/crons/{job_id}/script", handlers.api_cron_script_source)
     app.router.add_get("/api/cron-folders", handlers.api_cron_folders)
     app.router.add_post("/api/cron-folders", handlers.api_cron_folders_create)
     app.router.add_patch("/api/cron-folders/{folder_id}", handlers.api_cron_folders_update)
@@ -1015,15 +1014,6 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
     app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
     app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
-    # Native browser command channel (agent->Electron). Loopback + internal-secret
-    # only; see the _STRICT_INTERNAL_API_PATHS entries and each handler's re-assert.
-    app.router.add_post("/api/browser/command", handlers.api_browser_command)
-    app.router.add_post("/api/browser/command-drain", handlers.api_browser_command_drain)
-    app.router.add_post("/api/browser/command-result", handlers.api_browser_command_result)
-    # Distinctive boot marker: this line exists ONLY in the command-bus-gateway
-    # build, so its presence in gateway.log proves this worktree's backend is the
-    # one actually running (vs a stale / frozen bundled backend).
-    logger.debug("browser-cmdbus gateway: /api/browser/command{,-drain,-result} registered")
     # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives
     # HERE (rather than in the dashboard-only block, where the browser-called
     # config pair sits) so the headless ``--slack-only`` server exposes it too —
@@ -1369,7 +1359,9 @@ async def _start_unix_site(runner: web.AppRunner, port: int) -> Path | None:
         logger.info("dashboard internal API also listening on unix socket %s", path)
         return path
     except Exception as exc:
-        logger.warning("dashboard unix socket unavailable (%s); internal API stays TCP-only", exc)
+        logger.warning(
+            "dashboard unix socket unavailable (%s); internal API stays TCP-only", exc
+        )
         return None
 
 
@@ -1752,7 +1744,6 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
             base_port=_cfg.instances.tunnel_base_port,
             connect_timeout_secs=_cfg.instances.connect_timeout_secs,
             ssh_compression=_cfg.instances.ssh_compression,
-            mint_timeout_secs=_cfg.instances.mint_timeout_secs,
             max_recovery_attempts=_cfg.instances.max_recovery_attempts,
             recover_backoff_max_secs=_cfg.instances.recover_backoff_max_secs,
             probe_failure_threshold=_cfg.instances.probe_failure_threshold,
@@ -2350,13 +2341,6 @@ async def start_dashboard(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
-    # Voice settings live in slack/handler's module state and are otherwise
-    # loaded only on the Slack startup path (set_orch_cfg) — without this a
-    # dashboard-only gateway (no Slack tokens) resets TTS to defaults on
-    # every restart (see load_voice_reply_config).
-    from kiro_crew.slack.handler import load_voice_reply_config
-
-    await asyncio.to_thread(load_voice_reply_config)
     # ── Tunnel teardown (FIRST cleanup hook, deliberately) ───────────────────
     # aiohttp dispatches ``on_cleanup`` in registration order and gateway
     # shutdown has a hard deadline, so this is registered ahead of every other
@@ -3312,13 +3296,6 @@ async def start_api_server(
         client_max_size=60 * 1024 * 1024
     )  # 60 MB: covers 50 MB upload + multipart overhead
     app["state"] = state
-    # Voice settings live in slack/handler's module state and are otherwise
-    # loaded only on the Slack startup path (set_orch_cfg) — without this a
-    # dashboard-only gateway (no Slack tokens) resets TTS to defaults on
-    # every restart (see load_voice_reply_config).
-    from kiro_crew.slack.handler import load_voice_reply_config
-
-    await asyncio.to_thread(load_voice_reply_config)
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
     app["kiro_prerequisite_service"] = await asyncio.to_thread(

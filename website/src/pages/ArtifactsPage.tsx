@@ -13,7 +13,6 @@ import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input
 import SimpleSelect from '../components/SimpleSelect'
 import RemoteArtifactCard from '../components/RemoteArtifactCard'
 import { useImeGuard } from '../hooks/useImeGuard'
-import { useIsMobile } from '../hooks/useIsMobile'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -1519,7 +1518,6 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // a click.
   const cloudDeployEnabled = useCloudDeploymentEnabled()
   const [filter, setFilter] = useState('')
-  const isMobile = useIsMobile()
   const [tagFilter, setTagFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<string>('')
   // Default to "All" artifacts, but remember the last visit's choice: if the
@@ -2045,12 +2043,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
           </div>
         )}
 
-        {/* `flex-wrap` moves the ACTION GROUP to its own line when the title
-          * cannot share one with it — it does not let the button row itself
-          * wrap, which is what would cost the row its ranking. Without it the
-          * title is the flex item that gives, and at 320px it is squeezed to a
-          * few pixels while the view switcher still hangs off the right edge. */}
-        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <div className="flex items-center justify-between gap-3 mb-3">
           <h3 className="text-sm font-semibold text-text-strong">{i18nT('pages.artifactsPage.your_artifacts')}</h3>
           <div className="flex items-center gap-2">
             {/* Split button: creating a blank document is the common verb and
@@ -2068,12 +2061,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Btn
-                    // On a phone this menu also holds the folder action, so an
-                    // add-only name would under-promise its contents — and the
-                    // name is all a screen reader gets from a chevron.
-                    aria-label={isMobile
-                      ? i18nT('pages.artifactsPage.more_actions')
-                      : i18nT('pages.artifactsPage.more_ways_to_add_an_artifact')}
+                    aria-label={i18nT('pages.artifactsPage.more_ways_to_add_an_artifact')}
                     disabled={addArtifactMut.isPending}
                     className="rounded-l-none border-l-0 px-1"
                   >
@@ -2084,20 +2072,6 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                   <DropdownMenuItem onSelect={handleAddArtifact}>
                     <FileText size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.import_from_a_file')}
                   </DropdownMenuItem>
-                  {/* On a phone this menu is also where the folder action lives:
-                    * three peer controls do not fit a 320px line in the wide
-                    * locales (fr/it/bn run ~40% longer than en), and clipping
-                    * one off the edge is the only worse outcome than moving it
-                    * one tap away. Creating is the row's verb, so creating is
-                    * what keeps the visible slot. */}
-                  {isMobile && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onSelect={handleNewFolder}>
-                        <FolderPlus size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.new_folder')}
-                      </DropdownMenuItem>
-                    </>
-                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -2109,11 +2083,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               className="hidden"
               onChange={handleAddArtifactFile}
             />
-            {!isMobile && (
-              <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.create_a_folder_to_organize_your_artifacts')}>
-                <FolderPlus size={13} /> {i18nT('pages.artifactsPage.new_folder')}
-              </Btn>
-            )}
+            <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.create_a_folder_to_organize_your_artifacts')}>
+              <FolderPlus size={13} /> {i18nT('pages.artifactsPage.new_folder')}
+            </Btn>
             <SegmentedControl
               segments={[
                 { key: 'grid', label: i18nT('pages.artifactsPage.gallery'), icon: <LayoutDashboard size={13} />, tooltip: i18nT('pages.artifactsPage.masonry_preview_gallery') },
@@ -2122,11 +2094,6 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               value={view}
               onChange={(v) => { setView(v); safeSetItem('mc-artifacts-view', v) }}
               layoutId="artifact-view"
-              // This control sits in a content-hugging group, so its own
-              // measurement always reads "plenty of room". Even on its own line
-              // the two labelled segments do not fit beside the create actions
-              // at 320px, and they are the widest thing in the row.
-              compact={isMobile}
             />
           </div>
         </div>
