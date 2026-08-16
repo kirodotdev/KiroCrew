@@ -110,6 +110,22 @@ Responses stream in real-time via progressive Slack message edits. A cursor
 
 When the response finishes, the 👀 reaction swaps to 🦞.
 
+## DM Sessions
+
+By default a session is scoped to a Slack **thread**, so every top-level message
+in a DM starts a fresh session and replies arrive as threaded replies. To keep
+one conversation, reply in the thread.
+
+Set `slack.dm_single_session` to `true` to treat each 1:1 DM as one continuous
+session instead: every message in that DM continues the same conversation, and a
+top-level reply posts at channel root so the DM reads as a normal chat. A
+threaded reply joins that same conversation too — in a 1:1 DM a thread is usually
+a layout choice, not a new topic — while the answer still lands inside the thread
+you asked in. Group channels and group DMs are unaffected.
+
+Off by default, because turning it on routes your next DM to a different session
+than the previous one. Existing threads keep working either way.
+
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, they render as interactive Block Kit buttons.

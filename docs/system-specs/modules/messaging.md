@@ -187,6 +187,8 @@ Session keys are namespaced as `f"{channel_type}:{conversation_id}"` (`session_k
 - `canonical_key(key)` — normalizes a bare legacy key to `slack:<thread>`; non-legacy keys (`dashboard:`, `channel:`, `slack:`, …) pass through unchanged. `SessionMap._load` (called from `__init__`) migrates bare keys and populates a Layer-3 `ChannelLink`; `get()`/`set()` re-canonicalize so a not-yet-updated caller passing a bare `thread_ts` still resolves.
 - `legacy_key(key)` — returns the bare `thread_ts` for a `slack:<thread>` key, else `None`.
 
+A Slack key's scope segment is not always a thread timestamp: with `slack.dm_single_session` on, a 1:1 DM is keyed `slack:<channel_id>` (`slack.transport_dispatch.flat_dm_session_key`) so the whole DM is one session. That is still the two-segment legacy shape — `is_legacy_slack_key` does not match a channel id, so `canonical_key` passes it through unchanged and `legacy_key` returns `None` for it, which is correct: there is no bare form to fold. It is deliberately NOT a `build_dm_session_key` bucket; see session.md for why the four-segment shape does not fit Slack.
+
 `ChannelLink(channel_type, channel_id=None, thread_id=None)` records the inbound channel a session belongs to (its **own** channel), with `to_dict()`/`from_dict()`. It is deliberately distinct from the dashboard→Slack *mirror* binding, which stays behind `SessionMap.get/set_slack_link` and is **not** modeled here (guardrail G3).
 
 ## Config flag & routing

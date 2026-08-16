@@ -571,6 +571,18 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
             if not target_channel and link_ch:
                 target_channel = link_ch
                 channel_from_session_map = True
+        elif not link_ts and link_ch and not target_channel and session_key == f"slack:{link_ch}":
+            # A flat 1:1 DM (slack.dm_single_session) is keyed BY its channel and
+            # deliberately claims no thread, so the branch above finds a channel
+            # with no thread and would fall through to the owner's DM -- sending
+            # the file to a different conversation than the one that asked for
+            # it. Deliver at the root of that DM, which is where the flat
+            # conversation itself lives. Narrow on purpose: only when the key IS
+            # this channel's key, so a thread-scoped or dashboard session that
+            # merely knows a channel keeps failing closed to the owner DM rather
+            # than broadcasting at channel root.
+            target_channel = link_ch
+            channel_from_session_map = True
     # Resolve channel: use explicit channel if provided, else owner DM
     channel = ""
     if target_channel:

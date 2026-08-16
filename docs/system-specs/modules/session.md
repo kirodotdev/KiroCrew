@@ -512,6 +512,15 @@ Legacy bare-thread Slack keys are unaffected — they keep the
 `canonical_key`/`legacy_key` shim. The DM channels are recent, so the key shape
 carries no prior persisted history to migrate.
 
+Slack does not use this key shape even for its own DMs. `slack.dm_single_session`
+gives a 1:1 DM one session by keying it `slack:<channel_id>`
+(`slack.transport_dispatch.flat_dm_session_key`) rather than by minting a
+four-segment bucket: a two-segment Slack key is what the existing thread keys
+already are, so the fold shim, the thread index and every caller that
+reverse-derives from a Slack key keep working unchanged. It carries no
+generation suffix, so the idle/daily rotation above does not apply — a flat DM
+relies on ordinary context compaction instead.
+
 ### Mid-turn messages (steer / queue)
 
 `SessionManager.is_busy(key)` reports whether a turn holds the session

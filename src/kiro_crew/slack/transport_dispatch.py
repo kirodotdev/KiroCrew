@@ -32,7 +32,7 @@ from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
-from kiro_crew.messaging.link import canonical_key
+from kiro_crew.messaging.link import SLACK_NAMESPACE, canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.sel import sel
 from kiro_crew.slack.handler import (
@@ -108,6 +108,39 @@ async def _refresh_dashboard_tab(session_key: str) -> None:
         )
 
 
+def flat_dm_session_key(channel: str, thread_ts: str | None, *, enabled: bool) -> str | None:
+    """The channel-scoped session key a direct message belongs to.
+
+    Slack gives every top-level message its own timestamp, and the Slack session
+    key is derived from it, so each plain reply in a DM starts a session that has
+    none of the conversation's transcript. With ``slack.dm_single_session`` on, a
+    1:1 DM is instead treated as ONE flat conversation keyed by the channel:
+    ``slack:<channel_id>``.
+
+    A threaded reply inside that DM keys the same way, on purpose. In a 1:1 DM a
+    thread is a layout habit rather than a new topic, so splitting it off leaves
+    the branch with none of the conversation it is replying to. Only the SESSION
+    merges: the reply is still posted where it was addressed -- channel root for
+    a top-level message, back into the thread for a threaded one -- which is the
+    caller's ``post_thread_ts`` decision, not this key's.
+
+    Keeping the ``slack:`` namespace with a single scope segment is deliberate.
+    It is the same two-segment shape the thread keys already use, so everything
+    that treats a Slack key as opaque -- or that reverse-derives from it -- keeps
+    working; a four-segment DM bucket would not (``parse_session_key`` rejects
+    two-segment Slack keys by design, and callers rely on that).
+
+    Returns None -- meaning "key it by its own timestamp", the historical
+    behavior -- when the feature is off or the channel is not a 1:1 DM. Only
+    ``D`` ids qualify: a group channel's threads are a deliberate scope boundary,
+    and an ``mpim`` is shared with other people, so neither may collapse into one
+    conversation.
+    """
+    if not enabled or not channel.startswith("D"):
+        return None
+    return f"{SLACK_NAMESPACE}:{channel}"
+
+
 async def handle_message_transport(
     slack: SlackClientOps,
     sessions: SessionManager,
@@ -128,6 +161,7 @@ async def handle_message_transport(
     show_thinking: bool = True,
     consolidator: HistoryConsolidator | None = None,
     user_display_name: str | None = None,
+    dm_single_session: bool = False,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
 
@@ -142,6 +176,20 @@ async def handle_message_transport(
     # shared with handler.py module dicts).
     reply_ts = thread_ts or msg_ts
     session_key = canonical_key(reply_ts)
+
+    # Where the CONVERSATION is posted, which a flat DM separates from reply_ts:
+    # None means channel root. reply_ts keeps its thread-index meaning either way
+    # (it is still a real Slack timestamp, and still what the reverse index and
+    # the reaction target are keyed by), so only the posting half moves.
+    post_thread_ts: str | None = reply_ts
+    _flat_key = flat_dm_session_key(channel, thread_ts, enabled=dm_single_session)
+    if _flat_key:
+        session_key = _flat_key
+        # Only a TOP-LEVEL message moves to channel root. A threaded reply keeps
+        # answering inside its thread -- the session merged, the layout did not,
+        # and answering at root would strand the reply away from the question.
+        if thread_ts is None:
+            post_thread_ts = None
 
     # ── Resolve the thread to its OWNING session (mirrors native handle_message) ──
     # canonical_key above is purely syntactic: it namespaces the bare thread ts
@@ -171,6 +219,14 @@ async def handle_message_transport(
         nonlocal session_key, linked_session_key
         owner = sessions.get_session_for_thread(reply_ts)
         if not owner:
+            return
+        if _flat_key and owner == canonical_key(reply_ts):
+            # A flat DM ignores a SELF-DERIVED owner: ``slack:<reply_ts>`` is the
+            # per-thread session this feature exists to stop splitting off, and a
+            # thread claimed before the flag was turned on would otherwise pull
+            # the turn back out of the merged conversation. Any OTHER owner is a
+            # real binding to somewhere else (a dashboard send-to-Slack), so it
+            # still wins below.
             return
         if owner != session_key:
             logger.info(
@@ -234,7 +290,7 @@ async def handle_message_transport(
     if context_builder:
         hook_result = context_builder.hooks.on_message(text)
         if hook_result.action == HOOK_REPLY:
-            await slack.post_message(channel, hook_result.text, reply_ts)
+            await slack.post_message(channel, hook_result.text, post_thread_ts)
             if conversation_log and not _is_slack_restricted(session_key):
                 await save_conversation_turn_off_loop(
                     conversation_log,
@@ -253,10 +309,10 @@ async def handle_message_transport(
         # importing the OSS SSO stub directly — keeps the CPP boundary intact
         # and returns the real SSO line under the enterprise companion context.
         mw = await current_context().identity.status_line(prefix=" · sso")
-        await slack.post_message(channel, Stats().summary() + mw, reply_ts)
+        await slack.post_message(channel, Stats().summary() + mw, post_thread_ts)
         return
     if _lower == "ping":
-        await slack.post_message(channel, "pong", reply_ts)
+        await slack.post_message(channel, "pong", post_thread_ts)
         return
 
     # ── !temporary / !incognito privacy modifiers (shared with native) ──
@@ -270,8 +326,20 @@ async def handle_message_transport(
     # created in that window and misroute every later reply in this thread.
     _resolve_thread_owner("pre-privacy")
     _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+    # post_thread_ts, not reply_ts: it is None for a top-level flat DM, so the
+    # confirmation lands where the modifier was typed. link_thread is separate --
+    # a flat DM's session is keyed by the channel, so it registers no thread even
+    # when the modifier arrives inside one.
     text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
-        text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
+        text,
+        _cmd_text,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        sessions,
+        post_thread_ts or "",
+        not _flat_key,
     )
     if _only_modifier:
         # Message was nothing but the modifier(s) — no LLM turn.
@@ -345,7 +413,7 @@ async def handle_message_transport(
         renderer = SlackRenderer(
             slack,
             channel,
-            reply_ts,
+            post_thread_ts,
             react_ts=msg_ts,
             reactions_enabled=reactions_enabled,
             show_thinking=show_thinking,
@@ -409,16 +477,29 @@ async def handle_message_transport(
         )
         if is_new:
             await sessions.set_channel(session_key, channel)
-        if not linked_session_key and not sessions.get_session_for_thread(reply_ts):
-            # Two conditions, deliberately. The first is the routing decision
-            # made at the top of this function. The second is a FRESH read,
-            # because that decision is many awaits old by now -- inbound
-            # governance, the hook path and session acquisition all yield -- and
-            # a dashboard send-to-Slack landing in that window would claim this
-            # thread after we looked. Self-linking on the stale value would
-            # overwrite that newer binding and send every later reply to the
-            # wrong session. Only claim a thread that is STILL unclaimed; the
-            # turn itself continues on the session we already acquired.
+        if (
+            not _flat_key
+            and not linked_session_key
+            and not sessions.get_session_for_thread(reply_ts)
+        ):
+            # Three conditions, deliberately. The first excludes a flat DM: its
+            # session is keyed by the channel, not by a thread, so binding it to
+            # a thread would hand the dashboard mirror one thread to post into
+            # while the conversation spans the whole DM -- and with several
+            # threads the scalar slack_thread_ts would just keep flipping to
+            # whichever spoke last. Routing needs no claim here anyway: the flat
+            # key is DERIVED from the channel, so it is recomputed rather than
+            # looked up. The channel binding it does need is set_channel above.
+            #
+            # The second is the routing decision made at the top of this
+            # function. The third is a FRESH read, because that decision is many
+            # awaits old by now -- inbound governance, the hook path and session
+            # acquisition all yield -- and a dashboard send-to-Slack landing in
+            # that window would claim this thread after we looked. Self-linking
+            # on the stale value would overwrite that newer binding and send
+            # every later reply to the wrong session. Only claim a thread that is
+            # STILL unclaimed; the turn itself continues on the session we
+            # already acquired.
             #
             # reply_ts (not session_key) is the true Slack timestamp -- storing
             # the namespaced key as slack_thread_ts would corrupt reply routing.
@@ -735,7 +816,9 @@ async def handle_message_transport(
         # Post error to Slack so user knows something went wrong
         try:
             await slack.post_message(
-                channel, "🔧 Something went wrong (transport path). Please try again.", reply_ts
+                channel,
+                "🔧 Something went wrong (transport path). Please try again.",
+                post_thread_ts,
             )
             await slack.set_thread_status(channel, reply_ts, "")
         except Exception:

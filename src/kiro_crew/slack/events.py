@@ -92,7 +92,7 @@ from kiro_crew.slack.sessions_view import (
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
 )
-from kiro_crew.slack.transport_dispatch import handle_message_transport
+from kiro_crew.slack.transport_dispatch import flat_dm_session_key, handle_message_transport
 from kiro_crew.stats import Stats
 from kiro_crew.transcribe import is_available as stt_available
 from kiro_crew.transcribe import transcribe_audio
@@ -1534,6 +1534,26 @@ async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> l
 # ---------------------------------------------------------------------------
 
 
+def _dm_single_session_enabled(orch: GatewayOrchestrator, channel: str) -> bool:
+    """Whether a 1:1 DM in *channel* runs as one flat session.
+
+    Two conditions, because only ``handle_message_transport`` honours the flat
+    key. ``slack.dm_single_session`` alone is not enough: on the native path
+    (``messaging.use_transport`` off, or a review-mode channel that
+    ``_route_message`` deliberately keeps native) the turn runs under
+    ``canonical_key(msg_ts)``, so bookkeeping keyed by channel would address a
+    session that does not exist -- ``!stop`` pops the live task's entry, then
+    finds no session and answers "Nothing running." while the turn keeps going.
+    Deriving both conditions HERE keeps every call site in agreement instead of
+    each one re-deciding.
+    """
+    if getattr(getattr(orch._cfg, "slack", None), "dm_single_session", False) is not True:
+        return False
+    if getattr(getattr(orch._cfg, "messaging", None), "use_transport", False) is not True:
+        return False
+    return orch._cfg.channel_config(channel).activation != ACTIVATION_REVIEW
+
+
 async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> None:
     """Handle message_deleted subtype — cancel queued or in-flight messages."""
     deleted_ts = event.get("deleted_ts")
@@ -1541,7 +1561,12 @@ async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> Non
     _del_channel = event.get("channel", "")
     _del_user = event.get("previous_message", {}).get("user", "")
     if deleted_ts and _del_channel and is_allowed_user(_del_user):
-        _del_session_key = _del_thread_ts or deleted_ts
+        # Same key the turn was queued under, or the cancellation misses it: a
+        # deleted top-level message in a single-session DM belongs to the
+        # channel's session, not to its own timestamp.
+        _del_session_key = flat_dm_session_key(
+            _del_channel, _del_thread_ts, enabled=_dm_single_session_enabled(orch, _del_channel)
+        ) or (_del_thread_ts or deleted_ts)
         was_queued = False
         if orch.sessions:
             was_queued = orch.sessions.cancel_queued(_del_session_key, deleted_ts)
@@ -1642,6 +1667,7 @@ async def _dispatch_queued(
                 show_thinking=KiroCrewConfig.load().slack.show_thinking,
                 consolidator=orch.consolidator,
                 user_display_name=kwargs.get("user_display_name"),
+                dm_single_session=KiroCrewConfig.load().slack.dm_single_session,
             )
             return
         await handle_message(
@@ -2312,7 +2338,16 @@ async def _route_message(
             if orch.slack:
                 await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
             return
-        session_key = thread_ts or msg_ts
+        _flat_stop_key = flat_dm_session_key(
+            channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
+        )
+        session_key = _flat_stop_key or (thread_ts or msg_ts)
+        # Where the acknowledgements go. session_key is only a Slack timestamp
+        # while the session is thread-scoped; a single-session DM keys by channel,
+        # and passing that as thread_ts would be rejected. A flat DM therefore
+        # acks where the !stop was typed -- inside its thread if it had one, at
+        # channel root otherwise -- which is the same split the turn itself uses.
+        stop_post_ts: str | None = thread_ts if _flat_stop_key else session_key
         has_session = orch.sessions.has_session(session_key)
         active_task = orch._session_tasks.pop(session_key, None)
         if has_session or active_task:
@@ -2329,17 +2364,17 @@ async def _route_message(
                     sender_id,
                     "Stopping…",
                     blocks=build_stopping_blocks(session_key),
-                    thread_ts=session_key,
+                    thread_ts=stop_post_ts,
                 )
 
             async def _on_soft() -> None:
                 if orch.slack:
-                    await orch.slack.post_message(channel, "⏹ Execution stopped.", session_key)
+                    await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
 
             async def _on_hard() -> None:
                 if orch.slack:
                     await orch.slack.post_message(
-                        channel, "⛔ Execution stopped — session reset.", session_key
+                        channel, "⛔ Execution stopped — session reset.", stop_post_ts
                     )
 
             outcome = await orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard)
@@ -2348,7 +2383,7 @@ async def _route_message(
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
             if outcome == "idle" and orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", session_key)
+                await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2394,7 +2429,14 @@ async def _route_message(
     )
 
     # ── Queue check: if session is busy, enqueue instead of blocking ──
-    session_key = thread_ts or msg_ts
+    # Keyed on the SAME session the turn will run under. A single-session DM keys
+    # by channel, so this has to derive it the same way the turn does -- keyed on
+    # the message ts instead, a second DM would read as not-busy, skip the queue,
+    # and block inside get_or_create with none of the queued-message feedback.
+    _dm_single_session = _dm_single_session_enabled(orch, channel)
+    session_key = (
+        flat_dm_session_key(channel, thread_ts, enabled=_dm_single_session) or thread_ts or msg_ts
+    )
     _task_busy = session_key in orch._session_tasks
     if _task_busy:
         # A task is already running for this session key.  Try the session-level
@@ -2524,6 +2566,7 @@ async def _route_message(
                 # handle_message (parity: don't drop these on the transport path).
                 consolidator=orch.consolidator,
                 user_display_name=_sender_display,
+                dm_single_session=_dm_single_session,
             )
         )
         orch._session_tasks[session_key] = t

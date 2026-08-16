@@ -77,6 +77,55 @@ log, per-thread override maps, trust set). The canonical form is stable
 across all messages of a thread; the legacy bare form is folded onto the same
 live session by `SessionManager._fold_key` (see session.md).
 
+`slack.dm_single_session` (default off) splits those two for a 1:1 DM. A
+message in a `D…` channel runs under `slack:<channel_id>` —
+`flat_dm_session_key`, one session for the whole DM instead of one per
+message — and a top-level message posts at channel root, so `post_thread_ts` is
+`None` while `reply_ts` keeps its thread-index and reaction meaning. A THREADED
+reply in that DM joins the same session: in a 1:1 DM a thread is a layout habit
+rather than a new topic, so splitting it off would leave the branch without the
+conversation it answers. Only the session merges — the reply, the `!stop` ack and
+a privacy modifier's confirmation all still post where they were addressed, back
+inside the thread. The session is bound to
+the channel (`set_channel`) and NOT to a thread: a flat conversation has no
+thread for `set_slack_link` to claim, claiming one would give the dashboard
+mirror a thread to post into while the conversation itself is flat, and with
+several threads the scalar `slack_thread_ts` would flip to whichever spoke last.
+Routing needs no claim regardless: the flat key is DERIVED from the channel, so
+it is recomputed rather than looked up. That holds
+for every writer of the link, not just the turn's own self-link:
+`maybe_apply_privacy_modifiers` takes a separate `link_thread` flag, which is
+false in flat mode, so `!temporary` / `!incognito` register no thread while still
+confirming in place. A thread already claimed by its own per-thread session — the
+shape this feature replaces, e.g. from before the flag was on — is ignored so it
+cannot pull the turn back out of the merged conversation; any OTHER owner (a
+dashboard send-to-Slack) still wins.
+Group channels and group DMs (`mpim`) are excluded — a thread there is
+a deliberate scope boundary, and an `mpim` is shared with other people. The key
+keeps the two-segment `slack:<scope>` shape on purpose, so callers that treat a
+Slack key as opaque or reverse-derive from it are unaffected.
+
+One consumer needs the shape spelled out: `file_send`'s upload handler resolves
+its target from the session map, and its thread-first branch requires a thread
+before it will use the linked channel. A flat DM has a channel and no thread, so
+it fell through to the owner's DM — a file sent to a different conversation than
+the one that asked. The handler now also accepts "channel, no thread" when the
+session key IS that channel's key (`slack:<channel_id>`), delivering at the DM's
+root. Deliberately not broader: a thread-scoped or dashboard session that merely
+knows a channel keeps failing closed to the owner DM rather than broadcasting at
+the root of a channel it does not own.
+
+`_route_message` derives the same key for its busy/queue bookkeeping; keyed on
+the message ts instead, a second DM would read as not-busy, skip the queue and
+block inside `get_or_create` with none of the queued-message feedback. That
+derivation (`_dm_single_session_enabled`) additionally requires the turn to
+take the messaging-transport path, because only `handle_message_transport`
+honours the flat key: with `messaging.use_transport` off, or in a review-mode
+channel that `_route_message` deliberately keeps on native for its privacy
+gate, the turn runs under `canonical_key(msg_ts)` and the bookkeeping keys the
+same way. Both conditions live in that one helper so `!stop`, the queue check
+and `message_deleted` cannot disagree.
+
 1. Check hooks for auto-reply
 2. Check `status` keyword — reply with stats summary
 3. Check owner-only `!` commands (`!yolo`, `!agent`, `!ta`, `!allowlist`, `!dashboard`)

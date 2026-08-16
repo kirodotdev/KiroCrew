@@ -395,6 +395,98 @@ class TestFileUploadSlotThreading:
                 assert call_args[0][1] == ""
 
     @pytest.mark.asyncio
+    async def test_flat_dm_session_uploads_into_that_dm(self, tmp_path):
+        """A flat 1:1 DM is keyed BY its channel and claims no thread.
+
+        The thread-first branch finds a channel with no thread, so without the
+        flat-DM case the file would land in the owner's DM instead of the
+        conversation that asked for it.
+        """
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        f = outbox / "report.txt"
+        f.write_text("data", encoding="utf-8")
+
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER_DM")
+        state = self._make_state_with_link(slack, thread_ts="", channel="D_FLAT")
+        app = _make_app(slack, tmp_path, state=state)
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load"
+        ) as mock_cfg:
+            mock_cfg.return_value.load_credentials.return_value = {
+                "KIROCREW_OWNER_ID": "U_OWNER"
+            }
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/slack/upload-file",
+                    json={
+                        "file_path": str(f),
+                        "filename": "report.txt",
+                        "thread_ts": "",
+                        "channel": "",
+                    },
+                    headers={"X-Session-Key": "slack:D_FLAT"},
+                )
+                assert resp.status == 200
+                slack.upload_file.assert_called_once()
+                call_args = slack.upload_file.call_args
+                assert call_args[0][0] == "D_FLAT"
+                # Flat means channel root, not a thread.
+                assert call_args[0][1] == ""
+                slack.open_dm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_merely_knows_a_channel_still_uses_owner_dm(self, tmp_path):
+        """The flat-DM case is narrow: the key must BE that channel's key.
+
+        A thread-scoped or dashboard session carrying a channel but no thread
+        keeps failing closed to the owner DM rather than broadcasting at the
+        root of a channel it does not own.
+        """
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        f = outbox / "report.txt"
+        f.write_text("data", encoding="utf-8")
+
+        slack = MagicMock()
+        slack.upload_file = AsyncMock()
+        slack.open_dm = AsyncMock(return_value="D_OWNER_DM")
+        state = self._make_state_with_link(slack, thread_ts="", channel="D_FLAT")
+        app = _make_app(slack, tmp_path, state=state)
+
+        with patch(
+            "kiro_crew.config.loader.outbox_dir", return_value=outbox
+        ), patch(
+            "kiro_crew.config.loader.workspace_root", return_value=tmp_path
+        ), patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load"
+        ) as mock_cfg:
+            mock_cfg.return_value.load_credentials.return_value = {
+                "KIROCREW_OWNER_ID": "U_OWNER"
+            }
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/slack/upload-file",
+                    json={
+                        "file_path": str(f),
+                        "filename": "report.txt",
+                        "thread_ts": "",
+                        "channel": "",
+                    },
+                    headers={"X-Session-Key": "dashboard:chat-1"},
+                )
+                assert resp.status == 200
+                call_args = slack.upload_file.call_args
+                assert call_args[0][0] == "D_OWNER_DM"
+
+    @pytest.mark.asyncio
     async def test_explicit_thread_ts_takes_priority_over_slot(self, tmp_path):
         """T3: Explicit thread_ts in body → takes priority over session map."""
         outbox = tmp_path / "outbox"
