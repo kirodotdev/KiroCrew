@@ -3971,7 +3971,8 @@
         "restart_failed": "Restart failed",
         "restart_after_installer_note": "Already ran it? Restart to load the new version — active sessions briefly disconnect.",
         "restart_confirm": "Click again to restart",
-        "restart_row_note": "Restart the gateway process without updating. Active sessions briefly disconnect."
+        "restart_row_note": "Restart the gateway process without updating. Active sessions briefly disconnect.",
+        "update_error_stage_invalidated": "This update was withdrawn or superseded. Check for updates to get the latest version."
       },
       "computerUsePanel": {
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",

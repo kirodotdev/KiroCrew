@@ -10525,8 +10525,10 @@
         "prerelease_report_prompt": "Obrigado por usar as versões antecipadas. Elas são menos testadas que a Stable, então algo vai quebrar — quando algo parecer errado, <report>relate no GitHub</report> para que seja corrigido antes de chegar a todos.",
         "published": "publicado {{when}}",
         "restart_after_installer_note": "Já executou? Reinicie para carregar a nova versão — as sessões ativas desconectam brevemente.",
+        "restart_confirm": "Clique novamente para reiniciar",
         "restart_failed": "Falha ao reiniciar",
         "restart_gateway": "Reiniciar o gateway",
+        "restart_row_note": "Reinicia o processo do gateway sem atualizar. As sessões ativas desconectam brevemente.",
         "restart_update": "Reiniciar e atualizar",
         "restarting": "Reiniciando...",
         "retry": "Tentar novamente",
@@ -10552,6 +10554,7 @@
         "update_error_offline": "Não foi possível acessar o servidor de atualização. Verifique sua conexão.",
         "update_error_server": "O servidor de atualização retornou um erro.",
         "update_error_server_status": "O servidor de atualização retornou um erro (HTTP {{status}}).",
+        "update_error_stage_invalidated": "Esta atualização foi retirada ou substituída. Verifique se há atualizações para obter a versão mais recente.",
         "update_error_unknown": "Algo deu errado. Tente verificar as atualizações novamente.",
         "update_failed": "Falha na atualização",
         "update_noun": "atualização",
@@ -10566,9 +10569,7 @@
         "view_this_commit_on_github": "Ver este commit no GitHub",
         "what_s_new": "Novidades",
         "you_are_on_the_latest_version": "Você está na versão mais recente.",
-        "you_re_on_the_latest_version": "Você está na versão mais recente.",
-        "restart_confirm": "Clique novamente para reiniciar",
-        "restart_row_note": "Reinicia o processo do gateway sem atualizar. As sessões ativas desconectam brevemente."
+        "you_re_on_the_latest_version": "Você está na versão mais recente."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

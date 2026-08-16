@@ -707,6 +707,64 @@ test("a NEWER version discovered while one is staged supersedes the stale stage"
   assert.strictEqual(calls.downloadUpdate, 1);
 });
 
+// ---------------------------------------------------------------------------
+// Background poll with a staged update. The supersede handling above is only
+// reachable if a check actually RUNS while the stage is armed -- and the only
+// check most users ever get is the background poll. A poll gated on
+// !updateReady makes that path unreachable: the app sits on its stale stage
+// for the rest of the session, the user installs a superseded build, and is
+// re-prompted immediately after relaunch. These tests drive the REAL interval
+// with node:test mock timers, so a regression on the timer wiring itself (not
+// just on safeCheck's internals) fails here.
+// ---------------------------------------------------------------------------
+
+test("the background poll invokes checkForUpdates even while an update is staged", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  initAutoUpdate(deps);
+  // Drain the 30s launch check first so the poll's contribution is isolated,
+  // and flush its microtasks so safeCheck's `checking` flag is released.
+  t.mock.timers.tick(30 * 1000);
+  await new Promise((r) => setImmediate(r));
+  // Stage an update: this is the state the old `if (!updateReady)` guard
+  // silenced the poll in.
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "old" });
+  const before = calls.checkForUpdates;
+  t.mock.timers.tick(4 * 60 * 60 * 1000); // one full poll interval
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(
+    calls.checkForUpdates,
+    before + 1,
+    "the poll must consult the feed with a stage armed -- skipping pins the user to the stale stage",
+  );
+});
+
+test("poll-path supersede end-to-end: poll fires -> NEWER version found -> stage discarded ('found', not 'downloaded')", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { deps, calls, emit, states, stateNames } = makeDeps({ appVersion: "1.0.0" });
+  const u = initAutoUpdate(deps);
+  t.mock.timers.tick(30 * 1000); // drain the launch check
+  await new Promise((r) => setImmediate(r));
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "old" });
+  assert.strictEqual(u.isReady(), true, "precondition: an update is staged");
+  states.length = 0;
+  const before = calls.checkForUpdates;
+  t.mock.timers.tick(4 * 60 * 60 * 1000); // the poll fires with the stage armed
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.checkForUpdates, before + 1, "poll must reach the feed");
+  // The feed answers with a NEWER version than the stage.
+  emit("update-available", { version: "1.2.0", releaseNotes: "new" });
+  assert.strictEqual(u.isReady(), false, "the stale stage must be discarded");
+  const found = states.find((s) => s.state === "found");
+  assert.ok(found, "the newer version must be surfaced as a fresh find");
+  assert.strictEqual(found.version, "1.2.0");
+  assert.ok(
+    !stateNames().includes("downloaded"),
+    "the superseded stage must not be re-surfaced as installable",
+  );
+  assert.strictEqual(calls.downloadUpdate, 0, "discovery via the poll must never download");
+});
+
 test("re-check and re-click while a download is in flight report progress instead of restarting", async () => {
   const { deps, calls, emit, states, stateNames } = makeDeps();
   const pending = [];
@@ -981,4 +1039,219 @@ test("BLOCKING-fix contract: package.json declares a publish entry so app-update
   assert.ok(Array.isArray(publish) && publish.length > 0, "build.publish must be a non-empty array");
   assert.strictEqual(publish[0].provider, "generic");
   assert.match(publish[0].url, /^https:\/\//, "baked publish url must be https");
+});
+
+test("the poll skips while an install is in flight (dispatched, gateway stopping)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  // Hold the gateway stop open so the poll interval can fire inside the
+  // dispatch window (installing === true, quitAndInstall not yet reached).
+  let releaseGateway;
+  deps.stopGateway = () => new Promise((resolve) => { releaseGateway = resolve; });
+  const u = initAutoUpdate(deps);
+  t.mock.timers.tick(30 * 1000); // drain the launch check
+  await new Promise((r) => setImmediate(r));
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const installPromise = u.install(); // dispatch: blocks awaiting stopGateway
+  await new Promise((r) => setImmediate(r));
+  const before = calls.checkForUpdates;
+  t.mock.timers.tick(4 * 60 * 60 * 1000); // poll interval elapses mid-install
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(
+    calls.checkForUpdates,
+    before,
+    "a poll during an install dispatch must not consult the feed -- a check "
+      + "failure in that window is classified as an install failure and would "
+      + "trigger the host's gateway recovery during the bundle swap",
+  );
+  releaseGateway();
+  await installPromise;
+});
+
+test("an installer failure that arrives while a check is in flight fires onInstallFailed and classifies as an install failure", async () => {
+  // GPT round-7 finding: `checking` outranking `installing` in the phase
+  // derivation labelled a genuine installer failure (observed live in the OTA
+  // lane: a Squirrel signature rejection) as "check" whenever a check happened
+  // to be in flight -- onInstallFailed never fired, and nothing restored the
+  // gateway the dispatch had deliberately stopped.
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  let installFailedCalls = 0;
+  deps.onInstallFailed = () => { installFailedCalls += 1; };
+  // Hold the check open so it is still in flight when the install dispatches,
+  // and hold the gateway stop open so the failure lands mid-dispatch.
+  let rejectCheck;
+  deps.autoUpdater.checkForUpdates = () => new Promise((_, reject) => { rejectCheck = reject; });
+  let releaseGateway;
+  deps.stopGateway = () => new Promise((resolve) => { releaseGateway = resolve; });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const checkPromise = u.check(); // checking = true, unresolved
+  const installPromise = u.install(); // installing = true, awaiting stopGateway
+  await new Promise((r) => setImmediate(r));
+  // The installer path fails, delivered as the library's error EVENT
+  // (electron-updater funnels every failure through one channel -- the phase
+  // derivation is the only classifier).
+  emit("error", new Error("Code signature at URL ... did not pass validation"));
+  const errState = states.filter((s) => s.state === "error").pop();
+  assert.ok(errState, "an error state must be emitted");
+  assert.strictEqual(
+    errState.phase,
+    "install",
+    "a failure while an install is dispatched must be reported as an install failure -- the gateway was stopped on purpose and only onInstallFailed restores it",
+  );
+  assert.strictEqual(installFailedCalls, 1, "host recovery must fire to restore the deliberately-stopped gateway");
+  releaseGateway();
+  await installPromise;
+  assert.strictEqual(installFailedCalls, 1, "the dead dispatch must not run the recovery a second time");
+  assert.strictEqual(calls.quitAndInstall.length, 0, "a dispatch whose install already failed must never reach quitAndInstall");
+  rejectCheck(new Error("feed unreachable"));
+  await checkPromise;
+});
+
+test("a check still in flight when the gateway has stopped aborts the install through the recovery path", async () => {
+  // Companion to the precedence above: this abort is what guarantees no
+  // install proceeds into quitAndInstall with a check outstanding, so a check
+  // outcome -- a stage-invalidating response or a feed error -- can never land
+  // in the middle of an actual bundle swap.
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  let installFailedCalls = 0;
+  deps.onInstallFailed = () => { installFailedCalls += 1; };
+  let resolveCheck;
+  deps.autoUpdater.checkForUpdates = () => new Promise((resolve) => { resolveCheck = resolve; });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const checkPromise = u.check(); // checking = true, unresolved
+  await u.install(); // gateway stops immediately; the check is still in flight
+  assert.strictEqual(calls.quitAndInstall.length, 0, "an install must not commit while a check is in flight");
+  assert.strictEqual(installFailedCalls, 1, "the abort must run the host recovery to bring the gateway back");
+  const last = states[states.length - 1];
+  assert.strictEqual(last.state, "error", "the renderer must learn the install did not proceed");
+  assert.strictEqual(last.phase, "install", "the abort must use the install-error renderer contract");
+  assert.strictEqual(last.code, "check-in-flight");
+  // The dispatch is over and the stage survives: a retry once the check
+  // settles must proceed.
+  resolveCheck();
+  await checkPromise;
+  await u.install();
+  assert.strictEqual(calls.quitAndInstall.length, 1, "a retry after the check settles must reach quitAndInstall");
+});
+
+test("a renderer-driven check during an install dispatch is refused, mirroring the poll gate", async () => {
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  let releaseGateway;
+  deps.stopGateway = () => new Promise((resolve) => { releaseGateway = resolve; });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const installPromise = u.install();
+  await new Promise((r) => setImmediate(r));
+  const before = calls.checkForUpdates;
+  await u.check();
+  assert.strictEqual(
+    calls.checkForUpdates,
+    before,
+    "a check during install activity must not consult the feed -- its failure would be classified as an install failure and fire gateway recovery mid-swap",
+  );
+  releaseGateway();
+  await installPromise;
+});
+
+test("the poll also skips during a deferred install-on-quit (quitHandled, installing never set)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const { deps, calls, emit, appOnce } = makeDeps({ appVersion: "1.0.0" });
+  // Hold the quit-path gateway stop open so the deferred install window stays
+  // live while the poll interval elapses.
+  deps.stopGateway = () => new Promise(() => {});
+  initAutoUpdate(deps);
+  t.mock.timers.tick(30 * 1000); // drain the launch check
+  await new Promise((r) => setImmediate(r));
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  // Fire the deferred install exactly as app quit would: the before-quit
+  // listener registered on update-downloaded.
+  const quitHook = appOnce.find((h) => h.ev === "before-quit");
+  assert.ok(quitHook, "update-downloaded must register the deferred quit install");
+  quitHook.fn({ preventDefault: () => {} });
+  await new Promise((r) => setImmediate(r));
+  const before = calls.checkForUpdates;
+  t.mock.timers.tick(4 * 60 * 60 * 1000);
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(
+    calls.checkForUpdates,
+    before,
+    "a poll during a deferred install-on-quit must not consult the feed -- a "
+      + "retraction there clears the stage under a dispatch that already "
+      + "passed its guard",
+  );
+});
+
+test("a stage invalidated while the gateway stops aborts the manual install and restores the gateway", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  let installFailedCalls = 0;
+  deps.onInstallFailed = () => { installFailedCalls += 1; };
+  let releaseGateway;
+  deps.stopGateway = () => new Promise((resolve) => { releaseGateway = resolve; });
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const installPromise = u.install(); // passes its updateReady guard, blocks on stopGateway
+  await new Promise((r) => setImmediate(r));
+  // A feed response that was in flight at click time now reports a
+  // retraction: the handler discards the stage mid-dispatch.
+  emit("update-not-available");
+  releaseGateway();
+  await installPromise;
+  assert.strictEqual(calls.quitAndInstall.length, 0, "an invalidated stage must never reach quitAndInstall");
+  assert.strictEqual(installFailedCalls, 1, "the abort must run the host recovery to bring the gateway back");
+  const last = states[states.length - 1];
+  assert.strictEqual(last.state, "error", "the renderer must learn the install did not proceed");
+  assert.strictEqual(last.phase, "install", "the abort must use the install-error renderer contract, not a silent state swap");
+});
+
+test("a stage invalidated during a deferred quit-install quits without installing", async () => {
+  const { deps, calls, emit, appOnce } = makeDeps({ appVersion: "1.0.0" });
+  let quitCalls = 0;
+  deps.app.quit = () => { quitCalls += 1; };
+  let releaseGateway;
+  deps.stopGateway = () => new Promise((resolve) => { releaseGateway = resolve; });
+  initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const quitHook = appOnce.find((h) => h.ev === "before-quit");
+  assert.ok(quitHook, "update-downloaded must register the deferred quit install");
+  quitHook.fn({ preventDefault: () => {} });
+  await new Promise((r) => setImmediate(r));
+  emit("update-not-available"); // retraction lands while the gateway stops
+  releaseGateway();
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.quitAndInstall.length, 0, "the withdrawn build must not install on quit");
+  assert.strictEqual(quitCalls, 1, "the quit the user asked for must still proceed");
+});
+
+
+test("a genuine install failure after a straddling check settles still fires recovery", async () => {
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  let installFailedCalls = 0;
+  deps.onInstallFailed = () => { installFailedCalls += 1; };
+  let rejectCheck;
+  deps.autoUpdater.checkForUpdates = () => new Promise((_, reject) => { rejectCheck = reject; });
+  deps.stopGateway = async () => {};
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0", releaseNotes: "n" });
+  const checkPromise = u.check(); // straddles the dispatch
+  const installPromise = u.install();
+  await new Promise((r) => setImmediate(r));
+  // The gateway stopped with the check still in flight: the dispatch aborts
+  // through the recovery path rather than committing under an unsettled check.
+  await installPromise;
+  assert.strictEqual(calls.quitAndInstall.length, 0, "the dispatch must not commit under an unsettled check");
+  assert.strictEqual(installFailedCalls, 1, "the abort must restore the gateway");
+  // With no install in flight, the straddling check's own failure is a plain
+  // check failure -- it must NOT fire recovery again.
+  rejectCheck(new Error("feed unreachable"));
+  await checkPromise;
+  emit("error", new Error("feed unreachable"));
+  assert.strictEqual(installFailedCalls, 1, "a check failure outside an install must not fire recovery");
+  // A retry now commits, and a LATER genuine installer failure in that
+  // dispatch classifies as `install` and fires recovery -- the flag was armed.
+  await u.install();
+  assert.strictEqual(calls.quitAndInstall.length, 1, "the retry must commit once the check has settled");
+  emit("error", new Error("Squirrel could not validate the update"));
+  assert.strictEqual(installFailedCalls, 2, "recovery must remain armed for a real install failure after the check settles");
 });

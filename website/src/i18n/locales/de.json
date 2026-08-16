@@ -10401,8 +10401,10 @@
         "prerelease_report_prompt": "Danke, dass du frühe Builds nutzt. Diese Builds sind weniger getestet als Stable, also geht auch mal etwas schief – wenn etwas nicht stimmt, <report>melde es bitte auf GitHub</report>, damit es behoben wird, bevor es alle erreicht.",
         "published": "veröffentlicht {{when}}",
         "restart_after_installer_note": "Schon ausgeführt? Starte neu, um die neue Version zu laden — aktive Sitzungen trennen sich kurz.",
+        "restart_confirm": "Zum Neustarten erneut klicken",
         "restart_failed": "Neustart fehlgeschlagen",
         "restart_gateway": "Gateway neu starten",
+        "restart_row_note": "Startet den Gateway-Prozess neu, ohne zu aktualisieren. Aktive Sitzungen trennen sich kurz.",
         "restart_update": "Neu starten & aktualisieren",
         "restarting": "Wird neu gestartet…",
         "retry": "Wiederholen",
@@ -10428,6 +10430,7 @@
         "update_error_offline": "Der Aktualisierungsserver war nicht erreichbar. Prüfen Sie Ihre Verbindung.",
         "update_error_server": "Der Aktualisierungsserver hat einen Fehler zurückgegeben.",
         "update_error_server_status": "Der Aktualisierungsserver hat einen Fehler zurückgegeben (HTTP {{status}}).",
+        "update_error_stage_invalidated": "Diese Aktualisierung wurde zurückgezogen oder ersetzt. Suchen Sie nach Updates, um die neueste Version zu erhalten.",
         "update_error_unknown": "Etwas ist schiefgelaufen. Versuchen Sie erneut, nach Aktualisierungen zu suchen.",
         "update_failed": "Aktualisierung fehlgeschlagen",
         "update_noun": "Aktualisierung",
@@ -10442,9 +10445,7 @@
         "view_this_commit_on_github": "Diesen Commit auf GitHub anzeigen",
         "what_s_new": "Neuigkeiten",
         "you_are_on_the_latest_version": "Sie verwenden die neueste Version.",
-        "you_re_on_the_latest_version": "Sie verwenden die neueste Version.",
-        "restart_confirm": "Zum Neustarten erneut klicken",
-        "restart_row_note": "Startet den Gateway-Prozess neu, ohne zu aktualisieren. Aktive Sitzungen trennen sich kurz."
+        "you_re_on_the_latest_version": "Sie verwenden die neueste Version."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

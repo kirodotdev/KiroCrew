@@ -10525,8 +10525,10 @@
         "prerelease_report_prompt": "Grazie per usare le build anticipate. Sono testate meno di Stable, quindi qualcosa si rompe — quando qualcosa non va, <report>segnalalo su GitHub</report> così viene corretto prima che arrivi a tutti.",
         "published": "pubblicato {{when}}",
         "restart_after_installer_note": "Già eseguito? Riavvia per caricare la nuova versione — le sessioni attive si disconnettono per un istante.",
+        "restart_confirm": "Clicca di nuovo per riavviare",
         "restart_failed": "Riavvio non riuscito",
         "restart_gateway": "Riavvia il gateway",
+        "restart_row_note": "Riavvia il processo del gateway senza aggiornare. Le sessioni attive si disconnettono per un istante.",
         "restart_update": "Riavvia e aggiorna",
         "restarting": "Riavvio in corso...",
         "retry": "Riprova",
@@ -10552,6 +10554,7 @@
         "update_error_offline": "Non è stato possibile raggiungere il server degli aggiornamenti. Controlla la connessione.",
         "update_error_server": "Il server degli aggiornamenti ha restituito un errore.",
         "update_error_server_status": "Il server degli aggiornamenti ha restituito un errore (HTTP {{status}}).",
+        "update_error_stage_invalidated": "Questo aggiornamento è stato ritirato o sostituito. Controlla gli aggiornamenti per ottenere la versione più recente.",
         "update_error_unknown": "Si è verificato un problema. Prova a controllare di nuovo gli aggiornamenti.",
         "update_failed": "Aggiornamento non riuscito",
         "update_noun": "aggiornamento",
@@ -10566,9 +10569,7 @@
         "view_this_commit_on_github": "Visualizza questo commit su GitHub",
         "what_s_new": "Novità",
         "you_are_on_the_latest_version": "Stai usando la versione più recente.",
-        "you_re_on_the_latest_version": "Stai usando la versione più recente.",
-        "restart_confirm": "Clicca di nuovo per riavviare",
-        "restart_row_note": "Riavvia il processo del gateway senza aggiornare. Le sessioni attive si disconnettono per un istante."
+        "you_re_on_the_latest_version": "Stai usando la versione più recente."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

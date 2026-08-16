@@ -745,6 +745,17 @@ function initAutoUpdate(deps) {
    */
   async function safeCheck() {
     if (checking) return;
+    if (installing || quitHandled) {
+      // Install activity: the gateway is stopped on purpose and the process
+      // is handing off to the platform installer. The poll timer already
+      // skips this window (see pollTimer below); the renderer-driven path
+      // must refuse for the same reasons — a check outcome here either races
+      // the handoff or, because `installing` outranks `checking` in the error
+      // handler's phase derivation, a feed failure would fire the host's
+      // gateway recovery in the middle of the bundle swap.
+      log.info("[update] check requested during install activity — skipping");
+      return;
+    }
     if (downloading) {
       // A download is in flight. Re-entering the check would restart the
       // updater's flow underneath the running download; report progress
@@ -902,6 +913,51 @@ function initAutoUpdate(deps) {
     } catch (err) {
       log.error("[update] gateway stop errored (continuing to install)", err);
     }
+    // An install-phase failure can land while the gateway stops: the error
+    // handler classifies it (installing outranks checking there), resets
+    // `installing`, and runs the host recovery. This dispatch is already
+    // dead — proceeding would install on a failure the user was just told
+    // about, and aborting would run the recovery a second time.
+    if (!installing) {
+      log.info("[update] install failed while the gateway stopped — dispatch abandoned");
+      return;
+    }
+    // Re-check the stage AFTER the await: a feed response already in flight
+    // when the user clicked install can report a retraction or a newer build
+    // while the gateway stops, and the update-available / update-not-available
+    // handlers then discard the stage. Installing those bytes anyway would
+    // ship a build the feed has withdrawn or superseded. A check STILL in
+    // flight is the same hazard one step earlier: its response can invalidate
+    // the stage the moment after this dispatch commits, and an error event it
+    // produces during the bundle swap would be misattributed to the install
+    // (see the phase derivation in the error handler). Aborting on `checking`
+    // makes the dispatch itself the serialization point between checks and
+    // installs: no check outcome — result or failure — can land past
+    // quitAndInstall.
+    if (!updateReady || checking) {
+      log.info(
+        !updateReady
+          ? "[update] stage invalidated while the gateway stopped — aborting install and restoring"
+          : "[update] check still in flight after the gateway stopped — aborting install and restoring",
+      );
+      installing = false;
+      try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
+      // Use the install-error renderer contract, NOT a bare found/not-available:
+      // the user just clicked Restart & Update and is watching an install
+      // surface -- a silent state swap reads as an unexplained cancel. The
+      // error/install shape has an existing renderer contract (the About
+      // card, and the in-place overlay failure state) that says the install
+      // did not proceed and offers the way forward.
+      emit("error", {
+        phase: "install",
+        code: !updateReady ? "stage-invalidated" : "check-in-flight",
+        message: !updateReady
+          ? "the staged update was withdrawn or superseded before the install could run"
+          : "a feed check was still in flight when the install was ready to run",
+        ...(foundVersion ? { version: foundVersion } : {}),
+      });
+      return;
+    }
     app.removeListener("before-quit", deferredInstallOnQuit);
     log.info("[update] gateway down — quitAndInstall");
     quitAndInstall();
@@ -925,6 +981,27 @@ function initAutoUpdate(deps) {
       // where main.js has already set isQuitting -- the watchdog is covered.
       log.info("[update] deferred install on quit");
       try { await stopGateway(); } catch (err) { log.error("[update] stop on quit errored", err); }
+      // Same stage re-check as the manual path: a feed response in flight at
+      // quit time can invalidate the stage while the gateway stops. The user
+      // asked to QUIT, so skip the install and let the quit proceed. What
+      // makes the re-entry safe is the LISTENER state, not `quitHandled`: a
+      // retraction handler resets `quitHandled = false` and removes this
+      // listener, and it was registered with app.once so it has already been
+      // consumed -- either way no live before-quit hook re-prevents the quit,
+      // so app.quit() exits normally without installing the withdrawn build.
+      if (!updateReady) {
+        log.info("[update] stage invalidated during quit — quitting without installing");
+        // The user was told the update would finish on quit; explain why it
+        // did not, or the still-old version at next launch reads as a failure.
+        try {
+          new Notification({
+            title: "Update canceled",
+            body: "The staged update was withdrawn or superseded, so it was not installed. You\u2019ll be offered the latest version next launch.",
+          }).show();
+        } catch { /* notifications optional */ }
+        app.quit();
+        return;
+      }
       quitAndInstall();
       forceExitFailsafe("deferred install on quit");
     })();
@@ -965,8 +1042,21 @@ function initAutoUpdate(deps) {
 
   autoUpdater.on("error", (err) => {
     // The library funnels every failure through one event, so derive the phase
-    // from what we were doing. Read the flags BEFORE clearing `downloading`, or
-    // a mid-download failure would be reported as a check failure.
+    // from the operation actually in flight. Read the flags BEFORE clearing
+    // `downloading`, or a mid-download failure would be reported as a check
+    // failure. `installing` must outrank `checking`: once an install is
+    // dispatched the gateway is stopped ON PURPOSE, and a genuine installer
+    // failure (observed live in the OTA lane: a Squirrel signature rejection)
+    // that arrives while a check happens to be in flight would otherwise be
+    // labelled "check" — onInstallFailed never fires, nothing restores the
+    // stopped gateway, and the app survives with a dead dashboard. The
+    // converse misattribution is the recoverable one: a straddling check's
+    // feed error killing the install runs the same onInstallFailed recovery
+    // the post-stopGateway abort would run anyway — and that abort refuses to
+    // reach quitAndInstall while `checking` is true, so no check outcome can
+    // fire recovery in the middle of an actual bundle swap. The
+    // `downloading`-before-`installing` precedence is long-standing behavior,
+    // preserved as-is.
     const phase = downloading ? "download" : installing ? "install" : "check";
     downloading = false;
     if (phase === "install") {
@@ -1063,7 +1153,25 @@ function initAutoUpdate(deps) {
 
   configureFeed();
   const launchTimer = setTimeout(safeCheck, LAUNCH_CHECK_DELAY_MS);
-  const pollTimer = setInterval(() => { if (!updateReady) safeCheck(); }, CHECK_INTERVAL_MS);
+  // The poll must keep consulting the feed even while an update is STAGED
+  // (see the note in safeCheck). Gating it on !updateReady would pin a
+  // long-running session to its stale stage whenever a newer version ships
+  // mid-session -- the supersede path in the update-available handler is only
+  // reachable if some check actually runs. safeCheck() already owns the
+  // staged case: re-surface when the stage is still latest, discard and
+  // re-find when it is superseded.
+  //
+  // INSTALL ACTIVITY is the one state the poll must still skip, and there are
+  // exactly two install entry points to cover: `installing` (the manual
+  // Restart & Update dispatch) and `quitHandled` (the deferred install on a
+  // natural quit, which never sets `installing`). In either window the
+  // gateway is being stopped on purpose and the process is about to hand off
+  // to the platform installer -- a check there is useless at best, and at
+  // worst its outcome (an error event, or a retraction clearing the stage
+  // under a dispatch that already passed its guard) races the handoff.
+  // Staged-but-idle and installing are different states; only the latter is
+  // unsafe to probe.
+  const pollTimer = setInterval(() => { if (!installing && !quitHandled) safeCheck(); }, CHECK_INTERVAL_MS);
   // Timers must never hold the process open (Electron quit, tests).
   if (typeof launchTimer.unref === "function") launchTimer.unref();
   if (typeof pollTimer.unref === "function") pollTimer.unref();

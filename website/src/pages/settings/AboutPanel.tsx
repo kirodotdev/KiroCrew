@@ -78,6 +78,7 @@ const UPDATE_ERROR_KEYS = {
   serverStatus: 'pages.settings.aboutPanel.update_error_server_status',
   server: 'pages.settings.aboutPanel.update_error_server',
   noRelease: 'pages.settings.aboutPanel.update_error_no_release',
+  stageInvalidated: 'pages.settings.aboutPanel.update_error_stage_invalidated',
   integrity: 'pages.settings.aboutPanel.update_error_integrity',
   misconfigured: 'pages.settings.aboutPanel.update_error_misconfigured',
   unknown: 'pages.settings.aboutPanel.update_error_unknown',
@@ -98,6 +99,7 @@ function updateErrorText(st: UpdateState | null | undefined): string {
         : i18nT(UPDATE_ERROR_KEYS.server)
     }
     case 'no-release': return i18nT(UPDATE_ERROR_KEYS.noRelease)
+    case 'stage-invalidated': return i18nT(UPDATE_ERROR_KEYS.stageInvalidated)
     case 'integrity': return i18nT(UPDATE_ERROR_KEYS.integrity)
     case 'misconfigured': return i18nT(UPDATE_ERROR_KEYS.misconfigured)
     // Unclassified failure. The localized generic WINS over st.message: the raw

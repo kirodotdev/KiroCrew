@@ -10526,8 +10526,10 @@
         "prerelease_report_prompt": "Merci d'utiliser les versions précoces. Elles sont moins testées que Stable, donc des choses cassent — quand quelque chose ne va pas, <report>signale-le sur GitHub</report> pour que ce soit corrigé avant que tout le monde soit touché.",
         "published": "publié {{when}}",
         "restart_after_installer_note": "Déjà exécuté ? Redémarrez pour charger la nouvelle version — les sessions actives seront brièvement déconnectées.",
+        "restart_confirm": "Cliquez à nouveau pour redémarrer",
         "restart_failed": "Échec du redémarrage",
         "restart_gateway": "Redémarrer la passerelle",
+        "restart_row_note": "Redémarre le processus de la passerelle sans mise à jour. Les sessions actives seront brièvement déconnectées.",
         "restart_update": "Redémarrer et mettre à jour",
         "restarting": "Redémarrage...",
         "retry": "Réessayer",
@@ -10553,6 +10555,7 @@
         "update_error_offline": "Impossible de joindre le serveur de mise à jour. Vérifiez votre connexion.",
         "update_error_server": "Le serveur de mise à jour a renvoyé une erreur.",
         "update_error_server_status": "Le serveur de mise à jour a renvoyé une erreur (HTTP {{status}}).",
+        "update_error_stage_invalidated": "Cette mise à jour a été retirée ou remplacée. Recherchez les mises à jour pour obtenir la dernière version.",
         "update_error_unknown": "Une erreur s'est produite. Relancez la recherche de mises à jour.",
         "update_failed": "Échec de la mise à jour",
         "update_noun": "mise à jour",
@@ -10567,9 +10570,7 @@
         "view_this_commit_on_github": "Voir ce commit sur GitHub",
         "what_s_new": "Nouveautés",
         "you_are_on_the_latest_version": "Vous utilisez la dernière version.",
-        "you_re_on_the_latest_version": "Vous utilisez la dernière version.",
-        "restart_confirm": "Cliquez à nouveau pour redémarrer",
-        "restart_row_note": "Redémarre le processus de la passerelle sans mise à jour. Les sessions actives seront brièvement déconnectées."
+        "you_re_on_the_latest_version": "Vous utilisez la dernière version."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",
