@@ -386,6 +386,22 @@ describe('Webhooks token lifecycle', () => {
     expect(screen.queryByTestId('webhook-revoke-legacy')).toBeNull()
     expect(screen.getByText(/Remove/).textContent).toContain('to revoke')
   })
+
+  it('keeps a minimum width floor on the label input so it wraps instead of crushing (#3845)', async () => {
+    mount(EMPTY)
+    await screen.findByTestId('webhook-row-setup')
+
+    // The shared <Input> bakes in `flex-1 min-w-0`; without an explicit floor
+    // the flex algorithm shrinks this gating field to ~3 visible characters at
+    // 390px instead of wrapping the row. jsdom does no layout, so pin the
+    // class contract: a `min-w-[...px]` floor large enough to stay readable
+    // (>=180px) must be present and `min-w-0` must not survive the twMerge.
+    const input = screen.getByLabelText('New token label')
+    const floor = input.className.match(/min-w-\[(\d+)px\]/)
+    expect(floor, 'expected a min-w-[NNNpx] floor on the token-label input').toBeTruthy()
+    expect(Number(floor![1])).toBeGreaterThanOrEqual(180)
+    expect(input.className.split(/\s+/)).not.toContain('min-w-0')
+  })
 })
 
 describe('Webhooks kill switch', () => {

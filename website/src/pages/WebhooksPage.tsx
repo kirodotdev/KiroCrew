@@ -789,8 +789,15 @@ export default function WebhooksPage() {
 
       <Section title={i18nT('pages.webhooksPage.tokens')}>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* The shared <Input> is `flex-1 min-w-0`, so without a floor this flex
+              item shrinks toward zero at narrow viewports (~3 visible characters
+              at 390px) instead of letting the row wrap. The 210px floor fits the
+              longest real-locale placeholder (de, 29 proportional chars at
+              text-sm) and forces the wrap before the field becomes unusable.
+              Same px unit as the cap so the bounds stay ordered at any root
+              font size. */}
           <Input
-            className="max-w-[260px]"
+            className="min-w-[210px] max-w-[260px]"
             placeholder={i18nT('pages.webhooksPage.label_e_g_review_bot')}
             aria-label={i18nT('pages.webhooksPage.new_token_label')}
             value={label}
