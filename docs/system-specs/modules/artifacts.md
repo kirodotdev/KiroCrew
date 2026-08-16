@@ -245,6 +245,42 @@ provider's first page are reachable rather than silently truncated.
   sandboxed iframe (same security model as inline `<mcwidget>`), with a
   version dropdown
 
+### Publish panel (`PublishHub`) — reading a publish outcome
+
+`PublishHub` posts to the row's declared `endpoint` and must recognize **two**
+response shapes, because two different routes answer that POST:
+
+- `{url}` / `{public_url}` — the deploy shape (`POST /api/deploy/deploy`).
+- a serialized artifact carrying a `publication` block — what `POST
+  /api/artifacts/{slug}/publish` returns, which is where an app provider lands
+  when it hands the confirmed publish to the core route (the supported way to
+  reuse the core's single publish authorization + audit trail rather than
+  growing a second one). The link, when the destination exposes one, is
+  `publication.view_url`.
+
+`readPublishOutcome` is that reader, and it returns an *outcome*, not a url:
+
+- success is signalled by the return SHAPE, never inferred from a non-empty url
+  — a destination may publish successfully and expose no browsable link, and
+  conflating the two rendered a succeeded publish as the error branch with an
+  undefined message (a bare red icon and no text);
+- an `error` field wins over anything else in the same body;
+- `publication: null` (an unpublished artifact) is not success;
+- anything unrecognized is reported as a NAMED error (`unexpected_response`)
+  rather than an empty one.
+
+**HTTP 200 is not success on the artifact shape.** `publish_sync.publish()`
+treats the version push as best-effort: its re-publish branch runs
+`push_version(force=True)`, reads `refreshed.publication.last_error`, persists it
+and returns normally — so the route answers 200 with a publication whose remote
+content is stale. A non-empty (non-whitespace) `last_error` is therefore an error
+outcome carrying the provider's own already-redacted message; whitespace-only
+stays success, because the core writes `""` to clear the field.
+
+The public-exposure warning and the blocking `PublicPublishAckModal` are
+unchanged and unconditional — every destination gets both, on the clean path and
+on a scan override.
+
 ## Widget auto-registration
 
 **Every `<mcwidget>` the agent emits becomes an artifact automatically** — no

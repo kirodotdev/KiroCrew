@@ -4,6 +4,26 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **A succeeded publish no longer renders as a blank error, and a failed
+  re-publish no longer renders as a success.** The Publish panel recognized only
+  the deploy-shaped `{url}` response, so a provider that hands its confirmed
+  publish to `POST /api/artifacts/{slug}/publish` — the supported way to reuse the
+  core's single publish authorization and audit trail rather than growing a second
+  one — got its serialized-artifact response read as "no url", fell through to
+  `{url: ''}` and rendered the ERROR branch with an undefined message: a bare red
+  icon, no text, on a publish that had in fact succeeded (the bytes were pushed
+  and `publication` was persisted). `readPublishOutcome` now reads both shapes and
+  returns an outcome rather than a url: success is signalled by the return shape
+  instead of inferred from a non-empty url (a destination can publish and expose
+  no browsable link), an `error` field wins over anything else in the same body,
+  `publication: null` is not success, and an unrecognized shape is reported as a
+  NAMED error instead of an empty one. The mirror-image lie is fixed too — a 200
+  whose `publication.last_error` is non-empty is now reported as that error rather
+  than as "Published!", because `publish_sync.publish()` treats the version push
+  as best-effort on a re-publish: it persists the failure and returns normally, so
+  the remote content is stale behind a 200. The public-exposure warning and its
+  blocking acknowledgment are unchanged and still unconditional.
+
 - **Every builtin app now starts its content 8px from a phone screen edge, not 24px.**
   The narrow-first page gutter (`px-2 md:px-6`) reached the core pages and Issue
   Radar, while the remaining builtin apps kept an unconditional `px-6`, so their
