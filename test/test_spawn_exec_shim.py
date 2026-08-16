@@ -447,9 +447,16 @@ class TestSyncReportedArgv:
         assert not any("--rlimits=" in a for a in result.args)
 
     def test_called_process_error_names_the_command_not_the_shim(self):
+        # A real exit(1), not `/bin/false`: that path is Linux-only (macOS ships
+        # `false`/`true` under /usr/bin, not /bin), so a hardcoded `/bin/false`
+        # made execv fail with ENOENT on macOS -- caught by the shim's own
+        # `except OSError`, which reports EXEC_FAILED (127), not the command's
+        # own exit status. sys.executable is the portable equivalent already
+        # used throughout this file for a real spawned child.
+        cmd = [sys.executable, "-c", "import sys;sys.exit(1)", "x"]
         with pytest.raises(subprocess.CalledProcessError) as caught:
-            run_limited(["/bin/false", "x"], check=True, capture_output=True)
-        assert caught.value.cmd == ["/bin/false", "x"]
+            run_limited(cmd, check=True, capture_output=True)
+        assert caught.value.cmd == cmd
         assert caught.value.returncode == 1
         # The regression this guards: the message was 8815 chars, nearly all shim.
         assert len(str(caught.value)) < 200
@@ -509,18 +516,40 @@ class TestSyncRealChild:
 
     def test_the_cap_is_lower_than_an_unwrapped_spawn(self):
         """Negative control: without the wrapper the child inherits the gateway's soft limit."""
-        probe = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
-        wrapped = run_limited(
-            [sys.executable, "-c", probe], capture_output=True, text=True
-        ).stdout.strip()
-        bare = subprocess.run(
-            [sys.executable, "-c", probe], capture_output=True, text=True
-        ).stdout.strip()
-        inherited = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-        assert int(bare) == inherited
-        assert int(wrapped) < int(bare), (
-            f"wrapped child got {wrapped}, unwrapped got {bare} — the cap did nothing"
-        )
+        # The tool profile's cap is a fixed target (`_RLIMIT_DEFAULTS
+        # ["max_open_files"]` in security.py == 1024), not "whatever is lower
+        # than inherited". This negative control only proves anything when the
+        # inherited soft limit starts out ABOVE that cap -- and macOS's own
+        # per-process default can already sit AT or BELOW 1024 (the classic
+        # 256 login default), in which case an unwrapped child reports <=1024
+        # too and the assertion fails for a reason that has nothing to do with
+        # the shim. Same host-variance handling as
+        # test_session_host_child_gets_headroom_not_the_tool_cap: read the real
+        # limits and, if needed, raise this process's own soft limit above the
+        # cap first so the comparison is meaningful on any host.
+        default_cap = 1024
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and hard <= default_cap:
+            pytest.skip(f"host hard NOFILE limit ({hard}) is at or below the tool cap")
+        raised = soft <= default_cap
+        if raised:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (default_cap + 1, hard))
+        try:
+            probe = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+            wrapped = run_limited(
+                [sys.executable, "-c", probe], capture_output=True, text=True
+            ).stdout.strip()
+            bare = subprocess.run(
+                [sys.executable, "-c", probe], capture_output=True, text=True
+            ).stdout.strip()
+            inherited = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+            assert int(bare) == inherited
+            assert int(wrapped) < int(
+                bare
+            ), f"wrapped child got {wrapped}, unwrapped got {bare} — the cap did nothing"
+        finally:
+            if raised:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
     def test_exit_status_belongs_to_the_command(self):
         assert run_limited([sys.executable, "-c", "raise SystemExit(42)"]).returncode == 42
