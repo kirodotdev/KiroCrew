@@ -438,6 +438,18 @@ async def api_cron_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "invalid_message"}, status=400
             )
+    # name, same treatment and same reason (#3831): POST caps it at
+    # MAX_SHORT_STRING through this validator while PATCH copied it in raw.
+    # The persistence owner now rejects a bad name too, but that surfaces as a
+    # bare ValueError -> generic 400; validating here keeps the sanitization
+    # and the typed `code` the create path already returns.
+    if "name" in kwargs:
+        try:
+            kwargs["name"] = validate_string_field(body, "name", max_len=MAX_SHORT_STRING)
+        except ValidationError as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_name"}, status=400
+            )
     # folder_id must be a string (or null → ""): a non-string JSON value
     # would be persisted verbatim into the schema and corrupt reads.
     if "folder_id" in kwargs:
