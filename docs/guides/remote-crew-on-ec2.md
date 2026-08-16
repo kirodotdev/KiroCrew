@@ -55,9 +55,130 @@ port, no SSH key.
   / **AWS region** / **Remote user**, and the **Remote port** (the gateway's real
   port). Save, then **Connect**.
 
+## Cheaper instance-hours with Spot (`--spot`)
+
+If you launched with the one-command launcher, `kirocrew cloud launch --spot`
+provisions the box on **Spot pricing** instead of on-demand — typically 60-90%
+below the on-demand rate for the same shape, though the discount varies by size
+tier, availability zone, and region.
+
+```bash
+kirocrew cloud launch --size balanced --spot
+```
+
+The trade is interruptibility: AWS can reclaim the capacity at any time with a
+**2-minute notice**. Kiro Crew does not yet act on that notice, so an agent task
+running at that moment dies ungracefully — the same way it would if you rebooted
+the host out from under it.
+
+What it does **not** cost you is your data. The launcher requests a
+**persistent** Spot instance with `InstanceInterruptionBehavior: stop`, never the
+AWS defaults (`one-time` + `terminate`). The root EBS volume is
+`DeleteOnTermination: true`, so a terminating interruption would take
+`~/.kiro/crew` — memory, sessions, config — with it. Stopping keeps the volume
+intact, and because the request is persistent, **EC2 restarts the instance by
+itself** once capacity frees up.
+
+### What you can and can't do after an interruption
+
+This is the one place Spot is genuinely different from a normal box, so be
+precise about it:
+
+| Situation | What works |
+|-----------|------------|
+| EC2 interrupted it (instance is `stopped`) | **Only EC2 can start it again.** `kirocrew cloud start` fails with an AWS error — wait for the auto-resume. `kirocrew cloud status` shows `stopped` meanwhile. |
+| You ran `kirocrew cloud stop` | `kirocrew cloud start` works normally, exactly as on an on-demand box. |
+| You're done with it | `kirocrew cloud destroy` — it cancels the Spot request first, *then* deletes the stack. |
+
+That first row is an AWS rule, not a Kiro Crew limitation: "only Amazon EC2 can
+restart an interrupted stopped Spot Instance." You can't tell the two stop
+reasons apart from `cloud status`, so if `cloud start` returns an AWS error on a
+`--spot` box, that's the tell — it was interrupted, and it will come back on its
+own when capacity does. You don't have to remember that: the failing `start`
+prints it, from the CLI and from the dashboard's Start alike, including the one
+instruction that matters — **don't destroy the box to fix it.** Destroy deletes
+the root volume the interruption deliberately kept, `~/.kiro/crew` and all.
+
+Two more things the launcher handles for you:
+
+* **The request never expires.** The Spot request is pinned to a far-future
+  `ValidUntil`. This matters because an *expired* request counts as a cancelled
+  one, and cancelling the request of a **stopped** Spot instance auto-terminates
+  that instance — which, with `DeleteOnTermination: true`, would silently destroy
+  a box you'd merely parked for a week.
+* **`destroy` cancels before it deletes — and won't delete if it can't.** A
+  persistent request outlives its instance: terminating the instance flips the
+  request back to `open` and EC2 launches a *replacement* — which, once the stack
+  is gone, is an orphan nobody tracks and nobody stops billing for. `kirocrew
+  cloud destroy` cancels the request first so that can't happen, and terminates
+  any instance the request still points at except the stack's own, which the
+  stack delete terminates (cancelling an `active` request does **not** stop its
+  running instance). If the cancel is refused — or it can't even look the request
+  up — it **stops there and deletes nothing**, tells you which request to cancel
+  and with what command, and exits non-zero. Your box and its disk are untouched;
+  re-run `destroy` once the request is gone. Deleting anyway is precisely how you
+  end up with a replacement instance billing outside a stack that no longer
+  exists.
+
+The first `--spot` launch in an AWS account also needs the EC2 Spot
+service-linked role (`AWSServiceRoleForEC2Spot`). The console creates it
+silently; the CLI does not — the policy from `kirocrew cloud iam-policy` grants
+creating it (pinned to the Spot service), so re-print and re-apply that policy if
+you applied an older copy.
+
+Spot stacks with, rather than replaces, a scheduled stop/start: a schedule cuts
+how many hours you pay for, `--spot` cuts the rate for the hours you do run, and
+neither touches the NAT gateway charge on a private-subnet deploy (usually the
+larger line item). `--spot` applies when the stack is **created** — to move an
+existing on-demand box onto Spot, launch a new one with `--new --spot`. Passing
+`--spot` while resuming an existing stack warns (and hard-fails under `-y`)
+rather than silently leaving you on on-demand pricing.
+
 ## EC2 gotchas / troubleshooting
 
 These map to warnings in `kirocrew doctor`.
+
+### A `--spot` launch failed and rolled back
+
+Run `kirocrew cloud destroy` on that tag, even though the stack is already gone.
+
+When CloudFormation rolls a failed launch back it terminates the instance, and a
+*persistent* Spot request reacts to a termination by re-opening and asking EC2
+for a replacement. The request outlives the launch template rollback deletes, so
+nothing closes it out on its own — an orphaned request that nobody owns can
+quietly hand you an instance nobody is watching. `destroy` sweeps for a request
+tagged with that instance tag, cancels it and terminates any instance it points
+at (a replacement is *not* a stack resource, so `delete-stack` would never touch
+it), whether or not a stack is still there — so it is the safe thing to run after
+any failed `--spot` launch. It is a no-op (one describe call) if there's nothing
+to sweep. If the cancel or the terminate is denied, `destroy` prints the ids and
+the exact `aws ec2 …` command to finish the job rather than telling you you're no
+longer billed.
+
+With no stack left, `destroy` **shows you what it found and asks before it
+cancels** (`-y` skips the question, as everywhere else). That prompt is not
+ceremony: if the leftover request's instance is merely *stopped*, EC2 terminates
+it as the request is cancelled — so this is the one sweep that can take a box,
+and its disk, with it.
+
+A replacement instance launched by a re-opened request now carries the same
+`kirocrew:managed` / `kirocrew:instance` tags as the original, because the launch
+template tags the instances *it* launches (the Spot service relaunches from the
+request, not from CloudFormation, so template-level tags are the only ones that
+reach a replacement). That is what lets the sweep find it and lets the tag-gated
+`ec2:TerminateInstances` in the launcher policy kill it. Orphans from a request
+created before this — or from a launch outside Kiro Crew — are untagged, so the
+sweep can still only hand you the manual command; that fallback isn't going away.
+
+### `kirocrew cloud start` errors on a `--spot` box
+
+It was almost certainly interrupted rather than stopped by you, and **only EC2
+can restart an interruption-stopped Spot instance**. The error now says so, so
+you shouldn't have to reach this page — but if you're here: wait for the
+auto-resume, the persistent request brings it back when capacity returns. Do
+**not** destroy and relaunch to "fix" it; the instance is fine and its volume is
+intact, and destroy is what would actually lose your data. See
+[What you can and can't do after an interruption](#what-you-can-and-cant-do-after-an-interruption).
 
 ### MCP tools all fail: "Sandbox backend unavailable … `allow_unsandboxed_exec` is not set"
 
