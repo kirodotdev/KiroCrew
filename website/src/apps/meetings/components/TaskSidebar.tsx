@@ -42,8 +42,12 @@ export default function TaskSidebar({ tasks, onClose, onAdd, onUpdate, onDelete 
   const open = tasks.filter(task => task.review_status !== 'archived')
 
   return (
+    // Full width below `lg`, stacked under the meeting with a bounded height --
+    // the same shape MeetingWorkspace's transcript pane uses. The divider turns
+    // with the layout: a left border between two stacked blocks draws a line down
+    // the side of the sidebar instead of between the two.
     <aside
-      className="flex-none w-[340px] border-l border-border bg-bg flex flex-col overflow-hidden"
+      className="flex-none w-full h-[42%] min-h-[260px] border-t border-border lg:h-full lg:w-[340px] lg:border-t-0 lg:border-l bg-bg flex flex-col overflow-hidden"
       aria-label={i18nT('apps.meetings.taskSidebar.title')}
     >
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border">

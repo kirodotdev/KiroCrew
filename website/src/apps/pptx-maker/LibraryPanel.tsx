@@ -294,8 +294,10 @@ export default function LibraryPanel({ kind }: { kind: LibraryKind }) {
       )}
       {notice && <div className="mb-3 text-[13px] text-muted">{notice}</div>}
 
-      <div className="flex gap-4 flex-1 min-h-0">
-        <div className="w-56 shrink-0 overflow-y-auto border-r border-border pr-3">
+      <div className="flex flex-col sm:flex-row gap-4 flex-1 min-h-0">
+        {/* Stacked while narrow, same reason as the deck split above: a 224px
+            template list beside the detail left it too little to read. */}
+        <div className="w-full sm:w-56 shrink-0 max-h-[40vh] sm:max-h-none overflow-y-auto border-b sm:border-b-0 sm:border-r border-border pb-3 sm:pb-0 sm:pr-3">
           {loading && (
             <div className="text-sm text-muted px-1">
               {i18nT('apps.pptxMaker.libraryPanel.loading')}

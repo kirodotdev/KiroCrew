@@ -418,8 +418,12 @@ export default function PptxMakerPage() {
                 />
               )}
               {filtered.length > 0 && (
-                <div className="flex gap-4 flex-1 min-h-0">
-                  <div className="w-60 shrink-0 overflow-y-auto border-r border-border pr-3">
+                <div className="flex flex-col sm:flex-row gap-4 flex-1 min-h-0">
+                  {/* Stacked while narrow: a 240px deck list beside the viewer left
+                      it 86px of a 390px viewport -- 44px once the surrounding Card
+                      padding is counted. The list is bounded when stacked, or its
+                      `shrink-0` natural height would push the viewer out. */}
+                  <div className="w-full sm:w-60 shrink-0 max-h-[40vh] sm:max-h-none overflow-y-auto border-b sm:border-b-0 sm:border-r border-border pb-3 sm:pb-0 sm:pr-3">
                     {filtered.map((deck) => (
                       <Clickable
                         key={deck.deckId}

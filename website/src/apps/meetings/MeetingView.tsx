@@ -120,8 +120,13 @@ export default function MeetingView({
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
+    // Stacks below `lg`, the same shape MeetingWorkspace and TaskReviewView
+    // already use in this app: a 340px task sidebar beside the meeting left the
+    // content 49px at 390px. `min-w-0`/`min-h-0` on the content column is what
+    // lets it actually shrink -- without it the row overflowed sideways instead,
+    // pushing the meeting off-screen rather than narrowing it.
+    <div className="flex flex-col lg:flex-row h-full overflow-hidden">
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
         <div className="flex-none px-6 py-4 border-b border-border flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <Btn onClick={onBack} aria-label={i18nT('apps.meetings.meeting.back')}>
