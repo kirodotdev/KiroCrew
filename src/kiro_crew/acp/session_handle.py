@@ -2165,20 +2165,14 @@ class AcpSessionHandle:
         # A real usage_update is authoritative for context_pct + token counts;
         # kiro's metadata percentage can measure a different window, so applying
         # it here would desync the headline % from the "used / total" token text.
-        if pct is not None and not self.last_prompt_stats.context_tokens_from_usage:
-            try:
-                pct_f = float(pct)
-                # Sanitize a malformed metadata percentage (NaN/±inf/out-of-range,
-                # e.g. 1e308) at the source so context_pct is always a real
-                # [0, 100] value: keeps compaction comparisons sane and the
-                # diagnostic /api/sessions JSON standard (Infinity/NaN are not
-                # valid JSON). NaN is caught by its self-inequality.
-                pct_f = 0.0 if pct_f != pct_f else min(max(pct_f, 0.0), 100.0)
-                self.last_prompt_stats.context_pct = pct_f
-                self.last_prompt_stats.note_pct_reported()
-                self._backfill_context_window(pct_f)
-            except (TypeError, ValueError):
-                pass
+        # sanitize_pct is the shared coercion (the AcpClient path uses it too),
+        # so the two metadata paths cannot drift: it clamps NaN/±inf/out-of-range
+        # and returns None for a missing or unparseable value.
+        pct_f = self.last_prompt_stats.sanitize_pct(pct)
+        if pct_f is not None and not self.last_prompt_stats.context_tokens_from_usage:
+            self.last_prompt_stats.context_pct = pct_f
+            self.last_prompt_stats.note_pct_reported()
+            self._backfill_context_window(pct_f)
         self.last_prompt_stats.credits += credits
 
     def _backfill_context_window(self, pct: float) -> None:
