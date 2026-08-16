@@ -12,6 +12,7 @@ binary, opens a socket, or writes outside ``tmp_path`` / the autouse isolated
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import os
 from pathlib import Path
@@ -771,6 +772,182 @@ class TestLiveSharedCount:
         assert _manager()._live_shared_count(31337) == 1
 
 
+class TestProcSubtreeCounts:
+    """``_proc_subtree_counts`` — the reading task rows were missing entirely."""
+
+    def test_no_pid_is_unmeasurable(self) -> None:
+        assert sa._proc_subtree_counts(None) == (None, None)
+
+    def test_non_linux_is_unmeasurable_not_zero(self) -> None:
+        with patch.object(sa.platform_compat, "IS_LINUX", False):
+            assert sa._proc_subtree_counts(4242) == (None, None)
+
+    def test_dead_pid_is_unmeasurable(self) -> None:
+        with (
+            patch.object(sa.platform_compat, "IS_LINUX", True),
+            patch.object(sa, "_single_proc_rss_kb", return_value=-1),
+        ):
+            assert sa._proc_subtree_counts(4242) == (None, None)
+
+    def test_counts_the_subtree_and_its_stubs(self) -> None:
+        # 1 runtime + 3 children, two of which are stubs.
+        children = {10: [11, 12, 13], 11: [], 12: [], 13: []}
+        stub_pids = {11, 12}
+        with (
+            patch.object(sa.platform_compat, "IS_LINUX", True),
+            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
+            patch.object(sa, "_proc_children", side_effect=lambda p: children.get(p, [])),
+            patch.object(
+                sa.platform_compat,
+                "process_matches",
+                side_effect=lambda p, needles: p in stub_pids and needles == (sa.STUB_MODULE,),
+            ),
+        ):
+            assert sa._proc_subtree_counts(10) == (4, 2)
+
+    def test_walk_is_bounded(self) -> None:
+        """A pathological tree cannot walk past the shared subtree ceiling."""
+        with (
+            patch.object(sa.platform_compat, "IS_LINUX", True),
+            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
+            patch.object(sa, "_proc_children", side_effect=lambda p: [p * 10, p * 10 + 1]),
+            patch.object(sa.platform_compat, "process_matches", return_value=False),
+        ):
+            procs, stubs = sa._proc_subtree_counts(2)
+        assert stubs == 0
+        assert procs is not None and procs < sa._RSS_SUBTREE_MAX_PROCS * 3
+
+
+class TestAttributedCount:
+    def test_unmeasured_keeps_the_last_good_reading(self) -> None:
+        assert sa._attributed_count(None, 1, 7) == 7
+
+    def test_sole_tenant_reports_the_raw_count(self) -> None:
+        assert sa._attributed_count(18, 1, None) == 18
+
+    def test_splits_across_sharers(self) -> None:
+        assert sa._attributed_count(18, 3, None) == 6
+
+    def test_rounds_to_a_whole_process(self) -> None:
+        assert sa._attributed_count(19, 3, None) == 6
+
+    def test_a_nonzero_count_never_reads_as_zero(self) -> None:
+        assert sa._attributed_count(1, 6, None) == 1
+
+    def test_zero_stays_zero(self) -> None:
+        """Pooling off is a real zero, not a floor-to-one."""
+        assert sa._attributed_count(0, 3, None) == 0
+
+
+class TestSampleLiveCounts:
+    """The sweep must write procs/mcp on both the shared and exclusive paths."""
+
+    def _patched(self, counts: tuple[int, int]):
+        return (
+            patch.object(sa, "_proc_rss_kb", return_value=1024 * 1024),
+            patch.object(sa, "_subtree_cpu_jiffies", return_value=0),
+            patch.object(sa, "_proc_subtree_counts", return_value=counts),
+        )
+
+    def test_shared_runtime_counts_are_split_per_sharer(self) -> None:
+        mgr = _manager()
+        for idx in range(3):
+            info = _info(f"s{idx}")
+            info._session_sharing = True
+            info._pid = 777
+            mgr._agents[info.id] = info
+        rss, cpu, counts = self._patched((21, 18))
+        with rss, cpu, counts:
+            mgr._sample_live_costs()
+        for info in mgr._agents.values():
+            assert info.last_procs == 7
+            assert info.last_stubs == 6
+
+    def test_exclusive_process_counts_are_not_split(self) -> None:
+        mgr = _manager()
+        info = _info("solo")
+        info._pid = 999
+        mgr._agents["solo"] = info
+        rss, cpu, counts = self._patched((7, 6))
+        with rss, cpu, counts:
+            mgr._sample_live_costs()
+        assert info.last_procs == 7
+        assert info.last_stubs == 6
+
+    def test_unmeasurable_sweep_does_not_blank_a_prior_reading(self) -> None:
+        mgr = _manager()
+        info = _info("solo")
+        info._pid = 999
+        info.last_procs, info.last_stubs = 7, 6
+        mgr._agents["solo"] = info
+        with (
+            patch.object(sa, "_proc_rss_kb", return_value=-1),
+            patch.object(sa, "_subtree_cpu_jiffies", return_value=0),
+            patch.object(sa, "_proc_subtree_counts", return_value=(None, None)),
+        ):
+            mgr._sample_live_costs()
+        assert (info.last_procs, info.last_stubs) == (7, 6)
+
+    def test_sweep_reads_the_registry_once_so_it_is_thread_safe(self) -> None:
+        """The sweep runs on an executor thread, so it must not iterate the live
+        registry lazily: a spawn or eviction landing mid-sweep would raise
+        ``RuntimeError: dictionary changed size during iteration``."""
+        mgr = _manager()
+        for idx in range(2):
+            info = _info(f"s{idx}")
+            info._session_sharing = True
+            info._pid = 777
+            mgr._agents[info.id] = info
+
+        reads = {"n": 0}
+        real = mgr._agents
+
+        class _CountingRegistry(dict):
+            def values(self):  # type: ignore[override]
+                reads["n"] += 1
+                return super().values()
+
+        mgr._agents = _CountingRegistry(real)  # type: ignore[assignment]
+        rss, cpu, counts = self._patched((4, 2))
+        with rss, cpu, counts:
+            mgr._sample_live_costs()
+        assert reads["n"] == 1, "the registry must be snapshotted exactly once"
+
+
+class TestReaperOffloadsTheSweep:
+    @pytest.mark.asyncio
+    async def test_sample_runs_on_the_maintenance_executor(self) -> None:
+        """``_sample_live_costs`` walks ``/proc`` once per live agent, so the reaper
+        must hand it to an executor rather than block the loop the chat turns and
+        heartbeats share."""
+        mgr = _manager()
+        seen: list[object] = []
+
+        def _capture(executor, fn, *args):  # noqa: ANN001 — test double
+            seen.append(executor)
+            fn(*args)
+            fut: asyncio.Future = asyncio.get_running_loop().create_future()
+            fut.set_result(None)
+            return fut
+
+        with (
+            patch.object(sa, "_REAPER_INTERVAL", 0),
+            patch.object(sa, "compact_cost_log"),
+            patch.object(sa, "maintenance_executor", return_value="mc-maint") as pool,
+            patch.object(asyncio.get_running_loop(), "run_in_executor", side_effect=_capture),
+            patch.object(mgr, "_sample_live_costs") as sample,
+            patch.object(mgr, "_rebuild_conversation_registry", new=AsyncMock()),
+        ):
+            task = asyncio.ensure_future(mgr._reaper_loop())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        assert pool.called, "the sweep must be offloaded to the maintenance pool"
+        assert seen and seen[0] == "mc-maint"
+        assert sample.called
+
+
 class TestRecordCost:
     def test_unsampled_run_records_nothing(self) -> None:
         mgr = _manager()
@@ -935,6 +1112,21 @@ class TestReadSurfaces:
         assert rows["sampled"]["sampled"] is True
         assert rows["sampled"]["rss_mb"] == pytest.approx(512.0)
         assert rows["sampled"]["cpu_cores"] == pytest.approx(1.23)
+
+    def test_task_memory_rows_carry_proc_and_stub_counts(self) -> None:
+        """The regression this fixes: the fields were absent, so the Sessions
+        surface rendered every subagent as carrying no MCP stubs at all."""
+        mgr = _manager()
+        fresh = _info("fresh", parent_session_key="dash:1")
+        counted = _info("counted", parent_session_key="dash:1")
+        counted.last_procs, counted.last_stubs = 7, 6
+        mgr._agents.update({"fresh": fresh, "counted": counted})
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert rows["counted"]["procs"] == 7
+        assert rows["counted"]["mcp"] == 6
+        # Never measured ⇒ null, which the surface renders as an em dash.
+        assert rows["fresh"]["procs"] is None
+        assert rows["fresh"]["mcp"] is None
 
     def test_task_memory_rows_skips_done_and_queued(self) -> None:
         mgr = _manager()

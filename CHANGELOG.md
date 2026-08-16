@@ -4,6 +4,36 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **Subagent rows in System → Sessions now report their process and MCP-stub
+  counts.** Both columns rendered an em dash on every task row, which read as
+  "a subagent carries no MCP stubs" — the opposite of the truth: a subagent
+  session spawns its own poolable stub set and reaches the shared backends
+  through the same gateway daemon a top-level session does (measured on a live
+  host: 18 `--poolable` stubs under one shared runtime, none of them falling
+  back to a private spawn). The reason was structural, not cosmetic: nothing
+  ever counted them. `task_memory_rows()` carried no `procs`/`mcp` fields at
+  all, and the reaper sweep that samples a task's RSS and CPU took no such
+  reading, so the frontend hardcoded both to null. The sweep now counts the
+  run's subtree in the same pass (one walk, no extra syscalls per column) and
+  attributes the counts the way RSS and CPU are already attributed — split
+  across the co-tenants of a shared runtime — with two rules a count needs and
+  a byte figure does not: the quotient rounds to a whole process, and a nonzero
+  total never rounds down to zero. Unmeasured stays null rather than becoming
+  "0", so an unsampled task still reads as an em dash instead of claiming to be
+  empty. The stub cmdline fingerprint is now one constant shared by the
+  rewriter that emits the launch line and both counters that match it, pinned
+  by a test: a private copy that drifted would not fail loudly, it would report
+  zero stubs.
+
+- **The subagent cost sweep no longer runs on the gateway event loop.**
+  ``_sample_live_costs`` walks ``/proc`` several times per live agent, and the
+  reaper called it inline, so every chat turn and heartbeat waited behind those
+  walks. It now runs on the maintenance executor. The body was made
+  thread-safe to go with it: the agent registry is snapshotted once and the
+  sharer count is derived from that snapshot, because iterating the live
+  registry from a worker thread raises ``RuntimeError`` the moment a spawn or
+  eviction lands mid-sweep.
+
 - **A delivered message no longer warns that it may not have been delivered.**
   Every message typed in the dashboard composer grew a "Message not confirmed —
   may not have been delivered" warning 30 seconds after it was sent, for the rest

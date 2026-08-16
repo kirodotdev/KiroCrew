@@ -38,6 +38,7 @@ from kiro_crew import __version__, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import spec_env_path, spec_path_key
+from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -120,7 +121,10 @@ _TARGET_ARGS_SEP = "|"
 #: launch time because kiro-cli strips env when it spawns MCP
 #: subprocesses, so neither a propagated var nor a ``python3`` on PATH
 #: that can import ``kiro_crew`` is guaranteed.
-_STUB_MODULE = "kiro_crew.mcp_gateway.stub"
+#:
+#: Aliased from the package constant so the launch line and the cmdline
+#: fingerprint the Sessions surface counts stubs by cannot drift apart.
+_STUB_MODULE = STUB_MODULE
 
 
 def _resolve_target_command(

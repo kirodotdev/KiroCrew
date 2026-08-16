@@ -164,8 +164,11 @@ function taskRow(t: TaskPayloadRow): SessionRow {
     rssMb: t.sampled ? t.rss_mb : null,
     peakMb: t.sampled ? t.peak_rss_mb : null,
     cpuCores: t.sampled ? t.cpu_cores : null,
-    procs: null,
-    mcp: null,
+    // Already null until the sweep has counted them, so no `sampled` gate: a
+    // count of 0 processes for a live task would be a lie, and the payload
+    // distinguishes "not measured yet" from zero on its own.
+    procs: t.procs ?? null,
+    mcp: t.mcp ?? null,
     credits: null,
     turns: null,
     uptimeS: t.started_at ? Date.now() / 1000 - t.started_at : null,

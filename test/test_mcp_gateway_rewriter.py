@@ -811,3 +811,46 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
 
     # And the stub must not be pointed at a sidecar we failed to protect.
     assert "--env-file" not in _overlay_stub_args(overlay_dir)
+
+
+def test_stub_fingerprint_is_the_module_on_the_launch_line(tmp_path: Path) -> None:
+    """``STUB_MODULE`` must be BOTH what the rewriter launches and what the
+    Sessions surface matches a stub process by.
+
+    The two counters (per-session and per-task) identify stubs by cmdline
+    substring. A copy of the string that drifts from the launch line does not
+    fail loudly — it reports zero stubs for a runtime that is carrying them,
+    which is precisely the reading this pair of columns exists to give.
+    """
+    from kiro_crew import subagent
+    from kiro_crew.dashboard import session_memory
+    from kiro_crew.mcp_gateway import STUB_MODULE, rewriter
+
+    source_dir = tmp_path / "agents"
+    overlay_dir = tmp_path / "overlay"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    # No ``env`` block: an env-declaring server is declassified from pooling
+    # unless forwarding is enabled, and this test is about the launch line.
+    (source_dir / "test-agent.json").write_text(
+        json.dumps(
+            {
+                "name": "test-agent",
+                "mcpServers": {"myserver": {"command": "echo", "args": ["hello"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rewriter.rewrite_agents(
+        source_dir=source_dir,
+        overlay_dir=overlay_dir,
+        socket_path=tmp_path / "gw.sock",
+        work_dir=tmp_path / "wd",
+        sandbox_mode="off",
+        approval_mode="auto",
+        stub_servers=frozenset(["myserver"]),
+    )
+    args = _overlay_stub_args(overlay_dir)
+    assert STUB_MODULE in args, f"launch line lost the stub module: {args}"
+    # Both cmdline matchers must be that same string, not a private copy.
+    assert session_memory._STUB_MARKER == STUB_MODULE
+    assert subagent.STUB_MODULE == STUB_MODULE

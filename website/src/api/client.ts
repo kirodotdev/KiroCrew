@@ -1662,6 +1662,7 @@ export const api = {
     tasks: {
       id: string; task: string; agent: string; parent: string
       rss_mb: number; peak_rss_mb: number; cpu_cores: number
+      procs: number | null; mcp: number | null
       started_at: number; shared: boolean; pid: number | null; sampled: boolean
     }[]
     totals: {
