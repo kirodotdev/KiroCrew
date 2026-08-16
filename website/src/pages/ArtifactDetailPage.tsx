@@ -1,4 +1,5 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -369,6 +370,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // show/hide applies to the current view only; we intentionally do NOT persist
   // it, so every artifact independently does the right thing instead of a
   // global pin re-opening empty panels everywhere.
+  const isMobile = useIsMobile()
   const [panel, setPanel] = useState<'none' | 'comments' | 'chat'>('none')
   // Flipped once the user manually toggles, so the comment-driven auto-reveal
   // below stops overriding an explicit choice — but only for the current
@@ -1822,7 +1824,12 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             would let a click on a webapp artifact create/activate a session with
             nowhere to display. */}
         <div className="flex gap-4 items-start">
-          <div className="flex-1 min-w-0">
+          {/* An open panel owns the width while narrow, so the artifact body
+              steps aside -- giving the panel `w-full` alone would still leave the
+              two of them splitting 390px. Hidden rather than unmounted: the body
+              holds scroll position and, for markdown, an in-progress anchored
+              comment selection, and rotating a phone crosses the breakpoint. */}
+          <div className={`flex-1 min-w-0 ${isMobile && panel !== 'none' ? 'hidden' : ''}`}>
             {/* Copy raw source — its own right-aligned slot ABOVE the body (not
                 the header toolbar, which must not grow; not an overlay, which
                 could obscure a heading's trailing text or cover a top-right

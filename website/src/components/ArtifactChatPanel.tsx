@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { Plus, ExternalLink, X, Sparkles } from 'lucide-react'
 import { useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
@@ -50,6 +51,7 @@ export function ArtifactChatPanel({
   onOpenFull: () => void
   onClose: () => void
 }) {
+  const isMobile = useIsMobile()
   const dispatch = useAppDispatch()
   const prevSlotRef = useRef<string | null>(null)
 
@@ -62,9 +64,12 @@ export function ArtifactChatPanel({
     }
   }, [slotKey, dispatch])
 
+  // 480px cannot fit a phone viewport, and this row has no horizontal scroll,
+  // so the overhang was clipped rather than reachable. While narrow the panel
+  // takes the width and the artifact body steps aside.
   return (
     <aside
-      className="w-[480px] shrink-0 flex flex-col rounded-xl border border-border bg-card overflow-hidden"
+      className={`${isMobile ? 'w-full' : 'w-[480px] shrink-0'} flex flex-col rounded-xl border border-border bg-card overflow-hidden`}
       style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
       aria-label={i18nT('components.artifactChatPanel.artifact_companion_chat')}
     >
