@@ -273,9 +273,15 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
   })
 
   // Doc column header: shared segmented tabs + expand + phase-gated actions.
-  // Same height and bottom border as the chat column's header so the two line up.
+  // On a desktop this matches the chat column header's height and bottom border
+  // so the two line up. While narrow the columns are STACKED, so that alignment
+  // buys nothing and the fixed height costs the phase control: at 390px the row
+  // measures 414px against a 390px viewport, and the `overflow-hidden` on the
+  // pane clips the action with no way to scroll to it. Wrapping puts the action
+  // on its own line instead, fully reachable.
   const docTabsHeader = (fullscreen: boolean) => (
-    <div className="flex gap-1.5 items-center px-2.5 h-[52px] border-b border-border shrink-0">
+    <div className={`flex gap-1.5 items-center px-2.5 border-b border-border shrink-0 ${
+      isMobile && !fullscreen ? 'flex-wrap min-h-[52px] py-1.5' : 'h-[52px]'}`}>
       <SegmentedControl<DocTabId>
         segments={docSegments}
         value={tab}
@@ -430,35 +436,53 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
             treatment made two peer columns look like different kinds of surface
             and left the doc header sitting below the chat's.
 
-            While narrow this column carries ONLY the pending-comment tray, as a
-            full-width row UNDER the chat. The document itself moves to the
-            fullscreen overlay, but the tray cannot: it holds comments the user
-            wrote and has not sent, and `key={sel}` unmounts this component on
-            the next spec — so hiding the whole column outright would make them
-            unreachable and then silently discard them. Rendered only when it has
-            something to show, or an empty strip would sit under every chat. */}
+            While narrow this column becomes a full-width row UNDER the chat,
+            carrying the header (which owns the phase controls), the state panel,
+            and the pending-comment tray. Only the document body moves to the
+            fullscreen overlay. The tray cannot move there: it holds comments the
+            user wrote and has not sent, and `key={sel}` unmounts this component
+            on the next spec, so hiding the column outright would make them
+            unreachable and then silently discard them.
+
+            The height cap is in `vh`, not a percentage: no ancestor in this
+            chain has a definite height, so a percentage max-height does not
+            resolve and the bound would be inert. `min-h-0` rather than a pinned
+            height: the cap binds before shrinking is ever needed on any real
+            geometry, but `vh` is relative to the VIEWPORT while this row lives
+            in the viewport MINUS the app header, so a shell shorter than the cap
+            would otherwise push the tray past the clip. Without a bound this column is
+            `shrink-0` while the chat above is `min-h-0`, so an accumulating
+            state panel plus a staged comment could grow past the page shell and
+            take the tray out of reach. */}
         <section
           className={`min-w-0 flex flex-col ${isMobile
-            ? (comments.length > 0 ? 'w-full shrink-0 border-t border-border' : 'hidden')
+            ? 'w-full min-h-0 border-t border-border max-h-[60vh] overflow-y-auto'
             : 'border-l border-border'}`}
           style={isMobile ? undefined : { flexBasis: docPct + '%', flexGrow: 0, flexShrink: 0 }}
         >
-          <div className={`sb-doc flex-1 min-h-0 flex flex-col overflow-hidden ${isMobile ? 'hidden' : ''}`}>
+          {/* Only the document BODY steps aside while narrow. The header stays,
+              because it is the sole host of the phase controls -- Approve → Design,
+              Approve → Tasks, Start building, Pause. The fullscreen overlay builds
+              its own header and never calls `docTabsHeader`, and those actions are
+              additionally gated on `!fullscreen`, so hiding this header took the
+              only route to them: at phone widths a spec could not be advanced,
+              built or paused at all. */}
+          <div className={`sb-doc flex flex-col overflow-hidden ${isMobile ? 'shrink-0' : 'flex-1 min-h-0'}`}>
             {docTabsHeader(false)}
-            <DocView detail={detail} tab={tab} addComment={addComment} running={running} />
+            {/* Body HIDDEN, not unmounted: the document itself moves to the
+                overlay, but DocView holds an in-progress comment draft. */}
+            <div className={`flex-1 min-h-0 flex flex-col ${isMobile ? 'hidden' : ''}`}>
+              <DocView detail={detail} tab={tab} addComment={addComment} running={running} />
+            </div>
           </div>
-          {/* HIDDEN, not unmounted — same reason as the pane above. This panel's
-              `sent` map is the guard against answering one decision twice while
-              the agent is still persisting the first answer (see its own comment),
-              and it lives in local state. Unmounting resets the guard, so merely
-              rotating a phone across the 768px breakpoint and back would let a
-              conflicting answer through. */}
-          <div className={isMobile ? 'hidden' : ''}>
-            <SpecStatePanel
-              detail={detail}
-              sendMessage={(msg) => messageMutation.mutateAsync(msg)}
-            />
-          </div>
+          {/* Visible at every width. This is the only surface that shows a
+              BLOCKING decision and the only one that can answer it, and the
+              overlay does not render it -- hidden, a blocked spec was
+              indistinguishable from an idle one. */}
+          <SpecStatePanel
+            detail={detail}
+            sendMessage={(msg) => messageMutation.mutateAsync(msg)}
+          />
           {comments.length > 0 && (
             <div
               className="mt-2.5 rounded-lg bg-bg shrink-0 max-h-[220px] flex flex-col"

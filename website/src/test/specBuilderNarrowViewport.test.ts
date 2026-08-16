@@ -107,29 +107,50 @@ describe('Spec Builder at narrow widths', () => {
     expect(gate![0]).toContain('expand_document_for_review')
   })
 
-  it('keeps unsent review comments reachable while narrow', async () => {
+  it('keeps every control that has no other host reachable while narrow', async () => {
     const s = await src('SpecDetail.tsx')
-    // The pending-comment tray lives in the document column. Hiding that column
-    // outright made comments the user WROTE unreachable — no Send, no Clear — and
-    // `key={sel}` unmounts this component on the next spec, so they were then
-    // discarded silently. While narrow the column survives as a full-width row
-    // under the chat whenever it has comments, carrying only the tray.
-    expect(s, 'the column must not be hidden while it holds comments')
-      .toMatch(/comments\.length > 0 \? 'w-full shrink-0 border-t border-border' : 'hidden'/)
-    // And the document body itself must still step aside, or the 44% split — and
-    // the 69px chat column — come straight back.
-    expect(s, 'the document body must still step aside')
-      .toMatch(/sb-doc flex-1 min-h-0 flex flex-col overflow-hidden \$\{isMobile \? 'hidden' : ''\}/)
-    // Same rule for the state panel: its `sent` map guards against answering one
-    // decision twice while the agent persists the first answer, and it is local
-    // state. Unmounting resets the guard, so rotating a phone across the 768px
-    // breakpoint and back would let a conflicting answer through.
-    expect(s, 'the state panel must be hidden, never unmounted')
-      .toMatch(/<div className=\{isMobile \? 'hidden' : ''\}>\s*\n\s*<SpecStatePanel/)
-    expect(s, 'the state panel must not be conditionally rendered away')
-      .not.toMatch(/\{!isMobile && \(\s*\n?\s*<SpecStatePanel/)
-    expect(s, 'the detail must stack so the tray lands under the chat')
-      .toMatch(/flex flex-1 min-w-0 min-h-0 \$\{isMobile \? 'flex-col' : ''\}/)
+    // Only the document BODY steps aside. The header must stay: `docTabsHeader` is
+    // the sole host of Approve → Design, Approve → Tasks, Start building and Pause.
+    // The fullscreen overlay builds its own header, never calls docTabsHeader, and
+    // gates those actions on `!fullscreen` -- so hiding this header left a phone
+    // unable to advance, build or pause a spec at all.
+    expect(s, 'the doc header must not be hidden while narrow')
+      .toMatch(/sb-doc flex flex-col overflow-hidden \$\{isMobile \? 'shrink-0' : 'flex-1 min-h-0'\}/)
+    expect(s, 'only the document body may step aside')
+      .toMatch(/flex-1 min-h-0 flex flex-col \$\{isMobile \? 'hidden' : ''\}/)
+    // The state panel is the only surface that shows a BLOCKING decision and the
+    // only one that can answer it, and the overlay does not render it. Hidden, a
+    // blocked spec was indistinguishable from an idle one.
+    expect(s, 'the state panel must not be hidden').not.toMatch(/\{isMobile \? 'hidden' : ''\}>\s*\n\s*<SpecStatePanel/)
+    // And the column itself must always render while narrow -- gating it on
+    // `comments.length` took the phase controls away whenever there were none.
+    expect(s, 'the column must always render while narrow')
+      .toMatch(/\? 'w-full min-h-0 border-t border-border max-h-/)
+    // Presence of the string is not enough -- it survives inside a nested ternary.
+    // What must be absent is any comment-count gate on the column itself.
+    expect(s, 'the column must not be gated on the comment count')
+      .not.toMatch(/comments\.length > 0 \? 'w-full/)
+    expect(s, 'the percentage basis must not apply while narrow')
+      .toMatch(/style=\{isMobile \? undefined : \{ flexBasis: docPct/)
+  })
+
+  it('lets the doc header wrap while narrow, or the phase control is clipped', async () => {
+    const s = await src('SpecDetail.tsx')
+    // Measured in the real build at 390px: the header row is 414px wide, and the
+    // pane's `overflow-hidden` clips `Approve → Tasks` (left 321, right 414) with
+    // no way to scroll to it. Exposing the header is not enough on its own.
+    expect(s, 'the header must wrap while narrow')
+      .toMatch(/isMobile && !fullscreen \? 'flex-wrap min-h-\[52px\] py-1\.5' : 'h-\[52px\]'/)
+  })
+
+  it('bounds the stacked column in vh, since a percentage would not resolve', async () => {
+    const s = await src('SpecDetail.tsx')
+    // No ancestor in this chain has a definite height, so `max-h-[60%]` is inert.
+    expect(s, 'expected a vh height bound').toMatch(/max-h-\[60vh\] overflow-y-auto/)
+    // Pinned instead of shrinkable, the section would overflow a shell shorter
+    // than the cap -- `vh` is viewport-relative, the shell is viewport minus header.
+    expect(s, 'the stacked column must be able to shrink').not.toMatch(/'w-full shrink-0 border-t/)
+    expect(s, 'a percentage bound would be inert here').not.toMatch(/max-h-\[\d+%\]/)
   })
 
   it('spends the bar on at most two actions', async () => {
