@@ -78,6 +78,7 @@
   "components.discoverySearchBar.result",
   "components.fileChangeChips.file",
   "components.followUpCard.suggested_follow_up",
+  "components.gitPanel.repos_count",
   "components.inlineCommentOverlay.comment",
   "components.inlineCommentOverlay.comment_unread",
   "components.pastedChip.paste_lines",

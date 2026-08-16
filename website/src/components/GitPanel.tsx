@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { GitBranch, RefreshCw } from 'lucide-react'
+import { FolderGit2, GitBranch, RefreshCw } from 'lucide-react'
 import { api } from '../api/client'
 import DetailPanel from './DetailPanel'
 import { i18nT } from '../i18n/t'
@@ -53,10 +53,15 @@ interface GitPanelProps {
 
 export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelProps) {
   const prevBranch = useRef<string | undefined>(undefined)
+  const forceFresh = useRef(false)
 
   const { data: status, refetch: refetchStatus, isLoading: statusLoading } = useQuery({
     queryKey: ['git-status', projectDir],
-    queryFn: () => api.projectGitStatus(projectDir),
+    queryFn: () => {
+      const fresh = forceFresh.current
+      forceFresh.current = false
+      return api.projectGitStatus(projectDir, fresh)
+    },
     enabled: !!projectDir,
     refetchInterval: 5000,
     refetchOnWindowFocus: true,
@@ -83,6 +88,14 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
   }, [status?.branch, status?.ahead, refetchLog])
 
   const fileCount = status?.files?.length ?? 0
+  // A single-repo answer is one unnamed group (no header).
+  const groups = useMemo(
+    () =>
+      status?.repos?.length
+        ? status.repos.map(r => ({ root: r.root, name: r.name, branch: r.branch, refused: r.refused, files: r.files }))
+        : [{ root: status?.repoRoot ?? '', name: '', branch: undefined as string | undefined, refused: status?.refused, files: status?.files ?? [] }],
+    [status],
+  )
   const isClean = fileCount === 0
 
   return (
@@ -96,7 +109,12 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           {/* Branch name */}
           <GitBranch size={14} className="text-accent shrink-0" />
           <span className="text-[12px] font-medium text-text truncate">
-            {status?.branch || i18nT('components.gitPanel.loading')}
+            {statusLoading
+              ? i18nT('components.gitPanel.loading')
+              : status?.branch
+                || (status?.repos?.length
+                  ? i18nT('components.gitPanel.repos_count', { count: status.repos.length })
+                  : '')}
           </span>
 
           {/* Ahead/behind pill */}
@@ -120,7 +138,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
 
           {/* Refresh */}
           <button
-            onClick={() => { refetchStatus(); refetchLog() }}
+            onClick={() => { forceFresh.current = true; refetchStatus(); refetchLog() }}
             className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
             title={i18nT('components.gitPanel.refresh')}
             aria-label={i18nT('components.gitPanel.refresh')}
@@ -132,7 +150,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
     >
       <div className="overflow-y-auto flex-1 text-[12px]">
         {/* ── CHANGES section ── */}
-        {!isClean && (
+        {(!isClean || status?.reposTruncated || status?.refused) && (
           <section className="py-2">
             <div className="px-3 pb-1.5 flex items-center gap-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
@@ -141,36 +159,94 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
               <span className="text-[10px] text-muted">{fileCount}</span>
             </div>
             <div>
-              {status?.files.map(f => (
-                <button
-                  key={`${f.path}:${f.staged}`}
-                  className="w-full flex items-center gap-2 px-3 py-1 hover:bg-bg-hover cursor-pointer transition-colors bg-transparent border-none text-left"
-                  // Paths are repo-root-relative; anchor them to the repo root
-                  // so the open cannot resolve against a DIFFERENT project's
-                  // dir (the gateway-wide project) when several slots have
-                  // different projects set.
-                  onClick={() => onFileOpen?.(status.repoRoot ? `${status.repoRoot}/${f.path}` : f.path)}
-                  title={f.path}
-                >
-                  <span className={`font-mono font-semibold w-[14px] text-center shrink-0 ${statusColor(f.status)}`}>
-                    {f.status}
-                  </span>
-                  <span className="flex-1 truncate">
-                    <FilePath path={f.path} />
-                  </span>
-                  {(f.additions != null || f.deletions != null) && (
-                    <span className="font-mono text-[11px] shrink-0">
-                      {f.additions != null && f.additions > 0 && <span className="text-[var(--diff-add-text,var(--ok))]">+{f.additions}</span>}
-                      {f.deletions != null && f.deletions > 0 && <span className="text-[var(--diff-del-text,var(--danger))] ml-1">-{f.deletions}</span>}
-                    </span>
+              {groups.map(group => (
+                <div key={group.root}>
+                  {group.name && (
+                    <div className="flex items-center gap-1.5 px-3 py-1 bg-bg-elevated border-y border-border">
+                      <FolderGit2 className="lucide-inline shrink-0 text-muted" />
+                      <span className="truncate text-[11px] text-text-strong font-medium" title={group.root}>{group.name}</span>
+                      {group.branch && (
+                        <span className="flex items-center gap-1 shrink-0 text-[10px] text-muted">
+                          <GitBranch className="lucide-inline" />
+                          <span className="truncate max-w-[110px]">{group.branch}</span>
+                        </span>
+                      )}
+                      <span className="flex-1" />
+                      {group.refused
+                        ? (
+                          <span
+                            className="text-[10px] text-muted italic"
+                            title={i18nT('components.gitPanel.repo_skipped_reason')}
+                          >
+                            {i18nT('components.gitPanel.repo_skipped')}
+                          </span>
+                        )
+                        : <span className="text-[10px] text-muted tabular-nums">{group.files.length}</span>}
+                    </div>
                   )}
-                </button>
+                  {group.files.map(f => (
+                    <button
+                      key={`${group.root}:${f.path}:${f.staged}`}
+                      className="w-full flex items-center gap-2 px-3 py-1 hover:bg-bg-hover cursor-pointer transition-colors bg-transparent border-none text-left"
+                      // Paths are repo-root-relative; anchor them to the row's
+                      // OWN repo root so the open cannot resolve against a
+                      // sibling repo, or against a DIFFERENT project's dir
+                      // (the gateway-wide project) when slots differ.
+                      onClick={() => {
+                        const owner = f.repoRoot ?? group.root
+                        onFileOpen?.(owner ? `${owner}/${f.path}` : f.path)
+                      }}
+                      title={f.path}
+                    >
+                      <span className={`font-mono font-semibold w-[14px] text-center shrink-0 ${statusColor(f.status)}`}>
+                        {f.status}
+                      </span>
+                      <span className="flex-1 truncate">
+                        <FilePath path={f.path} />
+                      </span>
+                      {(f.additions != null || f.deletions != null) && (
+                        <span className="font-mono text-[11px] shrink-0">
+                          {f.additions != null && f.additions > 0 && <span className="text-[var(--diff-add-text,var(--ok))]">+{f.additions}</span>}
+                          {f.deletions != null && f.deletions > 0 && <span className="text-[var(--diff-del-text,var(--danger))] ml-1">-{f.deletions}</span>}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               ))}
+              {status?.truncated && (
+                <div className="px-3 py-1 border-t border-border text-[10px] text-muted text-right">
+                  {i18nT('components.gitPanel.truncated', { count: fileCount })}
+                </div>
+              )}
+              {status?.reposTruncated && (
+                <div className="px-3 py-1 border-t border-border text-[10px] text-muted text-right">
+                  {i18nT('components.gitPanel.repos_truncated')}
+                </div>
+              )}
+              {status?.refused && (
+                <div className="px-3 py-1 border-t border-border text-[10px] text-muted text-right">
+                  {i18nT('components.gitPanel.repo_skipped_reason')}
+                </div>
+              )}
             </div>
           </section>
         )}
 
         {/* ── COMMITS section ── */}
+        {!log?.commits?.length && !!status?.repos?.length && (
+          <section className="py-2 border-t border-border">
+            <div className="px-3 pb-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                {i18nT('components.gitPanel.commits')}
+              </span>
+            </div>
+            <div className="px-3 text-[11px] text-muted">
+              {i18nT('components.gitPanel.commits_unavailable')}
+            </div>
+          </section>
+        )}
+
         {log?.commits && log.commits.length > 0 && (
           <section className="py-2 border-t border-border">
             <div className="px-3 pb-1.5">
@@ -197,8 +273,10 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
           </section>
         )}
 
-        {/* Empty state */}
-        {isClean && (!log?.commits || log.commits.length === 0) && !statusLoading && (
+        {/* Empty state -- suppressed for a multi-repo project, whose Commits
+            section already explains why it carries no history. */}
+        {isClean && (!log?.commits || log.commits.length === 0) && !statusLoading
+          && !status?.repos?.length && (
           <div className="px-3 py-8 text-center text-muted text-[12px]">
             {i18nT('components.gitPanel.empty_state')}
           </div>

@@ -6726,7 +6726,15 @@
       "no_project": "Nessuna cartella di progetto impostata per questa sessione.",
       "refresh": "Aggiorna",
       "title": "Git",
-      "uncommitted": "{{count}} non committati"
+      "uncommitted": "{{count}} non committati",
+      "repos_count_one": "{{count}} repository",
+      "repos_count_many": "{{count}} repository",
+      "repos_count_other": "{{count}} repository",
+      "truncated": "Troncato a {{count}} file",
+      "commits_unavailable": "La cronologia dei commit non è disponibile per i progetti multi-repository",
+      "repo_skipped": "ignorato",
+      "repos_truncated": "Alcuni repository non sono stati analizzati",
+      "repo_skipped_reason": "Ignorato: questo repository dichiara un filtro di contenuto git"
     }
   },
   "hooks": {

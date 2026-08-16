@@ -6726,7 +6726,15 @@
       "no_project": "Aucun dossier de projet défini pour cette session.",
       "refresh": "Actualiser",
       "title": "Git",
-      "uncommitted": "{{count}} non validé(s)"
+      "uncommitted": "{{count}} non validé(s)",
+      "repos_count_one": "{{count}} dépôt",
+      "repos_count_many": "{{count}} dépôts",
+      "repos_count_other": "{{count}} dépôts",
+      "truncated": "Tronqué à {{count}} fichiers",
+      "commits_unavailable": "L'historique des commits n'est pas disponible pour les projets multi-dépôts",
+      "repo_skipped": "ignoré",
+      "repos_truncated": "Certains dépôts n'ont pas été analysés",
+      "repo_skipped_reason": "Ignoré : ce dépôt déclare un filtre de contenu git"
     }
   },
   "hooks": {

@@ -6638,7 +6638,14 @@
       "no_project": "এই সেশনের জন্য কোনো প্রজেক্ট ফোল্ডার সেট করা নেই।",
       "refresh": "রিফ্রেশ",
       "title": "Git",
-      "uncommitted": "{{count}}টি আনকমিটেড"
+      "uncommitted": "{{count}}টি আনকমিটেড",
+      "repos_count_one": "{{count}}টি রিপোজিটরি",
+      "repos_count_other": "{{count}}টি রিপোজিটরি",
+      "truncated": "{{count}}টি ফাইলে ছাঁটা হয়েছে",
+      "commits_unavailable": "মাল্টি-রিপো প্রজেক্টে কমিট ইতিহাস পাওয়া যায় না",
+      "repo_skipped": "বাদ দেওয়া",
+      "repos_truncated": "কিছু রিপোজিটরি স্ক্যান করা হয়নি",
+      "repo_skipped_reason": "বাদ দেওয়া: এই রিপোজিটরি একটি git কনটেন্ট ফিল্টার ঘোষণা করে"
     }
   },
   "hooks": {

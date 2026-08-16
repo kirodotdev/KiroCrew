@@ -6550,7 +6550,13 @@
       "no_project": "이 세션에 설정된 프로젝트 폴더가 없습니다.",
       "refresh": "새로 고침",
       "title": "Git",
-      "uncommitted": "커밋되지 않음 {{count}}개"
+      "uncommitted": "커밋되지 않음 {{count}}개",
+      "repos_count_other": "저장소 {{count}}개",
+      "truncated": "{{count}}개 파일에서 잘림",
+      "commits_unavailable": "다중 저장소 프로젝트에서는 커밋 기록을 사용할 수 없습니다",
+      "repo_skipped": "건너뜀",
+      "repos_truncated": "일부 저장소는 스캔되지 않았습니다",
+      "repo_skipped_reason": "건너뜀: 이 저장소는 git 콘텐츠 필터를 선언합니다"
     }
   },
   "hooks": {

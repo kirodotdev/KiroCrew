@@ -2931,6 +2931,151 @@ def _repo_declares_filter_driver(git_cmd: list[str], base: str, env: dict) -> bo
     return False
 
 
+_REPO_SCAN_MAX_DEPTH = 3
+_REPO_SCAN_MAX_REPOS = 12
+_REPO_SCAN_MAX_ENTRIES = 4000
+_REPO_SCAN_TTL_SECONDS = 60.0
+_REPO_STATUS_CONCURRENCY = 6
+
+# Never worth descending into while looking for repositories.
+_REPO_SCAN_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        "dist",
+        "build",
+        ".next",
+        ".cache",
+        "target",
+        ".gradle",
+        ".idea",
+    }
+)
+
+_repo_scan_cache: dict[str, tuple[float, list[str], bool]] = {}
+
+
+def _discover_repo_roots(
+    base: str, git_cmd: list[str], env: dict, fresh: bool = False
+) -> tuple[list[str], bool]:
+    """Repo roots covering ``base``: its own repo if it has one, else its
+    descendants' (sorted, so the grouped order is stable across polls).
+
+    Returns the roots and whether a bound truncated the search, so a caller can
+    say that repositories are missing rather than presenting a short list as the
+    whole workspace.
+
+    ``fresh`` bypasses the TTL cache, so a manual refresh can pick up a repo
+    cloned into the workspace instead of waiting out the poll cache.
+    """
+    now = time.monotonic()
+    cached = _repo_scan_cache.get(base)
+    if not fresh and cached is not None and now - cached[0] < _REPO_SCAN_TTL_SECONDS:
+        return cached[1], cached[2]
+
+    roots: list[str] = []
+    bounded = False
+    probe_rc, _out, _ = _run_git_bounded(
+        [*git_cmd, "rev-parse", "--git-dir"], cwd=base, env=env, timeout=5
+    )
+    if probe_rc == 0:
+        root_rc, root_out, _ = _run_git_bounded(
+            [*git_cmd, "rev-parse", "--show-toplevel"], cwd=base, env=env, timeout=5
+        )
+        # git answers with forward slashes even on Windows, while `base` and the
+        # scanned descendants carry native separators. Normalising here keeps every
+        # root in one spelling, so the dispatch below can compare them as paths and
+        # a row's `repoRoot` does not change shape with the discovery route.
+        roots = [os.path.normpath(root_out.strip()) if root_rc == 0 else base]
+    else:
+
+        visited = 0
+
+        def _scan(directory: str, depth: int) -> None:  # noqa: C901
+            # Depth and repo count alone leave the walk unbounded over a merely
+            # large tree, so cap the directories visited too: an over-budget scan
+            # reports what it found rather than stat'ing the whole subtree every
+            # time the cache expires.
+            nonlocal visited, bounded
+            if len(roots) >= _REPO_SCAN_MAX_REPOS or visited >= _REPO_SCAN_MAX_ENTRIES:
+                bounded = True
+                return
+            if depth > _REPO_SCAN_MAX_DEPTH:
+                bounded = True
+                return
+            try:
+                entries = sorted(os.scandir(directory), key=lambda e: e.name)
+            except OSError:
+                # An unreadable directory is one branch of the walk, not the end
+                # of it: raising here would surface as a 500 for the whole panel.
+                bounded = True
+                return
+            for entry in entries:
+                if len(roots) >= _REPO_SCAN_MAX_REPOS or visited >= _REPO_SCAN_MAX_ENTRIES:
+                    bounded = True
+                    return
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if entry.name in _REPO_SCAN_SKIP_DIRS or entry.name.startswith("."):
+                        continue
+                    is_repo = os.path.exists(os.path.join(entry.path, ".git"))
+                except OSError:
+                    # Entry metadata can fail on its own (a vanished entry, a
+                    # permission-denied mount point); skip that entry only.
+                    bounded = True
+                    continue
+                visited += 1
+                if is_repo:
+                    # A submodule's status belongs to its parent.
+                    roots.append(entry.path)
+                    continue
+                _scan(entry.path, depth + 1)
+
+        _scan(base, 1)
+
+    _repo_scan_cache[base] = (now, roots, bounded)
+    return roots, bounded
+
+
+def _verify_descendant_roots(base: str, roots: list[str]) -> tuple[list[str], bool]:
+    """Keep only roots that are still real directories contained in ``base``.
+
+    Discovery refuses a symlinked entry, but its result is cached, so this runs at
+    USE time: a child swapped for a symlink out of the project within the TTL
+    would otherwise have git run in it, disclosing another repository's branch and
+    paths through an endpoint scoped to the project. Returns the surviving roots
+    and whether any were dropped.
+    """
+    real_base = os.path.realpath(base)
+    kept: list[str] = []
+    dropped = False
+    for root in roots:
+        real = os.path.realpath(root)
+        contained = real == real_base or real.startswith(real_base + os.sep)
+        if os.path.islink(root) or not contained or is_sensitive_path(real):
+            dropped = True
+            continue
+        try:
+            if not os.path.isdir(real):
+                dropped = True
+                continue
+        except OSError:
+            dropped = True
+            continue
+        kept.append(root)
+    return kept, dropped
+
+
 async def api_project_git_status(request: web.Request) -> web.Response:
     """GET /api/project/git/status?path=... - working tree status for a project dir.
 
@@ -2977,39 +3122,49 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     if not await asyncio.to_thread(os.path.isdir, base):
         return web.json_response({"repo": False, "files": []})
 
-    def _run() -> dict:
-        _git_cmd = [
-            "git",
-            "-c", "diff.textconv=",
-            "-c", "core.attributesFile=/dev/null",
-            "-c", f"core.hooksPath={os.devnull}",
-            "-c", "core.fsmonitor=",
-            # Repo-local .gitattributes is still consulted despite the
-            # attributesFile override, so keep driver escape hatches shut and
-            # emit non-ASCII paths raw (UTF-8) instead of C-quoted so the
-            # panel can open them.
-            "-c", "core.quotePath=false",
-        ]
-        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+    _git_cmd = [
+        "git",
+        "-c", "diff.textconv=",
+        "-c", "core.attributesFile=/dev/null",
+        "-c", f"core.hooksPath={os.devnull}",
+        "-c", "core.fsmonitor=",
+        # Repo-local .gitattributes is still consulted despite the
+        # attributesFile override, so keep driver escape hatches shut and
+        # emit non-ASCII paths raw (UTF-8) instead of C-quoted so the
+        # panel can open them.
+        "-c", "core.quotePath=false",
+    ]
+    _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
 
-        # Check if it's a repo
-        probe_rc, _probe_out, _ = _run_git_bounded(
-            [*_git_cmd, "rev-parse", "--git-dir"], cwd=base, env=_env, timeout=5,
-        )
-        if probe_rc != 0:
-            return {"repo": False, "files": []}
+    def _run(base: str = base, known_root: str | None = None) -> dict:
+        """Working-tree status for ONE repo. ``known_root`` skips the toplevel
+        probe when discovery already resolved it.
+        """
+        if known_root is None:
+            # Check if it's a repo
+            probe_rc, _probe_out, _ = _run_git_bounded(
+                [*_git_cmd, "rev-parse", "--git-dir"], cwd=base, env=_env, timeout=5,
+            )
+            if probe_rc != 0:
+                return {"repo": False, "files": []}
 
         # Refuse repos whose own config names a content-filter driver: status
         # re-hashes modified files through ``filter.<name>.clean``, which would
         # execute that program on every 5s poll. Degraded-but-safe empty answer.
         if _repo_declares_filter_driver(_git_cmd, base, _env):
-            return {"repo": True, "files": []}
+            return {"repo": True, "files": [], "refused": True}
 
         # Get repo root and branch info
-        root_rc, root_out, _ = _run_git_bounded(
-            [*_git_cmd, "rev-parse", "--show-toplevel"], cwd=base, env=_env, timeout=5,
-        )
-        repo_root = root_out.strip() if root_rc == 0 else base
+        if known_root is not None:
+            repo_root = known_root
+        else:
+            root_rc, root_out, _ = _run_git_bounded(
+                [*_git_cmd, "rev-parse", "--show-toplevel"], cwd=base, env=_env, timeout=5,
+            )
+            repo_root = root_out.strip() if root_rc == 0 else base
+            # Same normalisation as discovery, so `repoRoot` has one shape on
+            # Windows regardless of which route resolved it.
+            repo_root = os.path.normpath(repo_root)
 
         # Branch + ahead/behind via status -b
         status_rc, status_out, _ = _run_git_bounded(
@@ -3089,12 +3244,17 @@ async def api_project_git_status(request: web.Request) -> web.Response:
                 if y not in (" ", "?", "!"):
                     files.append({"path": filepath, "status": y, "staged": False})
 
-        # Merge numstat for line counts (staged + unstaged vs HEAD)
+        # Merge numstat for line counts (staged + unstaged vs HEAD). Skipped
+        # for a clean repo: one fewer spawn per untouched repo.
         try:
-            numstat_rc, numstat_out, _ = _run_git_bounded(
-                [*_git_cmd, "diff", "--numstat", "--no-textconv",
-                 "--no-ext-diff", "HEAD"],
-                cwd=base, env=_env, timeout=10,
+            numstat_rc, numstat_out, _ = (
+                _run_git_bounded(
+                    [*_git_cmd, "diff", "--numstat", "--no-textconv",
+                     "--no-ext-diff", "HEAD"],
+                    cwd=base, env=_env, timeout=10,
+                )
+                if files
+                else (1, "", False)
             )
             if numstat_rc == 0:
                 stats: dict[str, tuple[int | None, int | None]] = {}
@@ -3118,6 +3278,8 @@ async def api_project_git_status(request: web.Request) -> web.Response:
             pass
 
         result: dict = {"repo": True, "repoRoot": repo_root, "files": files[:500]}
+        for f in result["files"]:
+            f["repoRoot"] = repo_root
         if len(files) > 500:
             result["truncated"] = True
         if branch:
@@ -3128,7 +3290,74 @@ async def api_project_git_status(request: web.Request) -> web.Response:
             result["behind"] = behind
         return result
 
-    result = await asyncio.to_thread(_run)
+    fresh = request.query.get("refresh") == "1"
+    roots, bounded = await asyncio.to_thread(
+        _discover_repo_roots, base, _git_cmd, _env, fresh
+    )
+    if not roots:
+        return web.json_response({"repo": False, "files": []})
+
+    if len(roots) == 1 and roots[0] == base:
+        # The project dir IS the repo root: the ordinary single-repo answer.
+        result = await asyncio.to_thread(_run, base, roots[0])
+    elif len(roots) == 1 and base.startswith(roots[0] + os.sep):
+        # The dir sits INSIDE a repo: status stays scoped to the dir.
+        result = await asyncio.to_thread(_run)
+    else:
+        # Every DESCENDANT set takes the grouped path, one repo included: a lone
+        # descendant reported as a bare single repo hides both its name and a
+        # per-repo refusal, and it would need its own render case in the panel.
+        roots, dropped = await asyncio.to_thread(_verify_descendant_roots, base, roots)
+        if dropped:
+            # The tree moved under a cached answer, so drop the stale entry and
+            # report the repo list as partial rather than silently short.
+            _repo_scan_cache.pop(base, None)
+            bounded = True
+        if not roots:
+            return web.json_response({"repo": False, "files": []})
+        # Each collection spawns git through the OS sandbox: bound the burst.
+        gate = asyncio.Semaphore(_REPO_STATUS_CONCURRENCY)
+
+        async def _one(root: str) -> dict:
+            async with gate:
+                return await asyncio.to_thread(_run, root, root)
+
+        collected = await asyncio.gather(*(_one(r) for r in roots), return_exceptions=True)
+        repos: list[dict] = []
+        truncated = False
+        # One budget shared across groups keeps `files` and `repos[].files`
+        # holding the same row objects, so the redaction below covers both.
+        budget = 500
+        for root, one in zip(roots, collected):
+            if isinstance(one, BaseException) or not one.get("repo"):
+                continue
+            rows = one.get("files", [])
+            if len(rows) > budget:
+                rows = rows[:budget]
+                truncated = True
+            budget -= len(rows)
+            entry: dict = {
+                "root": root,
+                "name": os.path.relpath(root, base),
+                "files": rows,
+            }
+            # No per-group ahead/behind: nothing renders them, and a field with
+            # no reader is surface to maintain rather than information.
+            for key in ("branch", "refused"):
+                if one.get(key):
+                    entry[key] = one[key]
+            truncated = truncated or bool(one.get("truncated"))
+            repos.append(entry)
+        merged = [row for group in repos for row in group["files"]]
+        # No top-level branch/ahead/behind: siblings each have their own.
+        result = {"repo": bool(repos), "files": merged, "repos": repos}
+        if truncated:
+            result["truncated"] = True
+
+    if bounded:
+        # Discovery stopped early, so the repo list is not the whole workspace.
+        result["reposTruncated"] = True
+
     # Egress redaction: repo content (paths, branch label, repo root) is
     # agent-influenceable and this response body is rendered by the dashboard,
     # so it goes through the same redaction as api_project_git. Normal values
@@ -3139,6 +3368,13 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         result["branch"] = redact(result["branch"])
     for f in result.get("files", []):
         f["path"] = redact(f["path"])
+        if f.get("repoRoot"):
+            f["repoRoot"] = redact(f["repoRoot"])
+    for group in result.get("repos", []):
+        group["root"] = redact(group["root"])
+        group["name"] = redact(group["name"])
+        if group.get("branch"):
+            group["branch"] = redact(group["branch"])
     return web.json_response(result)
 
 

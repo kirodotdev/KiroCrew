@@ -6726,7 +6726,15 @@
       "no_project": "Nenhuma pasta de projeto definida para esta sessão.",
       "refresh": "Atualizar",
       "title": "Git",
-      "uncommitted": "{{count}} sem commit"
+      "uncommitted": "{{count}} sem commit",
+      "repos_count_one": "{{count}} repositório",
+      "repos_count_many": "{{count}} repositórios",
+      "repos_count_other": "{{count}} repositórios",
+      "truncated": "Truncado em {{count}} arquivos",
+      "commits_unavailable": "O histórico de commits não está disponível para projetos multirrepositório",
+      "repo_skipped": "ignorado",
+      "repos_truncated": "Alguns repositórios não foram verificados",
+      "repo_skipped_reason": "Ignorado: este repositório declara um filtro de conteúdo do git"
     }
   },
   "hooks": {

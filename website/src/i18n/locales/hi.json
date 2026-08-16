@@ -6638,7 +6638,14 @@
       "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
       "refresh": "रिफ़्रेश करें",
       "title": "Git",
-      "uncommitted": "{{count}} अनकमिटेड"
+      "uncommitted": "{{count}} अनकमिटेड",
+      "repos_count_one": "{{count}} रिपॉज़िटरी",
+      "repos_count_other": "{{count}} रिपॉज़िटरी",
+      "truncated": "{{count}} फ़ाइलों पर काटा गया",
+      "commits_unavailable": "मल्टी-रिपो प्रोजेक्ट के लिए कमिट इतिहास उपलब्ध नहीं है",
+      "repo_skipped": "छोड़ा गया",
+      "repos_truncated": "कुछ रिपॉज़िटरी स्कैन नहीं की गईं",
+      "repo_skipped_reason": "छोड़ा गया: यह रिपॉज़िटरी git कंटेंट फ़िल्टर घोषित करती है"
     }
   },
   "hooks": {

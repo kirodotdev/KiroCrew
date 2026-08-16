@@ -1379,6 +1379,17 @@ export interface WebhookTestResult {
   error?: string
 }
 
+/** One changed-file row from `/api/project/git/status`. `repoRoot` names the row's
+ *  OWN repo -- sibling packages can share a relative path. */
+export type ProjectGitFile = {
+  path: string
+  status: string
+  staged: boolean
+  additions?: number
+  deletions?: number
+  repoRoot?: string
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -1697,7 +1708,13 @@ export const api = {
   browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
   browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
   projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
-  projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
+  /** `fresh` bypasses the backend's repo-discovery cache, for an explicit refresh. */
+  projectGitStatus: (path: string, fresh = false) => fetch('/api/project/git/status?path=' + encodeURIComponent(path) + (fresh ? '&refresh=1' : '')).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; refused?: boolean
+    truncated?: boolean; reposTruncated?: boolean
+    files: ProjectGitFile[]
+    /** Present when the project dir covers several repos: the same rows as
+     *  `files`, grouped per repo. Absent for the single-repo case. */
+    repos?: { root: string; name: string; branch?: string; refused?: boolean; files: ProjectGitFile[] }[] }>,
   projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
   workspaces: () => fetch('/api/workspaces').then(j),
   createWorkspace: (body: object) => post('/api/workspaces', body).then(j),

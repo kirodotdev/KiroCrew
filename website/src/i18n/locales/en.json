@@ -3258,7 +3258,14 @@
       "refresh": "Refresh",
       "title": "Git",
       "uncommitted": "{{count}} uncommitted",
-      "no_project": "No project folder set for this session."
+      "no_project": "No project folder set for this session.",
+      "repos_count_one": "{{count}} repository",
+      "repos_count_other": "{{count}} repositories",
+      "truncated": "Truncated at {{count}} files",
+      "commits_unavailable": "Commit history is not available for multi-repo projects",
+      "repo_skipped": "skipped",
+      "repos_truncated": "Some repositories were not scanned",
+      "repo_skipped_reason": "Skipped: this repository declares a git content filter"
     },
     "agentImportFlow": {
       "back": "Back",

@@ -97,6 +97,308 @@ def repo(tmp_path, _repo_template):
 # ── /api/project/git/status tests ──
 
 
+class TestMultiRepoDiscovery:
+    """A project dir that is not itself a repo but contains them.
+
+    A workspace laid out as one repo per package (``<ws>/src/<Package>``) has no
+    repo at its own root, so upward-only resolution reported none at all.
+    """
+
+    @pytest.fixture()
+    def workspace(self, tmp_path, _repo_template):
+        """`ws/src/{PkgA,PkgB}` repos under a plain, non-repo workspace root."""
+        src = tmp_path / "ws" / "src"
+        src.mkdir(parents=True)
+        for pkg in ("PkgA", "PkgB"):
+            shutil.copytree(_repo_template, src / pkg)
+        return tmp_path / "ws"
+
+    @pytest.mark.asyncio
+    async def test_groups_changes_per_descendant_repo(self, workspace, mock_sel):
+        (workspace / "src" / "PkgA" / "a.txt").write_text("changed in A\n")
+        (workspace / "src" / "PkgB" / "fresh.txt").write_text("new in B\n")
+
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={workspace}")
+            data = await resp.json()
+
+        assert data["repo"] is True
+        groups = {g["name"]: g for g in data["repos"]}
+        assert set(groups) == {os.path.join("src", "PkgA"), os.path.join("src", "PkgB")}
+        assert [f["path"] for f in groups[os.path.join("src", "PkgA")]["files"]] == ["a.txt"]
+        assert [f["path"] for f in groups[os.path.join("src", "PkgB")]["files"]] == ["fresh.txt"]
+        assert all(g["branch"] == "trunk" for g in data["repos"])
+        assert "branch" not in data
+        # Nothing renders per-group ahead/behind, so the response does not carry it.
+        assert all("ahead" not in g and "behind" not in g for g in data["repos"])
+
+    @pytest.mark.asyncio
+    async def test_every_row_names_its_own_repo(self, workspace, mock_sel):
+        """`files` stays flat for existing consumers, with a per-row repoRoot."""
+        (workspace / "src" / "PkgA" / "a.txt").write_text("changed in A\n")
+        (workspace / "src" / "PkgB" / "a.txt").write_text("changed in B\n")
+
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={workspace}")
+            data = await resp.json()
+
+        assert [f["path"] for f in data["files"]] == ["a.txt", "a.txt"]
+        roots = sorted(f["repoRoot"] for f in data["files"])
+        assert roots == sorted(g["root"] for g in data["repos"])
+        assert sum(len(g["files"]) for g in data["repos"]) == len(data["files"])
+
+    @pytest.mark.asyncio
+    async def test_clean_workspace_reports_no_files(self, workspace, mock_sel):
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={workspace}")
+            data = await resp.json()
+        assert data["repo"] is True
+        assert data["files"] == []
+        assert len(data["repos"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_dir_with_no_repos_anywhere_still_reports_false(self, tmp_path, mock_sel):
+        bare = tmp_path / "bare"
+        (bare / "src" / "notarepo").mkdir(parents=True)
+        async with TestClient(TestServer(_make_app(str(bare)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={bare}")
+            data = await resp.json()
+        assert data["repo"] is False
+        assert data["files"] == []
+        assert "repos" not in data
+
+    @pytest.mark.asyncio
+    async def test_single_descendant_repo_takes_the_grouped_shape(
+        self, tmp_path, _repo_template, mock_sel
+    ):
+        """One descendant is the same case as several, not an ancestor lookup.
+
+        Re-probing the non-repo base answers "not a repo" and empties the panel,
+        and a bare single-repo answer would hide both the repo's name and a
+        per-repo refusal.
+        """
+        ws = tmp_path / "solo"
+        src = ws / "src"
+        src.mkdir(parents=True)
+        shutil.copytree(_repo_template, src / "OnlyPkg")
+        (src / "OnlyPkg" / "a.txt").write_text("changed\n")
+
+        async with TestClient(TestServer(_make_app(str(ws)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={ws}")
+            data = await resp.json()
+
+        assert data["repo"] is True
+        assert [f["path"] for f in data["files"]] == ["a.txt"]
+        assert data["files"][0]["repoRoot"] == str(src / "OnlyPkg")
+        assert [g["name"] for g in data["repos"]] == [os.path.join("src", "OnlyPkg")]
+        assert data["repos"][0]["files"] == data["files"]
+
+    @pytest.mark.asyncio
+    async def test_lone_descendant_refusal_is_visible_as_a_group(
+        self, tmp_path, _repo_template, mock_sel
+    ):
+        """A repo refused for a filter driver must not read as clean."""
+        ws = tmp_path / "filtered"
+        src = ws / "src"
+        src.mkdir(parents=True)
+        pkg = src / "OnlyPkg"
+        shutil.copytree(_repo_template, pkg)
+        _git(pkg, "config", "filter.evil.clean", "touch /tmp/pwned")
+        (pkg / "a.txt").write_text("changed\n")
+
+        async with TestClient(TestServer(_make_app(str(ws)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={ws}")
+            data = await resp.json()
+
+        assert data["repos"][0]["refused"] is True
+        assert data["repos"][0]["files"] == []
+        assert data["files"] == []
+
+    @pytest.mark.asyncio
+    async def test_single_repo_refusal_is_reported_on_the_response(
+        self, repo, mock_sel
+    ):
+        """The project dir being the repo draws no group header, so the refusal
+        has to reach the client as a field of its own."""
+        _git(repo, "config", "filter.evil.clean", "touch /tmp/pwned")
+        (repo / "a.txt").write_text("changed\n")
+
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+
+        assert data["refused"] is True
+        assert data["files"] == []
+
+    @pytest.mark.asyncio
+    async def test_capped_discovery_says_the_list_is_partial(
+        self, tmp_path, _repo_template, mock_sel, monkeypatch
+    ):
+        """A repo dropped by a discovery bound must not read as nonexistent.
+
+        Same failure mode the row-budget notice exists to prevent: a short list
+        rendered as the whole workspace.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        ws = tmp_path / "big"
+        src = ws / "src"
+        src.mkdir(parents=True)
+        for name in ("PkgA", "PkgB", "PkgC"):
+            shutil.copytree(_repo_template, src / name)
+        monkeypatch.setattr(files_mod, "_REPO_SCAN_MAX_REPOS", 2)
+        files_mod._repo_scan_cache.clear()
+
+        async with TestClient(TestServer(_make_app(str(ws)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={ws}")
+            data = await resp.json()
+
+        assert len(data["repos"]) == 2
+        assert data["reposTruncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_cached_root_swapped_for_an_outside_symlink_is_refused(
+        self, tmp_path, _repo_template, mock_sel
+    ):
+        """A cached root is re-checked at use time, not trusted for the TTL.
+
+        Discovery refuses a symlinked child, but its answer is cached -- so a child
+        replaced by a symlink out of the project inside that window would run git
+        in an unauthorised directory and return its branch and paths.
+        """
+        ws = tmp_path / "ws"
+        src = ws / "src"
+        src.mkdir(parents=True)
+        pkg = src / "PkgA"
+        shutil.copytree(_repo_template, pkg)
+        (pkg / "a.txt").write_text("inside the project\n")
+
+        outside = tmp_path / "outside"
+        shutil.copytree(_repo_template, outside)
+        _git(outside, "checkout", "-b", "secret-branch")
+        (outside / "confidential.txt").write_text("must not leak\n")
+
+        async with TestClient(TestServer(_make_app(str(ws)))) as client:
+            warm = await (await client.get(f"/api/project/git/status?path={ws}")).json()
+            assert [f["path"] for f in warm["files"]] == ["a.txt"]
+
+            # Same path, now pointing out of the project, while the scan is cached.
+            shutil.rmtree(pkg)
+            os.symlink(outside, pkg)
+
+            after = await (await client.get(f"/api/project/git/status?path={ws}")).json()
+
+        assert after.get("repos", []) == []
+        assert after["files"] == []
+        assert "confidential.txt" not in str(after)
+        assert "secret-branch" not in str(after)
+
+    @pytest.mark.asyncio
+    async def test_a_symlinked_repo_inside_the_project_is_still_refused(
+        self, tmp_path, _repo_template, mock_sel
+    ):
+        """Containment is not the only test: a symlink is refused as such.
+
+        Following one would report a repo twice under two names, and its target is
+        only checkable at the moment of the check.
+        """
+        ws = tmp_path / "ws"
+        src = ws / "src"
+        src.mkdir(parents=True)
+        real = src / "Real"
+        shutil.copytree(_repo_template, real)
+        (real / "a.txt").write_text("changed\n")
+        os.symlink(real, src / "Alias")
+
+        async with TestClient(TestServer(_make_app(str(ws)))) as client:
+            data = await (await client.get(f"/api/project/git/status?path={ws}")).json()
+
+        assert [g["name"] for g in data["repos"]] == [os.path.join("src", "Real")]
+
+    def test_unreadable_entry_does_not_abort_discovery(self, tmp_path, monkeypatch):
+        """An OSError from one entry probe is a skipped branch, not a 500."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        (tmp_path / "b" / ".git").mkdir()
+
+        real_scandir = os.scandir
+
+        class _Hostile:
+            def __init__(self, entry):
+                self._entry = entry
+                self.name = entry.name
+                self.path = entry.path
+
+            def is_dir(self, follow_symlinks=True):
+                if self.name == "a":
+                    raise PermissionError(self.path)
+                return self._entry.is_dir(follow_symlinks=follow_symlinks)
+
+        def fake_scandir(path):
+            return [_Hostile(e) for e in real_scandir(path)]
+
+        monkeypatch.setattr(files_mod.os, "scandir", fake_scandir)
+        with patch.object(files_mod, "_run_git_bounded", return_value=(1, "", False)):
+            files_mod._repo_scan_cache.clear()
+            roots, bounded = files_mod._discover_repo_roots(str(tmp_path), ["git"], {})
+
+        assert roots == [str(tmp_path / "b")]
+        assert bounded is True
+
+    @pytest.mark.asyncio
+    async def test_refresh_bypasses_the_root_scan_cache(
+        self, workspace, _repo_template, mock_sel
+    ):
+        """A repo cloned after the first poll appears on an explicit refresh."""
+        async with TestClient(TestServer(_make_app(str(workspace)))) as client:
+            first = await (
+                await client.get(f"/api/project/git/status?path={workspace}")
+            ).json()
+            shutil.copytree(_repo_template, workspace / "src" / "PkgC")
+            cached = await (
+                await client.get(f"/api/project/git/status?path={workspace}")
+            ).json()
+            refreshed = await (
+                await client.get(f"/api/project/git/status?path={workspace}&refresh=1")
+            ).json()
+
+        assert len(first["repos"]) == 2
+        assert len(cached["repos"]) == 2
+        assert len(refreshed["repos"]) == 3
+
+    def test_upward_root_is_normalised(self, tmp_path):
+        """git spells the toplevel with forward slashes even on Windows.
+
+        Discovery and the descendant scan must agree on separators: dispatch
+        compares a root against the project dir as strings, and a row's
+        ``repoRoot`` must not change shape with the route that resolved it.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        odd = f"{tmp_path}//sub/./repo"
+        with patch.object(
+            files_mod, "_run_git_bounded", return_value=(0, odd + "\n", False)
+        ):
+            files_mod._repo_scan_cache.clear()
+            roots, _bounded = files_mod._discover_repo_roots(str(tmp_path), ["git"], {})
+
+        assert roots == [os.path.normpath(odd)]
+        assert roots[0] == str(tmp_path / "sub" / "repo")
+
+    @pytest.mark.asyncio
+    async def test_single_repo_answer_keeps_its_shape(self, repo, mock_sel):
+        (repo / "a.txt").write_text("modified\n")
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/git/status?path={repo}")
+            data = await resp.json()
+        assert data["repo"] is True
+        assert data.get("branch") == "trunk"
+        assert "repos" not in data
+        assert data["files"][0]["repoRoot"] == str(repo)
+
+
 class TestGitStatus:
     @pytest.mark.asyncio
     async def test_non_repo_returns_repo_false(self, tmp_path, mock_sel):

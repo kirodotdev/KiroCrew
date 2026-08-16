@@ -6638,7 +6638,14 @@
       "no_project": "Kein Projektordner für diese Sitzung festgelegt.",
       "refresh": "Aktualisieren",
       "title": "Git",
-      "uncommitted": "{{count}} nicht committet"
+      "uncommitted": "{{count}} nicht committet",
+      "repos_count_one": "{{count}} Repository",
+      "repos_count_other": "{{count}} Repositorys",
+      "truncated": "Bei {{count}} Dateien abgeschnitten",
+      "commits_unavailable": "Commit-Verlauf ist für Multi-Repo-Projekte nicht verfügbar",
+      "repo_skipped": "übersprungen",
+      "repos_truncated": "Einige Repositorys wurden nicht durchsucht",
+      "repo_skipped_reason": "Übersprungen: dieses Repository deklariert einen Git-Inhaltsfilter"
     }
   },
   "hooks": {

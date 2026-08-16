@@ -6550,7 +6550,13 @@
       "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
       "refresh": "更新",
       "title": "Git",
-      "uncommitted": "{{count}} 件の未コミット"
+      "uncommitted": "{{count}} 件の未コミット",
+      "repos_count_other": "{{count}} 個のリポジトリ",
+      "truncated": "{{count}} ファイルで打ち切り",
+      "commits_unavailable": "マルチリポジトリプロジェクトではコミット履歴を表示できません",
+      "repo_skipped": "スキップ",
+      "repos_truncated": "一部のリポジトリはスキャンされていません",
+      "repo_skipped_reason": "スキップ: このリポジトリは git のコンテンツフィルターを宣言しています"
     }
   },
   "hooks": {
