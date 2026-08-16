@@ -3,6 +3,18 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **A transient API failure can no longer wedge a fork PR at
+  `readiness: checking`.** The four fork reviewer lanes
+  (`fork-{opus,gpt,design,ux}-review.yml`) finalized their check-run with a
+  bare `PATCH … || true`. One transient 5xx left the run `in_progress`
+  forever, and `pr-readiness.yml` counts ANY non-completed check-run of that
+  name as pending — including after a successful re-run — so the PR sat at
+  `readiness: checking` with no event able to clear it. `|| true` also
+  swallowed the failure, so nothing in the job log said why. All four now
+  finalize through the same one-retry `complete()` helper
+  `fork-first-principles-review.yml` already uses, and a finalize that still
+  fails emits a `::warning::` naming the check-run and head instead of
+  failing silently. (#3447)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A

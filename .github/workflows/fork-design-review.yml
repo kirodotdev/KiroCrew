@@ -569,11 +569,26 @@ jobs:
             BLOCK)    conclusion="failure"; title="BLOCK — design concern (advisory)" ;;
             *)        conclusion="neutral"; title="review incomplete (advisory)" ;;
           esac
+          # complete <conclusion> <title> — one retry, because a single transient
+          # 5xx here is what strands the run: the check-run stays `in_progress`
+          # forever, and pr-readiness counts ANY non-completed run of this name as
+          # pending — including after a successful re-run — so the PR sits at
+          # `readiness: checking` with no event able to clear it.
+          complete() {
+            for attempt in 1 2; do
+              if gh api --method PATCH "repos/$REPO/check-runs/$CHECK_ID" \
+                -f status="completed" -f conclusion="$1" \
+                -f "output[title]=Design Review — $2" \
+                -f "output[summary]=Advisory fork design review for $HEAD. See the PR comment for details." >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "::warning::could not complete check-run $CHECK_ID for $HEAD"
+            return 1
+          }
           if [ -n "${CHECK_ID:-}" ]; then
-            gh api --method PATCH "repos/$REPO/check-runs/$CHECK_ID" \
-              -f status="completed" -f conclusion="$conclusion" \
-              -f "output[title]=Design Review — $title" \
-              -f "output[summary]=Advisory fork design review for $HEAD. See the PR comment for details." >/dev/null || true
+            complete "$conclusion" "$title" || true
           elif [ -n "${HEAD:-}" ]; then
             gh api --method POST "repos/$REPO/check-runs" \
               -f name="Design Review" -f head_sha="$HEAD" \
