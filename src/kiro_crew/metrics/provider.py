@@ -716,14 +716,57 @@ def shutdown() -> None:
         _flush_detached_provider(doomed)
 
 
+# reset_for_testing() waits at most this long for an in-flight consent-check
+# worker to finish before returning. The worker is a daemon thread whose
+# ``finally`` unconditionally clears ``_check_in_flight`` (see
+# ``_consent_worker``), so under normal load this bound is never approached;
+# it exists so a genuinely stuck worker fails the test loudly instead of
+# reset_for_testing() handing back a "clean" state while a stale thread can
+# still mutate module globals underneath the next test.
+_RESET_WAIT_BOUND_SECS = 10.0
+_RESET_WAIT_POLL_SECS = 0.01
+
+
+def _wait_for_in_flight_consent_worker() -> None:
+    """Block until ``_check_in_flight`` is False, or raise past the bound.
+
+    Test-only: called from ``reset_for_testing`` so every test starts from a
+    state with no consent-check worker still running. Polling a plain bool
+    under ``_lock`` matches how ``_check_in_flight`` is read and written
+    everywhere else in this module, and keeps this seam simple since it only
+    ever runs between tests, never on a request path.
+    """
+    deadline = time.monotonic() + _RESET_WAIT_BOUND_SECS
+    while True:
+        with _lock:
+            if not _check_in_flight:
+                return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "reset_for_testing: a consent-check worker is still in flight "
+                f"after {_RESET_WAIT_BOUND_SECS}s; a test must never proceed "
+                "with a live stale worker able to mutate module state"
+            )
+        time.sleep(_RESET_WAIT_POLL_SECS)
+
+
 def reset_for_testing() -> None:
     """Drop the cached recorder + provider so the next get_recorder() rebuilds.
 
     Also clears ``_ever_built``, so the next build is synchronous and a test can
     assert on the result without polling. Production keeps that flag set, which is
     what pushes a post-shutdown rebuild off the calling thread.
+
+    Waits (bounded) for any in-flight consent-check worker to finish before
+    returning. ``shutdown()`` alone does not stop that worker — it only bumps
+    the generation the worker checks before installing its result — so a
+    worker started by an earlier test can still be mid-run here. Owning that
+    wait in this one seam, rather than in each test's own helpers, is what
+    guarantees every test starts from a state with no worker able to mutate
+    module globals underneath it.
     """
     global _ever_built
     shutdown()
+    _wait_for_in_flight_consent_worker()
     with _lock:
         _ever_built = False

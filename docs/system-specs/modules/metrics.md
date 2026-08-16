@@ -90,7 +90,11 @@ a steady-state request path. Every later build is a REbuild and goes off-thread,
 including one after `shutdown()` cleared the state — otherwise the config route's
 own write would put the SDK import back on the event loop. `reset_for_testing()`
 clears `_ever_built`, so a test's next build is synchronous and assertable without
-polling.
+polling. `shutdown()` bumps the generation but does not stop an already-running
+consent worker, so `reset_for_testing()` also waits (bounded, `_RESET_WAIT_BOUND_SECS`)
+for `_check_in_flight` to clear before returning — raising if the bound expires —
+so a worker left running by an earlier test can never mutate module state
+underneath the next one.
 
 One consequence of the detached flush: while it is still in its join, a re-enable
 can put a second exporter on the same per-PID shard, which the local exporter's

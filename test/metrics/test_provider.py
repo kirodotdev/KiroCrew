@@ -3,6 +3,8 @@
 import threading
 import time
 
+import pytest
+
 from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
 from kiro_crew.metrics.provider import MetricsRecorder, get_recorder, reset_for_testing
 from kiro_crew.metrics.provider import shutdown as provider_shutdown
@@ -52,14 +54,49 @@ def test_recorder_is_cached(monkeypatch):
 
 
 def _wait_for(predicate, timeout=5.0):
-    """Poll until predicate holds. The reap runs on its own thread, so asserting
-    immediately would race it; polling keeps the test deterministic without a sleep."""
+    """Poll until predicate holds. Used where the background work is a trivial
+    no-op that completes in microseconds (e.g. a fake reader shutdown call, or
+    draining a real worker after a deliberately-triggered timeout in
+    ``TestResetForTestingWaitsOutInFlightWorker``). Tests that need to observe
+    a real consent-worker RUN use event-based synchronization instead — see
+    ``_worker_event``."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return True
         time.sleep(0.01)
     return False
+
+
+def _worker_event(monkeypatch):
+    """Wrap ``_consent_worker`` so it signals a threading.Event on completion.
+
+    Returns the event. Tests wait on the event with a generous bound instead of
+    polling a predicate against a wall-clock deadline. This eliminates flakiness
+    under host load because the test never wakes up until the worker has actually
+    finished, regardless of how long it was starved.
+
+    The event is re-armed (cleared) each time the worker starts so tests that
+    trigger multiple worker runs can wait again after the first.
+
+    Relies on every test's own ``reset_for_testing()`` call to wait out a worker
+    left running by a prior test, so this helper does not touch
+    ``_check_in_flight`` itself — see ``reset_for_testing``'s docstring.
+    """
+    import kiro_crew.metrics.provider as provider_mod
+
+    done = threading.Event()
+    real_worker = provider_mod._consent_worker
+
+    def _signaling_worker(generation: int) -> None:
+        done.clear()
+        try:
+            real_worker(generation)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(provider_mod, "_consent_worker", _signaling_worker)
+    return done
 
 
 def test_reader_thread_reaped_when_meterprovider_init_fails(tmp_path, monkeypatch):
@@ -133,9 +170,9 @@ def test_the_otlp_reader_is_reaped_too_when_init_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(provider_mod, "MeterProvider", _boom)
     try:
         assert get_recorder().enabled is False
-        assert _wait_for(lambda: sorted(shut) == ["local", "otlp"]), (
-            f"expected both readers reaped, got {sorted(shut)}"
-        )
+        assert _wait_for(
+            lambda: sorted(shut) == ["local", "otlp"]
+        ), f"expected both readers reaped, got {sorted(shut)}"
     finally:
         reset_for_testing()
 
@@ -206,9 +243,7 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
         def __init__(self, *, endpoint):
             raise ValueError(f"invalid endpoint: {endpoint}")
 
-    mod = types.ModuleType(
-        "opentelemetry.exporter.otlp.proto.http.metric_exporter"
-    )
+    mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
     mod.OTLPMetricExporter = _FailingOTLPMetricExporter  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
@@ -242,8 +277,7 @@ def test_retention_config_defaults():
 def test_env_var_opts_in_when_config_disabled(tmp_path, monkeypatch):
     """KIROCREW_TELEMETRY=1 enables LOCAL telemetry even if the config flag is off."""
     reset_for_testing()
-    _patch_config(monkeypatch, enabled=False, local_dir=str(tmp_path),
-                  export_interval_seconds=3600)
+    _patch_config(monkeypatch, enabled=False, local_dir=str(tmp_path), export_interval_seconds=3600)
     monkeypatch.setenv("KIROCREW_TELEMETRY", "1")
     try:
         assert get_recorder().enabled is True
@@ -301,9 +335,7 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
         def shutdown(self, timeout_millis=30_000, **kwargs):
             return None
 
-    mod = types.ModuleType(
-        "opentelemetry.exporter.otlp.proto.http.metric_exporter"
-    )
+    mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
     mod.OTLPMetricExporter = _StubOTLPMetricExporter  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
@@ -311,9 +343,7 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
         mod,
     )
 
-    cfg = TelemetryConfig(
-        enabled=True, otlp_endpoint="http://localhost:4318/v1/metrics"
-    )
+    cfg = TelemetryConfig(enabled=True, otlp_endpoint="http://localhost:4318/v1/metrics")
     reader = _build_otlp_reader(cfg)
     assert reader is not None, "opt-in endpoint must build an OTLP reader"
     assert captured["endpoint"] == "http://localhost:4318/v1/metrics"
@@ -362,6 +392,7 @@ class TestConsentRecheck:
         _patch_config(monkeypatch, enabled=False)
         try:
             assert get_recorder().enabled is False
+            done = _worker_event(monkeypatch)
 
             # What `config set` does: the value on disk changes, nothing calls us.
             _patch_config(
@@ -373,9 +404,8 @@ class TestConsentRecheck:
             self._elapse_window(monkeypatch)
 
             get_recorder()  # notices the flip and schedules the build
-            assert _wait_for(lambda: get_recorder().enabled is True), (
-                "recorder never went live after the rebuild"
-            )
+            assert done.wait(timeout=10), "consent worker never completed"
+            assert get_recorder().enabled is True
             assert provider_mod._built_consent is True
         finally:
             reset_for_testing()
@@ -394,11 +424,13 @@ class TestConsentRecheck:
         try:
             get_recorder()
             caller = threading.get_ident()
-            build_threads = []
+            build_threads: list[int] = []
+            build_done = threading.Event()
             real_build = provider_mod._build_recorder
 
             def _spy():
                 build_threads.append(threading.get_ident())
+                build_done.set()
                 return real_build()
 
             monkeypatch.setattr(provider_mod, "_build_recorder", _spy)
@@ -411,7 +443,7 @@ class TestConsentRecheck:
             self._elapse_window(monkeypatch)
 
             get_recorder()
-            assert _wait_for(lambda: build_threads), "the rebuild never ran"
+            assert build_done.wait(timeout=10), "the rebuild never ran"
             assert caller not in build_threads, "the build ran on the calling thread"
         finally:
             reset_for_testing()
@@ -435,22 +467,25 @@ class TestConsentRecheck:
             release_first = threading.Event()
             real_build = provider_mod._build_recorder
             calls = {"n": 0}
+            second_done = threading.Event()
 
             def _build(*a, **k):
                 calls["n"] += 1
                 if calls["n"] == 1:
                     first_in_build.set()
-                    release_first.wait(timeout=5)
-                return real_build()
+                    release_first.wait(timeout=10)
+                result = real_build()
+                if calls["n"] >= 2:
+                    second_done.set()
+                return result
 
             monkeypatch.setattr(provider_mod, "_build_recorder", _build)
-            live = dict(
-                enabled=True, local_dir=str(tmp_path), export_interval_seconds=3600
-            )
+            done = _worker_event(monkeypatch)
+            live = dict(enabled=True, local_dir=str(tmp_path), export_interval_seconds=3600)
             _patch_config(monkeypatch, **live)
             self._elapse_window(monkeypatch)
             get_recorder()  # schedules build #1
-            assert first_in_build.wait(timeout=5), "first build never started"
+            assert first_in_build.wait(timeout=10), "first build never started"
 
             # Flap: off, then back on, while build #1 is still running.
             _patch_config(monkeypatch, enabled=False)
@@ -458,12 +493,19 @@ class TestConsentRecheck:
             get_recorder()
             _patch_config(monkeypatch, **live)
             provider_shutdown()
-            get_recorder()  # must schedule build #2 for the CURRENT generation
+            get_recorder()  # tries to schedule build #2, but #1 is still in flight
             release_first.set()
 
-            assert _wait_for(lambda: get_recorder().enabled is True, timeout=8), (
-                "collection stayed a no-op after the re-enable"
-            )
+            # Wait for the first worker to finish (clears _check_in_flight).
+            assert done.wait(timeout=10), "first consent worker never completed"
+
+            # Now a get_recorder() call can schedule the second worker for the
+            # current generation (the re-enable).
+            done.clear()
+            self._elapse_window(monkeypatch)
+            get_recorder()
+            assert done.wait(timeout=10), "second consent worker never completed"
+            assert get_recorder().enabled is True, "collection stayed a no-op after the re-enable"
         finally:
             release_first.set()
             reset_for_testing()
@@ -510,16 +552,12 @@ class TestConsentRecheck:
             with provider_mod._lock:
                 provider_mod._built_consent = False  # force "consent changed"
                 gen = provider_mod._build_generation
-            worker = threading.Thread(
-                target=provider_mod._consent_worker, args=(gen,), daemon=True
-            )
+            worker = threading.Thread(target=provider_mod._consent_worker, args=(gen,), daemon=True)
             worker.start()
             assert flush_started.wait(timeout=5), "the discard flush never ran"
             release_flush.set()
             worker.join(timeout=5)
-            assert lock_free_during_flush["v"] is True, (
-                "_lock was held across the discard flush"
-            )
+            assert lock_free_during_flush["v"] is True, "_lock was held across the discard flush"
         finally:
             release_flush.set()
             reset_for_testing()
@@ -544,10 +582,11 @@ class TestConsentRecheck:
 
             def _slow_build():
                 in_build.set()
-                release.wait(timeout=5)
+                release.wait(timeout=10)
                 return real_build()
 
             monkeypatch.setattr(provider_mod, "_build_recorder", _slow_build)
+            done = _worker_event(monkeypatch)
             _patch_config(
                 monkeypatch,
                 enabled=True,
@@ -556,15 +595,16 @@ class TestConsentRecheck:
             )
             self._elapse_window(monkeypatch)
             get_recorder()  # schedules the build
-            assert in_build.wait(timeout=5), "the build never started"
+            assert in_build.wait(timeout=10), "the build never started"
 
             # The user turns it back off while the build is still running.
             _patch_config(monkeypatch, enabled=False)
             provider_shutdown()
             release.set()
 
-            # Give the superseded build time to try to install itself.
-            time.sleep(0.2)
+            # Wait for the superseded worker to finish (its finally clears
+            # _check_in_flight and signals done).
+            assert done.wait(timeout=10), "consent worker never completed"
             assert get_recorder().enabled is False, "a stale build resurrected collection"
         finally:
             release.set()
@@ -584,17 +624,17 @@ class TestConsentRecheck:
             flushed = threading.Event()
             monkeypatch.setattr(live_provider, "shutdown", lambda *a, **k: flushed.set())
 
+            done = _worker_event(monkeypatch)
             _patch_config(monkeypatch, enabled=False)
             self._elapse_window(monkeypatch)
 
             get_recorder()  # notices and schedules the consent worker
-            assert _wait_for(lambda: get_recorder().enabled is False), (
-                "collection never stopped"
-            )
+            assert done.wait(timeout=10), "consent worker never completed"
+            assert get_recorder().enabled is False
             # Withdrawing consent must flush what was already aggregated rather
             # than dropping the reader on the floor. The flush runs on the worker,
             # so wait for it rather than asserting synchronously.
-            assert flushed.wait(timeout=5), "detached flush never ran"
+            assert flushed.wait(timeout=10), "detached flush never ran"
         finally:
             reset_for_testing()
 
@@ -620,14 +660,16 @@ class TestConsentRecheck:
             caller = threading.get_ident()
             seen: dict[str, object] = {}
             released = threading.Event()
+            flush_entered = threading.Event()
 
             def _slow_shutdown(*_a, **_k):
                 seen["thread"] = threading.get_ident()
-                released.wait(timeout=5)  # stands in for the 30s join + final POST
-
+                flush_entered.set()
+                released.wait(timeout=10)  # stands in for the 30s join + final POST
                 seen["done"] = True
 
             monkeypatch.setattr(live_provider, "shutdown", _slow_shutdown)
+            done = _worker_event(monkeypatch)
             _patch_config(monkeypatch, enabled=False)
             self._elapse_window(monkeypatch)
 
@@ -637,13 +679,14 @@ class TestConsentRecheck:
             # recorder until it lands, which is immaterial against the window the
             # recheck already sits behind.
             get_recorder()
+            # Wait until the flush function has been entered on the worker.
+            assert flush_entered.wait(timeout=10), "flush never started"
             assert seen.get("done") is not True
-            assert _wait_for(lambda: get_recorder().enabled is False), (
-                "withdrawal never landed"
-            )
+            # The worker is blocked in the flush; recorder should be disabled now.
+            assert get_recorder().enabled is False
             assert seen.get("done") is not True  # still blocked, nobody waited
             released.set()
-            assert _wait_for(lambda: seen.get("thread") is not None), "flush never ran"
+            assert done.wait(timeout=10), "consent worker never completed"
             assert seen["thread"] != caller
         finally:
             released.set()
@@ -732,9 +775,9 @@ class TestConsentRecheck:
             worker.start()
             worker.join(timeout=5)
 
-            assert provider_mod._consent_checked_at == before, (
-                "a superseded check refreshed the recheck clock"
-            )
+            assert (
+                provider_mod._consent_checked_at == before
+            ), "a superseded check refreshed the recheck clock"
             assert provider_mod._check_in_flight is False, "the in-flight flag leaked"
         finally:
             reset_for_testing()
@@ -754,22 +797,23 @@ class TestConsentRecheck:
             get_recorder()  # first build; stamps the clock
             caller = threading.get_ident()
             read_threads: list[int] = []
+            read_done = threading.Event()
             real_load = KiroCrewConfig.load
 
             def _tracking_load(cls=None):
                 read_threads.append(threading.get_ident())
+                read_done.set()
                 return real_load()
 
-            monkeypatch.setattr(
-                KiroCrewConfig, "load", classmethod(lambda cls: _tracking_load())
-            )
+            monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _tracking_load()))
+            done = _worker_event(monkeypatch)
             self._elapse_window(monkeypatch)
-            for _ in range(5):
-                get_recorder()
-            assert _wait_for(lambda: read_threads), "the recheck never read config at all"
-            assert caller not in read_threads, (
-                f"config was read on the calling thread ({caller}): {read_threads}"
-            )
+            get_recorder()
+            assert done.wait(timeout=10), "the recheck never read config at all"
+            assert read_threads, "no config reads recorded"
+            assert (
+                caller not in read_threads
+            ), f"config was read on the calling thread ({caller}): {read_threads}"
         finally:
             reset_for_testing()
 
@@ -782,18 +826,20 @@ class TestConsentRecheck:
         try:
             get_recorder()
             reads = {"n": 0}
+            read_done = threading.Event()
 
             def _boom(cls=None):
                 reads["n"] += 1
+                read_done.set()
                 raise OSError("config unreadable")
 
             monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _boom()))
+            done = _worker_event(monkeypatch)
             self._elapse_window(monkeypatch)
             get_recorder()  # schedules the check; the worker does the failing read
-            assert _wait_for(lambda: reads["n"] >= 1), "the recheck never read config"
-            assert _wait_for(lambda: provider_mod._consent_checked_at > 0.0), (
-                "a failed read left the clock unstamped"
-            )
+            assert done.wait(timeout=10), "consent worker never completed"
+            assert reads["n"] >= 1, "the recheck never read config"
+            assert provider_mod._consent_checked_at > 0.0, "a failed read left the clock unstamped"
             for _ in range(20):
                 get_recorder()
             # One read for the recheck that failed; the rest are inside the
@@ -839,9 +885,7 @@ class TestConsentRecheck:
             monkeypatch.undo()
             reset_for_testing()
 
-    def test_shutdown_applies_a_change_without_waiting_out_the_window(
-        self, tmp_path, monkeypatch
-    ):
+    def test_shutdown_applies_a_change_without_waiting_out_the_window(self, tmp_path, monkeypatch):
         """The dashboard's own write path: apply now, don't wait out the window.
 
         `shutdown()` drops the recorder so the change is picked up on the next
@@ -859,10 +903,12 @@ class TestConsentRecheck:
                 local_dir=str(tmp_path),
                 export_interval_seconds=3600,
             )
+            done = _worker_event(monkeypatch)
             # No window elapsed — shutdown() is what makes it immediate.
             provider_shutdown()
             get_recorder()  # schedules the rebuild
-            assert _wait_for(lambda: get_recorder().enabled is True)
+            assert done.wait(timeout=10), "consent worker never completed"
+            assert get_recorder().enabled is True
         finally:
             reset_for_testing()
 
@@ -917,13 +963,150 @@ class TestConsentRecheck:
         monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
         try:
             assert get_recorder().enabled is False
-            fake = KiroCrewConfig(
-                telemetry=TelemetryConfig(enabled=True, local_dir=str(tmp_path))
-            )
+            fake = KiroCrewConfig(telemetry=TelemetryConfig(enabled=True, local_dir=str(tmp_path)))
             monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
             monkeypatch.setenv("KIROCREW_TELEMETRY", "0")
             self._elapse_window(monkeypatch)
 
             assert get_recorder().enabled is False
         finally:
+            reset_for_testing()
+
+
+class TestResetForTestingWaitsOutInFlightWorker:
+    """Pins the fix for the force-clear this module's ``_worker_event`` helper
+    used to do: ``reset_for_testing`` must wait for a REAL in-flight
+    consent-check worker to finish, rather than a test helper force-clearing
+    ``_check_in_flight`` out from under a worker that is still actually
+    running. These tests drive the flag only through the product's own
+    scheduling path (``get_recorder()`` -> ``_schedule_consent_check_locked``
+    -> ``_consent_worker``) and never assign it directly.
+    """
+
+    def test_waits_for_a_real_worker_to_finish_before_returning(self, tmp_path, monkeypatch):
+        """A worker started by an earlier flip must finish before
+        ``reset_for_testing`` returns, even though nothing here calls
+        ``get_recorder()`` again afterwards.
+
+        The worker is a deliberately slow, event-gated fake build (never a
+        wall-clock sleep) sitting inside the product's real
+        ``_consent_worker``, so ``_check_in_flight`` is set and cleared by the
+        product code path, not by this test. A hook on the wait loop's
+        ``time.sleep`` call proves ``reset_for_testing`` actually entered its
+        wait loop, so the ordering is established by that signal rather than
+        a guessed delay.
+        """
+        import kiro_crew.metrics.provider as provider_mod
+
+        reset_for_testing()
+        _patch_config(monkeypatch, enabled=False)
+        try:
+            get_recorder()
+
+            in_build = threading.Event()
+            release = threading.Event()
+            real_build = provider_mod._build_recorder
+
+            def _slow_build():
+                in_build.set()
+                release.wait(timeout=10)
+                return real_build()
+
+            monkeypatch.setattr(provider_mod, "_build_recorder", _slow_build)
+            _patch_config(
+                monkeypatch,
+                enabled=True,
+                local_dir=str(tmp_path),
+                export_interval_seconds=3600,
+            )
+            monkeypatch.setattr(provider_mod, "_consent_checked_at", 0.0)
+
+            get_recorder()  # schedules the real worker; _check_in_flight -> True
+            assert in_build.wait(timeout=10), "the worker never started its build"
+
+            poll_entered = threading.Event()
+            real_sleep = time.sleep
+
+            def _tracking_sleep(seconds):
+                poll_entered.set()
+                real_sleep(seconds)
+
+            monkeypatch.setattr(provider_mod.time, "sleep", _tracking_sleep)
+
+            reset_done = threading.Event()
+            reset_error = {}
+
+            def _call_reset():
+                try:
+                    provider_mod.reset_for_testing()
+                except Exception as exc:  # pragma: no cover - asserted below
+                    reset_error["error"] = exc
+                finally:
+                    reset_done.set()
+
+            thread = threading.Thread(target=_call_reset, daemon=True)
+            thread.start()
+            try:
+                assert poll_entered.wait(timeout=5), "the wait loop never polled"
+                # The real worker is still blocked in its build, so it has not
+                # reached its finally yet and _check_in_flight is still True.
+                assert (
+                    not reset_done.is_set()
+                ), "reset_for_testing returned while the worker was still in flight"
+
+                release.set()  # let the worker finish; its own finally clears the flag
+
+                assert reset_done.wait(timeout=10), "reset_for_testing never returned"
+                assert "error" not in reset_error, reset_error.get("error")
+            finally:
+                release.set()
+                thread.join(timeout=5)
+        finally:
+            reset_for_testing()
+
+    def test_raises_when_the_bound_expires(self, tmp_path, monkeypatch):
+        """A worker that never clears the flag must fail loudly, not silently.
+
+        A silent timeout would reintroduce exactly the cross-test leak class
+        this wait exists to prevent: a test would proceed believing it has a
+        clean state while a stale worker can still mutate module globals.
+        """
+        import kiro_crew.metrics.provider as provider_mod
+
+        reset_for_testing()
+        _patch_config(monkeypatch, enabled=False)
+        try:
+            get_recorder()
+
+            stuck_in_build = threading.Event()
+            release = threading.Event()
+            real_build = provider_mod._build_recorder
+
+            def _stuck_build():
+                stuck_in_build.set()
+                release.wait(timeout=10)
+                return real_build()
+
+            monkeypatch.setattr(provider_mod, "_build_recorder", _stuck_build)
+            _patch_config(
+                monkeypatch,
+                enabled=True,
+                local_dir=str(tmp_path),
+                export_interval_seconds=3600,
+            )
+            monkeypatch.setattr(provider_mod, "_consent_checked_at", 0.0)
+
+            get_recorder()  # schedules the real worker; _check_in_flight -> True
+            assert stuck_in_build.wait(timeout=10), "the worker never started its build"
+
+            monkeypatch.setattr(provider_mod, "_RESET_WAIT_BOUND_SECS", 0.05)
+            monkeypatch.setattr(provider_mod, "_RESET_WAIT_POLL_SECS", 0.01)
+            with pytest.raises(RuntimeError, match="in flight"):
+                provider_mod.reset_for_testing()
+        finally:
+            release.set()
+            # Let the real worker actually finish (its own finally clears the
+            # flag) so the next test's reset_for_testing() has nothing to wait
+            # out.
+            assert _wait_for(lambda: provider_mod._check_in_flight is False, timeout=10)
             reset_for_testing()
