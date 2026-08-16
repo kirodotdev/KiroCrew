@@ -10,5 +10,11 @@
     "gitUrl": "https://github.com/qihang-dai/todo-ledger",
     "repo": "https://github.com/qihang-dai/todo-ledger",
     "branch": "release"
+  },
+  {
+    "name": "todo-txt",
+    "gitUrl": "https://github.com/LeTeutz/todo-txt",
+    "repo": "https://github.com/LeTeutz/todo-txt",
+    "branch": "main"
   }
 ]
