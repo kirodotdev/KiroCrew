@@ -40,8 +40,8 @@ The page container keeps the `px-6 pb-8` the skeleton above prescribes -- that i
 `AUTOSDE.yaml`'s `page-layout-pattern` requires, and it is not the layer to change. The
 third layer is the one to drop:
 
-**Below `md`, prefer no horizontal padding on the rows inside a `Card`.** The page gutter
-and the card's own inset already supply it:
+**Below `md`, prefer no horizontal padding on a row that is a DIRECT child of a `Card`.**
+The page gutter and the card's own inset already supply it:
 
 ```tsx
 <div className="… py-2 md:px-4">   {/* row: the card supplies the inset while narrow */}
@@ -51,20 +51,48 @@ Gate **every** row in that card the same way -- section header, group header, da
 footnote. Gating only some of them leaves the data rows sitting to the left of the headers
 that label them, which reads as rows escaping their own section.
 
-**Status: this is a direction, not a description of the repo.** Exactly one card has been
-migrated (`SkillContextBudget`). A scan for `className="…px-4…py-2"` under
-`website/src/pages` matches **28 rows across 15 files** -- including sibling rows in the
-very same Skills tab -- and none of them are gated. There is no lint gate for this, so
-treat the rule as what to do in code you are already touching, and see the sweep issue
-before assuming a page conforms (kirodotdev/KiroCrew#3939).
+**The direct-child part is the precondition, not a detail.** The rule works because the
+card is what supplies the inset the row gives up. Put an unpadded bordered pane between
+them and that stops being true:
 
-Above `md` this guide prescribes no total. The stacking measured here was a
-narrow-viewport problem and the wide layout was never the complaint, so the rule stops
-where the evidence does.
+```tsx
+<Card>                                                   {/* 20px */}
+  <div className="… border border-border rounded-md">    {/* 0px, draws a visible edge */}
+    <div className="… px-4 py-2.5 border-b">             {/* row: px-4 is its ONLY gutter */}
+```
 
-For a full-height pane that genuinely needs to reach the screen edge, cancel the gutter
-INSIDE the pane (`-mx-6` while narrow) rather than gating the container -- the container
-is what the blocking rule names.
+Here the row's `px-4` is load-bearing -- gating it puts the text flush against the border.
+The excess inset belongs to the card, but the card is NOT what yields: halve the card's inset
+below `md` and pull the pane out by exactly that amount, on the shell the pane and its
+loading skeleton share so the layout does not jump when data arrives. The two numbers
+are ONE number -- changing the inset without the margin pushes the pane past the border:
+
+```tsx
+const PANE_SHELL_CLASS = 'flex gap-3 max-md:-mx-2.5 …'  /* cancels the card's max-md:px-2.5 */
+```
+
+Measured at 390px on the Skills tab: the pane goes from left 37 / width 316 to left 17 /
+width 356, so a row inside it starts at ~33px instead of ~54px, against 32px for the same
+text in chat.
+
+**Do not flush the card itself** (`max-md:px-0`). Its padding is also the only gutter the
+toolbar above the pane has, and removing it puts the search field's rounded border
+directly against the card's border -- measured as a 0px gap, and the first thing a reader
+calls ugly. Halving it (`max-md:px-2.5`, a measured 10px) keeps the field off the border
+while giving the row back most of the width. An inset toolbar above a full-bleed list is the ordinary phone pattern; the
+two do not need to share a left edge.
+
+This does not touch the page container's `px-6 pb-8`, which is what `AUTOSDE.yaml`'s
+`page-layout-pattern` names and is not the layer to change. For a pane that must reach the
+SCREEN edge, past the page gutter, cancel more inside the pane (`-mx-6` while narrow).
+
+**Status: a direction, not a description of the repo.** Two shapes are migrated --
+`SkillContextBudget` (direct-child rows) and the `SkillsTab` / `SteeringTab` split panes
+(card flush). A scan for `className="…px-4…py-2"` under `website/src/pages` matches ~27
+rows across 15 files, but a hit is not a work item: most are toolbars, banners, sticky
+bars and buttons that own the only gutter their content has, and rows inside a bordered
+pane must keep theirs. There is no lint gate for this. Read the structure around a hit
+before gating it, and see kirodotdev/KiroCrew#3939 for the triage of all 27.
 
 ## Stat cards
 
