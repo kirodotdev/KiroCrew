@@ -142,9 +142,19 @@ export default [
       // Stated as a false-negative class, per this file's convention: user-visible
       // copy added to one of these modules will not be reported -- keep them
       // stylesheet-only, and put anything a person reads in the component with
-      // `i18nT`. Verified copy-free rather than assumed: none of them imports
-      // `i18nT` or `useTranslation`.
-      'src/apps/*/styles.ts',
+      // `i18nT`. Verified copy-free rather than assumed: none of these four
+      // imports `i18nT` or `useTranslation`.
+      //
+      // Listed as EXACT PATHS, not a `src/apps/*/styles.ts` glob, for the reason
+      // stated above for the srcdoc pair: the false-negative note is only true of
+      // files that exist today. A glob would put every future app's stylesheet
+      // outside this gate sight-unseen, including one where someone later writes
+      // `content: "…"` copy or misfiles a string. One config line per new app is
+      // the cost of keeping the ratchet's shape.
+      'src/apps/crew-companion/styles.ts',
+      'src/apps/design-critique/styles.ts',
+      'src/apps/file-explorer/styles.ts',
+      'src/apps/md-notebook/styles.ts',
       // The PPTX Maker board-preview builder — the same category as
       // `sketchSrcdoc.ts` directly above, and listed by the same exact-path rule
       // rather than a shared glob. Every literal in it is handed to a PARSER: the
