@@ -4,22 +4,21 @@
  * This file began as a guard on TWO alignment guides — folder glyph on the text x
  * of sibling sessions, folder name on the text x of the sessions inside it — after
  * #1211 changed three numbers at once and broke both. Those guides no longer hold:
- * a status gutter added 12px to where a session row's content starts (`px-3` 12 +
- * gutter `w-3` 12 + `gap-1.5` 6 = 30), and the header's pad is a symmetric
- * `px-2.5` (10px) so a folder reads as a HEADER over its sessions rather than a
+ * gutter added 12px to where a session row's content starts (`pl-1` 4 +
+ * gutter `w-3` 12 + `gap-1` 4), and the header's pad is an asymmetric
+ * `pl-[18px]` / `pr-3` so a folder reads as a HEADER over its sessions rather than a
  * peer opening the same column. Both glyph and name now sit well left of what they
  * used to track. That is a decision, not drift.
  *
  * What is still guarded, and why each number is not free:
- *   - the header's `px-2.5` pad with NO inline left-pad override, the 14px glyph
- *     and the 5px gap, so the folder row's own proportions cannot be changed by
- *     accident the way #1211 changed them;
- *   - the nested body's 15px indent step (`ml-2` + 1px border + `pl-1`) and its
- *     `border-l` connector line, which is what makes the nesting readable at all.
- *     Note this step no longer equals glyph 14 + gap 5 (19px): that equality
- *     existed only to serve the dead guide 2, so the gap is now just a gap;
- *   - the session row's `px-3` and `gap-1.5`, because they set the content offset
- *     that any future attempt to re-align the two must be computed from.
+ *   - the header's asymmetric `pl-[18px]` / `pr-3` pad with NO inline left-pad
+ *     override, the 14px glyph and the `gap-2` glyph→name gap, so the folder
+ *     row's own proportions cannot be changed by accident the way #1211 changed
+ *     them. The extra left pad opens a gutter for the collapsed-folder unread dot;
+ *   - the nested body's 17px indent step (`ml-4` 16px + 1px border) and its
+ *     `border-l` connector line, which is what makes the nesting readable at all;
+ *   - the session row's `pl-1` / `pr-2` and `gap-1`, because they set the content
+ *     offset that any future attempt to re-align the two must be computed from.
  *
  * jsdom has no layout engine, so this asserts the INPUTS to the geometry rather
  * than measured x's. That is a real limit, not a shortcut: an input-level
@@ -135,49 +134,48 @@ const hasClass = (el: HTMLElement, cls: string) =>
   el.className.split(/\s+/).includes(cls)
 
 describe('chat sidebar — folder header alignment geometry', () => {
-  it('keeps the px-2.5 pad / 14px glyph / 5px gap triple the folder row is built on', () => {
+  it('keeps the pl-[18px]/pr-3 pad / 14px glyph / gap-2 the folder row is built on', () => {
     const { getByTestId } = renderSidebar(SLOTS, FOLDERS)
     const glyph = getByTestId('folder-collapse-f1')
 
-    // Symmetric `px-2.5` (10px) from the class, and NO inline left-pad override —
-    // the 16px one that used to live here is gone. Both halves are asserted: a
-    // reintroduced inline style would silently win over the class.
+    // Asymmetric `pl-[18px]` / `pr-3` from the class, and NO inline left-pad
+    // override — the 16px one that used to live here is gone. Both halves are
+    // asserted: a reintroduced inline style would silently win over the class.
     const header = glyph.closest('[role="group"]') as HTMLElement
     expect(header).toBeTruthy()
-    expect(hasClass(header, 'px-2.5')).toBe(true)
-    expect(hasClass(header, 'pr-2')).toBe(false)
+    expect(hasClass(header, 'pl-[18px]')).toBe(true)
+    expect(hasClass(header, 'pr-3')).toBe(true)
+    expect(hasClass(header, 'px-2.5')).toBe(false)
     expect(header.style.paddingLeft).toBe('')
 
-    // glyph box + gap == the nested body's 19px indent step, so the glyph and
-    // name columns stay exactly one indent step apart down the tree.
+    // 14px glyph and a `gap-2` (8px) glyph→name gap.
     expect(glyph.style.width).toBe('14px')
     expect(glyph.style.height).toBe('14px')
     const toggle = glyph.closest('button') as HTMLElement
-    expect(toggle.className).toContain('gap-[5px]')
+    expect(toggle.className.split(/\s+/).includes('gap-2')).toBe(true)
   })
 
-  it('indents the nested folder body by 15px, and keeps its connector line', () => {
+  it('indents the nested folder body by 17px, and keeps its connector line', () => {
     const { getByText } = renderSidebar(SLOTS, FOLDERS)
-    // ml-2 (8px) + 1px left border + pl-1 (4px) == 15px, measured per level by
-    // capture-folder-glyph.mjs. The glyph→name step is 19px (glyph 14 + gap 5) and
-    // no longer equals it: that equality existed to land the folder NAME on the
-    // content x of the sessions inside it, and that guide is already gone (see
-    // this file's header). The 5px gap is now just a gap.
+    // ml-4 (16px) + 1px left border == 17px per level. `pl-1` is gone: the
+    // sessions sit flush against the connector. The old glyph→name equality
+    // (which needed pl-1 to land the name on child content) is dead — see the
+    // file header.
     const row = getByText('inside the folder').closest('.session-row') as HTMLElement
     // The row is wrapped (sortable + motion shims), so walk up to the folder
     // body rather than assuming it is the immediate parent.
     const body = row.closest('[class*="border-l"]') as HTMLElement
     expect(body).toBeTruthy()
-    expect(hasClass(body, 'ml-2')).toBe(true)
-    expect(hasClass(body, 'pl-1')).toBe(true)
+    expect(hasClass(body, 'ml-4')).toBe(true)
+    expect(hasClass(body, 'pl-1')).toBe(false)
     // The connector line itself. Without the border the indent is just empty
     // space and the nesting stops being readable.
     expect(hasClass(body, 'border-l')).toBe(true)
-    // The two row values that set the content offset (12 + gutter 12 + 6 = 30).
-    // Pinned because any future attempt to re-align the folder glyph with session
-    // content has to be computed from them, and jsdom cannot measure the result.
-    // Token-exact: `px-3` as a substring would also match `px-3.5`.
-    expect(hasClass(row, 'px-3')).toBe(true)
-    expect(hasClass(row, 'gap-1.5')).toBe(true)
+    // The row values that set the content offset. Pinned because any future
+    // attempt to re-align the folder glyph with session content has to be
+    // computed from them, and jsdom cannot measure the result. Token-exact.
+    expect(hasClass(row, 'pl-1')).toBe(true)
+    expect(hasClass(row, 'pr-2')).toBe(true)
+    expect(hasClass(row, 'gap-1')).toBe(true)
   })
 })

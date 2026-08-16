@@ -1818,7 +1818,7 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   left:0;
   top:var(--radius-md);
   bottom:var(--radius-md);
-  width:3px;
+  width:2px;
   border-radius:999px;
   background:var(--_sc);
 }
@@ -1838,8 +1838,8 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   background:linear-gradient(
     to right,
     var(--_sc) 0px,
-    var(--_sc) 3px,
-    color-mix(in srgb,var(--_sc) 28%,transparent) 3px,
+    var(--_sc) 2px,
+    color-mix(in srgb,var(--_sc) 28%,transparent) 2px,
     transparent 100%
   );
 }

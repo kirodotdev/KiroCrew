@@ -762,7 +762,7 @@ function FolderBody({ open, children }: { open: boolean; children: React.ReactNo
         transition: 'grid-template-rows 0.15s ease-out',
       }}
     >
-      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? '2px' : 0 }}>{children}</div>
+      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? '2px 0 2px 2px' : 0 }}>{children}</div>
     </div>
   )
 }
@@ -2567,7 +2567,7 @@ function ChatSidebar({
           <ContextMenuTrigger asChild>
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
-          className={`session-row group relative flex items-start gap-1.5 px-3 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start gap-1 pl-1 pr-2 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -3045,9 +3045,9 @@ function ChatSidebar({
          *  glyph look enclosed. Matches the Figma, which carries this border on
          *  the `content` frame rather than on the row.
          *
-         *  30px is the row's content offset: `px-3` (12) + status gutter `w-3`
-         *  (12) + `gap-1.5` (6). The right inset is just the row's own padding. */}
-        {showDivider && <div className="ml-[30px] mr-3 border-b border-border" />}
+         *  20px is the row's content offset: `pl-1` (4) + status gutter `w-3`
+         *  (12) + `gap-1` (4). The right inset is just the row's own padding. */}
+        {showDivider && <div className="ml-[20px] mr-3 border-b border-border" />}
       </motion.div>
     )
   }
@@ -3083,11 +3083,12 @@ function ChatSidebar({
         // no role override). 8px activation distance keeps the collapse toggle
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
-        // Symmetric `px-2.5` (10px), with no inline left-pad override. That is
-        // shallower than the 30px that would put this glyph on the x where a
-        // session row's CONTENT starts (`px-3` 12 + status gutter 12 + `gap-1.5`
-        // 6): a folder row reads as a HEADER over its sessions rather than a peer
-        // of them, so it opens its own column and sits left of their content.
+        // Asymmetric `pl-[18px]` / `pr-3`: the extra left pad opens a gutter for
+        // the collapsed-folder unread dot (below) and is shallower than the 30px
+        // that would put this glyph on the x where a session row's CONTENT starts
+        // (`pl-1` 4 + status gutter 12 + ...). A folder row reads as a HEADER over
+        // its sessions rather than a peer of them, so it opens its own column and
+        // sits left of their content.
         //
         // Consequence, recorded because it used to be otherwise: the glyph no
         // longer lands on sibling session content and the NAME no longer lands on
@@ -3095,10 +3096,16 @@ function ChatSidebar({
         // status gutter added 12px to the row's content offset; they are now traded
         // away on purpose.
         //
-        // The 5px glyph→name gap still equals the nested body's 19px indent step
-        // minus the 14px glyph, so the glyph and name columns stay one indent step
-        // apart down the tree. Measured by capture-folder-glyph.mjs with MEASURE=1.
-        className={`group relative flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
+        // The glyph→name gap is `gap-2` (8px); the nested body indents by `ml-4`
+        // (16px) + a 1px connector border = 17px per level. The two no longer need
+        // to match — that equality only served the dead name-on-child-content guide.
+        className={`group relative flex items-center gap-2 pl-[18px] pr-3 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
+        {/* Unread dot on the LEFT, matching the session rows' gutter marker.
+         *  Absolute so it sits in the pl gutter without reflowing the row; only
+         *  shown when collapsed (an expanded folder's child rows carry their own). */}
+        {hasUnread && folder.collapsed && !(editingId === folder.id && editScope === 'list') && (
+          <span className="absolute left-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} aria-hidden />
+        )}
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} />
@@ -3111,7 +3118,7 @@ function ChatSidebar({
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
-              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              className="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
               onClick={() => toggleCollapse(folder.id)}>
@@ -3130,7 +3137,6 @@ function ChatSidebar({
                 <span className="shrink-0 opacity-80" aria-hidden><ChannelBrandIcon channel={folder.channel} size={11} /></span>
               )}
               {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
-              {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
               <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
             </button>
             {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={i18nT('pages.chatSidebar.default_agent', { name: folder.default_agent })}>{folder.default_agent}</span>}
@@ -3259,14 +3265,14 @@ function ChatSidebar({
     // clear when multiple folders are open. Only wrap when there's content,
     // otherwise the FolderBody would render an empty 1px-tall strip with a line.
     const wrapped = childNodes.length > 0 ? (
-      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-2 pl-1 rounded-bl-md">
+      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-4 rounded-bl-md">
         {childNodes}
       </div>
     ) : !(slotFilter || activeFilters.size > 0) ? (
       // Empty-folder affordance: a newly created (or emptied) expanded folder
       // would otherwise render nothing, leaving the hover ⊕ on the header as
       // the only (invisible-at-rest) way to start a session in it.
-      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-2 pl-1 rounded-bl-md">
+      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-4 rounded-bl-md">
         <button key={`folder-newchat-${folder.id}`} type="button"
           onClick={() => createChatInFolder(folder.id)}
           title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
