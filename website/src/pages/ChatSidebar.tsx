@@ -2370,7 +2370,10 @@ function ChatSidebar({
           )}
         </div>
         <FolderBody open={!folder.collapsed && !forceCollapsed}>
-          <div className="border-l border-border ml-2 pl-1">
+          {/* ml-4 + no pl: flush-connector treatment matching the list-view
+           *  folder body (renderFolderBlock) so nested rows sit identically
+           *  against the connector line in both views. */}
+          <div className="border-l border-border ml-4">
             {/* Empty-folder affordance — list-view parity (see renderFolderBlock). */}
             {deepChildren.length === 0 && childSlots.length === 0 && (
               <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
