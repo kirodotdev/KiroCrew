@@ -1963,11 +1963,11 @@ export const api = {
    *  the auto-nudge feature flag is off, so callers need no flag check. */
   autonudgeList: (): Promise<{ enabled: boolean; loops: { slot_key: string; active?: boolean; cycle_count?: number; max_cycles?: number }[] }> =>
     fetch('/api/autonudge').then(j),
-  chatSlotDetail: (slot: string, limit?: number, before?: number) => {
+  chatSlotDetail: (slot: string, limit?: number, before?: number, signal?: AbortSignal) => {
     const p = new URLSearchParams()
     if (limit) p.set('limit', String(limit))
     if (before !== undefined) p.set('before', String(before))
-    return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p).then(j)
+    return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p, { signal }).then(j)
   },
   createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}) }).then(j),
   /** Inject silent background context into a slot — consumed on the next user

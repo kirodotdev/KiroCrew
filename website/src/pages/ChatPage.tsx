@@ -13,7 +13,7 @@ import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
-  switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages,
+  switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, isSupersededPagingRejection,
   appendMessage, appendSlotMessage, resumeFromHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions, cancelQueuedMessage, editQueuedMessage,
   selectComposerBusy,
@@ -947,6 +947,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
   const slotHasMore = useAppSelector(s => s.chat.slotHasMore)
   const slotOldestIndex = useAppSelector(s => s.chat.slotOldestIndex)
+  const cursorIsForActiveSlot = useAppSelector(s => s.chat.slotCursorKey === s.chat.activeSlot)
   const loadingOlder = useAppSelector(s => s.chat.loadingOlder)
   const history = useAppSelector(s => s.chat.history)
   const historyHasMore = useAppSelector(s => s.chat.historyHasMore)
@@ -5417,14 +5418,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [messages, navToDisplayIndex])
   const handleJumpToPinnedMessage = useCallback((messageTs: string, mid?: string) => {
     if (jumpToLoadedPinnedMessage(messageTs, mid)) return
-    if (activeSlot && slotHasMore && slotOldestIndex > 0) {
+    if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
       pinnedJumpPageLoadsRef.current = 0
       setPinNotice(null)
       setPendingPinnedJump({ slotKey: activeSlot, messageTs, mid })
       return
     }
     setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
-  }, [activeSlot, jumpToLoadedPinnedMessage, slotHasMore, slotOldestIndex])
+  }, [activeSlot, cursorIsForActiveSlot, jumpToLoadedPinnedMessage, slotHasMore, slotOldestIndex])
   useEffect(() => {
     if (!pendingPinnedJump) return
     if (pendingPinnedJump.slotKey !== activeSlot) {
@@ -5437,6 +5438,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setPendingPinnedJump(null)
       return
     }
+    // The cursor still describes the chat we left; wait for the switch to settle
+    // rather than read its has-more as this chat's.
+    if (!cursorIsForActiveSlot) return
     if (!slotHasMore || slotOldestIndex <= 0) {
       pinnedJumpPageLoadsRef.current = 0
       setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
@@ -5453,7 +5457,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
         setPendingPinnedJump(null)
       }
-    }).catch(() => {
+    }).catch(err => {
+      // Cancelled or refused means the user switched chat, not that the pin is
+      // unreachable.
+      if (isSupersededPagingRejection(err)) return
       if (!cancelled) {
         pinnedJumpPageLoadsRef.current = 0
         setPinNotice(i18nT('pages.chat.pins.message_unavailable'))
@@ -5463,6 +5470,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => { cancelled = true }
   }, [
     activeSlot,
+    cursorIsForActiveSlot,
     dispatch,
     jumpToLoadedPinnedMessage,
     loadingOlder,

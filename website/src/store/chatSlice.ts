@@ -534,6 +534,15 @@ interface ChatState {
   slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
+  /** Slot the cursor above describes. A switch moves activeSlot first, so
+   *  without this the cursor silently reads as the new chat's. */
+  slotCursorKey: string | null
+  /** requestId of the switchSlot fetch in flight, else null. While set, that
+   *  switch owns the cursor: a background settle must not re-key it, and
+   *  clearing the transcript must not install a cursor over it. */
+  slotSwitchRequestId: string | null
+  /** Slot the in-flight switch targets; it only installs a cursor for that one. */
+  slotSwitchTarget: string | null
   loadingOlder: boolean
   lastChunkSeq: number | undefined
   _wsChunkedDuringFetch: boolean
@@ -687,6 +696,9 @@ const initialState: ChatState = {
   slotStatusDetail: {},
   slotHasMore: false,
   slotOldestIndex: 0,
+  slotCursorKey: null,
+  slotSwitchRequestId: null,
+  slotSwitchTarget: null,
   loadingOlder: false,
   lastChunkSeq: undefined,
   _wsChunkedDuringFetch: false,
@@ -941,6 +953,46 @@ export const fetchHistory = createAsyncThunk(
 /** Rows to request per older-history page. */
 const OLDER_PAGE_LIMIT = 100
 
+// Aborts the in-flight older-history fetch, or null when none is running.
+// Module-level because switchSlot must reach a fetch it did not start.
+let _abortLoadOlder: (() => void) | null = null
+
+/**
+ * True for a rejection that means "this paging attempt was cancelled or refused",
+ * as opposed to "this request failed". A caller must not read either as evidence
+ * that the history it wanted is unreachable.
+ *
+ * `AbortError` is a superseded fetch (the user switched chat). `ConditionError`
+ * is Redux Toolkit refusing the dispatch outright — a page is already loading,
+ * or the cursor belongs to a chat the user has left.
+ *
+ * Keys on `name` and deliberately does NOT use `instanceof`: `unwrap()`
+ * rethrows Redux Toolkit's serialized error, a plain `{name, message, stack}`
+ * object. The `instanceof DOMException` / `instanceof Error` form used
+ * elsewhere in this codebase is always false here, so it would silently never
+ * match.
+ */
+/**
+ * Replaces the paging cursor as ONE unit: how far back history goes, the offset
+ * to ask for next, and the slot both describe. These three must move together --
+ * writing the offset without re-keying leaves paging refusing forever, and
+ * re-keying without the offset pages the wrong chat at the wrong place.
+ */
+function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number): void {
+  // A switch installs a cursor only for the slot it targets, so a writer that
+  // activated a different slot must write: nothing else will.
+  if (state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot) return
+  state.slotHasMore = hasMore
+  state.slotOldestIndex = hasMore ? nextBefore : 0
+  state.slotCursorKey = state.activeSlot
+}
+
+export function isSupersededPagingRejection(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const name = (err as { name?: unknown }).name
+  return name === 'AbortError' || name === 'ConditionError'
+}
+
 async function fetchSlotDetail(key: string) {
   // No limit → backend returns all chained history (across gateway restarts).
   const d = await api.chatSlotDetail(key)
@@ -987,6 +1039,9 @@ function seedContextUsage(
 export const switchSlot = createAsyncThunk(
   'chat/switchSlot',
   async (key: string, { dispatch }) => {
+    // Safe unconditionally: this fetch resets the pane's messages and cursor, so
+    // any older page still in flight is superseded even when the key is unchanged.
+    _abortLoadOlder?.()
     dispatch(markSlotRead(key))
     return fetchSlotDetail(key)
   },
@@ -1358,14 +1413,25 @@ export const loadOlderMessages = createAsyncThunk(
     if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
     const slot = state.activeSlot
-    const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex)
-    return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    _abortLoadOlder = abort
+    try {
+      const d = await api.chatSlotDetail(slot, OLDER_PAGE_LIMIT, state.slotOldestIndex, controller.signal)
+      return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
+    } finally {
+      // Only clear our own handle: a newer fetch may already have replaced it.
+      if (_abortLoadOlder === abort) _abortLoadOlder = null
+    }
   },
   {
-    // Concurrency guard belongs HERE, not in the payload creator: `pending`
-    // sets loadingOlder BEFORE the creator runs, so a creator that reads the
-    // same flag always sees true and returns null -- paging never fetched.
-    condition: (_, { getState }) => !(getState() as { chat: ChatState }).chat.loadingOlder,
+    // `loadingOlder` must be read HERE: `pending` sets it before the creator runs.
+    // The cursor check blocks paging mid-switch, when it still describes the old chat.
+    condition: (_, { getState }) => {
+      const state = (getState() as { chat: ChatState }).chat
+      if (state.loadingOlder) return false
+      return state.slotCursorKey === state.activeSlot
+    },
   },
 )
 
@@ -1693,7 +1759,7 @@ const chatSlice = createSlice({
   initialState,
   reducers: {
     setActiveSlot(state, action: PayloadAction<string | null>) { state.activeSlot = action.payload; state.slotState = 'idle'; state.pendingTurnSlot = null },
-    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; state.slotHasMore = false; state.slotOldestIndex = 0; state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
+    clearSlotState(state) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'files'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
     setPendingInput(state, action: PayloadAction<string | null>) { state.pendingInput = action.payload },
     setAgentSwitchNotice(state, action: PayloadAction<string | null>) {
       // Always create a fresh value so repeating the same refusal restarts the
@@ -2106,7 +2172,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; state.slotHasMore = false; state.slotOldestIndex = 0; state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
+    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) evictMcpApps(state, state.activeSlot) },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
     replaceMessages(state, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
     /** Path B: seed a non-active slot's message history into the per-slot store
@@ -3204,6 +3270,11 @@ const chatSlice = createSlice({
         state.historyOffset = offset + sessions.length
       })
       .addCase(switchSlot.pending, (state, action) => {
+        // This fetch replaces the cursor, so it is stale from here until it lands
+        // -- including a same-key switch, where the key alone still looks valid.
+        state.slotCursorKey = null
+        state.slotSwitchRequestId = action.meta?.requestId ?? null
+        state.slotSwitchTarget = action.meta?.arg ?? null
         // Save current slot's activity
         if (state.activeSlot) {
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
@@ -3240,6 +3311,9 @@ const chatSlice = createSlice({
         state._wsChunkedDuringFetch = false
       })
       .addCase(switchSlot.fulfilled, (state, action) => {
+        // Before the guards below, so an early return still ends this claim. Keyed
+        // on requestId, which a hand-rolled dispatch may omit, so read it safely.
+        if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null }
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
@@ -3315,8 +3389,7 @@ const chatSlice = createSlice({
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
-        state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? nextBefore : 0
+        setPagingCursor(state, hasMore, nextBefore)
         // Hydrate queued messages from the backend queue field through the
         // single shared path (hydrateQueuedBubbles) so this reducer cannot drift
         // from warmSlotCache/refreshSlot. It strips any WS-delivered queued
@@ -3332,12 +3405,12 @@ const chatSlice = createSlice({
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(switchSlot.rejected, (state, action) => {
+        if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null }
         if (state.activeSlot !== action.meta.arg) return
         state.messages = []
         state.slotRunning = false
         state.slotStopping = false
-        state.slotHasMore = false
-        state.slotOldestIndex = 0
+        setPagingCursor(state, false, 0)
         state.slotLoading = false
       })
       .addCase(refreshSlot.fulfilled, (state, action) => {
@@ -3384,8 +3457,7 @@ const chatSlice = createSlice({
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
-        state.slotHasMore = hasMore
-        state.slotOldestIndex = hasMore ? nextBefore : 0
+        setPagingCursor(state, hasMore, nextBefore)
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -3471,8 +3543,7 @@ const chatSlice = createSlice({
         state.slotRunning = false
         state.slotStopping = false
         state.slotState = 'idle'
-        state.slotHasMore = false
-        state.slotOldestIndex = 0
+        setPagingCursor(state, false, 0)
       })
       .addCase(deleteSlot.fulfilled, (state, action) => {
         delete state.slotActivity[action.payload]
@@ -3511,8 +3582,7 @@ const chatSlice = createSlice({
           state.messages = mergePreservedPastes(state.messages, action.payload.messages)
           state.slotState = 'idle'
           state.pendingTurnSlot = null
-          state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
+          setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
         }
       })
       .addCase(deleteHistorySession.fulfilled, (state, action) => {
@@ -3534,8 +3604,7 @@ const chatSlice = createSlice({
           // ts tuple cannot express this without dropping legitimate rows.
           const fresh = merged.filter(m => !isRedeliveredMessage(state.messages, m.meta))
           state.messages = [...fresh, ...state.messages]
-          state.slotHasMore = action.payload.hasMore
-          state.slotOldestIndex = action.payload.hasMore ? action.payload.nextBefore : 0
+          setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
         }
       })
       .addCase(loadOlderMessages.rejected, (state) => {
