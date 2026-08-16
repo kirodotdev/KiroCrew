@@ -3,6 +3,21 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **The shared screenshot stub no longer blanks any harness that opens
+  Developer > Config.** `stub-dashboard-api.mjs` ended with a catch-all that
+  answered anything matching `config` with `{}`. `/api/config/kirocrew`
+  matched, so `KiroCrewCfgTab`'s `Object.entries(cfg.agents)` threw on
+  `undefined`, the app-shell error boundary caught it, and the WHOLE PAGE
+  rendered blank — while the harness still exited 0 and still wrote a PNG. The
+  failure fails toward a false pass: a PR could cite a screenshot of an error
+  boundary as visual evidence. `/api/config/kirocrew` and `/api/agent/config`
+  now have real fixtures named ahead of the catch-all, exported so a harness
+  needing a variation spreads them instead of hand-rolling the shape again —
+  eighteen already had, and had drifted (several spelled a workspace's
+  directory `path` where the component reads `dir`, so those rows rendered
+  blank in the very screenshots meant to prove them). The catch-all also
+  announces each unmapped path once per run, so the next fixture gap is
+  discoverable instead of appearing as a mysterious blank page. (#3696)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
