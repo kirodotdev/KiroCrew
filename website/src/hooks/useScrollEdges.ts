@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 export interface ScrollEdges {
   /** Content is hidden past the scroller's left edge. */
@@ -21,16 +21,23 @@ export interface ScrollEdges {
  * Physical `left`/`right`, not logical start/end: every shipped locale is LTR,
  * so a logical mapping would be untested indirection.
  *
- * `remeasure` is returned for content changes a ResizeObserver cannot see — the
- * scroller keeps its own box while its children change, e.g. a tab appearing
- * behind a feature flag.
+ * Returns a CALLBACK ref, and that is load-bearing: the scroller can mount
+ * later than the component holding this hook — a strip that exists only below a
+ * breakpoint appears on a mid-session resize, long after mount. A mount-only
+ * effect would see a null node, attach nothing, and never run again, leaving the
+ * cues frozen while the reader scrolls. Binding from the ref callback attaches
+ * whenever the node arrives and detaches when it leaves.
+ *
+ * `remeasure` is for content changes no observer reports — the scroller keeps
+ * its own box while its children change, e.g. a tab appearing behind a flag.
  */
-export function useScrollEdges<T extends HTMLElement>(): [React.RefObject<T>, ScrollEdges, () => void] {
-  const ref = useRef<T>(null)
+export function useScrollEdges<T extends HTMLElement>(): [(node: T | null) => void, ScrollEdges, () => void] {
+  const elRef = useRef<T | null>(null)
+  const detachRef = useRef<(() => void) | null>(null)
   const [edges, setEdges] = useState<ScrollEdges>({ left: false, right: false })
 
   const remeasure = useCallback(() => {
-    const el = ref.current
+    const el = elRef.current
     if (!el) return
     const hidden = el.scrollWidth - el.clientWidth
     const scrolled = el.scrollLeft
@@ -43,18 +50,26 @@ export function useScrollEdges<T extends HTMLElement>(): [React.RefObject<T>, Sc
     setEdges(prev => (prev.left === next.left && prev.right === next.right ? prev : next))
   }, [])
 
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
+  // Stable, so React does not detach and re-attach on every render.
+  const attach = useCallback((node: T | null) => {
+    detachRef.current?.()
+    detachRef.current = null
+    elRef.current = node
+    if (!node) {
+      // No scroller means nothing is clipped; a surviving cue would point at
+      // content that is not there.
+      setEdges({ left: false, right: false })
+      return
+    }
     remeasure()
-    el.addEventListener('scroll', remeasure, { passive: true })
+    node.addEventListener('scroll', remeasure, { passive: true })
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
-    ro?.observe(el)
-    return () => {
-      el.removeEventListener('scroll', remeasure)
+    ro?.observe(node)
+    detachRef.current = () => {
+      node.removeEventListener('scroll', remeasure)
       ro?.disconnect()
     }
   }, [remeasure])
 
-  return [ref, edges, remeasure]
+  return [attach, edges, remeasure]
 }

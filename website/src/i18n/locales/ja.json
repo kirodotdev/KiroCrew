@@ -7174,7 +7174,8 @@
       "ver": "バージョン",
       "widgets_files_and_snippets_live_tracked_with_ver": "ウィジェット、ファイル、スニペット — バージョン履歴とともにライブ追跡",
       "your_artifacts": "あなたのアーティファクト",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "more_actions": "その他のアクション"
     },
     "capabilitiesPage": {
       "agent_capabilities": "エージェント機能",

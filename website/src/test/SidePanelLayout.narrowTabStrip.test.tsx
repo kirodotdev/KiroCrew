@@ -16,7 +16,7 @@
  * is what lets the derivation be tested at all.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import SidePanelLayout, { type SidePanelTab } from '../components/SidePanelLayout'
 
@@ -103,5 +103,32 @@ describe('narrow tab strip overflow cues', () => {
 
     expect(screen.queryByTestId('tab-strip-cue-right')).toBeNull()
     expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('tracks scrolling on a strip that mounts after a desktop→mobile resize', () => {
+    // The strip exists only in the mobile branch, so on a desktop-first mount
+    // there is no node to bind to. A mount-only effect would attach nothing and
+    // never run again, freezing the cues for the rest of the session.
+    mobile = false
+    stubStripGeometry({ hidden: 1013 })
+    const { rerender } = renderAt('')
+    expect(screen.queryByTestId('tab-strip-cue-right')).toBeNull()
+
+    mobile = true
+    rerender(
+      <MemoryRouter initialEntries={['/settings']}>
+        <SidePanelLayout title="Settings" tabs={TABS}>
+          {tab => <div data-testid="pane">{tab}</div>}
+        </SidePanelLayout>
+      </MemoryRouter>,
+    )
+    const strip = screen.getByTestId('tab-strip-cue-right').parentElement!.querySelector('div')!
+
+    // Scroll the strip: only a listener bound to the late-mounted node can turn
+    // the left cue on.
+    expect(screen.queryByTestId('tab-strip-cue-left')).toBeNull()
+    stubStripGeometry({ hidden: 1013, scrolled: 400 })
+    fireEvent.scroll(strip)
+    expect(screen.getByTestId('tab-strip-cue-left')).toBeTruthy()
   })
 })

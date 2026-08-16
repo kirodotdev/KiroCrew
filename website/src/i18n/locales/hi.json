@@ -7272,7 +7272,8 @@
       "ver": "संस्करण",
       "widgets_files_and_snippets_live_tracked_with_ver": "विजेट, फ़ाइलें और स्निपेट — संस्करण इतिहास के साथ लाइव-ट्रैक किए गए",
       "your_artifacts": "आपके आर्टिफ़ैक्ट",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "more_actions": "और कार्रवाइयां"
     },
     "capabilitiesPage": {
       "agent_capabilities": "एजेंट क्षमताएँ",

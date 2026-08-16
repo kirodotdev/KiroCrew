@@ -7272,7 +7272,8 @@
       "ver": "সংস্করণ",
       "widgets_files_and_snippets_live_tracked_with_ver": "উইজেট, ফাইল ও স্নিপেট — সংস্করণ ইতিহাসসহ লাইভ ট্র্যাক করা",
       "your_artifacts": "আপনার আর্টিফ্যাক্ট",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "more_actions": "আরও অ্যাকশন"
     },
     "capabilitiesPage": {
       "agent_capabilities": "এজেন্টের সক্ষমতা",

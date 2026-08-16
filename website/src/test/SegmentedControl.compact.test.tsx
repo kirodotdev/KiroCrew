@@ -49,4 +49,17 @@ describe('SegmentedControl compact', () => {
     await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(2))
     expect(screen.getByRole('button', { name: /table/i }).textContent).toContain('Table')
   })
+
+  it('names the icon-only segment explicitly, not via its tooltip', async () => {
+    stubRoomyParent()
+    render(<SegmentedControl segments={SEGMENTS} value="grid" onChange={vi.fn()} compact />)
+    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(2))
+    // `title` is only the accessible-name FALLBACK and never renders on touch,
+    // which is the form factor compact exists for — the hidden label has to be
+    // carried by aria-label.
+    expect(screen.getByRole('button', { name: /table/i }).getAttribute('aria-label')).toBe('Table')
+    // The selected segment still shows its label, so naming it again would be
+    // a duplicate the screen reader has to sit through.
+    expect(screen.getByRole('button', { name: /gallery/i }).getAttribute('aria-label')).toBeNull()
+  })
 })

@@ -7272,7 +7272,8 @@
       "ver": "Ver.",
       "widgets_files_and_snippets_live_tracked_with_ver": "Widgets, Dateien und Snippets — live erfasst mit Versionsverlauf",
       "your_artifacts": "Ihre Artefakte",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "more_actions": "Weitere Aktionen"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Agenten-Fähigkeiten",
