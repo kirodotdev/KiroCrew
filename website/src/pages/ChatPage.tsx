@@ -6184,8 +6184,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             OVER it — leaving no way to close a panel that covers the whole
             screen. It would also be pointing at a chat pane the panel has
             squeezed to zero width. Sessions stay reachable meanwhile via the
-            left-edge swipe (useSwipeEdge above). */}
-        {isMobile && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
+            left-edge swipe (useSwipeEdge above).
+
+            Suppressed when EMBEDDED for the same reason it is suppressed
+            behind the side panel: `fixed` anchors it to the VIEWPORT, not to
+            the host's pane, so it lands on whatever the host put in that
+            corner -- in Papyrus, on the toolbar's back button, giving two
+            overlapping tap targets on the app's primary exit. A host that
+            embeds one scoped conversation has no sessions list to open. */}
+        {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-[42px] left-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
