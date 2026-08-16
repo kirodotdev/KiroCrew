@@ -128,7 +128,7 @@ verification. Route names below are relative to that prefix.
 | Route | Body | Description |
 |-------|------|-------------|
 | `/apps/dev-fleet/api/sync` | — | Pull main + rebuild (single-flight; a concurrent call is refused **409**) |
-| `/apps/dev-fleet/api/worktree/remove` | `{name, force?}` | Remove a worktree (stops pod first) |
+| `/apps/dev-fleet/api/worktree/remove` | `{name, force?}` | Remove a worktree (stops its pod and reclaims that pod's isolated HOME first) |
 | `/apps/dev-fleet/api/prune-run` | `{names[]}` | Batch-remove eligible worktrees |
 | `/apps/dev-fleet/api/pod/up` | `{name}` | Start isolated pod instance (re-verifies the unit is active) |
 | `/apps/dev-fleet/api/pod/down` | `{name}` | Stop pod instance (re-verifies the unit is gone before reporting success) |
@@ -226,6 +226,80 @@ running" bug, issue #220). As defence-in-depth, `_pod_up` and `_pod_down` both
 re-check `runtime.active_names` after the CLI returns and fail closed
 (`pod not active after start` / `pod still active after shutdown`) — a CLI exit 0
 is never taken as proof of the state change, in either direction.
+
+### Pod HOME reclamation on worktree removal
+
+Removing a worktree reclaims the isolated `KIROCREW_HOME` of that worktree's pod
+whether or not the pod is still running, because a stopped pod still owns its
+HOME and this is the last moment anything can attribute that directory to this
+checkout — afterwards the per-pod env pin naming it is gone and only a bulk
+`pod prune` could find it. Reclaiming only a LIVE unit would therefore reclaim
+nothing on the ordinary path: the operator stops the pod when testing ends and
+prunes days later once the PR merges, so the unit is inactive by then and every
+removal stranded a full isolated HOME (a per-instance embedding-model copy
+dominates its size).
+
+Which directories qualify is decided by `runtime.orphan_homes`, the same
+predicate `pod ls` and `pod prune` use, rather than a bare directory probe — so
+symlinks are skipped and, on macOS, a name whose per-pod plist exists counts as
+*installed* rather than orphaned and is never reclaimed from underneath a
+concurrent `up`. That predicate keys on the pod root, liveness and plist and
+never on the checkout pin, so attribution is not its job.
+
+Attribution and teardown are ONE locked transaction. `_reclaim_pod_locked` runs
+entirely inside `runtime.pod_name_mutex` — the cross-process flock every mutating
+pod path cooperates on — and reads the checkout pin, decides ownership, calls
+`runtime.stop_pod`, and clears the per-pod env file without ever releasing it.
+Splitting those halves is what the lock exists to prevent: pod identities are
+global basenames, so between an ownership check in one process and a teardown in
+another, a concurrent `pod up` from a DIFFERENT checkout can claim the same name
+and the teardown would stop that pod and delete its isolated HOME. Both call
+sites in `_worktree_remove` — the live-unit path and the orphaned-HOME path — go
+through this one helper, so neither carries that window.
+
+That is also why the reclaim is in-process rather than a `pod down` shell-out:
+the mutex is held per open-file-description and `stop_pod` re-acquires it, so a
+caller holding it around a subprocess would block the child it waits on. The
+mutex is reentrant *within a thread* and the helper is submitted to the executor
+as a single callable, so `stop_pod`'s own acquisition nests instead of
+deadlocking. The helper mirrors `_pod_checkout_guard`'s attribution rules with one deliberate
+tightening: an ABSENT pin is a refusal here. The guard allows an unpinned name
+when no unit is live, which is right for operating on a pod the caller located,
+but this path DELETES the HOME and a same-basename leftover from another checkout
+is indistinguishable from here, so deletion demands positive attribution. The
+cost is that an unpinned orphan is not reclaimed automatically — `pod prune`
+still takes it — which is the cheaper side of the trade. It also mirrors the
+CLI's post-teardown env-file clear, and leaves that file alone when `stop_pod`
+reports the name was handed to a new pod mid-teardown (it now pins the new pod's
+checkout).
+
+`handed_over` is a REFUSAL at both call sites, not a success: a new pod holds the
+name, which checkout it belongs to is unknowable here, and it may be running out
+of the very worktree about to be deleted. The post-stop liveness recheck is not a
+substitute, since it can miss a unit that is still bootstrapping.
+
+The two fail directions are scoped separately on the orphan path. The
+ENUMERATION is best-effort cleanup — an orphan scan says nothing about liveness,
+so its failure degrades to a named leftover rather than turning a lost directory
+into a lost removal. The RECLAIM is teardown and fails CLOSED: a returned failure
+refuses the removal, and a RAISED one is deliberately not caught there either,
+because a teardown that died mid-flight (a stop that timed out against a
+still-activating unit) is exactly the state in which removing the checkout is
+unsafe.
+
+The result reports the two outcomes separately: `stopped_pod` for a unit that was
+running, `reclaimed_pod_home` for a HOME reclaimed with nothing running.
+
+Two failure directions are deliberately different. A **liveness** check that
+cannot run fails CLOSED and refuses the removal, because it guards against
+deleting a checkout out from under a running pod. A **reclamation** step that
+cannot run degrades: the orphan scan says nothing about liveness, so an
+enumeration error logs the leftover (pointing at `pod prune`) and the removal
+proceeds, rather than turning a lost directory into a lost removal. When the pod
+backend is provably absent the HOME is left in place on purpose — liveness is
+then unprovable and deleting a HOME that may belong to a live gateway is the one
+outcome teardown must never risk — but the path is logged at WARNING with the
+`pod down` verb that reclaims it, so the residue is visible instead of silent.
 
 ### Provisioning Dependency Install
 

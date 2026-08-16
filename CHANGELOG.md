@@ -4,6 +4,37 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **Removing a worktree in Dev Fleet no longer strands its pod's isolated
+  HOME.** Reclamation was gated on the pod's unit still being ACTIVE, which the
+  ordinary path never is: you stop the pod when testing ends and prune days
+  later once the PR merges. So the delete path that reclaims the HOME was
+  effectively never called, and every removal leaked a full isolated
+  `KIROCREW_HOME` — dominated by a per-instance copy of the embedding model, so
+  ~0.6 GB each — with the directory becoming unattributable the moment the
+  worktree's env pin went away. Removal now reclaims the HOME whether or not the
+  pod is running, using the same `orphan_homes` predicate as `pod ls` / `pod
+  prune` (so symlinks are skipped, and a macOS name mid-`up` is treated as
+  installed rather than orphaned). Attribution and teardown are ONE transaction
+  held under `pod_name_mutex`: pod identities are global basenames, so checking
+  ownership in one process and tearing down in another leaves a window where a
+  concurrent `pod up` from a different checkout claims the same name and the
+  teardown would stop that pod and delete its HOME. Both call sites — the
+  live-unit path and the orphaned-HOME path — go through the one locked helper,
+  which is necessarily in-process: the mutex is held per open-file-description
+  and `stop_pod` re-acquires it, so holding it around a `pod down` shell-out
+  would block the child being waited on. Because the delete needs positive
+  attribution, an ABSENT checkout pin refuses rather than assuming ownership
+  (`pod prune` still reclaims those), and a name handed to a new pod mid-teardown
+  refuses the removal outright, since that pod may be running out of the very
+  worktree about to be deleted.
+  The two outcomes are reported separately (`stopped_pod` vs
+  `reclaimed_pod_home`) rather than conflated into a shutdown that never
+  happened. Liveness checks keep failing CLOSED — they guard against deleting a
+  checkout under a live pod — while a reclamation that cannot run now degrades
+  to a logged leftover instead of refusing the removal, and a provably absent
+  pod backend logs the HOME it is leaving behind at WARNING with the verb that
+  reclaims it, replacing a debug-level line that hid the residue entirely.
+
 - **The one-time config migration no longer leaves a `.json.bak` orphan beside a
   config path it does not own.** `KiroCrewConfig.load()` copied the
   pre-migration config to `<path>.bak`, where `<path>` is whatever
@@ -18,6 +49,7 @@ All notable changes to KiroCrew are documented in this file.
   copy aside is not rewritten either. The name is also built by
   appending rather than `with_suffix(".json.bak")`, which REPLACED the final
   suffix and so renamed a non-`*.json` config instead of backing it up.
+
 
 - **A knowledge source that errored during ingestion is no longer re-synced on
   every sweep.** `KnowledgeIngestion` marks failure in the `sync_status`
