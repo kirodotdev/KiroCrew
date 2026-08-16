@@ -466,6 +466,7 @@ jobs:
         if: always()
         env:
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          HEAD: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -uo pipefail
           summary=""
@@ -480,6 +481,20 @@ jobs:
           if [ -s "$RUNNER_TEMP/design-review-output.md" ]; then
             v="$(printf '%s\n' "$summary" | grep -iE '^Design-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
             [ -n "$v" ] && verdict="$v"
+          fi
+          # Require the CURRENT-HEAD proof marker before honouring that verdict.
+          # The prompt emits `[DESIGN-REVIEWED] <sha>`, but parsing the
+          # `Design-Verdict:` header alone made the marker decorative: a reply
+          # carrying a stale or rewritten marker still scored as a verdict for
+          # THIS revision, so a design verdict earned on older code could be
+          # presented as current. Absent or mismatched -> back to UNKNOWN, the
+          # existing non-blocking path, rather than inventing a verdict.
+          # Here-string, not `printf | grep`, so a long summary cannot
+          # manufacture a SIGPIPE status under `pipefail`.
+          if [ "$verdict" != "UNKNOWN" ] \
+             && ! grep -qF "[DESIGN-REVIEWED] ${HEAD:-}" <<< "$summary"; then
+            echo "verdict header present but no [DESIGN-REVIEWED] ${HEAD:-} marker; treating as UNKNOWN"
+            verdict="UNKNOWN"
           fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "Design review verdict: $verdict"

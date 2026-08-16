@@ -345,6 +345,19 @@ jobs:
           # Machine-parse the verdict header the prompt requires (case-insensitive).
           verdict="$(printf '%s\n' "$summary" | grep -iE '^Design-Verdict:' | head -n1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' | tr '[:lower:]' '[:upper:]')"
           [ -z "$verdict" ] && verdict="UNKNOWN"
+          # Require the CURRENT-HEAD proof marker before honouring that verdict.
+          # The prompt emits `[DESIGN-REVIEWED] <sha>`, but parsing the
+          # `Design-Verdict:` header alone made the marker decorative: a reply
+          # carrying a stale or rewritten marker still scored as a verdict for
+          # THIS revision, so a design verdict earned on older code could be
+          # presented as current. Absent or mismatched -> fall through to the
+          # existing non-blocking "could not complete" path rather than
+          # inventing a verdict. Here-string, not `printf | grep`, so a long
+          # summary cannot manufacture a SIGPIPE status under `pipefail`.
+          if ! grep -qF "[DESIGN-REVIEWED] $HEAD" <<< "$summary"; then
+            echo "verdict header present but no [DESIGN-REVIEWED] $HEAD marker; treating as UNKNOWN"
+            verdict="UNKNOWN"
+          fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           MARKER="<!-- design-review -->"
           case "$verdict" in
