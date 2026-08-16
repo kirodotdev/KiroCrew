@@ -1872,8 +1872,18 @@ def find_listening_pids(port: int) -> list[int]:
                 [lsof_bin, "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
                 text=True,
                 stderr=subprocess.DEVNULL,
+                # Bounded like the Windows branch below. A wedged lsof (stale
+                # network mount, jammed process table) must not hang a caller:
+                # app-backend adoption and stop both run this on a request
+                # path, and an unbounded probe would block them indefinitely
+                # rather than degrading. SubprocessError — not just
+                # CalledProcessError — so the TimeoutExpired this introduces
+                # lands in the same "return []" degraded result an absent tool
+                # produces; listening_pid_tool_available() is what callers use
+                # to tell that apart from a genuinely empty port.
+                timeout=10,
             )
-        except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
             return []
         return list(dict.fromkeys(int(p) for p in out.split() if p.strip().isdigit()))
     # Windows: netstat -ano. Lines look like:

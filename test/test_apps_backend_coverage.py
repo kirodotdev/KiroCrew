@@ -158,6 +158,37 @@ def _capture_popen(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return seen
 
 
+def _stub_listening_pids(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pids: list[int] | None = None,
+    exc: BaseException | None = None,
+    available: bool = True,
+) -> None:
+    """Stub the port->PID probe at the seam the module actually uses.
+
+    ``_listening_pids`` wraps ``platform_compat.find_listening_pids``, which is
+    what makes the lookup answerable on Windows (``netstat -ano``) as well as
+    POSIX. Stubbing it here also keeps these tests hermetic: the real helper
+    spawns lsof/netstat and would otherwise report on whatever happens to be
+    listening on the developer's machine.
+
+    *available* drives ``listening_pid_tool_available``, which is the ONLY thing
+    that separates "the tool is absent" from "the tool ran and found no
+    listener" — ``find_listening_pids`` collapses both into ``[]``.
+    """
+
+    def _probe(_port: int) -> list[int]:
+        if exc is not None:
+            raise exc
+        return list(pids or [])
+
+    monkeypatch.setattr(bmod.platform_compat, "find_listening_pids", _probe)
+    monkeypatch.setattr(
+        bmod.platform_compat, "listening_pid_tool_available", lambda: available
+    )
+
+
 def _record_runs(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -654,11 +685,10 @@ class TestAdoptExistingInstance:
     ) -> None:
         port = bmod._MIN_PORT + 6
         monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *_a, **_k: _FakeResp(200))
-        _record_runs(
-            monkeypatch,
-            # A non-numeric line must be skipped, not abort the adoption.
-            result=SimpleNamespace(returncode=0, stdout="111\nbogus\n222\n"),
-        )
+        # Parsing (non-numeric rows, dedup) is find_listening_pids' own
+        # contract and is covered in test_platform_compat; this test's subject
+        # is that a healthy occupant is adopted carrying the PIDs it reports.
+        _stub_listening_pids(monkeypatch, pids=[111, 222])
         ap = self._run(port)
         assert ap is not None
         assert ap.proc is None
@@ -666,6 +696,36 @@ class TestAdoptExistingInstance:
         assert ap.adopted_pids == [111, 222]
         assert bmod._processes["adoptee"] is ap
         assert bmod._allocated_ports["adoptee"] == port
+
+    def test_a_healthy_instance_is_adopted_where_lsof_does_not_exist(
+        self, occupied: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Adoption must not depend on a POSIX-only tool.
+
+        Windows ships no ``lsof``, so the bare probe raises ``FileNotFoundError``
+        and no owning PID can be recorded — which makes adoption impossible on a
+        platform where Python and Node backends otherwise run (only the *exec*
+        launcher branch is POSIX-gated). ``platform_compat.find_listening_pids``
+        answers exactly this question there by parsing ``netstat -ano``, and this
+        module already routes every other process primitive through it —
+        including its own ``_listening_pids`` helper.
+        """
+        monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *_a, **_k: _FakeResp(200))
+        # What a bare ["lsof", ...] actually does on a host without lsof.
+        _record_runs(
+            monkeypatch,
+            exc=FileNotFoundError(2, "No such file or directory", "lsof"),
+        )
+        monkeypatch.setattr(bmod.platform_compat, "find_listening_pids", lambda _p: [4242])
+
+        ap = self._run(bmod._MIN_PORT + 11)
+
+        assert ap is not None, (
+            "a healthy backend on the port was refused because the port->PID "
+            "lookup shelled out to lsof; on Windows that can never succeed")
+        assert ap.adopted_pids == [4242]
+        assert ap.healthy is True
+        assert bmod._processes["adoptee"] is ap
 
     def test_adoption_survives_an_audit_sink_failure(
         self, occupied: Any, monkeypatch: pytest.MonkeyPatch
@@ -677,7 +737,7 @@ class TestAdoptExistingInstance:
 
         monkeypatch.setattr(bmod, "sel", _boom)
         monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *_a, **_k: _FakeResp(200))
-        _record_runs(monkeypatch, result=SimpleNamespace(returncode=0, stdout="333\n"))
+        _stub_listening_pids(monkeypatch, pids=[333])
         ap = self._run(bmod._MIN_PORT + 7)
         assert ap is not None
         assert ap.adopted_pids == [333]
@@ -688,7 +748,7 @@ class TestAdoptExistingInstance:
         """Adopting without PIDs would leave a backend we can never stop."""
 
         monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *_a, **_k: _FakeResp(200))
-        _record_runs(monkeypatch, result=SimpleNamespace(returncode=1, stdout=""))
+        _stub_listening_pids(monkeypatch, pids=[])
         with caplog.at_level(logging.WARNING):
             assert self._run(bmod._MIN_PORT + 8) is None
         assert any("cannot record PIDs" in r.message for r in caplog.records)
@@ -698,7 +758,7 @@ class TestAdoptExistingInstance:
         self, occupied: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *_a, **_k: _FakeResp(200))
-        _record_runs(monkeypatch, exc=OSError("no lsof"))
+        _stub_listening_pids(monkeypatch, exc=OSError("no port->pid tool"))
         assert self._run(bmod._MIN_PORT + 9) is None
 
     def test_an_unhealthy_occupant_blocks_the_spawn_instead_of_colliding(
@@ -1116,15 +1176,38 @@ class TestStopAdoptedBackend:
         """Revalidation guards against a PID recycled since adoption."""
 
         self._track(adopted_pids=[111, 222], healthy=True)
-        _record_runs(monkeypatch, result=SimpleNamespace(returncode=0, stdout="111\n999\n"))
+        _stub_listening_pids(monkeypatch, pids=[111, 999])
         assert bmod.stop_app_backend("ext") is True
         assert kills == [(111, bmod.platform_compat.SIGTERM)]
+
+    def test_a_working_probe_finding_no_listener_signals_nobody(
+        self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty answer from a WORKING probe is a negative identity result.
+
+        The backend exited, the port has no listener, and the OS may already have
+        recycled the adopted PID onto an unrelated process. Nothing downstream
+        re-checks identity before ``kill_pid``, so treating "no listener" as "no
+        information" and falling back to the recorded PID is how an unrelated
+        process gets signalled. ``find_listening_pids`` cannot express the
+        difference — it folds a failed probe and a genuinely empty port into
+        ``[]`` — which is exactly why ``listening_pid_tool_available`` exists.
+        """
+        self._track(adopted_pids=[111], healthy=True)
+        _stub_listening_pids(monkeypatch, pids=[], available=True)
+
+        assert bmod.stop_app_backend("ext") is True
+
+        assert kills == [], (
+            "the adopted PID was signalled although a working probe reported no "
+            "listener on the port -- that PID may have been recycled onto an "
+            "unrelated process")
 
     def test_an_unavailable_pid_probe_falls_back_to_the_adopted_set(
         self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._track(adopted_pids=[111], healthy=True)
-        _record_runs(monkeypatch, exc=OSError("no lsof"))
+        _stub_listening_pids(monkeypatch, available=False)
         assert bmod.stop_app_backend("ext") is True
         assert kills == [(111, bmod.platform_compat.SIGTERM)]
 
@@ -1132,7 +1215,7 @@ class TestStopAdoptedBackend:
         self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._track(adopted_pids=[0, -1], healthy=True)
-        _record_runs(monkeypatch, exc=OSError("no lsof"))
+        _stub_listening_pids(monkeypatch, available=False)
         assert bmod.stop_app_backend("ext") is True
         assert kills == []
 
@@ -1145,7 +1228,7 @@ class TestStopAdoptedBackend:
         )
         monkeypatch.setattr(bmod.platform_compat, "pid_exists", lambda _pid: True)
         self._track(adopted_pids=[111], healthy=True)
-        _record_runs(monkeypatch, exc=OSError("no lsof"))
+        _stub_listening_pids(monkeypatch, available=False)
         assert bmod.stop_app_backend("ext") is True
         assert recorded == [
             (111, bmod.platform_compat.SIGTERM),
@@ -1161,7 +1244,7 @@ class TestStopAdoptedBackend:
         monkeypatch.setattr(bmod.platform_compat, "kill_pid", _denied)
         monkeypatch.setattr(bmod.platform_compat, "pid_exists", lambda _pid: False)
         self._track(adopted_pids=[111], healthy=True)
-        _record_runs(monkeypatch, exc=OSError("no lsof"))
+        _stub_listening_pids(monkeypatch, available=False)
         assert bmod.stop_app_backend("ext") is True
 
     def test_an_unexpected_stop_failure_restores_tracking(
@@ -1174,7 +1257,7 @@ class TestStopAdoptedBackend:
 
         monkeypatch.setattr(bmod.platform_compat, "kill_pid", _bad)
         ap = self._track(adopted_pids=[111], healthy=True)
-        _record_runs(monkeypatch, exc=OSError("no lsof"))
+        _stub_listening_pids(monkeypatch, available=False)
         with caplog.at_level(logging.WARNING):
             assert bmod.stop_app_backend("ext") is False
         assert any("Failed to stop adopted backend" in r.message for r in caplog.records)
@@ -1746,7 +1829,7 @@ class TestDefensiveBranches:
         assert bmod.stop_app_backend("ext") is False
         assert "ext" in bmod._processes
 
-    def test_a_garbled_pid_probe_line_is_skipped_during_an_adopted_stop(
+    def test_an_adopted_stop_escalates_despite_an_audit_sink_failure(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def _no_sel() -> Any:
@@ -1759,7 +1842,7 @@ class TestDefensiveBranches:
             bmod.platform_compat, "kill_pid", lambda pid, sig: killed.append((pid, sig))
         )
         monkeypatch.setattr(bmod.platform_compat, "pid_exists", lambda _pid: True)
-        _record_runs(monkeypatch, result=SimpleNamespace(returncode=0, stdout="111\nnope\n"))
+        _stub_listening_pids(monkeypatch, pids=[111])
         with bmod._lock:
             bmod._processes["ext"] = AppProcess(
                 app_name="ext", port=9100, pid=0, proc=None, adopted_pids=[111], healthy=True

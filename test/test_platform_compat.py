@@ -2136,6 +2136,40 @@ class TestFindListeningPidsErrors:
         monkeypatch.setattr(pc.subprocess, "check_output", lambda *a, **k: "111\n111\n222\n")
         assert pc.find_listening_pids(7777) == [111, 222]
 
+    def test_posix_probe_is_bounded_by_a_timeout(self, monkeypatch):
+        # The POSIX branch must pass timeout= like the Windows branch does.
+        # Adoption and stop_app_backend both call this on a request path, so an
+        # unbounded lsof would hang the caller instead of degrading. Forced onto
+        # the POSIX branch so the guard is asserted on every platform: the
+        # sibling tests here skip off-POSIX, which would hide a regression from
+        # everyone developing on Windows.
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/lsof")
+        seen: dict = {}
+
+        def _capture(*_a, **kwargs):
+            seen.update(kwargs)
+            return "4242\n"
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _capture)
+        assert pc.find_listening_pids(7777) == [4242]
+        assert seen.get("timeout"), "POSIX lsof probe must pass a timeout"
+
+    def test_posix_timeout_degrades_to_empty_rather_than_raising(self, monkeypatch):
+        # The timeout above is only safe if TimeoutExpired is caught: the except
+        # tuple originally listed CalledProcessError, which does NOT cover it,
+        # so a bare timeout= would have turned a hang into an uncaught crash on
+        # the app-start path. [] is the same degraded result an absent tool
+        # gives; listening_pid_tool_available() distinguishes the two.
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/lsof")
+
+        def _wedged(*_a, **_kw):
+            raise pc.subprocess.TimeoutExpired(cmd="lsof", timeout=10)
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _wedged)
+        assert pc.find_listening_pids(7777) == []
+
     def _fake_netstat(self, blob: str):
         """Return a fake subprocess.check_output that returns *blob*."""
         def _run(*_a, **_kw):

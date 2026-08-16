@@ -135,7 +135,8 @@ def _survived_spawn(proc: Any, port: int | None = None) -> bool:
     established at all (no port to observe, or no port->PID tool on the host), it
     degrades to polling the full budget exactly as before.
 
-    The ownership probe shells out to lsof (~150ms), so it is gated behind a cheap
+    The ownership probe shells out to the port->PID tool (lsof on POSIX, netstat
+    on Windows; ~150ms), so it is gated behind a cheap
     loopback connect and is not run on every poll: the deadline below stays honest
     about wall-clock rather than adding the probe's cost to each interval, which
     would otherwise make the failure path take LONGER than the original budget.
@@ -631,23 +632,34 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
                 # Record PIDs listening on this port at adoption time
-                adopted_pids: list[int] = []
-                try:
-                    lsof_result = subprocess.run(
-                        ["lsof", "-ti", f":{port}", "-sTCP:LISTEN"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if lsof_result.returncode == 0 and lsof_result.stdout.strip():
-                        for pid_str in lsof_result.stdout.strip().split("\n"):
-                            try:
-                                adopted_pids.append(int(pid_str.strip()))
-                            except ValueError:
-                                pass
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                # Through the module's own helper, never a bare ``lsof``: that
+                # tool does not exist on Windows, where only the *exec* launcher
+                # branch is POSIX-gated — Python and Node backends run there, so
+                # a POSIX-only probe records no owner and refuses every
+                # adoption. find_listening_pids parses ``netstat -ano`` instead,
+                # and resolves the binary through trusted_system_bin rather than
+                # a PATH that can lead with a same-uid-writable directory.
+                #
+                # Ownership recorded here is port-wide, not address-scoped: the
+                # probe reports every listener on the port whatever its local
+                # address, so a process bound to a different address on the same
+                # port is adopted alongside the backend we health-checked and is
+                # signalled with it by stop's adopted path. That breadth is not
+                # introduced here — the inline probe this call replaced selected
+                # the same set — and it is deliberately left alone: the address a
+                # listener is bound to is not part of find_listening_pids' return
+                # shape, and the two obvious narrowings are both wrong. Owning
+                # only the loopback listener would refuse adoption for an
+                # externally-managed backend bound to 0.0.0.0, which is what
+                # adoption exists for, and refusing when several PIDs answer
+                # would refuse every pre-fork or multi-worker backend, where
+                # sharing one listening socket is normal. Narrowing it means
+                # changing that helper for all of its callers. Tracked in #5261.
+                adopted_pids = _listening_pids(port)
                 if not adopted_pids:
                     logger.warning(
-                        "App %s: cannot record PIDs on port %d (lsof unavailable?) — skipping adoption",
+                        "App %s: cannot record PIDs on port %d (port->PID probe "
+                        "unavailable?) — skipping adoption",
                         app_name, port,
                     )
                     return None
@@ -664,7 +676,8 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 # If the gateway dies, the external instance keeps running and is
                 # simply re-probed and re-adopted on the next start — so reaping it
                 # would kill a healthy service we would immediately re-adopt. stop's
-                # adopted path kills only the lsof-revalidated PIDs for this reason.
+                # adopted path kills only the PIDs still revalidated as holding
+                # this port, for this reason.
                 with _lock:
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
@@ -1134,25 +1147,24 @@ def stop_app_backend(app_name: str) -> bool:
             target_pids: set[int] = set(ap.adopted_pids)
 
             # Verify adopted PIDs still belong to this port (guards against
-            # PID recycling between adoption and stop).
-            try:
-                lsof_result = subprocess.run(
-                    ["lsof", "-ti", f":{ap.port}", "-sTCP:LISTEN"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if lsof_result.returncode == 0 and lsof_result.stdout.strip():
-                    current_pids: set[int] = set()
-                    for pid_str in lsof_result.stdout.strip().split("\n"):
-                        try:
-                            current_pids.add(int(pid_str.strip()))
-                        except ValueError:
-                            pass
-                    # Only kill PIDs that are both adopted AND still on this port
-                    target_pids = target_pids & current_pids
-            except (OSError, subprocess.TimeoutExpired):
-                # lsof unavailable at stop time — proceed with adopted PIDs
-                # (they were validated at adoption time)
-                pass
+            # PID recycling between adoption and stop). Same helper as adoption,
+            # so the check works on Windows instead of silently degrading there.
+            #
+            # Gate on the TOOL, not on the result. find_listening_pids folds
+            # "the probe could not run" and "the port genuinely has no listener"
+            # into one empty list, and those demand opposite actions: the first
+            # carries no identity information, while the second says the backend
+            # is gone and the recorded PID may already have been recycled onto an
+            # unrelated process. Nothing after this point re-checks identity
+            # before kill_pid, so an empty result from a WORKING probe must empty
+            # the kill set. listening_pid_tool_available exists to tell the two
+            # apart. A probe that is present but fails also collapses to [] and
+            # therefore kills nobody: at a process-termination boundary, leaking
+            # a backend beats signalling a stranger — the same rule
+            # _reap_stale_app_backends applies when it cannot confirm identity.
+            if platform_compat.listening_pid_tool_available():
+                # Only kill PIDs that are both adopted AND still on this port.
+                target_pids &= set(_listening_pids(ap.port))
 
             pids: list[int] = []
             for pid in target_pids:
