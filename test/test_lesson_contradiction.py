@@ -1425,3 +1425,49 @@ class TestLessonStorageShape:
             assert decoded["category"] == "preference"
         finally:
             store.close()
+
+
+class TestNormalizeLessonCategory:
+    """Direct coverage of the shared helper both policies delegate to.
+
+    The write path (strict=True) and the display surfaces (strict=False) pin
+    their behavior through the call sites above and in the handler tests;
+    these lock the helper's own contract so a change here fails fast.
+    """
+
+    def test_strict_clamps_unknown_label_to_knowledge(self):
+        from kiro_crew.validation import normalize_lesson_category
+
+        assert normalize_lesson_category("banana", strict=True) == "knowledge"
+
+    def test_strict_preserves_enum_member(self):
+        from kiro_crew.validation import normalize_lesson_category
+
+        assert normalize_lesson_category("preference", strict=True) == "preference"
+
+    def test_strict_clamps_unhashable_label_without_raising(self):
+        from kiro_crew.validation import normalize_lesson_category
+
+        assert normalize_lesson_category({"a": 1}, strict=True) == "knowledge"
+        assert normalize_lesson_category(["tool"], strict=True) == "knowledge"
+
+    def test_display_passes_through_non_enum_string(self):
+        """strict=False must NOT clamp: a category accepted at write time
+        after the enum grows keeps its own label on display surfaces."""
+        from kiro_crew.validation import normalize_lesson_category
+
+        assert normalize_lesson_category("future-category", strict=False) == "future-category"
+
+    def test_display_defaults_blank_and_non_string(self):
+        from kiro_crew.validation import normalize_lesson_category
+
+        assert normalize_lesson_category("   ", strict=False) == "knowledge"
+        assert normalize_lesson_category(None, strict=False) == "knowledge"
+        assert normalize_lesson_category(123, strict=False) == "knowledge"
+
+    def test_both_policies_agree_on_enum_members(self):
+        from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES, normalize_lesson_category
+
+        for cat in ALLOWED_LESSON_CATEGORIES:
+            assert normalize_lesson_category(cat, strict=True) == cat
+            assert normalize_lesson_category(cat, strict=False) == cat

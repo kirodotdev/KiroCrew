@@ -56,7 +56,7 @@ from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
+from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES, normalize_lesson_category
 
 # Consolidation caps live in vector_memory_constants (a light module with no
 # heavy transitive deps) so prompt-building callers can import them at top
@@ -2167,13 +2167,11 @@ class VectorMemoryStore:
         # bad label into lost guidance. Consolidation passes the LLM's own
         # item.get("category") straight through (history.py) with no validation,
         # unlike the REST and MCP paths, which are enum-restricted by
-        # LEARN_ADD_SCHEMA. Clamp to that same enum: an unrecognized or non-string
-        # label is not a category, and "knowledge" is what every other caller
-        # defaults to. The isinstance check runs first: an unhashable label (a
-        # dict or list from the LLM) would make the set membership test itself
-        # raise, aborting consolidation instead of clamping.
-        if not isinstance(category, str) or category not in ALLOWED_LESSON_CATEGORIES:
-            category = "knowledge"
+        # LEARN_ADD_SCHEMA. The shared helper clamps to that same enum
+        # (write policy, strict=True), safely handling unhashable labels
+        # (a dict or list from the LLM) that would make a raw set membership
+        # test raise and abort consolidation instead of clamping.
+        category = normalize_lesson_category(category, strict=True)
         rule_words = self._lesson_keywords(rule_lower)
         # Same reasoning as write_episodic: carry the space generation to the write
         # so a swap landing between the embed and the lock cannot commit a vector

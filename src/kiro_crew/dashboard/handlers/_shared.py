@@ -19,7 +19,7 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.skills import skills_dir
 from kiro_crew.slack.handler import (
     _hydrate_conv_flags,
@@ -31,6 +31,26 @@ if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import CapabilityManager
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_memory_field(val: object) -> object:
+    """Redact credentials and exfiltration URLs from a memory field.
+
+    Lives here (not in ``memory.py``) so handlers that ``memory.py`` itself
+    imports from -- e.g. ``cron.py`` -- can share the chain without an import
+    cycle.
+    """
+    if isinstance(val, (bytes, memoryview)):
+        return None
+    if isinstance(val, str):
+        val, _ = redact_exfiltration_urls(val)
+        val, _ = redact_credentials(val)
+        return val
+    if isinstance(val, list):
+        return [_redact_memory_field(item) for item in val]
+    if isinstance(val, dict):
+        return {k: _redact_memory_field(v) for k, v in val.items()}
+    return val
 
 
 # Shared body cap for the small JSON-object endpoints that must bound the

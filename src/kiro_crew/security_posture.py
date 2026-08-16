@@ -778,6 +778,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.
         "apps/builtins/mochi/redact.py",
+        # Same shape: hosts _redact_memory_field, the shared recursive scrubber
+        # for memory fields. It owns no output of its own — the handler modules
+        # that call it (memory.py, cron.py) are the covered surfaces.
+        "dashboard/handlers/_shared.py",
         # Same shape: applies a redactor the CALLER injects, to scan the form a
         # platform will actually render (markup collapsed, ANSI stripped). It owns
         # no output of its own -- the registered sinks are the modules that call

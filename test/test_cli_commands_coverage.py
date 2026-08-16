@@ -1240,6 +1240,22 @@ class TestLearnCli:
             cc._learn(_ns(learn_action="list"))
         assert "[tool] r — n" in capsys.readouterr().out
 
+    def test_list_jsonl_fallback_normalizes_blank_category(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The JSONL fallback branch applies the same display policy as the
+        vector-store branch and the dashboard: a blank/legacy category renders
+        the store's own "knowledge" default, never a bare []."""
+        with _LearnHarness() as h:
+            h.vs.get_lessons.return_value = []
+            h.jsonl.load_all.return_value = [
+                SimpleNamespace(category="", rule="legacy row", negative=None)
+            ]
+            cc._learn(_ns(learn_action="list"))
+        out = capsys.readouterr().out
+        assert "[knowledge] legacy row" in out
+        assert "[]" not in out
+
     def test_list_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _LearnHarness() as h:
             h.vs.get_lessons.return_value = []

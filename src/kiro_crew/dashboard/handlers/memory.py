@@ -49,7 +49,7 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
-from ._shared import _get_memory, _is_restricted_session
+from ._shared import _get_memory, _is_restricted_session, _redact_memory_field
 from .cron import _recognize_session
 
 logger = logging.getLogger(__name__)
@@ -163,21 +163,6 @@ async def api_memory_settings(request: web.Request) -> web.Response:
             "migrated": cfg.memory.migrated,
         }
     )
-
-
-def _redact_memory_field(val: object) -> object:
-    """Redact credentials and exfiltration URLs from a memory field."""
-    if isinstance(val, (bytes, memoryview)):
-        return None
-    if isinstance(val, str):
-        val, _ = redact_exfiltration_urls(val)
-        val, _ = redact_credentials(val)
-        return val
-    if isinstance(val, list):
-        return [_redact_memory_field(item) for item in val]
-    if isinstance(val, dict):
-        return {k: _redact_memory_field(v) for k, v in val.items()}
-    return val
 
 
 def _get_vector_store(state: DashboardState):

@@ -38,6 +38,7 @@ from kiro_crew.validation import (
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
     ValidationError,
+    normalize_lesson_category,
     validate_string_field,
     validate_tool_args,
 )
@@ -49,6 +50,7 @@ from ._shared import (
     _get_memory,
     _is_restricted_session,
     _probe_persisted_session,
+    _redact_memory_field,
 )
 
 logger = logging.getLogger(__name__)
@@ -1383,21 +1385,21 @@ async def api_lessons(request: web.Request) -> web.Response:
     def _safe_lesson(rule: object, category: object, ts: object) -> dict:
         """One sanitization chokepoint for every branch of this endpoint.
 
-        Lesson rows can carry consolidation (LLM) or import output: enforce a
-        string category so a malformed row cannot ship an object to the React
-        panel, and redact BOTH prose fields like every other agent-derived
+        Lesson rows can carry consolidation (LLM) or import output: normalize
+        the category through the shared helper (display policy, strict=False)
+        so this surface cannot drift from the write-path rules, and redact
+        BOTH prose fields via the shared chain like every other agent-derived
         string this handler returns -- an imported row can carry a credential
         in either field. The JSONL store loads ``rule`` without type
         validation, so a malformed row can carry a non-string here; stringify
-        before the regex redaction rather than crashing the endpoint.
+        before the redaction rather than crashing the endpoint.
         """
         if not isinstance(rule, str):
             rule = str(rule)
-        safe_rule = redact_credentials(redact_exfiltration_urls(rule)[0])[0]
-        if isinstance(category, str) and category.strip():
-            safe_category = redact_credentials(redact_exfiltration_urls(category)[0])[0]
-        else:
-            safe_category = "knowledge"
+        safe_rule = _redact_memory_field(rule)
+        safe_category = _redact_memory_field(
+            normalize_lesson_category(category, strict=False)
+        )
         return {"rule": safe_rule, "category": safe_category, "ts": ts}
 
     # Read from vector store if it has lessons, else JSONL

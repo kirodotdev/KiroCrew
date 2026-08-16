@@ -74,7 +74,13 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
-from kiro_crew.validation import _AGENT_NAME_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN, WORKSPACE_NAME_RE
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    CHANNEL_ID_RE,
+    CHANNEL_MAX_LEN,
+    WORKSPACE_NAME_RE,
+    normalize_lesson_category,
+)
 from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
@@ -1444,10 +1450,12 @@ def _learn(args: argparse.Namespace) -> None:
                     #
                     # The label reads the row's own category so this surface agrees
                     # with the dashboard's lessons panel; a legacy string row
-                    # carries none, and "knowledge" is the store's own default.
-                    category = val.get("category") if isinstance(val, dict) else None
-                    if not isinstance(category, str) or not category.strip():
-                        category = "knowledge"
+                    # carries none, and the shared helper supplies the store's
+                    # own "knowledge" default (display policy, strict=False).
+                    category = normalize_lesson_category(
+                        val.get("category") if isinstance(val, dict) else None,
+                        strict=False,
+                    )
                     text = _TERMINAL_CTRL_RE.sub("", _lesson_display_text(val) or str(val))
                     print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}")
             else:
@@ -1457,7 +1465,11 @@ def _learn(args: argparse.Namespace) -> None:
                     return
                 for le in lessons:
                     neg = f" — {_TERMINAL_CTRL_RE.sub('', str(le.negative))}" if le.negative else ""
-                    print(f"  [{_TERMINAL_CTRL_RE.sub('', str(le.category))}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}")
+                    # Same display policy as the vector-store branch above and
+                    # the dashboard's JSONL path: a blank/legacy category gets
+                    # the store's own "knowledge" default instead of printing [].
+                    category = normalize_lesson_category(le.category, strict=False)
+                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}")
 
         elif action == "remove":
             if vs.get_lessons() and vs.delete_lesson(args.query):

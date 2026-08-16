@@ -53,6 +53,29 @@ MAX_RESPONSE_LEN = 100_000  # truncate tool responses
 # Allowed categories for lessons
 ALLOWED_LESSON_CATEGORIES = frozenset({"tool", "preference", "knowledge"})
 
+
+def normalize_lesson_category(value: object, *, strict: bool) -> str:
+    """Normalize a lesson category to a usable string label.
+
+    The single source of the category rules for every surface that labels a
+    lesson, so write-time and display-time policy cannot drift apart:
+
+    - ``strict=True`` (write path): clamp to ``ALLOWED_LESSON_CATEGORIES`` --
+      an unrecognized or non-string label is not a category, and "knowledge"
+      is the default every other writer uses. The ``isinstance`` check runs
+      first so an unhashable label (a dict or list from an LLM) cannot make
+      the set membership test raise.
+    - ``strict=False`` (display surfaces): only default non-string or blank
+      values, passing any other non-blank string through -- a category
+      accepted at write time keeps its own label when rendered.
+    """
+    if not isinstance(value, str):
+        return "knowledge"
+    if strict:
+        return value if value in ALLOWED_LESSON_CATEGORIES else "knowledge"
+    return value if value.strip() else "knowledge"
+
+
 # Allowed scopes for lessons (mirrors the learn_add MCP inputSchema enum).
 ALLOWED_LESSON_SCOPES = frozenset({"global", "workspace"})
 
