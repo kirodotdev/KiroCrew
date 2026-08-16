@@ -78,6 +78,31 @@ class LLMProvider(ABC):
         """
         return False
 
+    @property
+    def child_fidelity_aware(self) -> bool:
+        """Consumer opt-in for the low-fidelity CHILD permission downgrade.
+
+        Backend-internal subagents (children spawned inside the backend
+        process) can escalate permission requests whose structured security
+        context is absent. A consumer that implements the downgrade (e.g.
+        an interactive card) sets this True so those events are delivered
+        to it; while False, the session layer fail-closes them (reject)
+        so no consumer can auto-approve a child on agent-authored context.
+
+        Declared on the ABC so every conforming adapter has the attribute:
+        the default is the SAFE value (False → fail-closed), and providers
+        without child sessions can ignore it entirely. Runtime-backed
+        providers override with a real forwarding property.
+        """
+        return False
+
+    @child_fidelity_aware.setter
+    def child_fidelity_aware(self, value: bool) -> None:
+        """Accept and discard by default — providers without child sessions
+        have nothing to forward to, and the False getter above remains the
+        (safe) truth for them."""
+        return None
+
     def context_window_tokens(self) -> int:
         """Return the real served context window in tokens (0 if unknown).
 

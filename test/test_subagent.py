@@ -2037,3 +2037,62 @@ class TestSubagentUsageRow:
 
         persist.assert_awaited_once()
         assert persist.await_args.kwargs["agent"] == "researcher"
+
+
+class TestChildEscalationLimit:
+    """Child-origin permission escalations get their own volume bound, and the
+    bail must ANSWER the triggering request before tombstoning — a return
+    without a response strands the child's oneshot (under session sharing the
+    runtime outlives the subagent, so nothing else tears the connection down).
+    """
+
+    @pytest.mark.asyncio
+    async def test_escalation_limit_bail_answers_triggering_request(self) -> None:
+        from kiro_crew.hooks import TOOL_AUTO_APPROVE, ToolHookResult
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="")
+        provider = sessions.get_or_create.return_value[0]
+
+        async def _stream(*_a, **_kw):
+            # Limit floor is 60: the 61st child escalation trips the bail.
+            for i in range(61):
+                yield LLMEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    title=f"child tool {i}",
+                    request_id=1000 + i,
+                    sub_session_id="child-a",
+                )
+
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        provider.reject_tool = AsyncMock()
+
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("msg", None))
+        ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=TOOL_AUTO_APPROVE))
+        ctx.hooks.auto_approve_subagent_spawn = True
+
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        info = SubagentInfo(id="esc01", task="t", parent_session_key="dashboard:default")
+        manager._agents["esc01"] = info
+
+        tombstones: list[str] = []
+        manager._write_tombstone = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda _i, cause: tombstones.append(cause)
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"), patch(
+            "kiro_crew.subagent.update_state"
+        ), patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True):
+            await manager._run_inner(info, "subagent:esc01")
+
+        assert tombstones == ["child_escalation_limit"]
+        assert info.error.startswith("child_escalation_limit:")
+        # EVERY escalation was answered — including the triggering 61st
+        # (low-fidelity children with no approver are rejected; the bail must
+        # not strand the one that tripped the limit).
+        answered = {c.args[0] for c in provider.reject_tool.await_args_list}
+        assert 1000 + 60 in answered, "triggering request was not answered"
+        assert len(answered) == 61

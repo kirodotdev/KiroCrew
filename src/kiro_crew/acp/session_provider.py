@@ -156,6 +156,16 @@ class AcpSessionProvider(LLMProvider):
         except Exception:  # pragma: no cover - handle types without the attr
             logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
 
+    @property
+    def child_fidelity_aware(self) -> bool:
+        """See AcpSessionHandle.child_fidelity_aware."""
+        return getattr(self._handle, "child_fidelity_aware", False)
+
+    @child_fidelity_aware.setter
+    def child_fidelity_aware(self, value: bool) -> None:
+        if hasattr(self._handle, "child_fidelity_aware"):
+            self._handle.child_fidelity_aware = value
+
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.
 

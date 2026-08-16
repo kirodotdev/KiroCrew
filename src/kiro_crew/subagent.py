@@ -1339,8 +1339,17 @@ class SubagentManager:
         event: LLMEvent,
         *,
         metadata: dict | None = None,
+        info: "SubagentInfo | None" = None,
     ) -> None:
         await client.approve_tool(request_id)
+        # An APPROVED child-origin escalation is side-effect activity: count
+        # it in tool_count so the transient-retry / cancel-respawn replay
+        # gates see it (an approved child mutation must never be replayed by
+        # a bare original prompt). Counted here — on the approval outcome —
+        # not at receipt: a purely rejected escalation executed nothing and
+        # must not permanently disable the run's replay budget.
+        if info is not None and event.sub_session_id:
+            info.tool_count += 1
         sel().log_tool_invocation(
             session_key=session_key,
             source="subagent",
@@ -4975,6 +4984,11 @@ class SubagentManager:
         result_text = ""
         turns = 0
         turn_limit = self._effective_turn_limit(info)
+        # Separate volume bound for child-origin permission escalations —
+        # they are exempt from the parent's turn budget (see the
+        # EVENT_PERMISSION_REQUEST branch) but must not be unbounded.
+        child_escalations = 0
+        child_escalation_limit = max(turn_limit * 3, 60)
         # Reports inherited agent (not just info.agent) so telemetry shows
         # the actual agent used for this subagent session.
         await self._fire_event(
@@ -5137,8 +5151,63 @@ class SubagentManager:
                 # session/request_permission. Run them through the same hook
                 # → parent_policy → interactive callback pipeline so the
                 # approve / reads / trust / yolo protocol applies uniformly.
-                turns += 1
-                info.turns = turns
+                #
+                # Child-origin escalations (runtime-routed backend subagents)
+                # do NOT consume the parent's turn budget: a child asking for
+                # enough permissions would otherwise trip the parent's
+                # turn_limit and kill the whole subagent run on activity that
+                # is not the parent's own turns. They get their OWN bound
+                # instead — without one, a chatty or adversarial backend
+                # child could generate unbounded approval prompts until the
+                # wall-clock reaper fires (the turn budget used to bound
+                # exactly this traffic). Generous multiple of the parent's
+                # limit: legitimate crews fan many small child tool calls.
+                if not event.sub_session_id:
+                    turns += 1
+                    info.turns = turns
+                else:
+                    # Child escalation: counted toward its own volume bound
+                    # here; side-effect activity (tool_count) is counted at
+                    # APPROVAL in _approve_and_log — a purely rejected
+                    # escalation executed nothing and must not consume the
+                    # run's replay budget (tool_count gates prompt replay
+                    # and cancel-respawn).
+                    child_escalations += 1
+                    if child_escalations > child_escalation_limit:
+                        # Answer the triggering request BEFORE bailing: this
+                        # event is already dequeued, so returning without a
+                        # response would strand the child's oneshot — under
+                        # session sharing the runtime outlives this subagent
+                        # and nothing else tears the connection down. The
+                        # "requests are answered on every queue path"
+                        # contract this PR establishes applies to limit
+                        # bails too.
+                        try:
+                            await self._reject_and_log(
+                                client,
+                                event.request_id,
+                                session_key,
+                                event,
+                                error="child_escalation_limit",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "failed to reject escalation-limit trigger request"
+                            )
+                        info.result = result_text or "_Partial output._"
+                        info.error = f"child_escalation_limit:{child_escalation_limit}"
+                        info.done = True
+                        Stats().inc_subagent_failed()
+                        logger.warning(
+                            "Subagent %s hit child escalation limit (%d)",
+                            info.id,
+                            child_escalation_limit,
+                        )
+                        self._write_tombstone(info, "child_escalation_limit")
+                        return
+                # Diagnostic pointer is written for BOTH origins — orphan
+                # recovery must see child activity too; only the turn
+                # increment is parent-scoped.
                 info.last_tool = event.title or ""
                 # Persist turn state for orphan recovery diagnostics
                 try:
@@ -5156,6 +5225,15 @@ class SubagentManager:
                     },
                 )
                 if turns > turn_limit:
+                    # Same contract as the child_escalation_limit bail: the
+                    # triggering request is already dequeued and must be
+                    # answered before this loop exits, or its oneshot strands.
+                    try:
+                        await self._reject_and_log(
+                            client, event.request_id, session_key, event, error="turn_limit"
+                        )
+                    except Exception:
+                        logger.exception("failed to reject turn-limit trigger request")
                     info.result = result_text or "_Partial output._"
                     info.error = f"turn_limit:{turn_limit}"
                     info.done = True
@@ -5182,14 +5260,71 @@ class SubagentManager:
                     continue
                 if event.child_low_fidelity:
                     # Backend-internal child origin whose SECURITY context is
-                    # absent (structured params missing, or shell without a
-                    # recoverable command — AcpEvent.child_low_fidelity): any
-                    # APPROVE would rest on the LLM-authored title alone. This
-                    # consumer is headless — there is no card to downgrade to
-                    # — so fail closed before any approve branch (hook
-                    # auto-approve or parent_policy auto) can fire. A child
-                    # WITH cached bytes flows through the same pipeline as any
-                    # other tool (mode parity).
+                    # absent (structured params missing, unresolved shell
+                    # classification, or shell without a recoverable command —
+                    # AcpEvent.child_low_fidelity): any AUTO-approve would
+                    # rest on the LLM-authored title alone, so skip the hook
+                    # auto-approve and parent_policy=auto branches. When an
+                    # interactive approver IS configured — the per-subagent
+                    # factory, or the gateway-level _on_tool_approval
+                    # fallback the non-child path below also uses — hand the
+                    # decision to it: that is a human/host judgment, the same
+                    # downgrade the dashboard's card provides. Only a truly
+                    # headless consumer fails closed.
+                    _child_fallback = self._on_tool_approval
+                    if self._on_tool_approval_factory or _child_fallback is not None:
+                        # The human must know the title is ALL there is: the
+                        # structured params the policy gates would verify are
+                        # absent, so the displayed text is agent-authored and
+                        # unverifiable. Annotate the prompt so the approval
+                        # is an informed judgment, not a title-only rubber
+                        # stamp.
+                        event.title = (
+                            "⚠️ UNVERIFIED child request (security context "
+                            f"missing — title is agent-authored): {event.title or '<unknown tool>'}"
+                        )
+                        approved = False
+                        # Same human-wait lifecycle as the ordinary callback
+                        # branches below: without _awaiting_approval the
+                        # reaper reads a healthy approval wait as a stalled
+                        # subagent after the idle threshold.
+                        info._awaiting_approval = True
+                        try:
+                            if self._on_tool_approval_factory:
+                                approve_cb = self._on_tool_approval_factory(info)
+                                approved = bool(await approve_cb(event))
+                            elif _child_fallback is not None:
+                                approved = bool(
+                                    await _child_fallback(
+                                        event, info.parent_session_key
+                                    )
+                                )
+                        except Exception:
+                            logger.exception("child approval callback failed")
+                        finally:
+                            info._awaiting_approval = False
+                            info.last_activity = time.time()
+                        if approved:
+                            await self._approve_and_log(
+                                client,
+                                event.request_id,
+                                session_key,
+                                event,
+                                metadata={
+                                    "subagent_id": info.id,
+                                    "reason": "child_interactive_approved",
+                                },
+                                info=info,
+                            )
+                        else:
+                            await self._reject_and_log(
+                                client,
+                                event.request_id,
+                                session_key,
+                                event,
+                                error="child_interactive_rejected",
+                            )
+                        continue
                     await self._reject_and_log(
                         client,
                         event.request_id,
@@ -5205,6 +5340,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id, "reason": "hook_auto_approve"},
+                        info=info,
                     )
                     continue
                 if parent_policy == "auto":
@@ -5214,6 +5350,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id, "reason": "parent_policy_auto"},
+                        info=info,
                     )
                     continue
                 if self._on_tool_approval_factory:
@@ -5239,6 +5376,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id},
+                        info=info,
                     )
                 elif self._on_tool_approval:
                     info._awaiting_approval = True
@@ -5256,6 +5394,7 @@ class SubagentManager:
                         session_key,
                         event,
                         metadata={"subagent_id": info.id},
+                        info=info,
                     )
                 else:
                     # No callback, no auto policy — deny by default
@@ -5451,6 +5590,10 @@ class SubagentManager:
             agent=agent or None,
         )
         provider = AcpSessionProvider(handle, runtime)
+        # This consumer implements the low-fidelity child downgrade (interactive
+        # approver when configured, reject when headless) — opt in so the
+        # handle-level fail-close gate yields those events instead of rejecting.
+        provider.child_fidelity_aware = True
         info._session_sharing = True
         info._shared_provider = provider
         if runtime.pid:

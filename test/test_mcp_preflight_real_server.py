@@ -167,15 +167,15 @@ async def test_a_caller_sensitive_server_is_caught_by_provoking_it(
             "blocker is upstream of it — a governance floor above Kiro Crew's own "
             "config, or no usable spawn backend at all"
         )
-    if len(seen) == 1 and result.ran is False:
-        # The first real handshake succeeded but the second timed out under
-        # load (preflight reports ran=False, "could not ask" — see the
-        # single-shot branch in preflight()). One spawn proves nothing about
-        # caller sensitivity either way, so this is the same environment skip
-        # as zero spawns, not a policy failure. Observed on loaded xdist
-        # shards, where the sibling-test CPU contention starves the second
-        # subprocess handshake past the probe budget.
-        pytest.skip(f"only one probe handshake completed under load: {seen}")
+    if len(seen) == 1 and result.ran is False and result.detail == "timeout":
+        # The first real handshake succeeded but the SECOND timed out under
+        # load (preflight reports ran=False with the probe's timeout detail —
+        # the single-shot branch in preflight()). Keyed on the timeout detail
+        # so a genuine second-probe regression (crash, refusal, protocol
+        # error) still FAILS; only the load-starvation shape skips. Observed
+        # on loaded xdist shards where sibling-test CPU contention starves
+        # the second subprocess handshake past the probe budget.
+        pytest.skip(f"second probe handshake timed out under load: {seen}")
 
     assert len(seen) == 2, f"the pre-flight must provoke exactly twice, saw {seen}"
     assert len(set(seen)) == 2, f"both spawns used the same clientInfo: {seen}"
@@ -212,10 +212,11 @@ async def test_a_stable_server_answers_both_callers_identically(
     seen = _identities(witness)
     if not seen:
         pytest.skip("the probe did not spawn anything on this host")
-    if len(seen) == 1 and result.ran is False:
-        # Same environment skip as the caller-sensitive test above: the second
-        # handshake timed out under load, so shareability was never assessed.
-        pytest.skip(f"only one probe handshake completed under load: {seen}")
+    if len(seen) == 1 and result.ran is False and result.detail == "timeout":
+        # Same environment skip as the caller-sensitive test above: only the
+        # load-starvation shape (second-probe timeout) skips; any other
+        # single-spawn outcome still fails.
+        pytest.skip(f"second probe handshake timed out under load: {seen}")
 
     assert len(seen) == 2, f"expected two spawns, saw {seen}"
     assert result.ran is True

@@ -322,6 +322,11 @@ class AcpProvider(LLMProvider):
         if agent:
             kwargs["agent"] = agent
         self._client = AcpClient(**kwargs)
+        # Consumer opt-in for the low-fidelity child permission downgrade
+        # (see child_fidelity_aware property). Set by fidelity-aware
+        # consumers (dashboard chat) BEFORE startup; re-applied when
+        # _start_kiro_runtime_impl swaps in the real AcpSessionProvider.
+        self._child_fidelity_aware: bool = False
         # Canonical Kiro Crew identity (a cfg.agents key), resolved by the
         # factory at provider-creation time — ``agent`` above is the bound kiro
         # template, a different namespace. Threaded into the kiro-shared
@@ -374,6 +379,29 @@ class AcpProvider(LLMProvider):
     def client(self) -> AcpClient:
         """Expose underlying client for backward compat (e.g. is_ready check)."""
         return self._client
+
+    @property
+    def child_fidelity_aware(self) -> bool:
+        """See AcpSessionHandle.child_fidelity_aware.
+
+        Stored on the provider AND forwarded to the live inner client:
+        for the kiro backend ``self._client`` starts as a placeholder
+        AcpClient and is REPLACED with an AcpSessionProvider at runtime
+        startup (_start_kiro_runtime_impl), so a flag set only on the
+        inner client before startup would be lost with the placeholder.
+        The stored value is re-applied at replacement time.
+        """
+        return self._child_fidelity_aware
+
+    @child_fidelity_aware.setter
+    def child_fidelity_aware(self, value: bool) -> None:
+        self._child_fidelity_aware = bool(value)
+        inner = getattr(self, "_client", None)
+        if inner is not None and hasattr(inner, "child_fidelity_aware"):
+            try:
+                inner.child_fidelity_aware = bool(value)
+            except Exception:  # pragma: no cover - read-only shapes
+                pass
 
     @property
     def served_model(self) -> str:
@@ -842,6 +870,13 @@ class AcpProvider(LLMProvider):
             provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
             if resumed:
                 provider.resumed = True
+            # Re-apply the consumer's fidelity opt-in: it was set on THIS
+            # provider (possibly landing on the placeholder client, now
+            # discarded) before startup — without this, the dashboard's
+            # opt-in never reaches the handle and its child permission
+            # requests are fail-closed instead of shown as a card.
+            if self._child_fidelity_aware:
+                provider.child_fidelity_aware = True
             self._client = provider  # type: ignore[assignment]
         except BaseException:
             # No provider owns the runtime yet — kill it so a failed session
@@ -1170,6 +1205,14 @@ class AcpProvider(LLMProvider):
             tool_final=e.tool_final,
             usage=e.usage,
             raw_tool_params=e.raw_tool_params,
+            # PROVENANCE flags for the child-fidelity gate. Dropping these
+            # zeroes them to their False defaults, which flips
+            # child_low_fidelity to True for EVERY child permission event that
+            # crosses this provider — the full-fidelity half of the feature
+            # (mode-parity auto-approval, unannotated card) would be inert on
+            # the primary interactive surface.
+            raw_params_trusted=e.raw_params_trusted,
+            shell_classified=e.shell_classified,
             server_name=e.server_name,
             oauth_url=e.oauth_url,
             subagents=e.subagents,
