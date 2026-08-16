@@ -2442,6 +2442,12 @@ class DashboardState:
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
     _slots_broadcast_loop: "asyncio.AbstractEventLoop | None" = None
     _slots_broadcast_last: float = 0.0
+    # The loop the websockets are served on, latched when a client registers (and
+    # again by any send issued from it). A fan-out reached from a worker thread
+    # has no running loop of its own and hands the send to this one; see
+    # _spawn_ws_send. Class-level None so a __new__-built state answers "unknown"
+    # instead of raising.
+    _ws_send_loop: "asyncio.AbstractEventLoop | None" = None
     # Keys the last open-tab restore could not read (not keys it proved absent).
     # _persist_open_slots folds these back into the snapshot so a transient read
     # failure cannot erase the reopen seed. The class-level baseline is an
@@ -5790,7 +5796,43 @@ class DashboardState:
         mid-send — silently dropping the websocket message (a lost dashboard update).
         Track it in ``_background_tasks`` (the existing pattern in this module) and
         discard on completion so the reference is held for the task's lifetime.
+
+        A fan-out can be reached from a worker thread: ``push_slots_update``'s
+        leading edge broadcasts inline on whatever thread called it, and several
+        subsystems notify the dashboard from sync callbacks. Off the loop there is
+        nothing to attach a coroutine to, so the send HOPS to the serving loop and
+        the coroutine is created there.
+
+        **Only a PEER failure escapes this method.** A synchronous raise from
+        ``send_str`` (``ConnectionResetError`` on a gone client) propagates, because
+        the fan-out uses it to reap that client. Everything else — no serving loop,
+        a loop mid-shutdown — is this process's own problem, is logged, and costs
+        the frame but never the registration. Conflating the two is what let a
+        thread-origin broadcast unregister every healthy socket: ``ensure_future``
+        raises off-loop, the fan-out read that as a dead peer, and the client kept
+        an open connection that would never receive another frame.
         """
+        loop = self._running_loop()
+        if loop is None:
+            target = self._ws_send_loop
+            if target is not None and not target.is_closed():
+                try:
+                    target.call_soon_threadsafe(self._spawn_ws_send, ws, msg)
+                    return
+                except RuntimeError:
+                    # Raced a shutdown between the is_closed check and the call.
+                    logger.debug("WS send: serving loop is shutting down")
+            # Nowhere to run it. Still CALL send_str so a peer that refuses
+            # synchronously is reported to the caller, then close the coroutine
+            # rather than abandoning it — an un-awaited coroutine loses the frame
+            # just as silently and additionally warns at collection time.
+            coro = ws.send_str(msg)
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            logger.debug("WS send dropped: no serving loop to run it on")
+            return
+        self._ws_send_loop = loop
         task = asyncio.ensure_future(ws.send_str(msg))
         self._background_tasks.add(task)
         task.add_done_callback(self._on_ws_send_done)
@@ -5973,8 +6015,23 @@ class DashboardState:
             if not self._ws_client_allowed(ws, msg_type, data):
                 continue
             try:
-                self._spawn_ws_send(ws, self._serialize_for_client(ws, msg_type, data, msg))
+                payload = self._serialize_for_client(ws, msg_type, data, msg)
             except Exception:
+                # A payload-shaping bug is ours, not the peer's. Unregistering here
+                # would strip a healthy socket of every future broadcast while
+                # leaving it open, so the client renders a frozen snapshot with
+                # nothing surfaced anywhere.
+                logger.warning(
+                    "WS payload shaping failed for %s; keeping the client registered",
+                    msg_type,
+                    exc_info=True,
+                )
+                continue
+            try:
+                self._spawn_ws_send(ws, payload)
+            except Exception:
+                # send_str refused synchronously — this peer is gone. Scheduling
+                # problems never reach here; see _spawn_ws_send.
                 dead.append(ws)
         for ws in dead:
             self._remove_ws(ws)
@@ -5989,6 +6046,7 @@ class DashboardState:
             try:
                 self._spawn_ws_send(ws, msg)
             except Exception:
+                # Synchronous refusal from the peer; see _send_ws_all.
                 dead.append(ws)
         for ws in dead:
             self._remove_ws(ws)
@@ -6249,10 +6307,21 @@ class DashboardState:
         self.broadcast_ws("browser_event", payload)
 
     def register_ws(self, ws: web.WebSocketResponse, *, owner: bool = False) -> None:
-        """Register a WebSocket client and its owner authorization state."""
+        """Register a WebSocket client and its owner authorization state.
+
+        Latches the serving loop here rather than on the first send. Registration
+        runs on the aiohttp handler's loop, so this is the earliest point that
+        loop is known; latching on first send instead left a window where the
+        FIRST frame after a connect, if it originated off-loop, had no loop to
+        run on and was dropped -- a live notification lost until the client
+        reconnected.
+        """
         self._ws_clients.append(ws)
         if owner:
             self._owner_ws_clients.add(ws)
+        loop = self._running_loop()
+        if loop is not None:
+            self._ws_send_loop = loop
 
     def unregister_ws(self, ws: web.WebSocketResponse) -> None:
         """Remove a WebSocket client on disconnect."""
@@ -6301,7 +6370,20 @@ class DashboardState:
             if not self._ws_client_allowed(ws, msg_type, data):
                 continue
             try:
-                self._spawn_ws_send(ws, self._serialize_for_client(ws, msg_type, data, msg))
+                payload = self._serialize_for_client(ws, msg_type, data, msg)
+            except Exception:
+                # Same split as _send_ws_all: a payload-shaping fault is ours and
+                # must not unregister a healthy subscriber (_remove_ws strips
+                # _ws_clients too, so an eviction here freezes that client's whole
+                # dashboard, not just its subagent stream).
+                logger.warning(
+                    "WS subagent payload shaping failed for %s; keeping the client registered",
+                    msg_type,
+                    exc_info=True,
+                )
+                continue
+            try:
+                self._spawn_ws_send(ws, payload)
             except Exception:
                 dead.append(ws)
         for ws in dead:
