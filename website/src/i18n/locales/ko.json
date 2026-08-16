@@ -7669,6 +7669,8 @@
         "menu_context_desc": "이 세션의 턴 동안 추가된 컨텍스트",
         "menu_files": "파일",
         "menu_files_desc": "파일 탐색 및 편집",
+        "menu_folder": "프로젝트 트리",
+        "menu_folder_desc": "이 채팅이 다룬 파일만이 아니라 프로젝트 트리 전체 탐색",
         "menu_issues": "이슈",
         "menu_issues_desc": "이 세션에서 언급된 이슈",
         "menu_logs": "로그",

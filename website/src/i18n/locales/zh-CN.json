@@ -7669,6 +7669,8 @@
         "menu_context_desc": "本次会话各轮次中添加的上下文",
         "menu_files": "文件",
         "menu_files_desc": "浏览与编辑文件",
+        "menu_folder": "项目目录树",
+        "menu_folder_desc": "浏览整个项目目录树，不只是本会话动过的文件",
         "menu_issues": "Issues",
         "menu_issues_desc": "本会话中提到的 issue",
         "menu_logs": "日志",

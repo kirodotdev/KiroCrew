@@ -7873,6 +7873,8 @@
         "menu_context_desc": "Contexto adicionado durante os turnos desta sessão",
         "menu_files": "Arquivos",
         "menu_files_desc": "Navegar e editar arquivos",
+        "menu_folder": "Árvore do projeto",
+        "menu_folder_desc": "Navegar por toda a árvore do projeto, não apenas os arquivos que este chat tocou",
         "menu_issues": "Issues",
         "menu_issues_desc": "Issues mencionadas nesta sessão",
         "menu_logs": "Logs",
