@@ -218,12 +218,13 @@ class Renderer(ABC):
         """Release whatever the renderer opened for this turn. Default no-op.
 
         Declared here because the shared pipeline's ``finally`` awaits it
-        (``messaging/dispatch.py``) — before this existed, that await reached
-        through an ``Any`` for a method the contract never mentioned, so a
-        channel could change its signature without anything noticing. Telegram
-        did: its override takes an extra optional ``failure_reason``, which is a
-        legal widening of this contract and stays a channel-local concern until
-        the pipeline has a reason to carry one.
+        (``messaging/dispatch.py``, through a ``ChannelTurn.renderer`` still typed
+        ``Any``). Naming it in the contract is what makes a channel's override
+        signature checked, rather than a method the ABC never mentions that a
+        channel could reshape with nothing noticing. Telegram's override takes an
+        extra optional ``failure_reason``, which is a legal widening of this
+        contract and stays a channel-local concern until the pipeline has a
+        reason to carry one.
 
         Two rules for implementers:
 
@@ -309,16 +310,17 @@ class SilentRenderer(Renderer):
     gates in the dashboard turn loop. Every OTHER channel drives its turns
     through the shared inbound pipeline instead, where the reply is written by
     the channel's own :class:`Renderer` — a path the dashboard never touches. So
-    a stored pause for a non-Slack conversation had nothing to gate, and a
-    disconnected channel kept answering as if it were still connected.
+    without this substitution a stored pause for a non-Slack conversation has
+    nothing to gate, and a disconnected channel keeps answering as if it were
+    still connected.
 
     ``dispatch.drive_turn`` substitutes this for the real renderer when the
     conversation is disconnected. The turn STILL RUNS and the inbound message
     still lands in the session: the binding is retained by design, and the
     dashboard is where that user is now working. Only the writes back to the
-    muted conversation are dropped. ``on_turn_start`` and ``close`` inherit the
-    base no-ops, so no typing indicator is ever opened and there is nothing to
-    finalize.
+    muted conversation are dropped. ``on_turn_start`` inherits the base no-op, so
+    no typing indicator is ever opened; ``close`` overrides only to tolerate a
+    widened signature, because there is nothing to finalize either way.
 
     ``on_prompt_choice`` is dropped like the rest, matching the Slack gate that
     withholds the linked approval prompt from a disconnected thread: the

@@ -64,6 +64,23 @@ _CHANNEL_SESSION_PREFIXES: tuple[str, ...] = tuple(
 )
 
 
+def _in_namespace(key: str, ns: str) -> bool:
+    """True when *key* sits in namespace *ns*, in either separator spelling.
+
+    Both separators must be accepted: a live session key uses ``:`` while the
+    persisted filename stem uses ``_`` (see :data:`_CHANNEL_SESSION_PREFIXES`).
+    This is the per-namespace form, for callers that need to know WHICH
+    namespace matched; :data:`_CHANNEL_SESSION_PREFIXES` is the flattened
+    equivalent for a yes/no over every CHANNEL namespace. Also called with the
+    ``_TELEMETRY_LOCAL_PREFIXES`` names, which that tuple deliberately excludes.
+
+    ``sel.py``'s audit-source attributor and ``context._runtime_display_name``
+    spell the same pair separately, on a LOWERCASED key over a narrower set and
+    with a ``"slack"`` fallback — do not consolidate them onto this helper.
+    """
+    return key.startswith((f"{ns}:", f"{ns}_"))
+
+
 def is_channel_session_key(key: str) -> bool:
     """True when *key* is a session started on a messaging channel.
 
@@ -81,7 +98,7 @@ def is_channel_session_key(key: str) -> bool:
 def channel_namespace_of(key: str) -> str:
     """Return the channel namespace of *key*, or ``""`` if it is not a channel key."""
     for ns in CHANNEL_SESSION_NAMESPACES:
-        if key.startswith((f"{ns}:", f"{ns}_")):
+        if _in_namespace(key, ns):
             return ns
     return ""
 
@@ -147,7 +164,7 @@ def telemetry_channel_of(key: str | None) -> str:
     if ns:
         return ns
     for prefix, label in _TELEMETRY_LOCAL_PREFIXES:
-        if key.startswith((f"{prefix}:", f"{prefix}_")):
+        if _in_namespace(key, prefix):
             return label
     if _TELEMETRY_CHAT_SLOT_RE.match(key):
         return "dashboard"
@@ -187,7 +204,7 @@ def session_key(channel_type: str, conversation_id: str) -> str:
     return f"{channel_type}:{conversation_id}"
 
 
-# ── Why an inbound resume binding was removed ────────────────────────────────
+# ── Unbind reasons: why an inbound resume binding was lost ───────────────────
 # The audited vocabulary, kept in this leaf module because both sides need it:
 # ``SessionMap`` stamps it on the audit event and normalizes to it, and the
 # transports that clear a binding pass it. Every clearing call site names one of

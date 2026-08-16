@@ -163,9 +163,7 @@ def classify(mimetype: str, name: str = "", audio_mimetypes: tuple[str, ...] = (
     mt = (mimetype or "").lower()
     if mt in IMAGE_MIMETYPES:
         return IMAGE
-    if any(mt.startswith(p) for p in audio_mimetypes):
-        return AUDIO
-    if any(mt.startswith(p) for p in _AUDIO_PREFIXES):
+    if any(mt.startswith(p) for p in (*audio_mimetypes, *_AUDIO_PREFIXES)):
         return AUDIO
     if any(mt.startswith(p) for p in _VIDEO_PREFIXES):
         return VIDEO
@@ -497,7 +495,7 @@ async def transcribe_audio_attachments(result: IngestResult, source: str) -> Ing
 
     Lives here rather than in each channel adapter so the transcript wording and
     the STT-unavailable handling cannot drift between channels — Discord and
-    Telegram previously carried byte-identical copies of this block.
+    Telegram would otherwise each carry a byte-identical copy of this block.
 
     ``source`` names the channel for log lines only; it does not change behaviour.
     """

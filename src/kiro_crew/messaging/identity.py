@@ -75,23 +75,19 @@ def _channel_inbound_permitted_sync(channel_type: str) -> bool:
             "channels", channel_type, session_key=HOST_SESSION_KEY, fail_closed=True
         )
         permitted = bool(getattr(decision, "permitted", False))
-        # Durable SEL audit. EVERY inbound decision is recorded (the codebase
-        # invariant: audit every permission decision). A GOVERNED ALLOW (layer ∈
-        # {policy,profile,both}) is AUDIT-OR-DENY, matching the host transport-start
-        # gate: the SEL write is ``critical=True`` (synchronous + raising), so if it
-        # can't be persisted (unwritable SEL / full disk) the exception propagates
-        # to the outer ``except`` and the inbound is DENIED — a governed message
-        # never drives a turn unaudited. A DENY (any layer) is logged BEST-EFFORT
-        # (``critical=False``): the message is dropped either way, so availability
-        # must not hinge on SEL disk health. The UNGOVERNED default-permit is not
-        # logged at all — see below. File-backed SEL, safe in this worker thread.
         layer = getattr(decision, "layer", "")
         governed = layer in ("policy", "profile", "both")
-        # Every GOVERNED decision, and every deny, leaves a SEL record. Disposition
+        # Durable SEL audit, on the codebase invariant that every permission
+        # DECISION is recorded — an ungoverned default-permit is not one, per the
+        # third bullet. File-backed SEL, safe in this worker thread. Every
+        # GOVERNED decision, and every deny, leaves a record; the disposition
         # splits on how a persistence failure is handled:
-        #   * GOVERNED ALLOW → AUDIT-OR-DENY (critical=True, synchronous+raising): a
-        #     SEL write failure raises to the outer except → the inbound is DENIED,
-        #     so a governed channel never receives unaudited.
+        #   * GOVERNED ALLOW (layer ∈ {policy,profile,both}) → AUDIT-OR-DENY
+        #     (critical=True, synchronous + raising), matching the host
+        #     transport-start gate: a SEL write that cannot be persisted
+        #     (unwritable SEL / full disk) raises to the outer ``except`` → the
+        #     inbound is DENIED, so a governed message never drives a turn
+        #     unaudited.
         #   * DENY (any layer) → best-effort (critical=False): the message is dropped
         #     either way, and availability must not hinge on SEL disk health.
         #   * UNGOVERNED ALLOW (the default build, no `channels` policy at all) →
