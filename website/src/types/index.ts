@@ -726,6 +726,16 @@ export interface SubagentActivity {
   startedAt: number; elapsed: number; error?: string
   toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
+  /** Seconds of no stream activity measured when the reaper raised `stalled`
+   *  (the `idle_secs` the backend already sends with `subagent_stalled`).
+   *  Distinct from `elapsed` (total runtime): only the idle span justifies the
+   *  warning, so the card shows this rather than making the user infer it. */
+  idleSecs?: number
+  /** Client clock when that stall frame arrived. The backend emits `idle_secs`
+   *  ONCE, on the not-stalled→stalled transition, so this is what lets the row
+   *  advance the figure instead of freezing it beside a live elapsed counter —
+   *  while `stalled` holds there is by definition no activity to reset it. */
+  stalledAt?: number
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
   approving?: boolean
