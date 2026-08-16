@@ -399,9 +399,15 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (sidebarUserToggledRef.current) return
     setPanel(p => {
       if (p === 'chat' && !navigated) return p
-      return commentCount > 0 ? 'comments' : 'none'
+      // NOT while narrow. There the panel takes the whole pane and the artifact
+      // body steps aside, so auto-revealing lands every commented artifact on
+      // comments about content the reader cannot see, with a close button to
+      // find first. Auto-reveal was written for the side-by-side layout, where
+      // the body stayed visible beside it. A manual open still survives, via the
+      // user-toggled override this effect returns on above.
+      return commentCount > 0 && !isMobile ? 'comments' : 'none'
     })
-  }, [slug, commentCount])
+  }, [slug, commentCount, isMobile])
   const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   // Bidirectional anchor↔comment linking: flash a sidebar row when
   // its in-iframe highlight is clicked; scroll the iframe highlight when a
@@ -973,11 +979,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // would yank the conversation out from under the user. The toolbar's comment
     // badge already increments, so the add is still visibly acknowledged. Same
     // rationale as the auto-reveal guard in the panel effect above.
-    sidebarUserToggledRef.current = false
+    // Narrow: keep the override SET. Clearing it hands control back to the
+    // auto-reveal effect, which is gated off while narrow -- so the panel the
+    // user just posted into would be closed again the moment `commentCount`
+    // changes. Revealing it here is a user-initiated open, which is exactly what
+    // the override means.
+    sidebarUserToggledRef.current = isMobile
     setPanel(p => (p === 'chat' ? p : 'comments'))
     setPopover(null)
     window.getSelection()?.removeAllRanges()
-  }, [popover, postCommentMut])
+  }, [popover, postCommentMut, isMobile])
 
   // Doc-level add (from the sidebar) — works for ALL kinds, including
   // HTML/widget where in-iframe text selection isn't reachable.
