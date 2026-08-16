@@ -386,7 +386,13 @@ Enterprise Grid validation is a two-layer, **default-open** control: with no
 `auth.test` caches the workspace `team_id` (plus the org-level enterprise id on
 Grid) at startup, and each inbound event's `team` is compared against the cached
 allowlist. A governance `channels.posture` policy is the agent-unweakenable
-ceiling on top of the operator-editable config allowlist.
+ceiling on top of the operator-editable config allowlist. A corrupt `config.json`
+does not reopen the control: because `KiroCrewConfig.load()` degrades a torn
+config to defaults rather than raising, the module positively detects that case (a
+config file that exists but does not parse) and fails CLOSED, keeping the allowlist
+enforced and admitting NO origin -- not even the just-validated workspace,
+since which authenticated workspace is allowed is exactly what the unreadable
+allowlist would have decided -- rather than reverting to default-open.
 
 ### Interactive trust escalation
 

@@ -210,6 +210,15 @@ class SlackEnterpriseGate(Protocol):
     Signatures mirror ``slack/enterprise.py``: ``validate_enterprise`` is called
     once at startup with the bot token; ``check_message_origin`` is the per-
     message in-memory check.
+
+    ``extra_ids`` is advisory, and an implementation MAY ignore it. The public
+    default gate DOES ignore it: its callers derive the value from the same
+    ``slack.allowed_enterprise_ids`` key that gate re-reads itself, so the value
+    can only be an older copy of what the gate already has, and honouring it
+    would re-admit ids the operator removed. Do not rely on this parameter to
+    add ids the config does not list -- against the default gate they are
+    dropped. It stays in the signature because an edition whose allowlist comes
+    from somewhere other than that config key can still use it.
     """
 
     def validate_enterprise(

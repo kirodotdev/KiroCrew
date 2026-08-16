@@ -123,7 +123,13 @@ class DefaultCredentialPolicy:
 
 
 class DefaultSlackEnterpriseGate:
-    """Default-open gate delegating to ``slack/enterprise.py``."""
+    """Default-open gate delegating to ``slack/enterprise.py``.
+
+    ``extra_ids`` is accepted for protocol compatibility and IGNORED: the module
+    re-reads ``slack.allowed_enterprise_ids`` itself, which is the same key the
+    callers derive this value from, so a passed set is at best a duplicate and
+    at worst an older copy naming ids the operator removed.
+    """
 
     def validate_enterprise(self, bot_token: str, *, extra_ids: "set[str] | None" = None) -> bool:
         # deferred: defaults.py loads at platform-init (bootstrap imports it);
