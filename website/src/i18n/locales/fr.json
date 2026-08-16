@@ -5215,6 +5215,13 @@
       "pdf_preview": "Aperçu PDF",
       "rows": "lignes",
       "scroll_for_more_count": "Faites défiler pour en voir plus… ({{count}} lignes restantes)",
+      "sheet_cols_truncated": "Colonnes supplémentaires non affichées",
+      "sheet_empty": "Feuille vide",
+      "sheet_formulas_note": "Les valeurs calculées ne sont pas enregistrées dans ce fichier — les cellules de formule affichent leur formule",
+      "sheet_loading": "Chargement de la feuille de calcul…",
+      "sheet_preview_failed": "Échec de l'aperçu.",
+      "sheet_showing_rows": "Affichage des {{shown}} premières lignes",
+      "sheet_tabs_truncated": "Affichage de {{shown}} feuilles sur {{total}}",
       "showing_500_of": "Affichage de 500 sur",
       "showing_raw_content_count": "Affichage du contenu brut ({{count}} caractères)",
       "showing_raw_content_truncated_count": "Affichage du contenu brut ({{count}} caractères, les {{shown}} premiers affichés)"

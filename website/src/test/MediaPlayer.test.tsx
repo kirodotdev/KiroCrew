@@ -27,7 +27,8 @@ describe('detectFileType media routing', () => {
 
   it('does not disturb neighboring types', () => {
     expect(detectFileType('movie-notes.md')).toBe('markdown')
-    expect(detectFileType('workbook.xlsx')).toBe('office')
+    expect(detectFileType('report.docx')).toBe('office')
+    expect(detectFileType('workbook.xlsx')).toBe('sheet')
     expect(detectFileType('image.webp')).toBe('image')
     expect(detectFileType('script.py')).toBe('code')
   })

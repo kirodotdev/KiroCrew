@@ -5059,6 +5059,13 @@
       "pdf_preview": "PDF プレビュー",
       "rows": "行",
       "scroll_for_more_count": "スクロールしてさらに表示… （{{count}} 件残り）",
+      "sheet_cols_truncated": "追加の列は表示されていません",
+      "sheet_empty": "空のシート",
+      "sheet_formulas_note": "計算結果はこのファイルに保存されていません — 数式セルには数式が表示されます",
+      "sheet_loading": "スプレッドシートを読み込み中…",
+      "sheet_preview_failed": "プレビューに失敗しました。",
+      "sheet_showing_rows": "先頭の {{shown}} 行を表示しています",
+      "sheet_tabs_truncated": "全 {{total}} 件のうち {{shown}} 件のシートを表示しています",
       "showing_500_of": "表示：500 件 /",
       "showing_raw_content_count": "生のコンテンツを表示（{{count}} 文字）",
       "showing_raw_content_truncated_count": "生のコンテンツを表示（{{count}} 文字、最初の {{shown}} 文字を表示）"

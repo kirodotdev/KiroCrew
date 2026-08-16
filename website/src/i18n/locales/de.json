@@ -5137,6 +5137,13 @@
       "pdf_preview": "PDF-Vorschau",
       "rows": "Zeilen",
       "scroll_for_more_count": "Scrollen für mehr… (noch {{count}})",
+      "sheet_cols_truncated": "Weitere Spalten werden nicht angezeigt",
+      "sheet_empty": "Leeres Arbeitsblatt",
+      "sheet_formulas_note": "Berechnete Werte sind in dieser Datei nicht gespeichert — Formelzellen zeigen ihre Formel",
+      "sheet_loading": "Tabelle wird geladen…",
+      "sheet_preview_failed": "Vorschau fehlgeschlagen.",
+      "sheet_showing_rows": "Erste {{shown}} Zeilen werden angezeigt",
+      "sheet_tabs_truncated": "{{shown}} von {{total}} Arbeitsblättern werden angezeigt",
       "showing_500_of": "Angezeigt: 500 von",
       "showing_raw_content_count": "Rohinhalt wird angezeigt ({{count}} Zeichen)",
       "showing_raw_content_truncated_count": "Rohinhalt wird angezeigt ({{count}} Zeichen, davon die ersten {{shown}})"

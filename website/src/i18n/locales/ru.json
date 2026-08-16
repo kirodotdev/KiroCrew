@@ -5293,6 +5293,13 @@
       "pdf_preview": "Просмотр PDF",
       "rows": "строк",
       "scroll_for_more_count": "Прокрути для продолжения… (осталось {{count}})",
+      "sheet_cols_truncated": "Дополнительные столбцы не показаны",
+      "sheet_empty": "Пустой лист",
+      "sheet_formulas_note": "Вычисленные значения не сохранены в этом файле — ячейки с формулами показывают саму формулу",
+      "sheet_loading": "Загрузка таблицы…",
+      "sheet_preview_failed": "Не удалось создать предпросмотр.",
+      "sheet_showing_rows": "Показаны первые {{shown}} строк",
+      "sheet_tabs_truncated": "Показано {{shown}} из {{total}} листов",
       "showing_500_of": "Показано 500 из",
       "showing_raw_content_count": "Показано исходное содержимое ({{count}} симв.)",
       "showing_raw_content_truncated_count": "Показано исходное содержимое ({{count}} симв., показаны первые {{shown}})"

@@ -5059,6 +5059,13 @@
       "pdf_preview": "PDF 미리보기",
       "rows": "행",
       "scroll_for_more_count": "스크롤하여 더 보기… ({{count}}개 남음)",
+      "sheet_cols_truncated": "추가 열은 표시되지 않음",
+      "sheet_empty": "빈 시트",
+      "sheet_formulas_note": "계산된 값이 이 파일에 저장되어 있지 않습니다 — 수식 셀에는 수식이 표시됩니다",
+      "sheet_loading": "스프레드시트 로드 중…",
+      "sheet_preview_failed": "미리보기에 실패했습니다.",
+      "sheet_showing_rows": "처음 {{shown}}개 행 표시 중",
+      "sheet_tabs_truncated": "전체 {{total}}개 중 {{shown}}개 시트 표시 중",
       "showing_500_of": "500개 표시 / 전체",
       "showing_raw_content_count": "원본 콘텐츠 표시 ({{count}}자)",
       "showing_raw_content_truncated_count": "원본 콘텐츠 표시 ({{count}}자 중 처음 {{shown}}자 표시)"

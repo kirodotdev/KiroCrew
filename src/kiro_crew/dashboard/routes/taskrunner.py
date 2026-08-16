@@ -43,6 +43,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/file-write", handlers.api_file_write)
     app.router.add_get("/api/file-diff", handlers.api_file_diff)
     app.router.add_get("/api/file-search", handlers.api_file_search)
+    app.router.add_get("/api/file-sheet", handlers.api_file_sheet)
     app.router.add_get("/api/browse-dirs", handlers.api_browse_dirs)
     app.router.add_get("/api/browse-files", handlers.api_browse_files)
     app.router.add_get("/api/project/git", handlers.api_project_git)

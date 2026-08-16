@@ -5137,6 +5137,13 @@
       "pdf_preview": "PDF पूर्वावलोकन",
       "rows": "पंक्तियाँ",
       "scroll_for_more_count": "और देखने के लिए स्क्रॉल करें… ({{count}} शेष)",
+      "sheet_cols_truncated": "अतिरिक्त कॉलम नहीं दिखाए गए",
+      "sheet_empty": "खाली वर्कशीट",
+      "sheet_formulas_note": "गणना किए गए मान इस फ़ाइल में संग्रहीत नहीं हैं — सूत्र सेल अपना सूत्र दिखाते हैं",
+      "sheet_loading": "स्प्रेडशीट लोड हो रही है…",
+      "sheet_preview_failed": "पूर्वावलोकन विफल रहा।",
+      "sheet_showing_rows": "पहली {{shown}} पंक्तियां दिखाई जा रही हैं",
+      "sheet_tabs_truncated": "{{total}} में से {{shown}} शीट दिखाई जा रही हैं",
       "showing_500_of": "500 दिखा रहे हैं, कुल में से",
       "showing_raw_content_count": "कच्चा कंटेंट दिखा रहे हैं ({{count}} वर्ण)",
       "showing_raw_content_truncated_count": "कच्चा कंटेंट दिखा रहे हैं ({{count}} वर्ण, पहले {{shown}} दिखाए गए)"

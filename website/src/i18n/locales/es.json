@@ -5215,6 +5215,13 @@
       "pdf_preview": "Vista previa PDF",
       "rows": "filas",
       "scroll_for_more_count": "Desplázate para ver más… ({{count}} restantes)",
+      "sheet_cols_truncated": "Columnas adicionales no mostradas",
+      "sheet_empty": "Hoja vacía",
+      "sheet_formulas_note": "Los valores calculados no están guardados en este archivo: las celdas de fórmula muestran su fórmula",
+      "sheet_loading": "Cargando hoja de cálculo…",
+      "sheet_preview_failed": "Error en la vista previa.",
+      "sheet_showing_rows": "Mostrando las primeras {{shown}} filas",
+      "sheet_tabs_truncated": "Mostrando {{shown}} de {{total}} hojas",
       "showing_500_of": "Mostrando 500 de",
       "showing_raw_content_count": "Mostrando el contenido sin procesar ({{count}} caracteres)",
       "showing_raw_content_truncated_count": "Mostrando el contenido sin procesar ({{count}} caracteres, se muestran los primeros {{shown}})"

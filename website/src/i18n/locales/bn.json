@@ -5137,6 +5137,13 @@
       "pdf_preview": "PDF প্রিভিউ",
       "rows": "সারি",
       "scroll_for_more_count": "আরও দেখতে স্ক্রল করুন… ({{count}}টি বাকি)",
+      "sheet_cols_truncated": "অতিরিক্ত কলাম দেখানো হয়নি",
+      "sheet_empty": "খালি ওয়ার্কশিট",
+      "sheet_formulas_note": "গণনা করা মান এই ফাইলে সংরক্ষিত নেই — সূত্র ঘরগুলি তাদের সূত্র দেখায়",
+      "sheet_loading": "স্প্রেডশিট লোড হচ্ছে…",
+      "sheet_preview_failed": "প্রিভিউ ব্যর্থ হয়েছে।",
+      "sheet_showing_rows": "প্রথম {{shown}}টি সারি দেখানো হচ্ছে",
+      "sheet_tabs_truncated": "{{total}}টির মধ্যে {{shown}}টি শিট দেখানো হচ্ছে",
       "showing_500_of": "500টি দেখানো হচ্ছে, মোট",
       "showing_raw_content_count": "কাঁচা কনটেন্ট দেখানো হচ্ছে ({{count}}টি অক্ষর)",
       "showing_raw_content_truncated_count": "কাঁচা কনটেন্ট দেখানো হচ্ছে ({{count}}টি অক্ষর, প্রথম {{shown}}টি দেখানো হচ্ছে)"

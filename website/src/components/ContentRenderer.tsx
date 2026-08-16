@@ -18,7 +18,7 @@ import DOMPurify from 'dompurify'
 import type { Monaco } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
-import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
+import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
 import { monacoLang, useIsDark } from './MonacoCodeBlock'
 import { kirocrewDark, kirocrewLight } from './monacoTheme'
 
@@ -235,6 +235,7 @@ export const ContentRenderer = memo(function ContentRenderer({
       {isRichType && fileType === 'jsonl' && <JsonlViewer content={content} />}
       {isRichType && fileType === 'html' && <HtmlViewer content={content} />}
       {isRichType && fileType === 'pdf' && filePath && <PdfViewer filePath={filePath} />}
+      {isRichType && fileType === 'sheet' && filePath && <SheetViewer filePath={filePath} />}
       {isRichType && fileType === 'office' && filePath && <OfficeViewer filePath={filePath} />}
       {isRichType && fileType === 'video' && filePath && <MediaPlayer filePath={filePath} kind="video" />}
       {isRichType && fileType === 'audio' && filePath && <MediaPlayer filePath={filePath} kind="audio" />}

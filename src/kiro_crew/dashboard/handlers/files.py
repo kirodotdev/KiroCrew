@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as _dt
 import errno
 import hashlib
 import json
@@ -3163,6 +3164,334 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "jira_hosts": list(cfg.dashboard.jira_hosts),
         }
     )
+
+
+# ── /api/file-sheet: xlsx → JSON cell grid ───────────────────────────────────
+# Caps bound what one request can materialize server-side and ship to the
+# browser. 500 rows matches CsvViewer's display cap so the two table viewers
+# truncate consistently. The member/expansion caps bound zip inflation: the
+# on-disk size cap only limits the COMPRESSED archive, and a crafted workbook
+# can expand orders of magnitude larger than it stores.
+_SHEET_MAX_SHEETS = 20
+_SHEET_MAX_ROWS = 500
+_SHEET_MAX_COLS = 100
+_SHEET_MAX_MEMBERS = 4096
+_SHEET_MAX_EXPANDED_BYTES = 200 * 1024 * 1024
+# Text amplification caps. Shared strings are stored once in the archive but
+# referenced per cell, so the expansion cap above does not bound the RESPONSE:
+# one 32 KiB string referenced by every cell would amplify into gigabytes of
+# JSON. Cells truncate individually, and the whole workbook gets a cumulative
+# text budget past which the preview refuses (the frontend degrades to the
+# download card).
+_SHEET_MAX_CELL_CHARS = 2000
+_SHEET_MAX_TEXT_CHARS = 5 * 1000 * 1000
+
+
+class _SheetRefusal(Exception):
+    """Deliberate refusal carrying its HTTP status and machine-readable code;
+    raised on the worker thread and mapped to a response by api_file_sheet."""
+
+    def __init__(self, status: int, message: str, code: str):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def _sheet_cell_json(value: object) -> object:
+    """Serialize one workbook cell value into a JSON-safe primitive."""
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, str):
+        # Workbook text is file content leaving the host through the dashboard
+        # — same egress class as api_file_read, so the same redaction applies.
+        # Redact BEFORE truncating so the scan always sees the complete text,
+        # then cap the cell so one shared string cannot bloat every row.
+        value = redact(value)
+        if len(value) > _SHEET_MAX_CELL_CHARS:
+            return value[:_SHEET_MAX_CELL_CHARS] + "…"
+        return value
+    if isinstance(value, float):
+        # NaN/Infinity are rejected by JSON.parse in the browser; the stdlib
+        # encoder would happily emit the JS-only tokens.
+        if value != value or value in (float("inf"), float("-inf")):
+            return str(value)
+        return value
+    if isinstance(value, _dt.datetime):
+        return value.isoformat(sep=" ")
+    if isinstance(value, (_dt.date, _dt.time)):
+        return value.isoformat()
+    return redact(str(value))
+
+
+def _sheet_formula_text(value: object) -> str | None:
+    """Return the formula source ("=…") for a formula-pass cell value, else None."""
+    text: object = value
+    if not (isinstance(text, str) and text.startswith("=")):
+        # Array formulas come back as openpyxl ArrayFormula objects carrying .text.
+        text = getattr(value, "text", None)
+    if isinstance(text, str) and text.startswith("="):
+        text = redact(text)
+        if len(text) > _SHEET_MAX_CELL_CHARS:
+            return text[:_SHEET_MAX_CELL_CHARS] + "…"
+        return text
+    return None
+
+
+def _load_sheet_payload(path: str) -> dict:
+    """Open, vet, and parse the workbook into the sheet-grid payload.
+
+    Runs ENTIRELY on a worker thread (via asyncio.to_thread) so filesystem
+    latency, the first (heavy) openpyxl import, and parse time never stall the
+    gateway event loop. The open goes through _open_rb_nofollow: atomic
+    O_NOFOLLOW on POSIX, and the lstat-based symlink/reparse guard on Windows,
+    where os.O_NOFOLLOW does not exist. openpyxl is a soft import: absence
+    surfaces as ImportError from this thread and the handler maps it to 501.
+    """
+    import io
+
+    import openpyxl  # noqa: F401  (probe here, off-loop; parse imports lazily too)
+
+    fd = _open_rb_nofollow(path)
+    with os.fdopen(fd, "rb") as f:
+        # Bounded read is the size guard: a pre-check via fstat would race a
+        # concurrent writer (the file can grow between the stat and the read,
+        # e.g. an agent still generating the workbook), while reading at most
+        # cap+1 bytes bounds memory unconditionally.
+        data = f.read(_MAX_UPLOAD_BYTES + 1)
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise _SheetRefusal(413, "file too large", "file_too_large")
+    header = data[:4]
+    # OOXML spreadsheets are ZIP containers; refuse anything else before
+    # openpyxl touches the bytes.
+    if not header.startswith(b"PK\x03\x04"):
+        raise _SheetRefusal(415, "not an OOXML spreadsheet", "not_a_spreadsheet")
+    # Vet the archive's declared inventory before anything inflates it --
+    # including ZipFile construction itself, which materializes one ZipInfo
+    # per central-directory entry. The EOCD preflight bounds that allocation
+    # from the raw bytes; the infolist() pass then bounds what openpyxl can
+    # actually expand (zipfile truncates each member at its declared
+    # file_size, so the central directory's numbers are authoritative).
+    _vet_zip_eocd(data)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        infos = zf.infolist()
+        if (
+            len(infos) > _SHEET_MAX_MEMBERS
+            or sum(i.file_size for i in infos) > _SHEET_MAX_EXPANDED_BYTES
+        ):
+            raise _SheetRefusal(413, "workbook expands too large", "workbook_expands_too_large")
+    return _parse_workbook_grid(data)
+
+
+# Generous per-entry allowance for the central-directory size preflight: a
+# record is 46 bytes plus name/extra/comment, and OOXML part names are short.
+_SHEET_MAX_CDIR_ENTRY_BYTES = 512
+
+
+def _vet_zip_eocd(data: bytes) -> None:
+    """Refuse archives whose end-of-central-directory record declares an
+    oversized inventory, BEFORE zipfile.ZipFile is constructed.
+
+    ZipFile.__init__ walks the whole central directory and allocates a
+    ZipInfo per entry, so a crafted archive with hundreds of thousands of
+    entries exhausts memory during construction -- ahead of any infolist()
+    check. The EOCD carries both the entry count and the central-directory
+    byte size; capping both bounds that allocation regardless of which field
+    lies (zipfile itself iterates the directory by its byte size).
+    """
+    # EOCD (PK\x05\x06) sits within the last 22 + 65535 bytes (fixed record
+    # plus maximum comment length).
+    tail_start = max(0, len(data) - (22 + 65535))
+    eocd = data.rfind(b"PK\x05\x06", tail_start)
+    if eocd < 0 or len(data) < eocd + 22:
+        raise _SheetRefusal(415, "not an OOXML spreadsheet", "not_a_spreadsheet")
+    count = int.from_bytes(data[eocd + 10 : eocd + 12], "little")
+    cdir_size = int.from_bytes(data[eocd + 12 : eocd + 16], "little")
+    if count == 0xFFFF or cdir_size == 0xFFFFFFFF:
+        # Saturated classic fields mean the archive declares >= 65535 entries
+        # or a >= 4 GiB central directory -- both orders of magnitude past
+        # this endpoint's caps, so the ZIP64 records that would carry the
+        # real numbers can never change the verdict. Refusing outright keeps
+        # the vet free of a second record-location protocol to get right.
+        raise _SheetRefusal(413, "workbook expands too large", "workbook_expands_too_large")
+    if (
+        count > _SHEET_MAX_MEMBERS
+        or cdir_size > _SHEET_MAX_MEMBERS * _SHEET_MAX_CDIR_ENTRY_BYTES
+    ):
+        raise _SheetRefusal(413, "workbook expands too large", "workbook_expands_too_large")
+
+
+def _parse_workbook_grid(data: bytes) -> dict:
+    """Parse xlsx bytes into a JSON-safe sheet grid. Runs on a worker thread.
+
+    The workbook is loaded twice in read-only streaming mode: once with
+    data_only=True (formula cells yield the value cached by the writing
+    application) and once with data_only=False (formula cells yield the
+    formula source). Cells prefer the cached value; when a file carries no
+    cache — typical for openpyxl-generated workbooks — the formula text is
+    shown instead of an empty cell. Both loads stream the same bytes, so the
+    row structures are identical and can be zipped in lockstep.
+    """
+    import io
+    import itertools
+
+    from openpyxl import load_workbook
+
+    wb_vals = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    wb_form = load_workbook(io.BytesIO(data), read_only=True, data_only=False)
+    try:
+        names = wb_vals.sheetnames
+        sheets: list[dict] = []
+        # Cumulative post-truncation text budget across the whole workbook:
+        # shared strings are stored once but referenced per cell, so archive
+        # size caps alone do not bound the JSON response this grid becomes.
+        text_chars = 0
+        for name in names[:_SHEET_MAX_SHEETS]:
+            ws_v, ws_f = wb_vals[name], wb_form[name]
+            if not hasattr(ws_v, "iter_rows"):  # chartsheets have no cell grid
+                continue
+            # Dimension records can lie (some writers emit a stale ref such as
+            # A1:A1 for a populated sheet); read-only mode trusts them, so
+            # iter_rows would stop early and silently truncate the preview.
+            # Force a real scan of each sheet instead.
+            if hasattr(ws_v, "reset_dimensions"):
+                ws_v.reset_dimensions()
+                ws_f.reset_dimensions()
+            raw: list[list[object]] = []
+            rows_truncated = False
+            cols_truncated = False
+            paired = zip(ws_v.iter_rows(values_only=True), ws_f.iter_rows(values_only=True))
+            for vrow, frow in itertools.islice(paired, _SHEET_MAX_ROWS + 1):
+                if len(raw) >= _SHEET_MAX_ROWS:
+                    rows_truncated = True
+                    # No total is reported: any count derived from workbook
+                    # geometry is attacker-influenced (a single sparse row at
+                    # index 1e9 makes the read-only reader synthesize a
+                    # billion empties), so nothing here iterates past the cap.
+                    break
+                if len(vrow) > _SHEET_MAX_COLS:
+                    cols_truncated = True
+                out: list[object] = []
+                for vv, fv in list(zip(vrow, frow))[:_SHEET_MAX_COLS]:
+                    ftxt = _sheet_formula_text(fv)
+                    cell = ftxt if (vv is None and ftxt) else _sheet_cell_json(vv)
+                    if isinstance(cell, str):
+                        text_chars += len(cell)
+                        if text_chars > _SHEET_MAX_TEXT_CHARS:
+                            raise _SheetRefusal(
+                                413, "workbook text too large to preview",
+                                "workbook_text_too_large",
+                            )
+                    out.append(cell)
+                raw.append(out)
+            # Trim trailing all-empty rows, then normalize every row to the
+            # widest non-empty extent so the client renders a rectangle.
+            while raw and all(c is None or c == "" for c in raw[-1]):
+                raw.pop()
+            width = 0
+            for r in raw:
+                w = len(r)
+                while w and (r[w - 1] is None or r[w - 1] == ""):
+                    w -= 1
+                width = max(width, w)
+            rows = [r[:width] + [None] * (width - len(r[:width])) for r in raw] if width else []
+            sheets.append({
+                # Names take the same redact+truncate path as cell text — a
+                # crafted workbook.xml can carry arbitrarily long sheet names.
+                "name": _sheet_cell_json(name),
+                "rows": rows,
+                "truncated_rows": rows_truncated,
+                "truncated_cols": cols_truncated,
+            })
+        return {
+            "sheets": sheets,
+            "total_sheets": len(names),
+            "truncated_sheets": len(names) > _SHEET_MAX_SHEETS,
+        }
+    finally:
+        wb_vals.close()
+        wb_form.close()
+
+
+async def api_file_sheet(request: web.Request) -> web.Response:
+    """GET /api/file-sheet?path=… — parse an OOXML spreadsheet into a JSON cell grid.
+
+    Powers the file viewer's inline xlsx preview. Follows the api_file_raw
+    security pattern: dashboard path validation, sensitive-path block, a
+    symlink-refusing open (_open_rb_nofollow: atomic O_NOFOLLOW on POSIX,
+    lstat guard on Windows), size and zip-expansion caps, and a ZIP magic-byte
+    check before openpyxl touches the bytes. All file IO and parsing runs on a
+    worker thread so a large workbook cannot stall the event loop, and cell
+    text is credential-redacted like every other dashboard egress. openpyxl is
+    soft-imported: without it the endpoint answers 501 and the frontend
+    degrades to the download card.
+    """
+    import os  # noqa: F811
+
+    import kiro_crew.dashboard.handlers as _h  # noqa: F811
+
+    def _log(outcome: str, res: str) -> None:
+        _sel().log_tool_invocation(
+            session_key="dashboard", tool_name="file_sheet", outcome=outcome, resources=res,
+        )
+
+    raw_path = request.query.get("path", "")
+    path = _h._validate_dashboard_path(raw_path)
+    if not path:
+        _log("denied", raw_path)
+        return web.json_response(
+            {"error": "invalid or forbidden path", "code": "invalid_path"}, status=400
+        )
+    from kiro_crew.security import is_sensitive_path as _isp  # noqa: F811
+    if _isp(path):
+        _log("denied", path)
+        return web.json_response(
+            {"error": "sensitive path blocked", "code": "sensitive_path"}, status=403
+        )
+    if not os.path.isfile(path):
+        _log("not_found", path)
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    try:
+        payload = await asyncio.to_thread(_load_sheet_payload, path)
+    except asyncio.CancelledError:
+        # Shutdown or client disconnect mid-parse: the file was already
+        # opened, so the access must not vanish from the audit trail.
+        _log("cancelled", path)
+        raise
+    except ImportError:
+        # openpyxl absent: the preview is unavailable, not broken. The probe
+        # runs inside the worker thread so even the first heavy import never
+        # touches the event loop.
+        _log("failure", path)
+        return web.json_response(
+            {"error": "spreadsheet preview unavailable", "code": "preview_unavailable"},
+            status=501,
+        )
+    except _SheetRefusal as refusal:
+        # Both refusal kinds map to literal statuses so the response shape
+        # stays statically checkable; the carried code names the exact cause.
+        _log("denied", path)
+        if refusal.status == 415:
+            return web.json_response({"error": str(refusal), "code": refusal.code}, status=415)
+        return web.json_response({"error": str(refusal), "code": refusal.code}, status=413)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:  # symlink, from _open_rb_nofollow on any OS
+            _log("denied", path)
+            return web.json_response(
+                {"error": "symlinks not allowed", "code": "symlink_refused"}, status=403
+            )
+        _log("failure", path)
+        return web.json_response({"error": "cannot read file", "code": "read_failed"}, status=500)
+    except Exception:
+        # openpyxl's failure surface is wide (bad zip members, malformed XML,
+        # unexpected workbook parts). Every parse failure degrades to the same
+        # client answer, and the frontend falls back to the download card.
+        logger.warning("file-sheet: cannot parse workbook %s", path, exc_info=True)
+        _log("failure", path)
+        return web.json_response(
+            {"error": "cannot parse workbook", "code": "parse_failed"}, status=422
+        )
+    _log("success", path)
+    return web.json_response(payload)
 
 
 # ── Git status & log endpoints ──────────────────────────────────────────────
