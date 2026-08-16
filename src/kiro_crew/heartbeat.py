@@ -21,6 +21,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.memory import MemoryStore, workspace_dir
+from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -183,11 +184,31 @@ class HeartbeatService:
                 functools.partial(self._memory.prune_history, keep_days=max_days),
             )
 
-            # Prune security event log per retention policy
+            # Prune security event log per retention policy.
+            #
+            # maintenance_executor is deliberate, despite this pool's "fast
+            # periodic sweeps" charter and prune taking seconds on a large log.
+            # The three pools split on what makes a worker UN-RECLAIMABLE, not
+            # on duration: subprocess_executor is for work that can hang
+            # indefinitely on a wedged kernel resource, discovery_executor for
+            # work whose concurrency is set by remote callers.  prune is
+            # neither -- it terminates, it is awaited so it never overlaps
+            # itself, and it fires once per _PRUNE_TICKS, so one of four
+            # mc-maint workers once a day cannot starve the orphan-reaping
+            # sweeps this pool protects.  prune_history above is the same
+            # retention work on the same pool.
             try:
                 await loop.run_in_executor(maintenance_executor(), sel().prune)
             except Exception:
-                logger.debug("SEL prune failed", exc_info=True)
+                # WARNING, not debug: a dead prune means retention silently
+                # stops -- the unbounded-growth failure prune exists to
+                # prevent.  Counter so it is alarmable; guarded so a telemetry
+                # fault cannot take the heartbeat loop down with it.
+                logger.warning("SEL prune failed", exc_info=True)
+                try:
+                    get_recorder().counter("kirocrew.sel.prune_failed.count")
+                except Exception:
+                    pass
 
         # Check for idle sessions needing history consolidation (every tick)
         if self._consolidator:
