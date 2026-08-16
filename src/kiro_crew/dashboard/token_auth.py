@@ -177,18 +177,31 @@ class RevokedNonceStore:
             try:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-                tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+                # Create the temp file EMPTY, lock it down, and only then write
+                # the nonces. On Windows restrict_to_owner shells out to icacls,
+                # so writing first would leave the denylist under the
+                # parent-inherited DACL for the length of that call. O_TRUNC also
+                # empties a stale temp file an earlier crash left behind, so the
+                # lockdown never applies on top of someone else's contents.
+                os.close(os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
                 try:
-                    os.chmod(tmp, 0o600)
+                    # restrict_to_owner (fail-loud), NOT a raw chmod: on Windows
+                    # os.chmod only toggles the read-only attribute and leaves the
+                    # inherited DACL intact, so the nonces stay readable by other
+                    # local accounts — and because that chmod SUCCEEDS, the
+                    # warning below never fires. Matches token_secret.py and the
+                    # app-token secret written further down this module.
+                    platform_compat.restrict_to_owner(tmp)
                 except OSError:
-                    # Security-sensitive state (revoked session nonces). A chmod
-                    # failure must be observable, matching token_secret.py.
+                    # Security-sensitive state (revoked session nonces). A
+                    # lockdown failure must be observable, matching token_secret.py.
                     logger.warning(
-                        "could not set 0600 on revoked-nonce store %s; "
+                        "could not restrict revoked-nonce store %s to its owner; "
                         "file may be readable by other users",
                         tmp,
                         exc_info=True,
                     )
+                tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
                 os.replace(tmp, self._state_path)
             except OSError:
                 logger.warning("could not persist revoked-nonce store", exc_info=True)
