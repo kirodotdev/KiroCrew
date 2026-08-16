@@ -1062,6 +1062,41 @@ describe('App routing', () => {
   })
 })
 
+describe('mobile nav drawer insets', () => {
+  /** The drawer's className, read from source: it only renders below 768px and
+   *  jsdom applies no CSS, so a rendered assertion here would either need the
+   *  whole mobile shell stood up or would pass against an empty rule. */
+  function mobileDrawerClasses(): string[] {
+    const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8')
+    const drawer = src.slice(src.indexOf('key="mobile-nav-drawer"'))
+    const cls = drawer.match(/className="([^"]+)"/)?.[1] ?? ''
+    expect(cls, 'expected to find the mobile nav drawer className').not.toBe('')
+    return cls.split(/\s+/)
+  }
+
+  it('insets all four sides equally', () => {
+    // The drawer is `fixed` to the VIEWPORT, not placed in the grid row below
+    // the topbar the way the desktop rail is, so it owns its own top offset.
+    // Without it the card's rounded top edge sits flat against the screen while
+    // the other three sides float — see the reported defect.
+    const classes = mobileDrawerClasses()
+    expect(classes).toContain('mx-2')
+    expect(classes).toContain('mt-2')
+    expect(classes).toContain('mb-2')
+    expect(classes).not.toContain('mt-0')
+  })
+
+  it('spans the viewport height so both margins resolve', () => {
+    // `top-0 bottom-0` with a margin on each end resolves the height to
+    // viewport-16px. Dropping either anchor would make the margins inert (auto
+    // height) and re-open the flush-top defect from the other direction.
+    const classes = mobileDrawerClasses()
+    expect(classes).toContain('fixed')
+    expect(classes).toContain('top-0')
+    expect(classes).toContain('bottom-0')
+  })
+})
+
 describe('TopbarMetrics widget', () => {
   it('shows only the Activity toggle button when metricsOpen is not set', () => {
     localStorage.removeItem('mc-topbar-metrics')

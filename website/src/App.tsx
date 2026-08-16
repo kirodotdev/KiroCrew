@@ -2595,13 +2595,20 @@ export default function App() {
         return isMobile ? (
           <AnimatePresence>
             {mobileNavOpen && (
+              /* mt-2, unlike the desktop rail's mt-0: this form is `fixed` to the
+                 VIEWPORT top rather than sitting in the grid row below the
+                 topbar, so mt-0 pressed the card's rounded top edge flat against
+                 the screen while mx-2/mb-2 inset the other three sides. Matching
+                 the 8px inset on all four keeps the drawer reading as one
+                 floating card. `top-0 bottom-0` with both margins resolves the
+                 height to viewport-16px, so nothing is clipped. */
               <motion.nav
                 key="mobile-nav-drawer"
                 initial={{ x: -240 }}
                 animate={{ width: 220, x: 0 }}
                 exit={{ x: -240 }}
                 transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-0 mb-2 shadow-sm z-50 overflow-hidden fixed top-0 left-0 bottom-0"
+                className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-2 mb-2 shadow-sm z-50 overflow-hidden fixed top-0 left-0 bottom-0"
                 role="navigation"
                 aria-label={i18nT('app.main_navigation')}
               >
