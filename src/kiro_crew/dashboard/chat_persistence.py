@@ -2062,7 +2062,7 @@ def _save_slot_to_history(
             except OSError:
                 slot._frozen_prefix_cache = None
             state.conversation_log._invalidate_cache(history_key)
-            state.conversation_log.invalidate_tab_id_cache()
+            state.conversation_log.note_tab_id(history_key, tab_id)
     except Exception:
         logger.error("Failed to save slot %s to history", slot.key, exc_info=True)
         raise

@@ -1241,6 +1241,35 @@ def transcript_stem(key: str) -> str:
     return _safe_key(key)
 
 
+_TAB_ID_INDEX_STEM_PREFIX = "dashboard_chat-"
+_TAB_ID_INDEX_GLOB = f"{_TAB_ID_INDEX_STEM_PREFIX}*.jsonl"
+
+
+def _index_key_for_stem(stem: str) -> str:
+    """The key form :attr:`ConversationLog._tab_id_index` stores for *stem*.
+
+    One derivation shared by the index builder (which starts from a filename)
+    and the in-place updater (which starts from a session key), because a second
+    copy would drift the moment either side changed and the failure is silent:
+    the two spellings stop matching, so an updater's lookup misses an entry that
+    is really there.
+    """
+    return stem.replace("_", ":", 1)
+
+
+def can_hold_tab_id_index_entry(key: str) -> bool:
+    """True when *key*'s transcript is one :meth:`_rebuild_tab_id_index` scans.
+
+    The index is built by globbing :data:`_TAB_ID_INDEX_GLOB`, so a transcript
+    whose stem does not match can never appear in it -- a channel-keyed session
+    (``slack:<ts>`` and friends) writes ``slack_<ts>.jsonl``, which the glob
+    never returns. Saving such a transcript therefore cannot add, remove or
+    change any index entry, which is what makes a no-op the correct response to
+    one rather than an invalidation.
+    """
+    return transcript_stem(key).startswith(_TAB_ID_INDEX_STEM_PREFIX)
+
+
 def transcript_stems(key: str) -> tuple[str, ...]:
     """Every filename stem *key*'s transcript could occupy, canonical first.
 
@@ -3459,14 +3488,14 @@ class ConversationLog:
         ``_tab_id_index`` mapping.
         """
         index: dict[str, list[str]] = {}
-        for path in sorted(self._dir.glob("dashboard_chat-*.jsonl")):
+        for path in sorted(self._dir.glob(_TAB_ID_INDEX_GLOB)):
             try:
                 with path.open(encoding="utf-8") as f:
                     first_line = f.readline()
                 m = json.loads(first_line)
                 tid = m.get("tab_id")
                 if tid:
-                    index.setdefault(tid, []).append(path.stem.replace("_", ":", 1))
+                    index.setdefault(tid, []).append(_index_key_for_stem(path.stem))
             except Exception:
                 continue
         self._tab_id_index = index
@@ -3483,6 +3512,59 @@ class ConversationLog:
         """
         with self._lock:
             self._tab_id_index = None
+
+    def note_tab_id(self, key: str, tab_id: str | None) -> None:
+        """Register *key* under *tab_id* in place, keeping the chain index warm.
+
+        A content-only save never changes the tab_id -> keys mapping, so the
+        blanket :meth:`invalidate_tab_id_cache` the slot-save path used to call
+        threw the whole index away, and the next chained read then re-globbed
+        the session directory and re-opened every ``dashboard_chat-*.jsonl`` in
+        it to rebuild a mapping that had not changed. Updating the single
+        affected entry keeps that rescan off the read path.
+
+        A key whose transcript the rebuild never scans returns immediately
+        without invalidating -- see :func:`can_hold_tab_id_index_entry`. Such a
+        save cannot change the mapping at all, so invalidating on one would
+        throw the warm index away for nothing, and a channel-keyed session
+        flushes often enough that it would restore the very per-save rescan
+        this method exists to remove.
+
+        Three further cases deliberately fall back to the slow-but-correct path
+        instead of appending:
+
+        * no *tab_id* -- there is nothing to index against, so invalidate and
+          keep the previous unconditional behaviour for that case;
+        * a stale index (``None``) -- leave it stale, because the next chained
+          read rebuilds it authoritatively and a rebuild is what makes it
+          trustworthy;
+        * a *tab_id* carrying no keys -- this save may have just created that
+          tab_id's FIRST file, which a previously-built index predates.
+          Appending here would forge a one-key entry that reads as
+          authoritative and hides every sibling key. The test is ``not keys``
+          rather than ``keys is None`` so an empty-list value can never slip
+          through into that append.
+
+        Caller must not hold ``self._lock``; this takes it. The slot-save path
+        already calls ``invalidate_tab_id_cache`` (which takes the same lock)
+        from inside ``_locked(history_key)``, so this adds no new lock ordering.
+        """
+        if not can_hold_tab_id_index_entry(key):
+            return
+        if not tab_id:
+            self.invalidate_tab_id_cache()
+            return
+        with self._lock:
+            index = self._tab_id_index
+            if index is None:
+                return
+            keys = index.get(tab_id)
+            if not keys:
+                self.invalidate_tab_id_cache()
+                return
+            chained = _index_key_for_stem(transcript_stem(key))
+            if chained not in keys:
+                keys.append(chained)
 
     def delete_session(self, key: str) -> bool:
         """Delete a session file. Returns True if a file was removed.
