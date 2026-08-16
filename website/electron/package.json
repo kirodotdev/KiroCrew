@@ -69,6 +69,7 @@
       "find-bin.js",
       "data-home.js",
       "auto-update.js",
+      "update-logger.js",
       "bundle-location.js",
       "gateway-auth-hint.js",
       "blocking-prompt.js",

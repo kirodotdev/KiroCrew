@@ -259,6 +259,19 @@ function makeDeps(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Logger wiring contract: a provided `log` dep must become autoUpdater.logger,
+// verbatim. This is what routes electron-updater's own lifecycle/error output
+// through the caller's sink -- if the assignment drifts, a packaged app's
+// update diagnostics silently fall back to console and are lost.
+// ---------------------------------------------------------------------------
+
+test("initAutoUpdate wires the provided log dep as autoUpdater.logger", () => {
+  const { deps } = makeDeps();
+  initAutoUpdate(deps);
+  assert.strictEqual(deps.autoUpdater.logger, deps.log);
+});
+
+// ---------------------------------------------------------------------------
 // #709 regression guard: every state that renders a version must report the
 // PENDING one. emit() defaults `version` to app.getVersion(), so a
 // "downloading" event that forgets to pass it makes the update card claim the

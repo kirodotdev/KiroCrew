@@ -20,6 +20,7 @@ const {
 const { createWindowOpenHandler, openExternalSafely } = require("./external-scheme");
 const { resolveThemeSource } = require("./native-theme");
 const { initAutoUpdate } = require("./auto-update");
+const { makeUpdaterLogger } = require("./update-logger");
 const {
   classifyBundleLocation,
   containingDirForBundle,
@@ -3538,6 +3539,7 @@ app.whenReady().then(async () => {
       recoverWedgedGateway(mainWindow).catch((e) => glog(`post-install-failure recovery failed: ${e && e.message}`));
     },
     onUpdateState: broadcastUpdateState,
+    log: makeUpdaterLogger(glog),
     });
   } catch (e) {
     glog(`auto-update init failed — continuing WITHOUT auto-update: ${(e && e.stack) || e}`);
