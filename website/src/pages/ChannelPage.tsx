@@ -14,6 +14,9 @@ import { AnimatePresence } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
 
 import { i18nT } from '../i18n/t'
+import { useListDetailView } from '../hooks/useListDetailView'
+import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
+import ListDetailBack from '../components/ListDetailBack'
 import { fmtDateFields } from '../i18n/format'
 // ── Types ──
 
@@ -162,7 +165,7 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
             </Btn>
           )}
           {onReply && (
-            <Btn onClick={onReply} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text opacity-0 group-hover:opacity-100 transition-opacity">
+            <Btn onClick={onReply} className="!p-0 !border-none !rounded-none text-[13px] text-muted hover:text-text transition-opacity md:opacity-0 md:group-hover:opacity-100">
               <MessageSquare className="lucide-inline" /> {i18nT('pages.channelPage.reply')}
             </Btn>
           )}
@@ -332,14 +335,9 @@ function MentionInput({ agents, value, onChange, onSend }: {
     if (m) { setFilter((m[1] || '').trim().toLowerCase()); setShow(true); setSel(0) } else setShow(false)
   }
 
-  const applyHeight = () => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.3) + 'px'
-  }
-
-  useEffect(() => { applyHeight() }, [value])
+  // The shared hook, which now carries the hidden-mount guard and the
+  // visibility re-measure, rather than a second spelling of both here.
+  useAutoGrowTextarea(ref, value, Math.round(window.innerHeight * 0.3))
 
   const pick = (a: ChannelAgent) => {
     onChange(value.replace(/@[\w ]*$/, `@${a.role} `))
@@ -434,11 +432,19 @@ export default function ChannelPage() {
   const [input, setInput] = useState('')
   const [showNew, setShowNew] = useState(false)
   const [showAgents, setShowAgents] = useState(false)
+  // One pane at a time while narrow. Both rails here are a fixed w-64, so at
+  // 390px the transcript column measured 86px and the message paragraph inside
+  // it 2px -- a column that cannot hold one character per line.
+  const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
   const [showAddAgent, setShowAddAgent] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [threadId, setThreadId] = useState<string | null>(null)
-  const [threadInput, setThreadInput] = useState('')
+  // Which thread the unsent reply belongs to, so it is neither discarded on
+  // navigation nor inherited by a different thread.
+  // Keyed by thread id: a draft belongs to one thread, so switching threads or
+  // channels neither discards it nor hands it to a different conversation.
+  const [threadDrafts, setThreadDrafts] = useState<Record<string, string>>({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const channel = channels.find(c => c.id === activeId) || channels[0] || null
@@ -456,6 +462,15 @@ export default function ChannelPage() {
   }, [activeId])
 
   useEffect(() => { reload(); api.channelPresets().then(r => setPresets(r.presets || FALLBACK_PRESETS)).catch(() => {}) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A thread id and the agents panel both belong to one channel: `threadId` names a
+  // message in it, and the panel lists its members. Leaving either set across a change
+  // of channel is not cosmetic -- the thread panel's composer sends against the ACTIVE
+  // channel, so a stale id parents a reply to a message that channel does not contain.
+  useEffect(() => {
+    setThreadId(null)
+    setShowAgents(false)
+  }, [activeId])
 
   // Load full channel (with messages) when switching
   useEffect(() => {
@@ -509,6 +524,22 @@ export default function ChannelPage() {
     try { await api.channelPost(channel.id, msg, mentionIds.length ? mentionIds : undefined, tid) } catch { /* WS will deliver */ }
   }
 
+  const threadInput = threadId ? (threadDrafts[threadId] ?? '') : ''
+  const setThreadInput = (v: string) => {
+    if (threadId) setThreadDrafts(d => ({ ...d, [threadId]: v }))
+  }
+  const discardThreadDraft = (id: string) => {
+    setThreadDrafts(d => { const { [id]: _gone, ...rest } = d; return rest })
+  }
+
+  const openThread = (id: string) => {
+    setThreadId(id)
+    // Exclusivity is a narrow-viewport concern: both overlays are `w-full` there, so
+    // opening the second would split the viewport. A desktop shows them side by side
+    // and that capability is left alone.
+    if (isMobile) setShowAgents(false)
+  }
+
   const handleSend = async () => {
     if (!input.trim()) return
     await sendMessage(input)
@@ -541,6 +572,7 @@ export default function ChannelPage() {
         const ch = mapChannel(res.channel)
         setChannels(prev => prev.some(c => c.id === ch.id) ? prev : [ch, ...prev])
         setActiveId(res.channel.id)
+        openDetail()
       }
     } catch (err) {
       setError(apiError(err, i18nT('pages.channelPage.failed_to_create_channel')))
@@ -551,7 +583,7 @@ export default function ChannelPage() {
     <>
       <PageHeader title={i18nT('pages.channelPage.channels')} subtitle={i18nT('pages.channelPage.multi_agent_collaboration_spaces')} />
       <div className="px-6 pb-8 overflow-y-auto flex-1 min-h-0">
-    <div className="flex h-full relative">
+    <div className={`flex h-full relative ${isMobile ? '-mx-6 -mb-8' : ''}`}>
       {showNew && <NewChannelDialog onClose={() => setShowNew(false)} presets={presets} onCreate={handleCreateChannel} />}
 
       {/* Error modal */}
@@ -567,7 +599,7 @@ export default function ChannelPage() {
       )}
 
       {/* Channel list sidebar */}
-      <div className="w-64 shrink-0 border-r border-border flex flex-col">
+      <div className={`flex flex-col ${showList ? '' : 'hidden'} ${isMobile ? 'w-full' : 'w-64 shrink-0 border-r border-border'}`}>
         <div className="px-3 py-3 border-b border-border flex items-center justify-between">
           <span className="text-sm font-semibold text-text-strong">{i18nT('pages.channelPage.channels')}</span>
           <Btn onClick={() => setShowNew(true)} primary title={i18nT('pages.channelPage.new_channel_2')}>{i18nT('pages.channelPage.new')}</Btn>
@@ -575,18 +607,23 @@ export default function ChannelPage() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {channels.length === 0 && <EmptyState icon={<MessageSquare className="lucide-inline" />} title={i18nT('pages.channelPage.no_channels_yet')} subtitle={i18nT('pages.channelPage.click_new_to_create_one')} />}
           {channels.map(ch => (
-            <ChannelListItem key={ch.id} ch={ch} active={ch.id === activeId} onClick={() => setActiveId(ch.id)} />
+            <ChannelListItem key={ch.id} ch={ch} active={ch.id === activeId} onClick={() => { setActiveId(ch.id); openDetail() }} />
           ))}
         </div>
       </div>
 
       {/* Channel content */}
       {channel ? (
-        <div className="flex-1 flex flex-col min-w-0">
-          <div className="border-b border-border px-4 py-2.5 flex items-center justify-between">
-            <h2 className="text-base font-semibold text-text-strong truncate">{channel.topic}</h2>
+        <div className={`flex-1 flex-col min-w-0 ${showDetail ? 'flex' : 'hidden'}`}>
+          <div className="border-b border-border px-4 py-2.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+            <div className="flex flex-1 items-center gap-1 min-w-0 basis-full sm:basis-auto">
+              {isMobile && (
+                <ListDetailBack label={i18nT('pages.channelPage.channels')} onBack={closeDetail} />
+              )}
+              <h2 className="text-base font-semibold text-text-strong truncate min-w-0">{channel.topic}</h2>
+            </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              <Btn onClick={() => setShowAgents(!showAgents)}>
+              <Btn onClick={() => { setShowAgents(v => !v); if (isMobile) setThreadId(null) }}>
                 <Users className="lucide-inline" /> {i18nT('pages.channelPage.agent_2', { count: channel.agents.length })}
                 {channel.agents.some(a => a.state === 'working' || a.state === 'tool_running') && <Badge variant="ok">●</Badge>}
               </Btn>
@@ -605,6 +642,10 @@ export default function ChannelPage() {
                 try { await api.channelClose(channel.id) } catch { /* WS handles removal */ }
                 setChannels(prev => prev.filter(c => c.id !== channel.id))
                 setActiveId(null)
+                // Without this the narrow layout keeps the transcript pane while no
+                // channel exists: the list holding "+ New" stays hidden and the Back
+                // control unmounted with the channel, leaving no way out.
+                closeDetail()
               }} danger title={i18nT('pages.channelPage.close_channel')}>
                 <X className="lucide-inline" /> {i18nT('pages.channelPage.close')}
               </Btn>
@@ -612,14 +653,14 @@ export default function ChannelPage() {
           </div>
 
           <div className="flex flex-1 min-h-0">
-            <div className="flex-1 overflow-y-auto px-2 py-3 space-y-1">
+            <div className={`flex-1 overflow-y-auto py-3 space-y-1 ${isMobile ? 'px-0' : 'px-2'} ${isMobile && (showAgents || threadId) ? 'hidden' : ''}`}>
               {topLevelMessages.length === 0 && (
                 <EmptyState icon={<Zap className="lucide-inline" />} title={i18nT('pages.channelPage.setting_up_channel')} subtitle={`${channel.agents.length} agent${channel.agents.length !== 1 ? 's' : ''} joining`} />
               )}
               {topLevelMessages.map(msg => (
                 <MessageBubble key={msg.id} msg={msg} agents={channel.agents}
-                  onReply={() => setThreadId(msg.id)}
-                  onOpenThread={() => setThreadId(msg.id)}
+                  onReply={() => openThread(msg.id)}
+                  onOpenThread={() => openThread(msg.id)}
                   onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action).catch(() => {}) : undefined} />
               ))}
               {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
@@ -636,11 +677,11 @@ export default function ChannelPage() {
               const parent = channel.messages.find(m => m.id === threadId)
               const replies = channel.messages.filter(m => m.threadId === threadId)
               return (
-                <DetailPanel key="thread-panel" title={i18nT('pages.channelPage.thread')} onClose={() => { setThreadId(null); setThreadInput('') }} initialWidth={320} minWidth={260} storageKey="mc-channel-thread-width" footer={
+                <DetailPanel key="thread-panel" title={i18nT('pages.channelPage.thread')} onClose={() => setThreadId(null)} initialWidth={320} minWidth={260} storageKey="mc-channel-thread-width" footer={
                   <MentionInput agents={channel.agents} value={threadInput} onChange={setThreadInput} onSend={async () => {
                     if (!threadInput.trim() || !threadId) return
                     await sendMessage(threadInput, threadId)
-                    setThreadInput('')
+                    discardThreadDraft(threadId)
                   }} />
                 }>
                   <div className="flex flex-col gap-1 -mx-3 -mt-2">
@@ -663,7 +704,7 @@ export default function ChannelPage() {
             </AnimatePresence>
 
             {showAgents && (
-              <div className="w-64 shrink-0 border-l border-border flex flex-col bg-bg-elevated">
+              <div className={`flex flex-col bg-bg-elevated ${isMobile ? 'w-full' : 'w-64 shrink-0 border-l border-border'}`}>
                 <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
                   <span className="text-sm font-semibold text-text-strong">{i18nT('pages.channelPage.agents')}</span>
                   <Btn onClick={() => setShowAgents(false)} aria-label={i18nT('pages.channelPage.close_agents_panel')} className="!p-0 !border-none !rounded-none text-muted hover:text-text text-sm"><X className="lucide-inline" /></Btn>
@@ -698,7 +739,7 @@ export default function ChannelPage() {
             )}
           </div>
 
-          <div className="border-t border-border px-4 py-3">
+          <div className={`border-t border-border px-4 py-3 ${isMobile && (threadId || showAgents) ? 'hidden' : ''}`}>
             <div className="flex gap-2">
               <MentionInput agents={channel.agents} value={input} onChange={setInput} onSend={handleSend} />
               <Btn onClick={handleSend} primary>{i18nT('pages.channelPage.send')}</Btn>

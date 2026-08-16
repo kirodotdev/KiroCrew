@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react'
+import { useEffect, useLayoutEffect } from 'react'
 import type { RefObject } from 'react'
 
 /**
@@ -11,6 +11,17 @@ import type { RefObject } from 'react'
  * The textarea should keep `resize-none`; an initial `rows` attribute sets the
  * resting height before the first measure (avoids a paint flash).
  */
+function measure(el: HTMLTextAreaElement, maxH: number): void {
+  // An element inside a hidden pane has no layout box, so `scrollHeight` reads 0.
+  // Writing that back as an explicit height leaves a sliver -- the padding and
+  // border around a zero-height content box -- and the value-keyed effect below
+  // cannot recover it, because becoming visible is not a value change.
+  if (el.scrollHeight === 0 || !el.offsetParent) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, maxH)}px`
+  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+}
+
 export function useAutoGrowTextarea(
   ref: RefObject<HTMLTextAreaElement | null>,
   value: string,
@@ -19,8 +30,19 @@ export function useAutoGrowTextarea(
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, maxH)}px`
-    el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+    measure(el, maxH)
   }, [ref, value, maxH])
+
+  // Re-measure once the field gains a layout box. A responsive shell may mount a
+  // composer inside a hidden pane; IntersectionObserver and not ResizeObserver,
+  // because `measure` SETS the height it would otherwise observe.
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) measure(el, maxH)
+    })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [ref, maxH])
 }
