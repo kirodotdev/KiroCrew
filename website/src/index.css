@@ -1611,6 +1611,21 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .tb-left{justify-content:flex-start;gap:.5rem}
 .tb-right{justify-content:flex-end;gap:.375rem}
 
+/* …except where the track asks the group for a size. The containment above is
+   sound while both side tracks are `minmax(0,1fr)`, because the window sizes them
+   and the contents only adapt. The narrow rule makes the identity track `auto`,
+   which does the opposite: it asks the item for a content size, and an
+   inline-size container has none to give. The track then collapsed to this
+   group's own padding -- 16px measured, `16px 28px 298px` for the three tracks --
+   and `overflow:hidden` clipped the 36px menu button down to an 8px sliver, so
+   the only route to the nav on a phone was invisible.
+   Dropped rather than worked around: nothing queries this group. Every
+   `@container` rung below targets a descendant of `.tb-right`. Must sit AFTER the
+   declaration above, which is unconditional and would otherwise win on order. */
+@media (max-width:767px){
+  .tb-left{container-type:normal}
+}
+
 /* The collapse ladder. Each rung is keyed off the GROUP's own width, so it
    responds to the space actually handed to it rather than to a viewport
    breakpoint that cannot know what the group currently holds (usage pill

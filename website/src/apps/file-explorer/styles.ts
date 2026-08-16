@@ -36,6 +36,12 @@ export const FE_CSS = `
    column and the divider turns with it. The left pane's border-right would draw
    a stray vertical rule once stacked. */
 .mc-fe-split.is-stacked { flex-direction:column; }
+/* Stacked, the tree must FILL the column and scroll inside it. Left non-shrinking
+   it takes its CONTENT height instead -- measured 1553px inside a 718px split --
+   so its own overflow-y never engages and the split's hidden overflow clips the
+   rest with no way to reach it. A zero min-height is required for the same
+   reason: a flex item will not otherwise shrink below its content. */
+.mc-fe-split.is-stacked > .mc-fe-left { flex:1 1 0%; min-height:0; }
 .mc-fe-split.is-stacked > .mc-fe-left { border-right:none; border-bottom:1px solid var(--border); }
 /* Hidden rather than unmounted: the pane keeps its scroll position across a
    rotation that crosses the breakpoint. */
