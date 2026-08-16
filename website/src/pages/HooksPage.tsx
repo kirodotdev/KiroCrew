@@ -83,7 +83,17 @@ function HookForm({ hook, onSave, onCancel }: {
           <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={isToolHook ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git') : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')} value={matcher} onChange={e => setMatcher(e.target.value)} />
+          {/* The shared Input is `flex-1 min-w-0`, i.e. `flex-basis: 0%`, so its
+              hypothetical main size is ZERO. Flex line-breaking uses that size,
+              so the three non-shrinking siblings below never wrap to their own
+              line — they all stay on line 1 and this field absorbs the entire
+              shortfall. Measured across pane widths 320-760px: 45px at a 360px
+              pane, 105px at 420px, under 120px at six widths. `basis-full` while
+              narrow and `basis-auto` above restores intrinsic-size-aware
+              breaking, so a sibling that does not fit wraps instead: 231px worst
+              case, never below 120px. Same idiom as the tokens row in
+              WebhooksPage, which had the identical defect. */}
+          <Input className="basis-full sm:basis-auto" placeholder={isToolHook ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git') : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')} value={matcher} onChange={e => setMatcher(e.target.value)} />
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
             <span>{i18nT('pages.hooksPage.timeout')}</span>
             <Input type="number" min={1} max={300} className="w-16" value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
