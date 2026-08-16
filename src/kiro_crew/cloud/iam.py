@@ -210,41 +210,92 @@ def policy_document() -> dict[str, Any]:
                 "ec2:DescribeKeyPairs",
                 "ec2:DescribeAvailabilityZones",
                 "ec2:DescribeInstanceTypeOfferings",
+                # --spot: CloudFormation reads back the launch template it
+                # creates (and GetAtt LatestVersionNumber reads its versions);
+                # `cloud destroy` finds the tagged Spot request to cancel. All
+                # read-only, and EC2 Describe* takes no resource scoping.
+                "ec2:DescribeLaunchTemplates",
+                "ec2:DescribeLaunchTemplateVersions",
+                "ec2:DescribeSpotInstanceRequests",
             ],
             "Resource": "*",
         },
         {
-            # ec2:RunInstances — request-tag-gated on the NEW instance only.
+            # THE REQUEST-TAG GATE. Every EC2 resource this policy can CREATE and
+            # that a later statement gates on `aws:ResourceTag/kirocrew:managed`
+            # must be creatable ONLY with that tag — otherwise a leaked launcher
+            # credential could create an UNtagged twin that sits outside the
+            # tag-gated Stop/Terminate/Delete/Cancel statements. The three
+            # (action, resource) pairs below are exactly those:
+            #   * RunInstances  -> instance/*               (Stop/Start/Terminate)
+            #   * CreateSecurityGroup -> security-group/*   (Authorize/Revoke/Delete)
+            #   * CreateLaunchTemplate -> launch-template/* (DeleteLaunchTemplate)
+            # All three are tagged at creation by the template's TagSpecifications,
+            # so aws:RequestTag is populated and the condition matches on the
+            # legitimate CFN path.
             #
-            # RunInstances authorizes PER-RESOURCE across every ARN the call
-            # touches: the new instance/volume/network-interface it creates AND the
-            # pre-existing image/subnet/security-group it references. aws:RequestTag
-            # is evaluated per-resource, so requiring kirocrew:managed=true on the
-            # WHOLE action denies the launch — the referenced (existing, untagged)
-            # security group + subnet + AMI don't carry the request tag, and this
-            # template's TagSpecifications tag only the INSTANCE (not the volume or
-            # ENI). Empirically confirmed with a least-privilege assume-role
-            # `run-instances --dry-run`: a blanket request-tag on `security-group/*`
-            # DENIED an otherwise-correct tagged launch on the referenced SG.
+            # NOT here: spot-instances-request/*. AWS's own IAM example
+            # ("Example policies for working with the AWS CLI or an AWS SDK" ->
+            # "Working with Spot Instances", ExamplePolicies_EC2.html
+            # #iam-example-spot-instances) documents that an aws:RequestTag
+            # condition on the spot-instances-request resource for RunInstances is
+            # NOT SUPPORTED. The gate would be theatre either way: IAM only
+            # evaluates a resource ARN the request actually names, so an UNtagged
+            # spot request carries no TagSpecification, the ARN is skipped, and
+            # the condition never fires — untagged requests slip past it. A policy
+            # simply cannot prevent a rogue untagged Spot request. Our own
+            # requests are always tagged (the launch template's
+            # LaunchTemplateData.TagSpecifications), which is what makes the
+            # aws:ResourceTag gate on CancelSpotInstanceRequests meaningful, so
+            # the ARN is granted UNCONDITIONED below alongside the other
+            # referenced/derived resources.
             #
-            # So: the request-tag condition applies ONLY to `instance/*` (the one
-            # resource CFN tags and the only one an escalation cares about — a
-            # leaked credential can't RunInstances an UNtagged instance, which
-            # would sit outside the tag-gated Stop/Terminate statements). All the
-            # other ARNs a launch legitimately needs (its own volume/ENI + the
-            # referenced image/subnet/SG/key-pair) are granted WITHOUT the
-            # condition — they can't create a tag-gated resource on their own (the
-            # volume/ENI exist only as sub-resources of the tagged instance in the
-            # same call; the rest are read-only references). Validated end-to-end
-            # with a live CREATE_COMPLETE + SSM Online launch (admin launches
-            # bypass the policy, so the dry-run/harness is the condition oracle).
-            "Sid": "Ec2RunInstancesTaggedInstance",
+            # What must NOT be in here: the ARNs a launch merely REFERENCES or
+            # creates as a sub-resource (volume/ENI, subnet, SG, AMI, launch
+            # template). aws:RequestTag is evaluated PER-RESOURCE, so demanding it
+            # on those denies the launch — empirically confirmed with a
+            # least-privilege assume-role `run-instances --dry-run`, where a
+            # blanket request-tag on `security-group/*` DENIED an otherwise-correct
+            # tagged launch on the referenced SG. They are granted unconditioned in
+            # Ec2RunInstancesSupportingResources / Ec2CreateSecurityGroupVpc
+            # instead. Validated end-to-end with a live CREATE_COMPLETE + SSM
+            # Online launch (admin launches bypass the policy, so the dry-run
+            # harness is the condition oracle).
+            #
+            # WHY ONE STATEMENT and not three: a customer managed policy is capped
+            # at 6,144 characters and the split form no longer fits (see
+            # test_policy_fits_iam_managed_policy_limit). The merge is safe
+            # because the action x resource cross-product is INERT given current
+            # EC2 authorization semantics: each create action authorizes ONLY
+            # against its own resource type (CreateSecurityGroup is never
+            # evaluated against an instance/launch-template ARN,
+            # CreateLaunchTemplate never against an instance/SG ARN), and the one
+            # live cross-product — RunInstances on security-group/* and
+            # launch-template/* — is a STRICTLY NARROWER duplicate of the
+            # unconditioned grant below. If this ever needs splitting again, split
+            # the POLICY, not this gate.
+            "Sid": "Ec2CreateTaggedResources",
             "Effect": "Allow",
-            "Action": ["ec2:RunInstances"],
-            "Resource": "arn:aws:ec2:*:*:instance/*",
+            "Action": [
+                "ec2:RunInstances",
+                "ec2:CreateSecurityGroup",
+                "ec2:CreateLaunchTemplate",
+            ],
+            "Resource": [
+                "arn:aws:ec2:*:*:instance/*",
+                "arn:aws:ec2:*:*:security-group/*",
+                "arn:aws:ec2:*:*:launch-template/*",
+            ],
             "Condition": {"StringEquals": {f"aws:RequestTag/{MANAGED_TAG_KEY}": "true"}},
         },
         {
+            # The ARNs a RunInstances legitimately touches that CANNOT carry the
+            # request tag: its own volume/ENI (sub-resources of the tagged
+            # instance, created in the same call) and the pre-existing resources it
+            # references. None can become a tag-gated resource on their own, so the
+            # unconditioned grant is not an escalation. NB: `instance/*` is
+            # deliberately ABSENT — listing it here would nullify the request-tag
+            # gate above.
             "Sid": "Ec2RunInstancesSupportingResources",
             "Effect": "Allow",
             "Action": ["ec2:RunInstances"],
@@ -255,47 +306,32 @@ def policy_document() -> dict[str, Any]:
                 "arn:aws:ec2:*:*:security-group/*",
                 "arn:aws:ec2:*:*:key-pair/*",
                 "arn:aws:ec2:*:*:elastic-ip/*",
+                # --spot: the instance launches WITH a launch-template reference
+                # (the only way to express InstanceMarketOptions on a CFN
+                # instance), so RunInstances authorizes on the LT ARN too. It is a
+                # referenced resource here, not one this call tags — its CREATION
+                # is request-tag-gated above.
+                "arn:aws:ec2:*:*:launch-template/*",
+                # --spot: RunInstances creates the Spot REQUEST as a side effect
+                # and authorizes on its ARN. Unconditioned by necessity, not by
+                # choice — see the Ec2CreateTaggedResources comment: AWS documents
+                # aws:RequestTag on this resource as unsupported, and an untagged
+                # request would skip the ARN entirely, so a condition here would
+                # only break our own (correctly tagged) launch.
+                "arn:aws:ec2:*:*:spot-instances-request/*",
                 "arn:aws:ec2:*::image/*",
                 "arn:aws:ec2:*::snapshot/*",
             ],
         },
         {
-            # ec2:CreateSecurityGroup — request-tag-gated on the NEW security group.
-            # CreateSecurityGroup creates the SG (tagged kirocrew:managed=true at
-            # creation by the template's TagSpecifications) and authorizes against
-            # the target vpc/*. Require the request tag on `security-group/*` (so a
-            # leaked credential can't create an UNtagged SG that escapes the
-            # tag-gated Authorize/Delete statements) and allow `vpc/*` unconditioned
-            # (pre-existing, referenced, not tagged by this call). Validated with
-            # the least-privilege `create-security-group --dry-run`.
-            "Sid": "Ec2CreateSecurityGroupTagged",
-            "Effect": "Allow",
-            "Action": ["ec2:CreateSecurityGroup"],
-            "Resource": "arn:aws:ec2:*:*:security-group/*",
-            "Condition": {"StringEquals": {f"aws:RequestTag/{MANAGED_TAG_KEY}": "true"}},
-        },
-        {
+            # CreateSecurityGroup also authorizes against the target VPC, which is
+            # pre-existing and not tagged by the call — ungated, same reasoning as
+            # the supporting ARNs above. Validated with the least-privilege
+            # `create-security-group --dry-run`.
             "Sid": "Ec2CreateSecurityGroupVpc",
             "Effect": "Allow",
             "Action": ["ec2:CreateSecurityGroup"],
             "Resource": "arn:aws:ec2:*:*:vpc/*",
-        },
-        {
-            # SG rule mutation is gated to KiroCrew-tagged security groups: the
-            # stack's SG carries kirocrew:managed=true from creation
-            # (TagSpecifications), so CFN can add its egress/SSH rules — but a
-            # leaked launcher credential can't Authorize/Revoke rules on an
-            # UNRELATED security group (which would expose other account
-            # resources). Revoke is already in Ec2DestructiveTagged; Authorize is
-            # here.
-            "Sid": "Ec2SecurityGroupRulesTagged",
-            "Effect": "Allow",
-            "Action": [
-                "ec2:AuthorizeSecurityGroupEgress",
-                "ec2:AuthorizeSecurityGroupIngress",
-            ],
-            "Resource": "*",
-            "Condition": {"StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"}},
         },
         {
             # Tagging is allowed ONLY as part of a create operation
@@ -313,28 +349,59 @@ def policy_document() -> dict[str, Any]:
             "Resource": "*",
             "Condition": {
                 "StringEquals": {
-                    "ec2:CreateAction": ["RunInstances", "CreateSecurityGroup"],
+                    # CreateLaunchTemplate is the --spot addition: CFN tags the
+                    # launch template at creation, which AWS authorizes as
+                    # ec2:CreateTags with this CreateAction. (The
+                    # spot-instances-request is tagged as part of RunInstances,
+                    # already covered.)
+                    "ec2:CreateAction": [
+                        "RunInstances",
+                        "CreateSecurityGroup",
+                        "CreateLaunchTemplate",
+                    ],
                 }
             },
         },
         {
-            # Destructive verbs, gated to KiroCrew-tagged resources so a leaked
-            # launcher credential can't delete/retag security groups it never
-            # created. The stack's SG carries kirocrew:managed=true from creation.
-            "Sid": "Ec2DestructiveTagged",
+            # THE RESOURCE-TAG GATE: every verb that MUTATES an existing EC2
+            # resource, allowed only on resources carrying kirocrew:managed=true.
+            # A leaked launcher credential therefore can't stop/terminate/reboot
+            # instances, open or revoke security-group rules, delete security
+            # groups or launch templates, cancel spot requests, or strip tags on
+            # anything Kiro Crew didn't create. Everything the stack creates carries
+            # the tag from creation (TagSpecifications), and Ec2TagOnCreate below
+            # makes sure the tag can't be bolted onto a foreign resource, so this
+            # gate is non-spoofable.
+            #
+            # By verb:
+            #   * Authorize*/Revoke*/DeleteSecurityGroup — CFN builds and tears
+            #     down the stack's SG (egress + optional SSH ingress).
+            #   * Stop/Start/Terminate/Reboot — `cloud stop`/`start` and the
+            #     delete-stack teardown.
+            #   * DeleteTags — CFN tag cleanup.
+            #   * DeleteLaunchTemplate (--spot) — CFN removes the market-options
+            #     launch template on stack delete.
+            #   * CancelSpotInstanceRequests (--spot) — `cloud destroy` cancels the
+            #     persistent request BEFORE delete-stack; without it, terminating
+            #     the instance flips the request back to open and EC2 launches a
+            #     replacement instance outside the stack.
+            #
+            # These were three separate statements (Ec2SecurityGroupRulesTagged /
+            # Ec2DestructiveTagged / Ec2LifecycleTagged) until the 6,144-character
+            # managed-policy cap forced the merge. It is EXACTLY equivalent, not a
+            # widening: all three had the identical `"Resource": "*"` and the
+            # identical single condition, so the union of their Action lists
+            # authorizes precisely what they did apart.
+            "Sid": "Ec2ManagedResourceMutateTagged",
             "Effect": "Allow",
             "Action": [
+                "ec2:AuthorizeSecurityGroupEgress",
+                "ec2:AuthorizeSecurityGroupIngress",
                 "ec2:RevokeSecurityGroupIngress",
                 "ec2:DeleteSecurityGroup",
                 "ec2:DeleteTags",
-            ],
-            "Resource": "*",
-            "Condition": {"StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"}},
-        },
-        {
-            "Sid": "Ec2LifecycleTagged",
-            "Effect": "Allow",
-            "Action": [
+                "ec2:DeleteLaunchTemplate",
+                "ec2:CancelSpotInstanceRequests",
                 "ec2:StopInstances",
                 "ec2:StartInstances",
                 "ec2:TerminateInstances",
@@ -554,6 +621,30 @@ def policy_document() -> dict[str, Any]:
                     "iam:AssociatedResourceArn": "arn:aws:ec2:*:*:instance/*",
                 },
             },
+        },
+        {
+            # --spot only, and only ONCE per account: the FIRST Spot request in an
+            # account requires the EC2 Spot service-linked role
+            # (AWSServiceRoleForEC2Spot). The console creates it silently; the
+            # CLI/API does NOT, so without this a first `--spot` launch fails with
+            # an opaque "the service-linked role does not exist" from
+            # RunInstances. Once it exists this grant is inert.
+            #
+            # This is the ONLY unconditioned-looking IAM *write* in the policy, so
+            # it is doubly constrained: the resource is the exact AWS-owned
+            # service-role path for the spot service, AND iam:AWSServiceName is
+            # pinned to spot.amazonaws.com — so it cannot be used to create a
+            # service-linked role for any other AWS service. A service-linked role
+            # can only be assumed by its own service and its permissions are fixed
+            # by AWS, so creating it grants the caller nothing.
+            "Sid": "IamCreateSpotServiceLinkedRole",
+            "Effect": "Allow",
+            "Action": ["iam:CreateServiceLinkedRole"],
+            "Resource": (
+                "arn:aws:iam::*:role/aws-service-role/spot.amazonaws.com/"
+                "AWSServiceRoleForEC2Spot*"
+            ),
+            "Condition": {"StringEquals": {"iam:AWSServiceName": "spot.amazonaws.com"}},
         },
         {
             # The sensitive verbs — StartSession (interactive shell / tunnel)

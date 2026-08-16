@@ -4,6 +4,53 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **`kirocrew cloud launch --spot` provisions the box on Spot pricing.** Opt-in
+  and off by default (on-demand launches are unchanged): typically 60-90% below
+  the on-demand rate, at the cost of AWS being able to reclaim the instance with
+  a 2-minute notice, which kills an in-flight agent task the way a host reboot
+  would. The request is a *persistent* Spot request that **stops** rather than
+  terminates on interruption, so the root volume and everything in `~/.kiro/crew`
+  survive and EC2 restarts the instance itself once capacity returns. Note the
+  asymmetry: **only EC2 can restart an interruption-stopped Spot instance** —
+  `kirocrew cloud start` fails on one with an AWS error and you wait for the
+  auto-resume; your own `cloud stop`/`start` still work normally. That failing
+  start now explains itself instead of printing only the AWS error: on a `--spot`
+  crew, both `kirocrew cloud start` and the dashboard's Start say it is most
+  likely an interruption, that EC2 resumes it on its own, that your data is
+  intact, and that you must **not** destroy the instance to fix it (destroy would
+  delete the volume the interruption preserved). The Spot
+  request is pinned never to expire (an expired request counts as cancelled, and
+  cancelling a *stopped* Spot instance's request auto-terminates it), and
+  `kirocrew cloud destroy` now cancels the request **before** deleting the stack
+  so EC2 can't launch a replacement instance outside it, and terminates any
+  instance the request still points at except the stack's own, which the stack
+  delete terminates (cancelling an active request does *not* stop its instance).
+  If that cancel can't be done — refused, or the lookup itself failed — `destroy`
+  **stops and deletes nothing**: deleting would terminate the box while the
+  request is still open, which is exactly what makes EC2 hand out a replacement
+  instance nothing tracks. It names the request, prints the command that cancels
+  it, and exits non-zero with your stack, instance and disk untouched; re-run
+  `destroy` afterwards. Run `destroy` after a failed `--spot` launch too, to
+  sweep an orphaned request even though the stack is already gone — with no stack
+  left it now shows what it found and **asks before cancelling** (`-y` skips),
+  because cancelling the request of a *stopped* instance terminates that instance
+  and its disk. If the cancel, the terminate, or the lookup fails, `destroy`
+  prints the exact `aws ec2 …` command to finish (or check) the job and **exits
+  non-zero** instead of telling you you're no longer billed — so a script can't
+  mistake a half-swept Spot teardown for a finished one. Destroying from the
+  dashboard reports the same leftovers (same ids, same commands) instead of
+  showing a clean teardown, and refuses the delete in the same case — the crew's
+  row stays where it is instead of going to "Deleting…", with the cancel command
+  one click from your clipboard. A lookup the destroying profile isn't allowed
+  to run is judged by the stack's own
+  Spot setting rather than by that profile's permissions — so an admin-launched
+  `--spot` stack torn down under a restricted profile can no longer come back
+  "you won't be billed for it". A replacement instance is also tagged like the
+  original now, which is what lets the sweep terminate it. First use in an
+  account needs the EC2 Spot service-linked role; the policy printed by
+  `kirocrew cloud iam-policy` now grants creating it (pinned to the Spot
+  service), so re-print and re-apply it if you attached an older copy. (#3184)
+
 - **`test_redaction_timing_scales_linearly` no longer fails CI
   intermittently** (observed "Redaction scaled super-linearly: 3.2x, limit
   3.0x" on an otherwise-healthy matcher). The test took ONE

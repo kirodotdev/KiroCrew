@@ -281,6 +281,31 @@ class TestTemplate:
         assert "AssociatePublicIpAddress: !If [WantPublicIp, true, false]" in text
         assert "AssociatePublicIpAddress: true" not in text  # never hardcoded
 
+    def test_spot_is_opt_in_and_defaults_to_on_demand(self):
+        # The Spot parameter must default to "false" so an unchanged launch is
+        # on-demand, and the market options must hang off the IsSpot condition
+        # (resolving to AWS::NoValue otherwise) rather than always being emitted.
+        text = ec2.load_template()
+        block = re.search(r"  Spot:\n(?:    .+\n)+", text)
+        assert block, "Spot parameter missing"
+        assert 'Default: "false"' in block.group(0)
+        assert 'AllowedValues: ["true", "false"]' in block.group(0)
+        assert 'IsSpot: !Equals [!Ref Spot, "true"]' in text
+        assert "!Ref AWS::NoValue" in text
+
+    def test_spot_market_options_are_not_on_the_instance(self):
+        # AWS::EC2::Instance has NO InstanceMarketOptions property — a template
+        # that puts one there fails validation (cfn-lint E3002). Spot on a
+        # CloudFormation single instance is expressible ONLY via a launch
+        # template the instance references, so a regression that "simplifies" it
+        # back onto the Instance must fail here rather than at deploy time.
+        text = ec2.load_template()
+        market_idx = text.index("InstanceMarketOptions:")
+        assert text.index("SpotLaunchTemplate:") < market_idx
+        assert text.index("  Instance:\n") > market_idx, (
+            "InstanceMarketOptions must live in SpotLaunchTemplate, not on the Instance"
+        )
+
     def test_sub_escape_for_shell_vars(self):
         # ${!tail_ctx} is CFN !Sub's escape syntax: it renders the literal
         # ${tail_ctx} into the bash script. Without the !, Sub would try to
@@ -299,6 +324,151 @@ class TestTemplate:
             if line.lstrip().startswith("#"):
                 continue
             assert line.isascii(), f"non-ASCII in template line {i}: {line!r}"
+
+
+class TestSpotTemplateStructure:
+    """Parse the template as YAML and assert the spot wiring structurally.
+
+    Substring assertions can't tell "under the right resource" from "somewhere in
+    the file", and the whole point of the launch-template design is WHERE each
+    property sits. CloudFormation's short tags (!Ref/!Sub/!If/...) aren't valid
+    YAML, so a multi_constructor maps them to their long form instead of pulling
+    in a new dependency.
+    """
+
+    @staticmethod
+    def _load():
+        import yaml
+        from yaml_helpers import load_with
+
+        class _CfnLoader(yaml.SafeLoader):
+            pass
+
+        def _cfn_tag(loader, tag_suffix, node):
+            name = "Fn::" + tag_suffix if tag_suffix != "Ref" else "Ref"
+            if isinstance(node, yaml.ScalarNode):
+                return {name: loader.construct_scalar(node)}
+            if isinstance(node, yaml.SequenceNode):
+                return {name: loader.construct_sequence(node, deep=True)}
+            return {name: loader.construct_mapping(node, deep=True)}
+
+        _CfnLoader.add_multi_constructor("!", _cfn_tag)
+        return load_with(_CfnLoader, ec2.load_template())
+
+    def test_spot_defaults_to_false(self):
+        # The parameter default is what makes --spot opt-in: a deploy that sends
+        # no Spot override must stay on-demand.
+        doc = self._load()
+        assert doc["Parameters"]["Spot"]["Default"] == "false"
+        assert doc["Parameters"]["Spot"]["AllowedValues"] == ["true", "false"]
+        assert doc["Conditions"]["IsSpot"] == {"Fn::Equals": [{"Ref": "Spot"}, "true"]}
+
+    def test_launch_template_exists_only_under_is_spot(self):
+        lt = self._load()["Resources"]["SpotLaunchTemplate"]
+        assert lt["Type"] == "AWS::EC2::LaunchTemplate"
+        assert lt["Condition"] == "IsSpot"
+
+    def test_spot_options_are_persistent_stop_and_never_expire(self):
+        # The root volume is DeleteOnTermination: true, so AWS's DEFAULTS
+        # (one-time + terminate) would wipe the data home on an interruption.
+        # persistent+stop keeps the EBS volume AND lets EC2 restart the box
+        # itself (only EC2 can resume an interruption-stop). The explicit
+        # far-future ValidUntil defeats the launch-template variant's documented
+        # 7-day default: request expiry counts as cancellation, and cancelling
+        # the request of a STOPPED spot instance auto-terminates it — silent data
+        # loss on any box left stopped for a week.
+        opts = self._load()["Resources"]["SpotLaunchTemplate"]["Properties"][
+            "LaunchTemplateData"
+        ]["InstanceMarketOptions"]
+        assert opts["MarketType"] == "spot"
+        assert opts["SpotOptions"] == {
+            "SpotInstanceType": "persistent",
+            "InstanceInterruptionBehavior": "stop",
+            "ValidUntil": "2099-01-01T00:00:00Z",
+        }
+
+    def test_spot_request_is_tagged_for_discovery(self):
+        # `cloud destroy` finds the persistent request by these tags to cancel it
+        # BEFORE delete-stack; without the cancel, terminating the instance flips
+        # the request open and EC2 launches a replacement outside the stack. The
+        # tags also gate the IAM create/cancel conditions.
+        specs = self._load()["Resources"]["SpotLaunchTemplate"]["Properties"][
+            "LaunchTemplateData"
+        ]["TagSpecifications"]
+        req = next(s for s in specs if s["ResourceType"] == "spot-instances-request")
+        tags = {t["Key"]: t["Value"] for t in req["Tags"]}
+        assert tags[ec2.MANAGED_TAG_KEY] == "true"
+        assert tags[ec2.INSTANCE_TAG_KEY] == {"Ref": "StackTag"}
+
+    def test_launch_template_tags_the_instance_and_volume_it_launches(self):
+        # The load-bearing one for a REPLACEMENT instance: when the persistent
+        # request re-opens, the Spot service relaunches from the request's launch
+        # specification, so CloudFormation's Instance tags never reach that
+        # instance. Only LT-level tags do — and without them the replacement is
+        # invisible to the sweep's tag-filtered describe AND denied by the
+        # launcher policy's aws:ResourceTag-gated ec2:TerminateInstances, i.e.
+        # the exact orphan the sweep exists for would be the one it can't kill.
+        specs = self._load()["Resources"]["SpotLaunchTemplate"]["Properties"][
+            "LaunchTemplateData"
+        ]["TagSpecifications"]
+        # All three, pinned: dropping any one of them silently re-opens a leak.
+        assert [s["ResourceType"] for s in specs] == [
+            "spot-instances-request",
+            "instance",
+            "volume",
+        ]
+        expected = {
+            "Name": {"Fn::Sub": "kirocrew-${StackTag}"},
+            ec2.MANAGED_TAG_KEY: "true",
+            ec2.INSTANCE_TAG_KEY: {"Ref": "StackTag"},
+        }
+        for resource_type in ("instance", "volume"):
+            spec = next(s for s in specs if s["ResourceType"] == resource_type)
+            assert {t["Key"]: t["Value"] for t in spec["Tags"]} == expected
+        # On the PRIMARY launch these duplicate what CloudFormation already puts
+        # on the Instance — same keys AND same values, so the documented
+        # request-wins merge is a no-op rather than a conflict.
+        instance_tags = {
+            t["Key"]: t["Value"] for t in self._load()["Resources"]["Instance"]["Properties"]["Tags"]
+        }
+        assert instance_tags == expected
+
+    def test_launch_template_itself_is_tagged(self):
+        # So the launcher policy can tag-gate ec2:DeleteLaunchTemplate, the same
+        # treatment the security group gets.
+        specs = self._load()["Resources"]["SpotLaunchTemplate"]["Properties"][
+            "TagSpecifications"
+        ]
+        lt = next(s for s in specs if s["ResourceType"] == "launch-template")
+        tags = {t["Key"]: t["Value"] for t in lt["Tags"]}
+        assert tags[ec2.MANAGED_TAG_KEY] == "true"
+        assert tags[ec2.INSTANCE_TAG_KEY] == {"Ref": "StackTag"}
+
+    def test_instance_references_the_launch_template_conditionally(self):
+        # On-demand must resolve to AWS::NoValue so the rendered Instance is
+        # exactly what it was before --spot existed.
+        instance = self._load()["Resources"]["Instance"]["Properties"]
+        assert instance["LaunchTemplate"] == {
+            "Fn::If": [
+                "IsSpot",
+                {
+                    "LaunchTemplateId": {"Ref": "SpotLaunchTemplate"},
+                    "Version": {"Fn::GetAtt": "SpotLaunchTemplate.LatestVersionNumber"},
+                },
+                {"Ref": "AWS::NoValue"},
+            ]
+        }
+        # ...and the market options are NOT on the instance (invalid property).
+        assert "InstanceMarketOptions" not in instance
+
+    def test_launch_template_carries_market_options_only(self):
+        # Everything that defines the box (AMI, networking, IMDSv2, block
+        # devices, UserData, tags) must stay on the Instance so the spot and
+        # on-demand paths can't drift apart.
+        data = self._load()["Resources"]["SpotLaunchTemplate"]["Properties"][
+            "LaunchTemplateData"
+        ]
+        assert set(data) == {"InstanceMarketOptions", "TagSpecifications"}
 
 
 class TestUserDataSize:
@@ -463,6 +633,31 @@ class TestBuildDeployArgv:
         )
         assert not any(a.startswith("AllowSshCidr=") for a in argv)
 
+    def test_spot_included_when_set(self):
+        tier = sizes.get_tier("balanced")
+        argv = ec2.build_deploy_argv(
+            tag="t1",
+            tier=tier,
+            vpc_id="v",
+            subnet_id="s",
+            permissions_boundary_arn=_BOUNDARY_ARN,
+            spot=True,
+        )
+        assert "Spot=true" in argv
+
+    def test_spot_omitted_by_default(self):
+        # On-demand must stay byte-for-byte what it was before --spot existed:
+        # no override at all, so the template's Spot="false" default applies.
+        tier = sizes.get_tier("balanced")
+        argv = ec2.build_deploy_argv(
+            tag="t1",
+            tier=tier,
+            vpc_id="v",
+            subnet_id="s",
+            permissions_boundary_arn=_BOUNDARY_ARN,
+        )
+        assert not any(a.startswith("Spot=") for a in argv)
+
 
 class TestDeployDryRun:
     def test_dry_run_returns_argv_without_aws(self, monkeypatch):
@@ -494,6 +689,25 @@ class TestDeployDryRun:
         assert "SubnetId=subnet-0123456789abcdef0" in r.argv
         assert "VpcId=<auto>" in r.argv  # resolved from the subnet at real-run time
         assert "AssociatePublicIp=<auto>" in r.argv  # egress kind known only at real run
+
+    def test_dry_run_shows_spot(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
+        r = ec2.deploy(
+            tag="t1",
+            tier=sizes.default_tier(),
+            profile="dev",
+            region="us-east-1",
+            spot=True,
+            dry_run=True,
+        )
+        assert "Spot=true" in r.argv
+
+    def test_dry_run_omits_spot_by_default(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
+        r = ec2.deploy(
+            tag="t1", tier=sizes.default_tier(), profile="dev", region="us-east-1", dry_run=True
+        )
+        assert not any(a.startswith("Spot=") for a in r.argv)
 
     def test_dry_run_no_source_when_disabled(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
@@ -1499,7 +1713,34 @@ class TestHumanActionGuard:
         aws.assert_human_action("cloudformation:DeleteStack")  # must not raise
 
 
+# What cancel_spot_requests() returns for an on-demand stack: nothing found,
+# nothing cancelled, nothing failed.
+_EMPTY_SWEEP = {
+    "cancelled": [],
+    "failed": [],
+    "error": "",
+    "error_kind": "",
+    "terminated": [],
+    "terminate_failed": [],
+    "terminate_error": "",
+}
+
+
+def test_empty_spot_sweep_matches_the_documented_outcome_shape():
+    # Every caller reads this dict by key, so the "nothing found" shape and the
+    # real outcome shape must not drift apart.
+    assert ec2._empty_spot_sweep() == _EMPTY_SWEEP
+
+
 class TestDestroy:
+    @pytest.fixture(autouse=True)
+    def _no_spot_requests(self, monkeypatch):
+        # destroy() sweeps for a leftover Spot request on the stack-exists path.
+        # These tests are about the delete-stack path, so stub the sweep to the
+        # on-demand answer (none) and keep them hermetic — without this they
+        # would shell out to a real `aws ec2 describe-spot-instance-requests`.
+        monkeypatch.setattr(ec2, "cancel_spot_requests", lambda *a, **k: _EMPTY_SWEEP)
+
     def test_build_destroy_argv(self):
         assert ec2.build_destroy_argv("t1") == [
             "cloudformation",
@@ -1516,17 +1757,32 @@ class TestDestroy:
 
     def test_already_absent_is_success(self, monkeypatch):
         monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ec2, "cancel_spot_requests", lambda *a, **k: pytest.fail("no stack — no sweep here")
+        )
         r = ec2.destroy("t1", "dev", "us-east-1")
         assert r["destroyed"] is True
         assert r["already_absent"] is True
+        # The no-stack orphan sweep is the CLI's job (it never calls destroy() on
+        # a describe miss); doing it here too would only add a mutation to the
+        # path that has nothing to delete.
+        assert r["spot_sweep"] == _EMPTY_SWEEP
 
     def test_destroy_propagates_query_error(self, monkeypatch):
         # find_stack raising (e.g. AccessDenied) must NOT be reported as success;
         # the error propagates so the CLI never claims a billed stack was removed.
+        # And because the lookup runs FIRST, the abort is total: nothing was
+        # cancelled and nothing terminated, so "could not query stack" is the
+        # whole truth rather than a half-done teardown the user isn't told about.
         def boom(*a, **k):
             raise aws.AWSError("query failed", action="cloudformation:DescribeStacks")
 
         monkeypatch.setattr(ec2, "find_stack", boom)
+        monkeypatch.setattr(
+            ec2,
+            "cancel_spot_requests",
+            lambda *a, **k: pytest.fail("must not mutate before the stack lookup succeeds"),
+        )
         with pytest.raises(aws.AWSError):
             ec2.destroy("t1", "dev", "us-east-1")
 
@@ -1551,3 +1807,793 @@ class TestDestroy:
         r = ec2.destroy("t1", "dev", "us-east-1", wait=False)
         assert r["destroyed"] is True
         assert r["waited"] is False
+
+
+class TestDestroyCancelsSpotRequest:
+    """A --spot stack owns one resource CloudFormation does not: the persistent
+    Spot *request*. Terminating its instance (which delete-stack does) flips the
+    request back to `open` and EC2 launches a REPLACEMENT instance outside the
+    stack — a box nobody tracks and nobody stops billing for. So destroy cancels
+    the request FIRST.
+    """
+
+    @staticmethod
+    def _record(monkeypatch, *, requests):
+        """Stub the aws layer, returning the recorded (json_calls, checked_calls).
+
+        ``requests`` items are either a bare request id (an ``active`` request
+        with no instance recorded) or a full describe record dict.
+        """
+        records = [
+            r if isinstance(r, dict) else {"SpotInstanceRequestId": r, "State": "active"}
+            for r in requests
+        ]
+        json_calls: list = []
+        checked_calls: list = []
+
+        def fake_checked_json(args, *a, action="", **k):
+            json_calls.append((args, action))
+            return {"SpotInstanceRequests": records}
+
+        def fake_checked(args, *a, action="", **k):
+            checked_calls.append((args, action))
+            return ""
+
+        monkeypatch.setattr(aws, "checked_json", fake_checked_json)
+        monkeypatch.setattr(aws, "checked", fake_checked)
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kirocrew-t1"})
+        monkeypatch.setattr(ec2, "wait_for_delete", lambda *a, **k: True)
+        return json_calls, checked_calls
+
+    def test_finds_requests_by_instance_tag_without_a_state_filter(self, monkeypatch):
+        json_calls, _ = self._record(
+            monkeypatch, requests=[{"SpotInstanceRequestId": "sir-1", "State": "disabled"}]
+        )
+        assert ec2.find_spot_requests("t1", "dev", "us-east-1") == [
+            {"id": "sir-1", "instance_id": ""}
+        ]
+        args, action = json_calls[0]
+        assert args[:2] == ["ec2", "describe-spot-instance-requests"]
+        assert f"Name=tag:{ec2.INSTANCE_TAG_KEY},Values=t1" in args
+        assert f"Name=tag:{ec2.MANAGED_TAG_KEY},Values=true" in args
+        # No state filter at all: `disabled` — the state of a persistent request
+        # whose instance is stopped, i.e. exactly the one that most needs
+        # sweeping — is NOT a documented value for the `state` FILTER (only
+        # open|active|closed|cancelled|failed are). Filtering happens client-side
+        # on the returned State instead.
+        assert not any(str(a).startswith("Name=state") for a in args)
+        assert action == "ec2:DescribeSpotInstanceRequests"
+
+    def test_the_lookup_demands_the_managed_tag_too(self, monkeypatch):
+        # The lookup feeds cancel_spot_requests, which CANCELS what it finds and
+        # terminates the instances behind it — so it obeys the same ownership rule
+        # as every other destructive path: kirocrew:managed=true says "we created
+        # it", kirocrew:instance says "for this tag". The instance tag alone is a
+        # plain user tag anyone can set, so a foreign request carrying it (or a
+        # collision on a common tag like `dev`) would be cancelled and its box
+        # terminated by `cloud destroy`. Both filters, ANDed by the API.
+        json_calls, _ = self._record(
+            monkeypatch, requests=[{"SpotInstanceRequestId": "sir-1", "State": "active"}]
+        )
+        ec2.find_spot_requests("t1", "dev", "us-east-1")
+        args, _action = json_calls[0]
+        assert args[args.index("--filters") + 1 :] == [
+            f"Name=tag:{ec2.MANAGED_TAG_KEY},Values=true",
+            f"Name=tag:{ec2.INSTANCE_TAG_KEY},Values=t1",
+        ]
+
+    def test_terminal_states_are_excluded_client_side(self, monkeypatch):
+        # Exclude the terminal set rather than allow-list the live one, so a state
+        # AWS adds later defaults to "sweep it" instead of leaking a billing box.
+        self._record(
+            monkeypatch,
+            requests=[
+                {"SpotInstanceRequestId": "sir-dead", "State": "cancelled"},
+                {"SpotInstanceRequestId": "sir-closed", "State": "closed"},
+                {"SpotInstanceRequestId": "sir-failed", "State": "failed"},
+                {"SpotInstanceRequestId": "sir-live", "State": "disabled", "InstanceId": "i-0dead"},
+                {"SpotInstanceRequestId": "sir-future", "State": "something-new"},
+            ],
+        )
+        assert ec2.find_spot_requests("t1", "dev", "us-east-1") == [
+            {"id": "sir-live", "instance_id": "i-0dead"},
+            {"id": "sir-future", "instance_id": ""},
+        ]
+
+    def test_cancel_runs_before_delete_stack(self, monkeypatch):
+        _, checked_calls = self._record(monkeypatch, requests=["sir-1", "sir-2"])
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["spot_sweep"]["cancelled"] == ["sir-1", "sir-2"]
+        verbs = [args[1] for args, _ in checked_calls]
+        assert verbs == ["cancel-spot-instance-requests", "delete-stack"], (
+            "the request must be cancelled BEFORE the stack delete terminates the "
+            "instance, or EC2 launches a replacement"
+        )
+        cancel_args, cancel_action = checked_calls[0]
+        assert cancel_args[-2:] == ["sir-1", "sir-2"]
+        assert cancel_action == "ec2:CancelSpotInstanceRequests"
+
+    def test_on_demand_stack_costs_one_describe_and_cancels_nothing(self, monkeypatch):
+        json_calls, checked_calls = self._record(monkeypatch, requests=[])
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["spot_sweep"]["cancelled"] == []
+        assert len(json_calls) == 1
+        assert [args[1] for args, _ in checked_calls] == ["delete-stack"]
+
+    def test_denied_describe_warns_and_still_destroys(self, monkeypatch):
+        # A principal without Describe/Cancel on spot requests must never be
+        # BLOCKED from the uninstall path — whether the denial is also harmless
+        # is a separate question, graded from the stack's Spot parameter by
+        # grade_spot_sweep, not decided here.
+        def denied(*a, **k):
+            raise aws.AWSError("AccessDenied", action="ec2:DescribeSpotInstanceRequests")
+
+        _, checked_calls = self._record(monkeypatch, requests=[])
+        monkeypatch.setattr(aws, "checked_json", denied)
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["destroyed"] is True
+        assert res["spot_sweep"]["cancelled"] == []
+        assert [args[1] for args, _ in checked_calls] == ["delete-stack"]
+
+    def test_denied_cancel_is_reported_not_swallowed(self, monkeypatch):
+        # A denied cancel must be DISTINGUISHABLE from "nothing to cancel": the
+        # request is still live and will hand out a replacement instance, so the
+        # CLI must be able to warn instead of printing "you won't be billed".
+        json_calls, checked_calls = self._record(monkeypatch, requests=["sir-1"])
+
+        def denied(args, *a, action="", **k):
+            checked_calls.append((args, action))
+            if args[1] == "cancel-spot-instance-requests":
+                raise aws.AWSError("AccessDenied", action="ec2:CancelSpotInstanceRequests")
+            return ""
+
+        monkeypatch.setattr(aws, "checked", denied)
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["destroyed"] is True
+        assert res["spot_sweep"]["cancelled"] == []
+        assert res["spot_sweep"]["failed"] == ["sir-1"]
+        assert "AccessDenied" in res["spot_sweep"]["error"]
+        assert "delete-stack" in [args[1] for args, _ in checked_calls]
+
+    def test_denied_describe_is_reported_with_no_ids(self, monkeypatch):
+        def denied(*a, **k):
+            raise aws.AWSError("AccessDenied", action="ec2:DescribeSpotInstanceRequests")
+
+        self._record(monkeypatch, requests=[])
+        monkeypatch.setattr(aws, "checked_json", denied)
+        sweep = ec2.cancel_spot_requests("t1", "dev", "us-east-1")
+        assert sweep["cancelled"] == [] and sweep["failed"] == []
+        assert "AccessDenied" in sweep["error"]
+
+    def test_cancel_terminates_the_requests_instances(self, monkeypatch):
+        # Cancelling an ACTIVE request leaves its running instance alive, and a
+        # REPLACEMENT instance is not a stack resource — no delete-stack will ever
+        # terminate it. So the sweep terminates what the requests point at.
+        _, checked_calls = self._record(
+            monkeypatch,
+            requests=[
+                {"SpotInstanceRequestId": "sir-1", "State": "active", "InstanceId": "i-0live"},
+                {"SpotInstanceRequestId": "sir-2", "State": "open"},
+            ],
+        )
+        sweep = ec2.cancel_spot_requests("t1", "dev", "us-east-1")
+        assert sweep["cancelled"] == ["sir-1", "sir-2"]
+        assert sweep["terminated"] == ["i-0live"]
+        verbs = [args[1] for args, _ in checked_calls]
+        assert verbs == ["cancel-spot-instance-requests", "terminate-instances"]
+        term_args, term_action = checked_calls[1]
+        assert term_args[-1] == "i-0live"
+        assert term_action == "ec2:TerminateInstances"
+
+    def test_denied_terminate_is_reported_and_cancel_still_counts(self, monkeypatch):
+        # A replacement instance EC2 launched off a re-opened request may not carry
+        # the managed tags, so the tag-gated TerminateInstances can be denied. The
+        # cancel still succeeded, but the box is still billing — report both.
+        self._record(
+            monkeypatch,
+            requests=[
+                {"SpotInstanceRequestId": "sir-1", "State": "active", "InstanceId": "i-0orphan"}
+            ],
+        )
+
+        def denied(args, *a, action="", **k):
+            if args[1] == "terminate-instances":
+                raise aws.AWSError("AccessDenied", action="ec2:TerminateInstances")
+            return ""
+
+        monkeypatch.setattr(aws, "checked", denied)
+        sweep = ec2.cancel_spot_requests("t1", "dev", "us-east-1")
+        assert sweep["cancelled"] == ["sir-1"]
+        assert sweep["terminated"] == []
+        assert sweep["terminate_failed"] == ["i-0orphan"]
+        assert "AccessDenied" in sweep["terminate_error"]
+
+    def test_stack_lookup_runs_before_the_mutating_sweep(self, monkeypatch):
+        # Ordering guard for the whole teardown: find_stack FIRST, sweep second.
+        # With the sweep first, a throttled/denied cloudformation:DescribeStacks
+        # aborts AFTER the request was cancelled and the instance terminated, and
+        # the CLI reports only "could not query stack" — no hint the box is gone.
+        _, checked_calls = self._record(monkeypatch, requests=["sir-1"])
+        order: list[str] = []
+        monkeypatch.setattr(
+            ec2, "find_stack", lambda *a, **k: order.append("find_stack") or {"StackName": "s"}
+        )
+        real_cancel = ec2.cancel_spot_requests
+        monkeypatch.setattr(
+            ec2,
+            "cancel_spot_requests",
+            lambda *a, **k: order.append("sweep") or real_cancel(*a, **k),
+        )
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert order == ["find_stack", "sweep"]
+        # …and the sweep is still ahead of delete-stack, which is what stops the
+        # terminate from flipping the request open into a replacement instance.
+        assert res["spot_sweep"]["cancelled"] == ["sir-1"]
+        assert [args[1] for args, _ in checked_calls] == [
+            "cancel-spot-instance-requests",
+            "delete-stack",
+        ]
+
+    def test_the_stacks_own_instance_is_left_to_delete_stack(self, monkeypatch):
+        # THE deletion-safety rule of this path: while the stack stands, its
+        # instance is CloudFormation's to terminate. Terminating it here is not
+        # equivalent — if the delete-stack that follows is refused (denied,
+        # throttled) we have destroyed the box AND its DeleteOnTermination root
+        # volume out from under a stack that still exists, so the user loses
+        # ~/.kiro/crew and gets nothing they asked for. The request is still
+        # cancelled first (that is what stops the replacement launch).
+        _, checked_calls = self._record(
+            monkeypatch,
+            requests=[
+                {"SpotInstanceRequestId": "sir-1", "State": "active", "InstanceId": "i-0stack"}
+            ],
+        )
+        monkeypatch.setattr(
+            ec2,
+            "find_stack",
+            lambda *a, **k: {
+                "StackName": "kirocrew-t1",
+                "Outputs": [{"OutputKey": "InstanceId", "OutputValue": "i-0stack"}],
+            },
+        )
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["spot_sweep"]["cancelled"] == ["sir-1"]
+        assert res["spot_sweep"]["terminated"] == []
+        assert [args[1] for args, _ in checked_calls] == [
+            "cancel-spot-instance-requests",
+            "delete-stack",
+        ]
+
+    def test_an_instance_that_is_not_the_stacks_is_still_terminated(self, monkeypatch):
+        # A REPLACEMENT instance from an earlier re-opened request is not a stack
+        # resource — no delete-stack will ever touch it, so the exclusion must be
+        # exactly the stack's own id, not "skip the terminate on the stack path".
+        _, checked_calls = self._record(
+            monkeypatch,
+            requests=[
+                {"SpotInstanceRequestId": "sir-1", "State": "active", "InstanceId": "i-0stack"},
+                {"SpotInstanceRequestId": "sir-2", "State": "active", "InstanceId": "i-0zombie"},
+            ],
+        )
+        monkeypatch.setattr(
+            ec2,
+            "find_stack",
+            lambda *a, **k: {
+                "StackName": "kirocrew-t1",
+                "Outputs": [{"OutputKey": "InstanceId", "OutputValue": "i-0stack"}],
+            },
+        )
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["spot_sweep"]["terminated"] == ["i-0zombie"]
+        term_args = next(args for args, _ in checked_calls if args[1] == "terminate-instances")
+        assert "i-0stack" not in term_args
+
+    def test_the_orphan_path_terminates_everything_it_finds(self, monkeypatch):
+        # No stack means no delete-stack is coming for any of them, so the caller
+        # that sweeps orphans (the CLI / the dashboard route on `already_absent`)
+        # passes no exclusions and every instance the requests point at is
+        # terminated.
+        self._record(
+            monkeypatch,
+            requests=[
+                {"SpotInstanceRequestId": "sir-1", "State": "active", "InstanceId": "i-0orphan"}
+            ],
+        )
+        assert ec2.cancel_spot_requests("t1", "dev", "us-east-1")["terminated"] == ["i-0orphan"]
+
+    def test_no_stack_does_not_sweep_here(self, monkeypatch):
+        # A --spot launch that CloudFormation rolled back can leave the request
+        # behind with no stack at all — but that orphan is swept by the CLI on its
+        # own `describe` miss (see test_cloud_cli's
+        # test_destroy_sweeps_spot_request_when_no_stack_exists), which never
+        # reaches destroy(). Sweeping here too would just re-add the mutation the
+        # lookup-first ordering exists to avoid.
+        _, checked_calls = self._record(monkeypatch, requests=["sir-orphan"])
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: None)
+        res = ec2.destroy("t1", "dev", "us-east-1")
+        assert res["already_absent"] is True
+        assert res["spot_sweep"] == _EMPTY_SWEEP
+        assert checked_calls == []
+
+    @pytest.mark.parametrize(
+        "exc,expected",
+        [
+            (
+                aws.AWSError(
+                    "ec2:DescribeSpotInstanceRequests failed: User: arn:aws:iam::1:user/u is "
+                    "not authorized to perform: ec2:DescribeSpotInstanceRequests",
+                    action="ec2:DescribeSpotInstanceRequests",
+                    missing_action="ec2:DescribeSpotInstanceRequests",
+                    stderr="is not authorized to perform: ec2:DescribeSpotInstanceRequests",
+                ),
+                ec2.SWEEP_ERROR_ACCESS_DENIED,
+            ),
+            (
+                aws.AWSError(
+                    "ec2:DescribeSpotInstanceRequests failed: UnauthorizedOperation",
+                    action="ec2:DescribeSpotInstanceRequests",
+                    stderr="UnauthorizedOperation",
+                ),
+                ec2.SWEEP_ERROR_ACCESS_DENIED,
+            ),
+            (
+                aws.AWSError(
+                    "ec2:DescribeSpotInstanceRequests failed: Throttling: Rate exceeded",
+                    action="ec2:DescribeSpotInstanceRequests",
+                    stderr="Throttling: Rate exceeded",
+                ),
+                ec2.SWEEP_ERROR_FAILED,
+            ),
+            (
+                aws.AWSError(
+                    "ec2:DescribeSpotInstanceRequests: could not parse aws JSON output: x",
+                    action="ec2:DescribeSpotInstanceRequests",
+                ),
+                ec2.SWEEP_ERROR_FAILED,
+            ),
+        ],
+    )
+    def test_describe_failure_records_its_cause(self, monkeypatch, exc, expected):
+        # The cause is reported rather than flattened into a bare error string
+        # because the caller grades on it: a denial can be shrugged off when the
+        # STACK says Spot=false (there was never a request), while throttling /
+        # no network / unparseable JSON is a failure on any stack. Neither
+        # verdict is reachable if both arrive as "the lookup failed".
+        self._record(monkeypatch, requests=[])
+
+        def boom(*a, **k):
+            raise exc
+
+        monkeypatch.setattr(aws, "checked_json", boom)
+        sweep = ec2.cancel_spot_requests("t1", "dev", "us-east-1")
+        assert sweep["error_kind"] == expected
+        assert sweep["error"] == str(exc)
+        assert sweep["cancelled"] == [] and sweep["failed"] == []
+
+    def test_agent_session_refusal_is_caught_not_raised(self, monkeypatch):
+        # The chokepoint denies all three verbs (none is in _AGENT_READ_ALLOWLIST).
+        # The CLI's no-stack sweep is the one mutating entry point with no
+        # assert_human_action in front of it, so letting CloudActionDenied escape
+        # turned an agent-session `cloud destroy` on a missing stack from a clean
+        # "nothing to remove" into a hard failure. "Never raises" means never.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-123")
+        sweep = ec2.cancel_spot_requests("t1", "dev", "us-east-1")
+        assert sweep["error_kind"] == ec2.SWEEP_ERROR_AGENT_SESSION
+        assert "agent session" in sweep["error"]
+        assert sweep["cancelled"] == [] and sweep["failed"] == []
+        assert sweep["terminate_failed"] == []
+
+    def test_dry_run_still_makes_no_aws_call(self, monkeypatch):
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: pytest.fail("dry run must not hit AWS"))
+        monkeypatch.setattr(
+            aws, "checked_json", lambda *a, **k: pytest.fail("dry run must not hit AWS")
+        )
+        assert ec2.destroy("t1", "dev", "us-east-1", dry_run=True)["dry_run"] is True
+
+
+class TestDestroyRefusesToDeleteAfterABadSweep:
+    """The delete is what CREATES the zombie: terminating the instance while its
+    persistent request is still open makes EC2 launch a replacement outside the
+    stack — untracked, and billing until someone finds it. So a --spot stack
+    whose sweep could not prove the request is gone is NOT deleted.
+    """
+
+    _SPOT_STACK = {
+        "StackName": "kirocrew-t1",
+        "Parameters": [{"ParameterKey": "Spot", "ParameterValue": "true"}],
+    }
+
+    @staticmethod
+    def _run(monkeypatch, *, stack, sweep):
+        """destroy() with a canned stack + sweep; returns (result, delete_calls)."""
+        deletes: list = []
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: dict(stack))
+        monkeypatch.setattr(ec2, "cancel_spot_requests", lambda *a, **k: dict(sweep))
+        monkeypatch.setattr(
+            aws, "checked", lambda args, *a, **k: deletes.append(args[1]) or ""
+        )
+        monkeypatch.setattr(ec2, "wait_for_delete", lambda *a, **k: True)
+        return ec2.destroy("t1", "dev", "us-east-1"), deletes
+
+    @pytest.mark.parametrize(
+        "sweep_kw",
+        [
+            # The cancel was refused: the request is provably still live.
+            {"failed": ["sir-1"], "error": "AccessDenied"},
+            # The lookup never answered, so a live request cannot be ruled out.
+            # Denied counts too, deliberately: on a Spot=true stack the denial
+            # hides exactly the request that zombies (grade_spot_sweep already
+            # calls it a failure for the same reason).
+            {"error": "AccessDenied", "error_kind": ec2.SWEEP_ERROR_ACCESS_DENIED},
+            {"error": "refused from an agent session",
+             "error_kind": ec2.SWEEP_ERROR_AGENT_SESSION},
+            {"error": "Throttling: Rate exceeded", "error_kind": ec2.SWEEP_ERROR_FAILED},
+        ],
+    )
+    def test_a_spot_stack_is_left_standing(self, monkeypatch, sweep_kw):
+        sweep = dict(_EMPTY_SWEEP, **sweep_kw)
+        res, deletes = self._run(monkeypatch, stack=self._SPOT_STACK, sweep=sweep)
+        assert deletes == [], "delete-stack must not run while the request may be open"
+        assert res["destroyed"] is False
+        # `aborted` is the whole branch every caller reads: a failed sweep is the
+        # only thing that stops the delete, so there is no second reason code to
+        # tell apart.
+        assert res["aborted"] is True
+        # The outcome IS the message: the caller renders its ids and remedies,
+        # which is why this is a returned result and not a raised exception.
+        assert res["spot_sweep"] == sweep
+        assert res["stack_is_spot"] is True
+
+    def test_an_on_demand_stack_deletes_exactly_as_before(self, monkeypatch):
+        # Nothing can relaunch without a request, so a failed sweep on a
+        # Spot=false stack must not start refusing teardowns — that would break
+        # the uninstall path for every user still on the old launcher policy.
+        res, deletes = self._run(
+            monkeypatch,
+            stack={"StackName": "kirocrew-t1"},
+            sweep=dict(_EMPTY_SWEEP, error="AccessDenied", error_kind=ec2.SWEEP_ERROR_FAILED),
+        )
+        assert deletes == ["delete-stack"]
+        assert res["destroyed"] is True
+        assert "aborted" not in res
+
+    def test_a_failed_terminate_still_deletes(self, monkeypatch):
+        # The cancel SUCCEEDED, so the request is gone and cannot relaunch
+        # anything; the instance we could not kill is leftover work to report,
+        # not a reason to leave the stack (and its bill) standing.
+        res, deletes = self._run(
+            monkeypatch,
+            stack=self._SPOT_STACK,
+            sweep=dict(
+                _EMPTY_SWEEP,
+                cancelled=["sir-1"],
+                terminate_failed=["i-0orphan"],
+                terminate_error="AccessDenied",
+            ),
+        )
+        assert deletes == ["delete-stack"]
+        assert res["destroyed"] is True
+        assert "aborted" not in res
+
+    def test_a_clean_sweep_on_a_spot_stack_deletes(self, monkeypatch):
+        res, deletes = self._run(
+            monkeypatch,
+            stack=self._SPOT_STACK,
+            sweep=dict(_EMPTY_SWEEP, cancelled=["sir-1"]),
+        )
+        assert deletes == ["delete-stack"]
+        assert res["destroyed"] is True
+
+    @pytest.mark.parametrize(
+        "sweep_kw,risk",
+        [
+            ({}, False),
+            ({"cancelled": ["sir-1"], "terminated": ["i-0abc"]}, False),
+            ({"failed": ["sir-1"], "error": "AccessDenied"}, True),
+            ({"error": "boom", "error_kind": ec2.SWEEP_ERROR_FAILED}, True),
+            # A cancel that worked leaves nothing that can relaunch, whatever the
+            # terminate did.
+            ({"cancelled": ["sir-1"], "terminate_failed": ["i-0x"],
+              "terminate_error": "AccessDenied"}, False),
+        ],
+    )
+    def test_live_risk_is_exactly_an_unproven_cancel(self, sweep_kw, risk):
+        assert ec2.spot_sweep_leaves_live_risk(dict(_EMPTY_SWEEP, **sweep_kw)) is risk
+
+
+class TestProbeSpotRequests:
+    """The read-only half of the sweep. Cancelling a `disabled` request makes EC2
+    terminate its STOPPED instance, so a surface that has to ask the user first
+    (the CLI's no-stack path) needs to look without touching anything.
+    """
+
+    def test_it_returns_what_it_found_and_a_clean_outcome(self, monkeypatch):
+        monkeypatch.setattr(
+            aws,
+            "checked_json",
+            lambda *a, **k: {
+                "SpotInstanceRequests": [
+                    {"SpotInstanceRequestId": "sir-1", "State": "disabled",
+                     "InstanceId": "i-0stopped"}
+                ]
+            },
+        )
+        monkeypatch.setattr(
+            aws, "checked", lambda *a, **k: pytest.fail("the probe must not mutate anything")
+        )
+        found, outcome = ec2.probe_spot_requests("t1", "dev", "us-east-1")
+        assert found == [{"id": "sir-1", "instance_id": "i-0stopped"}]
+        assert outcome == _EMPTY_SWEEP
+
+    @pytest.mark.parametrize(
+        "exc,kind",
+        [
+            (
+                aws.AWSError(
+                    "AccessDenied",
+                    action="ec2:DescribeSpotInstanceRequests",
+                    stderr="UnauthorizedOperation",
+                ),
+                ec2.SWEEP_ERROR_ACCESS_DENIED,
+            ),
+            (
+                aws.AWSError("Throttling", action="ec2:DescribeSpotInstanceRequests"),
+                ec2.SWEEP_ERROR_FAILED,
+            ),
+        ],
+    )
+    def test_a_failed_lookup_comes_back_as_a_gradable_outcome(self, monkeypatch, exc, kind):
+        # Never raises, and grades identically to the cancelling path — the CLI
+        # hands this straight to grade_spot_sweep, so the two must not word the
+        # same failure differently.
+        def boom(*a, **k):
+            raise exc
+
+        monkeypatch.setattr(aws, "checked_json", boom)
+        found, outcome = ec2.probe_spot_requests("t1", "dev", "us-east-1")
+        assert found == []
+        assert outcome["error"] == str(exc)
+        assert outcome["error_kind"] == kind
+
+    def test_the_agent_guard_is_caught_here_too(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "sess-123")
+        found, outcome = ec2.probe_spot_requests("t1", "dev", "us-east-1")
+        assert found == []
+        assert outcome["error_kind"] == ec2.SWEEP_ERROR_AGENT_SESSION
+
+
+class TestStackUsesSpot:
+    """Whether a teardown can leave a Spot request behind is a property of the
+    STACK, not of the principal running destroy — an admin can launch --spot and
+    a restricted profile can destroy it, so "this profile couldn't have created
+    a Spot stack" is not a safe reason to reassure anyone.
+    """
+
+    @pytest.mark.parametrize(
+        "params,expected",
+        [
+            ([{"ParameterKey": "Spot", "ParameterValue": "true"}], True),
+            ([{"ParameterKey": "Spot", "ParameterValue": "True"}], True),
+            ([{"ParameterKey": "Spot", "ParameterValue": "false"}], False),
+            # No Spot parameter at all: a stack from before the flag existed.
+            ([{"ParameterKey": "InstanceType", "ParameterValue": "t4g.large"}], False),
+            ([], False),
+        ],
+    )
+    def test_reads_the_spot_template_parameter(self, params, expected):
+        assert ec2.stack_uses_spot({"Parameters": params}) is expected
+
+    @pytest.mark.parametrize("stack", [None, {}, {"Parameters": None}, {"Parameters": "junk"}])
+    def test_unreadable_parameters_read_as_on_demand(self, stack):
+        # Only ever used to make the caller LOUDER, so the safe default when the
+        # payload is missing or malformed is the pre---spot behaviour (quiet)
+        # rather than a false Spot alarm on every on-demand destroy.
+        assert ec2.stack_uses_spot(stack) is False
+
+    def test_destroy_reports_the_stacks_spot_parameter_without_an_extra_call(self, monkeypatch):
+        # It comes off the describe-stacks payload find_stack already fetched —
+        # if this ever needs its own AWS call, the free-signal argument is gone.
+        monkeypatch.setattr(
+            ec2,
+            "find_stack",
+            lambda *a, **k: {
+                "StackName": "kirocrew-t1",
+                "Parameters": [{"ParameterKey": "Spot", "ParameterValue": "true"}],
+            },
+        )
+        monkeypatch.setattr(ec2, "cancel_spot_requests", lambda *a, **k: dict(_EMPTY_SWEEP))
+        monkeypatch.setattr(aws, "checked", lambda *a, **k: "")
+        monkeypatch.setattr(ec2, "wait_for_delete", lambda *a, **k: True)
+        monkeypatch.setattr(
+            aws, "checked_json", lambda *a, **k: pytest.fail("no extra describe for the parameter")
+        )
+        assert ec2.destroy("t1", "dev", "us-east-1")["stack_is_spot"] is True
+        assert ec2.destroy("t1", "dev", "us-east-1", wait=False)["stack_is_spot"] is True
+
+    def test_destroy_reports_on_demand_for_a_stack_without_the_parameter(self, monkeypatch):
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"StackName": "kirocrew-t1"})
+        monkeypatch.setattr(ec2, "cancel_spot_requests", lambda *a, **k: dict(_EMPTY_SWEEP))
+        monkeypatch.setattr(aws, "checked", lambda *a, **k: "")
+        monkeypatch.setattr(ec2, "wait_for_delete", lambda *a, **k: True)
+        assert ec2.destroy("t1", "dev", "us-east-1")["stack_is_spot"] is False
+
+
+class TestSpotStartFailureHint:
+    """A failed `cloud start` on a --spot crew is almost always an EC2
+    interruption stop — the one Spot event every user eventually meets. Raw, the
+    AWS error reads like a broken box, and the obvious "fix" (delete it, launch a
+    new one) destroys the DeleteOnTermination root volume the interruption
+    deliberately preserved. So the failure path says so.
+    """
+
+    _SPOT_STACK = {"Parameters": [{"ParameterKey": "Spot", "ParameterValue": "true"}]}
+
+    def test_a_spot_stack_gets_the_interruption_hint(self, monkeypatch):
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: dict(self._SPOT_STACK))
+        hint = ec2.spot_start_failure_hint("t1", "dev", "us-east-1")
+        blob = " ".join(hint)
+        assert "INTERRUPTION" in blob
+        assert "Only EC2 can restart" in blob
+        # The two claims that stop a user from destroying the box to fix it.
+        assert "data is intact" in blob
+        assert "Do NOT destroy" in blob
+
+    def test_an_on_demand_stack_gets_nothing(self, monkeypatch):
+        # A start that fails on an on-demand box has nothing to do with Spot;
+        # inventing an interruption story would send the user off to wait for an
+        # auto-resume that is never coming.
+        monkeypatch.setattr(ec2, "find_stack", lambda *a, **k: {"Parameters": []})
+        assert ec2.spot_start_failure_hint("t1", "dev", "us-east-1") == []
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            aws.AWSError("throttled", action="cloudformation:DescribeStacks"),
+            RuntimeError("aws CLI vanished"),
+        ],
+    )
+    def test_a_failed_lookup_stays_silent_instead_of_raising(self, monkeypatch, exc):
+        # This runs while a REAL error is already being reported. A second
+        # failure here must not replace the message the user needs, and must
+        # certainly not turn a reported failure into a traceback.
+        def boom(*a, **k):
+            raise exc
+
+        monkeypatch.setattr(ec2, "find_stack", boom)
+        assert ec2.spot_start_failure_hint("t1", "dev", "us-east-1") == []
+
+    def test_a_successful_start_never_looks_the_parameter_up(self, monkeypatch):
+        # The happy path must cost exactly what it always did: the hint's own
+        # describe-stacks belongs to the failure path alone.
+        monkeypatch.setattr(ec2, "describe", lambda *a, **k: {"exists": True, "instance_id": "i-1"})
+        monkeypatch.setattr(aws, "checked", lambda *a, **k: "")
+        monkeypatch.setattr(
+            ec2, "find_stack", lambda *a, **k: pytest.fail("no stack lookup on a good start")
+        )
+        assert ec2.start("t1", "dev", "us-east-1")["action"] == "start"
+
+
+class TestGradeSpotSweep:
+    """The single grader both surfaces use. `kirocrew cloud destroy` renders it
+    to the terminal and exits non-zero on ``failed``; the dashboard destroy route
+    returns the same lines as response warnings. They must never disagree about
+    whether a teardown left something billing.
+    """
+
+    @staticmethod
+    def _sweep(**kw):
+        out = dict(_EMPTY_SWEEP)
+        out.update(kw)
+        return out
+
+    def test_a_clean_sweep_says_nothing(self):
+        grade = ec2.grade_spot_sweep(
+            self._sweep(cancelled=["sir-1"], terminated=["i-0abc"]), "t1", "dev", "us-east-1"
+        )
+        assert grade == {"failed": False, "problems": [], "notes": []}
+
+    def test_a_failed_cancel_carries_the_ids_and_the_runnable_remedy(self):
+        grade = ec2.grade_spot_sweep(
+            self._sweep(failed=["sir-1"], error="AccessDenied"), "t1", "dev", "us-east-1"
+        )
+        assert grade["failed"] is True
+        (problem,) = grade["problems"]
+        assert "sir-1" in problem["summary"]
+        # The raw AWS error first, the runnable remedy LAST — the order every
+        # surface depends on: the terminal ends on the actionable line, and the
+        # dashboard peels the trailing command off the flattened line to render
+        # it as copyable code (a detail after the command would be dragged in).
+        assert "AccessDenied" in problem["details"][0]
+        assert problem["details"][-1].endswith(
+            "aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1 "
+            "--profile dev --region us-east-1"
+        )
+
+    def test_a_failed_terminate_carries_the_ids_and_the_runnable_remedy(self):
+        grade = ec2.grade_spot_sweep(
+            self._sweep(
+                cancelled=["sir-1"], terminate_failed=["i-0orphan"], terminate_error="AccessDenied"
+            ),
+            "t1",
+            "dev",
+            "us-east-1",
+        )
+        assert grade["failed"] is True
+        (problem,) = grade["problems"]
+        assert "i-0orphan" in problem["summary"]
+        assert "AccessDenied" in problem["details"][0]
+        assert problem["details"][-1].endswith(
+            "aws ec2 terminate-instances --instance-ids i-0orphan --profile dev "
+            "--region us-east-1"
+        )
+
+    @pytest.mark.parametrize(
+        "kind,stack_is_spot,failed",
+        [
+            # THE fix: the destroying principal need not be the launching one, so
+            # a denied describe on a stack we KNOW is Spot=true hides a possibly
+            # live persistent request — a failure, not a shrug.
+            (ec2.SWEEP_ERROR_ACCESS_DENIED, True, True),
+            (ec2.SWEEP_ERROR_ACCESS_DENIED, False, False),
+            (ec2.SWEEP_ERROR_ACCESS_DENIED, None, False),
+            # Same reasoning for the agent-guard refusal (unreachable on the
+            # stack path today, since destroy() asserts a human action first —
+            # the grading must not silently depend on that).
+            (ec2.SWEEP_ERROR_AGENT_SESSION, True, True),
+            (ec2.SWEEP_ERROR_AGENT_SESSION, False, False),
+            (ec2.SWEEP_ERROR_AGENT_SESSION, None, False),
+            # Throttling/network/JSON stays loud even for Spot=false: a stack
+            # re-deployed without --spot can still carry a request left by its
+            # Spot generation.
+            (ec2.SWEEP_ERROR_FAILED, True, True),
+            (ec2.SWEEP_ERROR_FAILED, False, True),
+            (ec2.SWEEP_ERROR_FAILED, None, True),
+        ],
+    )
+    def test_an_unanswered_lookup_is_graded_by_the_stack_not_the_principal(
+        self, kind, stack_is_spot, failed
+    ):
+        grade = ec2.grade_spot_sweep(
+            self._sweep(error="lookup boom", error_kind=kind),
+            "t1",
+            "dev",
+            "us-east-1",
+            stack_is_spot=stack_is_spot,
+        )
+        assert grade["failed"] is failed
+        if failed:
+            (problem,) = grade["problems"]
+            assert problem["summary"].startswith(
+                "Could NOT check for a leftover persistent Spot request"
+            )
+            assert "lookup boom" in problem["details"][0]
+            assert (
+                "aws ec2 describe-spot-instance-requests --filters "
+                f"Name=tag:{ec2.MANAGED_TAG_KEY},Values=true "
+                f"Name=tag:{ec2.INSTANCE_TAG_KEY},Values=t1 --profile dev --region us-east-1"
+                in problem["details"][1]
+            )
+            assert grade["notes"] == []
+        else:
+            assert grade["problems"] == []
+            assert len(grade["notes"]) == 1
+
+    def test_the_denied_note_is_justified_by_the_stack_when_there_is_one(self):
+        (note,) = ec2.grade_spot_sweep(
+            self._sweep(error="AccessDenied", error_kind=ec2.SWEEP_ERROR_ACCESS_DENIED),
+            "t1",
+            stack_is_spot=False,
+        )["notes"]
+        assert "no permission" in note
+        # The reassurance now comes from the stack, not from an inference about
+        # which policy the caller is on.
+        assert "on-demand (Spot=false)" in note
+
+    def test_the_denied_note_admits_it_cannot_rule_a_request_out_with_no_stack(self):
+        (note,) = ec2.grade_spot_sweep(
+            self._sweep(error="AccessDenied", error_kind=ec2.SWEEP_ERROR_ACCESS_DENIED), "t1"
+        )["notes"]
+        # No stack means no Spot parameter to appeal to, so this may not claim
+        # there was never a request — only that it could not look.
+        assert "no permission" in note
+        assert "nothing to prove it either way" in note

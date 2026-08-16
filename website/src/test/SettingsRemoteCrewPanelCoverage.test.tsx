@@ -405,6 +405,34 @@ describe('RemoteCrewPanel — instance actions', () => {
     expect(screen.queryByRole('button', { name: /Deleting/ })).not.toBeInTheDocument()
   })
 
+  it('tells a screen reader the sweep remedy was copied, not just the sighted user', async () => {
+    // The remedy's copy button is icon-only: the tick swapping in is the whole
+    // confirmation, and a label frozen at "Copy command" says nothing happened
+    // to anyone who cannot see it. This is the command that stops a persistent
+    // Spot request billing, so "did my click work?" is not a small question.
+    const remedy = 'aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1'
+    vi.mocked(api.listInstances).mockResolvedValue(list([CLOUD_INSTANCE]))
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
+    vi.mocked(api.cloudDestroy).mockResolvedValue({
+      cleanup: 'pending',
+      warnings: [`Could NOT cancel this tag's persistent Spot request(s): sir-1 ${remedy}`],
+    })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/ }))
+    await u.click(await screen.findByRole('button', { name: /^Confirm deleting/ }))
+
+    await u.click(await screen.findByRole('button', { name: 'Copy command' }))
+    expect(copyToClipboard).toHaveBeenCalledWith(remedy)
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+
+    // …and it reverts with the tick, so the affordance reads as "copy" again.
+    await act(async () => { vi.advanceTimersByTime(1_600) })
+    expect(await screen.findByRole('button', { name: 'Copy command' })).toBeInTheDocument()
+  })
+
   it('reports a cancel that the gateway refuses', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(list([]))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [RUNNING_JOB] })

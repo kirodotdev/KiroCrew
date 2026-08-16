@@ -403,6 +403,61 @@ def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str
         logger.warning("Could not remove the uploaded source for %s: %s", tag, e)
 
 
+def _spot_sweep_report(
+    result: dict, tag: str, profile: str, region: str
+) -> tuple[list[str], list[str]]:
+    """(warnings, notices) for whatever destroy's Spot sweep could NOT clean up.
+
+    Empty for every on-demand stack and every clean sweep, so the destroy
+    response is byte-identical to before unless something is genuinely left
+    live. When it isn't, the dashboard has to say so: a persistent Spot request
+    that survives the delete keeps handing out REPLACEMENT instances outside the
+    stack, and an instance we could not terminate keeps billing — reporting that
+    teardown as clean is the exact dishonesty ``kirocrew cloud destroy`` exits
+    non-zero to prevent (``cli_cloud._report_spot_sweep``). Same grader, same
+    wording, same runnable ``aws`` remedies, so the two surfaces cannot drift.
+
+    Each entry is one self-contained line (summary + ids + the command that
+    finishes the job), matching the ``warnings`` list other dashboard routes
+    return alongside a 200: when the delete WAS accepted this is not an error
+    status, it is work the user still has to do. The one case that is an error
+    status is the refused destroy (``aborted``), where the same lines ride along
+    with a 409 — the remedies are identical, only the verdict about the stack
+    differs.
+
+    ``notices`` carries the grader's informational lines, but ONLY for the
+    no-stack orphan case: with no stack whose ``Spot`` parameter could rule a
+    leftover request in or out, an unanswerable lookup deserves the CLI's
+    honest "nothing proves it either way" line rather than silence. On a stack
+    that IS present the notes are pure reassurance (e.g. "this stack is
+    on-demand, so it never created one") — surfacing those would put a banner
+    on every old-policy on-demand teardown, the false alarm the quiet path
+    exists to avoid, so they stay out of the response.
+    """
+    grade = ec2.grade_spot_sweep(
+        result.get("spot_sweep") or {},
+        tag,
+        profile,
+        region,
+        # The stack's own Spot parameter, read from the describe-stacks payload
+        # destroy already had. It — never the dashboard's own credentials —
+        # decides whether a lookup we couldn't run may be shrugged off. When the
+        # stack was ALREADY GONE there is no such parameter (destroy reports
+        # False there only because there was nothing to ask), so the orphan
+        # sweep grades with None exactly like the CLI's no-stack path: an
+        # unanswerable lookup then gets the honest "nothing proves it either
+        # way" note instead of the on-demand stack's "there was never a request".
+        stack_is_spot=None if result.get("already_absent") else bool(result.get("stack_is_spot")),
+    )
+    notices = list(grade["notes"]) if result.get("already_absent") else []
+    if not grade["failed"]:
+        return [], notices
+    warnings = [
+        " ".join([problem["summary"], *problem["details"]]) for problem in grade["problems"]
+    ]
+    return warnings, notices
+
+
 def _start_teardown_watch(
     tag: str, profile: str, region: str, instance_id: str, *, sync: bool = False
 ) -> None:
@@ -469,6 +524,36 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)
+        if out.get("already_absent"):
+            # "No stack" is NOT "nothing to clean up": a rolled-back --spot launch
+            # leaves its persistent Spot request behind with no stack at all.
+            # `ec2.destroy` deliberately returns an EMPTY sweep on that path (it
+            # looks the stack up first so a failed lookup cannot abort mid-sweep),
+            # leaving the sweep to the caller — which the CLI does in
+            # `cli_cloud._cloud_destroy`. Without the same sweep here the panel
+            # would report a clean teardown for the very case the docs send people
+            # to destroy for, while a live request keeps handing out replacement
+            # instances. Never raises, so it cannot break the delete path.
+            #
+            # No confirmation is asked for HERE the way the CLI's equivalent
+            # sweep now does (`cli_cloud._cloud_destroy`): this route is only
+            # reachable through the panel's two-step Delete → "Confirm deleting"
+            # UI, so the user has already agreed to lose this crew before the
+            # request is sent. The CLI has no such gate — `kirocrew cloud
+            # destroy` with no -y would otherwise cancel (and thereby terminate a
+            # STOPPED instance) before asking anything.
+            out["spot_sweep"] = ec2.cancel_spot_requests(tag, profile, region)
+        if out.get("aborted"):
+            # `ec2.destroy` refused to delete: the sweep could not prove this
+            # --spot stack's persistent request is gone, and deleting anyway is
+            # what turns it into a replacement instance outside the stack. So
+            # NOTHING was deleted — no teardown watch (there is no deletion to
+            # confirm), no `cleanup: "pending"` (the registration and source
+            # object still describe a live crew), and the route below must not
+            # answer 2xx.
+            out["warnings"], _ = _spot_sweep_report(out, tag, profile, region)
+            logger.warning("Destroy of %s refused: %s", tag, "; ".join(out["warnings"]))
+            return out
         # Local teardown (registry entry + uploaded source) mirrors the CLI's
         # destroy path, but it must NOT happen here: the delete is only *accepted*
         # at this point, and a stack that later reaches DELETE_FAILED would leave
@@ -477,6 +562,17 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # the same confirmation on a background thread and cleans up then.
         _start_teardown_watch(tag, profile, region, iid, sync=sync_teardown)
         out["cleanup"] = "pending"
+        # The Spot sweep already ran INSIDE ec2.destroy (it must precede
+        # delete-stack) — or, for an already-absent stack, just above — so its
+        # outcome is final here even though the delete is only accepted.
+        # Ignoring it would let the panel report a clean teardown while a
+        # persistent request keeps launching replacement instances.
+        warnings, notices = _spot_sweep_report(out, tag, profile, region)
+        if warnings:
+            out["warnings"] = warnings
+            logger.warning("Spot sweep for %s left work behind: %s", tag, "; ".join(warnings))
+        if notices:
+            out["notices"] = notices
         return out
 
     try:
@@ -493,9 +589,82 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         _audit(op, "denied", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "cloud_action_denied"}, status=403)
     except AWSError as e:
-        _audit(op, "failure", request_id=tag, error=str(e))
-        return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
-    _audit(op, "success", request_id=tag)
+        message = str(e)
+        if op == "start":
+            # Parity with `kirocrew cloud start` (cli_cloud._cloud_start): on a
+            # --spot crew a failed start is almost always an EC2 interruption
+            # stop, and this panel's next affordance after a failed Start is
+            # Delete — which takes the root volume the interruption preserved.
+            # The hint rides IN the error string because that is the field the
+            # dashboard client unwraps and renders (api/client.friendlyErrText);
+            # a sibling key would be silently dropped by every existing caller.
+            # The delimiter is STRUCTURAL, not prose: error, one newline, hint.
+            # The panel splits on that newline (`splitSpotStartHint`) so the
+            # sentences render as their own lines rather than as a paragraph
+            # tail beside the Delete button — and no wording on either side is
+            # load-bearing, so the hint stays translatable/rewordable.
+            # The AWS message's own whitespace is collapsed first so the
+            # delimiter is the ONLY newline in the string: aws stderr can be
+            # multi-line, and a second newline would move part of the failure
+            # into the note block (and make "has a newline" stop meaning "has a
+            # hint"). Collapsing costs nothing here — the banner soft-wraps.
+            # Off-loop like every other AWS call here, and never raising, so it
+            # cannot turn a reportable failure into a 500.
+            hint = await _in_executor(ec2.spot_start_failure_hint, tag, profile, region)
+            if hint:
+                message = "\n".join([" ".join(message.split()), " ".join(hint)])
+        _audit(op, "failure", request_id=tag, error=message)
+        return web.json_response({"error": message, "code": "aws_call_failed"}, status=502)
+    if isinstance(result, dict) and result.get("aborted"):
+        # The delete was REFUSED, not accepted: a Spot request this teardown
+        # could not cancel would have been relaunched as a replacement instance
+        # the moment delete-stack terminated the box. A 200 here would put the
+        # row into "Deleting…" for a stack that is still standing — the panel
+        # would go quiet about the one outcome that keeps costing money, and the
+        # crew would look gone while it runs. So it is an error status, and the
+        # message says what is true: nothing was deleted, and what to do first.
+        # The sweep's remedies ride along as `warnings` — the same lines a
+        # warned-but-accepted destroy returns, so the panel renders their
+        # runnable commands as copyable code either way (see ApiError.body).
+        # "not confirmed cancelled", not "still live": a refused cancel proves the
+        # request is live, a denied or throttled lookup proves nothing — and both
+        # land here, because on a --spot stack an unanswered lookup is exactly
+        # the case that can zombie.
+        message = (
+            f"'{tag}' was NOT deleted: its persistent Spot request is not confirmed cancelled, "
+            "and deleting the stack now would let EC2 launch a replacement instance outside "
+            "it that nothing tracks and nothing stops billing. Cancel the request (command "
+            "below, or the EC2 console under Spot Requests), then delete again. The crew, "
+            "its instance and its disk are untouched."
+        )
+        _audit(op, "failure", request_id=tag, error="; ".join(result["warnings"])[:500])
+        # Spelled out key by key rather than `{**result, ...}`: an error body
+        # assembled by spread hides its `code` from the static error-contract
+        # scan (test_error_code_contract), which cannot follow a `**` to see
+        # whether the response is machine-readable at all. Enumerating also
+        # keeps this 409 to what a caller actually consumes — the sentence
+        # (api/client.friendlyErrText) and the remedies (RemoteCrewPanel's
+        # sweepRemediesFromError, off ApiError.body) — instead of leaking
+        # destroy's internal bookkeeping (`spot_sweep`, `stack_is_spot`, and the
+        # `aborted`/`destroyed` flags the code itself already carries: the
+        # status is 409 and the verdict IS `spot_sweep_blocked_destroy`) into a
+        # public contract nothing reads.
+        return web.json_response(
+            {
+                "error": message,
+                "code": "spot_sweep_blocked_destroy",
+                "warnings": result["warnings"],
+            },
+            status=409,
+        )
+    warnings = result.get("warnings") if isinstance(result, dict) else None
+    if warnings:
+        # The call succeeded but left AWS resources live (today: a Spot sweep
+        # that could not finish). "success" in the audit trail would hide the
+        # one destroy outcome an owner may still be billed for.
+        _audit(op, "partial", request_id=tag, error="; ".join(warnings)[:500])
+    else:
+        _audit(op, "success", request_id=tag)
     return web.json_response(result)
 
 

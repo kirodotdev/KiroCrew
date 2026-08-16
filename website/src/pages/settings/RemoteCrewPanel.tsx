@@ -38,6 +38,7 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
+  Info,
 } from 'lucide-react'
 import {
   api,
@@ -483,6 +484,123 @@ function CrewRow({
   )
 }
 
+/* ── Spot-sweep remedy lines ──
+ * The gateway sends each leftover-work line pre-flattened: prose, then the exact
+ * runnable `aws` command that finishes the job (`ec2.grade_spot_sweep` puts any
+ * raw AWS error BEFORE that command and the command last, precisely so the tail
+ * of the line is the command and nothing else). Rendered as one paragraph the
+ * command wraps mid-flag and is a nightmare to select, which matters more here
+ * than anywhere else in this panel: the user is being asked to run it because we
+ * could not, and a mistyped `--spot-instance-request-ids` leaves the request
+ * live, handing out replacement instances that keep billing. So the tail is
+ * peeled back off and rendered as selectable code with a copy button.
+ * A line with no command (an informational notice) renders verbatim. */
+const SWEEP_COMMAND_MARK = 'aws ec2 '
+
+/** The sweep remedy lines carried by a REFUSED destroy (HTTP 409).
+ *
+ * A destroy the gateway refuses because it could not cancel the crew's Spot
+ * request answers with an error status, so its lines arrive in the error BODY
+ * rather than in a 200 payload — but they are the same lines, and they are the
+ * only thing that tells the user which request is still live and the exact
+ * command that clears it. Without this the banner would say "not deleted" and
+ * the one actionable command would be dropped on the floor. Returns [] for
+ * every other failure, so no other error path grows a remedy block. */
+export function sweepRemediesFromError(e: unknown): string[] {
+  if (!(e instanceof ApiError) || !e.body) return []
+  try {
+    const parsed = JSON.parse(e.body)
+    if (!Array.isArray(parsed?.warnings)) return []
+    return parsed.warnings.filter((w: unknown): w is string => typeof w === 'string')
+  } catch {
+    return []
+  }
+}
+
+export function splitSweepRemedy(line: string): { prose: string; command: string } {
+  // lastIndexOf, not indexOf: the contract is that the command is LAST, and the
+  // prose before it is a raw AWS error we do not control — an error that quotes
+  // the API call ("aws ec2 terminate-instances is not authorized…") would
+  // otherwise split at the quote and drag half the error text into the code
+  // block, leaving the user a "command" that is not one.
+  const at = line.lastIndexOf(SWEEP_COMMAND_MARK)
+  if (at < 0) return { prose: line, command: '' }
+  return { prose: line.slice(0, at).trim(), command: line.slice(at).trim() }
+}
+
+/* The one stretch of a remedy line nobody here wrote: the raw AWS failure the
+ * grader puts between its own summary and the runnable command. `cloud.aws.checked`
+ * stamps every one of them with the call that failed — `ec2:CancelSpotInstanceRequests
+ * failed: …` — which is the marker: machine text, like SWEEP_COMMAND_MARK above,
+ * not a sentence anyone rewords. It matters because it is also the LONGEST part
+ * of the line, so at equal weight it buries the two things the user can act on
+ * (which resource is still live, and the command that clears it). No match — an
+ * agent-session refusal carries our own wording, not an AWS one — mutes nothing. */
+const SWEEP_AWS_ERROR_MARK = /\s(?=[a-z][\w.-]*:[A-Za-z]\w* failed: )/
+
+export function splitSweepError(prose: string): { summary: string; awsError: string } {
+  const at = prose.search(SWEEP_AWS_ERROR_MARK)
+  if (at < 0) return { summary: prose, awsError: '' }
+  return { summary: prose.slice(0, at).trim(), awsError: prose.slice(at).trim() }
+}
+
+function SweepRemedy({ line, copied, onCopy }: { line: string; copied: boolean; onCopy: (command: string) => void }) {
+  const { prose, command } = splitSweepRemedy(line)
+  const { summary, awsError } = splitSweepError(prose)
+  if (!command) return <span className="break-words">{line}</span>
+  return (
+    <div className="min-w-0 flex flex-col gap-1">
+      {summary && <span className="break-words">{summary}</span>}
+      {awsError && <span className="break-words text-muted">{awsError}</span>}
+      <div className="flex items-start gap-1.5 min-w-0">
+        <code className="flex-1 min-w-0 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto whitespace-pre">
+          {command}
+        </code>
+        <IconButton
+          // The label follows the state, like every other copy affordance here:
+          // the tick is the only feedback this button gives, and a screen reader
+          // that keeps hearing "Copy command" is told nothing happened.
+          aria-label={copied ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_command')}
+          onClick={() => onCopy(command)}
+        >
+          {copied ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />}
+        </IconButton>
+      </div>
+    </div>
+  )
+}
+
+/* ── The --spot start hint ──
+ * A start that fails on a --spot crew is almost always an EC2 interruption stop,
+ * and the gateway appends `ec2.spot_start_failure_hint` to the 502's `error`
+ * because that string is the only field this client unwraps. Left in it, the hint
+ * renders as the tail of the red banner — so "Do NOT destroy the instance to
+ * 'fix' this" reads as a clause beside the Delete button, which deletes the
+ * very volume the interruption preserved. Peel it back off: the AWS failure stays
+ * the error, the hint's sentences become their own lines.
+ * The seam is STRUCTURAL, not a phrase: `handlers_cloud` joins the two halves
+ * with a single newline (and collapses the AWS message's own whitespace, so that
+ * newline is the only one). Nothing here depends on the hint's English, and a
+ * message without a newline is returned exactly as it arrived, so every other
+ * failure is untouched. */
+export function splitSpotStartHint(message: string): { error: string; hint: string[] } {
+  const at = message.indexOf('\n')
+  if (at < 0) return { error: message, hint: [] }
+  return {
+    error: message.slice(0, at).trim(),
+    // One line per sentence rather than per hint entry: the entries were joined
+    // with a plain space, so a sentence boundary is what survived the flattening.
+    // (Splitting on `. ` + a capital keeps `~/.kiro/crew` and `kirocrew cloud
+    // status` intact — neither is followed by a space.)
+    hint: message
+      .slice(at)
+      .split(/\.\s+(?=[A-Z])/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .map(s => (s.endsWith('.') ? s : `${s}.`)),
+  }
+}
+
 /** One AWS prerequisite row (ok / warn) with optional command + actions. */
 function PrereqRow({
   ok,
@@ -688,6 +806,21 @@ export function RemoteCrewPanel() {
   // row disappears on its own when the teardown finishes.
   const [deletingTags, setDeletingTags] = useState<Set<string>>(new Set())
   const [actionErr, setActionErr] = useState<string | null>(null)
+  // Work AWS left behind on an action that otherwise SUCCEEDED — today, a destroy
+  // whose Spot sweep could not finish. Kept apart from `actionErr` because the
+  // request was accepted: an error banner would say the delete failed, and it did
+  // not. Each entry is one self-contained line from the gateway (summary, ids, and
+  // the runnable `aws` command that finishes the job), rendered verbatim.
+  const [actionWarn, setActionWarn] = useState<string[]>([])
+  // The gateway's `notices` (and the --spot start hint, which is the same kind
+  // of claim) — kept in their OWN state, not merged into `actionWarn`. A notice
+  // says "nothing proves it either way, go look"; a warning says "this is still
+  // billing and only you can stop it". Rendering both in the amber block spent
+  // the loud treatment on the line that has no known consequence, which is how
+  // the loud one stops being read.
+  const [actionNote, setActionNote] = useState<string[]>([])
+  // Which remedy command was just copied, so its button can flip to a tick.
+  const [copiedRemedy, setCopiedRemedy] = useState<string | null>(null)
   const [diagNote, setDiagNote] = useState<string | null>(null)
   const [restartPending, setRestartPending] = useState(false)
 
@@ -876,18 +1009,51 @@ export function RemoteCrewPanel() {
   })
   const startMutation = useMutation({
     mutationFn: (v: { tag: string; coords: CloudCoords }) => api.cloudStart(v.tag, v.coords),
-    onMutate: () => setActionErr(null),
-    onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
+    onMutate: () => { setActionErr(null); setActionNote([]) },
+    // A --spot start that fails is the one Spot event every user meets, and the
+    // gateway can only tell them about it inside the error string (see
+    // `splitSpotStartHint`). Split back out, the AWS failure stays the banner and
+    // the hint takes the neutral note block one sentence per line — "there is
+    // nothing to fix here" and "do NOT destroy this to fix it" are read there,
+    // not skimmed as the tail of a red paragraph. Note, not warning: nothing is
+    // live that the user must chase; the box comes back on its own.
+    onError: e => {
+      const { error, hint } = splitSpotStartHint(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')))
+      setActionErr(error)
+      setActionNote(hint)
+    },
     onSettled: () => { reloadInstances(); reloadLaunches() },
   })
   const deleteMutation = useMutation({
     mutationFn: (v: { tag: string; coords: CloudCoords }) => api.cloudDestroy(v.tag, v.coords),
-    onMutate: () => { setActionErr(null); setConfirmDeleteTag(null) },
+    onMutate: () => { setActionErr(null); setActionWarn([]); setActionNote([]); setConfirmDeleteTag(null) },
     // The request only *starts* the teardown (the gateway returns cleanup: "pending");
     // remember the tag so its row shows "Deleting…" and the list polls until the
     // background watcher drops the row once AWS confirms.
-    onSuccess: (_r, v) => setDeletingTags(prev => new Set(prev).add(v.tag)),
-    onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
+    onSuccess: (r, v) => {
+      setDeletingTags(prev => new Set(prev).add(v.tag))
+      // A 200 is not proof the teardown left nothing billing: on a --spot crew the
+      // gateway attaches `warnings` for whatever its Spot sweep could NOT clean up.
+      // Discarding them would show "Deleting…" and nothing else while a persistent
+      // request keeps launching REPLACEMENT instances outside the stack — exactly
+      // what `kirocrew cloud destroy` exits non-zero to prevent. `notices` is the
+      // softer no-stack-orphan variant ("nothing proves it either way"), which
+      // gets the neutral note treatment instead — see `actionNote`.
+      if (r?.warnings?.length) setActionWarn(r.warnings)
+      if (r?.notices?.length) setActionNote(r.notices)
+    },
+    // A destroy the gateway REFUSES (409: it could not cancel the crew's
+    // persistent Spot request, and deleting anyway would leave EC2 relaunching a
+    // replacement instance nobody tracks) lands here, not in onSuccess — and
+    // deliberately: the row must NOT go to "Deleting…" for a stack that is still
+    // standing. The refusal's own remedies travel in the error body, so they get
+    // the same amber block with the copyable command as the accepted-but-warned
+    // case; the banner alone would name the problem and not the cure.
+    onError: e => {
+      setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')))
+      const remedies = sweepRemediesFromError(e)
+      if (remedies.length) setActionWarn(remedies)
+    },
     onSettled: () => { reloadInstances(); reloadLaunches() },
   })
   const signinMutation = useMutation({
@@ -933,6 +1099,11 @@ export function RemoteCrewPanel() {
     void copyToClipboard(command)
     setCopied('command')
     setTimeout(() => setCopied(null), 1500)
+  }, [])
+  const copyRemedy = useCallback((command: string) => {
+    void copyToClipboard(command)
+    setCopiedRemedy(command)
+    setTimeout(() => setCopiedRemedy(null), 1500)
   }, [])
   const copyPolicy = useCallback(async () => {
     try {
@@ -1047,6 +1218,33 @@ export function RemoteCrewPanel() {
   const Notices = (
     <>
       {actionErr && <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} className="mb-3" />}
+      {actionWarn.length > 0 && (
+        // Warn tone, not danger, and role="status": the action was accepted, so this
+        // is leftover work, not a failure. The lines come from the gateway already
+        // carrying their ids and the exact command that finishes the job — the ids
+        // and prose render as they are, the trailing command as copyable code, and
+        // never in place of the action's own error banner.
+        <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
+          <AlertTriangle className="lucide-inline mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+            {actionWarn.map(w => <SweepRemedy key={w} line={w} copied={copiedRemedy === splitSweepRemedy(w).command} onCopy={copyRemedy} />)}
+          </div>
+          <button type="button" aria-label={i18nT('components.errorNotice.dismiss')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setActionWarn([])}><X size={12} /></button>
+        </div>
+      )}
+      {actionNote.length > 0 && (
+        // The neutral note treatment (same as `diagNote` below): informational,
+        // nothing known to be live. Deliberately NOT the amber block above — a
+        // notice the user cannot act on, dressed as a warning they must, is how
+        // the real "this is still billing" line gets skimmed past.
+        <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-accent/10 text-accent border border-accent/30">
+          <Info className="lucide-inline mt-0.5 shrink-0" />
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+            {actionNote.map(n => <SweepRemedy key={n} line={n} copied={copiedRemedy === splitSweepRemedy(n).command} onCopy={copyRemedy} />)}
+          </div>
+          <button type="button" aria-label={i18nT('components.errorNotice.dismiss')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setActionNote([])}><X size={12} /></button>
+        </div>
+      )}
       {diagNote && (
         <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-accent/10 text-accent border border-accent/30">
           <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />

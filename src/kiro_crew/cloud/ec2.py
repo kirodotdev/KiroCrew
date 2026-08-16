@@ -2,10 +2,11 @@
 
 Every AWS interaction goes through :mod:`kiro_crew.cloud.aws` (the ``run_aws``
 chokepoint). Provisioning is a **CloudFormation** stack (``kirocrew-ec2.yaml``):
-one atomic, rollback-safe deploy; ``destroy`` is a single ``delete-stack`` that
-removes *every* resource the launch created (instance, role, instance profile,
-security group, EBS volume). Nothing is left behind — this is the clean
-uninstall/remove-from-AWS path.
+one atomic, rollback-safe deploy; ``destroy`` is a ``delete-stack`` that removes
+*every* resource the launch created (instance, role, instance profile, security
+group, EBS volume), preceded by an explicit cancel of the persistent Spot request
+a ``--spot`` launch leaves outside the stack (see :func:`cancel_spot_requests`).
+Nothing is left behind — this is the clean uninstall/remove-from-AWS path.
 
 Discovery is **stateless-by-tag** (like deploy-web): every resource carries
 ``kirocrew:managed=true`` + ``kirocrew:instance=<tag>``, and the stack itself is
@@ -433,6 +434,7 @@ def build_deploy_argv(
     source_bucket: str = "",
     source_key: str = "",
     dashboard_port: int = 0,
+    spot: bool = False,
 ) -> list[str]:
     """Assemble the exact ``aws cloudformation deploy`` argv (also the dry-run output).
 
@@ -455,6 +457,10 @@ def build_deploy_argv(
     # template default rather than being pinned by an implicit 0.
     if dashboard_port:
         overrides.append(f"DashboardPort={dashboard_port}")
+    # Opt-in only: an omitted override leaves the template's Spot="false", so the
+    # on-demand argv is byte-for-byte what it was before the flag existed.
+    if spot:
+        overrides.append("Spot=true")
     # Prefer the S3 source (private-repo safe); else pass git repo/ref fallback.
     if source_bucket:
         overrides.append(f"SourceBucket={source_bucket}")
@@ -494,6 +500,7 @@ def deploy(
     allow_ssh_cidr: str = "",
     ship_source: Optional[bool] = None,
     dashboard_port: int = 0,
+    spot: bool = False,
     disable_rollback: bool = False,
     dry_run: bool = False,
     proc_sink: Optional[Any] = None,
@@ -504,10 +511,13 @@ def deploy(
     running from a checkout; packaged installs use the template's public-repo
     clone path. Explicit ``ship_source=True`` remains fail-closed when no checkout
     exists. ``subnet_id`` pins the launch to an explicit subnet (validated by
-    :func:`resolve_explicit_subnet`) instead of auto-discovery. ``dry_run``
-    returns the exact argv without calling AWS. ``proc_sink`` is forwarded to
-    :func:`aws.run_aws` for the (long) deploy call so a caller running deploy on
-    a background thread can terminate the child on Ctrl+C.
+    :func:`resolve_explicit_subnet`) instead of auto-discovery. ``spot``
+    (``--spot``) requests Spot pricing — the template turns that into a
+    persistent, stop-on-interruption request so an interruption preserves the
+    root volume. ``dry_run`` returns the exact argv without calling AWS.
+    ``proc_sink`` is forwarded to :func:`aws.run_aws` for the (long) deploy call
+    so a caller running deploy on a background thread can terminate the child on
+    Ctrl+C.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -547,6 +557,7 @@ def deploy(
             source_bucket="<auto>" if ship_source else "",
             source_key=f"{tag}/kirocrew-src.tar.gz" if ship_source else "",
             dashboard_port=dashboard_port,
+            spot=spot,
         )
         return DeployResult(
             tag=tag,
@@ -615,6 +626,7 @@ def deploy(
         source_bucket=source_bucket,
         source_key=source_key,
         dashboard_port=dashboard_port,
+        spot=spot,
     )
     # `cloudformation deploy` blocks until the stack settles (WaitCondition gates
     # on the gateway being healthy). "No changes" exits 0 with a message on reuse.
@@ -724,6 +736,33 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
             action="cloudformation:DescribeStacks",
         )
     return stack
+
+
+def stack_uses_spot(stack: Optional[dict[str, Any]]) -> bool:
+    """True when this stack was deployed with ``Spot=true`` (so it HAS a request).
+
+    The authority on "could this teardown leave a persistent Spot request
+    behind?" is the STACK, not the principal running destroy: an admin can
+    launch ``--spot`` and a restricted profile can destroy it, so a denied
+    ``ec2:DescribeSpotInstanceRequests`` says nothing about whether a request
+    exists. The Spot template parameter does, and it costs no extra API call —
+    ``cloudformation describe-stacks`` (:func:`find_stack`) already returns
+    ``Parameters`` alongside the tags.
+
+    Absent/unparseable parameters read as False, which is the pre-``--spot``
+    behaviour (quiet) rather than a false alarm on every on-demand destroy. It
+    is only ever used to make the caller LOUDER, never to silence a lookup that
+    genuinely failed.
+    """
+    if not stack:
+        return False
+    params = stack.get("Parameters") or []
+    if not isinstance(params, list):
+        return False
+    for param in params:
+        if isinstance(param, dict) and param.get("ParameterKey") == "Spot":
+            return str(param.get("ParameterValue", "")).strip().lower() == "true"
+    return False
 
 
 def get_stack_failures(tag: str, profile: str = "", region: str = "") -> list[dict[str, str]]:
@@ -986,12 +1025,484 @@ def start(tag: str, profile: str = "", region: str = "") -> dict[str, Any]:
     return {"tag": tag, "instance_id": iid, "action": "start"}
 
 
+# What to say when `start` fails on a stack that was launched with `--spot`.
+# Kept as separate lines so each surface can render them its own way (the CLI as
+# detail lines under the failure, the dashboard joined into the error body).
+#
+# This is the ONE Spot event every user eventually hits, and the raw AWS error
+# ("only Amazon EC2 can restart an interrupted stopped Spot Instance", or worse,
+# an opaque IncorrectSpotRequestState) reads like a broken box. The dangerous
+# reading is the obvious one: "start is broken, so delete it and launch a new
+# one" — and destroy takes the DeleteOnTermination root volume, i.e. ~/.kiro/crew,
+# with it. The docs already call the failing start "the tell"; this says it at the
+# moment the user is actually looking at it.
+#
+# Reword these freely. The dashboard has no rich channel for a failed start (the
+# panel renders the error STRING), so `handlers_cloud` flattens the hint into it —
+# but behind a NEWLINE, which is what the panel splits on. No sentence here is a
+# marker, so nothing in this wording is load-bearing for that split.
+SPOT_START_FAILURE_HINT: tuple[str, ...] = (
+    "This crew was launched with --spot, so the most likely cause is an EC2 "
+    "INTERRUPTION stop, not a broken instance.",
+    "Only EC2 can restart an interruption-stopped Spot instance. It resumes on "
+    "its own when Spot capacity comes back — there is nothing to fix here.",
+    "Your data is intact: an interruption stops the instance, it does not "
+    "terminate it, so the root volume (and ~/.kiro/crew on it) is untouched.",
+    "Do NOT destroy the instance to 'fix' this — destroy deletes that volume and "
+    "everything on it. Wait for the auto-resume, or check `kirocrew cloud status`.",
+)
+
+
+def spot_start_failure_hint(tag: str, profile: str = "", region: str = "") -> list[str]:
+    """Lines to append to a FAILED ``start``, or ``[]`` when they don't apply.
+
+    Call this ONLY on the failure path. It costs one ``describe-stacks``, and the
+    happy path must not pay for it — ``start`` does look the stack up (via
+    :func:`describe`), but it throws the ``Parameters`` away, and threading them
+    out of the success path just to read them on the rare failure would make
+    every successful start carry the plumbing for an error it didn't hit.
+
+    Never raises, for any reason. It runs while a real error is already being
+    reported, so a second failure here (throttling, a denied DescribeStacks, the
+    foreign-stack guard in :func:`find_stack`) must not replace the error the
+    user actually needs to see — it just means we say nothing extra.
+    """
+    try:
+        if not stack_uses_spot(find_stack(tag, profile, region)):
+            return []
+    except Exception as exc:  # noqa: BLE001 - see docstring: advisory, never fatal
+        logger.debug("could not read the Spot parameter for '%s' (%s)", tag, exc)
+        return []
+    return list(SPOT_START_FAILURE_HINT)
+
+
 # --- destroy (full uninstall / remove from AWS) -----------------------------
 
 
 def build_destroy_argv(tag: str) -> list[str]:
     """The exact ``delete-stack`` argv (also the dry-run output)."""
     return ["cloudformation", "delete-stack", "--stack-name", stack_name(tag)]
+
+
+# Spot request states that are DONE and need no action. Everything else —
+# ``open`` (awaiting capacity), ``active`` (has an instance), ``disabled`` (a
+# persistent request whose instance is stopped) — can still produce an instance
+# and must be swept. Excluding the terminal set rather than allow-listing the
+# live one is deliberate: a state AWS adds later defaults to "sweep it" instead
+# of silently leaking a billing instance.
+_TERMINAL_SPOT_REQUEST_STATES = frozenset({"cancelled", "closed", "failed"})
+
+
+def find_spot_requests(tag: str, profile: str = "", region: str = "") -> list[dict[str, str]]:
+    """Live Spot requests we own for ``<tag>``, as ``{id, instance_id}``.
+
+    ``instance_id`` is ``""`` for an ``open`` request that has no instance yet.
+    Empty for an on-demand stack (which never creates a request) — the call is
+    one ``describe`` and costs nothing else.
+
+    OWNERSHIP takes BOTH tags. This lookup feeds ``cancel_spot_requests``, which
+    cancels what it finds and terminates the instances behind it, so it obeys the
+    same rule as every other destructive path here (cf. :func:`find_stack`):
+    ``kirocrew:managed=true`` asserts "Kiro Crew created this", and
+    ``kirocrew:instance=<tag>`` narrows it to THIS tag. The instance tag alone is
+    neither — it is a plain user tag anyone can set, and a foreign Spot request
+    that happens to carry it (a hand-made one, a collision on a common tag like
+    ``dev``) would be cancelled and its instance terminated by ``cloud destroy``.
+    The launch template tags our requests with both keys (see the
+    ``spot-instances-request`` TagSpecifications in ``kirocrew-ec2.yaml``), and
+    the tag-gated ``ec2:CancelSpotInstanceRequests`` grant already keys on the
+    managed tag, so filtering on both here is what makes the two agree.
+
+    The state filter is applied CLIENT-side, not by the API: the documented
+    values for the ``state`` filter are ``open|active|closed|cancelled|failed``,
+    and ``disabled`` — the real state of a persistent request whose instance is
+    stopped, and the one that most needs sweeping — is NOT among them. Filtering
+    here on the returned ``State`` avoids relying on an undocumented filter
+    value.
+    """
+    data = aws.checked_json(
+        [
+            "ec2",
+            "describe-spot-instance-requests",
+            "--filters",
+            f"Name=tag:{MANAGED_TAG_KEY},Values=true",
+            f"Name=tag:{INSTANCE_TAG_KEY},Values={tag}",
+        ],
+        profile,
+        region,
+        action="ec2:DescribeSpotInstanceRequests",
+        timeout=_POLL_TIMEOUT,
+    )
+    requests = data.get("SpotInstanceRequests", []) if isinstance(data, dict) else []
+    return [
+        {"id": r["SpotInstanceRequestId"], "instance_id": r.get("InstanceId", "") or ""}
+        for r in requests
+        if r.get("SpotInstanceRequestId")
+        and str(r.get("State", "")).lower() not in _TERMINAL_SPOT_REQUEST_STATES
+    ]
+
+
+# ``error_kind`` values for a FAILED Spot-request lookup. The cause decides how
+# loud the caller is allowed to be, so it must not be flattened into a bare
+# string. None of them is quiet on its OWN, though: what settles whether a
+# missed lookup can be shrugged off is the STACK (see :func:`stack_uses_spot`),
+# never an inference about the principal — the profile running destroy need not
+# be the one that launched, so "this principal could not have created a --spot
+# stack" is not a safe reason to reassure anybody.
+#   ACCESS_DENIED — IAM said no. Nothing was learned. Harmless only when the
+#     stack itself says Spot=false (it never created a request); on a Spot
+#     stack it is a SWEEP FAILURE like any other unanswered lookup.
+#   AGENT_SESSION — the in-process chokepoint refused (agent/ACP session). We
+#     learned nothing, but nothing was mutated either; a human re-run sweeps.
+#     Graded like the denial: a quiet note unless the stack is Spot=true.
+#   FAILED — throttling, network, expired SSO, unparseable JSON… Always a SWEEP
+#     FAILURE: warn, drop the "you won't be billed" claim, exit non-zero. It
+#     stays loud even for a Spot=false stack, because a stack RE-deployed
+#     without --spot can still carry a request left by its Spot generation.
+SWEEP_ERROR_ACCESS_DENIED = "access_denied"
+SWEEP_ERROR_AGENT_SESSION = "agent_session"
+SWEEP_ERROR_FAILED = "failed"
+
+
+def _sweep_error_kind(exc: aws.AWSError) -> str:
+    """Classify a failed Spot-request lookup as an IAM denial or a real failure.
+
+    ``missing_action`` is set only when :func:`aws.map_missing_action` parsed an
+    ``is not authorized to perform: <action>`` out of stderr; a denial without
+    that clause (``UnauthorizedOperation``, a bare ``AccessDenied``) still has
+    the markers in the text, so the raw stderr AND the rendered message are both
+    checked. Anything else — throttling, no network, expired SSO, unparseable
+    JSON — is a genuine failure and must NOT borrow the denial's quiet path.
+    """
+    if exc.missing_action:
+        return SWEEP_ERROR_ACCESS_DENIED
+    if aws.is_access_denied(exc.stderr) or aws.is_access_denied(str(exc)):
+        return SWEEP_ERROR_ACCESS_DENIED
+    return SWEEP_ERROR_FAILED
+
+
+def _empty_spot_sweep() -> dict[str, Any]:
+    """A ``cancel_spot_requests`` outcome with nothing found and nothing failed."""
+    return {
+        "cancelled": [],
+        "failed": [],
+        "error": "",
+        "error_kind": "",
+        "terminated": [],
+        "terminate_failed": [],
+        "terminate_error": "",
+    }
+
+
+def probe_spot_requests(
+    tag: str, profile: str = "", region: str = ""
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Read-only ``(requests, outcome)`` — the LOOKUP half of the sweep, alone.
+
+    Mutates nothing, and never raises, for the same reasons
+    :func:`cancel_spot_requests` doesn't (it is this function's error handling
+    that makes that promise keepable). The outcome is an otherwise-empty sweep
+    carrying ``error``/``error_kind`` when the lookup failed, so a caller can
+    hand it straight to :func:`grade_spot_sweep` and report the failure in the
+    identical words the cancelling path would have used; on success it is the
+    clean ``_empty_spot_sweep()`` and the requests are in the first element.
+
+    Exists because cancelling is DESTRUCTIVE in a way the verb hides: cancelling
+    a ``disabled`` request (a persistent request whose instance is STOPPED)
+    makes EC2 terminate that instance. So a surface that must show the user what
+    it found and ask before touching it — ``kirocrew cloud destroy`` on a tag
+    with no stack — needs to look WITHOUT sweeping. It re-runs the lookup inside
+    the cancel afterwards, which is the honest ordering anyway: what gets
+    cancelled is what is live when the user says yes, not what was live when the
+    prompt was drawn.
+    """
+    outcome = _empty_spot_sweep()
+    try:
+        return find_spot_requests(tag, profile, region), outcome
+    except aws.CloudActionDenied as exc:
+        logger.warning("Spot-request sweep for '%s' refused from an agent session (%s)", tag, exc)
+        outcome["error"] = str(exc)
+        outcome["error_kind"] = SWEEP_ERROR_AGENT_SESSION
+        return [], outcome
+    except aws.AWSError as exc:
+        logger.warning(
+            "could not look up Spot requests for '%s' (%s) — if this was a --spot "
+            "instance, check for a leftover request in the EC2 console",
+            tag,
+            exc,
+        )
+        outcome["error"] = str(exc)
+        outcome["error_kind"] = _sweep_error_kind(exc)
+        return [], outcome
+
+
+def cancel_spot_requests(
+    tag: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    exclude_instance_id: str = "",
+) -> dict[str, Any]:
+    """Cancel this tag's live Spot requests (and terminate their instances).
+
+    Returns an OUTCOME dict — ``{cancelled, failed, error, error_kind,
+    terminated, terminate_failed, terminate_error}`` — never just the happy-path
+    ids: the caller has to be able to tell "nothing to cancel" from "the cancel
+    was denied", because only the second one means an instance may still be
+    billing and must not be reported as a clean teardown. The described instance
+    ids are NOT reported: what a caller can act on is what we FAILED to
+    terminate (``terminate_failed``), not what we looked at.
+
+    MUST run BEFORE ``delete-stack`` on a ``--spot`` stack. A *persistent* Spot
+    request does not go away when its instance does: terminating a running OR
+    stopped instance flips the request back to ``open`` and EC2 launches a
+    REPLACEMENT instance — which, once the stack is gone, is an orphan nobody
+    tracks and nobody stops billing for. Cancelling first removes that.
+
+    Cancelling is NOT symmetric across states, which is why the terminate step
+    exists: cancelling an ``active`` request leaves its RUNNING instance alive
+    (so this can't pull the box out from under a stack delete — delete-stack
+    still does that terminating), while cancelling a ``disabled`` request (a
+    STOPPED instance) auto-terminates that instance — EC2's doing, not ours, and
+    unavoidable if the request is to be cancelled at all. So for the orphan case
+    — a replacement instance that is not a stack resource and that no
+    delete-stack will ever touch — the cancel alone would leave a live, billing
+    box behind. We terminate the described instances explicitly: a no-op for the
+    stopped ones the cancel already killed.
+
+    ``exclude_instance_id`` is an instance this call must NOT terminate itself
+    (the state above still applies: a stopped one the cancel kills is EC2's
+    doing). :func:`destroy` passes the STACK's own instance on the stack-exists
+    path, because there the terminating is CloudFormation's job and doing it
+    ourselves is not equivalent: if ``delete-stack`` is then refused (denied,
+    throttled) we have destroyed the instance AND its DeleteOnTermination root
+    volume out from under a stack that still exists — the user's ``~/.kiro``
+    gone, with nothing deleted that they asked to have deleted. The orphan path
+    (no stack) excludes nothing: there is no delete-stack coming for those.
+
+    Never raises — for real, not just for :class:`aws.AWSError`. A user still on
+    the PREVIOUS launcher policy has no ``ec2:DescribeSpotInstanceRequests`` /
+    ``ec2:CancelSpotInstanceRequests``, and an on-demand stack (which is every
+    stack that policy could have created) has nothing to cancel — so a denial
+    must be REPORTED and let the teardown proceed, not block the uninstall path.
+    :class:`aws.CloudActionDenied` (none of these three verbs is in the agent
+    read allowlist) is caught for the same reason: the CLI's no-stack sweep is
+    the one mutating entry point with no ``assert_human_action`` in front of it,
+    and an agent-session ``cloud destroy`` on a missing stack must still end in a
+    clean "nothing to remove", not a raw failure. Catching it on the DESCRIBE is
+    sufficient to make the whole function total ONLY because
+    ``ec2 describe-spot-instance-requests`` is absent from
+    ``aws._AGENT_READ_ALLOWLIST``: an agent session is refused at the describe
+    and never reaches the cancel/terminate calls. If that describe is ever added
+    to the allowlist, those two mutating calls need their own catches to keep
+    this contract.
+
+    The failure CAUSE is reported as ``error_kind`` (see the constants above) —
+    a denial is provably nothing-to-sweep, any other lookup failure is not, and
+    only the caller that can tell them apart can decide whether "you won't be
+    billed" is true.
+    """
+    found, outcome = probe_spot_requests(tag, profile, region)
+    if outcome["error"] or not found:
+        return outcome
+
+    ids = [r["id"] for r in found]
+    instance_ids = [
+        r["instance_id"]
+        for r in found
+        if r["instance_id"] and r["instance_id"] != exclude_instance_id
+    ]
+    try:
+        aws.checked(
+            ["ec2", "cancel-spot-instance-requests", "--spot-instance-request-ids", *ids],
+            profile,
+            region,
+            action="ec2:CancelSpotInstanceRequests",
+            timeout=_POLL_TIMEOUT,
+        )
+    except aws.AWSError as exc:
+        logger.warning("could not cancel Spot requests %s for '%s' (%s)", ids, tag, exc)
+        outcome["failed"] = ids
+        outcome["error"] = str(exc)
+        return outcome
+    outcome["cancelled"] = ids
+
+    if not instance_ids:
+        return outcome
+    try:
+        aws.checked(
+            ["ec2", "terminate-instances", "--instance-ids", *instance_ids],
+            profile,
+            region,
+            action="ec2:TerminateInstances",
+            timeout=_POLL_TIMEOUT,
+        )
+    except aws.AWSError as exc:
+        # The tag-gated ec2:TerminateInstances covers anything the template
+        # created, but a REPLACEMENT instance EC2 launched off a re-opened
+        # request may not carry the tags, so this can be denied. Report the ids
+        # and the exact command rather than claiming the teardown is clean.
+        logger.warning("could not terminate Spot instances %s for '%s' (%s)", instance_ids, tag, exc)
+        outcome["terminate_failed"] = instance_ids
+        outcome["terminate_error"] = str(exc)
+        return outcome
+    outcome["terminated"] = instance_ids
+    return outcome
+
+
+def spot_sweep_leaves_live_risk(sweep: dict[str, Any]) -> bool:
+    """True when the sweep did not PROVE this tag's persistent request is gone.
+
+    Either the cancel was refused (``failed``) or the lookup never answered
+    (``error`` — denied, agent-guarded, throttled, offline). Both mean a
+    persistent request may still be open, and an open persistent request turns
+    the next terminate of its instance into a REPLACEMENT launch.
+
+    A failed TERMINATE is deliberately not in here: it means the cancel
+    succeeded, so the request is gone and cannot relaunch anything. That is
+    leftover work to report (the box still bills until the user kills it), not a
+    reason to leave the stack standing.
+    """
+    return bool(sweep.get("failed") or sweep.get("error"))
+
+
+def grade_spot_sweep(
+    sweep: dict[str, Any],
+    tag: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    stack_is_spot: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Turn a sweep outcome into what to SAY about it and whether it FAILED.
+
+    Returns ``{"failed": bool, "problems": [{"summary", "details"}], "notes":
+    [str]}``. ``problems`` are the things that may still be billing — each one
+    carries the leftover ids and the exact runnable ``aws`` command that
+    finishes the job; ``notes`` are the quiet "nothing was learned but nothing
+    can be live either" lines. A clean sweep yields all three empty, so a
+    caller can attach the result unconditionally and stay silent when there is
+    nothing to say.
+
+    DETAIL ORDER IS PART OF THE CONTRACT: the raw AWS error (when there is one)
+    comes first and the runnable ``aws`` remedy is ALWAYS the last detail. In a
+    terminal that puts the actionable line where the eye lands; in the dashboard
+    it is what makes the command recoverable, because those surfaces flatten
+    ``summary + details`` into one string and the panel peels the trailing
+    command back off it to render as copyable code. A remedy followed by more
+    prose would drag that prose into the code block.
+
+    Lives HERE, not in the CLI, because two surfaces must grade the same
+    outcome identically: ``kirocrew cloud destroy`` (which exits non-zero) and
+    the dashboard's destroy route (which returns the same warnings in its
+    response). A stack destroyed from the dashboard leaks exactly as much money
+    as one destroyed from a terminal, so the two must never drift.
+
+    ``stack_is_spot`` is the stack's own ``Spot`` parameter (see
+    :func:`stack_uses_spot`), or ``None`` when there is NO stack — the orphan
+    case, where nothing can be proven either way and the wording has to admit
+    it. It is what decides whether an unanswered lookup (IAM denial, agent
+    guard) is a shrug or a failure; the identity of the destroying principal
+    never is.
+    """
+    scope = ""
+    if profile:
+        scope += f" --profile {profile}"
+    if region:
+        scope += f" --region {region}"
+
+    problems: list[dict[str, Any]] = []
+    notes: list[str] = []
+
+    failed = list(sweep.get("failed") or [])
+    if failed:
+        details = []
+        if sweep.get("error"):
+            details.append(str(sweep["error"]))
+        details.append(
+            "Cancel them yourself or EC2 keeps launching replacements: "
+            "aws ec2 cancel-spot-instance-requests --spot-instance-request-ids "
+            f"{' '.join(failed)}{scope}"
+        )
+        problems.append(
+            {
+                "summary": (
+                    "Could NOT cancel this tag's persistent Spot request(s): "
+                    f"{', '.join(failed)}"
+                ),
+                "details": details,
+            }
+        )
+
+    terminate_failed = list(sweep.get("terminate_failed") or [])
+    if terminate_failed:
+        details = []
+        if sweep.get("terminate_error"):
+            details.append(str(sweep["terminate_error"]))
+        details.append(
+            "They keep billing until you do: aws ec2 terminate-instances --instance-ids "
+            f"{' '.join(terminate_failed)}{scope}"
+        )
+        problems.append(
+            {
+                "summary": (
+                    f"Could NOT terminate the Spot instance(s): {', '.join(terminate_failed)}"
+                ),
+                "details": details,
+            }
+        )
+
+    kind = sweep.get("error_kind", "")
+    if kind:
+        # An unanswered lookup is only safe to shrug off when the STACK proves
+        # there is nothing to find. A denial/agent-refusal on a stack we KNOW was
+        # deployed with Spot=true is the false-reassurance case: delete-stack
+        # terminates the instance, the persistent request flips open, and EC2
+        # hands out a replacement nobody tracks.
+        unresolved_is_harmless = (
+            kind in (SWEEP_ERROR_ACCESS_DENIED, SWEEP_ERROR_AGENT_SESSION) and not stack_is_spot
+        )
+        if unresolved_is_harmless and kind == SWEEP_ERROR_ACCESS_DENIED:
+            notes.append(
+                "Could not check for a leftover Spot request (no permission) — "
+                + (
+                    "and with no stack left there is nothing to prove it either way; "
+                    "check the EC2 console if this tag ever ran --spot."
+                    if stack_is_spot is None
+                    else "this stack is on-demand (Spot=false), so it never created one."
+                )
+            )
+        elif unresolved_is_harmless:
+            notes.append("Agent sessions can't sweep Spot requests — run destroy from a terminal.")
+        else:
+            if kind == SWEEP_ERROR_ACCESS_DENIED:
+                summary = (
+                    "Could NOT check for a leftover persistent Spot request — the "
+                    "lookup was denied, and this stack was launched with --spot."
+                )
+            elif kind == SWEEP_ERROR_AGENT_SESSION:
+                summary = (
+                    "Could NOT check for a leftover persistent Spot request — an agent "
+                    "session can't run the lookup, and this stack was launched with --spot."
+                )
+            else:
+                summary = "Could NOT check for a leftover persistent Spot request — the lookup failed."
+            details = []
+            if sweep.get("error"):
+                details.append(str(sweep["error"]))
+            # Both tag filters, exactly as :func:`find_spot_requests` runs it: the
+            # hand-check has to answer the same question the sweep would have
+            # ("is there a request WE own for this tag?"), and the wider
+            # instance-tag-only form can surface a foreign request the sweep would
+            # never have touched — inviting the user to cancel someone else's.
+            details.append(
+                "Check it yourself: aws ec2 describe-spot-instance-requests --filters "
+                f"Name=tag:{MANAGED_TAG_KEY},Values=true "
+                f"Name=tag:{INSTANCE_TAG_KEY},Values={tag}{scope}"
+            )
+            problems.append({"summary": summary, "details": details})
+
+    return {"failed": bool(problems), "problems": problems, "notes": notes}
 
 
 def destroy(
@@ -1007,6 +1518,54 @@ def destroy(
     This is the clean uninstall/remove-from-AWS path — instance, IAM role +
     instance profile, security group, and EBS volume all go away. Idempotent:
     deleting an already-gone stack is a no-op success.
+
+    A ``--spot`` launch has ONE resource CloudFormation does not own: the
+    persistent Spot *request*, which EC2 creates as a side effect of RunInstances
+    and which outlives the instance. So teardown cancels it BEFORE
+    ``delete-stack`` (see :func:`cancel_spot_requests`) — otherwise delete-stack's
+    terminate would flip the request open and EC2 would launch a replacement
+    instance the stack no longer tracks. It also terminates the instances those
+    requests point at — EXCEPT the stack's own, which CloudFormation terminates
+    as part of the delete that is about to run — because a replacement instance
+    is NOT a stack resource and no ``delete-stack`` will ever touch it. For an
+    on-demand stack it is one ``describe`` that finds nothing.
+
+    If that sweep leaves live risk on a ``Spot=true`` stack — the cancel was
+    refused, or the lookup never answered (see
+    :func:`spot_sweep_leaves_live_risk`) — the ``delete-stack`` is NOT issued at
+    all. Issuing it would terminate the instance while the persistent request is
+    still open, which is precisely how EC2 hands out an untracked replacement.
+    The result then reads ``destroyed: False``, ``aborted: True``, and the
+    caller must report the sweep's problems and remedies and NOT claim the stack
+    is gone (it is intact, including the root volume, and destroy is re-runnable
+    once the request is cancelled). ``aborted`` is the whole branch — a failed
+    sweep is the only thing that can stop the delete, so a reason code beside it
+    would be a second spelling of it that no caller reads. An on-demand stack
+    never aborts: with no request there is
+    nothing that could relaunch, so its teardown is byte-identical to the
+    pre-``--spot`` one.
+
+    ORDER: ``find_stack`` runs FIRST, the sweep second. The reverse (what this
+    did originally) means a throttled or denied ``cloudformation:DescribeStacks``
+    aborts AFTER the request was cancelled and the instance terminated, leaving
+    the caller told only "could not query stack" with no hint that the box is
+    already gone. Nothing is lost by waiting: the no-stack orphan case — a rolled
+    back ``--spot`` launch whose request outlived its stack — is swept by
+    whichever surface saw the miss (:func:`kiro_crew.cli_cloud._cloud_destroy`
+    on its "no stack found" early return, or the dashboard destroy route when
+    this function reports ``already_absent``), not by this function itself.
+
+    The sweep's full outcome is returned as ``spot_sweep`` — and ONLY as that:
+    a happy-path shorthand for the cancelled ids would be a second spelling of
+    ``spot_sweep["cancelled"]`` that a reader could consult without ever seeing
+    the failure fields beside it, which is the reporting mistake this whole path
+    exists to prevent. Callers read the outcome, so they can report a DENIED
+    cancel/terminate instead of claiming the teardown left nothing billing.
+    Alongside it, ``stack_is_spot`` reports the stack's own ``Spot`` parameter
+    (free — ``describe-stacks`` already returned it): it is what lets the caller
+    tell a denied lookup that PROVABLY had nothing to find from one that hid a
+    live persistent request, without guessing from the destroying principal's
+    permissions. Feed both to :func:`grade_spot_sweep`.
 
     ``dry_run`` returns the argv without calling AWS. When ``wait`` is true this
     blocks until the stack reaches ``DELETE_COMPLETE`` (or raises on
@@ -1028,6 +1587,9 @@ def destroy(
             "argv": argv,
         }
 
+    # Look the stack up BEFORE mutating anything: if this query fails (throttled,
+    # denied, expired SSO) we abort having cancelled nothing and terminated
+    # nothing, so "could not query stack" is the whole truth.
     stack = find_stack(tag, profile, region)
     if not stack:
         return {
@@ -1036,6 +1598,62 @@ def destroy(
             "action": "destroy",
             "destroyed": True,
             "already_absent": True,
+            # Nothing swept HERE: the no-stack orphan case belongs to the
+            # caller — the CLI sweeps on its own `describe` miss, the dashboard
+            # destroy route sweeps when it sees this `already_absent` result.
+            "spot_sweep": _empty_spot_sweep(),
+            # No stack, so no Spot parameter to read. Harmless: the empty sweep
+            # above has no error_kind, so there is nothing to grade either way.
+            "stack_is_spot": False,
+        }
+
+    # Does this stack have a persistent Spot request at all? Read it from the
+    # describe-stacks payload we already have (no extra call) — the sweep's
+    # honesty depends on it when the lookup below cannot answer.
+    is_spot = stack_uses_spot(stack)
+
+    # The stack exists and is about to be deleted — cancel the persistent request
+    # first so delete-stack's terminate can't flip it open into a replacement.
+    # The stack's OWN instance is excluded from the sweep's terminate: while the
+    # stack stands, terminating its instance is CloudFormation's job, and doing
+    # it here would take the DeleteOnTermination root volume with it even if the
+    # delete-stack below never gets accepted. The id is free — it is an output of
+    # the describe-stacks payload find_stack already returned.
+    sweep = cancel_spot_requests(
+        tag, profile, region, exclude_instance_id=_outputs(stack).get("InstanceId", "")
+    )
+
+    if is_spot and spot_sweep_leaves_live_risk(sweep):
+        # Deleting NOW is the billing zombie this whole path exists to prevent:
+        # delete-stack terminates the instance, the persistent request we could
+        # not cancel (or could not even look up) flips back to `open`, and EC2
+        # launches a REPLACEMENT instance outside a stack that no longer exists —
+        # untracked, unstoppable from here, billing. Leaving the stack up costs
+        # the same instance-hours the user already has, keeps their disk, and
+        # keeps `destroy` re-runnable once the request is gone. So: report,
+        # don't delete. Reported (not raised) because the sweep outcome IS the
+        # message — the caller renders its ids and runnable remedies, which an
+        # exception string cannot carry.
+        #
+        # A lookup that was DENIED or agent-refused counts, deliberately: on a
+        # Spot=true stack an unanswered lookup hides exactly the request that
+        # zombies (grade_spot_sweep already grades it as a failure for the same
+        # reason). On-demand stacks never reach this branch — nothing can zombie
+        # without a request — so the quiet on-demand teardown is untouched, old
+        # launcher policies included.
+        logger.warning(
+            "not deleting stack %s: its Spot request sweep left live risk (%s)",
+            stack_name(tag),
+            sweep.get("error") or ", ".join(sweep.get("failed") or []),
+        )
+        return {
+            "tag": tag,
+            "stack_name": stack_name(tag),
+            "action": "destroy",
+            "destroyed": False,
+            "aborted": True,
+            "spot_sweep": sweep,
+            "stack_is_spot": is_spot,
         }
 
     aws.checked(argv, profile, region, action="cloudformation:DeleteStack", timeout=_POLL_TIMEOUT)
@@ -1046,6 +1664,8 @@ def destroy(
             "action": "destroy",
             "destroyed": True,
             "waited": False,
+            "spot_sweep": sweep,
+            "stack_is_spot": is_spot,
         }
 
     final = wait_for_delete(tag, profile, region)
@@ -1055,6 +1675,8 @@ def destroy(
         "action": "destroy",
         "destroyed": final,
         "waited": True,
+        "spot_sweep": sweep,
+        "stack_is_spot": is_spot,
     }
 
 

@@ -25,6 +25,16 @@ Parameters:
     MinValue: 20
     MaxValue: 1000
     Description: gp3 root volume size in GiB.
+  Spot:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Opt into Spot pricing for the instance (typically 60-90% below on-demand,
+      at the cost of interruptibility). "false" (default) leaves the launch
+      on-demand, byte-for-byte the historical behavior. See the
+      SpotLaunchTemplate resource for why the request is persistent,
+      stop-on-interruption, never-expiring and tagged.
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC to launch into (the wizard passes the default VPC).
@@ -134,6 +144,7 @@ Conditions:
   IsArm: !Equals [!Ref Architecture, arm64]
   HasS3Source: !Not [!Equals [!Ref SourceBucket, ""]]
   WantPublicIp: !Equals [!Ref AssociatePublicIp, "true"]
+  IsSpot: !Equals [!Ref Spot, "true"]
 
 Resources:
   # --- IAM: instance role trusts EC2 and gets SSM core (enables Session Manager
@@ -215,6 +226,115 @@ Resources:
       CidrIp: !Ref AllowSshCidr
       Description: SSH fallback from the user's CIDR
 
+  # --- Spot market options (opt-in, `kirocrew cloud launch --spot`).
+  #
+  #     WHY A LAUNCH TEMPLATE AT ALL: AWS::EC2::Instance has NO
+  #     InstanceMarketOptions property (it is a RunInstances-only parameter; a
+  #     template that puts it on the Instance fails validation with cfn-lint
+  #     E3002 "Additional properties are not allowed"). On CloudFormation, Spot
+  #     for a SINGLE instance is expressible ONLY through an
+  #     AWS::EC2::LaunchTemplate carrying
+  #     LaunchTemplateData.InstanceMarketOptions, which the Instance then
+  #     references. So this resource exists purely to carry the market options —
+  #     everything that defines the box (AMI, networking, IMDSv2, block devices,
+  #     UserData, tags) deliberately stays on the Instance so there is exactly
+  #     ONE definition of it and the spot/on-demand paths can't drift.
+  #
+  #     Created only under IsSpot, and the Instance references it only under
+  #     IsSpot, so an on-demand stack's resource graph is exactly what it was
+  #     before this flag existed.
+  SpotLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: IsSpot
+    Properties:
+      LaunchTemplateName: !Sub "kirocrew-${StackTag}-spot"
+      # Tag the launch template ITSELF (this is the CreateLaunchTemplate
+      # tag-on-create, not the launched resources) so the launcher IAM policy can
+      # gate DeleteLaunchTemplate on kirocrew:managed=true — the same treatment
+      # the security group above gets.
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - { Key: "kirocrew:managed", Value: "true" }
+            - { Key: "kirocrew:instance", Value: !Ref StackTag }
+      LaunchTemplateData:
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions:
+            # PERSISTENT + STOP, never AWS's defaults (one-time + terminate):
+            # the Instance's root volume below carries DeleteOnTermination: true,
+            # so a terminate-on-interruption would delete the gp3 root and take
+            # the whole data home (~/.kiro/crew — memory, sessions, config) with
+            # it. "stop" keeps the EBS volume intact; "persistent" is what lets
+            # EC2 bring the stopped instance back by itself once capacity returns
+            # (only EC2 can restart an interruption-stopped Spot instance — a
+            # user `cloud start` on one fails with an AWS error, so a
+            # non-persistent request would strand the box until it is rebuilt).
+            # RunInstances only accepts a persistent request with
+            # InstanceInterruptionBehavior stop|hibernate, so the two settings
+            # are a package: never relax either half.
+            SpotInstanceType: persistent
+            InstanceInterruptionBehavior: stop
+            # Explicit far-future expiry, deliberately NOT left to the default.
+            # AWS's docs are ambiguous for this exact path: the RunInstances
+            # SpotMarketOptions variant says a persistent request with no
+            # ValidUntil stays active until cancelled, but the
+            # LaunchTemplateSpotMarketOptionsRequest variant (the one used here)
+            # documents "Default: 7 days from the current date". If the 7-day
+            # default applied it would be FATAL: request expiry is treated as
+            # cancellation, and cancelling a "disabled" request (the state a
+            # STOPPED spot instance's request sits in) AUTO-TERMINATES that
+            # stopped instance — which, with DeleteOnTermination: true, is
+            # silent data loss on any box left stopped for a week. Pinning a
+            # far-future date makes the request never expire under either
+            # reading. `cloud destroy` cancels it explicitly (see cloud/ec2.py).
+            ValidUntil: "2099-01-01T00:00:00Z"
+        # Tag the SPOT REQUEST at creation. This is load-bearing, not cosmetic:
+        # terminating a running OR stopped instance that belongs to a persistent
+        # request flips the request back to "open" and EC2 launches a REPLACEMENT
+        # instance OUTSIDE this stack — so `cloud destroy` must cancel the
+        # request BEFORE delete-stack, and it finds it by exactly these tags.
+        # Tagging on create is also what makes the launcher policy's
+        # aws:ResourceTag gate on CancelSpotInstanceRequests meaningful. (The
+        # create side cannot be gated: AWS documents aws:RequestTag on the
+        # spot-instances-request resource for RunInstances as unsupported.)
+        #
+        # The instance/volume entries below are what make a REPLACEMENT instance
+        # cleanable. When a persistent request re-opens, the Spot service
+        # relaunches from the REQUEST's stored launch specification — not from
+        # CloudFormation — so the tags CFN puts on the Instance resource never
+        # reach that replacement. Untagged, it is invisible to the sweep's
+        # tag-filtered describe AND denied by the launcher policy's
+        # aws:ResourceTag-gated ec2:TerminateInstances, i.e. exactly the orphan
+        # the sweep exists for would be the one it cannot kill. Tagging at the
+        # LAUNCH TEMPLATE level rides along on every relaunch, so the
+        # replacement is both discoverable and terminable.
+        #
+        # On the PRIMARY launch these duplicate the tags CloudFormation already
+        # sends with RunInstances (same keys, same values). That is a harmless
+        # merge, not a conflict: EC2 documents request-level tag specifications
+        # as merged with the launch template's, with the request's value winning
+        # on a duplicate key — and here the two values are identical.
+        TagSpecifications:
+          - ResourceType: spot-instances-request
+            Tags:
+              - { Key: "kirocrew:managed", Value: "true" }
+              - { Key: "kirocrew:instance", Value: !Ref StackTag }
+          - ResourceType: instance
+            Tags:
+              - { Key: "Name", Value: !Sub "kirocrew-${StackTag}" }
+              - { Key: "kirocrew:managed", Value: "true" }
+              - { Key: "kirocrew:instance", Value: !Ref StackTag }
+          # The root volume travels with the instance (DeleteOnTermination), so
+          # tagging it matters only for a replacement the user has to find and
+          # bill-attribute by hand — same keys as the instance, so cost
+          # allocation and the console filter agree with the primary launch.
+          - ResourceType: volume
+            Tags:
+              - { Key: "Name", Value: !Sub "kirocrew-${StackTag}" }
+              - { Key: "kirocrew:managed", Value: "true" }
+              - { Key: "kirocrew:instance", Value: !Ref StackTag }
+
   # --- The instance. UserData installs KiroCrew + kiro-cli + the systemd service
   #     and signals the WaitCondition when the gateway is healthy (or fails it
   #     with the tail of the setup log, so the stack rolls back cleanly).
@@ -229,6 +349,16 @@ Resources:
             - !FindInMap [ArchToAmiParam, arm64, Param]
             - !FindInMap [ArchToAmiParam, x8664, Param]
       IamInstanceProfile: !Ref InstanceProfile
+      # The ONLY spot-specific line on the instance: reference the launch
+      # template that carries InstanceMarketOptions (see SpotLaunchTemplate above
+      # for why it can't live here directly). AWS::NoValue on the on-demand path,
+      # so the rendered resource is unchanged when Spot="false". The LT carries
+      # market options ONLY, so nothing here is overridden by it.
+      LaunchTemplate: !If
+        - IsSpot
+        - LaunchTemplateId: !Ref SpotLaunchTemplate
+          Version: !GetAtt SpotLaunchTemplate.LatestVersionNumber
+        - !Ref AWS::NoValue
       # Attach the ENI explicitly so the public-IP decision is instance-level
       # (the subnet's MapPublicIpOnLaunch may disagree either way). The launcher
       # computes the subnet's egress kind and passes AssociatePublicIp
