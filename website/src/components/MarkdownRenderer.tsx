@@ -1236,6 +1236,91 @@ export function rehypeSanitize() {
   }
 }
 
+/** A whole mdast `html` node that is exactly ONE tag: `<x>`, `</x>`, `<x a b>`,
+ * `<x/>`. `[^>]*` forbids an interior `>`, and the leading `[a-zA-Z]` excludes
+ * comments (`<!-- -->`) and doctypes, which must keep their existing handling. */
+const SINGLE_TAG_RE = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^>]*)?\/?>$/
+
+/** Tag name of a single-tag html node, or undefined when it is not one. */
+function singleTagName(value: string): string | undefined {
+  return SINGLE_TAG_RE.exec(value)?.[1]?.toLowerCase()
+}
+
+/** Showable verbatim. Executable tags keep their `[unsupported: x]` marker; every
+ * other unknown tag diverts, because a text node is inert wherever it lands. */
+function divertibleTag(tag: string): boolean {
+  return !UNSAFE_RECONSTRUCT_TAGS.has(tag)
+}
+
+/** Index of the sibling that closes `tag`, tracking same-tag nesting; -1 if unclosed. */
+function matchingCloseIndex(kids: MdastNode[], start: number, tag: string): number {
+  let depth = 0
+  for (let j = start + 1; j < kids.length; j++) {
+    const k = kids[j]
+    if (k.type !== 'html' || typeof k.value !== 'string') continue
+    if (singleTagName(k.value) !== tag) continue
+    if (k.value.startsWith('</')) {
+      if (depth === 0) return j
+      depth--
+    } else if (!k.value.endsWith('/>')) depth++
+  }
+  return -1
+}
+
+/** Render non-allowlisted single tags VERBATIM instead of reconstructing them.
+ *
+ * Runs at the remark (mdast) stage, before rehypeRaw reaches the HTML parser. An
+ * mdast `html` node's `value` IS the author's original source substring, so
+ * converting it to `text` reproduces exactly what was typed: original case,
+ * original spacing, and no closing tag the author never wrote.
+ *
+ * Deliberately narrow — two things keep existing escapedNodeTree() handling:
+ * multi-tag raw HTML blocks, and UNSAFE_RECONSTRUCT_TAGS (script/style/iframe
+ * still collapse to `[unsupported: x]`). Everything else diverts, including a
+ * tag whose attribute value is a dangerous protocol — see frontend-security.
+ *
+ * Exported so every markdown surface that admits raw HTML shares this pass; a
+ * surface wiring rehypeSanitize without it keeps the lossy reconstruction.
+ *
+ * frontend-security: the tag never becomes an element and never reaches the HTML
+ * parser — it ends up a text node, which React escapes on render, so the React
+ * #290 guard still holds.
+ */
+export function remarkVerbatimUnknownTags() {
+  return (tree: MdastNode) => {
+    const walk = (node: MdastNode) => {
+      const kids = node.children
+      if (!kids) return
+      for (let i = 0; i < kids.length; i++) {
+        const child = kids[i]
+        if (child.type === 'html' && typeof child.value === 'string') {
+          const tag = singleTagName(child.value)
+          if (tag && !ALLOWED_TAGS.has(tag) && divertibleTag(tag)) {
+            const paired = child.value.startsWith('</') || child.value.endsWith('/>')
+              ? -1
+              : matchingCloseIndex(kids, i, tag)
+            if (paired > i) {
+              // A closed container: divert the whole span, so allowlisted tags
+              // inside it stay literal instead of rendering as live elements.
+              for (let j = i; j <= paired; j++) {
+                const k = kids[j]
+                if (k.type !== 'html' || typeof k.value !== 'string') continue
+                const kt = singleTagName(k.value)
+                if (kt && divertibleTag(kt)) k.type = 'text'
+              }
+            } else {
+              // Verbatim source text — no HTML string is built or re-parsed.
+              child.type = 'text'
+            }
+          }
+        }
+        walk(child)
+      }
+    }
+    walk(tree)
+  }
+}
+
 // CommonMark has a known emphasis defect (commonmark/commonmark-spec#650): a
 // closing `**` is only right-flanking when it is NOT preceded by punctuation, or
 // IS followed by whitespace/punctuation. `**中文（带括号）。**这句` fails both —
@@ -1252,6 +1337,7 @@ const REMARK_PLUGINS: PluggableList = [
   remarkGfm,
   remarkCjkFriendlyGfmStrikethrough,
   [remarkMath, { singleDollarTextMath: false }],
+  remarkVerbatimUnknownTags,
 ]
 
 /**

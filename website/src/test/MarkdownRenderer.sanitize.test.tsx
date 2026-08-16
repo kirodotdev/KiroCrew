@@ -12,8 +12,9 @@ describe('rehypeSanitize allowlist (React #290 fix)', () => {
       <MarkdownRenderer content={'The client is <dynamoDBClient> and it handles requests.'} />
     )
     // Should render as literal text, not crash
-    // Note: HTML parser lowercases tag names before they reach rehype
-    expect(container.textContent).toContain('<dynamodbclient>')
+    // Rendered verbatim: the tag is diverted to a text node at the remark stage,
+    // so it never reaches the HTML parser that used to lowercase it.
+    expect(container.textContent).toContain('<dynamoDBClient>')
     // Should NOT produce an actual dynamoDBClient element
     expect(container.querySelector('dynamoDBClient' as any)).toBeNull()
     expect(container.querySelector('dynamodbclient' as any)).toBeNull()
@@ -23,10 +24,10 @@ describe('rehypeSanitize allowlist (React #290 fix)', () => {
     const { container } = render(
       <MarkdownRenderer content={'<myCustomTag>inner content</myCustomTag>'} />
     )
-    // HTML parser lowercases tag names before they reach rehype
-    expect(container.textContent).toContain('<mycustomtag>')
+    // Verbatim, including the closing tag the author actually typed.
+    expect(container.textContent).toContain('<myCustomTag>')
     expect(container.textContent).toContain('inner content')
-    expect(container.textContent).toContain('</mycustomtag>')
+    expect(container.textContent).toContain('</myCustomTag>')
   })
 
   it('still renders allowed HTML tags normally', () => {
@@ -94,11 +95,17 @@ describe('rehypeSanitize allowlist (React #290 fix)', () => {
     expect(container.innerHTML).toContain('&lt;')
   })
 
-  it('drops dangerous-protocol attribute values when serializing unknown tags', () => {
+  it('renders an unknown tag with a dangerous-protocol value as inert text', () => {
     const { container } = render(
       <MarkdownRenderer content={'<customLink href="javascript:alert(1)">x</customLink>'} />
     )
-    expect(container.textContent).not.toContain('javascript:')
+    // Unknown tags are no longer serialized; they divert to a text node, so the
+    // protocol is displayed rather than parsed. No anchor, no handler, no href.
+    expect(container.querySelectorAll('a')).toHaveLength(0)
+    expect(Array.from(container.querySelectorAll('*')).filter(el =>
+      Array.from(el.attributes).some(a => /^on/i.test(a.name) || /javascript:/i.test(a.value))
+    )).toHaveLength(0)
+    expect(container.textContent).toContain('<customLink href="javascript:alert(1)">')
   })
 
   it('GFM footnotes render as real elements, not escaped text', () => {
