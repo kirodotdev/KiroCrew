@@ -99,6 +99,14 @@ def _body(resp):
     return json.loads(resp.body.decode("utf-8"))
 
 
+def _sweep(**kw):
+    """A `cancel_spot_requests` outcome: every key present, empty unless overridden."""
+    return {
+        "cancelled": [], "failed": [], "error": "", "error_kind": "",
+        "terminated": [], "terminate_failed": [], "terminate_error": "", **kw,
+    }
+
+
 class TestGuards:
     async def test_slack_origin_rejected(self, tmp_path):
         resp = await hc.api_cloud_iam_policy(
@@ -600,6 +608,112 @@ class TestInstanceMutations:
         assert resp.status == 200
         assert calls["unregistered"] == "i-resolved123"
 
+    @pytest.mark.parametrize(
+        "params,hinted",
+        [
+            ([{"ParameterKey": "Spot", "ParameterValue": "true"}], True),
+            ([], False),
+        ],
+    )
+    async def test_a_failed_start_explains_a_spot_interruption(
+        self, tmp_path, monkeypatch, params, hinted
+    ):
+        """Parity with `kirocrew cloud start`. The panel's next affordance after a
+        failed Start is Delete, which takes the root volume an interruption
+        deliberately preserved — so the 502 has to say the box is probably fine.
+        The hint rides IN `error` because that is the field the dashboard client
+        unwraps (api/client.friendlyErrText); a sibling key would be dropped —
+        behind ONE newline, which is the seam the panel splits on."""
+
+        def _boom(*a, **k):
+            raise hc.AWSError("IncorrectSpotRequestState", action="ec2:StartInstances")
+
+        monkeypatch.setattr(hc.ec2, "start", _boom)
+        monkeypatch.setattr(hc.ec2, "find_stack", lambda *a, **k: {"Parameters": params})
+
+        resp = await hc.api_cloud_start(
+            _req("POST", "/api/cloud/kc-3f9a/start", state=_state(tmp_path),
+                 match_info={"tag": "kc-3f9a"})
+        )
+
+        assert resp.status == 502
+        body = _body(resp)
+        assert body["code"] == "aws_call_failed"
+        # The real AWS error stays the headline either way.
+        assert body["error"].startswith("IncorrectSpotRequestState")
+        assert ("Do NOT destroy" in body["error"]) is hinted
+        assert ("Only EC2 can restart" in body["error"]) is hinted
+        # Structural seam, not prose: exactly one newline, error before it and the
+        # whole hint after it. The panel splits on that and nothing else, so a
+        # reworded hint must not need a matching edit in the frontend.
+        assert body["error"].count("\n") == (1 if hinted else 0)
+        if hinted:
+            error, _, note = body["error"].partition("\n")
+            assert error == "IncorrectSpotRequestState"
+            assert note == " ".join(hc.ec2.SPOT_START_FAILURE_HINT)
+
+    async def test_the_hinted_error_carries_exactly_one_newline(
+        self, tmp_path, monkeypatch
+    ):
+        """`aws` stderr can be multi-line, and the panel reads the FIRST newline as
+        the seam. So the AWS half is whitespace-collapsed before the hint is joined
+        on: a stray newline would push part of the failure into the note block and
+        break "a newline means a hint". Untouched when there is no hint."""
+
+        def _boom(*a, **k):
+            raise hc.AWSError("usage: aws [options]\naws: error: bad value")
+
+        monkeypatch.setattr(hc.ec2, "start", _boom)
+        monkeypatch.setattr(
+            hc.ec2,
+            "find_stack",
+            lambda *a, **k: {"Parameters": [{"ParameterKey": "Spot", "ParameterValue": "true"}]},
+        )
+
+        resp = await hc.api_cloud_start(
+            _req("POST", "/api/cloud/kc-3f9a/start", state=_state(tmp_path),
+                 match_info={"tag": "kc-3f9a"})
+        )
+
+        body = _body(resp)
+        assert body["error"].count("\n") == 1
+        assert body["error"].partition("\n")[0] == "usage: aws [options] aws: error: bad value"
+
+    async def test_a_successful_start_never_looks_the_spot_parameter_up(
+        self, tmp_path, monkeypatch
+    ):
+        """The hint's describe-stacks belongs to the failure path alone — a start
+        that works must cost exactly the AWS calls it always did."""
+        monkeypatch.setattr(hc.ec2, "start", lambda *a, **k: {"action": "start"})
+        monkeypatch.setattr(
+            hc.ec2, "find_stack", lambda *a, **k: pytest.fail("failure-path lookup only")
+        )
+
+        resp = await hc.api_cloud_start(
+            _req("POST", "/api/cloud/kc-3f9a/start", state=_state(tmp_path),
+                 match_info={"tag": "kc-3f9a"})
+        )
+        assert resp.status == 200
+
+    async def test_a_failed_stop_is_never_given_the_start_hint(self, tmp_path, monkeypatch):
+        """`stop` failing says nothing about an interruption — the interruption
+        story only makes sense for the start EC2 alone is allowed to do."""
+
+        def _boom(*a, **k):
+            raise hc.AWSError("IncorrectInstanceState", action="ec2:StopInstances")
+
+        monkeypatch.setattr(hc.ec2, "stop", _boom)
+        monkeypatch.setattr(
+            hc.ec2, "find_stack", lambda *a, **k: pytest.fail("stop must not grade for Spot")
+        )
+
+        resp = await hc.api_cloud_stop(
+            _req("POST", "/api/cloud/kc-3f9a/stop", state=_state(tmp_path),
+                 match_info={"tag": "kc-3f9a"})
+        )
+        assert resp.status == 502
+        assert _body(resp)["error"] == "IncorrectInstanceState"
+
     async def test_invalid_cloud_parameter_is_a_coded_400_not_a_500(
         self, tmp_path, monkeypatch
     ):
@@ -698,6 +812,287 @@ class TestInstanceMutations:
 
         assert resp.status == 200
         assert calls["unregistered"] == "i-fromjob"
+
+    @pytest.mark.parametrize(
+        "sweep_kw,leftover,remedy",
+        [
+            (
+                {"failed": ["sir-1"], "error": "AccessDenied"},
+                "sir-1",
+                "aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1",
+            ),
+            (
+                {
+                    "cancelled": ["sir-1"],
+                    "terminate_failed": ["i-0orphan"],
+                    "terminate_error": "AccessDenied",
+                },
+                "i-0orphan",
+                "aws ec2 terminate-instances --instance-ids i-0orphan",
+            ),
+        ],
+    )
+    async def test_destroy_surfaces_a_failed_spot_sweep_as_warnings(
+        self, tmp_path, monkeypatch, sweep_kw, leftover, remedy
+    ):
+        """A --spot teardown whose sweep failed leaves a live persistent request
+        (which keeps launching REPLACEMENT instances) or an un-terminated,
+        still-billing box. Reporting that as a clean teardown is exactly what the
+        CLI path exits 1 to prevent, so the dashboard must say it too — with the
+        leftover ids and the same runnable aws remedies."""
+        sweep = _sweep(**sweep_kw)
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+        monkeypatch.setattr(
+            hc.ec2,
+            "destroy",
+            lambda tag, p, r, **kw: {
+                "destroyed": True,
+                "spot_sweep": sweep,
+                "stack_is_spot": True,
+            },
+        )
+        monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
+        monkeypatch.setattr(hc.connect_mod, "unregister_instance", lambda *a, **k: True)
+        monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
+
+        resp = await hc.api_cloud_destroy(
+            _req("DELETE", "/api/cloud/kc-3f9a?profile=dev&region=eu-west-1",
+                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+        )
+
+        assert resp.status == 200  # the delete WAS accepted; this is work left over
+        blob = " ".join(_body(resp)["warnings"])
+        assert leftover in blob
+        # The same runnable command the CLI prints, profile/region included.
+        assert f"{remedy} --profile dev --region eu-west-1" in blob
+        assert "AccessDenied" in blob
+
+    async def test_destroy_warns_when_a_denied_lookup_hides_a_spot_stacks_request(
+        self, tmp_path, monkeypatch
+    ):
+        """Same grading as the CLI: a denied describe is only harmless when the
+        STACK says Spot=false. The dashboard's own credentials prove nothing —
+        an admin-launched --spot stack can be destroyed under a restricted
+        profile."""
+        base = _sweep(error="AccessDenied", error_kind=hc.ec2.SWEEP_ERROR_ACCESS_DENIED)
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+        monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
+        monkeypatch.setattr(hc.connect_mod, "unregister_instance", lambda *a, **k: True)
+        monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
+
+        async def _destroy_with(stack_is_spot):
+            monkeypatch.setattr(
+                hc.ec2,
+                "destroy",
+                lambda tag, p, r, **kw: {
+                    "destroyed": True, "spot_sweep": dict(base), "stack_is_spot": stack_is_spot
+                },
+            )
+            return _body(
+                await hc.api_cloud_destroy(
+                    _req("DELETE", "/api/cloud/kc-3f9a", state=_state(tmp_path),
+                         match_info={"tag": "kc-3f9a"})
+                )
+            )
+
+        spot = await _destroy_with(True)
+        assert "Could NOT check for a leftover persistent Spot request" in " ".join(
+            spot["warnings"]
+        )
+        assert "aws ec2 describe-spot-instance-requests" in " ".join(spot["warnings"])
+        # ...and an on-demand stack stays silent: the stack never made a request.
+        assert "warnings" not in await _destroy_with(False)
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"destroyed": True},  # on-demand: no sweep in the result at all
+            {
+                "destroyed": True,
+                "stack_is_spot": True,
+                "spot_sweep": {
+                    "cancelled": ["sir-1"], "failed": [], "error": "", "error_kind": "",
+                    "terminated": ["i-0abc"],
+                    "terminate_failed": [], "terminate_error": "",
+                },
+            },
+        ],
+    )
+    async def test_destroy_response_is_unchanged_when_the_sweep_is_clean(
+        self, tmp_path, monkeypatch, result
+    ):
+        """Nothing left live, nothing to say: the panel must not grow a warning
+        banner on every on-demand teardown, or the real one stops being read."""
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+        monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: dict(result))
+        monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
+        monkeypatch.setattr(hc.connect_mod, "unregister_instance", lambda *a, **k: True)
+        monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
+
+        resp = await hc.api_cloud_destroy(
+            _req("DELETE", "/api/cloud/kc-3f9a", state=_state(tmp_path),
+                 match_info={"tag": "kc-3f9a"})
+        )
+
+        assert resp.status == 200
+        assert _body(resp) == {**result, "cleanup": "pending"}
+
+    async def test_a_refused_destroy_is_not_reported_as_accepted(self, tmp_path, monkeypatch):
+        """`ec2.destroy` refuses to delete a --spot stack whose persistent request
+        it could not cancel (deleting would let EC2 relaunch a replacement outside
+        the stack). A 200 here would send the panel row to "Deleting…" for a stack
+        that is still standing and still billing, so the route answers an error
+        status — carrying the same runnable remedies as a warned-but-accepted
+        destroy, because they are what actually unblocks the teardown."""
+        watched, cleaned = [], []
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+        monkeypatch.setattr(
+            hc.ec2,
+            "destroy",
+            lambda tag, p, r, **kw: {
+                "destroyed": False,
+                "aborted": True,
+                "spot_sweep": _sweep(failed=["sir-1"], error="AccessDenied"),
+                "stack_is_spot": True,
+            },
+        )
+        monkeypatch.setattr(hc, "_start_teardown_watch", lambda *a, **k: watched.append(a))
+        monkeypatch.setattr(hc.connect_mod, "unregister_instance", lambda *a, **k: cleaned.append(a))
+        monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: cleaned.append(a))
+
+        resp = await hc.api_cloud_destroy(
+            _req("DELETE", "/api/cloud/kc-3f9a?profile=dev&region=eu-west-1",
+                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+        )
+
+        assert resp.status == 409
+        body = _body(resp)
+        assert body["code"] == "spot_sweep_blocked_destroy"
+        # The verdict is the status plus that code — destroy's own `aborted` /
+        # `destroyed` bookkeeping is not re-spelled into the body, because no
+        # caller reads it (the client raises on 4xx and the panel branches on
+        # the code and the remedies).
+        assert set(body) == {"error", "code", "warnings"}
+        # The message the panel renders says what is true of the crew…
+        assert "was NOT deleted" in body["error"]
+        assert "untouched" in body["error"]
+        # …and the remedy the user has to run rides along, exactly as it does on
+        # the accepted-with-warnings path, so the panel can render it as code.
+        blob = " ".join(body["warnings"])
+        assert (
+            "aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1 "
+            "--profile dev --region eu-west-1"
+        ) in blob
+        # Nothing was deleted, so nothing local may be dropped and there is no
+        # deletion for the watcher to confirm.
+        assert watched == [] and cleaned == []
+        assert "cleanup" not in body
+
+    async def _destroy_absent_stack(self, tmp_path, monkeypatch, sweep, calls=None):
+        """Drive the destroy route against a stack AWS says is already gone.
+
+        `ec2.destroy` reports that with `already_absent` and an EMPTY sweep on
+        purpose — it looks the stack up first so a failed lookup cannot abort
+        mid-sweep, which leaves the orphan sweep to its caller (the CLI does it
+        in `_cloud_destroy`). *sweep* is what the route's own sweep returns.
+        """
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+        monkeypatch.setattr(
+            hc.ec2,
+            "destroy",
+            lambda tag, p, r, **kw: {
+                "destroyed": True, "already_absent": True,
+                "spot_sweep": _sweep(), "stack_is_spot": False,
+            },
+        )
+
+        def _cancel(tag, profile="", region=""):
+            if calls is not None:
+                calls.append((tag, profile, region))
+            return sweep
+
+        monkeypatch.setattr(hc.ec2, "cancel_spot_requests", _cancel)
+        monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
+        monkeypatch.setattr(hc.connect_mod, "unregister_instance", lambda *a, **k: True)
+        monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
+        return await hc.api_cloud_destroy(
+            _req("DELETE", "/api/cloud/kc-3f9a?profile=dev&region=eu-west-1",
+                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+        )
+
+    async def test_destroy_sweeps_orphan_spot_requests_when_the_stack_is_gone(
+        self, tmp_path, monkeypatch
+    ):
+        """A rolled-back --spot launch leaves its persistent request with NO stack,
+        and that is the case the docs send people to destroy for. The CLI sweeps it
+        on its own describe miss; without the same sweep here the panel would report
+        a clean teardown while the request keeps handing out replacements."""
+        calls = []
+        resp = await self._destroy_absent_stack(
+            tmp_path, monkeypatch,
+            _sweep(cancelled=["sir-1"], terminated=["i-0orphan"]),
+            calls,
+        )
+
+        assert resp.status == 200
+        body = _body(resp)
+        # Swept with the request's own coordinates, and the outcome replaces the
+        # empty placeholder ec2.destroy returned.
+        assert calls == [("kc-3f9a", "dev", "eu-west-1")]
+        assert body["spot_sweep"]["cancelled"] == ["sir-1"]
+        assert body["spot_sweep"]["terminated"] == ["i-0orphan"]
+        # It worked, so there is nothing left for the user to do.
+        assert "warnings" not in body
+
+    async def test_destroy_warns_when_the_orphan_sweep_fails(self, tmp_path, monkeypatch):
+        """Same verdict and wording as `kirocrew cloud destroy` on the no-stack path,
+        which exits 1 here: an un-cancelled persistent request keeps launching
+        replacement instances, so the ids and the runnable remedy must reach the panel."""
+        resp = await self._destroy_absent_stack(
+            tmp_path, monkeypatch, _sweep(failed=["sir-1"], error="AccessDenied"),
+        )
+
+        assert resp.status == 200  # the delete itself was a no-op success
+        blob = " ".join(_body(resp)["warnings"])
+        assert "sir-1" in blob
+        assert (
+            "aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1 "
+            "--profile dev --region eu-west-1"
+        ) in blob
+        assert "AccessDenied" in blob
+
+    async def test_destroy_of_an_absent_stack_with_denied_lookup_gets_the_honest_notice(
+        self, tmp_path, monkeypatch
+    ):
+        """With no stack whose Spot parameter could rule a leftover request in or
+        out, a denied lookup must not vanish into silence: the CLI prints the
+        'nothing to prove it either way' line, and the panel gets the same words
+        as `notices` — softer than `warnings`, because nothing is KNOWN to be
+        billing, so the audit outcome must stay success, not partial."""
+        from kiro_crew.cloud.ec2 import SWEEP_ERROR_ACCESS_DENIED
+
+        resp = await self._destroy_absent_stack(
+            tmp_path, monkeypatch,
+            _sweep(error="AccessDenied", error_kind=SWEEP_ERROR_ACCESS_DENIED),
+        )
+
+        assert resp.status == 200
+        body = _body(resp)
+        assert "warnings" not in body
+        blob = " ".join(body["notices"])
+        assert "nothing to prove it either way" in blob
+        assert "check the EC2 console" in blob
+
+    async def test_destroy_of_an_absent_on_demand_stack_is_unchanged(self, tmp_path, monkeypatch):
+        """The sweep finds nothing for every stack that never ran --spot, so the
+        response must stay byte-identical to the pre-Spot one."""
+        resp = await self._destroy_absent_stack(tmp_path, monkeypatch, _sweep())
+
+        assert resp.status == 200
+        assert _body(resp) == {
+            "destroyed": True, "already_absent": True,
+            "spot_sweep": _sweep(), "stack_is_spot": False, "cleanup": "pending",
+        }
 
     async def test_destroy_denied_maps_403(self, tmp_path, monkeypatch):
         from kiro_crew.cloud.aws import CloudActionDenied

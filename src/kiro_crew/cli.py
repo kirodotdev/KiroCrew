@@ -1626,6 +1626,7 @@ Examples:
   kirocrew cloud launch --size power     # non-interactive size
   kirocrew cloud launch --new            # create a separate new instance
   kirocrew cloud launch --subnet subnet-0abc…  # pin the launch to an exact subnet
+  kirocrew cloud launch --spot           # cheaper Spot pricing (can be interrupted)
   kirocrew cloud list                    # list your cloud instances
   kirocrew cloud connect                 # reopen the dashboard over SSM
   kirocrew cloud stop | start            # pause / resume (save cost)
@@ -1666,6 +1667,21 @@ Examples:
         "auto-discovery — required to target a dedicated/private-subnet VPC "
         "when a default VPC exists. The subnet must have internet egress "
         "(NAT or IGW route).",
+    )
+    _c_launch.add_argument(
+        "--spot",
+        action="store_true",
+        # %% because argparse %-expands help text (a bare % raises at --help time).
+        help="Provision the instance on Spot pricing (typically 60-90%% cheaper "
+        "than on-demand). AWS can reclaim the capacity with a 2-minute notice: "
+        "an agent task running at that moment dies ungracefully, the same way a "
+        "host reboot kills it. EC2 STOPS the instance rather than terminating it, "
+        "so the disk and everything in ~/.kiro/crew survive, and EC2 itself "
+        "restarts it once capacity returns — only EC2 can resume an "
+        "interruption-stop, so `cloud start` fails on one (wait for the "
+        "auto-resume); your own `cloud stop`/`start` keep working. `cloud "
+        "destroy` cancels the Spot request before deleting the stack. New stacks "
+        "only (use --new --spot); capacity varies by size tier and region.",
     )
     _c_launch.add_argument("-y", "--yes", action="store_true", help="Accept defaults, no prompts")
     _c_launch.add_argument(

@@ -68,7 +68,7 @@ claim that a hostile in-process agent is fully contained.
 | Module | Role |
 |--------|------|
 | `aws.py` | The single `run_aws` chokepoint — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key). `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`. |
-| `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
+| `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); opt-in `Spot=true` parameter override (`--spot`) plus `find_spot_requests`/`probe_spot_requests` (read-only, for the surface that must ask before it cancels)/`cancel_spot_requests` (cancel, then terminate everything except `exclude_instance_id` — the stack's own instance, which `delete-stack` terminates), which `destroy` runs AFTER the stack lookup and BEFORE `delete-stack` — so a persistent Spot request can't spawn a replacement instance outside the stack, and a failed `DescribeStacks` can't abort a teardown that already terminated the box; `spot_sweep_leaves_live_risk`, which makes `destroy` return `aborted` INSTEAD of deleting a `Spot=true` stack whose request may still be open (the no-stack orphan sweep belongs to whichever surface saw the miss — `cli_cloud` on its "no stack found" early return, the dashboard destroy route on an `already_absent` result); `stack_uses_spot` (the stack's own `Spot` parameter, free off the `describe-stacks` payload) + `grade_spot_sweep`, the one grader both the CLI and the dashboard destroy route report from, and `spot_start_failure_hint` (failure-path only, never raises), which both start surfaces append to a failed `start` so an interruption stop doesn't read as a box worth destroying; tag-based stateless discovery; `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `port_is_free` / `wait_for_local_port`. |
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM. |
@@ -131,6 +131,249 @@ stack; reusing an existing stack warns interactively that its network is fixed,
 and **hard-fails under `--yes`** — a script's explicitly requested pin must not
 be silently ignored.
 
+`launch --spot` opts the new instance into **Spot pricing** (typically 60-90%
+below on-demand, varying by tier/AZ/region). It is threaded the same way as
+`--subnet` — a single `Spot=true` parameter override, appended **only** when the
+flag is set, so an on-demand launch's argv is unchanged and the template's
+`Spot: "false"` default stands.
+
+The template expresses it through a **separate `AWS::EC2::LaunchTemplate`
+(`SpotLaunchTemplate`, `Condition: IsSpot`)** that the Instance references via
+`LaunchTemplate: !If [IsSpot, {...}, !Ref AWS::NoValue]`. That indirection is
+forced, not stylistic: `AWS::EC2::Instance` has **no `InstanceMarketOptions`
+property** (it is a RunInstances-only parameter — cfn-lint rejects it with
+E3002), so a launch template is the only way to put market options on a
+CloudFormation single instance. The launch template carries market options and
+tag specifications **and nothing else** — AMI, networking, IMDSv2, block devices,
+UserData and tags all stay on the Instance, so there is one definition of the box
+and the spot/on-demand paths can't drift. With `Spot=false` the launch template
+isn't created and the Instance's `LaunchTemplate` resolves to `AWS::NoValue`, so
+the on-demand resource graph is byte-for-byte what it was.
+
+The request is pinned to **`SpotInstanceType: persistent` +
+`InstanceInterruptionBehavior: stop`**, never AWS's defaults (`one-time` +
+`terminate`): the root volume is `DeleteOnTermination: true`, so a
+terminate-on-interruption would delete the gp3 root and take the whole data home
+(`~/.kiro/crew`) with it. RunInstances only accepts a persistent request with
+`stop`/`hibernate`, so the two settings are a package. `ValidUntil` is pinned
+explicitly to a far-future date rather than defaulted: the
+`LaunchTemplateSpotMarketOptionsRequest` docs give a **7-day default**, expiry
+counts as cancellation, and cancelling the request of a *stopped* Spot instance
+**auto-terminates** it — which with `DeleteOnTermination: true` is silent data
+loss on a box merely parked for a week.
+
+**The launch template's `TagSpecifications` are load-bearing three times over.**
+`spot-instances-request` is how `destroy` finds the request to cancel (and what
+makes the launcher policy's `aws:ResourceTag` gate on
+`CancelSpotInstanceRequests` mean anything; the create side can't be gated, since
+AWS documents `aws:RequestTag` on that resource for RunInstances as
+unsupported). `instance` and `volume` are what make a **replacement** instance
+cleanable: when a persistent request re-opens, the Spot service relaunches from
+the *request's* stored launch specification, not from CloudFormation, so the tags
+CFN puts on the `Instance` resource never reach that box. Untagged, it is
+invisible to the sweep's tag-filtered describe *and* denied by the tag-gated
+`ec2:TerminateInstances` — the one orphan the sweep exists for would be the one
+it cannot kill. On the primary launch these duplicate the tags CloudFormation
+already sends with RunInstances; EC2 merges request-level and template-level tag
+specifications (request wins on a duplicate key) and here both values are
+identical, so it is a no-op. Pre-existing orphans stay untagged, so the manual
+`aws ec2 terminate-instances` fallback remains.
+
+**Honest interruption semantics.** An interruption is *not* fully symmetric with
+a user stop. EC2 stops the instance (volume intact) and, because the request is
+persistent, restarts it itself when capacity returns. But **only EC2 can restart
+an interruption-stopped Spot instance** — `cloud start` on one fails with an AWS
+error, and the user has to wait for the auto-resume. A user's own `cloud stop` →
+`cloud start` works normally. `cloud status` cannot distinguish the two stop
+reasons; the failing `start` is the tell — and it now *says* so rather than
+leaving the user to decode a raw AWS error (see `spot_start_failure_hint`
+below). Also unhandled: the running agent task
+at the moment of reclaim — the 2-minute interruption notice is not observed on
+the box, so an in-flight task dies ungracefully, exactly as on a host reboot.
+
+**Teardown owns one resource CloudFormation doesn't.** A persistent Spot request
+outlives its instance: terminating a running *or stopped* instance flips the
+request back to `open` and EC2 launches a **replacement** outside the stack. So
+teardown calls `cancel_spot_requests` (describe by **both**
+`tag:kirocrew:managed=true` *and* `tag:kirocrew:instance=<tag>`, then
+`cancel-spot-instance-requests`) **before**
+`delete-stack`. Ownership takes both keys, exactly as `find_stack` demands them
+before status/stop/start/destroy touch a stack: the instance tag alone is a plain
+user tag anyone can set, so a foreign request carrying it (or colliding on a
+common tag like `dev`) would be cancelled — and its instance terminated — by
+`cloud destroy`. The launch template tags our requests with both, and the
+tag-gated `ec2:CancelSpotInstanceRequests` grant keys on the managed one, so the
+lookup and the policy agree. The state filter is applied **client-side**, excluding the
+terminal states (`cancelled`/`closed`/`failed`) rather than allow-listing the
+live ones: `disabled` — the state of a persistent request whose instance is
+stopped, the one that most needs sweeping — is not a documented value for the
+API's `state` filter, and excluding terminal states makes any future state
+default to "sweep it". The sweep then **terminates the instances** those requests
+point at, because cancelling an `active` request leaves its running instance
+alive and a *replacement* instance is not a stack resource that `delete-stack`
+would ever touch (for a stopped/`disabled` request EC2 terminates it as part of
+the cancel — its doing, not ours, and unavoidable if the request is to go away).
+
+**Except the stack's own instance**, which `destroy` passes as
+`cancel_spot_requests(exclude_instance_id=…)` (the id is an output of the
+`describe-stacks` payload `find_stack` already returned — no extra call). While
+the stack stands, terminating its instance is CloudFormation's job, and doing it
+ourselves is not equivalent: if the `delete-stack` that follows is refused
+(denied, throttled) we have destroyed the box **and** its `DeleteOnTermination`
+root volume out from under a stack that still exists — the user loses
+`~/.kiro/crew` and gets nothing they asked for. The orphan path (no stack)
+excludes nothing: no `delete-stack` is coming for those.
+
+**Ordering, exactly once.** Inside `destroy` the stack lookup runs **first** and
+the sweep second (`find_stack` → sweep → `delete-stack`). The reverse would let a
+throttled or denied `cloudformation:DescribeStacks` abort *after* the request was
+cancelled and the instance terminated, leaving the user told only "could not
+query stack" with no hint the box is already gone. Nothing is lost by waiting:
+the orphaned-request case — a rolled-back `--spot` launch whose stack is already
+gone — is swept by whichever surface saw the miss: `cli_cloud` on its "no stack
+found" early return (the path that skips `ec2.destroy` entirely), the dashboard's
+destroy route when `ec2.destroy` comes back `already_absent`. So there is exactly
+one sweep per teardown: the caller's when no stack exists, `destroy`'s (after the
+lookup, before `delete-stack`) when one does; cancel first, then terminate. This
+is why the guide recommends `cloud destroy` after a failed `--spot` launch. For
+an on-demand stack it is one describe that finds nothing.
+
+**The orphan sweep asks first.** Cancelling is destructive in a way the verb
+hides: a `disabled` request is one whose instance is *stopped*, and EC2
+terminates that instance as the request is cancelled — the root volume holding
+`~/.kiro/crew` with it. So the CLI's no-stack branch runs the read-only
+`ec2.probe_spot_requests` (the lookup half of the sweep, same never-raises
+contract and same `error_kind` grading, mutating nothing), prints the request ids
+and the instances they point at, and asks the **same confirmation the stack path
+asks** — `-y/--yes` skips it, a decline is rc 0 with nothing touched — before
+calling `cancel_spot_requests`. Finding nothing keeps the old silent "nothing to
+remove" (a prompt for cancelling nothing is a prompt people stop reading), and a
+lookup that failed never prompts at all: nothing was mutated, so it goes straight
+to the grader. The cancel re-runs the lookup, deliberately: what gets cancelled
+is what is live once the user says yes. The dashboard needs no equivalent — its
+Delete → "Confirm deleting" UI is answered before the route is called.
+
+`cancel_spot_requests` **never raises** — not `AWSError` and not
+`CloudActionDenied` (the CLI's no-stack sweep is the one mutating entry point
+with no `assert_human_action` in front of it, so an agent-session `cloud destroy`
+on a missing stack must still end in a clean rc-0 "nothing to remove"). It
+returns an outcome (`{cancelled, failed, error, error_kind, terminated,
+terminate_failed, terminate_error}`) so "nothing to cancel" is distinguishable
+from "the cancel was denied". What it looked at is not reported, only what it
+did and what it failed to do. `destroy` threads it out as `spot_sweep` — and
+only as that, with no happy-path shorthand for the cancelled ids, because a
+second spelling of `spot_sweep["cancelled"]` is a key a reader can consult
+without ever seeing the failure fields beside it. The CLI **warns with the ids
+and the exact runnable `aws ec2 cancel-spot-instance-requests` /
+`terminate-instances` command** on a failure, replacing the "You won't be billed
+for it" line and **exiting 1** — a
+still-open persistent request keeps handing out replacement instances, which is
+strictly worse than the "delete did not confirm completion" case that already
+exits non-zero so automation can't assume teardown finished.
+
+**A `Spot=true` stack whose sweep failed is NOT deleted.** Deleting is what
+creates the zombie: `delete-stack` terminates the instance, the request we could
+not cancel (or could not even look up) flips back to `open`, and EC2 launches a
+replacement outside a stack that no longer exists — untracked, and billing until
+someone finds it. So `destroy` checks `spot_sweep_leaves_live_risk` (the cancel
+`failed`, or the lookup returned any `error` — including a *denied* or
+agent-refused one, which on a `Spot=true` stack hides exactly the request that
+zombies) and returns `{destroyed: False, aborted: True, spot_sweep,
+stack_is_spot}` **before** issuing the
+delete. Reported, not raised: the sweep outcome *is* the message, and an
+exception string cannot carry the ids and remedies. A failed *terminate* is
+deliberately not live risk — the cancel succeeded, so nothing can relaunch; that
+box is leftover work to report, not a reason to leave the stack standing. Nothing
+changes for on-demand stacks (no request, nothing that could relaunch), so the
+quiet teardown every old-policy user runs is untouched. Leaving the stack up
+costs the instance-hours the user already has, keeps their disk, and keeps
+`destroy` re-runnable the moment the request is gone.
+
+Both surfaces then report a refusal, not a teardown. The **CLI** prints the
+sweep's remedies, then `Did NOT delete the '<tag>' stack` with why, "cancel the
+request(s) — the command above, or the EC2 console — then re-run `kirocrew cloud
+destroy`", and "your stack, instance and disk are untouched"; it exits 1 and
+**touches no local state** (the registration, the uploaded source and `last_tag`
+all still describe a live crew). The **dashboard** answers **409
+`spot_sweep_blocked_destroy`** with that message plus the same `warnings` lines,
+starts no teardown watcher and sets no `cleanup: "pending"`. The panel's
+`deleteMutation.onError` therefore runs instead of `onSuccess`, so no row goes to
+"Deleting…" for a stack that is still standing, and `sweepRemediesFromError`
+recovers the remedies from `ApiError.body` so the copyable command shows with the
+refusal rather than only the sentence naming the problem.
+
+A failed *lookup* is graded by `error_kind` **and by the stack's own `Spot`
+parameter**, because the cause alone doesn't decide whether silence is honest.
+The authority is the stack, never an inference about the principal: the profile
+running `destroy` need not be the one that launched (an admin can create a
+`--spot` stack that a restricted profile later tears down), so "this caller
+couldn't have made a Spot stack" is not a safe reason to reassure anybody.
+`destroy` reads `Spot` off the `describe-stacks` payload `find_stack` already
+fetched — no extra API call — and returns it as `stack_is_spot` beside
+`spot_sweep`. Then:
+
+* `access_denied` (IAM) or `agent_session` (the chokepoint, which mutated
+  nothing) **on a `Spot=true` stack** → sweep failure: a warning naming the
+  manual describe, no billing reassurance, rc 1. This is the false-reassurance
+  hole the parameter closes.
+* the same two **on a `Spot=false` stack** → the old quiet note at rc 0 with the
+  reassurance kept, now justified by the stack (it never created a request)
+  rather than by guessing at the caller's policy. With **no stack at all** (the
+  orphan sweep, on either surface) it stays rc 0 and "nothing to remove", but the
+  note says outright that a leftover request can't be ruled out without the
+  permission.
+* `failed` (throttling, no network, expired SSO, unparseable JSON) → a sweep
+  failure on **any** stack, including `Spot=false`: a stack re-deployed without
+  `--spot` can still carry a request left by its Spot generation. Warning, no
+  reassurance, rc 1, plus the manual `aws ec2 describe-spot-instance-requests
+  --filters Name=tag:kirocrew:managed,Values=true
+  Name=tag:kirocrew:instance,Values=<tag>` to check by hand — the same two
+  filters the sweep itself uses, so the hand-check answers the same question and
+  can't surface a foreign request the sweep would never have touched.
+
+The grading itself lives in `ec2.grade_spot_sweep` (`{failed, problems, notes}`),
+not in the CLI, because **two** surfaces destroy stacks. `cli_cloud` renders it
+to the terminal and exits 1 on `failed`; the dashboard's `DELETE /api/cloud/
+{tag}` returns the identical lines — ids plus the runnable `aws` remedy — as
+`warnings`: on its 200 when the delete *was* accepted (this is work left over),
+audited as `partial` rather than `success`, or on the 409 above when the delete
+was refused. It adds nothing at all when the sweep is clean. A stack destroyed from the panel leaks exactly as much money as
+one destroyed from a terminal, so the two must not drift.
+
+Within one problem the **detail order is part of the contract**: the raw AWS
+error first, the runnable `aws` remedy **always last**. The terminal then ends on
+the line the user can act on, and the dashboard — which flattens
+`summary + details` into one string — can peel the trailing command back off it
+and render it as selectable, copyable `<code>` instead of prose that wraps
+mid-flag. A remedy followed by more prose would drag that prose into the code
+block, and a mistyped `--spot-instance-request-ids` leaves the request live. The
+panel splits on the `aws ec2 ` marker and gives `notices` the neutral note
+treatment rather than the amber warning block: "nothing proves it either way" and
+"this is still billing" are different claims, and dressing the first as the
+second is how the second stops being read.
+
+**A failed `cloud start` on a `--spot` stack explains itself.** The docs above
+call the failing start "the tell" for an interruption stop; the product now says
+so at the moment it happens, on both surfaces. `ec2.spot_start_failure_hint`
+reads the stack's `Spot` parameter and, when it is true, returns the lines the
+CLI prints under `ui.fail` and the dashboard appends to the 502's `error` (the
+field its client unwraps, behind a single newline the panel splits on — a
+structural seam, so the hint stays free to be reworded or translated): likely an
+interruption stop, only EC2 can restart it,
+it resumes on its own, your data is intact, **do not destroy the instance to fix
+it**. That last line is the point — the obvious reaction to "start is broken" is
+delete-and-relaunch, and destroy takes the `DeleteOnTermination` root volume the
+interruption deliberately preserved. The lookup is a **failure-path** call: a
+successful start makes exactly the AWS calls it always did, and the hint never
+raises, so a second failure inside it cannot displace the error the user needs.
+
+Like `--subnet`, `--spot` only takes effect on a **new** stack — a resumed stack
+keeps the pricing model it was created with (warn interactively, hard-fail under
+`--yes`), and moving an existing box onto Spot means launching a new one
+(`--new --spot`). Spot compounds with, rather than replaces, an EventBridge
+scheduled stop/start: it cuts the instance-hour rate while running, the schedule
+cuts the hours, and neither touches the NAT gateway floor.
+
 The optional SSH CIDR is also **normalized** (host bits cleared, `1.2.3.4/24` →
 `1.2.3.0/24`) so the SG ingress rule is canonical. `get_stack_failures` sorts the
 specific bootstrap reason ahead of CloudFormation's generic `[WaitCondition]`
@@ -185,27 +428,65 @@ exits non-zero.
   results) is granted but `ssm:ListCommandInvocations` is NOT, so a leaked
   launcher credential can't blindly enumerate the command output that carries the
   minted dashboard token.
-- **Create verbs require the managed request-tag (per-resource-ARN split).**
-  `ec2:RunInstances` and `ec2:CreateSecurityGroup` require
-  `aws:RequestTag/kirocrew:managed=true`, so a leaked launcher credential can't
-  create untagged instances/SGs that sit outside the tag-gated
-  Stop/Terminate/Delete/Authorize statements. Because these calls authorize
-  **per-resource** across ARNs that don't carry the tag (RunInstances also creates
-  an untagged volume + ENI and references an existing image/subnet/SG; this
-  template's `TagSpecifications` tag only the instance), a blanket request-tag
-  403s the launch — so the condition is split by ARN: `RunInstances` requires the
-  tag on `instance/*` only (`Ec2RunInstancesTaggedInstance`) with the
-  volume/ENI/referenced ARNs granted unconditioned
-  (`Ec2RunInstancesSupportingResources`), and `CreateSecurityGroup` requires it on
-  the new `security-group/*` (`Ec2CreateSecurityGroupTagged`) with the referenced
-  `vpc/*` unconditioned. Proven with a least-privilege assumed-role `run-instances
-  --dry-run` (tagged instance ALLOWED incl. the template-shaped call, untagged
-  DENIED; tagged SG ALLOWED, untagged DENIED).
+- **Create verbs require the managed request-tag (scoped to the CREATED ARNs).**
+  `Ec2CreateTaggedResources` requires `aws:RequestTag/kirocrew:managed=true` for
+  `ec2:RunInstances` on `instance/*`, `ec2:CreateSecurityGroup` on
+  `security-group/*` and `ec2:CreateLaunchTemplate` on `launch-template/*` — so a
+  leaked launcher credential can't create untagged twins that sit outside the
+  tag-gated Stop/Terminate/Delete/Authorize statements. Because these calls
+  authorize **per-resource** across ARNs that don't carry the tag (RunInstances
+  also creates an untagged volume + ENI and references an existing
+  image/subnet/SG/launch-template), a blanket request-tag 403s the launch — so
+  those ARNs are granted unconditioned in `Ec2RunInstancesSupportingResources` /
+  `Ec2CreateSecurityGroupVpc`. Proven with a least-privilege assumed-role
+  `run-instances --dry-run` (tagged instance ALLOWED incl. the template-shaped
+  call, untagged DENIED; tagged SG ALLOWED, untagged DENIED).
+  `spot-instances-request/*` is deliberately in the **unconditioned** statement:
+  AWS's own IAM example doc (`ExamplePolicies_EC2.html#iam-example-spot-instances`)
+  documents `aws:RequestTag` on that resource for `RunInstances` as **not
+  supported**, and the gate would be theatre regardless — IAM only evaluates an
+  ARN the request actually names, so an untagged request (no spot-request
+  `TagSpecification`) skips the resource entirely and the condition never fires.
+  A policy cannot prevent a rogue *untagged* Spot request; what it can do is
+  ensure ours are always tagged (the launch template's `TagSpecifications`),
+  which is what makes the `aws:ResourceTag` gate on `CancelSpotInstanceRequests`
+  meaningful.
+- **Mutating verbs require the managed resource-tag.**
+  `Ec2ManagedResourceMutateTagged` gates every verb that touches an *existing*
+  EC2 resource — Authorize/Revoke SG rules, DeleteSecurityGroup, DeleteTags,
+  Stop/Start/Terminate/Reboot, and (for `--spot`) `DeleteLaunchTemplate` +
+  `CancelSpotInstanceRequests` — on `aws:ResourceTag/kirocrew:managed=true`.
+- **Spot additions (`--spot`).** Beyond the create/mutate gates above:
+  `ec2:DescribeLaunchTemplates`/`DescribeLaunchTemplateVersions`/
+  `DescribeSpotInstanceRequests` join the read-only `Ec2Discovery` statement, and
+  `IamCreateSpotServiceLinkedRole` grants `iam:CreateServiceLinkedRole` pinned
+  BOTH by resource path (`role/aws-service-role/spot.amazonaws.com/
+  AWSServiceRoleForEC2Spot*`) and by `iam:AWSServiceName=spot.amazonaws.com`. That
+  role is required for the first Spot request in an account; the console creates
+  it silently but the CLI does not. A service-linked role can only be assumed by
+  its own service and its permissions are fixed by AWS, so creating it grants the
+  caller nothing.
+- **The policy is at the IAM size ceiling.** A customer managed policy is capped
+  at **6,144 characters** (whitespace excluded) and the cap cannot be raised. The
+  generated policy is ~6.0k, so it fits with little headroom — which is why the
+  request-tag statements are one `Ec2CreateTaggedResources` and the resource-tag
+  statements one `Ec2ManagedResourceMutateTagged` rather than the six they were
+  before. Both merges are safe (see the module comments): the resource-tag merge
+  is *exactly* equivalent — identical `Resource: "*"` and identical condition —
+  and the create merge's action×resource cross-product is **inert given current
+  EC2 authorization semantics**: `CreateSecurityGroup` is never evaluated against
+  an instance/launch-template ARN and `CreateLaunchTemplate` never against an
+  instance/SG ARN, while the one *live* cross-product — `RunInstances` on
+  `security-group/*` and `launch-template/*`, which it genuinely does authorize
+  against (that is why `Ec2RunInstancesSupportingResources` exists) — is a
+  **strictly narrower duplicate** of the unconditioned grant in that statement.
+  `test_policy_fits_iam_managed_policy_limit` pins this; the next addition should
+  split the printed policy in two rather than loosen a gate.
 - **Escalation primitives constrained + immutable, pre-created permissions
   boundary.** `ec2:CreateTags` is gated by an `ec2:CreateAction` condition
-  (`RunInstances`/`CreateSecurityGroup`) so it can only tag at creation — a holder
-  can't tag an *existing* resource `kirocrew:managed=true` to pull it under the
-  tag-gated Stop/Terminate/Delete statements. `iam:AttachRolePolicy`/`DetachRolePolicy`
+  (`RunInstances`/`CreateSecurityGroup`/`CreateLaunchTemplate`) so it can only tag
+  at creation — a holder can't tag an *existing* resource `kirocrew:managed=true`
+  to pull it under the tag-gated Stop/Terminate/Delete statements. `iam:AttachRolePolicy`/`DetachRolePolicy`
   are pinned by `iam:PolicyARN` to exactly `AmazonSSMManagedInstanceCore`. The
   `PutRolePolicy` escalation is closed by a **required permissions boundary** that
   is now **shared, content-fixed, and immutable** — closing the earlier

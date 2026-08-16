@@ -282,21 +282,16 @@ class TestPolicyDocument:
     def test_authorize_security_group_is_tag_gated(self):
         # SG rule mutation must be gated to kirocrew:managed=true SGs so a leaked
         # credential can't open ingress on unrelated security groups.
-        st = next(
-            s
-            for s in iam.policy_document()["Statement"]
-            if s["Sid"] == "Ec2SecurityGroupRulesTagged"
-        )
-        assert set(st["Action"]) == {
+        st = self._stmt("Ec2ManagedResourceMutateTagged")
+        assert {
             "ec2:AuthorizeSecurityGroupEgress",
             "ec2:AuthorizeSecurityGroupIngress",
-        }
+        } <= set(st["Action"])
         assert st["Condition"]["StringEquals"][f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
         # ...and they're not in any of the provision (create) statements.
         prov_sids = {
-            "Ec2RunInstancesTaggedInstance",
+            "Ec2CreateTaggedResources",
             "Ec2RunInstancesSupportingResources",
-            "Ec2CreateSecurityGroupTagged",
             "Ec2CreateSecurityGroupVpc",
         }
         prov_actions = {
@@ -307,49 +302,70 @@ class TestPolicyDocument:
         }
         assert "ec2:AuthorizeSecurityGroupIngress" not in prov_actions
 
-    def test_run_instances_request_tag_gated_on_instance_only(self):
-        # ec2:RunInstances must require aws:RequestTag/kirocrew:managed=true, but
-        # ONLY on the instance ARN — RunInstances authorizes per-resource across
-        # the instance it creates AND the volume/ENI it creates + the referenced
-        # image/subnet/security-group, none of which carry the request tag; a
-        # blanket request-tag on the whole action 403s the launch (proven live
-        # with run-instances --dry-run). So there are TWO statements: the
-        # instance ARN gated, the supporting ARNs ungated.
-        tagged = self._stmt("Ec2RunInstancesTaggedInstance")
-        assert tagged["Action"] == ["ec2:RunInstances"]
-        assert tagged["Resource"] == "arn:aws:ec2:*:*:instance/*"
+    def test_create_verbs_request_tag_gated_on_created_resources(self):
+        # Every EC2 resource this policy can CREATE and that a ResourceTag-gated
+        # verb later acts on must be creatable ONLY with the managed request tag —
+        # otherwise a leaked credential could make an UNtagged twin that escapes
+        # Stop/Terminate/Delete/Cancel. The supporting ARNs (volume/ENI + the
+        # referenced subnet/SG/AMI/launch-template) stay UNgated: aws:RequestTag is
+        # evaluated per-resource, so demanding it there 403s the launch (proven
+        # live with run-instances --dry-run).
+        tagged = self._stmt("Ec2CreateTaggedResources")
+        assert set(tagged["Action"]) == {
+            "ec2:RunInstances",
+            "ec2:CreateSecurityGroup",
+            "ec2:CreateLaunchTemplate",
+        }
+        assert set(tagged["Resource"]) == {
+            "arn:aws:ec2:*:*:instance/*",
+            "arn:aws:ec2:*:*:security-group/*",
+            # --spot: CFN creates the launch template carrying the market options.
+            "arn:aws:ec2:*:*:launch-template/*",
+        }
         assert (
             tagged["Condition"]["StringEquals"][f"aws:RequestTag/{iam.MANAGED_TAG_KEY}"] == "true"
         )
         support = self._stmt("Ec2RunInstancesSupportingResources")
         assert support["Action"] == ["ec2:RunInstances"]
         assert "Condition" not in support  # sub-resources/references can't be request-tagged
-        # the supporting statement must NOT include instance/* (that would bypass
-        # the request-tag gate on the instance)
+        # the supporting statement must NOT include the request-tag-gated creation
+        # ARNs (that would nullify the gate above)
         assert not any(r.endswith(":instance/*") for r in support["Resource"])
-        for needed in ("volume/*", "network-interface/*"):
+        for needed in ("volume/*", "network-interface/*", "launch-template/*"):
             assert any(r.endswith(needed) for r in support["Resource"]), f"missing {needed}"
-
-    def test_create_security_group_request_tag_gated(self):
-        # ec2:CreateSecurityGroup must require the managed request-tag on the NEW
-        # security-group ARN (so a leaked cred can't create an untagged SG that
-        # escapes the tag-gated Authorize/Delete verbs); the referenced vpc/* is
-        # ungated (pre-existing, not tagged by this call).
-        tagged = self._stmt("Ec2CreateSecurityGroupTagged")
-        assert tagged["Action"] == ["ec2:CreateSecurityGroup"]
-        assert tagged["Resource"] == "arn:aws:ec2:*:*:security-group/*"
-        assert (
-            tagged["Condition"]["StringEquals"][f"aws:RequestTag/{iam.MANAGED_TAG_KEY}"] == "true"
-        )
         vpc = self._stmt("Ec2CreateSecurityGroupVpc")
         assert vpc["Action"] == ["ec2:CreateSecurityGroup"]
         assert vpc["Resource"] == "arn:aws:ec2:*:*:vpc/*"
         assert "Condition" not in vpc
 
-    def test_no_untagged_run_instances_or_create_sg_on_instance_or_sg(self):
-        # Guard: no statement may grant ec2:RunInstances on instance/* OR
-        # ec2:CreateSecurityGroup on security-group/* WITHOUT the managed
-        # request-tag condition — that would re-open untagged-resource creation.
+    def test_spot_request_arn_is_unconditioned_on_run_instances(self):
+        # AWS's own IAM example doc (ExamplePolicies_EC2.html
+        # #iam-example-spot-instances) states that an aws:RequestTag condition on
+        # the spot-instances-request resource for RunInstances is NOT SUPPORTED,
+        # and the gate would be theatre anyway: an UNtagged request carries no
+        # TagSpecification, so IAM never evaluates the ARN and the condition never
+        # fires. Adding it back would only 403 our own (correctly tagged) launch.
+        # So the ARN lives in the UNCONDITIONED supporting statement.
+        support = self._stmt("Ec2RunInstancesSupportingResources")
+        assert "arn:aws:ec2:*:*:spot-instances-request/*" in support["Resource"]
+        assert "Condition" not in support
+        for st in iam.policy_document()["Statement"]:
+            res = st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
+            if any(r.endswith(":spot-instances-request/*") for r in res):
+                cond = st.get("Condition", {}).get("StringEquals", {})
+                assert f"aws:RequestTag/{iam.MANAGED_TAG_KEY}" not in cond, st["Sid"]
+
+    def test_no_untagged_creation_of_tag_gated_resources(self):
+        # Guard: no statement may grant a creation verb on the resource type it
+        # creates WITHOUT the managed request-tag condition — that would re-open
+        # untagged-resource creation and with it an escape from the ResourceTag
+        # gate. (RunInstances on security-group/launch-template is a REFERENCE,
+        # not a creation, so those pairs are deliberately absent here.)
+        pairs = [
+            ("ec2:RunInstances", ":instance/*"),
+            ("ec2:CreateSecurityGroup", ":security-group/*"),
+            ("ec2:CreateLaunchTemplate", ":launch-template/*"),
+        ]
         for st in iam.policy_document()["Statement"]:
             acts = set(st.get("Action", []))
             res_list = st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
@@ -358,18 +374,70 @@ class TestPolicyDocument:
                 .get("StringEquals", {})
                 .get(f"aws:RequestTag/{iam.MANAGED_TAG_KEY}")
             )
-            if "ec2:RunInstances" in acts and any(r.endswith(":instance/*") for r in res_list):
-                assert cond_tag == "true", f"{st['Sid']} runs instances on instance/* untagged"
-            if "ec2:CreateSecurityGroup" in acts and any(
-                r.endswith(":security-group/*") for r in res_list
-            ):
-                assert cond_tag == "true", f"{st['Sid']} creates SG on security-group/* untagged"
+            for action, suffix in pairs:
+                if action in acts and any(r.endswith(suffix) for r in res_list):
+                    assert cond_tag == "true", f"{st['Sid']}: {action} on {suffix} untagged"
 
     def test_lifecycle_is_tag_scoped(self):
-        st = next(s for s in iam.policy_document()["Statement"] if s["Sid"] == "Ec2LifecycleTagged")
+        st = self._stmt("Ec2ManagedResourceMutateTagged")
         cond = st["Condition"]["StringEquals"]
         assert cond[f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
         assert "ec2:TerminateInstances" in st["Action"]
+
+    def test_spot_actions_present_and_correctly_gated(self):
+        # --spot end-to-end grants, pinned so a regression can't silently drop the
+        # launch (CreateLaunchTemplate / RunInstances-on-the-request) or the
+        # teardown (CancelSpotInstanceRequests), the latter being what stops EC2
+        # from launching a REPLACEMENT instance when destroy terminates this one.
+        doc = iam.policy_document()
+        actions = {a for st in doc["Statement"] for a in st["Action"]}
+        for needed in (
+            "ec2:CreateLaunchTemplate",
+            "ec2:DeleteLaunchTemplate",
+            "ec2:DescribeLaunchTemplates",
+            "ec2:DescribeLaunchTemplateVersions",
+            "ec2:DescribeSpotInstanceRequests",
+            "ec2:CancelSpotInstanceRequests",
+            "iam:CreateServiceLinkedRole",
+        ):
+            assert needed in actions, f"missing {needed}"
+        # Cancel is destructive and must be ResourceTag-gated, never on its own
+        # ungated statement.
+        for st in doc["Statement"]:
+            if "ec2:CancelSpotInstanceRequests" in st.get("Action", []):
+                cond = st.get("Condition", {}).get("StringEquals", {})
+                assert cond.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true", st["Sid"]
+        # CreateLaunchTemplate must be tag-on-create-able (CFN passes the LT's
+        # tags inline, which AWS authorizes as ec2:CreateTags).
+        tag_on_create = self._stmt("Ec2TagOnCreate")
+        assert "CreateLaunchTemplate" in tag_on_create["Condition"]["StringEquals"]["ec2:CreateAction"]
+
+    def test_service_linked_role_pinned_to_spot_service(self):
+        # The first --spot launch in an account needs AWSServiceRoleForEC2Spot,
+        # which the console creates silently but the CLI/API does not. This is the
+        # only unconditioned-looking IAM write in the policy, so it must be pinned
+        # BOTH by resource path and by iam:AWSServiceName — otherwise it becomes a
+        # create-any-service-linked-role grant.
+        st = self._stmt("IamCreateSpotServiceLinkedRole")
+        assert st["Action"] == ["iam:CreateServiceLinkedRole"]
+        assert st["Resource"] == (
+            "arn:aws:iam::*:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot*"
+        )
+        assert st["Condition"]["StringEquals"]["iam:AWSServiceName"] == "spot.amazonaws.com"
+
+    def test_policy_fits_iam_managed_policy_limit(self):
+        # A customer managed policy is capped at 6,144 characters (whitespace not
+        # counted) and CANNOT be raised — over that, `aws iam create-policy` fails
+        # with LimitExceeded and the printed policy is unusable for every operator
+        # who isn't already an admin. The policy sits close to the cap, so this is
+        # a real gate, not a formality: adding statements requires either merging
+        # equivalent ones (see Ec2CreateTaggedResources /
+        # Ec2ManagedResourceMutateTagged) or splitting the printed policy in two.
+        compact = json.dumps(iam.policy_document(), separators=(",", ":"))
+        assert len(compact) <= 6144, (
+            f"launcher policy is {len(compact)} chars — over IAM's 6,144 managed-policy "
+            "limit; merge equivalent statements or split the policy"
+        )
 
     def _stmt(self, sid):
         return next(s for s in iam.policy_document()["Statement"] if s["Sid"] == sid)
@@ -396,25 +464,33 @@ class TestPolicyDocument:
                     "without a tag condition"
 
     def test_destructive_ec2_verbs_tag_scoped(self):
-        st = self._stmt("Ec2DestructiveTagged")
+        st = self._stmt("Ec2ManagedResourceMutateTagged")
         cond = st["Condition"]["StringEquals"]
         assert cond[f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}"] == "true"
-        for verb in ("ec2:DeleteSecurityGroup", "ec2:RevokeSecurityGroupIngress", "ec2:DeleteTags"):
+        for verb in (
+            "ec2:DeleteSecurityGroup",
+            "ec2:RevokeSecurityGroupIngress",
+            "ec2:DeleteTags",
+            # --spot teardown: CFN removes the launch template, and destroy
+            # cancels the persistent request before delete-stack.
+            "ec2:DeleteLaunchTemplate",
+            "ec2:CancelSpotInstanceRequests",
+        ):
             assert verb in st["Action"]
         # creation verbs live in the provision statements; destructive verbs don't.
-        run_st = self._stmt("Ec2RunInstancesTaggedInstance")
+        run_st = self._stmt("Ec2CreateTaggedResources")
         assert "ec2:RunInstances" in run_st["Action"]
         prov_actions = {
             a
             for sid in (
-                "Ec2RunInstancesTaggedInstance",
+                "Ec2CreateTaggedResources",
                 "Ec2RunInstancesSupportingResources",
-                "Ec2CreateSecurityGroupTagged",
                 "Ec2CreateSecurityGroupVpc",
             )
             for a in self._stmt(sid)["Action"]
         }
         assert "ec2:DeleteSecurityGroup" not in prov_actions
+        assert "ec2:DeleteLaunchTemplate" not in prov_actions
 
     def test_create_tags_only_on_create(self):
         # ec2:CreateTags must be gated by ec2:CreateAction so a leaked credential
@@ -423,14 +499,15 @@ class TestPolicyDocument:
         st = self._stmt("Ec2TagOnCreate")
         assert st["Action"] == ["ec2:CreateTags"]
         actions = st["Condition"]["StringEquals"]["ec2:CreateAction"]
-        assert set(actions) == {"RunInstances", "CreateSecurityGroup"}
+        # CreateLaunchTemplate joins the allowlist for --spot: CFN passes the
+        # launch template's tags inline, which AWS authorizes as ec2:CreateTags.
+        assert set(actions) == {"RunInstances", "CreateSecurityGroup", "CreateLaunchTemplate"}
         # and it's not in the provision (create) statements
         prov_actions = {
             a
             for sid in (
-                "Ec2RunInstancesTaggedInstance",
+                "Ec2CreateTaggedResources",
                 "Ec2RunInstancesSupportingResources",
-                "Ec2CreateSecurityGroupTagged",
                 "Ec2CreateSecurityGroupVpc",
             )
             for a in self._stmt(sid)["Action"]

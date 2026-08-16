@@ -208,13 +208,17 @@ class TestF4CfnLintCI:
     """CI workflow includes a cfn-lint job."""
 
     def test_ci_has_cfn_lint_job(self):
-        """ci.yml contains a cfn-lint job that lints deploy templates."""
+        """ci.yml contains a cfn-lint job covering every shipped template dir."""
         ci_path = (
             Path(__file__).parent.parent / ".github" / "workflows" / "ci.yml"
         )
         content = ci_path.read_text(encoding="utf-8")
         assert "cfn-lint" in content
-        assert "Lint deploy templates" in content
+        # Renamed from "Lint deploy templates" when the step's glob was widened
+        # to also cover the cloud launcher template (kirocrew-ec2.yaml).
+        assert "Lint CloudFormation templates" in content
+        assert "src/kiro_crew/deploy/skills/artifact-deploy/templates" in content
+        assert "src/kiro_crew/cloud/templates" in content
 
 
 # ── F5: SKILL.md metadata-backfill ordering ──────────────────────────────

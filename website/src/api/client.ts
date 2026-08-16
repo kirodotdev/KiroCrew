@@ -1575,8 +1575,24 @@ export const api = {
     post('/api/cloud/' + encodeURIComponent(tag) + '/stop' + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean }>,
   cloudStart: (tag: string, coords?: CloudCoords) =>
     post('/api/cloud/' + encodeURIComponent(tag) + '/start' + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean }>,
+  // `warnings` rides along with a SUCCESSFUL destroy: the delete was accepted,
+  // but the Spot sweep that runs before it left something live — a persistent
+  // request that keeps handing out replacement instances, or an instance still
+  // billing. Each entry is one self-contained line (summary + ids + the runnable
+  // aws command that finishes the job), the same text `kirocrew cloud destroy`
+  // prints before exiting 1, so the caller must surface it rather than treat a
+  // 200 as a clean teardown.
+  // `notices` is the softer sibling: informational lines for the no-stack orphan
+  // sweep (e.g. "nothing proves a leftover request either way — check the
+  // console"), where nothing is known to be billing but nothing rules it out.
+  // The harder case REJECTS the call: when the sweep could not cancel a --spot
+  // crew's persistent request the gateway refuses to delete at all (409,
+  // `code: "spot_sweep_blocked_destroy"`) — deleting would let EC2 relaunch a
+  // replacement instance outside the stack. That throws an ApiError whose `body`
+  // carries the same `warnings` lines, so the caller can show the remedies with
+  // the refusal instead of only the message.
   cloudDestroy: (tag: string, coords?: CloudCoords) =>
-    del('/api/cloud/' + encodeURIComponent(tag) + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean; unregistered?: boolean; source_removed?: boolean }>,
+    del('/api/cloud/' + encodeURIComponent(tag) + cloudQuery(coords)).then(j) as Promise<{ ok?: boolean; unregistered?: boolean; source_removed?: boolean; cleanup?: string; warnings?: string[]; notices?: string[] }>,
   // Memory
   memoryPreferences: () => fetch('/api/memory/preferences').then(j),
   saveMemoryPreferences: (content: string) => put('/api/memory/preferences', { content }),

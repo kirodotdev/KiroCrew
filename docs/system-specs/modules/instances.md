@@ -619,7 +619,7 @@ authenticated owner (`request["user"]`), non-Slack, POSIX only, `403` otherwise.
 | `POST /api/cloud/launch/{id}/signin` | Acknowledge the device-code prompt (`409` when none is pending). |
 | `POST /api/cloud/{tag}/stop` | Stop the instance behind a stack tag. |
 | `POST /api/cloud/{tag}/start` | Start it again. |
-| `DELETE /api/cloud/{tag}` | Terminate the stack (`wait=False`; a denied human-action check surfaces as `403`). |
+| `DELETE /api/cloud/{tag}` | Terminate the stack (`wait=False`; a denied human-action check surfaces as `403`). Answers `409` `spot_sweep_blocked_destroy` when a `--spot` stack's request cannot be confirmed cancelled (the delete is refused), and returns `warnings[]` on its 200 when a completed sweep left work over — see below. |
 
 **A launch is a durable job, not a request.** It outlives both the HTTP call and
 the browser tab: `cloud/launch_job.py` writes one JSON file per job under
@@ -647,6 +647,40 @@ nothing was created.
 Because the gateway cannot answer the device login on the user's behalf, a job
 parks in `awaiting_signin` with the verification URL and user code exposed as
 job state until the owner confirms it in the browser.
+
+**A destroy that can't confirm the Spot request is gone refuses to delete.**
+`ec2.destroy` cancels a `--spot` stack's persistent Spot request before
+`delete-stack` (see [cloud](cloud.md)); when the cancel fails — or the lookup
+itself goes unanswered on a `Spot=true` stack — the route answers `409`
+`spot_sweep_blocked_destroy` with the same remedy lines as `warnings[]`, starts
+no teardown, and audits `failure`: deleting anyway would terminate the instance
+and let the un-cancelled request launch an untracked replacement. When the
+delete does proceed but the sweep left work over (a failed follow-up terminate,
+or an orphan-sweep failure on an already-absent stack), the route returns the
+leftover ids and the exact runnable `aws` command as `warnings[]` on its 200 and
+audits the outcome as `partial`. The
+verdict and the wording come from the same `ec2.grade_spot_sweep` the CLI exits
+1 on, because a stack destroyed from the panel leaks exactly as much money as one
+destroyed from a terminal — the delete itself *was* accepted, so this is work
+left over, not an error status. A clean sweep (and every on-demand teardown) adds
+nothing to the response. The panel renders each line's trailing `aws` command as
+copyable `<code>` rather than wrapped prose — it is a command the user has to run
+because the gateway could not — and gives the grader's softer `notices[]` the
+neutral note treatment instead of the amber warning block, so "nothing proves it
+either way" cannot be mistaken for "this is still billing".
+
+**A failed Start on a `--spot` crew explains itself too.** `POST
+/api/cloud/{tag}/start` appends `ec2.spot_start_failure_hint` to the 502's
+`error` when the stack was launched with Spot — the same lines `kirocrew cloud
+start` prints, in the field the dashboard client unwraps. They are joined on
+behind ONE newline (the AWS half is whitespace-collapsed so that newline is the
+only one), and the panel splits there: the AWS failure keeps the red banner and
+the hint gets the neutral note block, one sentence per line. The seam is
+structural, so rewording or translating the hint needs no frontend edit.
+Without the hint the panel shows a raw AWS error whose only visible next
+affordance is **Delete**, and
+delete takes the root volume the interruption deliberately preserved. The lookup
+runs on the failure path only, so a successful Start is unchanged.
 
 ### What is reachable through which mechanism
 

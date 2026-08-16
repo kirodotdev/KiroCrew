@@ -1052,10 +1052,24 @@ jobs:
       - name: Install cfn-lint
         # Pinned: an unpinned lint tool silently changes the gate's behaviour on
         # every upstream release. Bump deliberately.
-        run: pip install "cfn-lint==1.22.3"
+        #
+        # Bumped 1.22.3 -> 1.55.0 because 1.22.3 ships a STALE AWS::EC2::Instance
+        # schema: it rejects the valid `MetadataOptions` property (the IMDSv2
+        # enforcement) with E3002, which is exactly why the cloud launcher's
+        # template could never be linted here. 1.55.0 has the current registry
+        # schema — it passes both template sets, and it is what caught the real
+        # bug this glob now guards against (AWS::EC2::Instance has NO
+        # InstanceMarketOptions property, so Spot requires a launch template).
+        run: pip install "cfn-lint==1.55.0"
 
-      - name: Lint deploy templates
-        run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
+      - name: Lint CloudFormation templates
+        # BOTH template sets: the artifact-deploy stacks and the cloud launcher's
+        # kirocrew-ec2.yaml. The launcher template was unlinted until now, which
+        # is how an invalid property reached review.
+        run: |
+          cfn-lint \
+            src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml \
+            src/kiro_crew/cloud/templates/*.yaml
 
   # The Electron shell (website/electron) has its own 460+ test node:test suite,
   # and until now NOTHING ran it on a PR — its only runner was ota-test.yml,

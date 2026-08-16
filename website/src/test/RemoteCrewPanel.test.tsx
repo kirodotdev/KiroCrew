@@ -2,14 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
-import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
+import { RemoteCrewPanel, splitSpotStartHint, splitSweepError, splitSweepRemedy, sweepRemediesFromError } from '../pages/settings/RemoteCrewPanel'
 
 vi.mock('../api/client', () => {
   class ApiError extends Error {
     status: number
-    constructor(status: number, message: string) {
+    // Mirrors the real one: the raw response body travels with the error, which
+    // is the only place a refused destroy's sweep remedies can arrive.
+    body: string
+    constructor(status: number, message: string, body = '') {
       super(message)
       this.status = status
+      this.body = body
     }
   }
   return {
@@ -378,7 +382,7 @@ describe('RemoteCrewPanel', () => {
     // row reappeared unchanged after the click and looked like nothing happened.
     vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] })
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
-    vi.mocked(api.cloudDestroy).mockResolvedValue({ cleanup: 'pending' } as never)
+    vi.mocked(api.cloudDestroy).mockResolvedValue({ cleanup: 'pending' })
     const u = userEvent.setup()
     renderWithProviders(<RemoteCrewPanel />)
 
@@ -389,6 +393,119 @@ describe('RemoteCrewPanel', () => {
     // The row now reflects the in-flight teardown and cannot be re-triggered.
     const deleting = await screen.findByRole('button', { name: /Deleting…/i })
     expect(deleting).toBeDisabled()
+    // A clean teardown says nothing extra: no leftover-work banner on the
+    // on-demand delete every user does, or the real one stops being read.
+    expect(screen.queryByText(/aws ec2 cancel-spot-instance-requests/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Spot request/i)).not.toBeInTheDocument()
+  })
+
+  it('surfaces the warnings a successful destroy returns, instead of dropping them', async () => {
+    // The gateway answers 200 with `warnings` when the delete was ACCEPTED but its
+    // Spot sweep left something live — a persistent request keeps handing out
+    // replacement instances outside the stack, billing with nothing tracking them.
+    // The panel used to read only the error path, so the row went "Deleting…" and
+    // the user was never told. Each line arrives self-contained: prose + ids, then
+    // the runnable aws command LAST (ec2.grade_spot_sweep guarantees that order).
+    const remedy =
+      'aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1 --region us-east-1'
+    const warning =
+      "Could NOT cancel this tag's persistent Spot request(s): sir-1 AccessDenied " +
+      `Cancel them yourself or EC2 keeps launching replacements: ${remedy}`
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
+    vi.mocked(api.cloudDestroy).mockResolvedValue({ cleanup: 'pending', warnings: [warning] })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/i }))
+    await u.click(await screen.findByRole('button', { name: /^Confirm deleting/i }))
+
+    // The prose keeps the ids the user needs to recognize the leftover request…
+    const prose = await screen.findByText(/Could NOT cancel this tag's persistent Spot request\(s\): sir-1/)
+    expect(prose).toBeInTheDocument()
+    // …and the command is CODE, not wrapped prose: this is a command the user has
+    // to run because we could not, and a mistyped --spot-instance-request-ids
+    // leaves the request live, handing out billing instances. So it must be
+    // selectable as one unit, and copyable in one click.
+    const code = screen.getByText(remedy)
+    expect(code.tagName).toBe('CODE')
+    expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
+    // The delete itself succeeded, so this is leftover work, not a failed action:
+    // it is announced as a status, not as an alert, and the row still shows the
+    // teardown it did start.
+    expect(code.closest('[role="status"]')).not.toBeNull()
+    expect(await screen.findByRole('button', { name: /Deleting…/i })).toBeInTheDocument()
+  })
+
+  it('refuses to show a blocked destroy as an in-flight one, and keeps its remedy', async () => {
+    // The gateway REFUSES the delete (409) when it could not cancel the crew's
+    // persistent Spot request: deleting would terminate the box, re-open the
+    // request and let EC2 launch a replacement outside the stack. So the row must
+    // NOT go to "Deleting…" — the stack is still there — and the refusal's
+    // remedy, which arrives in the error body rather than a 200 payload, must
+    // still reach the user: it is the command that unblocks the teardown.
+    const remedy =
+      'aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1 --region us-east-1'
+    const warning =
+      "Could NOT cancel this tag's persistent Spot request(s): sir-1 AccessDenied " +
+      `Cancel them yourself or EC2 keeps launching replacements: ${remedy}`
+    const message =
+      "'kc-3f9a' was NOT deleted: its persistent Spot request could not be cancelled. " +
+      'The crew, its instance and its disk are untouched.'
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
+    vi.mocked(api.cloudDestroy).mockRejectedValue(
+      new ApiError(409, message, JSON.stringify({
+        error: message, code: 'spot_sweep_blocked_destroy', warnings: [warning],
+      })),
+    )
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/i }))
+    await u.click(await screen.findByRole('button', { name: /^Confirm deleting/i }))
+
+    expect(await screen.findByText(/was NOT deleted/)).toBeInTheDocument()
+    // The command is code with a copy button, exactly as on the accepted path.
+    const code = await screen.findByText(remedy)
+    expect(code.tagName).toBe('CODE')
+    expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
+    // Nothing is being torn down, so nothing may claim to be.
+    expect(screen.queryByRole('button', { name: /Deleting…/i })).not.toBeInTheDocument()
+  })
+
+  it('gives a notice the neutral note treatment instead of the warning block', async () => {
+    // "Could not check — nothing proves it either way" and "this is STILL billing
+    // and only you can stop it" are not the same claim. Rendering both in the amber
+    // block spent the loud treatment on the line with no known consequence, which
+    // is exactly how the loud one stops being read. Notices get the panel's neutral
+    // note treatment (the same one `diagNote` uses); warnings keep the amber block.
+    const remedy = 'aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-1'
+    const warning = `Could NOT cancel this tag's persistent Spot request(s): sir-1 Cancel them yourself: ${remedy}`
+    const notice =
+      'Could not check for a leftover Spot request (no permission) — and with no ' +
+      'stack left there is nothing to prove it either way; check the EC2 console ' +
+      'if this tag ever ran --spot.'
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [CLOUD_INSTANCE] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [DONE_JOB] })
+    vi.mocked(api.cloudDestroy).mockResolvedValue({ cleanup: 'pending', warnings: [warning], notices: [notice] })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+
+    await openRowMenu(u)
+    await u.click(await screen.findByRole('menuitem', { name: /^Delete Kiro Crew Cloud/i }))
+    await u.click(await screen.findByRole('button', { name: /^Confirm deleting/i }))
+
+    const noticeBlock = (await screen.findByText(notice)).closest('[role="status"]')
+    const warnBlock = screen.getByText(remedy).closest('[role="status"]')
+    expect(noticeBlock).not.toBeNull()
+    expect(warnBlock).not.toBeNull()
+    // Two separate blocks, and only the warning wears the warn tone.
+    expect(noticeBlock).not.toBe(warnBlock)
+    expect(warnBlock?.className).toContain('warn')
+    expect(noticeBlock?.className).not.toContain('warn')
   })
 
   it('shows the enable CTA when the feature is disabled (403)', async () => {
@@ -550,5 +667,128 @@ describe('RemoteCrewPanel', () => {
     await waitFor(() => expect(api.cloudLaunch).toHaveBeenCalledWith({ profile: '', region: 'us-east-1', size_key: 'balanced' }))
     // Progress card polls the job and renders its steps.
     expect(await screen.findByText('Installing Kiro Crew')).toBeInTheDocument()
+  })
+})
+
+describe('splitSweepRemedy', () => {
+  // The gateway flattens each leftover-work line to "prose … runnable command",
+  // with the command LAST by contract (ec2.grade_spot_sweep). The split has to
+  // honour that contract rather than take the first thing that looks like a
+  // command: the prose in front of it is a raw AWS error nobody controls.
+  const command =
+    'aws ec2 terminate-instances --instance-ids i-0orphan --profile dev --region eu-west-1'
+
+  it('peels the trailing command off the prose', () => {
+    expect(splitSweepRemedy(`They keep billing until you do: ${command}`)).toEqual({
+      prose: 'They keep billing until you do:',
+      command,
+    })
+  })
+
+  it('is not fooled by an AWS error that quotes the API call', () => {
+    // A denial names the call it refused ("…not authorized to run aws ec2
+    // terminate-instances…"), which a first-match split takes for the start of
+    // the command — putting half the error inside the code block and handing the
+    // user a "command" that is not one.
+    const line =
+      'Could NOT terminate the Spot instance(s): i-0orphan ' +
+      'AccessDenied: not authorized to run aws ec2 terminate-instances on i-0orphan. ' +
+      command
+    const { prose, command: cmd } = splitSweepRemedy(line)
+    expect(cmd).toBe(command)
+    expect(prose).toContain('AccessDenied')
+    expect(prose.endsWith('.')).toBe(true)
+  })
+
+  it('leaves an informational line whole', () => {
+    const note = 'Agent sessions cannot sweep Spot requests — run destroy from a terminal.'
+    expect(splitSweepRemedy(note)).toEqual({ prose: note, command: '' })
+  })
+})
+
+describe('splitSweepError', () => {
+  // Inside the prose the grader hands over, one stretch is AWS's own text and the
+  // rest is ours. It is also the longest, so at equal weight it buries what the
+  // user can act on — hence the muted treatment, hence this split.
+  it('separates the raw AWS failure from the line we wrote', () => {
+    const { summary, awsError } = splitSweepError(
+      "Could NOT cancel this tag's persistent Spot request(s): sir-1 " +
+        'ec2:CancelSpotInstanceRequests failed: An error occurred (UnauthorizedOperation) ' +
+        'when calling the CancelSpotInstanceRequests operation. ' +
+        'Cancel them yourself or EC2 keeps launching replacements:',
+    )
+    expect(summary).toBe("Could NOT cancel this tag's persistent Spot request(s): sir-1")
+    expect(awsError.startsWith('ec2:CancelSpotInstanceRequests failed:')).toBe(true)
+  })
+
+  it('mutes nothing when the line carries no AWS error', () => {
+    // The agent-session refusal is our own sentence, not AWS's; so is a summary
+    // that had no error to report. Nothing to fade there.
+    const line = 'Could NOT check for a leftover persistent Spot request — the lookup was denied.'
+    expect(splitSweepError(line)).toEqual({ summary: line, awsError: '' })
+  })
+})
+
+describe('splitSpotStartHint', () => {
+  // The gateway can only reach the panel through the error STRING, so it appends
+  // ec2.SPOT_START_FAILURE_HINT to it behind a single newline (handlers_cloud).
+  // Rendered raw that puts "Do NOT destroy the instance to 'fix' this" in the red
+  // banner, beside a Delete button that deletes the volume the interruption
+  // preserved. The split is on that newline alone — no English is load-bearing.
+  const awsError =
+    'ec2:StartInstances failed: An error occurred (IncorrectSpotRequestState) when calling ' +
+    'the StartInstances operation: Only Amazon EC2 can restart an interrupted stopped ' +
+    'Spot Instance.'
+  const flattened =
+    `${awsError}\n` +
+    'This crew was launched with --spot, so the most likely cause is an EC2 INTERRUPTION ' +
+    'stop, not a broken instance. ' +
+    'Your data is intact: an interruption stops the instance, it does not terminate it, so ' +
+    'the root volume (and ~/.kiro/crew on it) is untouched. ' +
+    "Do NOT destroy the instance to 'fix' this — destroy deletes that volume and everything " +
+    'on it. Wait for the auto-resume, or check `kirocrew cloud status`.'
+
+  it('keeps the AWS failure as the error and gives the hint its own lines', () => {
+    const { error, hint } = splitSpotStartHint(flattened)
+    expect(error).toBe(awsError)
+    // Every sentence is a line, and each one still ends as a sentence.
+    expect(hint.every(l => l.endsWith('.'))).toBe(true)
+    expect(hint[0].startsWith('This crew was launched with --spot')).toBe(true)
+    // The line that has to be impossible to miss stands on its own.
+    expect(hint).toContain(
+      "Do NOT destroy the instance to 'fix' this — destroy deletes that volume and everything on it.",
+    )
+    // Paths and commands are not sentence ends, so they are not split apart.
+    expect(hint.some(l => l.includes('~/.kiro/crew'))).toBe(true)
+    expect(hint.some(l => l.includes('`kirocrew cloud status`'))).toBe(true)
+  })
+
+  it('leaves every other failure exactly as it arrived', () => {
+    // No newline, no hint: the gateway only ever adds one when it has one to add.
+    expect(splitSpotStartHint(awsError)).toEqual({ error: awsError, hint: [] })
+  })
+
+  it('splits on the delimiter, not on the hint wording', () => {
+    // The hint is translatable prose and gets reworded; the seam must survive
+    // that, so nothing English is matched. Any text after the newline is hint.
+    const { error, hint } = splitSpotStartHint(`${awsError}\nCeci est une note. Voilà.`)
+    expect(error).toBe(awsError)
+    expect(hint).toEqual(['Ceci est une note.', 'Voilà.'])
+  })
+})
+
+describe('sweepRemediesFromError', () => {
+  it('recovers the remedies a refused destroy carries in its body', () => {
+    const warnings = ['Could NOT cancel …: sir-1 aws ec2 cancel-spot-instance-requests …']
+    expect(sweepRemediesFromError(new ApiError(409, 'nope', JSON.stringify({ warnings })))).toEqual(warnings)
+  })
+
+  it('stays empty for every other failure', () => {
+    // No remedy block on an ordinary 500, a non-JSON body, or a plain Error —
+    // and a `warnings` array is trusted for its strings only.
+    expect(sweepRemediesFromError(new ApiError(500, 'boom', 'not json'))).toEqual([])
+    expect(sweepRemediesFromError(new ApiError(500, 'boom', '{"error":"boom"}'))).toEqual([])
+    expect(sweepRemediesFromError(new ApiError(409, 'x', '{"warnings":[1,"ok"]}'))).toEqual(['ok'])
+    expect(sweepRemediesFromError(new Error('boom'))).toEqual([])
   })
 })

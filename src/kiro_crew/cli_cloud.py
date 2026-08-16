@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Optional
 
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
@@ -52,6 +53,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         region=region,
         size_key=getattr(args, "size", "") or "",
         subnet_id=getattr(args, "subnet", "") or "",
+        spot=getattr(args, "spot", False),
         assume_yes=getattr(args, "yes", False),
         force_new=getattr(args, "new", False),
         keep_on_failure=getattr(args, "keep_on_failure", False),
@@ -220,10 +222,78 @@ def _cloud_start(args: argparse.Namespace) -> int:
         ec2.start(tag, profile, region)
     except AWSError as exc:
         ui.fail(str(exc))
+        # On a --spot crew a failed start is almost always an EC2 interruption
+        # stop, and the raw AWS text says nothing a user can act on. Without this
+        # the box looks broken, and the obvious "fix" — destroy and relaunch —
+        # deletes the root volume the interruption deliberately kept. The lookup
+        # runs only HERE, so a successful start still makes exactly the AWS calls
+        # it always did.
+        for line in ec2.spot_start_failure_hint(tag, profile, region):
+            ui.detail(line)
         return 1
     ui.ok(f"Starting '{tag}'. It'll be reachable again shortly.")
     ui.detail("Reopen the dashboard with: kirocrew cloud connect")
     return 0
+
+
+def _report_spot_sweep(
+    sweep: dict,
+    tag: str,
+    profile: str,
+    region: str,
+    *,
+    stack_is_spot: Optional[bool] = None,
+) -> bool:
+    """Print what destroy's Spot-request sweep did. True if anything FAILED.
+
+    Only ever says anything for a ``--spot`` stack. A failure here is not
+    cosmetic: a live persistent request keeps handing you REPLACEMENT instances,
+    and an orphaned instance we couldn't terminate keeps billing — so the caller
+    must not print "you won't be billed" when this returns True, and must exit
+    non-zero. Every failure is reported with the ids AND the exact command that
+    finishes the job.
+
+    The grading itself lives in :func:`ec2.grade_spot_sweep` so the dashboard's
+    destroy route reaches the identical verdict and wording — the money leaks
+    the same either way. This function is only the rendering: warn + details for
+    a problem, a quiet detail for a note.
+
+    ``stack_is_spot`` is the stack's own ``Spot`` parameter, or ``None`` on the
+    orphan path where there is no stack to ask. An unanswered lookup (IAM
+    denial, agent guard) is a quiet note only when the STACK proves there is no
+    request to find; the destroying principal's permissions prove nothing,
+    because it need not be the principal that launched.
+    """
+    for request_id in sweep.get("cancelled", []):
+        ui.detail(f"Cancelled Spot request {request_id} (so no replacement instance is launched).")
+    for instance_id in sweep.get("terminated", []):
+        ui.detail(f"Terminated its Spot instance {instance_id}.")
+
+    grade = ec2.grade_spot_sweep(sweep, tag, profile, region, stack_is_spot=stack_is_spot)
+    for problem in grade["problems"]:
+        ui.warn(problem["summary"])
+        for line in problem["details"]:
+            ui.detail(line)
+    for note in grade["notes"]:
+        ui.detail(note)
+    return bool(grade["failed"])
+
+
+def _confirm_destructive(args: argparse.Namespace, question: str) -> bool:
+    """Ask before destroying something. True to go ahead; ``-y/--yes`` skips.
+
+    One helper for every destructive branch of ``cloud destroy`` so they cannot
+    drift into asking differently (or, as the orphan sweep once did, not asking
+    at all). The decline line is part of it: "Aborted — nothing was deleted."
+    must stay true of whichever branch printed it, so callers must not have
+    mutated anything before they get here.
+    """
+    if getattr(args, "yes", False):
+        return True
+    if ui.confirm(question, default=False):
+        return True
+    ui.info("Aborted — nothing was deleted.")
+    return False
 
 
 def _cloud_destroy(args: argparse.Namespace) -> int:
@@ -239,7 +309,55 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
 
     st = ec2.describe(tag, profile, region)
     if not st.get("exists"):
-        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
+        # "No stack" is NOT "nothing to clean up". A rolled-back --spot launch
+        # leaves its persistent Spot request behind with no stack at all, and
+        # this is the case the docs tell people to run `cloud destroy` for — so
+        # the sweep has to happen HERE. ec2.destroy() deliberately does NOT sweep
+        # on its own already-absent path (it looks the stack up first so a failed
+        # lookup can't abort mid-sweep), and this early return never calls it.
+        #
+        # LOOK before touching anything. Cancelling is destructive in a way the
+        # verb hides: cancelling a `disabled` request makes EC2 terminate its
+        # STOPPED instance — the box whose root volume holds ~/.kiro/crew. Doing
+        # that on a bare `kirocrew cloud destroy` with no prompt was a delete
+        # nobody agreed to, and the tag came from `last_tag` half the time. So
+        # the read-only probe runs first and its findings go on screen; the
+        # cancel happens only after the same confirmation the stack path asks
+        # for. (The dashboard needs no equivalent: its two-step Delete → Confirm
+        # UI is answered before the route is ever called.)
+        found, sweep = ec2.probe_spot_requests(tag, profile, region)
+        if not sweep["error"] and found:
+            ui.warn(f"No stack for '{tag}', but it still has {len(found)} live Spot request(s):")
+            for req in found:
+                instance = req["instance_id"]
+                ui.detail(
+                    f"{req['id']}"
+                    + (f" → instance {instance}" if instance else " (no instance yet)")
+                )
+            ui.detail(
+                "Cancelling them stops EC2 launching replacement instances. A request whose "
+                "instance is STOPPED is terminated by EC2 as it is cancelled — any data on it "
+                "is lost."
+            )
+            if not _confirm_destructive(args, f"Cancel the leftover Spot request(s) for '{tag}'?"):
+                return 0
+            # Re-runs the lookup, deliberately: what gets cancelled is what is
+            # live now the user has said yes, not what was live at the prompt.
+            sweep = ec2.cancel_spot_requests(tag, profile, region)
+        # On a failed sweep _report_spot_sweep already warned with the ids and the
+        # command that finishes the job — don't follow it with a cheerful summary,
+        # and exit non-zero: an un-cancelled persistent request or an
+        # un-terminated instance is still billing, so automation must not read
+        # this as a finished teardown. stack_is_spot=None (the default): there is
+        # no stack whose Spot parameter could rule a leftover request in or out,
+        # so a denied lookup gets the honest "can't prove it either way" note
+        # rather than the on-demand stack's "there was never a request".
+        if _report_spot_sweep(sweep, tag, profile, region):
+            return 1
+        if sweep.get("cancelled"):
+            ui.ok(f"No stack for '{tag}' — cleaned up its leftover Spot request(s).")
+        else:
+            ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
         return 0
 
     ui.warn(f"This will PERMANENTLY delete the '{tag}' stack and everything in it:")
@@ -247,16 +365,54 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
         f"instance {st.get('instance_id', '')}, its IAM role, security group, and EBS volume."
     )
     ui.detail("Any data on the instance is lost. This cannot be undone.")
-    if not getattr(args, "yes", False):
-        if not ui.confirm(f"Remove KiroCrew instance '{tag}' from AWS?", default=False):
-            ui.info("Aborted — nothing was deleted.")
-            return 0
+    if not _confirm_destructive(args, f"Remove Kiro Crew instance '{tag}' from AWS?"):
+        return 0
 
     try:
         with ui.Spinner("Deleting the CloudFormation stack…"):
             res = ec2.destroy(tag, profile, region)
     except AWSError as exc:
         ui.fail(str(exc))
+        return 1
+
+    # Only ever says anything for a --spot stack. Worth saying out loud: cancelling
+    # the persistent request is what stops EC2 from launching a REPLACEMENT
+    # instance when delete-stack terminates this one. The stack's own Spot
+    # parameter rides along in the result — it, not this profile's permissions,
+    # decides whether a lookup we could not run is safe to shrug off (the
+    # destroying principal need not be the one that launched: an admin can
+    # create a --spot stack that a restricted profile later destroys).
+    sweep_failed = _report_spot_sweep(
+        res.get("spot_sweep", {}),
+        tag,
+        profile,
+        region,
+        stack_is_spot=bool(res.get("stack_is_spot")),
+    )
+
+    if res.get("aborted"):
+        # The sweep above could not prove this --spot stack's persistent request
+        # is gone, so `ec2.destroy` refused to issue the delete: terminating the
+        # instance with the request still open is how EC2 hands out a replacement
+        # instance outside the stack — untracked and billing forever. Nothing was
+        # deleted, so nothing local may be cleaned up either (the registration,
+        # the source object and last_tag all still describe a live crew), and rc
+        # is 1 like every other "teardown did not finish" exit.
+        # "not confirmed gone" rather than "still live": a refused CANCEL proves
+        # the request is live, but a lookup that was denied/throttled proves
+        # nothing — and both land here, because on a --spot stack an unanswered
+        # lookup is exactly the case that can zombie.
+        ui.fail(f"Did NOT delete the '{tag}' stack — its Spot request is not confirmed gone.")
+        ui.detail(
+            "Deleting now would terminate the instance while its persistent request is open, "
+            "and EC2 would launch a REPLACEMENT instance outside the stack that nothing "
+            "tracks and nothing stops billing."
+        )
+        ui.detail(
+            "Cancel the request(s) — the command above, or the EC2 console under Spot Requests "
+            "— then re-run `kirocrew cloud destroy`."
+        )
+        ui.detail("Your stack, instance and disk are untouched in the meantime.")
         return 1
 
     if not res.get("destroyed"):
@@ -292,6 +448,21 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     if cfg.last_tag == tag:
         cfg.last_tag = ""
         cfg.save()
+
+    if sweep_failed:
+        # The stack is gone, but the Spot sweep above left something live (or we
+        # could not even find out). A persistent request that is still open will
+        # hand you a REPLACEMENT instance nothing tracks, so "you won't be billed"
+        # would be a lie — and rc must be non-zero for the same reason the
+        # strictly milder "delete did not confirm" path above returns 1:
+        # automation must not assume the teardown finished while AWS resources
+        # may still be billing.
+        ui.warn(f"Removed the '{tag}' stack, but its Spot cleanup did not fully succeed.")
+        ui.detail(
+            "Run the command above before assuming the Spot side is clean — "
+            "you may still be billed for a Spot instance."
+        )
+        return 1
 
     ui.ok(f"Removed '{tag}' — all AWS resources deleted. You won't be billed for it.")
     return 0
