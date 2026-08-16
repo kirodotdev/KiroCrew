@@ -3,6 +3,20 @@
 All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
+- **A UI change on a wide diff no longer skips the UX review silently.**
+  `ux-review.yml` and `fork-ux-review.yml` detected UI-relevant paths with
+  `printf '%s\n' "$changed" | grep -qE …` under `set -o pipefail`. A
+  matching `grep -q` exits as soon as it has its answer, closing the pipe
+  while `printf` is still writing; `printf` then dies on SIGPIPE and the
+  pipeline reports 141 for input that DID match. Because the pipeline sits
+  in an `if` condition, that non-zero status is not an error — it simply
+  takes the `else` branch, so the gate answers `ui=false`, exits 0, and the
+  review skips GREEN on a diff that touches `website/`. The defect is
+  latent on small diffs (`printf` finishes before `grep` exits) and only
+  appears once the write blocks, which is why it survived review. Both
+  gates now feed `grep` from a here-string, which removes the writer from
+  the pipeline so no exit status can be manufactured by pipe timing.
+  (#3447)
 
 - **Switching Kiro accounts mid-session no longer leaves the chat showing a raw
   `The bearer token included in the request is invalid.` with no way out.** A
