@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -750,6 +750,25 @@ function dateSegment(ts: number | string | undefined): string {
 /** Animated collapsible for unknown-height content (folder bodies).
  *  Uses CSS grid `1fr`/`0fr` trick so we can animate to intrinsic height
  *  without measuring. For fixed-height panels use Framer Motion instead. */
+/** The nested folder body's own left inset, in px — and the `D` term in the
+ *  sidebar's alignment algebra (see renderFolderHeader).
+ *
+ *  It exists for the collapse animation: the body animates through
+ *  `grid-template-rows` with `overflow: hidden`, and without a little padding the
+ *  children's focus rings and the connector's rounded corner clip against that
+ *  edge. The LEFT component is the load-bearing one — it shifts the whole nested
+ *  subtree right by this much relative to the folder header that sits above it,
+ *  which is why the header's own pad has to be `D + ml-3` to keep the folder glyph
+ *  on the connector line.
+ *
+ *  Named and exported rather than inlined because that offset is what has broken
+ *  the sidebar's alignment guides four times: it is invisible in the class list, so
+ *  every attempt to derive the geometry from Tailwind classes alone has been 2px
+ *  out. ChatSidebar.folderAlignment.test.tsx imports THIS constant for its
+ *  arithmetic and asserts the rendered padding against it, so a change here fails a
+ *  test instead of silently moving three guides. */
+export const FOLDER_BODY_INSET_PX = 2
+
 function FolderBody({ open, children }: { open: boolean; children: React.ReactNode }) {
   return (
     <div
@@ -762,7 +781,7 @@ function FolderBody({ open, children }: { open: boolean; children: React.ReactNo
         transition: 'grid-template-rows 0.15s ease-out',
       }}
     >
-      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? '2px 0 2px 2px' : 0 }}>{children}</div>
+      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? `2px 0 2px ${FOLDER_BODY_INSET_PX}px` : 0 }}>{children}</div>
     </div>
   )
 }
@@ -2532,7 +2551,7 @@ function ChatSidebar({
                   // The label is resolved HERE rather than hoisted above: the
                   // status chain is evaluated for every row, and slotStatusDetail
                   // is only meaningful for a running one.
-                  ? { glyph: <Loader2 size={12} className="text-accent animate-spin" />, label: slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang) }
+                  ? { glyph: <Loader size={12} className="text-accent animate-spin" />, label: slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang) }
                   : s.unread
                     ? { glyph: <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} />, label: i18nT('pages.chatSidebar.agent_finished_your_turn') }
                     : null
@@ -2567,7 +2586,7 @@ function ChatSidebar({
           <ContextMenuTrigger asChild>
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
-          className={`session-row group relative flex items-start gap-1 pl-1 pr-2 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start pl-3.5 pr-3 py-1.5 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -2642,32 +2661,30 @@ function ChatSidebar({
            *  secondary line, which is what keeps "Needs approval" readable as a
            *  phrase rather than an orphaned dot.
            *
-           *  The width is reserved unconditionally, including for an idle row
-           *  with no glyph at all: the meta line, headline, secondary line and
-           *  chip row must share one left edge down the whole list, and a
-           *  collapsing gutter would ripple that edge per row.
+           *  ABSOLUTE, not a flex child, and this is load-bearing for the whole
+           *  sidebar's left edge. As an in-flow child it added its 12px width
+           *  plus a gap to where the content column starts, which is what pushed
+           *  the sessions inside a folder off the x their folder's NAME sits on.
+           *  Out of flow it costs the content column nothing: the row's
+           *  `pl-3.5` (14px) is its whole left offset, this glyph occupies 1..13
+           *  of it, and the content starts at 14. Putting it back in flow re-breaks
+           *  guides 2 and 3 — see ChatSidebar.folderAlignment.test.tsx.
            *
-           *  Vertical placement is derived, not measured. The first box repeats
-           *  the meta line's type classes so it is exactly as tall as the meta
-           *  line, and the second repeats the headline's, so the glyph centres on
-           *  the headline whatever those sizes become later. */}
+           *  Vertically CENTRED on the row, not on the headline. The trade is
+           *  explicit: a single-line row (the common case) gets a glyph that is
+           *  actually centred, and a row whose title wraps to two lines gets its
+           *  glyph on the block's midline rather than on the first line. The
+           *  earlier revision derived the headline's y from repeated type
+           *  classes, which kept the wrapped case tidy at the cost of every idle
+           *  row looking top-heavy (measured 10.25px above centre on a
+           *  three-line row). */}
           <div
-            className="shrink-0 w-3 flex flex-col items-center pointer-events-none"
+            className="absolute left-px top-1/2 -translate-y-1/2 w-3 h-3 flex items-center justify-center pointer-events-none"
             {...(status
               ? { role: 'img', 'aria-label': status.label, title: status.label }
               : { 'aria-hidden': true })}
           >
-            <div className="text-[11px] leading-tight">&nbsp;</div>
-            {/* The invisible space is what gives this box the headline's own
-             *  line height; the glyph is then centred in it absolutely. Sizing
-             *  the box to the glyph instead would collapse it to 12px and,
-             *  because a long title wraps to two lines, centre the glyph on the
-             *  whole wrapped block — about half a line too high. The marker
-             *  belongs on the FIRST line, which is where the title starts. */}
-            <div className="text-[13px] leading-snug relative w-3">
-              <span className="invisible">&nbsp;</span>
-              <span className="absolute inset-0 flex items-center justify-center">{status?.glyph}</span>
-            </div>
+            {status?.glyph}
           </div>
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
@@ -2782,7 +2799,7 @@ function ChatSidebar({
                 </span>
               ) : null}
             </div>
-            <div className={`text-[13px] font-semibold leading-snug break-words text-text mt-0.5 ${renamingSlot === s.key && renameScope === scope ? '' : 'line-clamp-2'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
+            <div className={`text-[13px] font-semibold leading-snug break-words text-text ${renamingSlot === s.key && renameScope === scope ? '' : 'line-clamp-2'}`} title={s.title && s.title !== s.key ? s.title : s.key}>
               {/* No separate fork glyph: forked titles already carry the
                   persisted "↳ " marker (chat_fork.py _FORK_TITLE_MARKER). Keeping
                   the arrow in the title text — rather than as a UI-only glyph —
@@ -3045,9 +3062,11 @@ function ChatSidebar({
          *  glyph look enclosed. Matches the Figma, which carries this border on
          *  the `content` frame rather than on the row.
          *
-         *  20px is the row's content offset: `pl-1` (4) + status gutter `w-3`
-         *  (12) + `gap-1` (4). The right inset is just the row's own padding. */}
-        {showDivider && <div className="ml-[20px] mr-3 border-b border-border" />}
+         *  14px is the row's content offset: the row's whole `pl-3.5`, since
+         *  the status gutter is absolutely positioned inside that pad and adds
+         *  nothing to the content column. The right inset is the row's own
+         *  padding. */}
+        {showDivider && <div className="ml-[14px] mr-3 border-b border-border" />}
       </motion.div>
     )
   }
@@ -3083,29 +3102,49 @@ function ChatSidebar({
         // no role override). 8px activation distance keeps the collapse toggle
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
-        // Asymmetric `pl-[18px]` / `pr-3`: the extra left pad opens a gutter for
-        // the collapsed-folder unread dot (below) and is shallower than the 30px
-        // that would put this glyph on the x where a session row's CONTENT starts
-        // (`pl-1` 4 + status gutter 12 + ...). A folder row reads as a HEADER over
-        // its sessions rather than a peer of them, so it opens its own column and
-        // sits left of their content.
+        // Symmetric `px-3.5` (14px), with no inline left-pad override. This is the
+        // SAME left pad the session rows use — that equality is the mechanism, not
+        // a coincidence, and it is what makes a nested folder read as a peer of the
+        // sessions filed beside it rather than sitting a couple of px to their
+        // left. The pad is therefore NOT free: #3903 raised it to 18px to open a
+        // gutter for an absolutely-positioned unread dot, which broke guide 3. That
+        // dot is back inline on the right, where it does not compete for the pad.
         //
-        // Consequence, recorded because it used to be otherwise: the glyph no
-        // longer lands on sibling session content and the NAME no longer lands on
-        // child session content. Those two guides were real and measured before the
-        // status gutter added 12px to the row's content offset; they are now traded
-        // away on purpose.
+        // With H = this header's box left, D = `FOLDER_BODY_INSET_PX` 2 — the
+        // nested body's own left inset, applied by `FolderBody` so its collapse
+        // animation does not clip. It is invisible in the class list, which is
+        // exactly why four revisions derived this geometry from Tailwind classes
+        // and each landed 2px out. It is now a named, exported constant that the
+        // alignment test imports and asserts against the rendered padding, so it
+        // is no longer a free empirical term.
+        // P = this pad 14,
+        // G = glyph 14, g = `gap-[5px]`, M = body `ml-3` 12, B = 1px border,
+        // p = body `pl-1` 4, R = row `pl-3.5` 14:
         //
-        // The glyph→name gap is `gap-2` (8px); the nested body indents by `ml-4`
-        // (16px) + a 1px connector border = 17px per level. The two no longer need
-        // to match — that equality only served the dead name-on-child-content guide.
-        className={`group relative flex items-center gap-2 pl-[18px] pr-3 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
-        {/* Unread dot on the LEFT, matching the session rows' gutter marker.
-         *  Absolute so it sits in the pl gutter without reflowing the row; only
-         *  shown when collapsed (an expanded folder's child rows carry their own). */}
-        {hasUnread && folder.collapsed && !(editingId === folder.id && editScope === 'list') && (
-          <span className="absolute left-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} aria-hidden />
-        )}
+        //   GUIDE 1  glyph == connector line                P = D + M
+        //   GUIDE 2  name == agent / title / tool-call sub   P + G + g = D+M+B+p+R
+        //   GUIDE 3  nested glyph == parent's content column P = R
+        //
+        //   14 = 2 + 12      14 + 14 + 5 = 2 + 12 + 1 + 4 + 14      14 = 14
+        //
+        // All three hold at EVERY depth and in the root lane: the algebra has no
+        // per-depth term, so depth 3 nests exactly as depth 2 does. Guide 3 is why
+        // the glyph→name gap is 5 and not 8 — at 8 the name overshoots the content
+        // column by 3px.
+        //
+        // Measured on the built SPA (x in CSS px), NOT derived — a paper estimate
+        // of these same numbers was 3px out: depth 1 glyph/connector 263, name and
+        // all three text lines 282; depth 2 glyph/connector 282 (== depth 1's
+        // content column), name/content 301; root-lane session content 263 (== the
+        // root folder's glyph, so guide 3 holds outside a folder too).
+        //
+        // Four revisions have broken these guides by computing from class names
+        // without D: #1211 (changed 9/17/7 at once), #3766 (status gutter in flow,
+        // +18px to the content column), #3903 (name 1px past content, nested glyph
+        // 2px short), and a `px-2` attempt during this fix. Re-measure with
+        // `website/scripts/capture-folder-glyph.mjs` under MEASURE=1 — never
+        // re-derive on paper.
+        className={`group relative flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} />
@@ -3118,7 +3157,7 @@ function ChatSidebar({
              *  <button> (keyboard-operable for free), filling the row so clicking
              *  the folder glyph/name still toggles.  Double-click the name renames. */}
             <button type="button"
-              className="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
+              className="flex items-center gap-[5px] flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left text-inherit p-0"
               aria-expanded={!folder.collapsed}
               aria-label={folder.collapsed ? i18nT('pages.chatSidebar.expand_folder_name', { name: folder.name }) : i18nT('pages.chatSidebar.collapse_folder_name', { name: folder.name })}
               onClick={() => toggleCollapse(folder.id)}>
@@ -3137,6 +3176,25 @@ function ChatSidebar({
                 <span className="shrink-0 opacity-80" aria-hidden><ChannelBrandIcon channel={folder.channel} size={11} /></span>
               )}
               {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
+              {/* Unread dot on the RIGHT, inline before the count — a state marker
+               *  reading after the text, not a gutter marker. #3903 moved it into an
+               *  absolute LEFT gutter, which forced the header's pad to 18px; that
+               *  pad is load-bearing for the alignment guides (it must equal the
+               *  session row's), so the dot goes back where it does not compete with
+               *  it. Only when collapsed: an expanded folder's child rows carry
+               *  their own markers. */}
+              {hasUnread && folder.collapsed && (
+                // Carries the same accessible name as a session row's unread
+                // marker, and the SAME i18n key: a colour-only dot is invisible to
+                // a screen reader and indistinguishable from decoration, and this
+                // one sits beside a count where that reads as styling. The session
+                // row's gutter marker has had `role="img"` + a label since #3766;
+                // this one had neither.
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }}
+                  role="img"
+                  aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
+                  title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
+              )}
               <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
             </button>
             {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={i18nT('pages.chatSidebar.default_agent', { name: folder.default_agent })}>{folder.default_agent}</span>}
@@ -3265,18 +3323,18 @@ function ChatSidebar({
     // clear when multiple folders are open. Only wrap when there's content,
     // otherwise the FolderBody would render an empty 1px-tall strip with a line.
     const wrapped = childNodes.length > 0 ? (
-      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-4 rounded-bl-md">
+      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
         {childNodes}
       </div>
     ) : !(slotFilter || activeFilters.size > 0) ? (
       // Empty-folder affordance: a newly created (or emptied) expanded folder
       // would otherwise render nothing, leaving the hover ⊕ on the header as
       // the only (invisible-at-rest) way to start a session in it.
-      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-4 rounded-bl-md">
+      <div key={`folder-children-${folder.id}`} className="border-l border-border mb-1 ml-3 pl-1 rounded-bl-md">
         <button key={`folder-newchat-${folder.id}`} type="button"
           onClick={() => createChatInFolder(folder.id)}
           title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
-          className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+          className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
         </button>
       </div>

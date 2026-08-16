@@ -10,8 +10,10 @@
  *   3. `running` draws a SPINNER, not a dot,
  *   4. the unread "your turn" dot lives in the gutter, NOT absolutely positioned
  *      at the row's right edge, and yields to any more specific state,
- *   5. the gutter reserves its width even with no glyph, so every row's meta
- *      line, headline, secondary line and chips share one left edge,
+ *   5. the gutter is OUT OF FLOW — absolutely positioned inside the row's own
+ *      `pl-3.5`, and vertically centred on the row. In flow it added its 12px
+ *      width plus a gap to where the content column starts, which is what broke
+ *      the sidebar's two left-edge guides (ChatSidebar.folderAlignment.test.tsx),
  *   6. the glyph carries an accessible name — it is the gutter's only content.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -130,13 +132,25 @@ describe('chat sidebar — status gutter', () => {
     expect(container.querySelector('.session-row .absolute.right-1\\.5.rounded-full')).toBeNull()
   })
 
-  it('reserves the gutter width for an idle, read row so text stays aligned', () => {
+  it('keeps the gutter out of the content flow, centred, so the left edges hold', () => {
     const { container } = renderSidebar([slot({ last_message: 'done' })])
     const g = gutterOf(container)
     expect(g).toBeTruthy()
     expect(g.className).toMatch(/\bw-3\b/)        // width still declared
     expect(g.querySelector('svg, .rounded-full')).toBeNull()   // but nothing drawn
     expect(g.getAttribute('aria-hidden')).toBe('true')
+    // OUT OF FLOW. As a flex child this box cost the content column 12px + a gap
+    // and pushed every session's text off the folder name's x; the row's own
+    // `pl-3.5` is what reserves the space now. Asserted as classes because jsdom
+    // has no layout engine to measure the offset with.
+    expect(g.className).toMatch(/\babsolute\b/)
+    expect(g.className).toMatch(/\bleft-px\b/)
+    expect(g.className).not.toMatch(/\bshrink-0\b/)
+    // Centred on the ROW, not derived from the headline's line height. The trade
+    // is deliberate: a single-line row (the common case) gets a truly centred
+    // glyph, and a wrapped two-line title puts its glyph on the block's midline.
+    expect(g.className).toMatch(/\btop-1\/2\b/)
+    expect(g.className).toMatch(/-translate-y-1\/2/)
   })
 
   it('renders exactly one status glyph, never two', () => {
