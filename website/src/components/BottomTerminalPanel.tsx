@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence, Reorder } from 'framer-motion'
 import { usePointerDrag } from '../hooks/usePointerDrag'
+import { useLongPressReorder } from '../hooks/useLongPressReorder'
 import { TerminalSquare, Plus, X, ChevronDown, ChevronRight, PictureInPicture2, MoreHorizontal, PanelRight, PanelBottom } from 'lucide-react'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -62,6 +63,30 @@ function TabChip({ tab, active, onSelect, onClose }: {
   )
 }
 
+/** One reorderable chip in the strip. A component rather than inline JSX inside
+ *  the map: each chip owns its own long-press drag state, and a hook cannot be
+ *  called from a loop. */
+function DraggableTermTab({ tab, active, separator, onSelect, onClose }: {
+  tab: TermTab; active: boolean; separator: boolean; onSelect: () => void; onClose: () => void
+}) {
+  const { itemProps, dragging } = useLongPressReorder()
+  return (
+    <Reorder.Item
+      value={tab}
+      {...itemProps}
+      // The ring is the only feedback a press-and-hold gets before the finger
+      // moves; without it an armed drag looks identical to a missed one.
+      className={`relative shrink-0 list-none rounded-full ${dragging ? 'ring-1 ring-accent' : ''}`}
+      transition={{ type: 'spring', stiffness: 700, damping: 45 }}
+    >
+      {separator && (
+        <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
+      )}
+      <TabChip tab={tab} active={active} onSelect={onSelect} onClose={onClose} />
+    </Reorder.Item>
+  )
+}
+
 /**
  * The tabbed terminal view (strip + per-tab CliPanel bodies), shared by the
  * docked bottom panel and the popped-out terminal window
@@ -118,24 +143,16 @@ export function TerminalTabsView({ variant }: { variant: 'dock' | 'popout' }) {
           className="flex items-center gap-2 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
         >
           {tabs.map((t, i) => (
-            <Reorder.Item
+            <DraggableTermTab
               key={t.id}
-              value={t}
-              className="relative shrink-0 list-none"
-              transition={{ type: 'spring', stiffness: 700, damping: 45 }}
-            >
-              {/* Hairline between adjacent chips, suppressed on both edges of
-                  the active tab (its pill already delineates it). */}
-              {i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId && (
-                <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
-              )}
-              <TabChip
-                tab={t}
-                active={t.id === activeId}
-                onSelect={() => setActiveTab(t.id)}
-                onClose={() => closeTab(t.id)}
-              />
-            </Reorder.Item>
+              tab={t}
+              active={t.id === activeId}
+              // Hairline between adjacent chips, suppressed on both edges of
+              // the active tab (its pill already delineates it).
+              separator={i > 0 && t.id !== activeId && tabs[i - 1].id !== activeId}
+              onSelect={() => setActiveTab(t.id)}
+              onClose={() => closeTab(t.id)}
+            />
           ))}
         </Reorder.Group>
         {/* + opens a new terminal tab instantly (no menu). */}

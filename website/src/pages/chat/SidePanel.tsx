@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type React
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useDevMode } from '../../hooks/useDevMode'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
+import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
 import { FileText, Bot, Workflow, ScrollText, MessageSquare, TerminalSquare, GitCompare, GitPullRequest, GitBranch, Plus, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, PanelRight, PanelBottom, Layers, ListTree } from 'lucide-react'
 import { PanelRightLight, PanelBottomSolid } from '../../components/icons/panels'
@@ -528,7 +529,8 @@ export default function SidePanel({
           <div className="absolute left-0 top-0 bottom-0 w-[2px] transition-colors duration-200 bg-transparent group-hover/drag:bg-accent resize-accent" />
         </div>
       ) : null}
-      {/* Tab strip — drag chips horizontally to reorder (framer Reorder).
+      {/* Tab strip — the row scrolls by touch/wheel; a chip is reordered by
+          dragging it (press and hold first on touch, see useLongPressReorder).
           Per Figma "left-nav" (7328:10637): the row is a rounded elevated card
           (bg-elevated, 12px radius, 8px padding) floating above the content,
           not a flat bordered bar. side-panel-strip punches the strip out of the
@@ -574,25 +576,19 @@ export default function SidePanel({
           className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto scrollbar-none list-none m-0 p-0"
         >
           {dynamicTabs.map((t, i) => (
-            <Reorder.Item
+            <DraggableTabItem
               key={t.id}
-              value={t}
-              className="relative shrink-0 list-none"
-              // Reorder.Item's layout prop can't be disabled (true | "position"
-              // only) — instead make the layout correction instant while
-              // resizing so chips track the panel edge 1:1. Otherwise use a
-              // tight spring (high stiffness, near-critical damping) so the
-              // reorder shuffle snaps into place instead of floating.
-              transition={resizing ? { duration: 0 } : { type: 'spring', stiffness: 700, damping: 45 }}
-            >
-              {/* Chrome-style separator: hairline between adjacent chips,
-                  suppressed on both edges of the selected tab (its pill
-                  background already delineates it). Centered in the gap-2. */}
-              {i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId && (
-                <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
-              )}
-              <TabChip tab={t} active={t.id === activeId} onSelect={() => setActive(t.id)} onClose={() => handleCloseTab(t.id)} onTransfer={t.kind === 'terminal' ? () => handleTransferToBottom(t.id) : undefined} />
-            </Reorder.Item>
+              tab={t}
+              active={t.id === activeId}
+              // Chrome-style separator: hairline between adjacent chips,
+              // suppressed on both edges of the selected tab (its pill
+              // background already delineates it).
+              separator={i > 0 && t.id !== activeId && dynamicTabs[i - 1].id !== activeId}
+              instantLayout={resizing}
+              onSelect={() => setActive(t.id)}
+              onClose={() => handleCloseTab(t.id)}
+              onTransfer={t.kind === 'terminal' ? () => handleTransferToBottom(t.id) : undefined}
+            />
           ))}
         </Reorder.Group>
         {/* + menu — the shared shadcn/Radix dropdown, so this strip gets the
@@ -914,6 +910,44 @@ function TabBody({ tab, active, slot, onClose, onContentChange, onDiffModeChange
 function TerminalTabTitle({ sessionId, fallback }: { sessionId: string; fallback: string }) {
   const live = useTerminalTitle(sessionId)
   return <>{live || fallback}</>
+}
+
+/** One reorderable chip in the dynamic half of the strip.
+ *
+ *  A component rather than inline JSX inside the map: each chip owns its own
+ *  long-press drag state, and a hook cannot be called from a loop. */
+function DraggableTabItem({ tab, active, separator, instantLayout, onSelect, onClose, onTransfer }: {
+  tab: PanelTab
+  active: boolean
+  separator: boolean
+  /** Skip the layout spring while the panel is being resized — see the caller. */
+  instantLayout: boolean
+  onSelect: () => void
+  onClose: () => void
+  onTransfer?: () => void
+}) {
+  const { itemProps, dragging } = useLongPressReorder()
+  return (
+    <Reorder.Item
+      value={tab}
+      {...itemProps}
+      // The ring is the only feedback a press-and-hold gets before the finger
+      // moves; without it an armed drag looks identical to a missed one.
+      className={`relative shrink-0 list-none rounded-md ${dragging ? 'ring-1 ring-accent' : ''}`}
+      // Reorder.Item's layout prop can't be disabled (true | "position"
+      // only) — instead make the layout correction instant while resizing so
+      // chips track the panel edge 1:1. Otherwise use a tight spring (high
+      // stiffness, near-critical damping) so the reorder shuffle snaps into
+      // place instead of floating.
+      transition={instantLayout ? { duration: 0 } : { type: 'spring', stiffness: 700, damping: 45 }}
+    >
+      {separator && (
+        // Centered in the group's gap-2.
+        <span aria-hidden="true" className="absolute -left-[4.5px] top-1/2 -translate-y-1/2 w-px h-4 bg-border" />
+      )}
+      <TabChip tab={tab} active={active} onSelect={onSelect} onClose={onClose} onTransfer={onTransfer} />
+    </Reorder.Item>
+  )
 }
 
 function TabChip({ tab, active, onSelect, onClose, closable = true, onTransfer, pinned = false }: { tab: PanelTab; active: boolean; onSelect: () => void; onClose: () => void; closable?: boolean; onTransfer?: () => void; pinned?: boolean }) {
