@@ -2814,7 +2814,7 @@ const chatSlice = createSlice({
       if (idx >= 0) side.messages.splice(idx, 1)
       side.pending = false
     },
-    sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }>) {
+    sseSubagentSnapshot(state, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
       const d = action.payload
       if (isUnsafeKey(d.slot) || isUnsafeKey(d.id)) return
       const subs = d.slot && d.slot !== state.activeSlot
@@ -2824,11 +2824,20 @@ const chatSlice = createSlice({
       // Live events can interleave with replay because subscription starts before
       // snapshots are sent. Never let a stale running snapshot demote a terminal card.
       if (existing?.status === 'done' || existing?.status === 'error') return
+      const stalled = d.stalled ?? false
       subs[safeKey(d.id)] = {
         id: d.id, task: d.task, agent: d.agent || 'kirocrew',
         status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
         startedAt: d.started * 1000, elapsed: 0,
-        toolCount: d.tool_count ?? 0, stalled: d.stalled ?? false,
+        toolCount: d.tool_count ?? 0, stalled,
+        // Same pairing rule as sseSubagentStalled: the idle span lives and dies
+        // with the flag it justifies, so a non-stalled snapshot can never carry
+        // one. `stalledAt` is the receipt instant — the row advances the figure
+        // from here rather than freezing it beside a live elapsed counter.
+        // Both stay undefined when the gateway omits `idle_secs`, which keeps
+        // the plain "no activity" fallback reachable for an older gateway.
+        idleSecs: stalled ? d.idle_secs : undefined,
+        stalledAt: stalled && typeof d.idle_secs === 'number' ? Date.now() : undefined,
         approval_id: existing?.approval_id, approving: existing?.approving,
       }
     },
