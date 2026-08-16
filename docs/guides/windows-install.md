@@ -183,7 +183,7 @@ while the other 503s. Concretely:
 | Script hooks (Settings → Hooks) | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above (like script crons — the hook command routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists; without it the hook returns that message as its `error`). With the opt-in they run in **cmd.exe** language: a hook `command` runs as `%ComSpec% /c "<command>"`, so read the context env vars as `%KIROCREW_HOOK_EVENT%` / `%KIROCREW_HOOK_CONTEXT%` (not `$VAR`), and group arguments with double quotes only (cmd.exe gives `'…'` no meaning). The line reaches cmd.exe verbatim, so a quoted interpreter path with a space works. A hook authored on macOS/Linux is not portable and must be rewritten |
 | Pull-request source drawer provider fetch/check/resolve | not yet — provider CLIs require the POSIX OS-level sandbox and fail closed with a clear unsupported response |
 | Browser automation (`playwright-cli`) | works (`npm install -g @playwright/cli@latest`, needs Node.js 20 or newer) |
-| Vector memory / embeddings | via a **remote embedding endpoint or Docker**; local Ollama auto-install is not yet supported |
+| Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. No remote endpoint, no Docker and no Ollama server is involved on any platform |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply (Piper TTS) | not yet — upstream rhasspy/piper ships no Windows binary; Polly (optional) works if the `aws` CLI is present **and** the `agent.sandbox_allow_unsandboxed_exec` opt-in above is set — the `aws polly` spawn routes through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it synthesis returns no audio and the log names that setting |
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
@@ -385,11 +385,13 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 - **"Python was not found" (Microsoft Store)** — a bare `python`/`python3` was
   resolving the Store alias stub; install a real CPython and ensure it precedes
   the stub on `PATH`.
-- **`kirocrew stop` reports "No Kiro Crew gateway currently running" on a
-  non-English Windows** — `find_listening_pids` matches the `netstat` state
-  against the wildcard foreign address and the literal English `LISTENING`;
-  some localized Windows editions emit translated state names. Workaround:
-  `netstat -ano | findstr :5476` to find the PID and `taskkill /F /PID <pid>`.
+- **`kirocrew stop` reports "No Kiro Crew gateway currently running"** — a
+  localized Windows edition is *not* the cause: `find_listening_pids` identifies
+  a listening row by its wildcard foreign address (`0.0.0.0:0` / `[::]:0`), which
+  no edition translates, and treats the English `LISTENING` literal only as a
+  defensive second signal. If it still finds nothing while the dashboard answers,
+  locate the PID by hand with `netstat -ano | findstr :5476` and stop it with
+  `taskkill /F /PID <pid>`.
 - **Web terminal / interactive SSO login panels** — unavailable on Windows
   (they need `pty`/`fork`/`termios`); they return a clear "not supported on
   Windows" response instead of crashing.
