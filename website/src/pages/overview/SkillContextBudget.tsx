@@ -150,7 +150,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
       <p className="text-[12.5px] text-muted mb-3">{i18nT('pages.overview.skillsTab.budget_subtitle')}</p>
       <Card>
         {/* Header row */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <div className="flex items-center justify-between md:px-4 py-3 border-b border-border">
           {/* One catalog key, not a shard: the total and the top-3 share are
            *  styled differently but the sentence around them must stay whole,
            *  or the 10 non-English locales cannot reorder it. */}
@@ -234,7 +234,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
         ))}
 
         {/* Footnote */}
-        <div className="px-4 py-2.5 text-[11px] text-muted border-t border-border" style={{ background: 'var(--bg-elevated, var(--bg))' }}>
+        <div className="md:px-4 py-2.5 text-[11px] text-muted border-t border-border" style={{ background: 'var(--bg-elevated, var(--bg))' }}>
           {i18nT('pages.overview.skillsTab.budget_footnote')}
         </div>
       </Card>
@@ -244,7 +244,7 @@ export default function SkillContextBudget({ onBack }: { onBack: () => void }) {
 
 function GroupHeader({ label, right, accent }: { label: string; right: string; accent?: boolean }) {
   return (
-    <div className="flex items-center justify-between px-4 py-2 border-t border-b border-border text-[10.5px] tracking-wider uppercase"
+    <div className="flex items-center justify-between md:px-4 py-2 border-t border-b border-border text-[10.5px] tracking-wider uppercase"
       style={{ background: 'var(--bg-elevated, var(--bg))' }}>
       <span className="text-muted">{label}</span>
       <span className={accent ? 'text-accent' : 'text-muted'}>{right}</span>
@@ -276,10 +276,10 @@ function BudgetRow({
 
   return (
     <div
-      className={`flex items-center gap-3.5 px-4 py-2 border-b border-border/50 hover:bg-bg-hover transition-colors ${frozen ? 'opacity-80' : ''}`}
+      className={`flex flex-wrap md:flex-nowrap items-center gap-x-3.5 gap-y-1 py-2 md:px-4 border-b border-border/50 hover:bg-bg-hover transition-colors ${frozen ? 'opacity-80' : ''}`}
     >
       {/* Column 1: name + key */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 basis-full md:basis-auto">
         <div className={`text-[12.5px] truncate ${frozen ? 'text-muted' : 'text-text'}`}>
           {displayName(row.name)}
         </div>
@@ -293,7 +293,7 @@ function BudgetRow({
 
       {/* Column 2: bar + chars. A row whose cost is unmeasurable (always: true)
        *  gets neither -- a bar length would imply a magnitude we do not have. */}
-      <div className="w-[280px] shrink-0">
+      <div className="flex-1 min-w-0 md:flex-none md:w-[280px]">
         {cold ? (
           <div className="text-[10.5px] text-muted font-mono">
             {i18nT('pages.overview.skillsTab.budget_if_fires', { size: fmtBytes(row.size_bytes) })}
@@ -318,7 +318,7 @@ function BudgetRow({
       {/* Column 3: deliveries, or why the last flip did not land. A cold row's
        *  size is already stated in column 2, so repeating it here says the same
        *  number twice on one line. */}
-      <div className="w-[140px] shrink-0 text-[10.5px] font-mono">
+      <div className="min-w-0 md:shrink-0 text-[10.5px] font-mono md:w-[140px]">
         {failed
           ? <span className="text-danger font-sans">{i18nT('pages.overview.skillsTab.injection_update_failed')}</span>
           : cold

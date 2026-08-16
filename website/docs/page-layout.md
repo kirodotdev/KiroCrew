@@ -29,6 +29,43 @@ whole page scrolls instead.
 `PageHeader` also takes an `actions` node, rendered right-aligned on the title
 row. Put page-level buttons there rather than in the first `Card`.
 
+### Horizontal insets below the breakpoint
+
+Padding stacks, and the eye reads the SUM. On a wide viewport a page gutter plus a card
+inset plus a row inset is comfortable; at 390px it is not. The skill-budget row measured
+16px (page) + 20px (`Card`) + 16px (row) = **52px** before its text, against 32px for the
+same text in chat.
+
+The page container keeps the `px-6 pb-8` the skeleton above prescribes -- that is what
+`AUTOSDE.yaml`'s `page-layout-pattern` requires, and it is not the layer to change. The
+third layer is the one to drop:
+
+**Below `md`, prefer no horizontal padding on the rows inside a `Card`.** The page gutter
+and the card's own inset already supply it:
+
+```tsx
+<div className="… py-2 md:px-4">   {/* row: the card supplies the inset while narrow */}
+```
+
+Gate **every** row in that card the same way -- section header, group header, data row,
+footnote. Gating only some of them leaves the data rows sitting to the left of the headers
+that label them, which reads as rows escaping their own section.
+
+**Status: this is a direction, not a description of the repo.** Exactly one card has been
+migrated (`SkillContextBudget`). A scan for `className="…px-4…py-2"` under
+`website/src/pages` matches **28 rows across 15 files** -- including sibling rows in the
+very same Skills tab -- and none of them are gated. There is no lint gate for this, so
+treat the rule as what to do in code you are already touching, and see the sweep issue
+before assuming a page conforms (kirodotdev/KiroCrew#3939).
+
+Above `md` this guide prescribes no total. The stacking measured here was a
+narrow-viewport problem and the wide layout was never the complaint, so the rule stops
+where the evidence does.
+
+For a full-height pane that genuinely needs to reach the screen edge, cancel the gutter
+INSIDE the pane (`-mx-6` while narrow) rather than gating the container -- the container
+is what the blocking rule names.
+
 ## Stat cards
 
 OPTIONAL summary metrics above the content. Add a row only when a number is not
