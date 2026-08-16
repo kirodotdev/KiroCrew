@@ -993,6 +993,26 @@ export const switchSlot = createAsyncThunk(
 )
 
 /** Re-fetch messages for a slot without changing activeSlot. Only applies if still active. */
+/**
+ * True when a `user` row ends the turn before it.
+ *
+ * A steered message is injected INTO the running turn, so a CONFIRMED steer is
+ * not a boundary. An OPTIMISTIC steer bubble (`meta.optimistic`, set at dispatch
+ * and cleared when the server's `steer_push` echo reconciles it) IS treated as a
+ * boundary, because it may not be a steer at all: the backend's steer branch is
+ * gated on `slot.running or slot._in_stage_execution`, so text sent while
+ * `chat_done` is still in flight takes the NEW TURN path instead, and no echo
+ * ever arrives to clear the flag. Exempting that row would splice the new turn's
+ * reasoning onto the previous turn's block — corrupting content rather than
+ * merely misplacing it.
+ *
+ * `selectSlotPendingApproval`'s scan deliberately does NOT use this: it exempts
+ * every steer row, optimistic included, because the distinction can only hide or
+ * show an approval bar there, never corrupt one.
+ */
+const isTurnBoundaryUser = (m: { role: string; meta?: Record<string, unknown> }): boolean =>
+  m.role === 'user' && !(m.meta?.steer && !m.meta?.optimistic)
+
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
  *  one fired on chat_done) would otherwise drop the thinking block the instant a
@@ -1002,7 +1022,7 @@ export const switchSlot = createAsyncThunk(
  *  block whose anchor isn't found is appended so it is never silently lost.
  *  Returns `incoming` unchanged (reference-equal) when there is nothing to
  *  preserve. */
-function mergePreservedThinking<M extends { role: string; content: string; cls?: string }>(
+function mergePreservedThinking<M extends { role: string; content: string; cls?: string; meta?: Record<string, unknown> }>(
   existing: M[],
   incoming: M[],
 ): M[] {
@@ -1014,7 +1034,12 @@ function mergePreservedThinking<M extends { role: string; content: string; cls?:
     for (let j = i + 1; j < existing.length; j++) {
       const r = existing[j].role
       if (r === 'assistant' || r === 'streaming') { anchor = existing[j].content.trimEnd(); break }
-      if (r === 'user') break
+      // A confirmed steer does not end this block's turn, so the assistant row
+      // after it is still its anchor. Breaking here instead leaves `anchor`
+      // null, and an unanchored block is appended at the tail — below the answer
+      // and its footer — where the forward scan can never reach an assistant row
+      // again, so it stays there and is re-appended on every later refresh.
+      if (isTurnBoundaryUser(existing[j])) break
     }
     preserved.push({ msg: m, anchor })
   }
@@ -2831,13 +2856,17 @@ const chatSlice = createSlice({
      *  single content-bearing `thinking`-role message for the current turn.
      *  Reasoning normally arrives before the visible answer, so the block sits
      *  above the streamed assistant text. Scans back to the turn boundary (the
-     *  last user message) to keep one reasoning block per turn. */
+     *  last non-steer user message) to keep one reasoning block per turn. */
     sseThinkingChunk(state, action: PayloadAction<{ slot: string; content: string }>) {
       const { slot, content } = action.payload
       if (slot !== state.activeSlot || !content) return
       for (let i = state.messages.length - 1; i >= 0; i--) {
         if (state.messages[i].role === 'thinking') { state.messages[i].content += content; return }
-        if (state.messages[i].role === 'user') break
+        // A confirmed steer does not start a new turn, so reasoning after it
+        // belongs to this turn's existing block. Treating it as a boundary mints
+        // a second block for one answer, and that block lands at the end of the
+        // array, below the answer.
+        if (isTurnBoundaryUser(state.messages[i])) break
       }
       state.messages.push({ role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
     },
