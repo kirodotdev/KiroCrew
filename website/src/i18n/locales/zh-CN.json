@@ -6175,8 +6175,13 @@
       "no_noun_match": "没有匹配的{{noun}}"
     },
     "updateModal": {
+      "back_to_dashboard": "返回仪表板",
       "dismiss": "忽略",
       "dismiss_update_dialog": "关闭更新对话框",
+      "install_failed": "更新安装失败",
+      "install_failed_body": "无法应用此更新。Kiro Crew 正在恢复本地网关——你可以继续使用当前版本，并在“设置 > 关于”中重试。",
+      "installing_update": "正在安装更新…",
+      "installing_update_body": "Kiro Crew 正在停止本地网关并安装更新。这可能需要一分钟——请勿退出应用，它会自行重新启动。",
       "is_downloaded_and_ready_to_install": "已下载完成，可以安装。",
       "kirocrew": "Kiro Crew",
       "later": "稍后",

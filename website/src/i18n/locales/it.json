@@ -6351,8 +6351,13 @@
       "no_noun_match": "Nessun(a) {{noun}} corrispondente"
     },
     "updateModal": {
+      "back_to_dashboard": "Torna alla dashboard",
       "dismiss": "Ignora",
       "dismiss_update_dialog": "Chiudi la finestra di aggiornamento",
+      "install_failed": "Installazione dell'aggiornamento non riuscita",
+      "install_failed_body": "Impossibile applicare l'aggiornamento. Kiro Crew sta ripristinando il gateway locale — puoi continuare a usare questa versione e riprovare da Impostazioni > Informazioni.",
+      "installing_update": "Installazione dell'aggiornamento…",
+      "installing_update_body": "Kiro Crew sta arrestando il gateway locale e installando l'aggiornamento. Può richiedere un minuto — non chiudere l'app; si riavvierà da sola.",
       "is_downloaded_and_ready_to_install": "è stato scaricato ed è pronto per l'installazione.",
       "kirocrew": "Kiro Crew",
       "later": "Più tardi",

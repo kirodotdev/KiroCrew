@@ -1901,6 +1901,11 @@
     },
     "updateModal": {
       "restart_update": "Restart & Update",
+      "installing_update": "Installing update…",
+      "installing_update_body": "Kiro Crew is stopping the local gateway and installing the update. This can take a minute — don’t quit the app; it will relaunch itself.",
+      "install_failed": "Update failed to install",
+      "install_failed_body": "The update could not be applied. Kiro Crew is restoring the local gateway — you can keep using this version and retry from Settings > About.",
+      "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
     "voiceDisabledModal": {

@@ -6263,8 +6263,13 @@
       "no_noun_match": "कोई {{noun}} मेल नहीं"
     },
     "updateModal": {
+      "back_to_dashboard": "डैशबोर्ड पर वापस जाएँ",
       "dismiss": "खारिज करें",
       "dismiss_update_dialog": "अपडेट डायलॉग बंद करें",
+      "install_failed": "अपडेट इंस्टॉल नहीं हो सका",
+      "install_failed_body": "अपडेट लागू नहीं किया जा सका। Kiro Crew लोकल गेटवे बहाल कर रहा है — इसी वर्शन का उपयोग जारी रखो और सेटिंग्स > अबाउट से फिर से कोशिश करो।",
+      "installing_update": "अपडेट इंस्टॉल हो रहा है...",
+      "installing_update_body": "Kiro Crew लोकल गेटवे रोककर अपडेट इंस्टॉल कर रहा है। इसमें एक मिनट लग सकता है — ऐप बंद मत करो; यह अपने आप फिर से शुरू हो जाएगा।",
       "is_downloaded_and_ready_to_install": "डाउनलोड हो गया है और इंस्टॉल के लिए तैयार है।",
       "kirocrew": "Kiro Crew",
       "later": "बाद में",

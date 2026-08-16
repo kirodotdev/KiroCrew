@@ -6175,8 +6175,13 @@
       "no_noun_match": "{{noun}}に一致しません"
     },
     "updateModal": {
+      "back_to_dashboard": "ダッシュボードに戻る",
       "dismiss": "閉じる",
       "dismiss_update_dialog": "更新ダイアログを閉じる",
+      "install_failed": "更新をインストールできませんでした",
+      "install_failed_body": "更新を適用できませんでした。Kiro Crew はローカルゲートウェイを復旧しています。このバージョンのまま利用を続け、「設定 > このアプリについて」から再試行できます。",
+      "installing_update": "更新をインストール中…",
+      "installing_update_body": "Kiro Crew はローカルゲートウェイを停止して更新をインストールしています。1分ほどかかることがあります。アプリを終了しないでください。自動的に再起動します。",
       "is_downloaded_and_ready_to_install": "がダウンロードされ、インストール準備ができています。",
       "kirocrew": "Kiro Crew",
       "later": "後で",

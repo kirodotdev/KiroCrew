@@ -12,7 +12,7 @@ import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
  * the consumer that nobody remembered to edit.
  */
 export type UpdateState = {
-  state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+  state: 'checking' | 'found' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
   version?: string
   notes?: string
   pubDate?: string
@@ -82,7 +82,7 @@ export function useUpdateSubscription() {
       // Mirror availability into Redux so nav dots (Settings item, About tab)
       // can use the surface-registry badge pipeline. found/downloading/
       // downloaded all mean "an update exists"; not-available clears it.
-      // checking/error deliberately leave the flag unchanged.
+      // checking/installing/error deliberately leave the flag unchanged.
       if (payload.state === 'found' || payload.state === 'available' || payload.state === 'downloading' || payload.state === 'downloaded') {
         dispatch(setDesktopUpdateAvailable(true))
       } else if (payload.state === 'not-available') {

@@ -6351,8 +6351,13 @@
       "no_noun_match": "Aucun(e) {{noun}} correspondant(e)"
     },
     "updateModal": {
+      "back_to_dashboard": "Retour au tableau de bord",
       "dismiss": "Ignorer",
       "dismiss_update_dialog": "Ignorer la boîte de dialogue de mise à jour",
+      "install_failed": "Échec de l’installation de la mise à jour",
+      "install_failed_body": "La mise à jour n’a pas pu être appliquée. Kiro Crew restaure la passerelle locale — vous pouvez continuer avec cette version et réessayer depuis Paramètres > À propos.",
+      "installing_update": "Installation de la mise à jour...",
+      "installing_update_body": "Kiro Crew arrête la passerelle locale et installe la mise à jour. Cela peut prendre une minute — ne quittez pas l’application ; elle redémarrera d’elle-même.",
       "is_downloaded_and_ready_to_install": "a été téléchargé et est prêt à être installé.",
       "kirocrew": "Kiro Crew",
       "later": "Plus tard",

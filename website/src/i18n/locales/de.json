@@ -6263,8 +6263,13 @@
       "no_noun_match": "Keine passenden {{noun}}"
     },
     "updateModal": {
+      "back_to_dashboard": "Zurück zum Dashboard",
       "dismiss": "Schließen",
       "dismiss_update_dialog": "Aktualisierungsdialog schließen",
+      "install_failed": "Aktualisierung konnte nicht installiert werden",
+      "install_failed_body": "Die Aktualisierung konnte nicht angewendet werden. Kiro Crew stellt das lokale Gateway wieder her — Sie können diese Version weiter nutzen und es unter Einstellungen > Info erneut versuchen.",
+      "installing_update": "Aktualisierung wird installiert...",
+      "installing_update_body": "Kiro Crew stoppt das lokale Gateway und installiert die Aktualisierung. Das kann eine Minute dauern — App nicht beenden; sie startet von selbst neu.",
       "is_downloaded_and_ready_to_install": "ist heruntergeladen und installationsbereit.",
       "kirocrew": "Kiro Crew",
       "later": "Später",

@@ -693,6 +693,13 @@ function initAutoUpdate(deps) {
       return;
     }
     installing = true;
+    // Tell the renderer the install is UNDERWAY before anything goes silent:
+    // the gateway is about to be stopped on purpose, and without this state
+    // the dashboard renders the stoppage as an outage (offline pill, failed
+    // requests) while the swap is still staging. On a failed handoff the
+    // 'error' emit (phase "install") replaces this state, which is what
+    // clears the renderer's installing overlay.
+    emit("installing", { version: stagedVersion });
     // BEFORE stopGateway, or the watchdog can win the race and respawn the
     // gateway into the middle of the bundle swap.
     try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
@@ -719,6 +726,10 @@ function initAutoUpdate(deps) {
     quitHandled = true;
     event.preventDefault();
     (async () => {
+      // Same signal as the manual path: the window can stay visible for
+      // several seconds while the gateway stops and the installer stages the
+      // bundle, and the renderer must not read that silence as an outage.
+      emit("installing", { version: stagedVersion });
       // No onInstallDispatched here: this handler only runs from before-quit,
       // where main.js has already set isQuitting -- the watchdog is covered.
       log.info("[update] deferred install on quit");

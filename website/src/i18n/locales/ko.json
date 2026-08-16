@@ -6175,8 +6175,13 @@
       "no_noun_match": "일치하는 {{noun}} 없음"
     },
     "updateModal": {
+      "back_to_dashboard": "대시보드로 돌아가기",
       "dismiss": "닫기",
       "dismiss_update_dialog": "업데이트 대화상자 닫기",
+      "install_failed": "업데이트를 설치하지 못했습니다",
+      "install_failed_body": "업데이트를 적용할 수 없습니다. Kiro Crew가 로컬 게이트웨이를 복구하는 중입니다. 이 버전을 계속 사용하고 설정 > 정보에서 다시 시도할 수 있습니다.",
+      "installing_update": "업데이트 설치 중…",
+      "installing_update_body": "Kiro Crew가 로컬 게이트웨이를 중지하고 업데이트를 설치하고 있습니다. 1분 정도 걸릴 수 있습니다. 앱을 종료하지 마세요. 자동으로 다시 시작됩니다.",
       "is_downloaded_and_ready_to_install": "다운로드가 끝나 설치할 준비가 되었습니다.",
       "kirocrew": "Kiro Crew",
       "later": "나중에",

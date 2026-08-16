@@ -6351,8 +6351,13 @@
       "no_noun_match": "No hay {{noun}} que coincidan"
     },
     "updateModal": {
+      "back_to_dashboard": "Volver al panel",
       "dismiss": "Descartar",
       "dismiss_update_dialog": "Descartar el diálogo de actualización",
+      "install_failed": "No se pudo instalar la actualización",
+      "install_failed_body": "No se pudo aplicar la actualización. Kiro Crew está restaurando la puerta de enlace local — puedes seguir usando esta versión y reintentarlo en Configuración > Acerca de.",
+      "installing_update": "Instalando la actualización…",
+      "installing_update_body": "Kiro Crew está deteniendo la puerta de enlace local e instalando la actualización. Puede tardar un minuto — no cierres la aplicación; se reiniciará sola.",
       "is_downloaded_and_ready_to_install": "se ha descargado y está listo para instalarse.",
       "kirocrew": "Kiro Crew",
       "later": "Más tarde",
