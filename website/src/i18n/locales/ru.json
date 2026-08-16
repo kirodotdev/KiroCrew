@@ -7468,7 +7468,8 @@
       "ver": "Вер.",
       "widgets_files_and_snippets_live_tracked_with_ver": "Виджеты, файлы и фрагменты кода — отслеживаются в реальном времени, с историей версий",
       "your_artifacts": "Ваши артефакты",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "more_actions": "Другие действия"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Возможности агента",

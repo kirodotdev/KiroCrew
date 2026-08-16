@@ -2392,7 +2392,8 @@
       "start_a_new_blank_document_in_the_library": "Start a new blank document in the library",
       "table": "Table",
       "this_folder_is_empty_drag_artifacts_onto_it_to_f": "This folder is empty. Drag artifacts onto it to file them here.",
-      "untitled_artifact_name": "Untitled"
+      "untitled_artifact_name": "Untitled",
+      "more_actions": "More actions"
     },
     "capabilitiesPage": {
       "crews_label": "Agents",

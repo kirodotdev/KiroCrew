@@ -145,10 +145,16 @@ export default function SegmentedControl<T extends string = string>({ segments, 
         {segments.map(s => {
           const isActive = s.key === value
           const isDisabled = s.disabled === true
+          // Compact hides an unselected segment's label, leaving an icon-only
+          // button. Name it explicitly rather than leaning on `title` as the
+          // accessible-name fallback: the tooltip never appears on touch, which
+          // is the form factor compact exists for.
+          const labelShown = mode === 'full' || isActive
           return (
             <motion.button
               key={s.key}
               layout
+              aria-label={labelShown ? undefined : s.label}
               aria-disabled={isDisabled || undefined}
               onClick={() => {
                 if (isDisabled) return
@@ -176,7 +182,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
               )}
               {s.icon && <span className="relative z-[1]">{s.icon}</span>}
               <AnimatePresence>
-                {(mode === 'full' || isActive) && (
+                {labelShown && (
                   <motion.span
                     key={`label-${s.key}`}
                     initial={reduceMotion ? false : { width: 0 }}

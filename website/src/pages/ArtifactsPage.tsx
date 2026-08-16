@@ -2068,7 +2068,12 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Btn
-                    aria-label={i18nT('pages.artifactsPage.more_ways_to_add_an_artifact')}
+                    // On a phone this menu also holds the folder action, so an
+                    // add-only name would under-promise its contents — and the
+                    // name is all a screen reader gets from a chevron.
+                    aria-label={isMobile
+                      ? i18nT('pages.artifactsPage.more_actions')
+                      : i18nT('pages.artifactsPage.more_ways_to_add_an_artifact')}
                     disabled={addArtifactMut.isPending}
                     className="rounded-l-none border-l-0 px-1"
                   >

@@ -7370,7 +7370,8 @@
       "ver": "Vers.",
       "widgets_files_and_snippets_live_tracked_with_ver": "Widgets, fichiers et extraits — suivis en direct avec historique des versions",
       "your_artifacts": "Vos artefacts",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "more_actions": "Plus d'actions"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Capacités de l'agent",

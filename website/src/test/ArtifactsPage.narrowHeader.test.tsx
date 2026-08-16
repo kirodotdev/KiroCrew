@@ -60,11 +60,23 @@ describe('ArtifactsPage header row at phone width', () => {
     await waitFor(() => expect(headerRow()).toBeTruthy())
     // Not a peer button any more...
     expect(screen.queryByRole('button', { name: /new folder/i })).toBeNull()
-    // ...but still reachable, one tap away, inside the existing add menu.
+    // ...but still reachable, one tap away, behind a trigger whose name covers
+    // what the menu now holds: an add action AND an organize action. The
+    // add-only name would under-promise it, and that name is all a screen
+    // reader gets from a chevron.
+    const trigger = screen.getByRole('button', { name: /more actions/i })
     // Radix opens on a pointer/keyboard event, not a synthetic click; Enter
     // also proves the menu is reachable without a pointer.
-    fireEvent.keyDown(screen.getByRole('button', { name: /more ways to add an artifact/i }), { key: 'Enter' })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
     await waitFor(() => expect(screen.getByRole('menuitem', { name: /new folder/i })).toBeTruthy())
+  })
+
+  it('keeps the add-specific trigger name on desktop, where the menu only adds', async () => {
+    mobile = false
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(headerRow()).toBeTruthy())
+    expect(screen.getByRole('button', { name: /more ways to add an artifact/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /more actions/i })).toBeNull()
   })
 
   it('keeps the folder action on the row at desktop width', async () => {
