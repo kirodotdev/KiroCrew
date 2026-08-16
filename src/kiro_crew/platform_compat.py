@@ -2021,6 +2021,78 @@ def pid_exists(pid: int) -> bool:
         return False
 
 
+#: Seconds before the ``ps`` start-time probe is abandoned. Only the BSD leg
+#: spawns anything; Linux reads /proc and Windows calls the kernel directly.
+_START_TIME_PS_TIMEOUT = 2
+
+
+def process_start_time(pid: int) -> str | None:
+    """Stable identity for WHEN *pid* started, or ``None`` when unreadable.
+
+    An opaque token whose only contract is that it compares equal across gateway
+    generations on the same host while the PID still names the same process
+    object, and unequal once that PID has been recycled onto another. Units
+    differ per platform and are deliberately not normalised -- nothing ever
+    compares one host's value against another's, and no caller parses it.
+
+    Callers use it as a PID-reuse guard before signalling, so an unreadable
+    value must fail SAFE: ``None`` means "identity unconfirmed", which every
+    caller treats as "do not kill".
+
+    * **Linux** -- ``/proc/<pid>/stat`` field 22 (start time in clock ticks
+      since boot): monotonic, locale-independent, and far finer than 1s, so
+      same-second reuse cannot alias.
+    * **Windows** -- the process creation ``FILETIME`` (100-ns units), read
+      through a QUERY-ONLY handle. Terminate rights are deliberately NOT
+      requested: this value is what decides whether a kill may happen at all, so
+      demanding the right to kill in order to read it would refuse the guard for
+      exactly the processes a caller must be most careful about.
+    * **macOS / other POSIX** -- ``ps -o lstart=`` (1s resolution, locale/TZ
+      formatted). Coarser, so a format or resolution drift can only make the
+      guard decline to act, never act on the wrong process.
+    """
+    if sys.platform == "linux":
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            # The comm field can contain spaces and parens; split after the
+            # LAST ')' so a process named "(evil) 1 2 3" cannot shift the index.
+            return stat.rsplit(")", 1)[1].split()[19]
+        except (OSError, ValueError, IndexError):
+            return None
+    if IS_WINDOWS:
+        # Opened and closed through the shared seams so this READ and the
+        # identity-pinned TERMINATE below cannot drift in how they acquire or
+        # release the handle -- the difference between the two is the handle's
+        # LIFETIME, and that is easier to reason about with one acquisition site.
+        handle = _open_process_query_handle(pid)
+        if handle is None:
+            return None
+        try:
+            identity = _windows_process_handle_identity(handle)
+        finally:
+            _close_process_handle(handle)
+        # (pid, creation_time, exit_time) -- only the creation half is an
+        # identity; exit_time moves as the process dies.
+        return str(identity[1]) if identity is not None else None
+    ps_bin = trusted_system_bin("ps")
+    if ps_bin is None:
+        return None
+    try:
+        out = subprocess.check_output(
+            [ps_bin, "-o", "lstart=", "-p", str(pid)],
+            stderr=subprocess.DEVNULL,
+            timeout=_START_TIME_PS_TIMEOUT,
+        )
+        # STRICT decode. A lossy one would turn unreadable bytes into a
+        # non-empty string, so the caller would accept garbage as a confirmed
+        # identity -- and two different processes whose output both decoded to
+        # replacement characters would compare equal. Undecodable output means
+        # the probe cannot be trusted, which is the None case.
+        return out.decode().strip() or None
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return None
+
+
 def process_thread_count(pid: int) -> int | None:
     """Thread count of *pid*, or ``None`` when it cannot be determined.
 
@@ -2275,6 +2347,92 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     if r.returncode != 0:
         _raise_taskkill_error(pid, r.returncode, r.stderr or r.stdout)
     return True
+
+
+def _open_process_query_handle(pid: int) -> int | None:
+    """Open a QUERY-ONLY Windows handle to *pid*, or ``None``.
+
+    Terminate rights are deliberately NOT requested: the callers use this handle
+    to decide whether a kill may happen at all, so demanding the right to kill in
+    order to read the identity would refuse the guard for exactly the processes a
+    caller must be most careful about.
+
+    Returns ``None`` on every non-Windows platform, and on any failure -- an
+    unopenable process is one whose identity cannot be confirmed, which every
+    caller must treat as "do not kill".
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    except Exception:
+        return None
+    return int(handle) if handle else None
+
+
+def _close_process_handle(handle: int) -> None:
+    """Release a handle from :func:`_open_process_query_handle`. Never raises."""
+    if not IS_WINDOWS or type(handle) is not int or handle <= 0:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+    except Exception:
+        logger.debug("CloseHandle failed for process handle %d", handle, exc_info=True)
+
+
+def kill_process_tree_pinned(
+    pid: int, expected_start_time: str, sig: int = SIGTERM
+) -> bool:
+    """Kill *pid*'s tree only while its verified identity is PINNED OPEN.
+
+    :func:`kill_process_tree` addresses the target by PID, and on Windows it
+    does so from a separate ``taskkill`` process. A caller that merely read the
+    start time first has released every handle by then, so between the check and
+    the terminate the process can exit and Windows can recycle the PID onto an
+    unrelated process -- which ``taskkill /T /F /PID`` would then tear down with
+    its whole tree. The check is only as good as the window after it.
+
+    Windows keeps a process ID reserved for as long as ANY handle to the process
+    object remains open, so holding the query handle that verified the identity
+    across the terminate is what makes the PID still mean the same process when
+    ``taskkill`` resolves it. That is the guarantee this function adds, and the
+    only reason it exists.
+
+    Returns ``False`` -- WITHOUT invoking any kill -- when the handle cannot be
+    opened or the identity does not match *expected_start_time*. Callers must
+    treat that as "identity unconfirmed, do not reap", the same fail-safe the
+    start-time comparison already gives them. On a match it delegates to
+    :func:`kill_process_tree` and propagates its exceptions unchanged, so
+    ``except (ProcessLookupError, OSError)`` handlers keep firing as before.
+
+    POSIX is deliberately untouched: it delegates straight through, because
+    ``os.killpg`` is issued in-process by the same interpreter that did the
+    check and there is no handle to hold. The residual probe-to-signal window
+    there is the pre-existing one the callers already mitigate by re-confirming
+    identity before the destructive escalation.
+    """
+    if not IS_WINDOWS:
+        return kill_process_tree(pid, sig)
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return False
+    try:
+        identity = _windows_process_handle_identity(handle)
+        # (pid, creation_time, exit_time) -- the creation half is the identity.
+        if identity is None or str(identity[1]) != expected_start_time:
+            return False
+        # The handle stays open for the whole call: taskkill resolves the PID
+        # while this process object is still referenced, so the PID cannot have
+        # been recycled onto a different process in between.
+        return kill_process_tree(pid, sig)
+    finally:
+        _close_process_handle(handle)
 
 
 async def kill_pid_async(pid: int, sig: int = SIGTERM) -> bool:

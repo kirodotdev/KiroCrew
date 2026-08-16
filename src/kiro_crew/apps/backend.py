@@ -76,7 +76,6 @@ _BOOT_SPAWN_MAX_WORKERS = 8
 # applied PER orphan, not shared across the batch.
 _REAP_SIGTERM_GRACE = 3.0  # seconds to wait for an orphan to exit after SIGTERM
 _REAP_POLL_INTERVAL = 0.1  # liveness re-poll cadence during the grace window
-_PS_TIMEOUT = 2  # seconds before a `ps` start-time probe is abandoned
 
 
 # ---------------------------------------------------------------------------
@@ -1385,25 +1384,14 @@ def _proc_start_time(pid: int) -> str | None:
     prior generation against one read now), so it cannot use ``hash()`` — that
     is salted per interpreter by ``PYTHONHASHSEED``.
 
-    Linux reads ``/proc/<pid>/stat`` field 22 (start time in clock ticks since
-    boot): monotonic, locale-independent, and far finer than 1s, so same-second
-    PID reuse cannot alias. macOS falls back to ``ps -o lstart=`` (1s resolution,
-    locale/TZ-formatted); a format/resolution drift there can only make the guard
-    FAIL SAFE (decline to reap → orphan leaks), never kill the wrong process.
+    Per-platform sources live in ``platform_compat.process_start_time``: Linux
+    reads ``/proc/<pid>/stat`` field 22, Windows the process creation FILETIME
+    through a query-only handle, and other POSIX ``ps -o lstart=``. Resolving it
+    there is what keeps the guard alive on Windows — a ``/proc``-or-``ps`` probe
+    answers None for every pid there, and a recorded None makes the reap decline
+    to confirm ANY backend, so nothing is ever reaped and the entries accumulate.
     """
-    try:
-        if sys.platform == "linux":
-            stat = Path(f"/proc/{pid}/stat").read_text()
-            # The comm field can contain spaces/parens; split after the last ')'.
-            fields = stat.rsplit(")", 1)[1].split()
-            return fields[19]  # field 22 (1-based) = starttime in clock ticks
-        out = subprocess.check_output(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            stderr=subprocess.DEVNULL, timeout=_PS_TIMEOUT,
-        )
-        return out.decode().strip() or None
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        return None
+    return platform_compat.process_start_time(pid)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1452,11 +1440,12 @@ def _record_app_pid(app_name: str, pid: int, port: int) -> None:
     if pid <= 0:
         return
     try:
-        # Compute start_time BEFORE taking the lock: on macOS _proc_start_time
-        # shells out to `ps` (up to _PS_TIMEOUT), and holding _pidfile_lock
-        # across that slow IO would serialize concurrent enable/stop/uninstall
-        # ops behind it. Mirrors the reap path's validate-lock-free /
-        # store-under-lock discipline.
+        # Compute start_time BEFORE taking the lock: the probe is slow on the
+        # platforms that cannot answer from memory (a `ps` spawn on macOS, an
+        # OpenProcess round trip on Windows), and holding _pidfile_lock across
+        # that IO would serialize concurrent enable/stop/uninstall ops behind
+        # it. Mirrors the reap path's validate-lock-free / store-under-lock
+        # discipline.
         start_time = _proc_start_time(pid)
         with _pidfile_lock:
             data = _read_pidfile()
@@ -1536,9 +1525,24 @@ def _reap_stale_app_backends() -> int:
             )
             continue
         try:
-            platform_compat.kill_process_tree(pid, platform_compat.SIGTERM)
+            # Identity-PINNED: on Windows the handle that re-verifies the start
+            # time stays open across the terminate, so the pid taskkill resolves
+            # cannot have been recycled between the check above and the signal.
+            # False means the identity could not be pinned -- keep the entry
+            # (omit from ``handled``) and retry on a later start, exactly as the
+            # unconfirmed-start_time branch above does. POSIX delegates straight
+            # through and is unchanged.
+            signalled = platform_compat.kill_process_tree_pinned(
+                pid, recorded_st, platform_compat.SIGTERM
+            )
         except (ProcessLookupError, OSError):
             handled[app_name] = entry  # gone between the probe and the signal
+            continue
+        if not signalled:
+            logger.info(
+                "Skipping stale-reap of %s pid %d: identity could not be pinned for the kill",
+                app_name, pid,
+            )
             continue
         handled[app_name] = entry
         # Carry recorded_st so the delayed SIGKILL can re-confirm identity before
@@ -1574,7 +1578,17 @@ def _reap_stale_app_backends() -> int:
             )
             continue
         try:
-            platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
+            # Same pinning as the SIGTERM path, and it matters more here: this is
+            # the destructive escalation, and the grace window above is exactly
+            # the interval in which the pid can be recycled.
+            if not platform_compat.kill_process_tree_pinned(
+                pid, recorded_st, platform_compat.SIGKILL
+            ):
+                logger.info(
+                    "Skipping stale-reap SIGKILL of %s pid %d: identity could not be pinned",
+                    app_name, pid,
+                )
+                continue
         except (ProcessLookupError, OSError):
             continue
         try:

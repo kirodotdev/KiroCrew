@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 from pathlib import Path
@@ -933,6 +934,131 @@ class TestProcessIdentityPosix:
         assert isinstance(result, bool)
         if pc.IS_POSIX:
             assert result is False
+
+
+class TestProcessStartTime:
+    """The identity source every PID-reuse guard compares before signalling.
+
+    The value is opaque and its units differ per platform; the contract is only
+    that it is stable for one process object on one host and that an unreadable
+    answer is ``None`` — which every caller treats as "identity unconfirmed, do
+    not kill".
+    """
+
+    def test_this_process_has_a_stable_identity(self):
+        first = pc.process_start_time(os.getpid())
+        assert first, "no start-time identity for the running process"
+        assert pc.process_start_time(os.getpid()) == first, "identity is not stable"
+
+    def test_an_unreadable_pid_fails_safe(self):
+        # PID 0 is never a queryable user process on any supported platform.
+        assert pc.process_start_time(0) is None
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc contract")
+    def test_linux_reports_stat_field_22(self):
+        stat_text = Path(f"/proc/{os.getpid()}/stat").read_text()
+        expected = stat_text.rsplit(")", 1)[1].split()[19]
+        assert pc.process_start_time(os.getpid()) == expected
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows creation-FILETIME contract")
+    def test_windows_reports_a_positive_creation_filetime(self):
+        value = pc.process_start_time(os.getpid())
+        assert value is not None and value.isdigit()
+        assert int(value) > 0
+
+    def test_linux_reads_the_starttime_field_past_a_parenthesised_comm(self, monkeypatch):
+        """Splitting on the FIRST ')' would mis-index any comm containing one."""
+
+        tail = " ".join(str(i) for i in range(4, 24))
+
+        class _FakeStatPath:
+            def __init__(self, _p):
+                pass
+
+            def read_text(self):
+                return f"4242 (my (odd) proc) S 1 {tail}"
+
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(pc, "Path", _FakeStatPath)
+        assert pc.process_start_time(4242) == "21"
+
+    def test_a_malformed_stat_line_fails_safe(self, monkeypatch):
+        class _FakeStatPath:
+            def __init__(self, _p):
+                pass
+
+            def read_text(self):
+                return "no closing paren here"
+
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(pc, "Path", _FakeStatPath)
+        assert pc.process_start_time(4242) is None
+
+    def test_the_bsd_leg_resolves_ps_through_trusted_system_bin(self, monkeypatch):
+        """A PATH-resolved `ps` would let a planted binary forge process identity.
+
+        The value gates a kill, so its source binary must come from the pinned
+        lookup rather than whatever `PATH` leads with.
+        """
+        monkeypatch.setattr(pc.sys, "platform", "darwin")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/ps")
+        seen: list[list[str]] = []
+
+        def _check_output(argv, **_k):
+            seen.append(list(argv))
+            return b" Mon Jan  1 00:00:00 2024\n"
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _check_output)
+
+        assert pc.process_start_time(4242) == "Mon Jan  1 00:00:00 2024"
+        assert seen and seen[0][0] == "/usr/bin/ps", "ps was not the pinned binary"
+
+    def test_an_absent_ps_fails_safe(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "darwin")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
+        assert pc.process_start_time(4242) is None
+
+    def test_undecodable_ps_output_fails_safe(self, monkeypatch):
+        """Bytes that are not valid UTF-8 are not an identity.
+
+        A lossy decode would turn unreadable output into a NON-EMPTY string, so
+        the caller would treat garbage as a confirmed identity — the fail-OPEN
+        direction at a kill boundary, and two different processes whose output
+        both decoded to replacement characters would compare equal.
+        """
+        monkeypatch.setattr(pc.sys, "platform", "darwin")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/ps")
+        monkeypatch.setattr(
+            pc.subprocess, "check_output", lambda *_a, **_k: b"\xff\xfe not utf-8"
+        )
+        assert pc.process_start_time(4242) is None
+
+    def test_empty_ps_output_fails_safe(self, monkeypatch):
+        monkeypatch.setattr(pc.sys, "platform", "darwin")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/ps")
+        monkeypatch.setattr(pc.subprocess, "check_output", lambda *_a, **_k: b"\n")
+        assert pc.process_start_time(4242) is None
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows handle-rights contract")
+    def test_windows_identity_does_not_require_terminate_rights(self, monkeypatch):
+        """Reading identity must not demand the right to kill.
+
+        This value is what DECIDES whether a kill may happen, so routing it
+        through the termination handle (PROCESS_TERMINATE + SYNCHRONIZE) would
+        deny the guard for exactly the processes a caller must be most careful
+        about — they would read as "identity unconfirmed" for a permissions
+        reason rather than a recycling one.
+        """
+
+        def _refuse(_pid):
+            raise AssertionError("start-time identity opened a termination handle")
+
+        monkeypatch.setattr(pc, "_open_process_termination_handle", _refuse)
+        assert pc.process_start_time(os.getpid())
 
 
 class TestPidLivenessPosix:
@@ -2802,3 +2928,217 @@ class TestIsBundledInterpreter:
             "platform_compat.BUNDLED_BACKEND_DIST_DIRNAME in sync with the "
             "packaging layer (see is_bundled_interpreter)."
         )
+
+
+class TestKillProcessTreePinned:
+    """The verified identity must stay PINNED for the whole terminate.
+
+    ``kill_process_tree`` addresses the target by PID, and on Windows it does so
+    from a separate ``taskkill`` process. A caller that only read the start time
+    first has released every handle by then, so the process can exit and Windows
+    can recycle the PID onto an unrelated one in between -- which
+    ``taskkill /T /F /PID`` would then tear down with its whole tree. Windows
+    keeps a process ID reserved while ANY handle to the process object is open,
+    so holding the query handle that verified the identity across the terminate
+    is what makes the PID still mean the same process when taskkill resolves it.
+
+    Driven through the module seams with ``IS_WINDOWS`` patched, so every case
+    runs on every platform: the invariant is about handle LIFETIME, not about
+    which OS the test host happens to be.
+    """
+
+    HANDLE = 4242
+
+    def _wire(self, monkeypatch, *, handle=HANDLE, identity=(4321, 777, None)):
+        """Patch the seams; return (opened, closed, killed) recorders."""
+        opened: list[int] = []
+        closed: list[int] = []
+        killed: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _open(pid):
+            opened.append(pid)
+            return handle
+
+        def _identity(h):
+            assert h == handle, "the identity must be read from the handle just opened"
+            return identity
+
+        def _close(h):
+            closed.append(h)
+
+        def _kill(pid, sig):
+            killed.append((pid, sig))
+            return True
+
+        monkeypatch.setattr(pc, "_open_process_query_handle", _open)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
+        monkeypatch.setattr(pc, "_close_process_handle", _close)
+        monkeypatch.setattr(pc, "kill_process_tree", _kill)
+        return opened, closed, killed
+
+    def test_a_matching_identity_kills_and_then_releases_the_handle(self, monkeypatch):
+        opened, closed, killed = self._wire(monkeypatch)
+
+        assert pc.kill_process_tree_pinned(4321, "777", pc.SIGTERM) is True
+
+        assert opened == [4321]
+        assert killed == [(4321, pc.SIGTERM)]
+        assert closed == [self.HANDLE]
+
+    def test_a_mismatched_identity_never_invokes_the_kill(self, monkeypatch):
+        """The pid was recycled: refuse, and do not spawn taskkill at all.
+
+        Asserting on "no kill" rather than on the return value is the point --
+        a terminate that ran and then failed would still have torn down whatever
+        now owns the pid.
+        """
+        _, closed, killed = self._wire(monkeypatch, identity=(4321, 999, None))
+
+        assert pc.kill_process_tree_pinned(4321, "777", pc.SIGKILL) is False
+
+        assert killed == []
+        assert closed == [self.HANDLE], "the handle must still be released"
+
+    def test_an_unopenable_process_never_invokes_the_kill(self, monkeypatch):
+        """No handle means no pin, and an unpinned pid must not be killed."""
+        _, closed, killed = self._wire(monkeypatch, handle=None)
+
+        assert pc.kill_process_tree_pinned(4321, "777", pc.SIGTERM) is False
+
+        assert killed == []
+        assert closed == [], "nothing was opened, so nothing may be closed"
+
+    def test_an_unreadable_identity_never_invokes_the_kill(self, monkeypatch):
+        """A handle that cannot answer WHO it is confirms nothing."""
+        _, closed, killed = self._wire(monkeypatch, identity=None)
+
+        assert pc.kill_process_tree_pinned(4321, "777", pc.SIGTERM) is False
+
+        assert killed == []
+        assert closed == [self.HANDLE]
+
+    def test_the_handle_is_still_open_while_the_kill_is_in_flight(self, monkeypatch):
+        """The invariant itself, observed rather than inferred.
+
+        The fake terminate is gated on an event, so the assertion runs at a
+        moment that is CAUSALLY inside the kill rather than at a moment chosen by
+        a sleep. The two ``wait`` calls are bounded hang guards; nothing asserts
+        on elapsed time.
+        """
+        closed: list[int] = []
+        entered = threading.Event()
+        release = threading.Event()
+        seen_closed_during_kill: list[list[int]] = []
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(
+            pc, "_windows_process_handle_identity", lambda h: (4321, 777, None)
+        )
+        monkeypatch.setattr(pc, "_close_process_handle", closed.append)
+
+        def _gated_kill(pid, sig):
+            seen_closed_during_kill.append(list(closed))
+            entered.set()
+            assert release.wait(10), "the gate was never released"
+            return True
+
+        monkeypatch.setattr(pc, "kill_process_tree", _gated_kill)
+
+        result: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: result.append(pc.kill_process_tree_pinned(4321, "777"))
+        )
+        worker.start()
+        try:
+            assert entered.wait(10), "the kill never started"
+            assert closed == [], (
+                "the handle was released while taskkill was still in flight -- "
+                "the pid is unpinned for exactly the window this exists to close"
+            )
+        finally:
+            release.set()
+            worker.join(10)
+
+        assert not worker.is_alive()
+        assert seen_closed_during_kill == [[]]
+        assert result == [True]
+        assert closed == [self.HANDLE], "released once the kill returned"
+
+    def test_the_handle_is_released_when_the_kill_raises(self, monkeypatch):
+        """A failing terminate must not leak the handle.
+
+        A leaked handle keeps the pid reserved for the life of the gateway, so
+        the failure mode is a slow resource leak rather than a loud one.
+        """
+        closed: list[int] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(
+            pc, "_windows_process_handle_identity", lambda h: (4321, 777, None)
+        )
+        monkeypatch.setattr(pc, "_close_process_handle", closed.append)
+
+        def _raising_kill(pid, sig):
+            raise ProcessLookupError("gone between the pin and the signal")
+
+        monkeypatch.setattr(pc, "kill_process_tree", _raising_kill)
+
+        with pytest.raises(ProcessLookupError):
+            pc.kill_process_tree_pinned(4321, "777")
+
+        assert closed == [self.HANDLE]
+
+    def test_posix_delegates_straight_through(self, monkeypatch):
+        """POSIX is unchanged: no handle exists to hold, so none is sought.
+
+        ``os.killpg`` is issued in-process by the same interpreter that did the
+        check. Introducing a Windows-shaped pin here would change a path this
+        finding is not about.
+        """
+        killed: list[tuple[int, int]] = []
+        opened: list[int] = []
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "_open_process_query_handle", opened.append)
+        monkeypatch.setattr(
+            pc, "kill_process_tree", lambda pid, sig: killed.append((pid, sig)) or True
+        )
+
+        assert pc.kill_process_tree_pinned(4321, "anything", pc.SIGTERM) is True
+
+        assert killed == [(4321, pc.SIGTERM)]
+        assert opened == [], "no handle work on POSIX"
+
+    def test_the_pinned_identity_is_the_same_half_process_start_time_returns(
+        self, monkeypatch
+    ):
+        """Both sides must read the CREATION half, or the comparison is nonsense.
+
+        ``process_start_time`` records ``str(identity[1])``; if the pin compared
+        a different element the guard would refuse every legitimate reap while
+        reporting itself as working.
+        """
+        # ``process_start_time`` checks ``sys.platform == "linux"`` BEFORE
+        # ``IS_WINDOWS``, so on a Linux runner the /proc arm answers None for a
+        # pid that does not exist and the patched Windows arm is never reached.
+        # Steering the platform too is what keeps this case host-independent --
+        # the same technique test_app_backend_stale_reap uses to model a
+        # ps-less host.
+        monkeypatch.setattr(pc.sys, "platform", "win32")
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_open_process_query_handle", lambda pid: self.HANDLE)
+        monkeypatch.setattr(pc, "_close_process_handle", lambda h: None)
+        monkeypatch.setattr(
+            pc, "_windows_process_handle_identity", lambda h: (4321, 777, 888)
+        )
+        monkeypatch.setattr(pc, "kill_process_tree", lambda pid, sig: True)
+
+        recorded = pc.process_start_time(4321)
+
+        assert recorded == "777"
+        assert pc.kill_process_tree_pinned(4321, recorded) is True
+        # The exit half moves as the process dies and must never be the identity.
+        assert pc.kill_process_tree_pinned(4321, "888") is False

@@ -1287,73 +1287,26 @@ class TestPidfileHelpers:
 
 
 class TestProcStartTime:
-    def test_linux_reads_the_starttime_field_past_a_parenthesised_comm(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Splitting on the FIRST ')' would mis-index any comm containing one."""
+    """The wrapper must not re-implement the per-platform probe.
 
-        tail = " ".join(str(i) for i in range(4, 24))
-        stat = f"4242 (my (odd) proc) S 1 {tail}"
+    Every platform source (Linux /proc field 22, the Windows creation
+    FILETIME, the BSD ``ps`` leg) and its fail-safe behaviour is pinned in
+    test_platform_compat::TestProcessStartTime. What matters here is that this
+    module reads identity from that shim, because a /proc-or-ps probe answers
+    None for every pid on Windows and a recorded None makes the stale-reap
+    decline to confirm any backend at all.
+    """
 
-        class _FakeStatPath:
-            def __init__(self, _p: str) -> None:
-                pass
+    def test_it_delegates_to_the_platform_shim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[int] = []
 
-            def read_text(self) -> str:
-                return stat
+        def _probe(pid: int) -> str:
+            seen.append(pid)
+            return "ST-FROM-SHIM"
 
-        monkeypatch.setattr(bmod.sys, "platform", "linux")
-        monkeypatch.setattr(bmod, "Path", _FakeStatPath)
-        assert bmod._proc_start_time(4242) == "21"
-
-    def test_a_malformed_stat_line_yields_no_identity(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        class _FakeStatPath:
-            def __init__(self, _p: str) -> None:
-                pass
-
-            def read_text(self) -> str:
-                return "no closing paren here"
-
-        monkeypatch.setattr(bmod.sys, "platform", "linux")
-        monkeypatch.setattr(bmod, "Path", _FakeStatPath)
-        assert bmod._proc_start_time(4242) is None
-
-    def test_non_linux_shells_out_to_ps(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bmod.sys, "platform", "darwin")
-        monkeypatch.setattr(
-            bmod.subprocess, "check_output", lambda *_a, **_k: b" Mon Jan  1 00:00:00 2024\n"
-        )
-        assert bmod._proc_start_time(4242) == "Mon Jan  1 00:00:00 2024"
-
-    def test_empty_ps_output_yields_no_identity(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(bmod.sys, "platform", "darwin")
-        monkeypatch.setattr(bmod.subprocess, "check_output", lambda *_a, **_k: b"\n")
-        assert bmod._proc_start_time(4242) is None
-
-    def test_a_failed_ps_probe_yields_no_identity(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def _boom(*_a: Any, **_k: Any) -> bytes:
-            raise OSError("no ps")
-
-        monkeypatch.setattr(bmod.sys, "platform", "darwin")
-        monkeypatch.setattr(bmod.subprocess, "check_output", _boom)
-        assert bmod._proc_start_time(4242) is None
-
-    def test_pid_alive_delegates_to_the_platform_shim(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(bmod.platform_compat, "pid_exists", lambda _pid: True)
-        assert bmod._pid_alive(4242) is True
-
-
-# ---------------------------------------------------------------------------
-# Health-gated MCP registration
-# ---------------------------------------------------------------------------
+        monkeypatch.setattr(bmod.platform_compat, "process_start_time", _probe)
+        assert bmod._proc_start_time(4242) == "ST-FROM-SHIM"
+        assert seen == [4242]
 
 
 class TestGateMcpRegistration:
@@ -1853,21 +1806,25 @@ class TestReapDefensiveBranches:
                 "zero": {"pid": 0, "start_time": "ST", "port": 9101},
             }
         )
-        monkeypatch.setattr(
-            bmod.platform_compat,
-            "kill_process_tree",
-            lambda *_a: pytest.fail("signalled an unusable pidfile entry"),
-        )
+        for _name in ("kill_process_tree", "kill_process_tree_pinned"):
+            monkeypatch.setattr(
+                bmod.platform_compat,
+                _name,
+                lambda *_a: pytest.fail("signalled an unusable pidfile entry"),
+            )
         assert bmod._reap_stale_app_backends() == 0
         assert bmod._read_pidfile() == {}
 
     def test_a_pid_that_exits_before_the_signal_is_dropped(
         self, matched_orphan: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _gone(_pid: int, _sig: int) -> None:
+        def _gone(_pid: int, _expected: str, _sig: int) -> bool:
             raise ProcessLookupError
 
-        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree", _gone)
+        # Patched at the PINNED entry point, which is what the reap calls now.
+        # Patching the inner ``kill_process_tree`` would leave the real handle
+        # work in front of it and make the case host-dependent.
+        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree_pinned", _gone)
         assert bmod._reap_stale_app_backends() == 0
         assert bmod._read_pidfile() == {}
 
@@ -1880,7 +1837,9 @@ class TestReapDefensiveBranches:
         signals: list[int] = []
         monkeypatch.setattr(bmod, "sel", _no_sel)
         monkeypatch.setattr(
-            bmod.platform_compat, "kill_process_tree", lambda _pid, sig: signals.append(sig)
+            bmod.platform_compat,
+            "kill_process_tree_pinned",
+            lambda _pid, _expected, sig: bool(signals.append(sig)) or True,
         )
         assert bmod._reap_stale_app_backends() == 1
         assert signals == [
@@ -1891,10 +1850,11 @@ class TestReapDefensiveBranches:
     def test_a_pid_that_exits_before_the_escalation_is_not_an_error(
         self, matched_orphan: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _kill(_pid: int, sig: int) -> None:
+        def _kill(_pid: int, _expected: str, sig: int) -> bool:
             if sig == bmod.platform_compat.SIGKILL:
                 raise ProcessLookupError
+            return True
 
-        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree", _kill)
+        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree_pinned", _kill)
         assert bmod._reap_stale_app_backends() == 1
         assert bmod._read_pidfile() == {}

@@ -239,7 +239,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
         # never reached from a tool dispatch path.
         "dashboard/tailnet_serve.py::_run",
-        "apps/backend.py::_proc_start_time",
+        # PID-reuse guard for the app-backend reap, moved out of
+        # ``apps/backend.py::_proc_start_time`` so Windows gets a real answer
+        # instead of a blanket None. Only the macOS/other-POSIX arm spawns, and
+        # it is the same fixed ``ps -o lstart= -p <pid>`` argv the backend used
+        # before: no shell, the binary comes from ``trusted_system_bin`` rather
+        # than PATH, and the sole interpolated value is a pid the gateway itself
+        # recorded, rendered through ``str()``. Nothing here is agent-influenced.
+        "platform_compat.py::process_start_time",
         "apps/backend.py::_resolve_nvm_path",
         "apps/backend.py::stop_app_backend",
         # py-spy attach for `kirocrew perf sample --pid`: fixed list-argv (no

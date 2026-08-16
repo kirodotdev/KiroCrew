@@ -33,6 +33,64 @@ def test_record_read_forget_roundtrip(pidfile):
     assert "code_reviewer" not in backend_mod._read_pidfile()
 
 
+def _model_a_host_without_ps(monkeypatch, *, identity):
+    """Model a platform whose start-time probe is NOT `/proc` and NOT `ps`.
+
+    That is precisely Windows: `sys.platform` is not "linux", and there is no
+    standard `ps` for the fallback to reach. `platform_compat` is the layer that
+    can still answer there (process creation FILETIME through a query-only
+    handle) — its real per-platform behaviour is pinned in test_platform_compat.
+    """
+    monkeypatch.setattr(backend_mod.sys, "platform", "win32")
+
+    def _no_ps(*_a, **_k):
+        raise FileNotFoundError(2, "No such file or directory", "ps")
+
+    monkeypatch.setattr(backend_mod.subprocess, "check_output", _no_ps)
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "process_start_time", lambda _pid: identity
+    )
+
+
+def test_a_host_without_ps_still_records_a_reapable_identity(pidfile, monkeypatch):
+    """The stale-reap must not be structurally dead on a `ps`-less platform.
+
+    `_record_app_pid` stores whatever the start-time probe returns, and the reap
+    refuses to signal when the recorded identity is falsy ("identity unconfirmed
+    -> do not kill", and the entry is KEPT). A probe that can only answer via
+    `/proc` or `ps` therefore records None on Windows, and every stale backend
+    there survives forever while its pidfile entry accumulates — the reap fails
+    safe into never reaping at all.
+    """
+    _model_a_host_without_ps(monkeypatch, identity="WIN-CREATION-8817")
+
+    backend_mod._record_app_pid("code_reviewer", 4321, 9100)
+
+    entry = backend_mod._read_pidfile()["code_reviewer"]
+    assert entry["start_time"] == "WIN-CREATION-8817", (
+        "no start-time identity was recorded on a host without /proc or ps, so "
+        "the stale-reap can never positively identify this backend")
+
+    # The consequence: with an identity on file, the reap can now confirm and act
+    # -- and the recorded identity is what the terminate is PINNED to, so the
+    # chain from probe to kill carries one value end to end.
+    killed: list[tuple[int, str, int]] = []
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "pid_liveness",
+        lambda _pid: backend_mod.platform_compat.PID_ALIVE,
+    )
+    monkeypatch.setattr(
+        backend_mod.platform_compat, "kill_process_tree_pinned",
+        lambda pid, expected, sig: bool(killed.append((pid, expected, sig))) or True,
+    )
+    monkeypatch.setattr(backend_mod, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(backend_mod, "sel", lambda: None)
+
+    assert backend_mod._reap_stale_app_backends() == 1
+    assert killed and killed[0][:2] == (4321, "WIN-CREATION-8817")
+    assert backend_mod._read_pidfile() == {}, "the handled entry was not cleared"
+
+
 def test_record_ignores_nonpositive_pid(pidfile):
     backend_mod._record_app_pid("x", 0, 9100)
     assert backend_mod._read_pidfile() == {}
@@ -298,3 +356,71 @@ def test_reap_skips_sigkill_when_pid_recycled_during_grace(pidfile):
         n = backend_mod._reap_stale_app_backends()
     assert n == 1  # the SIGTERM was sent, so it counts as reaped
     assert sigkilled == []  # but the recycled pid must NOT be SIGKILLed
+
+
+def test_reap_keeps_the_entry_when_the_kill_identity_cannot_be_pinned(pidfile):
+    """The reap goes through the identity-PINNED terminate, and honours its refusal.
+
+    ``kill_process_tree_pinned`` returns False when the process cannot be opened
+    or its identity no longer matches, which on Windows is the pid having been
+    recycled between the start-time check and the signal. That must behave like
+    every other unconfirmed-identity case here: no kill, and the entry is KEPT so
+    a later start can retry -- leak-not-mis-kill.
+
+    Liveness is stubbed at ``platform_compat.pid_liveness`` rather than at
+    ``os.kill`` so the case is about the pin and runs identically on every host;
+    the Windows liveness probe is an ``OpenProcess``, not an ``os.kill``.
+    """
+    backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
+    with (
+        patch.object(backend_mod, "_proc_start_time", return_value="ST-1"),
+        patch.object(
+            backend_mod.platform_compat,
+            "pid_liveness",
+            return_value=backend_mod.platform_compat.PID_ALIVE,
+        ),
+        patch.object(
+            backend_mod.platform_compat, "kill_process_tree_pinned", return_value=False
+        ) as mock_pinned,
+        patch.object(backend_mod, "sel"),
+    ):
+        n = backend_mod._reap_stale_app_backends()
+
+    assert n == 0
+    mock_pinned.assert_called_once()
+    assert "app" in backend_mod._read_pidfile(), "an unpinnable entry must be retried"
+
+
+def test_reap_hands_the_recorded_identity_to_the_pinned_kill(pidfile):
+    """The pin must re-verify against the RECORDED baseline, not a fresh read.
+
+    Re-reading inside the pin would compare the process against itself and
+    confirm any pid, which is the check the window exists to survive.
+    """
+    backend_mod._write_pidfile({"app": {"pid": 4321, "start_time": "ST-1", "port": 9100}})
+    alive = {"v": True}
+
+    def fake_pinned(pid, expected, sig):
+        alive["v"] = False  # the terminate took effect
+        return True
+
+    with (
+        patch.object(backend_mod, "_proc_start_time", return_value="ST-1"),
+        patch.object(
+            backend_mod.platform_compat,
+            "pid_liveness",
+            return_value=backend_mod.platform_compat.PID_ALIVE,
+        ),
+        patch.object(backend_mod, "_pid_alive", side_effect=lambda pid: alive["v"]),
+        patch.object(
+            backend_mod.platform_compat,
+            "kill_process_tree_pinned",
+            side_effect=fake_pinned,
+        ) as mock_pinned,
+        patch.object(backend_mod, "sel"),
+    ):
+        n = backend_mod._reap_stale_app_backends()
+
+    assert n == 1
+    assert mock_pinned.call_args.args[:2] == (4321, "ST-1")
+    assert backend_mod._read_pidfile() == {}
