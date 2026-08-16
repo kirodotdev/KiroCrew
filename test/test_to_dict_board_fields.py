@@ -1,6 +1,7 @@
 """Tests for to_dict() Board fields: options, waiting_for_input, pending_approval_info, last_activity_ts."""
 import asyncio
 import json
+from types import SimpleNamespace
 
 from kiro_crew.dashboard.state import _ChatSlot
 
@@ -118,3 +119,77 @@ def test_queue_depth_reflects_queued_prompts():
     s.queue_append("and another")
     d = s.to_dict()
     assert d["queue_depth"] == 2
+
+
+# ── interrupted ──
+# The transcript-evidence flag behind the composer's Resume button, surfaced on
+# the summary so the sidebar can stop rendering a goal-loop session as actively
+# working while it actually sits dead until resumed. Must mirror
+# chat_handlers._is_interrupted (same scan — see state.is_turn_interrupted).
+
+
+def test_interrupted_trailing_error_after_assistant():
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "assistant", "content": "starting…", "ts": "t2"},
+        {"role": "error", "content": "The model failed to generate a response", "ts": "t3"},
+    )
+    d = s.to_dict()
+    assert d["interrupted"] is True
+
+
+def test_interrupted_unanswered_user_row():
+    # A gateway restart mid-turn writes no error row; the unanswered user row is
+    # the only evidence.
+    s = _slot({"role": "user", "content": "do the thing", "ts": "t1"})
+    d = s.to_dict()
+    assert d["interrupted"] is True
+
+
+def test_not_interrupted_on_clean_finish():
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["interrupted"] is False
+
+
+def test_not_interrupted_after_deliberate_stop():
+    # Pressing Stop ENDS the turn — same [user, stop_event] tail as a crash, but
+    # the stop card must win.
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "system", "content": "stopped", "cls": json.dumps({"kind": "stop_event"}), "ts": "t2"},
+    )
+    d = s.to_dict()
+    assert d["interrupted"] is False
+
+
+def test_not_interrupted_while_running():
+    # A trailing error belongs to a superseded turn once a new one is in
+    # flight; the live status already tells the truth. `running` reads only
+    # `task.done()`, so a plain stub keeps the test loop-free (nothing to
+    # close, no ResourceWarning leaking into later tests on assert failure).
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "error", "content": "transient", "ts": "t2"},
+    )
+    s.task = SimpleNamespace(done=lambda: False)
+    d = s.to_dict()
+    assert d["interrupted"] is False
+
+
+def test_interrupted_scan_tolerates_non_string_cls():
+    # A row whose persisted `cls` is object-valued (foreign writer / corrupted
+    # transcript) must not crash the summary scan — `to_dict()` runs on every
+    # slots push and at gateway startup, so a TypeError here aborts snapshots.
+    # The predicate treats such a row as not-a-stop and the scan continues.
+    s = _slot(
+        {"role": "user", "content": "do the thing", "ts": "t1"},
+        {"role": "system", "content": "odd row", "cls": {"kind": "stop_event"}, "ts": "t2"},
+    )
+    d = s.to_dict()
+    # The object-valued cls is NOT recognized as a stop card, so the unanswered
+    # user row makes the transcript read interrupted.
+    assert d["interrupted"] is True

@@ -8,7 +8,9 @@ import { i18nT } from '../../../i18n/t'
 /** Body of the "Filters" accordion section: Sort options, the state / mine
  * toggles, and the label palette. Reads and drives everything through the
  * shared context. */
-export default function FiltersSection() {
+/** `onNavigate` fires after any navigation so a narrow viewport can collapse the
+ * full-width rail — otherwise the tap navigates behind a rail still covering it. */
+export default function FiltersSection({ onNavigate }: { onNavigate?: () => void }) {
   const {
     sortKey, sortDir, cycleSort,
     stateFilter, setStateFilter, setSelectedIssue, openIssues,
@@ -67,8 +69,8 @@ export default function FiltersSection() {
               replaces the other. Below it: independent toggles that combine.
               The rule makes that difference visible instead of leaving the user
               to discover it by clicking. */}
-          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.open')} active={stateFilter === 'open'} onToggle={() => { setStateFilter('open'); setSelectedIssue(null); openIssues() }} />
-          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.closed')} active={stateFilter === 'closed'} onToggle={() => { setStateFilter('closed'); setSelectedIssue(null); openIssues() }} />
+          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.open')} active={stateFilter === 'open'} onToggle={() => { setStateFilter('open'); setSelectedIssue(null); openIssues(); onNavigate?.() }} />
+          <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.closed')} active={stateFilter === 'closed'} onToggle={() => { setStateFilter('closed'); setSelectedIssue(null); openIssues(); onNavigate?.() }} />
           <div className="my-1 border-t border-border" role="separator" />
           <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.requested_by_me')} active={requestedByMe} disabled={!me} onToggle={toggleRequestedByMe} />
           <FilterRow label={i18nT('apps.issueRadar.components.filtersSection.assigned_to_me')} active={assignedToMe} disabled={!me} onToggle={toggleAssignedToMe} />

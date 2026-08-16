@@ -1,6 +1,7 @@
 import React from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { safeGetSessionItem, safeSetSessionItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
@@ -93,6 +94,26 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   }
   const meta = tabs.find(t => t.key === tab)
 
+  // The narrow-width tab strip scrolls, so two things have to be measured
+  // rather than assumed: whether it is clipped (the cue) and whether the tab
+  // the reader is ON is inside the visible window.
+  const [stripRef, stripEdges, remeasureStrip] = useScrollEdges<HTMLDivElement>()
+  const activeTabRef = React.useRef<HTMLButtonElement | null>(null)
+
+  // A tab count that changes behind a flag keeps the strip's own box, so the
+  // ResizeObserver never fires and a stale cue would survive.
+  React.useEffect(() => { remeasureStrip() }, [tabs.length, isMobile, remeasureStrip])
+
+  // Bring the active pill into view. Without this, any entry point that does
+  // not start on the first tab — a deep link, the command palette, or the
+  // remembered tab from the last visit — leaves the selected pill off-screen
+  // with the strip parked at offset 0, so the reader cannot see which tab they
+  // are on. `block: 'nearest'` keeps the page from scrolling vertically too.
+  React.useEffect(() => {
+    if (!isMobile) return
+    activeTabRef.current?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
+  }, [tab, isMobile])
+
   // Whether the shown pane is contained rather than page-scrolled. The
   // page-level prop is unconditional; the per-tab flag is honoured on desktop
   // only, because it exists for panes that put a fixed rail beside a scrolling
@@ -140,22 +161,37 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             <div className="text-lg font-bold text-text-strong">{title}</div>
             {headerRight}
           </div>
-          <div className="flex gap-1 overflow-x-auto scrollbar-none pb-2">
-            {tabs.map(t => (
-              <button
-                key={t.key}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium cursor-pointer border-none whitespace-nowrap transition-all ${
-                  tab === t.key
-                    ? 'bg-accent-subtle text-accent'
-                    : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
-                }`}
-                onClick={() => setTab(t.key)}
-              >
-                <span className="w-3.5 h-3.5 shrink-0 flex items-center justify-center">{t.icon}</span>
-                {t.label}
-                {t.dot && <span className="w-1.5 h-1.5 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
-              </button>
-            ))}
+          {/* The strip scrolls rather than collapsing into a menu: Settings
+            * carries seventeen tabs, and a menu holding fifteen of them is a
+            * worse control than a scroller. What it owes the reader instead is
+            * evidence that it scrolls — hence the measured edge cues below. */}
+          <div className="relative">
+            <div ref={stripRef} className="flex gap-1 overflow-x-auto scrollbar-none pb-2">
+              {tabs.map(t => (
+                <button
+                  key={t.key}
+                  ref={tab === t.key ? activeTabRef : undefined}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium cursor-pointer border-none whitespace-nowrap transition-all ${
+                    tab === t.key
+                      ? 'bg-accent-subtle text-accent'
+                      : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
+                  }`}
+                  onClick={() => setTab(t.key)}
+                >
+                  <span className="w-3.5 h-3.5 shrink-0 flex items-center justify-center">{t.icon}</span>
+                  {t.label}
+                  {t.dot && <span className="w-1.5 h-1.5 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                </button>
+              ))}
+            </div>
+            {/* Decorative and aria-hidden: the cue is that the row is clipped,
+              * and the pills themselves stay the only announced content. */}
+            {stripEdges.left && (
+              <div aria-hidden="true" data-testid="tab-strip-cue-left" className="pointer-events-none absolute left-0 top-0 bottom-2 w-6 bg-gradient-to-r from-bg to-transparent" />
+            )}
+            {stripEdges.right && (
+              <div aria-hidden="true" data-testid="tab-strip-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-2 w-6 bg-gradient-to-l from-bg to-transparent" />
+            )}
           </div>
           {footer && <div className="pt-2 pb-2">{footer}</div>}
         </div>

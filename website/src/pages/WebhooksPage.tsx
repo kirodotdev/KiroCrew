@@ -29,7 +29,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle, Check, Circle, Clock, Copy, KeyRound, Minus, Play, Power,
-  ShieldAlert, ShieldCheck, Trash2, Webhook, X,
+  ShieldAlert, ShieldCheck, Trash2, Webhook, X, PanelLeftOpen,
 } from 'lucide-react'
 
 import { api } from '../api/client'
@@ -358,6 +358,9 @@ export default function WebhooksPage() {
   // become a drill-down: the rail opens full-width to browse, and choosing an
   // entry collapses it back to the strip and hands the screen to the detail.
   const mobileRailOpen = isMobile && !rail.collapsed
+  // Collapsed while narrow: the rail lies across the TOP, so the pane below owns
+  // the full viewport width instead of the width left over beside a strip.
+  const railBar = isMobile && rail.collapsed
   const [selection, setSelection] = useState<Selection>(SETUP)
   /** Choose a rail entry. On a phone this also closes the rail, so the detail
    *  pane gets the screen instead of being squeezed beside it. */
@@ -789,8 +792,17 @@ export default function WebhooksPage() {
 
       <Section title={i18nT('pages.webhooksPage.tokens')}>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* `basis-full` while narrow: this row already wraps, but a flex item
+              with a max-width and no floor shrinks toward zero BEFORE the row
+              wraps — the field crushed to about three characters beside a
+              full-size button, and naming a token is the gate on creating one
+              (the button stays disabled until the label is non-empty).
+              A whole line is deterministic where a min-width is not: it does not
+              depend on whether this particular locale's placeholder happens to
+              be long enough to force the wrap. Widest is German at 29
+              characters, Korean the shortest at 17. */}
           <Input
-            className="max-w-[260px]"
+            className="basis-full sm:basis-auto max-w-full sm:max-w-[260px]"
             placeholder={i18nT('pages.webhooksPage.label_e_g_review_bot')}
             aria-label={i18nT('pages.webhooksPage.new_token_label')}
             value={label}
@@ -1271,18 +1283,39 @@ export default function WebhooksPage() {
         )}
       />
 
-      <div className="flex flex-1 w-full min-w-0 min-h-0">
+      <div className={`flex flex-1 w-full min-w-0 min-h-0 ${railBar ? 'flex-col' : ''}`}>
       {rail.collapsed
         ? (
+          // Narrow: a bar across the top, so the pane below takes the FULL width.
+          // A strip down the side keeps spending the one axis a phone has none of;
+          // above the content it costs height instead, which a phone can give.
           <aside
-            style={{ width: rail.width }}
-            className="shrink-0 flex flex-col min-h-0 border-r border-border bg-bg-accent"
+            style={{ width: railBar ? undefined : rail.width }}
+            className={`shrink-0 flex min-h-0 bg-bg-accent ${railBar
+              ? 'w-full flex-row border-b border-border'
+              : 'flex-col border-r border-border'}`}
           >
-            <div className="h-[46px] shrink-0 flex items-center justify-center border-b border-border">
-              <IconButton aria-label={i18nT('pages.webhooksPage.expand_webhooks_rail')} onClick={rail.expand}>
-                <Webhook size={16} className="text-accent" />
-              </IconButton>
-            </div>
+            {railBar ? (
+              // The WHOLE bar is the control, and it NAMES the pane you are in:
+              // a lone icon repeats the page title above it and carries no new
+              // meaning, while this bar is the only route back to the section
+              // list once selecting a row auto-collapses the rail.
+              <Btn
+                onClick={rail.expand}
+                aria-label={i18nT('pages.webhooksPage.expand_webhooks_rail')}
+                className="w-full h-[46px] justify-start gap-2 px-3 rounded-none border-none text-muted hover:text-text hover:bg-bg-hover focus-ring"
+              >
+                <Webhook size={16} className="shrink-0 text-accent" />
+                <span className="min-w-0 truncate text-[13px] font-medium text-text">{leaf}</span>
+                <PanelLeftOpen size={15} className="ml-auto shrink-0" />
+              </Btn>
+            ) : (
+              <div className="h-[46px] w-full shrink-0 flex items-center justify-center border-b border-border">
+                <IconButton aria-label={i18nT('pages.webhooksPage.expand_webhooks_rail')} onClick={rail.expand}>
+                  <Webhook size={16} className="text-accent" />
+                </IconButton>
+              </div>
+            )}
           </aside>
         )
         : (

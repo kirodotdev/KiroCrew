@@ -10,6 +10,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -18,6 +19,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +66,7 @@ from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import Lesson, LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.security import (
+    BUILTIN_DENIED_RULES,
     BUILTIN_DENY_PATTERNS,
     is_sensitive_path,
     redact,
@@ -73,8 +76,14 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
-from kiro_crew.validation import _AGENT_NAME_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN, WORKSPACE_NAME_RE
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    CHANNEL_ID_RE,
+    CHANNEL_MAX_LEN,
+    WORKSPACE_NAME_RE,
+    normalize_lesson_category,
+)
+from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
 # working state, so letting --dir escape would let it be pointed at ~/.ssh or the
@@ -83,6 +92,14 @@ from kiro_crew.vector_memory import VectorMemoryStore
 _WS_DIR_OUTSIDE_HOME = (
     "Error: --dir must resolve inside the KiroCrew data home ({home}); got {given!r}. "
     "Pass a relative directory name (e.g. 'workspace-myproject')."
+)
+
+# Strip ANSI escape sequences and C0/C1 control characters from lesson text
+# before printing to the terminal, preventing OSC-based clipboard/title attacks.
+_TERMINAL_CTRL_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"  # CSI sequences
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences
+    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"  # C0/C1 controls (keep \n \t)
 )
 
 
@@ -827,13 +844,11 @@ def _cron(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        if channel:
-
-            if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
-                print(
-                    f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
-                )
-                return
+        if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
+            print(
+                f"Error: invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})"
+            )
+            return
         if cron_expr:
             job = svc.add_job(
                 name=args.name,
@@ -1166,6 +1181,40 @@ def _security(args: argparse.Namespace) -> None:
         print("Usage: kirocrew security {audit|deny-list|events|verify}")
 
 
+def _print_denied_command_summary(*, ids: bool) -> None:
+    """Print the built-in denied-command catalog as grouped counts (or, with
+    ``--ids``, each category's rule ids).
+
+    The 139 built-in rules are visible and configurable to the USER (Settings
+    → Security renders them in category accordions, backed by
+    ``GET /api/security/denied-commands``) but were invisible to the AGENT --
+    ``policy show`` reported everything except them, so an agent planning a
+    multi-step task had no way to learn a class of work is hard-denied before
+    committing to a plan that turns out to be impossible. See issue #3454.
+
+    Deliberately just counts + ids, not the full 139 regex patterns: enough
+    for planning ("this class of work is blocked") and for citing a rule id
+    when relaying a refusal, without bloating the output the way dumping
+    every pattern would.
+    """
+    by_category: dict[str, list] = {}
+    for rule in BUILTIN_DENIED_RULES:
+        by_category.setdefault(rule.category, []).append(rule)
+    counts = Counter({cat: len(rules) for cat, rules in by_category.items()})
+    print(
+        f"   • commands.denied: {len(BUILTIN_DENIED_RULES)} rules "
+        f"in {len(by_category)} categories"
+    )
+    if ids:
+        for cat, rules in sorted(by_category.items(), key=lambda kv: -len(kv[1])):
+            rule_ids = ", ".join(r.id for r in rules)
+            print(f"       {cat}({len(rules)}): {rule_ids}")
+    else:
+        summary = " ".join(f"{cat}({n})" for cat, n in counts.most_common())
+        print(f"       {summary}")
+        print("     (add --ids for rule ids, or see Settings → Security)")
+
+
 def _policy(args: argparse.Namespace) -> None:
     """Governance policy + profile inspection (read-only; safe to expose to LLM).
 
@@ -1191,6 +1240,7 @@ def _policy(args: argparse.Namespace) -> None:
     if action == "show":
         if ceiling is None:
             print("No enterprise security policy is active (editable secure-defaults).")
+            _print_denied_command_summary(ids=getattr(args, "ids", False))
             return
         # Report the PROVEN provenance, not the claimed one: printing a bare
         # issuer implied a trust decision nothing had made.  signature_summary()
@@ -1206,6 +1256,7 @@ def _policy(args: argparse.Namespace) -> None:
             print("   (no governed scopes)")
         for scope in sorted(ceiling.controls):
             print(f"   • {scope}: {ceiling.controls[scope]}")
+        _print_denied_command_summary(ids=getattr(args, "ids", False))
 
     elif action == "validate":
         ok = True
@@ -1429,15 +1480,32 @@ def _learn(args: argparse.Namespace) -> None:
             if vs_lessons:
                 for e in vs_lessons:
                     val = json.loads(e["value_json"])
-                    print(f"  [knowledge] {val}")
+                    # Rendered text for either storage shape: mapping-shaped rows
+                    # (write_lesson's format and the onboarding import's) would
+                    # otherwise print as a Python dict repr.
+                    #
+                    # The label reads the row's own category so this surface agrees
+                    # with the dashboard's lessons panel; a legacy string row
+                    # carries none, and the shared helper supplies the store's
+                    # own "knowledge" default (display policy, strict=False).
+                    category = normalize_lesson_category(
+                        val.get("category") if isinstance(val, dict) else None,
+                        strict=False,
+                    )
+                    text = _TERMINAL_CTRL_RE.sub("", _lesson_display_text(val) or str(val))
+                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {text}")
             else:
                 lessons = jsonl_store.load_all()
                 if not lessons:
                     print("No lessons.")
                     return
                 for le in lessons:
-                    neg = f" — {le.negative}" if le.negative else ""
-                    print(f"  [{le.category}] {le.rule}{neg}")
+                    neg = f" — {_TERMINAL_CTRL_RE.sub('', str(le.negative))}" if le.negative else ""
+                    # Same display policy as the vector-store branch above and
+                    # the dashboard's JSONL path: a blank/legacy category gets
+                    # the store's own "knowledge" default instead of printing [].
+                    category = normalize_lesson_category(le.category, strict=False)
+                    print(f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}")
 
         elif action == "remove":
             if vs.get_lessons() and vs.delete_lesson(args.query):
@@ -1471,7 +1539,13 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                     val = json.loads(e["value_json"])
                 except Exception:
                     val = e["value_json"]
-                print(f"  {e['key']}: {val}  (confidence={e['confidence']}, source={e['source']})")
+                # A lesson row stores its rule and NOT-clause as separate fields,
+                # so printing the decoded value would show a Python dict repr on
+                # this surface while every other reader shows the prose.
+                if str(e["key"]).startswith("lesson."):
+                    val = _lesson_display_text(val) or val
+                safe_val = _TERMINAL_CTRL_RE.sub("", str(val))
+                print(f"  {e['key']}: {safe_val}  (confidence={e['confidence']}, source={e['source']})")
 
         elif action == "search":
             results = store.search_episodic(query_text=args.query, limit=10)

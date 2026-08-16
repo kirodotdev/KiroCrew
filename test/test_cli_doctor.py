@@ -514,3 +514,73 @@ class TestMemoryPressure:
         out = capsys.readouterr().out
         assert "not applicable" in out
         assert issues == []
+
+
+class TestDoctorKas:
+    """`kirocrew doctor` KAS backend section — gated on acp_backend == kas."""
+
+    class _Cfg:
+        def __init__(self, backend: str) -> None:
+            self.agent = type("A", (), {"acp_backend": backend})()
+
+    def _patch_cfg(self, monkeypatch, backend: str) -> None:
+        monkeypatch.setattr(
+            cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: self._Cfg(backend))
+        )
+
+    def test_version_label_from_bundle_path(self) -> None:
+        script = Path("/home/u/.local/share/kiro-cli/kas/2.18.0-abc123/nm/acp-server.js")
+        assert cli_doctor._kas_version_label(script) == "2.18.0-abc123"
+
+    def test_version_label_unknown_for_unexpected_layout(self) -> None:
+        assert cli_doctor._kas_version_label(Path("/opt/foo/acp-server.js")) == "unknown"
+
+    def test_silent_when_backend_not_kas(self, monkeypatch, capsys) -> None:
+        self._patch_cfg(monkeypatch, "")
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        assert "KAS backend" not in capsys.readouterr().out
+        assert issues == []
+
+    def test_selected_but_assets_missing_appends_issue(self, monkeypatch, capsys) -> None:
+        self._patch_cfg(monkeypatch, "kas")
+        from kiro_crew.acp import kas_assets, kas_auth
+
+        monkeypatch.setattr(kas_assets, "find_kas_node", lambda: None)
+        monkeypatch.setattr(kas_assets, "find_kas_server_script", lambda: None)
+
+        async def _raise(*, timeout: float = 8.0):
+            raise kas_auth.KasAuthCallbackError("kiro-cli not found; cannot obtain a KAS token")
+
+        monkeypatch.setattr(kas_auth, "resolve_kas_access_token", _raise)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "KAS backend" in out
+        assert "❌ not found" in out
+        assert "KAS backend selected but assets missing" in issues
+        # Token bytes never printed; only the advisory line.
+        assert "not obtainable" in out
+
+    def test_token_ok_prints_expiry_not_token(self, monkeypatch, capsys) -> None:
+        self._patch_cfg(monkeypatch, "kas")
+        from kiro_crew.acp import kas_assets, kas_auth
+
+        monkeypatch.setattr(kas_assets, "find_kas_node", lambda: Path("/x/node"))
+        monkeypatch.setattr(
+            kas_assets,
+            "find_kas_server_script",
+            lambda: Path("/x/kas/9.9.9-hash/nm/acp-server.js"),
+        )
+
+        async def _ok(*, timeout: float = 8.0):
+            return {"accessToken": "SECRET-DO-NOT-PRINT", "expiresAt": "2099-01-01T00:00:00Z"}
+
+        monkeypatch.setattr(kas_auth, "resolve_kas_access_token", _ok)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "9.9.9-hash" in out
+        assert "2099-01-01T00:00:00Z" in out
+        assert "SECRET-DO-NOT-PRINT" not in out
+        assert issues == []

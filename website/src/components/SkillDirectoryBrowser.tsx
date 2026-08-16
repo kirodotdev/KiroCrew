@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import MarkdownRenderer from './MarkdownRenderer'
 import { CodeBlock } from './CodeBlock'
 import { parseFrontmatter } from './SkillForm'
+import { useIsMobile } from '../hooks/useIsMobile'
 import type { Skill, SkillTreeEntry } from '../types'
 
 import { i18nT } from '../i18n/t'
@@ -206,6 +207,7 @@ export default function SkillDirectoryBrowser({
   // Default selection: SKILL.md if present at root.
   const [selected, setSelected] = useState<string>('SKILL.md')
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))  // root open by default
+  const isMobile = useIsMobile()
 
   const toggle = (path: string) => {
     setExpanded(prev => {
@@ -257,9 +259,23 @@ export default function SkillDirectoryBrowser({
   const stripTags = skillMeta.tags ?? ''
 
   return (
-    <div className="flex gap-3 h-full min-h-0" data-testid="skill-directory-browser">
-      {/* File-tree pane (pane 2 of the master-detail layout) */}
-      <div className="w-[200px] shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md bg-bg-elevated/50 p-1">
+    <div className={`flex gap-3 h-full min-h-0 ${isMobile ? 'flex-col' : ''}`} data-testid="skill-directory-browser">
+      {/* File-tree pane (pane 2 of the list-detail layout).
+       *
+       * This is the SECOND fixed-width column inside an already-narrow detail
+       * pane, so at 390px the two of them left the file viewer unreadable.
+       *
+       * While narrow it moves BELOW the viewer (`order-last`) rather than above
+       * it: a file tree is a link-heavy supporting pane, and stacking one on top
+       * of the content it navigates pushes the content the user asked for off
+       * the first screen. Material puts a supporting pane below the main content
+       * at compact width, and Primer's rule for a narrow split is the same.
+       * Because the viewer takes the flexible space, the tree stays parked at
+       * the pane's bottom edge instead of scrolling away.
+       *
+       * `overscroll-contain` stops a swipe that reaches the end of either pane
+       * from chaining into the page scroll behind it. */}
+      <div className={`${isMobile ? 'w-full order-last max-h-32' : 'w-[200px]'} shrink-0 overflow-y-auto overscroll-contain scrollbar-overlay border border-border rounded-md bg-bg-elevated/50 p-1`}>
         {treeLoading && <div className="text-muted text-[12px] p-2 animate-pulse">{i18nT('components.skillDirectoryBrowser.loading_tree')}</div>}
         {treeErr && <div className="text-danger text-[12px] p-2 flex items-start gap-1.5"><AlertCircle size={14} className="shrink-0" />{i18nT('components.skillDirectoryBrowser.failed_to_load_tree')}</div>}
         {!treeLoading && !treeErr && root.children.length === 0 && (
@@ -275,7 +291,7 @@ export default function SkillDirectoryBrowser({
       </div>
 
       {/* File viewer pane */}
-      <div className="flex-1 overflow-y-auto scrollbar-overlay border border-border rounded-md bg-card p-3">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-overlay border border-border rounded-md bg-card p-3">
         <SkillMetaStrip
           description={stripDescription}
           triggers={stripTriggers}

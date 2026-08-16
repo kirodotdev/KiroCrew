@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fmtDateFields } from '../../i18n/format'
+import { fmtDateFields, fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
 export function typeBadgeVariant(t: string): 'ok' | 'warn' | 'err' | 'aim' {
@@ -45,12 +45,26 @@ export const STATUSES = ['active', 'archived']
 // Status the list view opens on. This is the default view, NOT user narrowing,
 // so the onboarding empty state treats this value as "no filter applied".
 export const DEFAULT_STATUS_FILTER = 'active'
-// Key, not copy — same shape as `FILTER_LABEL_KEY` in `pages/ChatSidebar.tsx`:
-// a module-level `i18nT()` call would resolve once at boot and never follow a
-// language switch, so the lookup happens where the list renders. The value it
-// resolves to is a DNT set of product names and file extensions, kept verbatim
-// in every locale catalog.
-export const SUPPORTED_FORMATS_KEY = 'pages.knowledge.helpers.supported_formats_list'
+// Fallback shown/used only until GET /api/knowledge/config resolves. The
+// backend's `FileReader.SUPPORTED` (src/kiro_crew/knowledge/readers.py) is the
+// single source of truth for what upload ingests; this mirror exists so the
+// file picker and the copy are not empty during the config round-trip.
+// test/test_knowledge_formats_parity.py holds this list identical to
+// `sorted(FileReader.SUPPORTED - {''})`, so it cannot silently drift.
+export const FALLBACK_SUPPORTED_FORMATS = [
+  '.c', '.cpp', '.csv', '.docx', '.go', '.h', '.htm', '.html', '.java', '.js',
+  '.json', '.jsonl', '.log', '.md', '.ndjson', '.org', '.pdf', '.py', '.rb',
+  '.rs', '.sh', '.ts', '.txt', '.yaml', '.yml',
+]
+
+/**
+ * Render an extension list (from `/api/knowledge/config`, or the fallback
+ * above) as a localized display string for the "Supported formats" copy. The
+ * extensions themselves are DNT tokens; only the list separators localize.
+ */
+export function formatSupportedFormats(exts: readonly string[]): string {
+  return fmtList(exts, { type: 'conjunction' })
+}
 
 /**
  * Onboarding copy for the Knowledge Library help dialog and empty state.
@@ -69,14 +83,17 @@ export const ONBOARDING = {
   get description() {
     return i18nT('pages.knowledge.helpers.your_centralized_knowledge_base_with_entity_extr')
   },
-  get steps() {
+  // A method rather than a getter because the caller supplies the formats
+  // display string (derived from /api/knowledge/config). Like the getters, it
+  // resolves i18nT per CALL, so a language switch still re-renders correctly.
+  steps(formatsDisplay: string) {
     return [
       i18nT('pages.knowledge.helpers.drop_files_here_or_click_upload_to_ingest_docume'),
       i18nT('pages.knowledge.helpers.documents_are_chunked_entities_extracted_and_rel'),
       i18nT('pages.knowledge.helpers.search_across_all_knowledge_filter_by_type_or_ex'),
-      // The format list itself is a set of DNT product names and file
-      // extensions, interpolated so only the sentence around it is translated.
-      i18nT('pages.knowledge.helpers.supported_formats', { formats: i18nT(SUPPORTED_FORMATS_KEY) }),
+      // The format list itself is a set of DNT file extensions, interpolated
+      // so only the sentence around it is translated.
+      i18nT('pages.knowledge.helpers.supported_formats', { formats: formatsDisplay }),
     ]
   },
 }

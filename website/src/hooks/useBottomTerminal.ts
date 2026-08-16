@@ -50,9 +50,25 @@ const DEFAULT_WIDTH = 420
 /** Max concurrent terminal tabs (each is a live PTY). */
 export const MAX_TERMINALS = 8
 
+/** Fraction of the viewport height the bottom-docked panel may occupy. */
+export const MAX_VH = 0.72
+/** Fraction of the viewport width the right-docked panel may occupy. */
+export const MAX_VW = 0.55
+
 const mintId = () => Math.random().toString(36).slice(2, 14)
 const clampHeight = (h: number) => Math.max(MIN_HEIGHT, Math.round(h))
 const clampWidth = (w: number) => Math.max(MIN_WIDTH, Math.round(w))
+
+/** Clamp a persisted dimension against the CURRENT viewport so a width saved
+ *  on a wide monitor (e.g. 55% of 2560px = 1408px) doesn't overflow a narrow
+ *  one. Applied at render time, not only during drag. */
+export function clampToViewport(dim: number, axis: 'width' | 'height'): number {
+  if (typeof window === 'undefined') return dim
+  const max = axis === 'width'
+    ? Math.round(window.innerWidth * MAX_VW)
+    : Math.round(window.innerHeight * MAX_VH)
+  return Math.min(max, Math.max(axis === 'width' ? MIN_WIDTH : MIN_HEIGHT, dim))
+}
 
 function loadPersisted(): BottomTerminalState {
   const base: BottomTerminalState = { open: false, height: DEFAULT_HEIGHT, width: DEFAULT_WIDTH, position: 'bottom', tabs: [], activeId: null }
@@ -204,8 +220,25 @@ function subscribe(cb: () => void): () => void {
 }
 function getSnapshot(): BottomTerminalState { return state }
 
+/** Cached viewport-clamped view of state. Rebuilt only when the underlying
+ *  state reference changes (via set()), so useSyncExternalStore's Object.is
+ *  check works correctly without infinite re-render loops. */
+let clampedState: BottomTerminalState = state
+let clampedSource: BottomTerminalState = state
+function getViewportClampedSnapshot(): BottomTerminalState {
+  if (clampedSource !== state) {
+    clampedSource = state
+    clampedState = {
+      ...state,
+      height: clampToViewport(state.height, 'height'),
+      width: clampToViewport(state.width, 'width'),
+    }
+  }
+  return clampedState
+}
+
 export function useBottomTerminal(): BottomTerminalState {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useSyncExternalStore(subscribe, getViewportClampedSnapshot, getSnapshot)
 }
 
 /** Selector for just the `open` flag. App only needs this; returning a

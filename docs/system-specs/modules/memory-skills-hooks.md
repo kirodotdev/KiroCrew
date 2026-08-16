@@ -317,7 +317,12 @@ TEI (Text Embeddings Inference) uses the candle Rust framework with a Metal back
 
 When vector memory is active, lessons are stored as semantic entries:
 - Key: `lesson.<md5_of_rule>` (dedup via hash)
-- Value: `"rule text"` or `"rule text — NOT: negative text"`
+- Value: a mapping `{"rule": ..., "category": ..., "negative": ...}` — the NOT-clause
+  is its own field, so a rule containing the separator literal round-trips. Legacy
+  rows written as `"rule text"` or `"rule text — NOT: negative text"` stay readable
+  (read-time fallback, no migration); they upgrade to the mapping shape only when a
+  re-submit rewrites them anyway. Renderers go through `_lesson_display_text()`;
+  embeddings use `_lesson_embed_text()` (the bare rule, matching the write path).
 - Confidence: 1.0 for `user_explicit`, 0.9 for `migration`
 - Methods: `write_lesson()`, `get_lessons()`, `delete_lesson()`, `get_lessons_context()`
 - Context: injected as `[Learned corrections]` block, separate from `[Semantic Memory]`
@@ -477,7 +482,7 @@ concurrent native write from being duplicated.
 
 User-taught corrections ("always do X", "never do Y"). Single write path through `vector_memory.write_lesson()`:
 
-1. **Vector memory** (primary): stored as `lesson.<md5hash>` semantic entries with `confidence=1.0, source=user_explicit`. Negative rules stored as `"rule — NOT: negative"`. Injected via `get_lessons_context()` — separate from `[Semantic Memory]` block.
+1. **Vector memory** (primary): stored as `lesson.<md5hash>` semantic entries with `confidence=1.0, source=user_explicit`. The value is a mapping `{"rule", "category", "negative"}` — the NOT-clause is a separate field; legacy in-band `"rule — NOT: negative"` rows stay readable without migration. Injected via `get_lessons_context()` — separate from `[Semantic Memory]` block.
 2. **JSONL fallback** (`~/.kiro/crew/lessons.jsonl`): only used when vector memory is not initialized. Read-only migration source once vector memory is active.
 
 **Priority**: vector lessons override JSONL. If `vector_store.get_lessons()` returns entries, JSONL is skipped entirely.

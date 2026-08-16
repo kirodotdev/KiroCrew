@@ -638,3 +638,32 @@ resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
 for developer-facing diagnostics, drift-guarded by
 `website/src/test/appSdkEventScope.test.ts`). Runtime-facing summary for app
 authors: [../../../src/kiro_crew/docs/app-platform-trust-model.md](../../../src/kiro_crew/docs/app-platform-trust-model.md).
+
+## 14. The storefront reads the published catalog's display fields
+
+`GET /api/apps/registry` answers from the published catalog when it is reachable:
+`handle_registry` prefers `list_catalog_apps` (`registry.py`), which maps the
+published `official-registry.json` entries through
+`official_catalog.list_catalog_rows` and then applies the same install-status and
+trust stamping as the seed path. The bundled `app-registry.json` seed and the
+per-app `app.json` fetch are the OFFLINE FALLBACK, not the live source: a
+reachable catalog means the store renders the published document's list and
+display copy, and an unreachable one degrades to the seed listing.
+
+The catalog is trusted only as far as TLS, so `list_catalog_rows` emits DISPLAY
+fields only — identity, display name, summary, version, tags, author, and asset
+refs. It never emits clone coordinates (`gitUrl`/`repo`/`branch`) and never emits
+`origin`, so a compromised document cannot point an install at attacker-selected
+code with gateway credentials nor forge a first-party provenance claim. Install
+continues to resolve through the seed and external registries, and `verified`
+stays `false` for a catalog `git` app until the catalog signature is checked:
+wiring signature verification into `official_catalog` is what flips that, not a
+field the catalog can assert about itself.
+
+A name is a filesystem path on install, so `list_catalog_rows` drops any entry
+whose name is not kebab-case (`KEBAB_RE.fullmatch`), and the catalog fetch runs
+off the event loop (`asyncio.to_thread`) so a cache-expired request never blocks
+the gateway loop.
+
+Writers: `apps/official_catalog.py` (`list_catalog_rows`),
+`apps/registry.py` (`list_catalog_apps`), `apps/routes.py` (`handle_registry`).

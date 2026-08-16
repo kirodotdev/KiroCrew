@@ -365,6 +365,10 @@ class TestSanitizedPath:
         assert resolved[0] == str(real)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="uid 0 has no meaning on Windows")
+    @pytest.mark.skipif(
+        os.path.exists("/usr/bin") and os.stat("/usr/bin").st_uid != 0,
+        reason="system directories not root-owned on this host",
+    )
     def test_a_system_directory_is_trusted_without_any_config(self):
         # `/usr/bin` must work out of the box or the tier ships dead. Deliberately
         # NOT `/usr/local/bin`: CI runners hand that to the build user, so asserting
@@ -1035,6 +1039,7 @@ class TestProbeWithoutASandbox:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="probes are POSIX-only")
 @_NEEDS_SANDBOX
+@pytest.mark.xdist_group("sandbox_probe")
 class TestRunProbe:
     """The real subprocess path, driven with stock POSIX utilities rather than a
     CLI that may not be installed on the runner."""
@@ -1140,8 +1145,14 @@ class TestRunProbe:
         # not ours and not a leak — it is injected by the kernel/dyld, not
         # inherited from the parent environment.
         os_injected = {"__CF_USER_TEXT_ENCODING"} if sys.platform == "darwin" else set()
+        # systemd injects session markers into processes it manages (systemd-run
+        # --user --scope). These are not inherited from the parent env and are
+        # not credentials — they identify the unit/journal stream.
+        systemd_injected = {"INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID",
+                            "MANAGERPID", "LISTEN_FDS", "LISTEN_FDNAMES"}
         names = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
-        assert names <= ours | sandbox_injected | shell_added | os_injected, names
+        assert names <= (ours | sandbox_injected | shell_added | os_injected
+                         | systemd_injected), names
 
     @pytest.mark.asyncio
     async def test_the_child_path_is_the_sanitized_one(self, monkeypatch):

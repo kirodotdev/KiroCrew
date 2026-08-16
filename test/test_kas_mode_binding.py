@@ -18,6 +18,7 @@ import sys
 
 import pytest
 
+from kiro_crew.acp.kas_agents import _KAS_FALLBACK_PROMPT
 from kiro_crew.acp.kas_assets import ENV_KAS_NODE, ENV_KAS_SCRIPT
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import ACP_BACKEND_KAS
@@ -197,14 +198,55 @@ class TestModeBinding:
         assert seen["injected"][0]["prompt"] == "inlined from disk"
 
     @pytest.mark.asyncio
-    async def test_an_unprojectable_agent_fails_loud(self, mode_stub, crew_agent, tmp_path):
-        """Silently continuing would run KAS's default mode instead.
-
-        For a restricted app or subagent agent that means a BROADER agent than
-        the caller asked for, so this must raise rather than degrade.
+    async def test_a_prompt_less_agent_falls_back_to_the_kas_prompt(
+        self, mode_stub, crew_agent, tmp_path
+    ):
+        """KAS requires a non-empty prompt where kiro-cli tolerates an empty
+        one. Crew's own prompt-less utility agents (e.g. ``kirocrew-lite``, which
+        ships ``"prompt": ""``) must fall back to the small inline KAS prompt
+        rather than crash the session. The tool allowlist still comes from the
+        spec, so the fallback never widens the agent's capabilities.
         """
         (crew_agent / "kirocrew.json").write_text(
-            json.dumps({"name": "kirocrew", "tools": ["fs_read"]}), encoding="utf-8"
+            json.dumps({"name": "kirocrew", "tools": ["fs_read"], "prompt": ""}),
+            encoding="utf-8",
+        )
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws3",
+            agent="kirocrew",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            await runtime.create_session(cwd=tmp_path / "ws3", agent="kirocrew")
+        finally:
+            await runtime.kill()
+
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["injected"][0]["prompt"] == _KAS_FALLBACK_PROMPT
+        # Tool restriction is preserved — the fallback only supplies a prompt.
+        assert seen["injected"][0]["tools"] == ["fs_read"]
+
+    @pytest.mark.asyncio
+    async def test_an_unprojectable_agent_fails_loud(self, mode_stub, crew_agent, tmp_path):
+        """A prompt that cannot be resolved AT ALL still fails loud.
+
+        The base-prompt fallback only covers an empty/absent prompt. A
+        ``file://`` prompt pointing at a missing file is a genuine translation
+        failure: silently continuing would run KAS's default mode instead, which
+        for a restricted app or subagent agent means a BROADER agent than the
+        caller asked for, so this must raise rather than degrade.
+        """
+        (crew_agent / "kirocrew.json").write_text(
+            json.dumps(
+                {
+                    "name": "kirocrew",
+                    "tools": ["fs_read"],
+                    "prompt": f"file://{tmp_path / 'does-not-exist.md'}",
+                }
+            ),
+            encoding="utf-8",
         )
         runtime = AcpRuntime(
             work_dir=tmp_path / "ws3",

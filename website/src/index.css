@@ -1550,6 +1550,121 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   color:var(--muted)}
 .top-bar-pill:hover{border-color:var(--border-strong)}
 
+/* ── Topbar layout: search first, sides take the remainder ──
+   THREE tracks. The search width is a function of the WINDOW only
+   (`clamp(240px, 22vw, 480px)`); the two side groups split whatever is left.
+   Because both side tracks are the same `minmax(0,1fr)`, they are always equal,
+   so the search is exactly window-centred by construction — no measurement, no
+   ResizeObserver, no absolutely-positioned overlay to keep clear of.
+
+   The side tracks deliberately have NO floor: they are pure remainder, and each
+   group re-lays-out its own contents against the width it was handed
+   (`container-type: inline-size` below). Content never pushes back on the track,
+   which is why the search can no longer be squeezed out of existence.
+
+   The invariant that replaces the per-track floor is a property of the search
+   width function: for every desktop width, (W - 48 - clamp(240,22vw,480)) / 2
+   must stay above a group's icons-only width. Pinned by
+   test/App.test.tsx (searchWidth).
+
+   The 22vw factor is not a taste call. It is solved backwards from the rung
+   thresholds below: the widest readout tier needs 518px and its rung fires at
+   530px, so keeping the live readings at 1440 (the modal desktop width) requires
+   the side track to clear 531, hence a centre track no wider than 330 there. The
+   48px is the header's own `pl-3 pr-3` plus the two 12px track gaps -- chrome the
+   side tracks never get, and omitting it from the arithmetic is what first put
+   this factor 2vw too high.
+
+   A wider centre buys a bigger inert trigger by evicting live data, which is the
+   priority inversion this change exists to remove -- and above 1400px it would
+   also make the search WIDER than the layout it replaces, which reserved a
+   mirrored gutter and left the trigger 376px at 1440.
+
+   Centred in the header's CONTENT BOX, which is the window centre only when the
+   header's padding is symmetric. It is not on a frameless Electron window: the
+   macOS traffic lights and the Windows caption overlay are cleared with
+   `padding-left:84px` / `padding-right:142px` below, so the centre shifts by half
+   that inset. That is deliberate -- the inset is occupied by native controls, so
+   centring in the space the row can actually use is what reads as centred -- but
+   it means "window-centred" holds only for the plain browser dashboard.  */
+.topbar{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) clamp(240px, 22vw, 480px) minmax(0,1fr);
+  align-items:center;
+  gap:12px}
+/* Mobile: the centre track holds the trigger in its icon-only form rather than
+   the full-width one, sized `auto` so it sits next to the identity group instead
+   of floating mid-header. It stays a grid child of its own -- NOT a third
+   sibling inside the actions group, which would put three action controls in one
+   horizontal row (website/AUTOSDE.yaml max-two-buttons-per-row) -- and it also
+   keeps the three tracks matched to three children, so the actions group cannot
+   land in the centre track by auto-placement. */
+@media (max-width:767px){
+  .topbar{grid-template-columns:auto auto minmax(0,1fr)}
+}
+
+/* Each side group is a size-query container. Inline-size containment also stops
+   the group contributing its content width to the track it sits in, which is
+   exactly the semantics wanted here: the track is sized by the window, and the
+   contents adapt to it. */
+.tb-left,.tb-right{container-type:inline-size;min-width:0;display:flex;align-items:center;overflow:hidden}
+.tb-left{justify-content:flex-start;gap:.5rem}
+/* The actions group ends flush with the header's own padding edge, and the
+   notification bell's unread badge is deliberately offset 4px past the button's
+   top-right corner (`-top-1 -right-1` in App.tsx). `overflow:hidden` clipped
+   exactly that overhang, squaring the badge's right edge off and cutting into a
+   two-digit count.
+   The padding reserves the overhang INSIDE the clip box (which is the padding
+   box), and the equal negative margin puts the outer box back where it was, so
+   the bell does not move, the header does not change height, and the group's
+   CONTENT box -- what the @container ladder below queries -- keeps the width the
+   track gives it. Deliberately NOT `overflow-clip-margin`: WebKit does not
+   implement it, so on every iOS browser that spelling would leave the badge
+   clipped exactly as before. Keep both values equal to the badge's offset: less
+   re-clips it, more lets real content escape into the header's padding. */
+.tb-right{justify-content:flex-end;gap:.375rem;padding:4px 4px 0 0;margin:-4px -4px 0 0}
+
+/* …except where the track asks the group for a size. The containment above is
+   sound while both side tracks are `minmax(0,1fr)`, because the window sizes them
+   and the contents only adapt. The narrow rule makes the identity track `auto`,
+   which does the opposite: it asks the item for a content size, and an
+   inline-size container has none to give. The track then collapsed to this
+   group's own padding -- 16px measured, `16px 28px 298px` for the three tracks --
+   and `overflow:hidden` clipped the 36px menu button down to an 8px sliver, so
+   the only route to the nav on a phone was invisible.
+   Dropped rather than worked around: nothing queries this group. Every
+   `@container` rung below targets a descendant of `.tb-right`. Must sit AFTER the
+   declaration above, which is unconditional and would otherwise win on order. */
+@media (max-width:767px){
+  .tb-left{container-type:normal}
+}
+
+/* The collapse ladder. Each rung is keyed off the GROUP's own width, so it
+   responds to the space actually handed to it rather than to a viewport
+   breakpoint that cannot know what the group currently holds (usage pill
+   present or not, resource posture firing, extension segments registered).
+   Rungs drop cheapest-first: metric numbers, then the credit counter, then the
+   feedback labels, then the readouts entirely. */
+/* Thresholds are the MEASURED content width of the rung above, plus a small
+   margin: the rung must fire before the group gets narrower than its contents,
+   because flex children would otherwise absorb the difference by squeezing their
+   own text. Measured in capture/topbar-search-variants.tsx — full 518px, without
+   the metric numbers 382px, without the credit counter 330px, icons-only 139px. */
+@container (max-width:530px){ .tb-drop-metrics{display:none} }
+@container (max-width:392px){ .tb-drop-usage{display:none} }
+@container (max-width:340px){ .tb-drop-feedback{display:none} }
+/* Terminal rung: the capsule keeps only its first child, the connection dot.
+   The rungs above name the built-in readouts one by one, but the capsule is also
+   an extension slot (`getCapsuleSegments`) whose registered segments cannot be
+   enumerated here, so the floorless track needs one rung that bounds the group
+   whatever it holds. Structural (`> *:not(:first-child)`) rather than by class
+   for exactly that reason. Budget documented in docs/extension-seams.md. */
+@container (max-width:200px){ .tb-capsule > *:not(:first-child){display:none} }
+/* The counterpart: a form that exists ONLY on the narrow rungs (e.g. the metric
+   readout's icon stand-in). Both forms ship in the DOM because the rung is a
+   container query — no JS branch here can observe the group's own width. */
+@container (min-width:531px){ .tb-narrow-only{display:none} }
+
 /* ── Topbar glass ── */
 .topbar-glass{
   background:color-mix(in srgb, var(--chrome) 74%, transparent);
@@ -1704,34 +1819,40 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 .session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade{outline-color:transparent}
 .session-row.session-colored{position:relative}
+/* Flush against the row's left edge, and inset vertically by exactly the row's
+   corner radius — so the bar spans (row height - 2 * radius) and its ends stop
+   where the rounded corners begin, instead of poking into the curve. The inset
+   reads --radius-md because that is what the row's own `rounded-md` resolves to;
+   a theme pack that redefines the radius therefore moves the bar's ends with it
+   rather than leaving a hardcoded 8px that no longer matches the corner. */
 .session-row.session-colored::before{
   content:"";
   position:absolute;
-  left:5px;
-  top:6px;
-  bottom:6px;
-  width:3px;
-  border-radius:2px;
+  left:0;
+  top:var(--radius-md);
+  bottom:var(--radius-md);
+  width:2px;
+  border-radius:999px;
   background:var(--_sc);
 }
-/* Bar-plus-gradient idle decoration: solid 3px bar starting at 5px from the
-   row's edge, then a soft gradient extending further right to give the row a
-   "lit from the left" feel. Single pseudo-element, doesn't interact with the
-   row's main background so hover/active Tailwind tokens still win. */
+/* Bar-plus-gradient idle decoration: the same flush bar, then a soft gradient
+   extending further right to give the row a "lit from the left" feel. Single
+   pseudo-element, doesn't interact with the row's main background so hover and
+   active Tailwind tokens still win. */
 .session-row.session-colored.session-gradient::before{
   content:"";
   position:absolute;
-  left:5px;
-  top:6px;
-  bottom:6px;
+  left:0;
+  top:var(--radius-md);
+  bottom:var(--radius-md);
   width:40px;
-  border-radius:2px;
+  border-radius:999px;
   pointer-events:none;
   background:linear-gradient(
     to right,
     var(--_sc) 0px,
-    var(--_sc) 3px,
-    color-mix(in srgb,var(--_sc) 28%,transparent) 3px,
+    var(--_sc) 2px,
+    color-mix(in srgb,var(--_sc) 28%,transparent) 2px,
     transparent 100%
   );
 }

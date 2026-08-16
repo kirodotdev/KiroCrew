@@ -151,36 +151,96 @@ def _split_text(text: str, limit: int) -> list[str]:
         split_at = text.rfind("\n\n", 0, limit)
         if split_at < limit // 2:
             split_at = text.rfind("\n", 0, limit)
+        # Back the cut up to the FIRST newline of its run. rfind reports the
+        # LAST one ("\n\n" reports the first of the RIGHTMOST pair), so a run of
+        # 3+ straddles the cut and its earlier newlines land in text[:split_at],
+        # where the .rstrip() below deletes them. Cutting at the run's start
+        # keeps the whole run in the remainder, so the only newline anyone
+        # absorbs is the one separator below. The promotion guard still has the
+        # final say, so a cut that walked too far left becomes a hard cut rather
+        # than an empty chunk.
+        while split_at > 0 and text[split_at - 1] == "\n":
+            split_at -= 1
         if split_at < limit // 4:
             split_at = limit
         chunks.append(text[:split_at].rstrip())
-        text = text[split_at:].lstrip()
+        remainder = text[split_at:]
+        # Consume EXACTLY ONE newline: the line separator this message boundary
+        # itself represents. Every newline after it is an authored blank line --
+        # content inside a fence -- so lstrip("\n") deleted whole runs of them
+        # and pulled the next code line up onto the last one. Horizontal
+        # whitespace is never touched, or a cut just before an indented line
+        # re-indents split code. A hard (mid-line) cut sits on no separator, so
+        # removeprefix finds nothing and the continuation is verbatim. Every cut
+        # consumes at least one character, so the loop always advances.
+        text = remainder.removeprefix("\n")
     return chunks
 
 
 _FENCE_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
 
 
-def _split_markdown(text: str, limit: int) -> list[str]:
+def _ends_inside_fence(text: str) -> bool:
+    """True when ``text`` ends INSIDE an open fenced code block.
+
+    Line-anchored per CommonMark rather than counting ``` substrings: a literal
+    ``` written mid-line is prose about fencing, not a fence, and counting it
+    flips the parity of every fence decision that follows -- a sealed chunk gets
+    a closer it never needed, and the retained tail loses the one it did.
+
+    A fence opens on a line whose first non-space content (at most 3 spaces of
+    indent; 4+ is an indented code line) is a run of 3+ backticks, optionally
+    followed by an info string, which may not itself contain a backtick. It
+    closes on a later such line whose run is at least as long as the opener's
+    and which carries nothing but trailing whitespace.
+    """
+    opener = 0  # backtick run length of the fence now open; 0 == closed
+    for line in text.split("\n"):
+        stripped = line.lstrip(" ")
+        if len(line) - len(stripped) > 3:
+            continue
+        run = len(stripped) - len(stripped.lstrip("`"))
+        if run < 3:
+            continue
+        rest = stripped[run:]
+        if opener:
+            if run >= opener and not rest.strip():
+                opener = 0
+        elif "`" not in rest:
+            opener = run
+    return opener > 0
+
+
+def _split_markdown(text: str, limit: int) -> tuple[list[str], bool]:
     """Split markdown into <=``limit`` chunks, keeping fenced code blocks
     balanced: close a dangling fence at a chunk's end and reopen it at the next
     chunk's start, so every chunk is self-contained markdown (Discord renders
-    an unbalanced fence as literal backticks)."""
+    an unbalanced fence as literal backticks).
+
+    Returns the chunks and whether a synthetic closer was appended to the FINAL
+    chunk. That flag is this function's own record of what it did, and it is the
+    only sound basis for undoing it: the fence state is judged per chunk AFTER
+    prepending a bare ``` reopen, which discards the original opener's run
+    length, so no predicate re-derived from the source text can tell whether
+    this walk appended anything.
+    """
     chunks = _split_text(text, limit)
     if len(chunks) <= 1:
-        return chunks
+        # A lone chunk is handed back untouched -- nothing appended, nothing to
+        # undo.
+        return chunks, False
     out: list[str] = []
     carry_open = False
     for ch in chunks:
         if carry_open:
             ch = "```\n" + ch
-        if ch.count("```") % 2 == 1:
+        if _ends_inside_fence(ch):
             ch = ch.rstrip() + "\n```"
             carry_open = True
         else:
             carry_open = False
         out.append(ch)
-    return out
+    return out, carry_open
 
 
 class DiscordApprovalDecider:
@@ -385,7 +445,23 @@ class DiscordRenderer(Renderer):
         if len(raw) <= limit:
             return
         raw, protocol_suffix = split_trailing_protocol_suffix(raw)
-        chunks = _split_markdown(raw, limit)
+        chunks, appended_closer = _split_markdown(raw, limit)
+        # Mid-stream the source fence is often still OPEN (the model has not
+        # emitted its closing ``` yet). _split_markdown balances each chunk by
+        # appending a synthetic closer, right for the chunks we seal but wrong
+        # for the tail we keep streaming into: every later token would land
+        # after that closer and the model's real closer would show up
+        # literally. Drop it from the retained tail -- reading the splitter's
+        # own report of what it appended, never a predicate re-derived from the
+        # source. One judgment, made once, so the strip fires iff the append
+        # happened and cannot delete a line the author wrote.
+        if appended_closer:
+            # The splitter attached "\n```" to the rstripped content, so the
+            # exact inverse drops those four characters and restores the
+            # whitespace suffix it ate -- dropping the closer alone would eat
+            # the newline the content ended on and glue the next streamed line
+            # onto the last code line.
+            chunks[-1] = chunks[-1][:-4] + raw[len(raw.rstrip()) :]
         for ch in chunks[:-1]:
             self._buf = [ch]
             await self._seal_current()

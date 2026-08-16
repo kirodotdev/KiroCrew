@@ -109,7 +109,13 @@ export function LogViewer({ compact }: { compact?: boolean }) {
           <button key={l} className={`${sz.btn} rounded-full font-medium font-body cursor-pointer border transition-all ${levelBg(l, currentLevel === l)}`} onClick={() => changeLevel(l)}>{l.charAt(0) + l.slice(1).toLowerCase()}</button>
         ))}
       </div>
-      <div className={`flex gap-2 ${compact ? 'mb-2' : 'mb-3'} items-center`}>
+      {/* `flex-wrap` for the same reason the level row above it carries one: the
+          three trailing toggles are `whitespace-nowrap` and the filter field is
+          `flex-1`, so at 390px the row needs 154px more than it has. Nothing here
+          scrolls, so without wrapping `Wrap` sits 74px past the right edge and
+          `Tail` 154px past it — off-screen and untappable, which is a WCAG 1.4.10
+          Reflow failure rather than a cosmetic one. */}
+      <div className={`flex gap-2 flex-wrap ${compact ? 'mb-2' : 'mb-3'} items-center`}>
         <input type="text" aria-label={i18nT('pages.logsPage.filter_logs')} placeholder={i18nT('pages.logsPage.filter_logs_2')} value={search}
           onChange={e => { const v = e.target.value; setSearch(v); if (!v) setMatchesOnly(false) }}
           className={`flex-1 ${sz.input} rounded-lg border border-border bg-surface text-text font-mono placeholder:text-muted focus:outline-none focus:border-accent`}
@@ -133,7 +139,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
           atTopStateChange={setAtTop}
           style={{ flex: 1, minHeight: 0 }}
           itemContent={(_i, l) => (
-            <div data-testid="log-line" className={`font-mono ${sz.row} ${wrapLines ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} px-2.5 py-0.5 leading-[1.7] ${l.match ? 'border-l-2 border-accent bg-accent/10' : ''} ${levelColor(l.level)}`}>
+            <div data-testid="log-line" className={`font-mono ${sz.row} ${wrapLines ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'} px-2.5 py-0.5 leading-[1.7] ${l.match ? 'border-l-2 border-accent bg-accent/10' : ''} ${levelColor(l.level)}`}>
               {l.match ? highlight(l.msg) : l.msg}
             </div>
           )}

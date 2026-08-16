@@ -2,15 +2,19 @@
 (gh CLI, mocked), and the durable reviewed-index dedup store."""
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sage_lib import adapters, pipeline, results, review_driver, store
 
 from kiro_crew import platform_compat
+
+_needs_gh = pytest.mark.skipif(shutil.which("gh") is None, reason="gh CLI not installed")
 
 
 class TestParseRepoUrl(unittest.TestCase):
@@ -68,7 +72,13 @@ class TestParseRepoUrl(unittest.TestCase):
                 adapters.parse_repo_ref(url, config=cfg)
 
 
+@_needs_gh
 class TestListOpenPrs(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(pipeline.discovery, "gh_bin", return_value="/resolved-gh/gh")
+        self._mock_gh_bin = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _cp(self, returncode=0, stdout="", stderr=""):
         return subprocess.CompletedProcess(
             args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr)

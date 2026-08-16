@@ -586,3 +586,33 @@ class TestChannelPresetsReadIsCached:
 
         resp = await handlers_channel.api_channel_presets(MagicMock())
         assert json.loads(resp.body)["presets"] == [{"id": "b"}, {"id": "c"}]
+
+
+# ── Optional MCP servers stay off the CLI import graph ─────────────────────
+
+
+class TestOptionalMcpServersAreNotImportedByTheCli:
+    """`kirocrew gateway` boots through ``cli``, so a module-scope import of an
+    optional, default-OFF subsystem runs on every gateway start and every other
+    command that will never dispatch to it. Each MCP server module is therefore
+    loaded inside its own dispatch branch.
+
+    An in-process ``sys.modules`` check cannot see this — pytest has already
+    imported the package — so the assertion runs in a clean interpreter.
+    """
+
+    def test_importing_cli_does_not_pull_the_mcp_server_modules(self) -> None:
+        got = _probe(
+            "import json, sys\n"
+            "import kiro_crew.cli\n"
+            "print(json.dumps({\n"
+            "    'dashboard': 'kiro_crew.mcp_dashboard' in sys.modules,\n"
+            "    'computer': 'kiro_crew.mcp_computer' in sys.modules,\n"
+            "}))\n"
+        )
+        assert got["dashboard"] is False, (
+            "kiro_crew.mcp_dashboard is imported at cli module scope — move it "
+            "into the mcp-dashboard dispatch branch (importlib) so a "
+            "default-disabled server costs gateway boot nothing"
+        )
+        assert got["computer"] is False

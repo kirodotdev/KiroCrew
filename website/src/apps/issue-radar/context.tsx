@@ -18,6 +18,7 @@ import {
 import type {
   ActiveRepo, CrewFilter, CrewSortKey, CrewView, DashboardTab, ExpandedSection, MainView, PrSortKey, PrStateFilter, SettingsTarget, SortDir, SortKey, StateFilter,
 } from './lib/types'
+import { type ListDetailView, useListDetailView } from '../../hooks/useListDetailView'
 import { CREW_FILTERS, CREW_SORT_KEYS, CREW_VIEW_KINDS } from './lib/types'
 import { repoScopeKey } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
@@ -322,7 +323,16 @@ export interface IssueRadarContextValue {
   /** Open the crews surface, optionally jumping straight to a page — the same
    * shape as `openSettings(target?)`, so a rail row can navigate in one call
    * instead of setting the page and the view separately. */
-  openCrews: (view?: CrewView) => void}
+  openCrews: (view?: CrewView) => void
+  /** Which pane a narrow viewport is showing, for the list-detail drill-down.
+   * Hosted here rather than in the shell because the row handlers that drill in
+   * live in the list components, which already consume this context — passing a
+   * callback down through three lists would be the same state, threaded.
+   *
+   * Deliberately NOT persisted, unlike `selectedIssue`: a restored open detail
+   * would put a phone on the detail pane before the user picked anything, with
+   * the list unreachable behind it. */
+  listDetail: ListDetailView}
 
 const Ctx = createContext<IssueRadarContextValue | null>(null)
 
@@ -1144,6 +1154,10 @@ export function IssueRadarProvider({
     else refreshPullsMutation.mutate()
   }, [prPersonFilterActive, pullsSearchQuery, refreshPullsMutation])
 
+  // One pane at a time while narrow. Reuses the shell-agnostic primitive so
+  // this app drills down the same way the Capabilities tabs do.
+  const listDetail = useListDetailView()
+
   const value: IssueRadarContextValue = useMemo(() => ({
     repos, active, switchRepo, onAddRepo,
     activePermissions, canWrite,
@@ -1231,7 +1245,9 @@ export function IssueRadarProvider({
     crewsError: (crewsQuery.error as Error) ?? null,
     crewView, setCrewView, crewFilter, setCrewFilter, openCrews,
     crewSortKey, crewSortDir, cycleCrewSort,
+    listDetail,
   }), [
+    listDetail,
     repos, active, switchRepo, onAddRepo, activePermissions, canWrite,
     me, issues, repoLabels, issuesQuery.isLoading, issuesQuery.error, issuesQuery.dataUpdatedAt,
     issuesPartial, labelsQuery.isLoading, labelsQuery.error, refresh, refreshMutation.isPending,

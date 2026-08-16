@@ -258,25 +258,40 @@ class TestControlFrames:
         assert writer.frames() == [{"type": "pong"}]
 
     @pytest.mark.asyncio
-    async def test_stats_merges_the_warm_pool_hit_tally(self, peer_ok):
+    async def test_stats_merges_the_warm_pool_hit_tally(self, peer_ok, monkeypatch):
         hot_keys = MagicMock()
         hot_keys.hit_stats = MagicMock(return_value={"warm_hits": 7, "warm_misses": 2})
         pool = _fake_pool(
             metrics_snapshot_async=AsyncMock(return_value={"backends": 3, "sessions": 5})
         )
+        _fb = {"window_secs": 1, "total": 0, "by_server": {}, "by_reason": {}}
+        monkeypatch.setattr(gw, "stub_fallback_counts", lambda: _fb)
         writer = _FakeWriter()
 
         await _handle(_ScriptedReader({"type": "stats"}), writer, pool, hot_keys=hot_keys)
 
         assert writer.frames() == [
-            {"type": "stats", "backends": 3, "sessions": 5, "warm_hits": 7, "warm_misses": 2}
+            {
+                "type": "stats",
+                "backends": 3,
+                "sessions": 5,
+                "warm_hits": 7,
+                "warm_misses": 2,
+                "stub_fallbacks": _fb,
+            }
         ]
 
     @pytest.mark.asyncio
-    async def test_stats_omits_warm_keys_when_prewarming_is_disabled(self, peer_ok):
+    async def test_stats_omits_warm_keys_when_prewarming_is_disabled(
+        self, peer_ok, monkeypatch
+    ):
+        _fb = {"window_secs": 1, "total": 0, "by_server": {}, "by_reason": {}}
+        monkeypatch.setattr(gw, "stub_fallback_counts", lambda: _fb)
         writer = _FakeWriter()
         await _handle(_ScriptedReader({"type": "stats"}), writer, _fake_pool())
-        assert writer.frames() == [{"type": "stats", "backends": 0}]
+        assert writer.frames() == [
+            {"type": "stats", "backends": 0, "stub_fallbacks": _fb}
+        ]
 
     @pytest.mark.asyncio
     async def test_abort_frame_cancels_in_flight_work_for_the_named_runtime(self, peer_ok):

@@ -136,7 +136,6 @@
     "pages.hooksPage.ms": "The unit \"ms\" = milliseconds, rendered after a duration. Use the abbreviation your locale's technical writing uses.",
     "pages.hooksPage.ok": "Status value in a table or log line, meaning the operation succeeded. A state, not the confirmation button.",
     "pages.hooksPage.s": "The unit \"s\" = seconds, rendered directly after a number (`30s`). Not a plural marker.",
-    "pages.knowledge.helpers.supported_formats_list": "The Knowledge Library file-format list. Product and format names (Markdown, HTML, JSON, YAML, CSV, DOCX, Org Mode, PDF) and the file extensions are do-not-translate; the generic descriptors (plain text, code files, and the etc. word) follow the locale, matching the Sources info box wording.",
     "pages.knowledge.index.esc": "The literal Esc key cap. Do not translate unless the target locale's keyboards are genuinely labelled differently: it names a physical key.",
     "pages.mcpGatewayCard.pid": "\"PID\" = operating-system process id, labelling a number. A term of art; keep the acronym practitioners in the target language use.",
     "pages.mcpGatewayCard.rss": "\"RSS\" = resident set size, the process's physical memory use, labelling a byte count. NOT the web feed format.",

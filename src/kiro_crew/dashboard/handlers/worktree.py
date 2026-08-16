@@ -74,7 +74,7 @@ import subprocess
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.validation import MAX_FOLLOWUP_BRANCH, is_valid_followup_branch
@@ -203,8 +203,8 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     (:func:`_checkout_filter`).
 
     The remaining protections are all here: an argv list with no shell, the
-    POSIX resource-limit ceiling (``resource_limit_preexec`` returns ``None`` on
-    Windows, where ``preexec_fn`` must be ``None``), a wall-clock timeout, and
+    POSIX resource-limit ceiling (:func:`run_limited` applies it after ``exec``
+    rather than in a forked child), a wall-clock timeout, and
     ``GIT_TERMINAL_PROMPT=0`` so a credential helper cannot block on an
     interactive prompt.
     """
@@ -216,7 +216,7 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
         raise SandboxUnavailable(str(exc)) from exc
     env["GIT_TERMINAL_PROMPT"] = "0"
     try:
-        proc = subprocess.run(
+        proc = run_limited(
             argv,
             cwd=cwd,
             env=env,
@@ -224,7 +224,6 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             text=True,
             timeout=_GIT_TIMEOUT,
             check=False,
-            preexec_fn=resource_limit_preexec(),
         )
     finally:
         if cleanup:

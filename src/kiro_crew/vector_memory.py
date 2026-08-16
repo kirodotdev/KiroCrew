@@ -20,6 +20,7 @@ import math
 import re
 import struct
 import threading
+from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
@@ -55,6 +56,7 @@ from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir
 from kiro_crew.metrics.db_metrics import timed
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES, normalize_lesson_category
 
 # Consolidation caps live in vector_memory_constants (a light module with no
 # heavy transitive deps) so prompt-building callers can import them at top
@@ -95,6 +97,8 @@ _FAISS_FILE = "memory.faiss"
 _KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_.]*[a-z0-9]$")
 _MAX_KEY_LEN = 100
 _MAX_VALUE_BYTES = 4096
+# Serialized forms, not truthiness: 0/false/[]/{} are legitimate values.
+_EMPTY_VALUE_JSON = frozenset({"null", '""'})
 
 
 class SemanticRejectCode(str, Enum):
@@ -103,6 +107,7 @@ class SemanticRejectCode(str, Enum):
     RESERVED_PREFIX = "reserved_prefix"
     CONFIDENCE = "low_confidence"
     VALUE_SIZE = "value_size"
+    VALUE_EMPTY = "value_empty"
     INJECTION = "injection_blocked"
     CONFLICT = "conflict_skip"
 
@@ -112,13 +117,24 @@ _AUDITABLE_REJECT_CODES = {
     SemanticRejectCode.CONFIDENCE,
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
+    SemanticRejectCode.VALUE_EMPTY,
 }
 
 _SECURITY_REJECT_CODES = {
     SemanticRejectCode.INJECTION,
     SemanticRejectCode.RESERVED_PREFIX,
 }
+# Named explicitly rather than derived as "not a security code": ALLOWLIST and CONFIDENCE
+# predate the dedupe and get_rejection_stats counts them per attempt.
+_AUDIT_ONCE_REJECT_CODES = {
+    SemanticRejectCode.VALUE_EMPTY,
+}
 _MAX_EVENTS = 10_000
+# Bound on the warn-once promotion-refusal set. The project.<proj>.tool key form is
+# derived from arbitrary episodic text, so the key space is unbounded in principle.
+_MAX_PROMOTION_REFUSED = 1_000
+# Same bound, same reason, for the audit-once set in log_reject_event.
+_MAX_AUDITED_REJECTS = 1_000
 _DEFAULT_CONFIDENCE_THRESHOLD = 0.8
 _DEFAULT_DEDUP_THRESHOLD = 0.88
 _DEFAULT_EPISODIC_MAX = 10_000
@@ -294,10 +310,10 @@ _MIGRATIONS: list[tuple[int, str, "Callable[[sqlite3.Connection], None] | None"]
 
 _MAX_BACKFILLS_PER_CALL = 5  # cap lazy embedding backfills to bound latency
 
-# Joins a lesson's rule to its NOT-clause in the single stored value. Extracted
-# from the f-string that composes it because write_lesson now also has to READ it
-# back, to tell "<rule>" apart from "<rule><sep><negative>" when deciding whether
-# a bare re-submit would strip a clause that is already stored.
+# Joins a lesson's rule to its NOT-clause in a legacy single-value row, and renders
+# a mapping-shaped one for display. Reads need it as well as writes: it is what
+# tells "<rule>" apart from "<rule><sep><negative>" when deciding whether a bare
+# re-submit would strip a clause that is already stored.
 _LESSON_NEGATIVE_SEP = " — NOT: "
 
 
@@ -306,24 +322,49 @@ def _lesson_slug(rule: str) -> str:
     return hashlib.md5(rule.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
+def _lesson_fields(decoded: object) -> tuple[str, str | None] | None:
+    """Extract ``(rule, negative)`` from a mapping-shaped lesson value.
+
+    The mapping shape — ``{"rule": ..., "category": ..., "negative": ...}`` — is
+    the one place a lesson's two halves exist as separate fields, so reading them
+    back needs no parsing and cannot be confused by a rule whose own text contains
+    ``_LESSON_NEGATIVE_SEP``. Returns ``None`` when *decoded* is not that shape
+    (strings are the legacy in-band form and are read by ``_split_stored``;
+    anything else is not lesson data). A blank or non-string ``negative`` is
+    normalized to ``None`` — mirroring ``write_lesson``'s own input normalization,
+    so a round-trip compares equal to what was submitted.
+    """
+    if not isinstance(decoded, dict):
+        return None
+    rule = decoded.get("rule")
+    if not isinstance(rule, str) or not rule.strip():
+        return None
+    negative = decoded.get("negative")
+    if not isinstance(negative, str) or not negative.strip():
+        negative = None
+    else:
+        negative = negative.strip()
+    return rule.strip(), negative
+
+
 def _lesson_display_text(decoded: object) -> str:
     """Render a decoded lesson value as the prose that goes into the prompt.
 
-    Two writers produce two shapes, and only one of them is a string. ``learn_add``
-    stores the value as ``"<rule>"`` or ``"<rule><sep><negative>"``
-    (see ``_LESSON_NEGATIVE_SEP``), while the onboarding import stores a mapping —
-    ``{"rule": ..., "category": ..., "negative": ...}`` — because it carries fields
-    the string form has nowhere to put. Interpolating the decoded value directly
-    therefore pasted a Python ``dict`` repr into the system prompt for every
-    imported lesson: the model was handed ``{'rule': 'Prefer dark mode',
-    'category': 'preference', 'negative': None}`` instead of the rule, spending
-    tokens on punctuation and field names while burying the instruction it is
-    supposed to follow.
+    Lessons are stored in two shapes, and only one of them is a string. The
+    legacy ``learn_add`` form is ``"<rule>"`` or ``"<rule><sep><negative>"``
+    (see ``_LESSON_NEGATIVE_SEP``), while ``write_lesson`` and the onboarding
+    import store a mapping ``{"rule": ..., "category": ..., "negative": ...}``,
+    which keeps the two halves apart without in-band escaping. Interpolating the
+    decoded value directly therefore pasted a Python ``dict`` repr into the system
+    prompt for every imported lesson: the model was handed ``{'rule': 'Prefer dark
+    mode', 'category': 'preference', 'negative': None}`` instead of the rule,
+    spending tokens on punctuation and field names while burying the instruction it
+    is supposed to follow.
 
-    Normalizing at READ time rather than converting the rows keeps this a pure
-    rendering fix: stored bytes are untouched, so no migration runs, downgrading
-    stays safe, and the dedup/enrichment paths that parse the string form
-    (``_split_stored``) keep seeing exactly what they see today.
+    Stored bytes are read as-is: legacy string rows are returned unchanged (no
+    migration runs, and ``_split_stored`` still parses them where enrichment
+    needs the halves), while mapping rows are recomposed with the separator only
+    for DISPLAY -- the fields, not this rendering, remain the source of truth.
 
     An unrecognized shape yields ``""`` and is skipped by the caller rather than
     being stringified as a guess. This runs while a session's prompt is being
@@ -341,6 +382,23 @@ def _lesson_display_text(decoded: object) -> str:
             return f"{rule.strip()}{_LESSON_NEGATIVE_SEP}{negative.strip()}"
         return rule.strip()
     return ""
+
+
+def _lesson_embed_text(decoded: object) -> str:
+    """The text a lesson's embedding is computed FROM, matching write_lesson.
+
+    The write path embeds the bare ``rule`` (never the NOT-clause), so every
+    vector that participates in semantic similarity must come from the same
+    input space: a mapping row embeds its ``rule`` field. A legacy string row
+    cannot be split reliably (that ambiguity is what the mapping shape fixes),
+    so it embeds the stored text as-is -- the best available approximation and
+    what those rows have always embedded.
+    """
+    if isinstance(decoded, dict):
+        fields = _lesson_fields(decoded)
+        if fields is not None:
+            return fields[0]
+    return _lesson_display_text(decoded)
 
 
 def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple[str | None, bool]:
@@ -365,8 +423,7 @@ def _split_stored(existing_val: str, rule_norm: str, existing_key: str) -> tuple
     Rows keyed some other way -- the onboarding import uses sha256, and legacy
     migrations set their own keys -- match only on the whole value. For those a
     case-variant re-submit onto an EXISTING clause will not enrich. That is a missed
-    enrichment, never an overwrite: the ambiguous branch always declines. Tracked in
-    the follow-up issue together with the storage-format fix.
+    enrichment, never an overwrite: the ambiguous branch always declines.
 
     Case-insensitivity here is ``lower()``, not ``casefold()`` -- see write_lesson for
     why. ``casefold()``'s ß-to-ss expansion conflates "Maße" with "Masse", which would
@@ -532,6 +589,11 @@ class VectorMemoryStore:
         self._faiss_index: object | None = None  # faiss.IndexFlatIP (untyped)
         self._faiss_id_map: list[str] = []
         self._faiss_writes_since_save = 0
+        # Promotion keys already refused: the refusal is deterministic, so warn once per store
+        # per distinct reject cause. Bounded and oldest-first, so an evicted cause may warn
+        # once more rather than the set growing for the process lifetime.
+        self._promotion_refused: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._audited_rejects: OrderedDict[tuple[str, str], None] = OrderedDict()
         # Optional sync embedding function for migration (set by caller)
         self.embed_fn: Callable[[str], list[float] | None] | None = None
         # Optional factory that builds an embed_fn on demand. When set, _try_embed()
@@ -693,7 +755,37 @@ class VectorMemoryStore:
                 f"Confidence {confidence:.2f} below threshold {self._confidence_threshold}",
             )
         vj = value_json if value_json is not None else json.dumps(value)
-        vj_bytes = len(vj.encode("utf-8"))
+        if not vj.strip() or vj.strip() in _EMPTY_VALUE_JSON:
+            return SemanticRejectCode.VALUE_EMPTY, "Value must not be null or empty"
+        # A lesson mapping is size-gated on its CONTENT (the legacy-equivalent
+        # "<rule><sep><negative>" rendering), not the JSON envelope: the
+        # envelope's ~50-70 bytes of keys would otherwise shrink the accepted
+        # rule capacity below what the bare string form always allowed, and a
+        # caller with a JSONL fallback would report the lesson saved while the
+        # vector store had refused it. The exemption applies ONLY when every
+        # unbounded field is measured at its RAW stored size: exact
+        # {rule, category, negative} shape, enum-bounded (or absent) category,
+        # and a None-or-string negative. The basis concatenates the UNSTRIPPED
+        # rule and negative — the same bytes that persist — so whitespace
+        # padding cannot ride past the cap; anything else (oversized category,
+        # extra key, non-string negative) is measured as its full envelope.
+        # Every stored byte is therefore either raw-measured or bounded by a
+        # constant (the enum member and the key envelope).
+        size_basis = vj
+        if key.startswith("lesson.") and isinstance(value, dict) and _lesson_fields(value) is not None:
+            cat = value.get("category")
+            raw_negative = value.get("negative")
+            if (
+                set(value.keys()) <= {"rule", "category", "negative"}
+                and (cat is None or (isinstance(cat, str) and cat in ALLOWED_LESSON_CATEGORIES))
+                and (raw_negative is None or isinstance(raw_negative, str))
+            ):
+                raw_rule = value["rule"]  # _lesson_fields guarantees a str
+                if isinstance(raw_negative, str):
+                    size_basis = f"{raw_rule}{_LESSON_NEGATIVE_SEP}{raw_negative}"
+                else:
+                    size_basis = raw_rule
+        vj_bytes = len(size_basis.encode("utf-8"))
         if vj_bytes > _MAX_VALUE_BYTES:
             return (
                 SemanticRejectCode.VALUE_SIZE,
@@ -713,9 +805,19 @@ class VectorMemoryStore:
         value_json: str | None = None,
     ) -> None:
         """Emit an audit event for a validation rejection."""
-        if code in _AUDITABLE_REJECT_CODES:
-            snippet = (value_json if value_json is not None else str(value))[:200]
-            self._log_event(code.value, "semantic", key, None, snippet, source)
+        if code not in _AUDITABLE_REJECT_CODES:
+            return
+        # Only a refusal that repeats every promotion pass audits once per (key, cause); every
+        # other code records each attempt, which is what get_rejection_stats already counts.
+        if code in _AUDIT_ONCE_REJECT_CODES:
+            audited = (key, code.value)
+            if audited in self._audited_rejects:
+                return
+            self._audited_rejects[audited] = None
+            while len(self._audited_rejects) > _MAX_AUDITED_REJECTS:
+                self._audited_rejects.popitem(last=False)
+        snippet = (value_json if value_json is not None else str(value))[:200]
+        self._log_event(code.value, "semantic", key, None, snippet, source)
 
     # ── Semantic CRUD ──
 
@@ -2060,6 +2162,16 @@ class VectorMemoryStore:
         # guidance, and str()-ifying it would store a repr as if the user wrote it,
         # so treat it as absent.
         negative = negative.strip() or None if isinstance(negative, str) else None
+        # The category is now part of the stored value, so an unusable one would be
+        # scanned by validate_semantic and could REJECT the whole lesson -- turning a
+        # bad label into lost guidance. Consolidation passes the LLM's own
+        # item.get("category") straight through (history.py) with no validation,
+        # unlike the REST and MCP paths, which are enum-restricted by
+        # LEARN_ADD_SCHEMA. The shared helper clamps to that same enum
+        # (write policy, strict=True), safely handling unhashable labels
+        # (a dict or list from the LLM) that would make a raw set membership
+        # test raise and abort consolidation instead of clamping.
+        category = normalize_lesson_category(category, strict=True)
         rule_words = self._lesson_keywords(rule_lower)
         # Same reasoning as write_episodic: carry the space generation to the write
         # so a swap landing between the embed and the lock cannot commit a vector
@@ -2090,7 +2202,14 @@ class VectorMemoryStore:
         # no-op when the replacement cannot land.
         slug = _lesson_slug(rule)
         key = f"lesson.{slug}"
-        value = rule if not negative else f"{rule}{_LESSON_NEGATIVE_SEP}{negative}"
+        # The mapping shape keeps the two halves as separate fields, so they
+        # survive a round-trip regardless of what characters the rule contains.
+        # The legacy in-band form ("<rule><sep><negative>") is still READ below
+        # and by every renderer — no migration; old rows upgrade only when a
+        # re-submit rewrites them anyway. validate_semantic size-gates lesson
+        # mappings on their content (legacy-equivalent bytes), so the JSON
+        # envelope does not shrink the accepted rule capacity.
+        value: object = {"rule": rule, "category": category, "negative": negative}
         confidence = 1.0 if source == "user_explicit" else 0.9
         preflight = self.validate_semantic(key, value, confidence, source)
         if preflight is not None:
@@ -2128,40 +2247,62 @@ class VectorMemoryStore:
         lesson_rows = self.get_lessons()
 
         def _as_text(row: dict) -> str | None:
-            """The row's value as lesson TEXT, or None when it is not text.
+            """The row's value as lesson TEXT, or None when it has no lesson shape.
 
             set_semantic accepts any object, so an import or a legacy migration can
-            leave a dict or list under a lesson.* key. str() would render a Python
-            repr, and every text comparison here -- the substring dedup and the
-            keyword overlap -- would then match against that repr. Skipping is the
-            honest reading: it is not lesson text.
+            leave a list or a rule-less dict under a lesson.* key. str() would render
+            a Python repr, and every text comparison here -- the substring dedup and
+            the keyword overlap -- would then match against that repr. Skipping is
+            the honest reading: it is not lesson text.
 
-            The onboarding import does store lessons as a dict
-            (``{"rule", "category", "negative"}``), so a re-submit cannot enrich an
-            imported lesson and inserts a second row instead. That is pre-existing
-            and left alone here -- see the follow-up issue; reading that shape needs
-            the normalized-text path this PR deliberately does not add.
+            Mapping-shaped rows (write_lesson's own format, and the onboarding
+            import's) render through _lesson_embed_text (the rule only, without
+            the NOT-clause), so deduplication compares rules on the same basis
+            that embedding similarity does — the negative qualifies the rule but
+            does not change its identity.
             """
-            decoded = json.loads(row["value_json"])
-            return decoded if isinstance(decoded, str) else None
+            text = _lesson_embed_text(json.loads(row["value_json"]))
+            return text or None
 
         matched = False
         for existing in lesson_rows:
-            existing_val = _as_text(existing)
-            if existing_val is None:
-                continue
-
-            # Key equality FIRST: md5(rule) identifies THIS lesson exactly, whatever
-            # the stored value contains. Otherwise defer to _split_stored, which
-            # confirms a candidate prefix against the row's own key rather than
-            # guessing a reading of the in-band separator.
-            if existing["key"] == key:
-                base: str | None = rule.strip()
-                stored_clause = existing_val != base
+            decoded = json.loads(existing["value_json"])
+            fields = _lesson_fields(decoded)
+            if fields is not None:
+                # Mapping shape: the halves are separate fields, so the stored
+                # ``rule`` IS the rule and identifying it needs no key confirmation,
+                # whatever key the writer derived (write_lesson uses md5, the
+                # onboarding import sha256). This is what lets a re-submit enrich an
+                # imported lesson, which the string form could never do safely.
+                #
+                # Identity is the stored rule TEXT, never the key alone: a row whose
+                # key and stored rule disagree would otherwise be claimed by this
+                # rule and rewritten, attaching the submitted clause to a different
+                # lesson and dropping the submitted rule entirely.
+                stored_rule, stored_negative = fields
+                if stored_rule.lower() != rule_norm:
+                    continue
+                base = stored_rule
+                stored_clause = stored_negative is not None
+            elif isinstance(decoded, str):
+                existing_val = decoded
+                # Key equality FIRST: md5(rule) identifies THIS lesson exactly,
+                # whatever the stored value contains. Otherwise defer to
+                # _split_stored, which confirms a candidate prefix against the row's
+                # own key rather than guessing a reading of the in-band separator.
+                if existing["key"] == key:
+                    legacy_base: str | None = rule.strip()
+                    stored_clause = existing_val != legacy_base
+                else:
+                    legacy_base, stored_clause = _split_stored(
+                        existing_val, rule_norm, existing["key"]
+                    )
+                if legacy_base is None:
+                    continue
+                base = legacy_base
+                stored_negative = None  # in-band; only its presence is known
             else:
-                base, stored_clause = _split_stored(existing_val, rule_norm, existing["key"])
-            if base is None:
-                continue
+                continue  # not lesson data (list, rule-less dict, ...)
 
             if not negative and stored_clause:
                 # A BARE re-submit of a rule that already carries a clause. Writing
@@ -2174,13 +2315,33 @@ class VectorMemoryStore:
                 )
                 _flush_backfills()
                 return False
-            # Recompose from the STORED base so a case-variant re-submit attaches its
-            # clause without silently re-casing the rule -- again matching
-            # LessonStore, which keeps the stored spelling.
-            target = base if not negative else f"{base}{_LESSON_NEGATIVE_SEP}{negative}"
-            if target == existing_val:
-                _flush_backfills()
-                return False  # byte-identical row already stored
+            if fields is not None:
+                # Mapping row: a re-submit that changes nothing the fields express
+                # is a no-op. Category is effectively WRITE-ONCE here: it is not
+                # compared or rewritten on enrichment, because the intent of a
+                # re-submit-with-clause is "attach the clause", not "recategorize"
+                # (correcting a category means delete + re-add). The string form
+                # never stored a category for anything to have depended on.
+                if negative == stored_negative:
+                    _flush_backfills()
+                    return False
+                stored_category = decoded.get("category")
+                target: object = {
+                    "rule": stored_rule,
+                    "category": stored_category if isinstance(stored_category, str) else category,
+                    "negative": negative,
+                }
+            else:
+                # Legacy string row. Recompose from the STORED base so a
+                # case-variant re-submit attaches its clause without silently
+                # re-casing the rule. A byte-identical re-submit stays a no-op (the
+                # row is not churned into the new shape); an actual enrichment
+                # rewrites it as a mapping, upgrading the row in place.
+                target_text = base if not negative else f"{base}{_LESSON_NEGATIVE_SEP}{negative}"
+                if target_text == existing_val:
+                    _flush_backfills()
+                    return False
+                target = {"rule": base, "category": category, "negative": negative}
             # The preflight above validated the value built from the SUBMITTED rule;
             # this one differs, so validate what is actually written.
             if self.validate_semantic(existing["key"], target, confidence, source):
@@ -2198,10 +2359,10 @@ class VectorMemoryStore:
         similarity = self._stored_similarity_scorer(rule_emb) if rule_emb else None
 
         for existing in [] if matched else lesson_rows:
-            existing_val = _as_text(existing)
-            if existing_val is None:
+            existing_text = _as_text(existing)
+            if existing_text is None:
                 continue
-            existing_lower = existing_val.lower()
+            existing_lower = existing_text.lower()
 
             # Substring dedup
             if rule_lower in existing_lower:
@@ -2222,7 +2383,7 @@ class VectorMemoryStore:
                         logger.info(
                             "Lesson conflict: %r replaces %r (%.0f%% overlap)",
                             rule[:60],
-                            existing_val[:60],
+                            existing_text[:60],
                             ratio * 100,
                         )
                         self.delete_semantic(existing["key"], source)
@@ -2245,7 +2406,13 @@ class VectorMemoryStore:
                     # Sampling after it returns would tag an old blob with the new
                     # generation and the flush check would wave it through.
                     backfill_generation = self._space_generation
-                    existing_emb = self._try_embed(existing_val, PRIORITY_BULK)
+                    # Embed the canonical rule text (matching write_lesson), not
+                    # the display rendering -- the vector must live in the same
+                    # space as the query vectors it is compared against.
+                    existing_emb = self._try_embed(
+                        _lesson_embed_text(json.loads(existing["value_json"])),
+                        PRIORITY_BULK,
+                    )
                     if existing_emb:
                         row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
                         pending_backfills.append(
@@ -2256,7 +2423,7 @@ class VectorMemoryStore:
                     sim = similarity({"embedding": row_blob})
                     if sim > 0.85:
                         logger.info("Lesson semantic dedup: %.2f sim with %r", sim, existing["key"])
-                        if len(rule) > len(existing_val):
+                        if len(rule) > len(existing_text):
                             pending_backfills[:] = [
                                 (b, k, g)
                                 for b, k, g in pending_backfills
@@ -2359,7 +2526,11 @@ class VectorMemoryStore:
         for existing in self.get_lessons():
             sim = similarity(existing)
             if threshold_low <= sim < threshold_high:
-                existing_val = str(json.loads(existing["value_json"]))
+                # Rendered text, not str(): a mapping-shaped row would otherwise
+                # hand its Python repr to the contradiction prompt as the "rule".
+                existing_val = _lesson_display_text(json.loads(existing["value_json"]))
+                if not existing_val:
+                    continue
                 candidates.append({"key": existing["key"], "rule": existing_val, "similarity": sim})
         candidates.sort(key=lambda x: x["similarity"], reverse=True)
         return candidates[:5]
@@ -2388,7 +2559,12 @@ class VectorMemoryStore:
         deleted = False
         for e in self.get_lessons():
             val = json.loads(e["value_json"])
-            if rule_substring.lower() in str(val).lower():
+            # Match against the rendered lesson text so a mapping-shaped row is
+            # matched on its rule/clause, not on its repr (which would let a
+            # substring like "category" delete every imported lesson). Rows with
+            # no lesson shape fall back to str() so junk rows stay deletable.
+            text = _lesson_display_text(val) or str(val)
+            if rule_substring.lower() in text.lower():
                 self.delete_semantic(e["key"], "user_explicit")
                 deleted = True
         return deleted
@@ -2999,9 +3175,16 @@ class VectorMemoryStore:
             progress(0, total)
         for row in rows:
             try:
-                text = str(json.loads(row["value_json"]))
+                # Canonical embedding input: the mapping's rule field (matching
+                # write_lesson, which embeds the bare rule), the stored text for
+                # a legacy string row. Embedding a mapping row's str() would
+                # vectorize its Python repr.
+                text = _lesson_embed_text(json.loads(row["value_json"]))
             except (ValueError, TypeError):
                 logger.debug("Skipping lesson %s with unparseable value", row["key"])
+                continue
+            if not text:
+                logger.debug("Skipping lesson %s with no renderable text", row["key"])
                 continue
             vec = self._try_embed(text, PRIORITY_BULK)
             if not vec:
@@ -3282,6 +3465,7 @@ class VectorMemoryStore:
             return 0
 
         promoted = 0
+        skipped = 0
         rows = self._fetch_all_locked(
             "SELECT id, text, embedding FROM episodic_memories "
             "WHERE is_deleted = 0 AND embedding IS NOT NULL "
@@ -3315,12 +3499,33 @@ class VectorMemoryStore:
                 continue
 
             value = self._extract_value_from_text(text)
-            if self.set_semantic(key, value, 0.9, "promotion") is None:
+            reject = self.set_semantic(key, value, 0.9, "promotion")
+            if reject is None:
                 promoted += 1
                 for m in members:
                     self._delete_episodic_row(m["id"])
                 logger.info("Promoted %d episodic → %s: %s", len(members), key, value[:60])
+            else:
+                # A refused cluster keeps its rows and re-clusters identically next pass, so the
+                # refusal repeats forever: count every pass, but warn only the first time per key.
+                skipped += 1
+                reject_code, reject_reason = reject
+                # Keyed on the cause too: _infer_semantic_key returns a constant for every
+                # "user prefers" cluster, so keying on key alone hides refusals of other causes.
+                if (key, reject_code.value) not in self._promotion_refused:
+                    self._promotion_refused[(key, reject_code.value)] = None
+                    while len(self._promotion_refused) > _MAX_PROMOTION_REFUSED:
+                        self._promotion_refused.popitem(last=False)
+                    logger.warning(
+                        "Promotion skipped %s (%s: %s): %d rows retained, retried each pass",
+                        key,
+                        reject_code.value,
+                        reject_reason,
+                        len(members),
+                    )
 
+        if skipped:
+            logger.info("Promotion pass: %d promoted, %d skipped", promoted, skipped)
         return promoted
 
     @staticmethod
@@ -3355,7 +3560,7 @@ class VectorMemoryStore:
             "SELECT event_type, COUNT(*) as count FROM memory_events "
             "WHERE event_type = 'injection_blocked' "
             "OR (memory_type = 'semantic' AND event_type IN "
-            "('allowlist_reject', 'low_confidence', 'conflict_skip')) "
+            "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty')) "
             "GROUP BY event_type"
         )
         return {r["event_type"]: r["count"] for r in rows}

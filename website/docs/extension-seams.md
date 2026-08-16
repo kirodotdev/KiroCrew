@@ -321,6 +321,42 @@ standalone pill in the header's right-hand actions area, next to the capsule.
 Widgets render in insertion order, take no props (each reads its own state or
 queries), and are each `ErrorBoundary`-isolated.
 
+**Theme centre decoration is a backdrop, not a cell.** `branding.topBar` used to
+render as a sized flow cell between the search and the actions group
+(`flex-1 min-w-0 h-full`). Under the three-track grid it renders as a full-header
+background layer instead: `absolute inset-0`, `pointer-events-none`,
+`aria-hidden`. A fourth in-flow child would land in an implicit column and shift
+the search off centre, and a sweep or scanline is visually a backdrop anyway. The
+narrowed contract: a registered decoration **cannot receive pointer events** and
+is **not announced**, so an interactive or gap-sized decoration degrades silently
+(the `ErrorBoundary` never fires — nothing throws). Register interactive chrome
+through `registerTopBarWidgets` instead.
+
+**Rung thresholds are locale-measured.** The container-query breakpoints in
+`.topbar`'s ladder (`src/index.css`) are the measured content width of each
+readout tier plus a margin, taken in one locale through
+`website/capture/topbar-search-variants.tsx`. A wider locale can push a tier past
+its own threshold, in which case the group squeezes or truncates its text before
+the rung fires — graceful, but it means the constants are an approximation, not a
+guarantee. Re-measure with that harness when readout content or the catalogs
+change materially.
+
+
+**Width budget for both top-bar seams.** The header is a three-track grid whose
+side groups are pure remainder (`minmax(0,1fr)`, no floor) — see `.topbar` in
+`src/index.css`. The actions group therefore does NOT grow to fit its contents;
+it gets what the window leaves after the centred search, and its built-in
+readouts give that space back through container-query rungs. Registered segments
+and widgets do not participate in those rungs, so a registered component must
+stay inside a budget: **keep the collapsed form under ~40px** and drop your own
+labels with your own `@container` rule keyed off `.tb-right` if you render text.
+The narrowest desktop width leaves the group about 206px, of which the built-in
+dot, metric icon, credit icon and bell already claim roughly 139px. A component
+wider than the remainder is clipped from the group's leading edge (the group
+clips deliberately rather than pushing the notifications bell out of the
+header), and at the terminal rung the capsule is reduced to its connection dot,
+which hides registered segments along with the core readouts.
+
 **Overview status cards.** `registerOverviewStatCards([{ id, order?, component }])`
 adds a self-contained `StatCard` (owning its own query and state, like the core
 `TunnelStatus`) to the Settings Overview grid, after the core cards, in ascending

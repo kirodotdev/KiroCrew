@@ -971,6 +971,51 @@ class TestPolicyCli:
         assert "require_sandbox=True" in out
         assert "capabilities.telemetry: off" in out
 
+    def test_show_without_policy_includes_denied_command_summary(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Regression for #3454: an agent's only prior discovery mechanism for
+        the 139 built-in denied-command rules was to attempt one and be
+        refused. `policy show` must surface them even on a standalone
+        (non-enterprise) install, which is the common case the early-return
+        branch serves."""
+        with patch(
+            "kiro_crew.platform.context.current_context",
+            return_value=SimpleNamespace(governance=None),
+        ):
+            cc._policy(_ns(policy_action="show"))
+        out = capsys.readouterr().out
+        assert "commands.denied: 139 rules in 10 categories" in out
+        assert "aws-destructive(47)" in out
+        # Counts only by default -- rule ids are the --ids opt-in.
+        assert "aws-destructive-ec2-terminate-instances" not in out
+
+    def test_show_with_policy_also_includes_denied_command_summary(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch(
+            "kiro_crew.platform.context.current_context",
+            return_value=SimpleNamespace(governance=_fake_ceiling()),
+        ):
+            cc._policy(_ns(policy_action="show"))
+        assert "commands.denied:" in capsys.readouterr().out
+
+    def test_show_ids_lists_rule_ids_per_category(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Named --ids, not --verbose: the top-level parser already defines
+        # --verbose/-v as an int `count` (log level); a same-named store_true
+        # on this subparser would collide via argparse's parent/subparser
+        # default-override gotcha.
+        with patch(
+            "kiro_crew.platform.context.current_context",
+            return_value=SimpleNamespace(governance=None),
+        ):
+            cc._policy(_ns(policy_action="show", ids=True))
+        out = capsys.readouterr().out
+        assert "aws-destructive-ec2-terminate-instances" in out
+        assert "reverse-shell-nc" in out
+
     def test_show_with_no_governed_scopes(self, capsys: pytest.CaptureFixture[str]) -> None:
         ceiling = _fake_ceiling()
         ceiling.controls = {}
@@ -1239,6 +1284,22 @@ class TestLearnCli:
             ]
             cc._learn(_ns(learn_action="list"))
         assert "[tool] r — n" in capsys.readouterr().out
+
+    def test_list_jsonl_fallback_normalizes_blank_category(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The JSONL fallback branch applies the same display policy as the
+        vector-store branch and the dashboard: a blank/legacy category renders
+        the store's own "knowledge" default, never a bare []."""
+        with _LearnHarness() as h:
+            h.vs.get_lessons.return_value = []
+            h.jsonl.load_all.return_value = [
+                SimpleNamespace(category="", rule="legacy row", negative=None)
+            ]
+            cc._learn(_ns(learn_action="list"))
+        out = capsys.readouterr().out
+        assert "[knowledge] legacy row" in out
+        assert "[]" not in out
 
     def test_list_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _LearnHarness() as h:

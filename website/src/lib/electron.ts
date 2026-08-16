@@ -38,6 +38,20 @@ export const isLinuxFramelessElectron = isElectron && mc?.platform === 'linux' &
 export const LINUX_CAPTION_CONTROLS_WIDTH = 108
 
 /**
+ * The shell's raw `process.platform` (`'darwin'` / `'win32'` / `'linux'`), or
+ * `undefined` in a plain browser tab.
+ *
+ * For copy about an action the SHELL performs rather than the gateway — Mochi's
+ * reveal is an IPC send its main process handles, so the gateway's platform would
+ * be the wrong host to name. Read lazily (not from the module-load `mc` capture
+ * above) so a test can stub `window.kirocrew` per-case, exactly as `pathForFile`
+ * does.
+ */
+export function electronPlatform(): string | undefined {
+  return (window as { kirocrew?: { platform?: string } }).kirocrew?.platform
+}
+
+/**
  * Absolute filesystem path for a File the OS handed us (drag-drop), via the
  * desktop shell's preload bridge (webUtils.getPathForFile). Returns '' in a
  * plain browser — pages cannot see real paths there — so callers must treat a

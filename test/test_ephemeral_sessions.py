@@ -46,7 +46,7 @@ def _make_app(state):
         api_chat_slot_resume,
         api_chat_slots,
     )
-    from kiro_crew.dashboard.handlers import api_lessons_create
+    from kiro_crew.dashboard.handlers import api_lessons_create, api_lessons_delete
 
     app = web.Application()
     app["state"] = state
@@ -55,6 +55,7 @@ def _make_app(state):
     app.router.add_delete("/api/chat/slots/{slot}", api_chat_slot_delete)
     app.router.add_post("/api/chat/slots/{slot}/resume", api_chat_slot_resume)
     app.router.add_post("/api/lessons", api_lessons_create)
+    app.router.add_delete("/api/lessons", api_lessons_delete)
     return app
 
 
@@ -1729,3 +1730,517 @@ class TestDurableSlackFlagsAtHttpGate:
                     headers={"X-Session-Key": self.SLACK_KEY},
                 )
                 assert resp.status == 200, await resp.text()
+
+
+# ── API: lessons DELETE session-recognition gate ──
+
+
+class TestLessonsDeleteGate:
+    """DELETE /api/lessons must apply the SAME session recognition as the
+    create route. Before the gate, deleting was LESS protected than adding: a
+    key that create rejects with 400 ``unknown session`` could still
+    substring-delete any durable lesson, and a remove-then-re-add
+    consolidation from such a session lost the lesson (destructive half
+    succeeded, re-add refused). Delete-specific policy is preserved: incognito
+    may delete (active user action); only temporary is blocked.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _persisted_history_dir_tracks_patched_home(self, monkeypatch):
+        """Same redirect as TestSessionSlotRecovery: keep the seeded
+        ``<home>/.kirocrew/sessions`` layout authoritative for the probe."""
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared.config_dir",
+            lambda: Path.home() / ".kirocrew",
+        )
+
+    def _write_sessions_jsonl(self, tmp_path, stem: str, *, memory_mode=None) -> None:
+        sess_dir = tmp_path / ".kirocrew" / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        meta = {"_type": "metadata", "created_at": "2026-01-01T00:00:00"}
+        if memory_mode:
+            meta["memory_mode"] = memory_mode
+        (sess_dir / f"{stem}.jsonl").write_text(
+            _json.dumps(meta) + "\n", encoding="utf-8"
+        )
+
+    def _deletable_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        # Route reads the vector store through cron.py's own binding.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.cron._get_memory",
+            MagicMock(return_value=MagicMock(vector_store=None)),
+        )
+        state = _make_state(tmp_path)
+        state.lessons.remove = MagicMock(return_value=True)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_delete_rejected_without_session_header(self, tmp_path, monkeypatch):
+        state = self._deletable_state(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete("/api/lessons", json={"rule": "x"})
+            assert resp.status == 400
+            data = await resp.json()
+            assert "X-Session-Key" in data["error"]
+        state.lessons.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_rejected_for_unknown_session(self, tmp_path, monkeypatch):
+        """Core regression: a forged/unknown key must NOT delete lessons."""
+        state = self._deletable_state(tmp_path, monkeypatch)
+        (tmp_path / ".kirocrew" / "sessions").mkdir(parents=True, exist_ok=True)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:deleted-slot"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"] == "unknown session"
+        state.lessons.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_forged_cron_key_without_jsonl(self, tmp_path, monkeypatch):
+        state = self._deletable_state(tmp_path, monkeypatch)
+        (tmp_path / ".kirocrew" / "sessions").mkdir(parents=True, exist_ok=True)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "cron:forged123"},
+            )
+            assert resp.status == 400
+        state.lessons.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_allowed_for_browser_ui(self, tmp_path, monkeypatch):
+        state = self._deletable_state(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:ui"},
+            )
+            assert resp.status == 200
+        state.lessons.remove.assert_called_once_with("x")
+
+    @pytest.mark.asyncio
+    async def test_delete_allowed_for_live_persistent_slot(self, tmp_path, monkeypatch):
+        state = self._deletable_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("n1")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:n1"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_allowed_for_live_incognito_slot(self, tmp_path, monkeypatch):
+        """Incognito deletes stay allowed — an active user action (unchanged
+        from the pre-gate behavior; create blocks incognito, delete doesn't)."""
+        state = self._deletable_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("e1", memory_mode="incognito")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:e1"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_blocked_for_live_temporary_slot(self, tmp_path, monkeypatch):
+        state = self._deletable_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("t1", memory_mode="temporary")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:t1"},
+            )
+            assert resp.status == 403
+        state.lessons.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_allowed_for_channel_namespace(self, tmp_path, monkeypatch):
+        state = self._deletable_state(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "telegram:kirocrew:forum:-1004326574849:18:gen3"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_allowed_for_evicted_session_with_persistent_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        """Evicted-but-real session recovers via the persisted-JSONL probe —
+        same as create — so a cron whose transcript has flushed can still
+        remove lessons after a gateway restart."""
+        state = self._deletable_state(tmp_path, monkeypatch)
+        self._write_sessions_jsonl(tmp_path, "cron_abc123")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "cron:abc123"},
+            )
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_blocked_for_evicted_temporary_session_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        """Archived temporary session: the persisted memory_mode is the only
+        remaining evidence; deletes are blocked to mirror the live-slot
+        ``blocks_reads`` policy."""
+        state = self._deletable_state(tmp_path, monkeypatch)
+        self._write_sessions_jsonl(tmp_path, "dashboard_t9", memory_mode="temporary")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:t9"},
+            )
+            assert resp.status == 403
+        state.lessons.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_allowed_for_evicted_incognito_session_jsonl(
+        self, tmp_path, monkeypatch
+    ):
+        """Archived incognito session may still delete — consistent with the
+        live-slot policy (delete differs from create here by design)."""
+        state = self._deletable_state(tmp_path, monkeypatch)
+        self._write_sessions_jsonl(tmp_path, "dashboard_e9", memory_mode="incognito")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:e9"},
+            )
+            assert resp.status == 200
+
+
+class TestSharedRecognitionGate:
+    """Create and delete must run through ONE shared recognition gate.
+
+    ``_recognize_session`` is the single implementation of the slot /
+    restricted-key / channel-namespace / persisted-JSONL cascade; these tests
+    pin that both routes actually call it (so the cascades cannot silently
+    diverge again) and that each passes its own policy: create blocks every
+    incognito mode, delete blocks only temporary; every gate refusal emits
+    machine-readable codes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_and_delete_call_the_same_gate(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import cron as cron_handlers
+        from kiro_crew.history import is_incognito_transcript
+
+        calls: dict[str, dict] = {}
+
+        async def _spy(state, sk, operation, **kwargs):
+            calls[operation] = kwargs
+            return web.json_response({"error": "gate refusal"}, status=400)
+
+        monkeypatch.setattr(cron_handlers, "_recognize_session", _spy)
+        state = _make_state(tmp_path)
+        state.lessons.remove = MagicMock(return_value=True)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            create = await client.post(
+                "/api/lessons",
+                json={"rule": "x", "category": "knowledge"},
+                headers={"X-Session-Key": "dashboard:whatever"},
+            )
+            delete = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:whatever"},
+            )
+        # Both routes were refused by the gate's response — proof they route
+        # every request through the shared cascade, not a private copy.
+        assert create.status == 400
+        assert delete.status == 400
+        state.lessons.remove.assert_not_called()
+        assert set(calls) == {"learn_add", "lessons.delete"}
+        # Per-route policy rides on the parameters, not on divergent code:
+        # create blocks every private mode via the canonical classifier,
+        # delete blocks only temporary (incognito may delete).
+        assert calls["learn_add"]["blocks_persisted_mode"] is is_incognito_transcript
+        delete_blocks = calls["lessons.delete"]["blocks_persisted_mode"]
+        assert delete_blocks("temporary") is True
+        assert delete_blocks("incognito") is False
+        assert delete_blocks("persistent") is False
+
+    @pytest.mark.asyncio
+    async def test_delete_unknown_session_carries_machine_code(
+        self, tmp_path, monkeypatch
+    ):
+        """Every gate refusal carries ``code: unknown_session`` (the contract
+        learn_remove dispatches on) — the per-route ``error_codes`` knob was
+        dropped, so create's 400 carries it too."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path
+        )
+        (tmp_path / "sessions").mkdir(parents=True, exist_ok=True)
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            delete = await client.delete(
+                "/api/lessons",
+                json={"rule": "x"},
+                headers={"X-Session-Key": "dashboard:deleted-slot"},
+            )
+            assert delete.status == 400
+            data = await delete.json()
+            assert data["error"] == "unknown session"
+            assert data["code"] == "unknown_session"
+            create = await client.post(
+                "/api/lessons",
+                json={"rule": "x", "category": "knowledge"},
+                headers={"X-Session-Key": "dashboard:deleted-slot"},
+            )
+            assert create.status == 400
+            data = await create.json()
+            assert data["error"] == "unknown session"
+            assert data["code"] == "unknown_session"
+
+    def test_http_error_body_preserves_machine_code(self):
+        """``_http_error_body`` must carry the backend's ``code`` through the
+        error-body flattening — learn_remove dispatches on it."""
+        import io
+        import urllib.error
+
+        from kiro_crew.mcp_core import _http_error_body
+
+        err = urllib.error.HTTPError(
+            url="http://x/api/lessons", code=400, msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error": "unknown session", "code": "unknown_session"}'),
+        )
+        assert _http_error_body(err) == {
+            "error": "unknown session",
+            "code": "unknown_session",
+        }
+        # A non-identifier code is untrusted content and must be dropped, not
+        # echoed onward.
+        err = urllib.error.HTTPError(
+            url="http://x/api/lessons", code=400, msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error": "x", "code": "https://evil.example/exfil"}'),
+        )
+        assert _http_error_body(err) == {"error": "x"}
+
+    def test_learn_remove_dispatches_on_code_not_wording(self, monkeypatch):
+        """A rephrased error message must not break the fail-closed mapping:
+        the dispatch key is ``code == "unknown_session"``, not the wording."""
+        from kiro_crew.mcp_tools.learn import learn_remove
+
+        monkeypatch.setattr(
+            "kiro_crew.mcp_core._delete",
+            lambda path, body=None: {
+                "error": "session not recognised (reworded)",
+                "code": "unknown_session",
+            },
+        )
+        out = learn_remove("learn_remove", {"query": "x"})
+        assert "No lessons were removed" in out
+
+    def test_learn_remove_surfaces_other_errors_verbatim(self, monkeypatch):
+        from kiro_crew.mcp_tools.learn import learn_remove
+
+        monkeypatch.setattr(
+            "kiro_crew.mcp_core._delete",
+            lambda path, body=None: {"error": "boom"},
+        )
+        assert learn_remove("learn_remove", {"query": "x"}) == "Error: boom"
+
+
+# ── Memory-routes recognition gate (follow-up to #3226) ──
+
+
+class TestMemoryRoutesSessionGate:
+    """The three mutating memory routes must apply the SAME session
+    recognition as the lessons routes. Before the gate: DELETE
+    /api/memory/episodic/{id} had NO session check at all (even a restricted
+    session passed), and PUT /api/memory/semantic + DELETE
+    /api/memory/semantic/{key} gated only on ``_is_restricted_session`` —
+    which returns False for an unknown key, so a forged or never-established
+    X-Session-Key could mutate durable memory that the lessons routes refuse.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _persisted_history_dir_tracks_patched_home(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared.config_dir",
+            lambda: Path.home() / ".kirocrew",
+        )
+
+    def _memory_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        store = MagicMock()
+        store.set_semantic = MagicMock(return_value=None)
+        store.delete_semantic = MagicMock(return_value=True)
+        store.delete_episodic = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.memory._get_vector_store",
+            MagicMock(return_value=store),
+        )
+        state = _make_state(tmp_path)
+        return state, store
+
+    def _make_memory_app(self, state):
+        from kiro_crew.dashboard.handlers import (
+            api_memory_episodic_delete,
+            api_memory_semantic_delete,
+            api_memory_semantic_write,
+        )
+
+        app = web.Application()
+        app["state"] = state
+        app.router.add_put("/api/memory/semantic", api_memory_semantic_write)
+        app.router.add_delete(
+            "/api/memory/semantic/{key:.+}", api_memory_semantic_delete
+        )
+        app.router.add_delete(
+            "/api/memory/episodic/{id}", api_memory_episodic_delete
+        )
+        return app
+
+    async def _call(self, client, route, headers):
+        if route == "semantic_write":
+            return await client.put(
+                "/api/memory/semantic",
+                json={"key": "k", "value": "v"},
+                headers=headers,
+            )
+        if route == "semantic_delete":
+            return await client.delete("/api/memory/semantic/k", headers=headers)
+        return await client.delete("/api/memory/episodic/42", headers=headers)
+
+    def _mutations(self, store) -> int:
+        return (
+            store.set_semantic.call_count
+            + store.delete_semantic.call_count
+            + store.delete_episodic.call_count
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route", ["semantic_write", "semantic_delete", "episodic_delete"]
+    )
+    async def test_rejected_without_session_header(self, tmp_path, monkeypatch, route):
+        state, store = self._memory_state(tmp_path, monkeypatch)
+        async with TestClient(TestServer(self._make_memory_app(state))) as client:
+            resp = await self._call(client, route, {})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["code"] == "missing_session_key"
+        assert self._mutations(store) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route", ["semantic_write", "semantic_delete", "episodic_delete"]
+    )
+    async def test_rejected_for_forged_unknown_session(
+        self, tmp_path, monkeypatch, route
+    ):
+        """Core regression: a forged/unknown key must NOT mutate memory."""
+        state, store = self._memory_state(tmp_path, monkeypatch)
+        (tmp_path / ".kirocrew" / "sessions").mkdir(parents=True, exist_ok=True)
+        async with TestClient(TestServer(self._make_memory_app(state))) as client:
+            resp = await self._call(
+                client, route, {"X-Session-Key": "dashboard:forged-slot"}
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["code"] == "unknown_session"
+        assert self._mutations(store) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route,mode",
+        [
+            ("semantic_write", "incognito"),
+            ("semantic_write", "temporary"),
+            ("semantic_delete", "incognito"),
+            ("semantic_delete", "temporary"),
+            ("episodic_delete", "incognito"),
+            ("episodic_delete", "temporary"),
+        ],
+    )
+    async def test_blocked_for_live_restricted_slot(
+        self, tmp_path, monkeypatch, route, mode
+    ):
+        """Restricted live slots are refused on every route — episodic delete
+        previously had NO check and let a restricted session tombstone."""
+        state, store = self._memory_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("r1", memory_mode=mode)
+        async with TestClient(TestServer(self._make_memory_app(state))) as client:
+            resp = await self._call(client, route, {"X-Session-Key": "dashboard:r1"})
+            assert resp.status == 403
+        assert self._mutations(store) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route", ["semantic_write", "semantic_delete", "episodic_delete"]
+    )
+    async def test_allowed_for_browser_ui(self, tmp_path, monkeypatch, route):
+        state, store = self._memory_state(tmp_path, monkeypatch)
+        async with TestClient(TestServer(self._make_memory_app(state))) as client:
+            resp = await self._call(client, route, {"X-Session-Key": "dashboard:ui"})
+            assert resp.status == 200
+        assert self._mutations(store) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route", ["semantic_write", "semantic_delete", "episodic_delete"]
+    )
+    async def test_allowed_for_live_persistent_slot(
+        self, tmp_path, monkeypatch, route
+    ):
+        state, store = self._memory_state(tmp_path, monkeypatch)
+        state.get_or_create_slot("p1")
+        async with TestClient(TestServer(self._make_memory_app(state))) as client:
+            resp = await self._call(client, route, {"X-Session-Key": "dashboard:p1"})
+            assert resp.status == 200
+        assert self._mutations(store) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route", ["semantic_write", "semantic_delete", "episodic_delete"]
+    )
+    async def test_blocked_for_evicted_incognito_session_jsonl(
+        self, tmp_path, monkeypatch, route
+    ):
+        """Archived-session recovery fails closed for private modes: the
+        persisted memory_mode marker is the only remaining evidence once the
+        slot is evicted, and memory writes block every private mode."""
+        state, store = self._memory_state(tmp_path, monkeypatch)
+        sess_dir = tmp_path / ".kirocrew" / "sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "_type": "metadata",
+            "created_at": "2026-01-01T00:00:00",
+            "memory_mode": "incognito",
+        }
+        (sess_dir / "dashboard_gone1.jsonl").write_text(
+            _json.dumps(meta) + "\n", encoding="utf-8"
+        )
+        async with TestClient(TestServer(self._make_memory_app(state))) as client:
+            resp = await self._call(
+                client, route, {"X-Session-Key": "dashboard:gone1"}
+            )
+            assert resp.status == 403
+            data = await resp.json()
+            assert data["code"] == "restricted_session"
+        assert self._mutations(store) == 0

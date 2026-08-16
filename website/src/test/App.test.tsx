@@ -1,7 +1,9 @@
 import { afterAll, describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
-import App, { calculateTopbarSearchLayout } from '../App'
+import App from '../App'
 import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
 import SegmentedControl from '../components/SegmentedControl'
@@ -10,6 +12,39 @@ import { safeSetItem } from '../utils/safeStorage'
 
 /** A failure `POST /api/chat/slots/{slot}/agent` really can return today. */
 const REAL_FAILURE = 'invalid agent name'
+
+/** Chrome the side tracks never get: the header's own `pl-3 pr-3` (24px) plus the
+ *  two 12px track gaps. Subtracted before reasoning about a group's width —
+ *  leaving the padding out is what first put the width factor 2vw too high. */
+const TOPBAR_GAPS = 48
+
+/** `clamp(240px, 22vw, 480px)` evaluated in JS. One definition, because three
+ *  assertions below reason about it and three copies would drift apart. The
+ *  literal it mirrors is pinned by the track-contract test. */
+const searchWidth = (w: number) => Math.min(480, Math.max(240, w * 0.22))
+
+/** The top-bar layout is a stylesheet contract (see `.topbar` in index.css):
+ *  jsdom applies no CSS, so these read the rule text rather than computed style,
+ *  which would pass against an empty rule. */
+function topbarCss(): string {
+  return readFileSync(join(__dirname, '..', 'index.css'), 'utf8')
+}
+/** The three declared tracks of the header grid, whitespace-normalised. */
+function topbarTracks(): { sides: string[]; search: string } {
+  const rule = topbarCss().match(/\.topbar\{[^}]*\}/)?.[0] ?? ''
+  const cols = rule.match(/grid-template-columns:([^;}]+)/)?.[1].trim() ?? ''
+  // Split on top-level spaces only: clamp()/minmax() contain spaces of their own.
+  const parts: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const ch of cols) {
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ' ' && depth === 0) { if (cur) parts.push(cur); cur = '' } else cur += ch
+  }
+  if (cur) parts.push(cur)
+  return { sides: [parts[0], parts[2]], search: parts[1] }
+}
 
 // Mock all page components to isolate routing
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -718,63 +753,100 @@ describe('App routing', () => {
     expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
   })
 
-  it('reserves the larger topbar cluster before showing the centered search', () => {
-    expect(calculateTopbarSearchLayout(330, 180, 1200)).toEqual({ gutter: 342, width: 360, visible: true })
-    expect(calculateTopbarSearchLayout(180, 505, 1570)).toEqual({ gutter: 517, width: 483, visible: true })
-    expect(calculateTopbarSearchLayout(330, 180, 900)).toEqual({ gutter: 342, width: 240, visible: false })
+  it('renders the search trigger in the header centre track, not as a positioned overlay', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
+    // The trigger is a flow item now: it fills its grid track (`w-full`) and
+    // carries no positioning of its own. The previous implementation centred it
+    // on `50vw` with a JS-measured inline width, which is what forced it to
+    // reserve `max(left, right)` on BOTH sides and drop itself once that
+    // mirrored gutter fell under a floor.
+    expect(trigger).toHaveClass('w-full')
+    expect(trigger).not.toHaveClass('absolute')
+    expect(trigger.style.left).toBe('')
+    expect(trigger.style.width).toBe('')
+    // Header children, in order: left group · trigger · actions group. The
+    // three-track grid depends on that being exactly three in-flow children.
+    const header = trigger.parentElement!
+    const flow = [...header.children].filter(el => !el.className.includes('absolute'))
+    expect(flow[0]).toHaveClass('tb-left')
+    expect(flow[1]).toBe(trigger)
+    expect(flow[2]).toHaveClass('tb-right')
   })
 
-  it('caps the centered search at the measured gutter instead of a fixed third of the viewport', () => {
-    // Regression: `visible` is only a floor gate (does 240px still fit?), while
-    // the overlay rendered at a fixed 33.3333vw - 40px. Between those two
-    // numbers sits an overlap band where the gate says "show it" and the box is
-    // nonetheless wider than the space the actions cluster leaves, so it ran
-    // underneath the metrics capsule. Measured at 1400x820 with a 552px-reach
-    // capsule the overlay used to run 77px under it. A wide actions cluster
-    // must shrink the overlay, not be covered by it.
-    const wide = calculateTopbarSearchLayout(12, 460, 1300)
-    expect(wide.visible).toBe(true)
-    expect(wide.width).toBe(1300 - wide.gutter * 2)            // clamped to the gutter
-    expect(wide.width).toBeLessThan(Math.round(1300 / 3) - 40) // ...below the old fixed third
-    // A narrow actions cluster leaves the third of the viewport untouched.
-    expect(calculateTopbarSearchLayout(12, 180, 1300).width).toBe(Math.round(1300 / 3) - 40)
+  it('sizes the top-bar search from the window alone, with equal side tracks', () => {
+    // The layout lives in the stylesheet, so the contract is asserted there:
+    // jsdom applies no CSS, and a computed-style assertion would pass against
+    // an empty rule. Equal side tracks are what make the search exactly
+    // window-centred without measuring anything.
+    const { search, sides } = topbarTracks()
+    expect(search).toBe('clamp(240px, 22vw, 480px)')
+    expect(sides).toEqual(['minmax(0,1fr)', 'minmax(0,1fr)'])
   })
 
-  it('keeps a real gap between the centered search and the clusters that bound it', () => {
-    // The gutter is built from how far each cluster REACHES in from its side of
-    // the viewport, not its bare width. Measuring width alone ignored the
-    // header's own px-3 padding, so the whole TOPBAR_SEARCH_GAP was swallowed
-    // and the overlay's border ended up flush against the capsule (measured:
-    // 0px clearance). With reaches as inputs the clearance is the full gap.
-    const viewport = 1500
-    const actionsReach = 500                     // viewport - actions.left
-    const { width, visible } = calculateTopbarSearchLayout(12, actionsReach, viewport)
-    expect(visible).toBe(true)
-    // The overlay is centered, so its right edge sits at (viewport + width) / 2.
-    const clearance = (viewport - actionsReach) - (viewport + width) / 2
-    expect(clearance).toBeGreaterThanOrEqual(12)
+  it('leaves every desktop width room for the actions group icons-only form', () => {
+    // The invariant that replaced the per-track floor: the side tracks are pure
+    // remainder, so the search width function is the only thing standing between
+    // a narrow window and a clipped actions group. 139px is the measured
+    // icons-only width of that group (capture/topbar-search-variants.tsx).
+    const ICONS_ONLY = 139
+    for (let w = 768; w <= 3840; w += 8) {
+      const perSide = (w - searchWidth(w) - TOPBAR_GAPS) / 2
+      expect(perSide).toBeGreaterThanOrEqual(ICONS_ONLY)
+    }
   })
 
-  it('measures the topbar clusters even when the brand cluster is empty', () => {
-    // Regression: the brand cluster is legitimately 0-wide on a single-instance
-    // desktop (the brand lives in the sidebar and InstanceTabBar renders
-    // nothing without a remote instance), but `update` bailed on
-    // `brandWidth <= 0`. The measurement therefore never ran in the common
-    // case, the state stayed frozen on its optimistic initial value, and the
-    // overlay kept its full width no matter how wide the capsule grew.
-    const rect = (left: number, width: number) => ({ width, height: 40, top: 0, left, right: left + width, bottom: 40, x: left, y: 0, toJSON: () => ({}) }) as DOMRect
-    // jsdom viewport is 1024 wide. Actions cluster reaches 370px in from the
-    // right (left edge at 654), the brand cluster is empty at the px-3 edge.
-    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect')
-      .mockImplementation(function (this: Element) { return this.classList.contains('ml-auto') ? rect(654, 370) : rect(12, 0) })
-    try {
-      renderWithProviders(<App />, { route: '/chat' })
-      const trigger = screen.getByRole('button', { name: 'Search sessions, files, and commands' })
-      // gutter = 370 + 12 = 382, so the overlay is capped at 1024 - 764 = 260px,
-      // below the unclamped 301px a fixed third of the viewport would have given.
-      expect(trigger.style.width).toBe('260px')
-    } finally {
-      spy.mockRestore()
+  it('keeps the live readouts at the modal desktop widths', () => {
+    // The point of the width function, and the reason it is 22vw rather than
+    // something roomier: the widest readout tier measures 518px and its rung
+    // fires at 530px, so the side track has to clear 531 or the numbers are
+    // evicted. The layout this replaces showed full readouts at these widths, so
+    // evicting them would be a regression traded for a bigger inert trigger.
+    const READOUT_RUNG = 530
+    for (const w of [1440, 1600, 1920, 2560]) {
+      const perSide = (w - searchWidth(w) - TOPBAR_GAPS) / 2
+      expect(perSide).toBeGreaterThan(READOUT_RUNG)
+    }
+  })
+
+  it('never makes the search wider than the mirrored-gutter layout above 1376px', () => {
+    // "Equal or narrower" is the constraint on this redesign: the space reclaimed
+    // from the mirrored gutter goes to the side groups, not into a bigger
+    // trigger. That holds from 1376px up, where the old geometry's own box was
+    // still growing.
+    //
+    // The exception is the 1304-1370 band, asserted separately below: there the
+    // old layout had already been squeezed to its 240px floor (one pixel narrower
+    // and it unmounted the trigger entirely), so "narrower than old" would mean
+    // capping the new box at 240 up to 1370 -- a ~17vw factor that would hand the
+    // side groups far more room than their content can use.
+    const oldWidth = (w: number) => {
+      const gutter = Math.ceil(Math.max(187, 520)) + 12   // measured clusters
+      return Math.max(240, Math.min(Math.round(w / 3) - 40, w - gutter * 2))
+    }
+    for (let w = 1376; w <= 3840; w += 8) {
+      expect(searchWidth(w)).toBeLessThanOrEqual(oldWidth(w))
+    }
+  })
+
+  it('stays within the old floor-to-cap envelope in the band where the old box was pinned', () => {
+    // 1304 (the old layout's visibility threshold) to ~1370 (where the two cross).
+    // The old box was pinned at 240 across the whole band; the new one grows from
+    // 287 to 301, so it is wider -- bounded, and against a box the old design was
+    // about to drop rather than one it was rendering comfortably.
+    for (const w of [1304, 1336, 1368]) {
+      expect(searchWidth(w)).toBeLessThanOrEqual(301)
+    }
+  })
+
+  it('gives each side group its own size-query container and container-keyed rungs', () => {
+    // Each group re-lays-out against the width IT was handed, which a viewport
+    // media query cannot know: the actions group's content varies with the usage
+    // pill, resource posture and registered extension segments.
+    const css = topbarCss()
+    expect(css).toMatch(/\.tb-left,\s*\.tb-right\{[^}]*container-type:\s*inline-size/)
+    for (const rung of ['tb-drop-metrics', 'tb-drop-usage', 'tb-drop-feedback', 'tb-narrow-only']) {
+      expect(css).toMatch(new RegExp(`@container \\([^)]+\\)\\{\\s*\\.${rung}\\{`))
     }
   })
 

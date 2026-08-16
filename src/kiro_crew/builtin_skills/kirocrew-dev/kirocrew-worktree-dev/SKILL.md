@@ -160,6 +160,38 @@ python3 -m venv ~/.kiro/crew/venvs/mypy-ci
 **Order matters:** if you changed frontend code, rebuild the dist (Rule 3)
 before running backend tests that import static assets.
 
+### Two tiers: a diff-scoped fast inner loop, one full floor at push
+
+The full gate above is the **push gate** and never moves. But running all six
+gates on every fix→re-verify round is what produces the 45-minute timeouts — the
+cost lands during *iteration*, not at the push. So split verification into two
+tiers with different jobs:
+
+- **Iteration model (fast tier).** During the fix→re-verify loop, run
+  `scripts/local-gate.py` instead of the six gates by hand. It classifies the
+  diff into the same buckets `ci.yml`'s `changes` job uses and runs only the
+  surfaces the diff can affect, so an iteration costs what the diff costs rather
+  than what the repo costs. `--dry-run` prints the plan without running,
+  `--base REF` sets the base, `--full` forces both surfaces. Its narrowing is
+  deliberately **fail-open** — a meta path, both surfaces touched, or an
+  unreadable diff all fall back to the full gate — so a classification miss
+  costs local time, never a skipped test. Do NOT re-derive that bucket list as
+  your own prose or scope selection: `test/test_local_gate.py` pins the script's
+  rules to `ci.yml`, and a hand-maintained copy silently drifts out of that
+  ratchet.
+- **Gate model (full floor).** The full blocking floor — `pytest` + `isort` +
+  `flake8` + `mypy` + `tsc -b` + `vitest`, all green — **still runs once before
+  you push**, exactly as specified above. It is never skipped, never replaced,
+  and never satisfied by a fast-tier run. The fast tier is a strict *subset* of
+  the floor chosen for iteration speed only; it earns you quick rounds, it does
+  not earn you the push.
+
+This is what mitigates the documented full-suite timeout *during iteration*
+without loosening anything: the pre-push full floor plus the `ci.yml` ratchet
+(the profile test that fails when CI gains a gate the floor lacks) keep the
+determinism guarantee fully intact. Fast tier = how you iterate; full floor =
+the gate that lets you push.
+
 ## Rule 3 — The served frontend is a built `dist`, not a dev server
 
 - The gateway serves the frontend from `src/kiro_crew/static/dist/` (a compiled

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -430,6 +430,11 @@ interface Slot {
   // An unanswered question card the turn is parked on. Its own subtitle, and it
   // suppresses the "your turn" dot for the same reason an approval does.
   needs_input?: boolean
+  // The transcript shows the last turn ending without a reply (trailing error
+  // row or unanswered user row) — the state behind the composer's Resume
+  // button. Always false while a turn runs. Read by the goal-loop subtitle so a
+  // stalled loop stops pulsing as if it were working.
+  interrupted?: boolean
   mode?: string
   agent?: string
   model?: string  // '' / absent = provider-default ("auto")
@@ -745,6 +750,25 @@ function dateSegment(ts: number | string | undefined): string {
 /** Animated collapsible for unknown-height content (folder bodies).
  *  Uses CSS grid `1fr`/`0fr` trick so we can animate to intrinsic height
  *  without measuring. For fixed-height panels use Framer Motion instead. */
+/** The nested folder body's own left inset, in px — and the `D` term in the
+ *  sidebar's alignment algebra (see renderFolderHeader).
+ *
+ *  It exists for the collapse animation: the body animates through
+ *  `grid-template-rows` with `overflow: hidden`, and without a little padding the
+ *  children's focus rings and the connector's rounded corner clip against that
+ *  edge. The LEFT component is the load-bearing one — it shifts the whole nested
+ *  subtree right by this much relative to the folder header that sits above it,
+ *  which is why the header's own pad has to be `D + ml-3` to keep the folder glyph
+ *  on the connector line.
+ *
+ *  Named and exported rather than inlined because that offset is what has broken
+ *  the sidebar's alignment guides four times: it is invisible in the class list, so
+ *  every attempt to derive the geometry from Tailwind classes alone has been 2px
+ *  out. ChatSidebar.folderAlignment.test.tsx imports THIS constant for its
+ *  arithmetic and asserts the rendered padding against it, so a change here fails a
+ *  test instead of silently moving three guides. */
+export const FOLDER_BODY_INSET_PX = 2
+
 function FolderBody({ open, children }: { open: boolean; children: React.ReactNode }) {
   return (
     <div
@@ -757,7 +781,7 @@ function FolderBody({ open, children }: { open: boolean; children: React.ReactNo
         transition: 'grid-template-rows 0.15s ease-out',
       }}
     >
-      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? '2px' : 0 }}>{children}</div>
+      <div style={{ overflow: 'hidden', visibility: open ? 'visible' : 'hidden', padding: open ? `2px 0 2px ${FOLDER_BODY_INSET_PX}px` : 0 }}>{children}</div>
     </div>
   )
 }
@@ -1844,16 +1868,6 @@ function ChatSidebar({
     return rows
   }, [folders, filteredSlots, slotFolders, filterHiddenFolders, filterHiddenSubtree])
 
-  // Flat-view projection: every visible session (foldered + unfoldered) in one
-  // list. Removes ONLY the folder rendering hierarchy — the user's sort
-  // (incl. pin priority) and active filters/search apply exactly as in the
-  // tree, via filteredSlots.
-  const folderNameById = useMemo(() => {
-    const m: Record<string, string> = {}
-    for (const f of folders) m[f.id] = f.name
-    return m
-  }, [folders])
-
   // Folder mutations
   const createFolderMutation = useMutation({
     mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string }) =>
@@ -2375,7 +2389,10 @@ function ChatSidebar({
           )}
         </div>
         <FolderBody open={!folder.collapsed && !forceCollapsed}>
-          <div className="border-l border-border ml-2 pl-1">
+          {/* ml-4 + no pl: flush-connector treatment matching the list-view
+           *  folder body (renderFolderBlock) so nested rows sit identically
+           *  against the connector line in both views. */}
+          <div className="border-l border-border ml-4">
             {/* Empty-folder affordance — list-view parity (see renderFolderBlock). */}
             {deepChildren.length === 0 && childSlots.length === 0 && (
               <button key={`col-${columnId}-newchat-${folder.id}`} type="button"
@@ -2419,6 +2436,15 @@ function ChatSidebar({
     const isPackageAgent = agentMeta?.source === 'package'
     const isBuiltin = agentMeta?.source === 'builtin'
     const agentColor = isPackageAgent ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-muted'
+    // The meta line's second slot shows the session's TAGS, not a value derived
+    // from the project path. The auto-tagger already labels each session with its
+    // project, so those tags ARE the context the row needs; deriving a label
+    // would just print the same word again. ALL tags render, each as tinted plain
+    // text after a "·", in tag `order` so the sequence is stable.
+    const resolvedSlotTags = (s.tags ?? [])
+      .map(tid => tagById[tid])
+      .filter((t): t is ChatTag => !!t)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     const isActive = activeSlot === s.key
     const isOut = poppedOut.has(s.key)
     const recent = recentRank.get(s.key)
@@ -2466,6 +2492,15 @@ function ChatSidebar({
       : goalLoop.max_cycles > 0
         ? i18nT('pages.chatSidebar.loop', { count: goalLoop.cycle_count, total: goalLoop.max_cycles })
         : i18nT('pages.chatSidebar.loop_2', { count: goalLoop.cycle_count })
+    // The loop is armed but its session's last turn died — a trailing error row
+    // or an unanswered user row, the state behind the composer's Resume button —
+    // and nothing is executing on its behalf. The pulsing dot below would claim
+    // active work for the whole gap until the user resumes or the next
+    // idle-timer cycle fires (up to idle_secs away), so this renders as a static
+    // warn dot with an explicit "interrupted" instead. Guarded on the raw turn
+    // flag plus workflow/subagent activity: while any of those run, the loop IS
+    // working and `s.interrupted` only describes a superseded turn.
+    const goalLoopStalled = !!goalLoop && !!s.interrupted && !s.midTurn && !wfActive && subagentCount === 0
     // Whatever this row would have said if no loop were running, reused as the
     // loop line's trailing detail. This is why the loop branch can outrank the
     // working signals below without swallowing them: live workflow/subagent/tool
@@ -2481,6 +2516,48 @@ function ChatSidebar({
           ? slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)
           : (s.last_message || '')
     const ci = s.color_index != null && s.color_index >= 0 && s.color_index < paletteColors.length ? s.color_index : null
+    // The row's ONE status marker, for the gutter left of the headline: the glyph
+    // to draw and the label that names it. Kept as a single value so the two can
+    // never drift apart — a glyph is the gutter's only content, so a missing
+    // label would leave a coloured shape with no accessible name.
+    //
+    // The order below is the subtitle chain's own precedence, so glyph and
+    // secondary line can never disagree about which state the row is in. An owed
+    // decision (approval, question) outranks every "working" signal, because a
+    // decision rendered as work in progress is how an owed approval goes
+    // unnoticed.
+    //
+    // `unread` sits LAST, so it lights only when nothing else claims the slot.
+    // That is stricter than the dot it replaces, which coexisted with the
+    // workflow and sub-agent states; with one slot, showing two markers for one
+    // row is not available and the more specific state is the useful one.
+    //
+    // The label is NOT passed to the lucide icons as `title`: that lands as an
+    // svg attribute, which is not a tooltip. It goes on the gutter element.
+    const status: { glyph: React.ReactNode; label: string } | null = s.pending_approval
+      ? { glyph: <ShieldCheck size={12} style={{ color: 'var(--warn)' }} />, label: i18nT('pages.chatSidebar.needs_approval') }
+      : subagentAwaiting > 0
+        ? { glyph: <Bot size={12} style={{ color: 'var(--warn)' }} />, label: subagentApprovalLabel }
+        : s.needs_input
+          ? { glyph: <MessageCircleQuestionMark size={12} style={{ color: 'var(--info)' }} />, label: needsInputLabel }
+          : goalLoop
+            ? { glyph: <Goal size={12} className={goalLoopStalled ? 'text-warn' : 'text-accent animate-pulse'} />, label: goalLoopStalled ? `${goalLoopLabel} — ${i18nT('pages.chatSidebar.loop_interrupted')}` : goalLoopLabel }
+            : wfActive
+              ? { glyph: <Workflow size={12} className="text-accent animate-pulse" />, label: wfActive.label }
+              : subagentCount > 0
+                ? { glyph: <Bot size={12} className="text-accent animate-pulse" />, label: subagentLabel }
+                : s.running
+                  // A spinner, not a pulsing dot: "actively working" is the one
+                  // state with a definite direction, and rotation reads as
+                  // progress where a fading dot reads as a mere marker.
+                  //
+                  // The label is resolved HERE rather than hoisted above: the
+                  // status chain is evaluated for every row, and slotStatusDetail
+                  // is only meaningful for a running one.
+                  ? { glyph: <Loader size={12} className="text-accent animate-spin" />, label: slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang) }
+                  : s.unread
+                    ? { glyph: <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent)' }} />, label: i18nT('pages.chatSidebar.agent_finished_your_turn') }
+                    : null
     const rowColor = ci != null ? paletteColors[ci] : null
     const boostStyle: Record<string, string> = {}
     if (rowColor && ci != null) {
@@ -2512,7 +2589,7 @@ function ChatSidebar({
           <ContextMenuTrigger asChild>
         <div ref={scope === 'list' ? setNodeRef : undefined} {...(scope === 'list' ? listeners : {})}
           data-draggable={(renamingSlot !== s.key).toString()}
-          className={`session-row group relative flex items-start gap-2.5 px-4 py-2 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
+          className={`session-row group relative flex items-start pl-3.5 pr-3 py-1.5 rounded-md text-sm transition-all select-none ${isActive ? !connected ? 'session-active text-text-strong bg-accent-subtle cursor-not-allowed' : 'session-active text-text-strong bg-accent-subtle cursor-pointer' : !connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'} ${rowColor ? 'session-colored' : ''} ${rowColor && colorMode === 'gradient' ? 'session-gradient' : ''} ${isDragging ? 'opacity-40' : ''} ${revealFlash?.key === s.key ? `session-reveal-flash${revealFlash.fading ? ' session-reveal-flash-fade' : ''}` : ''}`}
           style={boostStyle as React.CSSProperties}
           draggable={(scope !== 'list' && scope !== 'flat' && renamingSlot !== s.key) && (connected || isActive)}
           {...offlineProps(connected, 'switch sessions')}
@@ -2580,28 +2657,67 @@ function ChatSidebar({
             dispatch(switchSlot(s.key))
             onSelectSlot?.(s.key)
           }}>
-          {s.unread && !s.running && !s.pending_approval && !subagentAwaiting && !goalLoop && !s.needs_input && (
-            // Blue dot = "your turn": the agent finished its turn (not running)
-            // and you haven't opened the session since (unread). Redefined from
-            // the old "any unseen output" trigger so it no longer lights
-            // mid-stream; a pending approval gets its own yellow subtitle
-            // treatment instead (including a sub-agent's spawn approval, which
-            // leaves the parent turn idle and would otherwise read as a plain
-            // unread reply).
-            // A goal loop suppresses it too: the loop appends a turn every cycle,
-            // so the dot would light permanently and stop meaning "your turn".
-            // The "Loop N/M" subtitle carries the state instead.
-            // An unanswered question card suppresses it on the same grounds —
-            // its own info-coloured subtitle says more than a bare dot, and two
-            // markers for one state read as two separate things to do.
-            <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full pointer-events-none" style={{ background: 'var(--accent)' }} title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
-          )}
+          {/* STATUS GUTTER — one slot, left of the content column, holding at most
+           *  ONE glyph. Every status branch's glyph lives here rather than inline
+           *  before its own subtitle, so a row has exactly one place to look for
+           *  "what is this session doing"; the coloured LABEL stays in the
+           *  secondary line, which is what keeps "Needs approval" readable as a
+           *  phrase rather than an orphaned dot.
+           *
+           *  ABSOLUTE, not a flex child, and this is load-bearing for the whole
+           *  sidebar's left edge. As an in-flow child it added its 12px width
+           *  plus a gap to where the content column starts, which is what pushed
+           *  the sessions inside a folder off the x their folder's NAME sits on.
+           *  Out of flow it costs the content column nothing: the row's
+           *  `pl-3.5` (14px) is its whole left offset, this glyph occupies 1..13
+           *  of it, and the content starts at 14. Putting it back in flow re-breaks
+           *  guides 2 and 3 — see ChatSidebar.folderAlignment.test.tsx.
+           *
+           *  Vertically CENTRED on the row, not on the headline. The trade is
+           *  explicit: a single-line row (the common case) gets a glyph that is
+           *  actually centred, and a row whose title wraps to two lines gets its
+           *  glyph on the block's midline rather than on the first line. The
+           *  earlier revision derived the headline's y from repeated type
+           *  classes, which kept the wrapped case tidy at the cost of every idle
+           *  row looking top-heavy (measured 10.25px above centre on a
+           *  three-line row). */}
+          <div
+            className="absolute left-px top-1/2 -translate-y-1/2 w-3 h-3 flex items-center justify-center pointer-events-none"
+            {...(status
+              ? { role: 'img', 'aria-label': status.label, title: status.label }
+              : { 'aria-hidden': true })}
+          >
+            {status?.glyph}
+          </div>
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
-              {pinned.has(s.key) && <span className="shrink-0" title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
               <AnimatePresence mode="wait">
-                <motion.span key={agentName || 'empty'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className="truncate">{agentName || '\u00A0'}</motion.span>
+                <motion.span key={agentName || 'empty'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 ? 'max-w-[50%]' : ''}`}>{agentName || '\u00A0'}</motion.span>
               </AnimatePresence>
+              {resolvedSlotTags.length > 0 && (
+                // Every tag, each as `· <name>` tinted with the tag's own colour
+                // and NO border — plain text sitting as context beside the agent
+                // name, not an actionable pill. The group is the only node here
+                // allowed to truncate (min-w-0), so a long tag run clips before it
+                // pushes the timestamp off the row; the agent name and trailing
+                // group stay shrink-0.
+                //
+                // It is a plain inline block (`truncate` = whitespace-nowrap +
+                // overflow-hidden + text-overflow-ellipsis), NOT a flex row:
+                // ellipsis does not render across flex children, so an inline-flex
+                // group hard-clipped mid-word ("KiroC", "kc-them") instead of
+                // showing "…". The children stay inline `<span>`s so a multi-tag
+                // run ellipsizes as one line while each tag keeps its own colour
+                // (applied inline, since it is per-tag data, not a theme token).
+                <span className="truncate min-w-0 font-normal" title={resolvedSlotTags.map(t => t.name).join(' · ')}>
+                  {resolvedSlotTags.map(t => (
+                    <span key={t.id} data-testid={`slot-tag-${t.id}`}>
+                      <span aria-hidden>{'\u00A0·\u00A0'}</span>
+                      <span style={{ color: t.color }}>{t.name}</span>
+                    </span>
+                  ))}
+                </span>
+              )}
               {isOut && <span className="text-accent" title={i18nT('pages.chatSidebar.popped_out_to_a_separate_window')}><ExternalLink size={10} /></span>}
               {slotChannelNamespace(s.key) && (() => {
                 // PROVENANCE ONLY: where this conversation started. That is
@@ -2666,17 +2782,23 @@ function ChatSidebar({
               {s.mode === 'orchestrator' && <span className="text-[11px] px-1 py-0 rounded bg-accent/15 text-accent font-medium" title={i18nT('pages.chatSidebar.autopilot_mode')}>{i18nT('pages.chatSidebar.autopilot')}</span>}
               {s.mode === 'crew' && <Badge variant="warn" className="text-[11px] px-1 py-0 rounded font-sans" title={i18nT('pages.chatSidebar.crew_mode')}>{i18nT('pages.chatSidebar.crew')}</Badge>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
-               *  margins would split the free space and strand the folder
-               *  chip mid-row. */}
-              {(scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]]) || s.last_ts || s.created ? (
+               *  margins would split the free space and strand the timestamp
+               *  mid-row.
+               *
+               *  No folder chip here. The meta line already names the session's
+               *  REPO, which is the more precise of the two facts — a folder is a
+               *  grouping the user chose, a repo is where the work actually is —
+               *  and in practice the two names coincide often enough that showing
+               *  both read as a stutter. Folder membership is carried by the tree
+               *  itself in folder view; in flat view the row's own context menu
+               *  still names it. */}
+              {s.last_ts || s.created || pinned.has(s.key) ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
-                  {scope === 'flat' && slotFolders[s.key] && folderNameById[slotFolders[s.key]] && (
-                    <span className="text-[10px] text-muted font-normal inline-flex items-center gap-0.5 max-w-[90px]" title={i18nT('pages.chatSidebar.in_folder', { name: folderNameById[slotFolders[s.key]] })}>
-                      <Folder size={9} className="shrink-0" aria-hidden />
-                      <span className="truncate">{folderNameById[slotFolders[s.key]]}</span>
-                    </span>
-                  )}
                   {(s.last_ts || s.created) && <span className="text-[11px] text-muted font-normal shrink-0">{fmtRelativeTime(s.last_ts || s.created!)}</span>}
+                  {/* Last in the row: the pin is a state marker, not a label, so
+                   *  it sits after the text that reads left-to-right rather than
+                   *  pushing the agent name off its own start edge. */}
+                  {pinned.has(s.key) && <span className="shrink-0" title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
                 </span>
               ) : null}
             </div>
@@ -2698,7 +2820,6 @@ function ChatSidebar({
               // still reports running, so an owed approval is never hidden
               // behind a "Thinking…" spinner.
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0">
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--warn)' }} title={i18nT('pages.chatSidebar.needs_approval')} />
                 <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.needs_approval')}</span>{s.last_message ? <span className="text-muted"> · {s.last_message}</span> : null}</span>
               </div>
             ) : subagentAwaiting > 0 ? (
@@ -2708,7 +2829,6 @@ function ChatSidebar({
               // work in progress. The bot glyph is static, not pulsing —
               // nothing is running — and warn-coloured to match the row above.
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={subagentApprovalLabel}>
-                <Bot size={11} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
                 <span className="truncate font-medium" style={{ color: 'var(--warn)' }}>{subagentApprovalLabel}</span>
               </div>
             ) : s.needs_input ? (
@@ -2726,7 +2846,6 @@ function ChatSidebar({
               // as the question itself, so the label stands alone and the
               // transcript carries the card.
               <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={needsInputLabel}>
-                <MessageSquare size={11} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
                 <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
               </div>
             ) : goalLoop ? (
@@ -2735,9 +2854,13 @@ function ChatSidebar({
               // read as unattended progress. Nothing is lost by ranking it high
               // — `goalLoopDetail` carries whatever the lower branch would have
               // shown, so this line reads "Loop 7/24 · 3 agents running".
-              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
-                <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" aria-hidden />
-                <span className="truncate"><span className="font-medium text-accent">{goalLoopLabel}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
+              // Stalled (see `goalLoopStalled`): the label goes warn + "interrupted"
+              // rather than accent. No inline dot — the loop's state marker lives
+              // in the status gutter (a static warn Goal icon when stalled, a
+              // pulsing accent one when live).
+              <div className="text-[12px] leading-snug mt-0.5 flex items-center gap-1.5 min-w-0" title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop.max_cycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycle_count, total: goalLoop.max_cycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop.cycle_count })}>
+                <span className="truncate"><span className={`font-medium ${goalLoopStalled ? 'text-warn' : 'text-accent'}`}>{goalLoopLabel}{goalLoopStalled ? ` — ${i18nT('pages.chatSidebar.loop_interrupted')}` : ''}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
+
               </div>
             ) : wfActive ? (
               // A dynamic-workflow run launched from this session is still
@@ -2748,7 +2871,6 @@ function ChatSidebar({
               // may also register as subagents, and "which workflow / phase"
               // is the stronger signal.
               <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={`${wfActive.count} workflow${wfActive.count > 1 ? 's' : ''} running`}>
-                <Workflow size={11} className="shrink-0 animate-pulse" aria-hidden />
                 <span className="truncate">{wfActive.label}</span>
               </div>
             ) : subagentCount > 0 ? (
@@ -2758,11 +2880,10 @@ function ChatSidebar({
               // the sidebar shows live activity instead of a stale last
               // message. Outranks the generic "Thinking…".
               <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1" title={subagentLabel}>
-                <Bot size={11} className="shrink-0 animate-pulse" aria-hidden />
                 <span className="truncate">{subagentLabel}</span>
               </div>
             ) : s.running ? (
-              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)}</div>
+              <div className="text-[12px] text-accent leading-snug truncate mt-0.5 flex items-center gap-1">{slotStatusText(slotStatusDetail[s.key], simplifiedToolNames, uiLang)}</div>
             ) : s.last_message ? (
               <div className="text-[12px] text-muted leading-snug truncate mt-0.5">{s.last_message}</div>
             ) : null}
@@ -2897,19 +3018,8 @@ function ChatSidebar({
                 </div>
               )
             })()}
-            {s.tags && s.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1">
-                {s.tags.map(tid => {
-                  const t = tagById[tid]
-                  if (!t) return null
-                  return (
-                    <span key={tid} data-testid={`slot-tag-${t.id}`} className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium border" style={{ borderColor: t.color, color: t.color, background: t.color + '1a' }}>
-                      {t.name}
-                    </span>
-                  )
-                })}
-              </div>
-            )}
+            {/* No tag chips here: every tag renders in the meta line above as
+             *  tinted `· name` text. A chip row would print each tag twice. */}
           </div>
           {/* Hide the hover action popup (⋯ / duplicate / close) while THIS slot
            *  is being renamed: it is absolute-positioned at right-1.5 and reveals
@@ -2949,7 +3059,17 @@ function ChatSidebar({
         </ContextMenu>
           )}
         </DndDraggable>
-        {showDivider && <div className="mx-3 border-b border-border" />}
+        {/* The divider starts at the CONTENT x, not the row's edge, so it
+         *  underlines the text block rather than boxing the whole row — the
+         *  status gutter reads as a margin, and a rule running under it makes the
+         *  glyph look enclosed. Matches the Figma, which carries this border on
+         *  the `content` frame rather than on the row.
+         *
+         *  14px is the row's content offset: the row's whole `pl-3.5`, since
+         *  the status gutter is absolutely positioned inside that pad and adds
+         *  nothing to the content column. The right inset is the row's own
+         *  padding. */}
+        {showDivider && <div className="ml-[14px] mr-3 border-b border-border" />}
       </motion.div>
     )
   }
@@ -2985,15 +3105,49 @@ function ChatSidebar({
         // no role override). 8px activation distance keeps the collapse toggle
         // and action buttons clickable; drag is off while renaming.
         {...(draggable ? dragHandleProps : {})}
-        className={`group relative flex items-center gap-2 pr-2 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        // 16px left pad puts the folder GLYPH on the same x as the text of the
-        // session rows at the folder's OWN level (both `px-4`), so a folder and
-        // its siblings start the same column. The 5px glyph→name gap is chosen
-        // (not cosmetic) so glyph 14px + 5px == the 19px indent step of the
-        // nested body, which lands the folder NAME on the text x of the sessions
-        // INSIDE it. Both guides hold at once; changing either breaks one.
-        // Measured: glyph == sibling session text, name == child session text.
-        style={{ paddingLeft: '16px' }}>
+        // Symmetric `px-3.5` (14px), with no inline left-pad override. This is the
+        // SAME left pad the session rows use — that equality is the mechanism, not
+        // a coincidence, and it is what makes a nested folder read as a peer of the
+        // sessions filed beside it rather than sitting a couple of px to their
+        // left. The pad is therefore NOT free: #3903 raised it to 18px to open a
+        // gutter for an absolutely-positioned unread dot, which broke guide 3. That
+        // dot is back inline on the right, where it does not compete for the pad.
+        //
+        // With H = this header's box left, D = `FOLDER_BODY_INSET_PX` 2 — the
+        // nested body's own left inset, applied by `FolderBody` so its collapse
+        // animation does not clip. It is invisible in the class list, which is
+        // exactly why four revisions derived this geometry from Tailwind classes
+        // and each landed 2px out. It is now a named, exported constant that the
+        // alignment test imports and asserts against the rendered padding, so it
+        // is no longer a free empirical term.
+        // P = this pad 14,
+        // G = glyph 14, g = `gap-[5px]`, M = body `ml-3` 12, B = 1px border,
+        // p = body `pl-1` 4, R = row `pl-3.5` 14:
+        //
+        //   GUIDE 1  glyph == connector line                P = D + M
+        //   GUIDE 2  name == agent / title / tool-call sub   P + G + g = D+M+B+p+R
+        //   GUIDE 3  nested glyph == parent's content column P = R
+        //
+        //   14 = 2 + 12      14 + 14 + 5 = 2 + 12 + 1 + 4 + 14      14 = 14
+        //
+        // All three hold at EVERY depth and in the root lane: the algebra has no
+        // per-depth term, so depth 3 nests exactly as depth 2 does. Guide 3 is why
+        // the glyph→name gap is 5 and not 8 — at 8 the name overshoots the content
+        // column by 3px.
+        //
+        // Measured on the built SPA (x in CSS px), NOT derived — a paper estimate
+        // of these same numbers was 3px out: depth 1 glyph/connector 263, name and
+        // all three text lines 282; depth 2 glyph/connector 282 (== depth 1's
+        // content column), name/content 301; root-lane session content 263 (== the
+        // root folder's glyph, so guide 3 holds outside a folder too).
+        //
+        // Four revisions have broken these guides by computing from class names
+        // without D: #1211 (changed 9/17/7 at once), #3766 (status gutter in flow,
+        // +18px to the content column), #3903 (name 1px past content, nested glyph
+        // 2px short), and a `px-2` attempt during this fix. Re-measure with
+        // `website/scripts/capture-folder-glyph.mjs` under MEASURE=1 — never
+        // re-derive on paper.
+        className={`group relative flex items-center gap-2 px-3.5 py-1.5 rounded-md text-sm text-muted hover:text-text hover:bg-bg-hover transition-all ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}>
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} size={14} open={!folder.collapsed} />
@@ -3025,7 +3179,25 @@ function ChatSidebar({
                 <span className="shrink-0 opacity-80" aria-hidden><ChannelBrandIcon channel={folder.channel} size={11} /></span>
               )}
               {folder.project_dir && <span className="text-[10px] text-accent/60 shrink-0" title={folder.project_dir}><Link2 size={9} /></span>}
-              {hasUnread && folder.collapsed && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }} />}
+              {/* Unread dot on the RIGHT, inline before the count — a state marker
+               *  reading after the text, not a gutter marker. #3903 moved it into an
+               *  absolute LEFT gutter, which forced the header's pad to 18px; that
+               *  pad is load-bearing for the alignment guides (it must equal the
+               *  session row's), so the dot goes back where it does not compete with
+               *  it. Only when collapsed: an expanded folder's child rows carry
+               *  their own markers. */}
+              {hasUnread && folder.collapsed && (
+                // Carries the same accessible name as a session row's unread
+                // marker, and the SAME i18n key: a colour-only dot is invisible to
+                // a screen reader and indistinguishable from decoration, and this
+                // one sits beside a count where that reads as styling. The session
+                // row's gutter marker has had `role="img"` + a label since #3766;
+                // this one had neither.
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--accent)' }}
+                  role="img"
+                  aria-label={i18nT('pages.chatSidebar.agent_finished_your_turn')}
+                  title={i18nT('pages.chatSidebar.agent_finished_your_turn')} />
+              )}
               <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
             </button>
             {folder.default_agent && <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[60px]" title={i18nT('pages.chatSidebar.default_agent', { name: folder.default_agent })}>{folder.default_agent}</span>}
@@ -3165,7 +3337,7 @@ function ChatSidebar({
         <button key={`folder-newchat-${folder.id}`} type="button"
           onClick={() => createChatInFolder(folder.id)}
           title={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })} aria-label={i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}
-          className="w-full flex items-center gap-2.5 px-4 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
+          className="w-full flex items-center gap-2.5 pl-3.5 pr-3 py-2 rounded-md text-[12px] text-muted hover:text-accent hover:bg-bg-hover transition-all bg-transparent border-none cursor-pointer text-left">
           <span>{i18nT('pages.chatSidebar.new_chat_in_name', { name: folder.name })}</span><MessageSquarePlus size={13} className="shrink-0 ml-auto" />
         </button>
       </div>

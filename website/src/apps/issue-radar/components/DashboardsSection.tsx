@@ -4,7 +4,9 @@ import { DASHBOARDS } from '../views/registry'
 /** Body of the "Dashboards" accordion section: a nav list (Overview, Tagging…)
  * driven entirely by the registry. Selecting one opens
  * that dashboard in the main area. */
-export default function DashboardsSection() {
+/** `onNavigate` fires after any navigation so a narrow viewport can collapse the
+ * full-width rail — otherwise the tap navigates behind a rail still covering it. */
+export default function DashboardsSection({ onNavigate }: { onNavigate?: () => void }) {
   const { mainView, dashboardTab, openDashboard } = useIssueRadar()
 
   return (
@@ -15,7 +17,7 @@ export default function DashboardsSection() {
           return (
             <button
               key={d.key}
-              onClick={() => openDashboard(d.key)}
+              onClick={() => { openDashboard(d.key); onNavigate?.() }}
               className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] text-left cursor-pointer transition-colors ${
                 isActive ? 'bg-accent-subtle text-text font-medium' : 'text-muted hover:bg-bg-hover'
               }`}

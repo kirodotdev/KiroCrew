@@ -58,8 +58,8 @@ No application code imports these files, but the path itself is referenced by
 three shipped skills under `src/kiro_crew/`, which are what tell an author or
 agent to write here in the first place:
 
-- `builtin_skills/kirocrew-dev/prepare-pr/SKILL.md` and its
-  `assets/pr-body-template.md` — read before a PR body is written.
+- `builtin_skills/kirocrew-dev/prepare-pr/SKILL.md` — read before a PR body
+  is written (directs agents to read `.github/PULL_REQUEST_TEMPLATE.md`).
 - `apps/builtins/dev_fleet/skills/pod-e2e/SKILL.md` — the operational recipe:
   copy the media in, amend into the PR's single commit, force-push, then verify
   the body update landed.

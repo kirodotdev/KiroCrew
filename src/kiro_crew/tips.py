@@ -658,9 +658,10 @@ def _sanitize_tip_links(t: dict) -> None:  # type: ignore[type-arg]
     """
     for link_field in ("doc", "doc_link"):
         val = t.get(link_field, "")
-        if isinstance(val, str) and val:
-            if not (re.match(r"^https?://", val) or re.match(r"^[\w./-]+\.md$", val)):
-                t[link_field] = ""
+        if isinstance(val, str) and val and not (
+            re.match(r"^https?://", val) or re.match(r"^[\w./-]+\.md$", val)
+        ):
+            t[link_field] = ""
 
 
 def _sanitize_persisted_tip(t: object) -> dict | None:  # type: ignore[type-arg]
@@ -799,9 +800,8 @@ def _is_eligible(
         snooze_ts = st.snoozed[tid]
         if now - snooze_ts < snooze_hours * 3600:
             return False
-    if doc and doc in st.snoozed_docs:
-        if now - st.snoozed_docs[doc] < snooze_hours * 3600:
-            return False
+    if doc and doc in st.snoozed_docs and now - st.snoozed_docs[doc] < snooze_hours * 3600:
+        return False
     return True
 
 

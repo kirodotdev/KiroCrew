@@ -7,6 +7,7 @@ import os
 import pathlib
 import shutil
 import socket
+import sys
 import warnings
 
 import pytest
@@ -439,6 +440,112 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             pass
 
 
+# ── xdist INTERNALERROR terminal report (issue #2803) ───────────────────
+# When TWO pytest-timeout worker kills land in the same ``--dist loadgroup``
+# shard, xdist's loadscope scheduler can die with ``KeyError:
+# <WorkerController gwN>`` (a replaced node present in ``assigned_work`` but
+# absent from ``registered_collections``). pytest then exits 3 WITHOUT a
+# ``short test summary info`` section, so the red names no failing test at
+# all. The upstream defect is xdist's to fix; what this repo preserves is the
+# REPORT: record every crashed worker and the test it was running (the
+# pytest-timeout victim), and replay them from ``pytest_internalerror`` --
+# a hook that fires only on the already-broken path, so healthy runs pay
+# nothing. The run still exits non-zero: nothing here suppresses the
+# INTERNALERROR traceback or touches the exit status.
+#
+# State lives at module level on the controller only: ``pytest_testnodedown``
+# and ``pytest_handlecrashitem`` are controller-side xdist hooks that never
+# fire inside a worker, and ``pytest_internalerror`` only emits when a crash
+# was recorded, so a non-xdist internal error is reported exactly as before.
+
+_crashed_workers: list[tuple[str, str]] = []  # (worker id, error text)
+_crash_victims: list[str] = []  # test nodeids running when their worker died
+
+
+def _reset_xdist_crash_state() -> None:
+    """Test seam: clear the recorded crashes (module state is process-global)."""
+    _crashed_workers.clear()
+    _crash_victims.clear()
+
+
+def pytest_testnodedown(node, error) -> None:
+    """Record a crashed worker (controller only; ``error`` is None on clean exit)."""
+    if error is None:
+        return
+    worker_id = getattr(getattr(node, "gateway", None), "id", None) or "<unknown worker>"
+    _crashed_workers.append((str(worker_id), str(error)))
+
+
+def pytest_handlecrashitem(crashitem, report, sched) -> None:
+    """Record the test a crashed worker was running -- the timeout victim."""
+    _crash_victims.append(str(crashitem))
+
+
+def _format_abandoned_run_report(
+    crashes: list[tuple[str, str]], victims: list[str]
+) -> str:
+    """Build the terminal report for a run abandoned after worker crashes.
+
+    Wording is deliberately non-causal: worker replacement is routine here
+    (``--max-worker-restart=2`` exists because workers die under memory
+    pressure), so a later INTERNALERROR is not necessarily caused by the
+    recorded crashes. The block replays what was RECORDED earlier in this
+    run and leaves attribution to the reader.
+    """
+    lines = [
+        "",
+        "=" * 72,
+        f"xdist run ABANDONED: INTERNALERROR after {len(crashes)} crashed-worker "
+        f"replacement{'s' if len(crashes) != 1 else ''}",
+        "=" * 72,
+        "pytest hit an INTERNALERROR after replacing crashed workers, so the",
+        "normal 'short test summary info' section was never written. The worker",
+        "crashes recorded earlier in this run are replayed here so this red",
+        "stays diagnosable:",
+        "",
+        "Crashed workers:",
+    ]
+    for worker_id, error in crashes:
+        # The error is commonly a remote traceback: its FIRST line is the
+        # constant "Traceback (most recent call last):", so the last
+        # non-empty line (the exception itself) is the informative one.
+        stripped = [ln for ln in error.strip().splitlines() if ln.strip()]
+        summary = stripped[-1].strip() if stripped else error
+        lines.append(f"    {worker_id}: {summary}")
+    if victims:
+        lines.append("")
+        lines.append("Tests running when their worker died (recorded earlier in this run):")
+        for victim in victims:
+            lines.append(f"    {victim}")
+    else:
+        lines.append("")
+        lines.append("No in-flight test was recorded for the crashed workers.")
+    lines.append("")
+    lines.append("The run still fails (INTERNALERROR, non-zero exit); this block only")
+    lines.append("preserves the report that the crash would otherwise erase.")
+    lines.append("=" * 72)
+    return "\n".join(lines)
+
+
+def pytest_internalerror(excrepr, excinfo) -> None:
+    """Replay recorded worker crashes when an INTERNALERROR kills the run.
+
+    Written to ``sys.stderr`` directly rather than through the terminal
+    reporter: this hook runs on a path where pytest's own reporting machinery
+    has already failed, and stderr is the one sink that cannot depend on it.
+    Returns ``None`` (never ``True``) so pytest still prints the
+    ``INTERNALERROR>`` traceback and exits 3 -- the goal is a diagnosable red,
+    not a green.
+    """
+    if not _crashed_workers:
+        return
+    print(
+        _format_abandoned_run_report(list(_crashed_workers), list(_crash_victims)),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_safety_override_between_tests():
     """Reset the SafetyOverride singleton between tests to prevent state leaking."""
@@ -628,6 +735,37 @@ def _isolate_message_entry_cache():
     finally:
         _cp._entry_cache.clear()
         _cp._entry_cache_bytes = 0
+
+
+@pytest.fixture(autouse=True)
+def _disarm_agent_slice_memory_high():
+    """Disarm the agent-slice ``MemoryHigh`` reconcile for every test.
+
+    ``cgroup_scope_argv`` reconciles ``MemoryHigh`` on the shared agent slice
+    via a real ``systemctl --user set-property`` before wrapping a spawn. On a
+    Linux host WITH cgroup delegation the probe passes for real, so any test
+    that reaches ``cgroup_scope_argv`` (spawn-audit, the real pids.max
+    enforcement test, integration paths) would mutate the developer's live
+    user manager — exactly the class of side effect the root conftest's
+    host-service guard refuses (``set-property`` is a mutating verb), turning
+    those tests into guard failures. Pre-disarm via the module's own kill
+    switch and restore all four state globals after, so tests of the
+    reconciler itself can re-arm explicitly in their own body.
+    """
+    import kiro_crew.sandbox as _sb
+
+    saved_disabled = _sb._SLICE_MEMHIGH_DISABLED
+    saved_applied = _sb._SLICE_MEMHIGH_APPLIED
+    saved_events_seen = _sb._SLICE_MEMHIGH_EVENTS_SEEN
+    saved_climb_warned = _sb._SLICE_MEMHIGH_CLIMB_WARNED
+    _sb._SLICE_MEMHIGH_DISABLED = True
+    try:
+        yield
+    finally:
+        _sb._SLICE_MEMHIGH_DISABLED = saved_disabled
+        _sb._SLICE_MEMHIGH_APPLIED = saved_applied
+        _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
+        _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
 
 
 @pytest.fixture(autouse=True)

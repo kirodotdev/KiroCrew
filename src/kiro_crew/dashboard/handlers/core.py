@@ -91,6 +91,10 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
                 path = f"{prefix}.{key}" if prefix else key
                 if isinstance(val, dict):
                     _walk(val, path)
+                elif isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, dict):
+                            _walk(item, path)
                 elif isinstance(val, str) and val and _is_sensitive_path(JSON_SCHEMA, path):
                     node[key] = _SENSITIVE_MASK
 

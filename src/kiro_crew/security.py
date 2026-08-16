@@ -3543,6 +3543,88 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
     return True  # nothing but flags → bare interpreter reads stdin
 
 
+# ── Self-protection floor short-circuit (perf, issue #3603) ──
+# The floor predicates below re-tokenize the command and descend every nested
+# shell payload (`_self_token_frames`), which is where the cost of the deny
+# scan concentrates: it scales with NESTING COMPLEXITY, and each `is_denied`
+# call runs the descent three times (mint once, kill twice). The common tool
+# call — a tool name plus a path — can never fire either predicate, so the
+# descent is pure waste there.
+#
+# The gate is a NECESSARY condition, deliberately wider than the issue's
+# proposal of a raw `_SELF_NAME_RE` search. That proposal is UNSOUND: the
+# predicates fire on inputs whose raw text never matches `kiro[-.]?crew` —
+# `python -m kiro_crew token` (the underscored import spelling), `[k]irocrew
+# token` (one-char bracket class), `kiro$()crew` (empty substitution),
+# `kiro${x:-crew}` (parameter default), `bash -c "\x6birocrew token"` (printf
+# escapes), `kiro?rew` (glob the shell expands before exec), and a `-c`
+# payload reaching the CLI through `exec`/`b64decode` with no name at all.
+# Every one of those was verified to be denied by the floor today, so a gate
+# that skipped them would be a real bypass, not an optimization.
+#
+# Sound formulation: the floor can only fire if, after the normalizations the
+# predicates themselves apply (shlex quote-stripping, `_debracket`,
+# `_resolve_param_defaults`, `_EMPTY_SUBST_RE`, `_decode_printf_escapes`,
+# `_glob_could_expand_to`), the text yields a self name/module — or an inline
+# dynamic-exec primitive stands in for it. Each normalization needs specific
+# MACHINERY characters present in the raw text, so the union below is a
+# superset of every firing path:
+#   * the literal name in any spelling (`kiro[-._]?crew` — underscore included
+#     for the module/import form, which `_SELF_NAME_RE` deliberately omits);
+#   * any machinery character that lets a normalization synthesize the name or
+#     a program spelling: glob/brace chars (`? * [ ] { }` — `_glob_could_expand_to`
+#     admits e.g. `k*w` for the program AND `*kill` for the kill verbs),
+#     `$` (substitutions, parameter defaults, ANSI-C quoting), backticks, and
+#     `~` (tilde expansion — the kill predicates expanduser their targets, so
+#     `pkill -f ~` IS a self-kill whenever $HOME lies under the product tree,
+#     with no name and no other machinery in the raw text);
+#   * printf numeric escapes (`\xHH`, `\NNN`) that can spell arbitrary
+#     characters once `_decode_printf_escapes` runs on a nested payload;
+#   * the dynamic-exec markers `_inline_payload_reaches_cli` accepts in place
+#     of a literal import — checked on the raw text AND on the quote-stripped
+#     text, because empty-quote glue hides the verb exactly as it hides the
+#     name (`python -c "ex""ec(...)"` carries no name and no other machinery,
+#     yet the floor denies it: pre-merge review finding);
+#   * the literal name after stripping quotes/backslashes (`k""iro""crew`,
+#     `ki\rocrew` — shlex removes those before the predicates compare).
+# When none of these is present, no predicate can return True, so the descent
+# is skipped. False positives (e.g. any `$VAR` in a command) merely fall back
+# to the full scan — the safe direction.
+#
+# Matched WITHOUT re.IGNORECASE on purpose: the floor's own contract is that
+# callers pass already-lowercased text (`is_denied` lowercases once), and the
+# predicates' regexes are lowercase-only too.
+_SELF_FLOOR_NAME_HINT_RE = re.compile(r"kiro[-._]?crew")
+_SELF_FLOOR_MACHINERY_RE = re.compile(r"[?*\[\]{}$`~]|\\x[0-9a-f]|\\0?[0-7]{1,3}")
+_SELF_FLOOR_QUOTE_JUNK_RE = re.compile(r"[\"'\\\\]")
+
+
+def _self_floor_can_fire(text_lower: str) -> bool:
+    """Cheap O(n) necessary condition for the self-protection floor predicates.
+
+    Returns False only when ``_is_credential_mint`` and ``_is_self_kill`` are
+    PROVABLY unable to fire on *text_lower*, so both can skip the recursive
+    payload descent. Any "maybe" answers True and runs the full scan — the
+    gate can over-trigger but never under-trigger (see the block comment above
+    for the case analysis).
+    """
+    if _SELF_FLOOR_NAME_HINT_RE.search(text_lower):
+        return True
+    if _SELF_FLOOR_MACHINERY_RE.search(text_lower):
+        return True
+    if _INLINE_DYNAMIC_EXEC_RE.search(text_lower):
+        return True
+    # Quote/backslash glue is removable by the tokenizer, so the name AND the
+    # dynamic-exec verb may only materialize once those come off:
+    # `k""iro""crew token`, `"kirocrew" token`, `python -c "ex""ec(...)"`.
+    # Both must be re-checked here -- testing only the name would let a glued
+    # `exec(` payload skip the descent while the floor still denies it.
+    stripped = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", text_lower)
+    if _SELF_FLOOR_NAME_HINT_RE.search(stripped):
+        return True
+    return bool(_INLINE_DYNAMIC_EXEC_RE.search(stripped))
+
+
 def _is_credential_mint(text_lower: str) -> bool:
     """True if *text_lower* invokes the ``kirocrew token`` credential mint.
 
@@ -3559,6 +3641,11 @@ def _is_credential_mint(text_lower: str) -> bool:
     argv whose PROGRAM is the CLI, and ``kirocrew doctor | grep token`` puts the
     word in ``grep``'s argv, not the CLI's.
     """
+    # Perf short-circuit (#3603): the tokenize-and-descend below is the deny
+    # scan's dominant cost, and it cannot produce a hit when the gate says the
+    # input carries neither a self name nor the machinery to synthesize one.
+    if not _self_floor_can_fire(text_lower):
+        return False
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
         for i, token in enumerate(tokens):
@@ -3667,6 +3754,11 @@ def _is_self_kill(text_lower: str) -> bool:
       product path is NOT a self-kill -- that is the false positive this
       replaced.
     """
+    # Perf short-circuit (#3603): both loops below re-run the payload descent.
+    # A kill can only target the product if the gate's necessary condition
+    # holds, so a miss skips both descents.
+    if not _self_floor_can_fire(text_lower):
+        return False
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
         for i, token in enumerate(tokens):

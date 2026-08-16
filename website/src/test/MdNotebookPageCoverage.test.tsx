@@ -345,22 +345,34 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
     expect(screen.queryByRole('button', { name: 'One' })).toBeNull()
   })
 
-  it('reports a failure to forget a vault', async () => {
-    api.forgetVault.mockRejectedValue(new Error('registry is read-only'))
+  it('reports a failure to forget a vault inline, without closing Settings', async () => {
+    // A failed Remove is reported right next to the confirm buttons rather
+    // than through the shared error banner, which only renders in the
+    // main-editor branch -- invisible while Settings (and its Remove
+    // confirm) is open, and reachable only by closing Settings first, which
+    // a user has no reason to do after clicking "Remove it". The confirm
+    // bar stays up on failure so the user can retry without re-opening the
+    // Remove flow.
+    api.forgetVault.mockRejectedValueOnce(new Error('registry is read-only'))
     await mount()
     await screen.findByRole('button', { name: 'One' })
     await openSettings()
 
     await userEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0])
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove it' }))
-    // The banner lives in the note column, which Settings was covering.
-    await userEvent.click(screen.getByRole('button', { name: 'Close settings' }))
+    const removeItBtn = await screen.findByRole('button', { name: 'Remove it' })
+    await userEvent.click(removeItBtn)
 
-    // Explicit timeout: the alert lands after an async save/sync round-trip,
-    // and the default 1000ms findBy window is a race that only loses under
-    // load -- CI ran this file in 8.5s where it takes milliseconds locally.
-    const alert = await screen.findByRole('alert', { timeout: 5_000 })
+    const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('registry is read-only')
+    // Still in Settings, confirm bar still up, button usable again.
+    expect(screen.getByRole('button', { name: 'Manual sync shortcut' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Remove it' })).not.toBeDisabled()
+
+    // Retrying with a working call succeeds without re-clicking "Remove".
+    api.forgetVault.mockResolvedValueOnce({ ok: true })
+    await userEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    await waitFor(() => expect(api.forgetVault).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('button', { name: 'Remove it' })).toBeNull()
   })
 
   it('persists a pending edit before forgetting the vault that holds it', async () => {
@@ -406,6 +418,50 @@ describe('MdNotebookPage — settings, guarded mutations and editor keys', () =>
 
     await waitFor(() => expect(api.setPat).toHaveBeenCalledWith('github_pat_example'))
     expect(await screen.findByRole('status')).toBeTruthy()
+  })
+
+  it('reports a failed token save inline instead of getting stuck busy forever', async () => {
+    // A rejected setPat() must not leave `busy` stuck true (the button
+    // permanently disabled) with neither the success confirmation nor any
+    // error shown -- the failure has to be reported and the button has to
+    // recover.
+    api.setPat.mockRejectedValueOnce(new Error('bad credentials'))
+    await mount()
+    await screen.findByRole('button', { name: 'One' })
+    await openSettings()
+
+    await userEvent.type(
+      screen.getByLabelText('Access token (optional)'),
+      'github_pat_bad',
+    )
+    const saveBtn = screen.getByRole('button', { name: 'Save' })
+    await userEvent.click(saveBtn)
+
+    // Failure is reported, distinctly from the success `status` case above.
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('bad credentials')
+    // The button is usable again -- not stuck disabled by a `busy` that
+    // never got reset.
+    await waitFor(() => expect(saveBtn).not.toBeDisabled())
+  })
+
+  it('reports a failed token clear inline and recovers the Clear button', async () => {
+    api.listVaults.mockResolvedValue({
+      vaults: [aVault(), SECOND_VAULT],
+      hasPat: true,
+      hasGhAuth: false,
+    })
+    api.setPat.mockRejectedValueOnce(new Error('network error'))
+    await mount()
+    await screen.findByRole('button', { name: 'One' })
+    await openSettings()
+
+    const clearBtn = await screen.findByRole('button', { name: 'Clear' })
+    await userEvent.click(clearBtn)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('network error')
+    await waitFor(() => expect(clearBtn).not.toBeDisabled())
   })
 
   it('records a vault dropping out of the Kiro Crew knowledge library', async () => {

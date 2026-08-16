@@ -467,17 +467,18 @@ def test_shipped_body_template_does_not_read_as_a_declaration() -> None:
     still see the notice -- the leftover instruction text must not read as a
     declaration.
 
-    This runs the real regexes against the real shipped asset, so the template
-    and the check cannot drift back into agreeing. The template deliberately
-    contains no column-0 opt-out declaration and no resolvable `#<digits>`.
+    This runs the real regexes against the repo's PR template (the single
+    source of truth), so the template and the check cannot drift back into
+    agreeing. The template contains no column-0 opt-out declaration and no
+    closing keyword that the host would resolve, so `closing_link_reason`
+    must return a non-None advisory reason.
     """
     module = _load_script()
     template = (
-        SCRIPT.parent.parent / "assets" / "pr-body-template.md"
+        ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
     ).read_text(encoding="utf-8")
     reason = module.closing_link_reason(template, [])
     assert reason is not None, "unfilled template reads as an issue-link declaration"
-    assert "no issue link" in reason
 
 
 def test_markdown_headings_are_not_mistaken_for_issue_references() -> None:

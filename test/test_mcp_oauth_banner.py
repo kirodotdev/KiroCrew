@@ -33,11 +33,11 @@ from kiro_crew.dashboard.chat_runner import (
     _emit_mcp_oauth_request,
     _is_safe_oauth_url,
     _mark_mcp_oauth_completed,
-    _oauth_url_contains_credential,
 )
 from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.mcp_utils import mcp_server_alias
+from kiro_crew.security import oauth_url_contains_credential
 
 # ── _is_safe_oauth_url ──
 
@@ -385,7 +385,7 @@ class TestLegitOAuthUrlCorpus:
     @pytest.mark.parametrize("provider,url", LEGIT_OAUTH_URLS, ids=[p for p, _ in LEGIT_OAUTH_URLS])
     def test_corpus_url_not_flagged_as_credential(self, provider: str, url: str):
         assert (
-            _oauth_url_contains_credential(url) is False
+            oauth_url_contains_credential(url) is False
         ), f"{provider}: legit OAuth URL wrongly flagged as containing a credential"
 
     @pytest.mark.parametrize("provider,url", LEGIT_OAUTH_URLS, ids=[p for p, _ in LEGIT_OAUTH_URLS])
@@ -412,14 +412,14 @@ class TestOAuthParamCredentialScan:
             "https://github.com/login/oauth/authorize?client_id=Iv1.x"
             "&state=AKIAIOSFODNN7EXAMPLE&response_type=code"
         )
-        assert _oauth_url_contains_credential(url) is True
+        assert oauth_url_contains_credential(url) is True
 
     def test_slack_token_in_redirect_uri_rejected(self):
         url = (
             "https://evil.com/authorize?client_id=x"
             "&redirect_uri=https://evil.com/cb?t=xoxb-123-abc"
         )
-        assert _oauth_url_contains_credential(url) is True
+        assert oauth_url_contains_credential(url) is True
 
     def test_high_entropy_pkce_state_still_allowed(self):
         # A genuine PKCE state/code_challenge (base64-ish, 40+ chars) must NOT
@@ -430,7 +430,53 @@ class TestOAuthParamCredentialScan:
             "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
             "&code_challenge_method=S256&response_type=code"
         )
-        assert _oauth_url_contains_credential(url) is False
+        assert oauth_url_contains_credential(url) is False
+
+
+# ── Banner gate consolidation: one security predicate, no local copy (#2403) ──
+
+
+class TestBannerGateIsCanonicalSecurityPredicate:
+    """The banner's credential gate must be security.oauth_url_contains_credential
+    itself — never a dashboard-local copy that can drift from the tested one.
+
+    A pure delegating wrapper is behaviourally indistinguishable from a direct
+    call, so these tests pin the *structure* instead: the local symbol must not
+    exist, the name chat_runner calls must be the canonical function object, and
+    the emit path must consult exactly that binding.
+    """
+
+    def test_no_local_copy_of_the_gate_exists(self):
+        # Fails on any reintroduction of a dashboard-local `_oauth_url_...`
+        # helper — the drift vector issue #2403 closed.
+        assert not hasattr(chat_runner, "_oauth_url_contains_credential")
+
+    def test_chat_runner_binding_is_the_canonical_function(self):
+        from kiro_crew import security
+
+        assert chat_runner.oauth_url_contains_credential is security.oauth_url_contains_credential
+
+    def test_emit_path_consults_the_single_binding(self, monkeypatch):
+        # Swap the one binding and the banner verdict must follow it. If a
+        # second copy of the predicate logic existed on the emit path, the
+        # verdict would not flip and this URL would render as a live banner.
+        seen: list[str] = []
+
+        def flagging_gate(url: str) -> bool:
+            seen.append(url)
+            return True
+
+        monkeypatch.setattr(chat_runner, "oauth_url_contains_credential", flagging_gate)
+        slot = _ChatSlot("s1")
+        url = "https://github.com/login/oauth/authorize?client_id=Iv1.x&state=ok"
+        _emit_mcp_oauth_request(MagicMock(), slot, "srv", url)
+
+        assert seen == [url]
+        assert len(slot.messages) == 1
+        meta = slot.messages[0]["meta"]
+        assert meta.get("rejected_url") is True
+        assert meta.get("failed") is True
+        assert "oauth_url" not in meta
 
 
 # ── session-init OAuth requests: always emitted, card ownership annotated ──

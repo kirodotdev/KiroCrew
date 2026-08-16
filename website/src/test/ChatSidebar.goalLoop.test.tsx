@@ -197,3 +197,54 @@ describe('chat sidebar — goal-loop progress subtitle', () => {
     expect(queryByText('idle session')).toBeNull() // filtered out: genuinely idle
   })
 })
+
+describe('chat sidebar — interrupted goal loop', () => {
+  const STALLED_TITLE = 'Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle'
+
+  it('renders a static warn dot and "interrupted" when the loop session sits behind Resume', () => {
+    // The reported bug: the turn died on a transient model error (trailing
+    // error row → summary interrupted=true) and the pill kept pulsing as if a
+    // cycle were executing — for up to idle_secs, until the next fire.
+    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, interrupted: true, last_message: 'cycle output' }]
+    const { getByText, getByTitle, container } = renderSidebar(
+      slots,
+      { goalLoops: { k: { cycle_count: 47, max_cycles: 72 } } },
+    )
+    expect(getByText(/Loop 47\/72 — interrupted/)).toBeTruthy()
+    const pill = getByTitle(STALLED_TITLE)
+    expect(pill).toBeTruthy()
+    // The pulse MEANS "work is happening" — it moved from the old inline dot to
+    // the status-gutter Goal glyph, which must be STATIC (warn) here, not pulsing.
+    const glyph = container.querySelector('.lucide-goal')
+    expect(glyph).toBeTruthy()
+    expect(glyph!.classList.contains('animate-pulse')).toBe(false)
+    expect(container.querySelector('[title="Goal loop · cycle 47 of 72"]')).toBeNull()
+  })
+
+  it('keeps the pulse mid-turn — a trailing error row is superseded once a new turn runs', () => {
+    const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, interrupted: false }]
+    const { getByText, getByTitle, container } = renderSidebar(
+      slots,
+      { activeSlot: 'k', goalLoops: { k: { cycle_count: 47, max_cycles: 72 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
+      { activeSlotProp: 'k' },
+    )
+    expect(getByText('Loop 47/72')).toBeTruthy()
+    expect(getByTitle('Goal loop · cycle 47 of 72')).toBeTruthy()
+    // Pulse lives on the gutter Goal glyph now (moved off the inline subtitle dot).
+    expect(container.querySelector('.lucide-goal.animate-pulse')).toBeTruthy()
+  })
+
+  it('keeps the pulse while a subagent wave is executing on the loop\'s behalf', () => {
+    // interrupted only describes the parent turn; children still working means
+    // the loop IS working.
+    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, interrupted: true }]
+    const { getByText, container } = renderSidebar(slots, {
+      goalLoops: { k: { cycle_count: 9, max_cycles: 24 } },
+      slotActivity: { k: { toolLog: [], subagents: { a: sa('running') } } },
+    })
+    expect(getByText(/1 agent running/)).toBeTruthy()
+    // The loop outranks the sub-agent count in the gutter, and a running child
+    // means the loop is working — so the gutter Goal glyph pulses.
+    expect(container.querySelector('.lucide-goal.animate-pulse')).toBeTruthy()
+  })
+})

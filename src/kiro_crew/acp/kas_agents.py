@@ -68,6 +68,37 @@ class KasAgentTranslationError(ValueError):
     """A spec cannot be projected onto KAS's schema at all."""
 
 
+#: System prompt fed to a prompt-less agent when projecting onto KAS. KAS
+#: requires a non-empty prompt where kiro-cli tolerates an empty one, so any
+#: agent that ships ``"prompt": ""`` (today only Crew's ``kirocrew-lite``, but
+#: the fallback is deliberately not tied to it) would otherwise crash KAS
+#: session creation. Deliberately generic and small: prompt-less agents run
+#: small system-issued text tasks (titles, summaries, tags, rephrases), so the
+#: full orchestration persona in ``prompt.md`` is both wrong and wasteful here.
+#: Only the KAS path uses this — ``resolve_prompt`` is called solely from
+#: ``build_kas_custom_agents`` — so the kiro-cli path keeps its empty-prompt
+#: behaviour (kiro-cli supplies its own default) unchanged.
+_KAS_FALLBACK_PROMPT = """\
+You are a Kiro Crew lightweight background worker. You are dispatched by the
+system — never by a human in a chat — to perform one small, self-contained text
+task per request: naming or summarizing a conversation, classifying or tagging
+content, rephrasing a line, suggesting a short label, and similar. The specific
+task is fully described in each request.
+
+- Do exactly what the request asks, and only that. Treat its stated output
+  format as binding: if it asks for a single line, a length limit, or JSON,
+  return exactly that — no preamble, no explanation, no markdown fences unless
+  the request asks for them.
+- Be concise and deterministic. Prefer the shortest correct answer; add no
+  commentary, caveats, or follow-up questions.
+- You have no tools and touch no external state. Work only from the text in the
+  request. If it is empty or unintelligible, return a minimal safe default (an
+  empty string or a generic label) rather than guessing at length.
+- This is not a conversation: no user to address, no session to remember. Each
+  request stands alone.
+"""
+
+
 def _is_unsafe_prompt_path(path: Path) -> bool:
     """True if *path* must not be read and inlined into a KAS agent prompt.
 
@@ -83,7 +114,12 @@ def _is_unsafe_prompt_path(path: Path) -> bool:
     return any(posix == root or posix.startswith(root + "/") for root in _PSEUDO_FS_ROOTS)
 
 
-def resolve_prompt(spec: dict[str, Any], *, agent_id: str, agents_dir: Path) -> str:
+def resolve_prompt(
+    spec: dict[str, Any],
+    *,
+    agent_id: str,
+    agents_dir: Path,
+) -> str:
     """Return the spec's prompt as literal text, reading a ``file://`` URI.
 
     Separated from :func:`to_client_custom_agent` so the projection itself stays
@@ -95,10 +131,31 @@ def resolve_prompt(spec: dict[str, Any], *, agent_id: str, agents_dir: Path) -> 
       and may not escape it via ``..``.
     * The resolved path must not be a credential/governance location or a
       pseudo-filesystem (see :func:`_is_unsafe_prompt_path`).
+
+    KAS requires a non-empty prompt where kiro-cli tolerates an empty one, so a
+    spec with no prompt (Crew's own utility agents such as ``kirocrew-lite``
+    ship ``"prompt": ""``) falls back to the small :data:`_KAS_FALLBACK_PROMPT`
+    constant instead of crashing the session. The fallback is an inline literal,
+    not a file read, so it carries none of the ``file://`` path's exfiltration /
+    decode risk. Only KAS reaches this — the kiro-cli path keeps its empty-prompt
+    behaviour untouched.
     """
     raw = spec.get("prompt")
-    if not isinstance(raw, str) or not raw.strip():
-        raise KasAgentTranslationError(f"agent {agent_id!r} has no prompt; KAS requires one")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        # Missing or blank — an intentionally prompt-less agent. Substitute the
+        # fallback so KAS's non-empty-prompt requirement is met.
+        logger.warning(
+            "agent %r has no prompt; falling back to the lightweight KAS prompt "
+            "(KAS requires a non-empty prompt)",
+            agent_id,
+        )
+        return _KAS_FALLBACK_PROMPT
+    if not isinstance(raw, str):
+        # A non-string prompt is a malformed spec, not a prompt-less one — fail
+        # loud rather than silently running with unrelated fallback text.
+        raise KasAgentTranslationError(
+            f"agent {agent_id!r} prompt must be a string, got {type(raw).__name__}"
+        )
     if not raw.startswith(_PROMPT_FILE_SCHEME):
         return raw
     ref = raw[len(_PROMPT_FILE_SCHEME) :]
@@ -118,7 +175,7 @@ def resolve_prompt(spec: dict[str, Any], *, agent_id: str, agents_dir: Path) -> 
         )
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise KasAgentTranslationError(
             f"agent {agent_id!r} prompt file {path} is unreadable: {exc}"
         ) from exc
@@ -228,6 +285,10 @@ def build_kas_custom_agents(agents_dir: Path, agent_id: str) -> list[dict[str, A
     the ordinary ``session/set_mode`` activation can select it. Without this the
     session stays on KAS's own default mode and the operator's prompt and tool
     configuration have no effect.
+
+    A prompt-less spec (e.g. ``kirocrew-lite``) is projected with the small
+    :data:`_KAS_FALLBACK_PROMPT` so it satisfies KAS's non-empty-prompt
+    requirement instead of crashing the session (see :func:`resolve_prompt`).
     """
     spec = load_agent_spec(agents_dir, agent_id)
     prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)

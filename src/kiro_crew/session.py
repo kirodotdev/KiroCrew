@@ -96,7 +96,11 @@ if TYPE_CHECKING:
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
-from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_DEFAULT,
+)
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import spec_model
 from kiro_crew.config import KiroCrewConfig
@@ -176,7 +180,7 @@ def _is_claude_backend(provider: Any) -> bool:
     if not isinstance(provider, AcpProvider):
         return False
     backend = getattr(provider.client, "backend", "")
-    return backend == "claude"
+    return backend == ACP_BACKEND_CLAUDE
 
 
 def _provider_label(provider: Any) -> str:
@@ -650,7 +654,12 @@ class _Session:
     resumed_armed: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
-    semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
+    # Bounded rather than plain: a release() call that lands on this object
+    # after get_or_create() has already replaced it at the session key (see
+    # SessionManager.release) must raise instead of silently pushing the
+    # counter above 1, which would let a second turn acquire concurrently
+    # with one still in flight.
+    semaphore: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
     approval_policy: str = ""  # "" (interactive) | "auto" (auto-approve all tools)
     agent: str = ""  # kiro agent name used for this session
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
@@ -746,6 +755,24 @@ class _ProviderBgSession:
         # down here. Just release the turn semaphore deterministically so the
         # next _bg caller isn't blocked on generator finalization.
         self._release()
+
+
+def unlink_queued_temp_paths(kwargs: dict) -> None:
+    """Unlink the temp files a queue entry tracks in ``image_temp_paths``.
+
+    Queued Slack messages defer temp-image cleanup to whichever code path
+    consumes the entry, so the queued turn's text can still resolve its image
+    paths at dispatch time. Every path that consumes an entry — dispatch, or
+    any discard (cancel, queue clear, cancelled-skip on dequeue) — must unlink
+    here, or the files sit on disk until external cleanup. Already-missing
+    files are ignored: a discard can benignly follow a dispatch that already
+    cleaned up.
+    """
+    for p in kwargs.get("image_temp_paths") or []:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 class SessionManager:
@@ -4103,7 +4130,19 @@ class SessionManager:
                         asyncio.ensure_future(self._safe_cleanup(session.provider, session_id))
                 except Exception:
                     logger.debug("Failed to get session_id for cleanup", exc_info=True)
-            session.semaphore.release()
+            try:
+                session.semaphore.release()
+            except ValueError:
+                # This key's session was popped and replaced (e.g. by reset())
+                # between our caller's acquire and this release — releasing
+                # the NEW occupant's semaphore would let a second turn run
+                # concurrently with one already in flight on it. Drop it.
+                logger.warning(
+                    "release(%s): session was replaced under us; dropping "
+                    "stray semaphore release instead of over-releasing the "
+                    "new occupant's",
+                    key,
+                )
 
     async def _safe_cleanup(self, provider: LLMProvider, session_id: str) -> None:
         """Best-effort session file cleanup."""
@@ -4172,6 +4211,9 @@ class SessionManager:
             if msg_ts not in session.cancelled:
                 return msg_ts, text, kwargs
             session.cancelled.discard(msg_ts)
+            # A skipped entry never reaches _dispatch_queued's cleanup, so its
+            # temp files must be unlinked here or they leak.
+            unlink_queued_temp_paths(kwargs)
         return None
 
     def cancel_queued(self, key: str, msg_ts: str) -> bool:
@@ -4184,8 +4226,11 @@ class SessionManager:
         session = self._sessions.get(key)
         if not session:
             return False
-        for i, (ts, _, _) in enumerate(session.queue):
+        for i, (ts, _, kwargs) in enumerate(session.queue):
             if ts == msg_ts:
+                # The entry will never reach _dispatch_queued's cleanup, so its
+                # temp files must be unlinked here or they leak.
+                unlink_queued_temp_paths(kwargs)
                 del session.queue[i]
                 return True
         # Not in queue — only mark cancelled if something is actually in-flight
@@ -4205,10 +4250,16 @@ class SessionManager:
         return False
 
     def clear_queue(self, key: str) -> None:
-        """Clear all queued messages and cancelled set for a session."""
+        """Clear all queued messages and cancelled set for a session.
+
+        Unlinks each discarded entry's temp files: cleared entries never reach
+        ``_dispatch_queued``'s cleanup, so skipping this leaks them on disk.
+        """
         key = self._fold_key(key)
         session = self._sessions.get(key)
         if session:
+            for _, _, kwargs in session.queue:
+                unlink_queued_temp_paths(kwargs)
             session.queue.clear()
             session.cancelled.clear()
 

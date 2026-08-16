@@ -1053,6 +1053,11 @@ activation), `sandbox.min_level` (ordinal
 floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`,
+`capabilities.browse` (the native `browser` MCP tool's dispatch chokepoint —
+default on; a deny makes the tool refuse outright, and it does NOT fall back to
+`playwright-cli`. The `playwright-cli` fallback path itself remains governed by
+the `commands` scope, so denying browsing wholesale means denying both this
+capability AND the `playwright-cli` command),
 `capabilities.publish` (artifact publish chokepoint — see below),
 `capabilities.theme_persona` / `capabilities.theme_install`, and
 `capabilities.telemetry` (the anonymous beacon: send gate + both write

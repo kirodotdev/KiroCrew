@@ -56,6 +56,7 @@ from kiro_crew.security import (
     should_record_observe_history,
 )
 from kiro_crew.sel import sel
+from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
@@ -1221,17 +1222,23 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             if isinstance(all_vs, list):
                 total_lessons = len(all_vs)
                 # get_lessons() returns ORDER BY updated_at DESC (most recent first).
+                # Deferred import: ``vector_memory`` pulls snowballstemmer plus
+                # the optional numpy/faiss imports, and this renderer is the
+                # module's only use of it, on an owner-command path.
+                from kiro_crew.vector_memory import _lesson_display_text
+
                 for entry in all_vs[:5]:
                     try:
                         parsed = json.loads(entry["value_json"])
-                        rule = (
-                            parsed.get("rule", str(parsed))
-                            if isinstance(parsed, dict)
-                            else str(parsed)
-                        )
-                        lesson_lines.append(
-                            f"• {redact_credentials(redact_exfiltration_urls(rule)[0])[0][:100]}"
-                        )
+                        # Rendered text for either storage shape, so a
+                        # mapping-shaped row keeps its NOT-clause instead of
+                        # showing rule-only (or a dict repr).  Credential
+                        # redaction runs on the FULL display text (rule +
+                        # negative combined) before truncation, so embedded
+                        # secrets in either field are replaced.
+                        rule = _lesson_display_text(parsed) or str(parsed)
+                        safe = redact_credentials(redact_exfiltration_urls(rule)[0])[0]
+                        lesson_lines.append(f"• {safe[:100]}")
                     except Exception:
                         logger.debug("Skipping malformed lesson entry", exc_info=True)
                 vs_ok = True
@@ -1543,6 +1550,11 @@ async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> Non
             _filtered = [item for item in _pq if item[0] != deleted_ts]
             if len(_filtered) < len(_pq):
                 was_queued = True
+                # Dropped entries never reach _dispatch_queued's cleanup, so
+                # their temp files must be unlinked here or they leak.
+                for item in _pq:
+                    if item[0] == deleted_ts:
+                        unlink_queued_temp_paths(item[2])
                 if _filtered:
                     orch._pending_queue[_del_session_key] = _filtered
                 else:
@@ -1656,11 +1668,7 @@ async def _dispatch_queued(
         # turn's text could still resolve its image paths (see _route_message).
         # Unlink them now that the turn has consumed them — in finally so a
         # raising turn can't leak the temp files.
-        for _p in kwargs.get("image_temp_paths") or []:
-            try:
-                os.unlink(_p)
-            except OSError:
-                pass
+        unlink_queued_temp_paths(kwargs)
 
 
 # Maximum characters to recover from block extraction (DoS guard).
@@ -2309,7 +2317,10 @@ async def _route_message(
         active_task = orch._session_tasks.pop(session_key, None)
         if has_session or active_task:
             orch.sessions.clear_queue(session_key)
-            orch._pending_queue.pop(session_key, None)
+            # Dropped pending (pre-session) entries never reach
+            # _dispatch_queued's cleanup, so unlink their temp files here.
+            for _item in orch._pending_queue.pop(session_key, None) or []:
+                unlink_queued_temp_paths(_item[2])
 
             # Post ephemeral "Stopping…" block with Kill Now button
             if orch.slack:

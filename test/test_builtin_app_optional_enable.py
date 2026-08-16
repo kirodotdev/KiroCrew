@@ -160,12 +160,14 @@ class TestProperty1FirstTimeRegistration:
 
     @given(app_def=valid_builtin_def_st)
     @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_first_registration_uses_default_enabled(self, app_def, tmp_path, monkeypatch):
+    def test_first_registration_uses_default_enabled(self, app_def, tmp_path, monkeypatch, request):
         """For any builtin app registered for the first time, enabled SHALL equal
         defaultEnabled if specified, or True if not specified."""
+        import shutil
         import tempfile
 
         home = tempfile.mkdtemp()
+        request.addfinalizer(lambda h=home: shutil.rmtree(h, ignore_errors=True))
         monkeypatch.setenv("KIROCREW_HOME", home)
 
         import kiro_crew.apps.manager as mgr
@@ -227,12 +229,14 @@ class TestProperty2ReRegistrationPreservesState:
         user_enabled=st.booleans(),
     )
     @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_reregistration_preserves_enabled(self, app_def, user_enabled, tmp_path, monkeypatch):
+    def test_reregistration_preserves_enabled(self, app_def, user_enabled, tmp_path, monkeypatch, request):
         """For any builtin app with existing installed.json, re-registration
         SHALL NOT change the enabled field."""
+        import shutil
         import tempfile
 
         home = tempfile.mkdtemp()
+        request.addfinalizer(lambda h=home: shutil.rmtree(h, ignore_errors=True))
         monkeypatch.setenv("KIROCREW_HOME", home)
 
         import kiro_crew.apps.manager as mgr
@@ -279,11 +283,13 @@ class TestProperty3LifecycleLocked:
 
     @given(app_def=valid_builtin_def_st)
     @settings(max_examples=30, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_builtin_apps_always_locked(self, app_def, tmp_path, monkeypatch):
+    def test_builtin_apps_always_locked(self, app_def, tmp_path, monkeypatch, request):
         """For any builtin app after registration, lifecycle SHALL equal 'locked'."""
+        import shutil
         import tempfile
 
         home = tempfile.mkdtemp()
+        request.addfinalizer(lambda h=home: shutil.rmtree(h, ignore_errors=True))
         monkeypatch.setenv("KIROCREW_HOME", home)
 
         import kiro_crew.apps.manager as mgr
@@ -644,11 +650,13 @@ class TestProperty6EnableDisableRoundTrip:
 
     @given(initial_enabled=st.booleans())
     @settings(max_examples=20, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    def test_toggle_roundtrip(self, initial_enabled, tmp_path, monkeypatch):
+    def test_toggle_roundtrip(self, initial_enabled, tmp_path, monkeypatch, request):
         """For any initial state, toggling preserves the new state."""
+        import shutil
         import tempfile
 
         home = tempfile.mkdtemp()
+        request.addfinalizer(lambda h=home: shutil.rmtree(h, ignore_errors=True))
         monkeypatch.setenv("KIROCREW_HOME", home)
         _ship_builtin(monkeypatch, tmp_path, "toggle-app")
 

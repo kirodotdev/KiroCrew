@@ -13,6 +13,13 @@ from typing import Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.browser.command_bus import (
+    DEFAULT_COMMAND_TIMEOUT_MS,
+    DEFAULT_DRAIN_WAIT_MS,
+    NoPanelError,
+    QueueFullError,
+    get_command_bus,
+)
 from kiro_crew.browser_cli import install as browser_cli_install
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.browser_cli import view as browser_cli_view
@@ -1922,6 +1929,176 @@ async def api_browser_token_put(request: web.Request) -> web.Response:
     else:
         os.environ.pop(browser_cli_token.TOKEN_ENV, None)
     return web.json_response({"ok": True, "token": browser_cli_token.has_token()})
+
+
+async def api_browser_command(request: web.Request) -> web.Response:
+    """POST /api/browser/command -- run one op against the native browser panel.
+
+    Called by the ``browser`` MCP tool. Body:
+    ``{"op": str, "session_key": str, "args"?: object, "timeout_ms"?: int}``.
+    ``session_key`` is the BARE slot key the Electron panel registers under (the
+    tool resolves and namespace-strips it; the ``dashboard:``-namespaced form
+    travels in the ``X-Session-Key`` header for the peer check). Enqueues the op
+    on the command bus and awaits the native panel's result.
+
+    Responses:
+    - 200 ``{"id", "ok": true, "result": <any>}`` -- op ran and succeeded;
+    - 200 ``{"id", "ok": false, "error": str}`` -- op ran but failed;
+    - 503 ``{"code": "no_native_panel"}`` -- no Electron poller for this session,
+      returned FAST so the tool falls back to playwright-cli;
+    - 429 ``{"code": "queue_full"}`` / 504 ``{"code": "timeout"}``.
+
+    Proven ``X-Internal-Secret`` only (``request["internal_auth"] is True``),
+    mirroring ``api_computer_use_invoke``: the middleware sets that flag only on
+    the validated-secret path, so a dashboard COOKIE caller -- even a
+    browser-credentialed page on a ``local_only=False`` deployment where strict
+    paths reclassify as mixed -- is rejected here. We do NOT additionally require
+    a loopback ``request.remote``: the tool reaches the gateway over the AF_UNIX
+    internal-API socket (0700 data home + kernel peer check), where
+    ``request.remote`` is empty, so a loopback re-assert would 403 every op.
+    """
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=str(request.get("user") or request.remote or ""),
+            operation="browser_command",
+            outcome="denied",
+            source="browser",
+            error="internal-secret authentication required (cookie callers forbidden)",
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    op = body.get("op")
+    args = body.get("args")
+    timeout_ms = body.get("timeout_ms")
+    session_key = body.get("session_key")
+    if not isinstance(op, str) or not op:
+        return web.json_response({"error": "op required", "code": "op_required"}, status=400)
+    if args is not None and not isinstance(args, dict):
+        return web.json_response(
+            {"error": "args must be an object", "code": "args_must_be_object"}, status=400
+        )
+    if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or timeout_ms <= 0:
+        timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS
+    if not isinstance(session_key, str) or not session_key:
+        # No addressable panel -> answer like the no-panel case (503) so the tool
+        # falls back to playwright-cli rather than surfacing a hard error.
+        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+    bus = get_command_bus()
+    logger.debug("browser-cmdbus: submit op=%s session=%s", op, session_key)
+    try:
+        outcome = await bus.submit(session_key, op, args or {}, timeout_ms=timeout_ms)
+    except NoPanelError:
+        logger.debug(
+            "browser-cmdbus: no native panel registered for session=%s -> 503 (client falls back to playwright-cli)",
+            session_key,
+        )
+        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+    except QueueFullError:
+        return web.json_response({"error": "queue-full", "code": "queue_full"}, status=429)
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "timeout", "code": "timeout"}, status=504)
+    response: dict[str, Any] = {"id": outcome.get("id"), "ok": bool(outcome.get("ok"))}
+    if outcome.get("ok"):
+        response["result"] = outcome.get("result")
+    else:
+        response["error"] = outcome.get("error") or "error"
+    logger.debug(
+        "browser-cmdbus: op=%s completed ok=%s session=%s", op, bool(outcome.get("ok")), session_key
+    )
+    return web.json_response(response)
+
+
+async def api_browser_command_drain(request: web.Request) -> web.Response:
+    """POST /api/browser/command-drain -- long-poll for a queued browser command.
+
+    Called by the Electron main process. Body:
+    ``{"session_keys": [str, ...], "wait_ms"?: int}``.
+
+    SIDE EFFECT: registers ``session_keys`` as having a live native panel for a
+    fixed liveness window (independent of ``wait_ms``) AND marks a native host
+    present for the same window; the registration is what ``/api/browser/command``
+    checks to decide whether to 503, and host-presence is what lets it briefly
+    wait for a cold-starting panel instead. ``wait_ms == 0`` with empty
+    ``session_keys`` is the Electron idle heartbeat: it refreshes host-presence
+    and returns 204 at once.
+
+    Responses: 200 ``{"id", "session_key", "op", "args"}`` or 204 (nothing yet).
+    """
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=str(request.get("user") or request.remote or ""),
+            operation="browser_command_drain",
+            outcome="denied",
+            source="browser",
+            error="internal-secret authentication required (cookie callers forbidden)",
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    session_keys = body.get("session_keys")
+    if not isinstance(session_keys, list) or not all(isinstance(k, str) for k in session_keys):
+        return web.json_response(
+            {"error": "session_keys must be a list of strings", "code": "session_keys_invalid"},
+            status=400,
+        )
+    wait_ms = body.get("wait_ms")
+    # ``wait_ms == 0`` is a valid heartbeat: refresh host-presence and return 204
+    # at once. Only a missing, negative, or non-int value takes the long wait.
+    if not isinstance(wait_ms, int) or isinstance(wait_ms, bool) or wait_ms < 0:
+        wait_ms = DEFAULT_DRAIN_WAIT_MS
+    bus = get_command_bus()
+    command = await bus.drain(session_keys, wait_ms=wait_ms)
+    if command is None:
+        return web.Response(status=204)
+    return web.json_response(command)
+
+
+async def api_browser_command_result(request: web.Request) -> web.Response:
+    """POST /api/browser/command-result -- post a native browser command's result.
+
+    Called by the Electron main process. Body:
+    ``{"id": str, "ok": bool, "result"?: <any>, "error"?: str}``.
+
+    Responses: 200 ``{"ok": true}``, or 404 ``{"code": "unknown_command"}`` when
+    the id already timed out or never existed.
+    """
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=str(request.get("user") or request.remote or ""),
+            operation="browser_command_result",
+            outcome="denied",
+            source="browser",
+            error="internal-secret authentication required (cookie callers forbidden)",
+        )
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    command_id = body.get("id")
+    if not isinstance(command_id, str) or not command_id:
+        return web.json_response({"error": "id required", "code": "id_required"}, status=400)
+    ok = bool(body.get("ok"))
+    result = body.get("result")
+    error = body.get("error")
+    if error is not None and not isinstance(error, str):
+        error = str(error)
+    bus = get_command_bus()
+    matched = await bus.complete(command_id, ok, result=result, error=error)
+    if not matched:
+        return web.json_response({"error": "unknown-command", "code": "unknown_command"}, status=404)
+    return web.json_response({"ok": True})
 
 
 async def api_browser_install_get(request: web.Request) -> web.Response:

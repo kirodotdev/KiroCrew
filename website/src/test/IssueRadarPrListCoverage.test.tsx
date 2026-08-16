@@ -78,6 +78,9 @@ const PrList = (await import('../apps/issue-radar/components/PrList')).default
 
 const spies = {
   setSelectedPull: vi.fn(),
+  // Selecting a row also drills into the detail on a narrow viewport, so the
+  // fake context has to carry the pane state the real one hosts.
+  listDetail: { isMobile: false, showList: true, showDetail: true, openDetail: vi.fn(), closeDetail: vi.fn() },
   refreshPulls: vi.fn(),
   setPrQuery: vi.fn(),
   togglePullChecked: vi.fn(),

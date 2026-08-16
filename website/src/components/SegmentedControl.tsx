@@ -34,11 +34,20 @@ interface SegmentedControlProps<T extends string = string> {
    * beneath the rows that follow it.
    */
   collapse?: boolean
+  /**
+   * Pin the control to its icon-only form — every segment keeps its icon, only
+   * the selected one keeps its label. For a row that must fit a phone while its
+   * parent hugs its content, where the measured collapse above cannot help
+   * (that measurement reads this control's own width and always answers
+   * "plenty of room"). Wins over `collapse`, since it is a decision the caller
+   * has already made.
+   */
+  compact?: boolean
 }
 
 type Mode = 'full' | 'compact' | 'dropdown'
 
-export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment', collapse = true }: SegmentedControlProps<T>) {
+export default function SegmentedControl<T extends string = string>({ segments, value, onChange, layoutId = 'segment', collapse = true, compact = false }: SegmentedControlProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null)
   // The label below animates its WIDTH while clipping overflow, so until it
   // settles the text is genuinely cut off. Anything measuring layout in that
@@ -47,7 +56,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
   // are not truncated once the spring lands. framer-motion does not consult the
   // preference on its own, which is why the honouring is explicit here.
   const reduceMotion = useReducedMotion()
-  const [mode, setMode] = useState<Mode>('full')
+  const [mode, setMode] = useState<Mode>(compact ? 'compact' : 'full')
   const [dropdownOpen, setDropdownOpen] = useState(false)
 
   useEffect(() => {
@@ -60,6 +69,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
   }, [dropdownOpen])
 
   const measure = useCallback(() => {
+    if (compact) { setMode('compact'); return }
     if (!collapse) { setMode('full'); return }
     const el = containerRef.current?.parentElement
     if (!el) return
@@ -70,15 +80,15 @@ export default function SegmentedControl<T extends string = string>({ segments, 
     if (w >= fullWidth) setMode('full')
     else if (w >= compactWidth) setMode('compact')
     else setMode('dropdown')
-  }, [segments.length, collapse])
+  }, [segments.length, collapse, compact])
 
   useEffect(() => {
     measure()
-    if (!collapse) return
+    if (!collapse || compact) return
     const ro = new ResizeObserver(measure)
     if (containerRef.current?.parentElement) ro.observe(containerRef.current.parentElement)
     return () => ro.disconnect()
-  }, [measure, collapse])
+  }, [measure, collapse, compact])
 
   const active = segments.find(s => s.key === value)
 
@@ -135,10 +145,16 @@ export default function SegmentedControl<T extends string = string>({ segments, 
         {segments.map(s => {
           const isActive = s.key === value
           const isDisabled = s.disabled === true
+          // Compact hides an unselected segment's label, leaving an icon-only
+          // button. Name it explicitly rather than leaning on `title` as the
+          // accessible-name fallback: the tooltip never appears on touch, which
+          // is the form factor compact exists for.
+          const labelShown = mode === 'full' || isActive
           return (
             <motion.button
               key={s.key}
               layout
+              aria-label={labelShown ? undefined : s.label}
               aria-disabled={isDisabled || undefined}
               onClick={() => {
                 if (isDisabled) return
@@ -166,7 +182,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
               )}
               {s.icon && <span className="relative z-[1]">{s.icon}</span>}
               <AnimatePresence>
-                {(mode === 'full' || isActive) && (
+                {labelShown && (
                   <motion.span
                     key={`label-${s.key}`}
                     initial={reduceMotion ? false : { width: 0 }}

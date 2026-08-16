@@ -1159,6 +1159,35 @@ class TestRenamedConfigKey:
     def test_absent_defaults_to_off(self) -> None:
         assert self._load({}) is False
 
+    @pytest.mark.parametrize("value", ["false", "0", "no", "off", "disabled", ""])
+    def test_falsy_looking_string_is_never_an_affirmative_grant(self, value: str) -> None:
+        """A bare ``bool(...)`` treats any non-empty string as True, so a
+        stringly-typed value from a templated/generated config -- someone's
+        hand-edit, a Docker-style generator that quotes every value -- used to
+        silently turn "explicitly disabled" into the standing, unattended
+        tool-auto-approve grant this key controls. A non-bool value must never
+        be read as an affirmative grant, regardless of what it looks like."""
+        assert self._load({"dangerously_skip_permissions": value}) is False
+
+    @pytest.mark.parametrize("value", ["true", "1", 1, 1.0, None, [], {}])
+    def test_non_bool_value_of_any_shape_falls_through(self, value: object) -> None:
+        """Not just falsy-looking strings -- ANY non-bool value (including one
+        that looks like an affirmative grant, e.g. "true"/1) must be rejected,
+        not coerced. Falls through to check the next spelling."""
+        assert self._load({"dangerously_skip_permissions": value}) is False
+        assert self._load({"dangerously_skip_permissions": value, "yolo": True}) is True
+
+    def test_bad_primary_key_does_not_shadow_a_valid_legacy_spelling(self) -> None:
+        """A malformed dangerously_skip_permissions must not block a
+        well-formed yolo/dangerouslySkipPermissions from being honoured --
+        the original bug's fallback path (renamed key) must still work even
+        when the new key is present but garbage."""
+        assert self._load({"dangerously_skip_permissions": "true", "yolo": True}) is True
+        assert (
+            self._load({"dangerously_skip_permissions": "1", "dangerouslySkipPermissions": True})
+            is True
+        )
+
 
 # ─── Never-expiring grants must not be described as expiring ─────────────────
 

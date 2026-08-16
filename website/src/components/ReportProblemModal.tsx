@@ -10,6 +10,7 @@ import {
   Lock,
 } from 'lucide-react'
 import { Btn, Toggle } from './ui'
+import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import Modal from './Modal'
 import { api, ApiError } from '../api/client'
 
@@ -33,14 +34,24 @@ interface ReportProblemModalProps {
  *
  * Calls the shared diagnostics collector (the same engine behind
  * `kirocrew doctor --bundle`): collects gateway + kiro-cli logs and crash
- * reports, scrubs secrets, zips them, and offers three deliveries — reveal in
- * Finder, download, or open a pre-filled GitHub issue.
+ * reports, scrubs secrets, zips them, and offers three deliveries — reveal the
+ * bundle in the gateway host's file manager, download, or open a pre-filled
+ * GitHub issue.
  */
 export default function ReportProblemModal({ open, onClose }: ReportProblemModalProps) {
   const [note, setNote] = useState('')
   const [includeLogs, setIncludeLogs] = useState(true)
   const [result, setResult] = useState<CollectResult | null>(null)
   const [error, setError] = useState('')
+  const gatewayPlatform = useGatewayPlatform()
+  // The bundle is written on the GATEWAY and `/api/reveal` shells out there, so
+  // that host names the application — generic for Linux and for a platform we
+  // could not read.
+  const revealLabel = gatewayPlatform === 'darwin'
+    ? i18nT('components.reportProblemModal.open_in_finder')
+    : gatewayPlatform === 'windows'
+      ? i18nT('components.reportProblemModal.open_in_file_explorer')
+      : i18nT('components.reportProblemModal.show_in_file_manager')
 
   const mut = useMutation({
     mutationFn: () => api.collectDiagnostics({ note, include_logs: includeLogs }),
@@ -156,7 +167,7 @@ export default function ReportProblemModal({ open, onClose }: ReportProblemModal
           <div className="flex flex-wrap gap-2">
             <Btn onClick={() => api.revealPath(result.zip_path)}>
               <FolderOpen size={13} className="lucide-inline" />{' '}
-              {i18nT('components.reportProblemModal.show_in_finder')}
+              {revealLabel}
             </Btn>
             <a href={result.download_url} download>
               <Btn>

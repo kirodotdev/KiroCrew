@@ -143,9 +143,22 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
 
   return (
     <Card>
-      <div style={{ display: 'grid', gridTemplateColumns: '196px minmax(0, 1fr)', gap: '1rem' }}>
+      {/* The rail is a fixed 196px only once there is room for it. As an inline
+          `gridTemplateColumns` it applied at EVERY width and no responsive class
+          could override it — the same defect as the `columns` style below, which
+          is why both are classes now. Measured at 390px it left the right pane
+          147px, which collapsed the storage row's text column to 0px and broke
+          its title over 4 lines; at 320px the row overflowed by 35px.
+          Below `sm` the rail becomes a 2x2 grid rather than a stack: stacking
+          four sparkline tiles is 362px of rail before the graph, where 2x2 is
+          178px and still gives each tile ~175px, enough for the longest
+          localized label. */}
+      <div className="grid gap-4 sm:grid-cols-[196px_minmax(0,1fr)]">
         {/* Left rail — resource selector tiles */}
-        <nav className="flex flex-col gap-1.5" aria-label={i18nT('pages.performanceTab.resource_nav')}>
+        <nav
+          className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-col"
+          aria-label={i18nT('pages.performanceTab.resource_nav')}
+        >
           {resources.map(r => (
             <button
               key={r}
@@ -186,7 +199,10 @@ export default function PerformanceTab({ planeStateRef }: { planeStateRef: Mutab
           </div>
 
           {/* Stats grid */}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 lg:grid-cols-3">
+          {/* Stats grid. Starts at one column: `grid-cols-2` with no narrow
+              override held two columns at 390px, leaving each value about 60px
+              and wrapping labels beside their own numbers. */}
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
             <ResourceStats d={d} resource={selected} />
           </div>
 

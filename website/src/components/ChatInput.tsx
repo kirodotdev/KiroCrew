@@ -970,8 +970,8 @@ function ChatInput({
     setPlusOpen(false)
   }
   // Split send button while the composer is BUSY: 'steer' (default) vs 'queue'.
-  // The mode is a shared, persisted preference — see BusySendButton.
-  const [busySendMode, setBusySendMode] = useBusySendMode()
+  // The mode is a persisted PER-SLOT preference — see BusySendButton.
+  const [busySendMode, setBusySendMode] = useBusySendMode(slotId)
   // Steer is the active Enter/send action only while the composer is busy and
   // not stopping, on a steer-capable slot, and the user hasn't switched the
   // split button to Queue. Everywhere else the composer falls back to onSend
@@ -1008,7 +1008,12 @@ function ChatInput({
   // gates the control on the interruption itself — but this component is still
   // callable with `continuable` alone, and in that case the hint survives and
   // the labeled Resume button carries the affordance on its own.
-  const continuePlaceholder = continuable && onContinue && continueIsRecovery
+  // The one expression both surfaces key off: the composer offers Resume
+  // exactly when the loop chip must stop pulsing. Hoisted so the two cannot
+  // drift — recomputing it at each site is how the chip silently regresses to
+  // claiming active work over a dead session.
+  const resumeOffered = !!(continuable && onContinue && continueIsRecovery)
+  const continuePlaceholder = resumeOffered
     ? i18nT('components.chatInput.turn_interrupted_press_continue')
     : ''
   const continueLabel = i18nT(continueIsRecovery
@@ -2538,6 +2543,10 @@ function ChatInput({
                   open={autoNudgeOpen || false}
                   onOpenChange={v => onAutoNudgeClick(v)}
                   onChange={onAutoNudgeChange || (() => {})}
+                  // Same condition as the Resume placeholder (`resumeOffered`):
+                  // whenever the composer says "press Resume", the loop chip
+                  // must not pulse as if a cycle were executing.
+                  interrupted={resumeOffered}
                 />
               )}
               {!isMobile && approvalMode && (

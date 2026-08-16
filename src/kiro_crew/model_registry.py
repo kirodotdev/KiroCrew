@@ -217,10 +217,9 @@ def refresh_kiro_windows(rows: list[dict[str, Any]]) -> bool:
         if not isinstance(win, int) or isinstance(win, bool) or win <= 0:
             continue
         for key in (row.get("model_id"), row.get("model_name")):
-            if isinstance(key, str) and key:
-                if _KIRO_WINDOWS.get(key) != win:
-                    _KIRO_WINDOWS[key] = win
-                    updated = True
+            if isinstance(key, str) and key and _KIRO_WINDOWS.get(key) != win:
+                _KIRO_WINDOWS[key] = win
+                updated = True
     return updated
 
 

@@ -177,7 +177,13 @@ export default function ServicesTab() {
             <span className="text-[12.5px] font-mono text-text-strong break-all">{d.cwd}</span>
           </div>
         )}
-        <div style={{ columns: 3 }} className="gap-6 max-[900px]:columns-2 max-[600px]:columns-1">
+        {/* `columns-3` as a CLASS, not `style={{ columns: 3 }}`. An inline style
+            outranks any stylesheet rule, so the two responsive overrides beside
+            it were dead: measured at a 390px viewport the container still
+            reported `column-count: 3` and each card got 119px, which is what
+            squeezed the value column to roughly 24px. As classes all three
+            participate in the cascade, so 390px resolves to one column. */}
+        <div className="columns-3 gap-6 max-[900px]:columns-2 max-[600px]:columns-1">
           {gatewaySections.map(sec => (
             <SectionBlock key={sec.title} section={sec} />
           ))}
@@ -210,7 +216,14 @@ function SectionBlock({ section }: { section: Section }) {
           className="flex justify-between gap-3 py-1.5 border-b border-border text-[12.5px] last:border-b-0"
         >
           <span className="text-muted shrink-0">{row.label}</span>
-          <span className="text-text-strong font-mono text-right break-all">{row.value}</span>
+          {/* `break-words`, not `break-all`. `break-all` breaks between letters
+              whether or not anything would overflow, so it split values mid-digit:
+              a 5,289 MB reading rendered as `5,` / `28` / `9 MB`, and an uptime of
+              4h4m17s over three lines. A number broken across lines reads as
+              corrupted data. `break-words` breaks only where a line cannot
+              otherwise fit, which still contains a long value such as a path.
+              `tabular-nums` keeps the column from shifting as values update. */}
+          <span className="text-text-strong font-mono tabular-nums text-right break-words">{row.value}</span>
         </div>
       ))}
     </div>

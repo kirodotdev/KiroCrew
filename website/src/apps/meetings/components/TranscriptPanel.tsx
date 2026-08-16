@@ -44,7 +44,17 @@ const VirtualList = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement> & ContextProp<VirtualContext>
 >(function VirtualList({ context, ...props }, ref) {
-  const className = `${props.className ?? ''} ${
+  // `px-4 pt-3` belongs HERE and not on the Virtuoso scroller. Virtuoso's own
+  // viewport sits between the two as `position:absolute; top:0; width:100%`
+  // inside a `position:relative` scroller: it pins `top`, which swallows the
+  // scroller's vertical padding outright, and it sets no `left`, so a
+  // horizontal padding there is respected on the left but NOT subtracted from
+  // `width:100%` (an absolute box measures 100% against the PADDING box) —
+  // every row ends up 32px wider than the visible pane with its right edge off
+  // screen. This element is a normal-flow child of the viewport, and is the
+  // structural twin of the <ol> in the non-virtualized branch below, so the two
+  // branches now inset their rows identically.
+  const className = `${props.className ?? ''} px-4 pt-3 ${
     context.primary ? 'w-full max-w-3xl mx-auto' : ''
   }`.trim()
   return <div {...props} ref={ref} role="list" className={className} />
@@ -202,7 +212,7 @@ export default function TranscriptPanel({
       ) : virtualized ? (
         <Virtuoso
           ref={virtuosoRef}
-          className="flex-1 min-h-0 px-4 pt-3"
+          className="flex-1 min-h-0"
           data={segments}
           context={virtualContext}
           components={VIRTUAL_COMPONENTS}

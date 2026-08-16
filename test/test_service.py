@@ -2679,6 +2679,10 @@ class TestTrustedToolResolution:
         reason="asserts POSIX ownership/permission semantics on a real system binary; "
         "Windows has neither /bin/sh nor a root uid, and the AppArmor path is Linux-only",
     )
+    @pytest.mark.skipif(
+        os.path.exists("/bin/sh") and os.stat("/bin/sh").st_uid != 0,
+        reason="system binaries are not root-owned on this host",
+    )
     def test_resolves_a_real_root_owned_system_binary(self):
         """Against the real filesystem, not a fixture: /bin/sh must resolve."""
         from kiro_crew.service import apparmor as aa
@@ -2996,8 +3000,13 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         from kiro_crew.service import apparmor as aa
 
         target = Path("/usr/bin/env")  # root-owned on every POSIX host
-        if not target.exists() or target.stat().st_uid == os.getuid():
-            pytest.skip("need a root-owned binary not owned by the test user")
+        if not target.exists():
+            pytest.skip("need /usr/bin/env")
+        target_uid = target.stat().st_uid
+        if target_uid == os.getuid():
+            pytest.skip("need a binary not owned by the test user")
+        if target_uid != 0:
+            pytest.skip("need a root-owned binary; this host has uid %d" % target_uid)
 
         problem = aa._substitutable_by_others(target.resolve())
 
@@ -3053,6 +3062,10 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         could give is refused.
         """
         from kiro_crew.service import apparmor as aa
+
+        tmp_uid = Path("/tmp").stat().st_uid
+        if tmp_uid not in (0, os.getuid()):
+            pytest.skip("/tmp owned by uid %d (not root or current user)" % tmp_uid)
 
         problem = aa._substitutable_by_others(Path("/tmp"))
 

@@ -480,13 +480,16 @@ class TestMalformedDeclaredEnv:
 
     @staticmethod
     def _build(tmp_path, env_value):
-        from kiro_crew.mcp_gateway.rewriter import _build_stub_entry
+        from kiro_crew.mcp_gateway.rewriter import _build_stub_entry, _normalized_env
 
+        original = {"command": "/bin/true", "args": [], "env": env_value}
         return _build_stub_entry(
             stubs_dir=tmp_path / "stubs",
             server_name="demo-mcp",
             agent_name="test-agent",
-            original={"command": "/bin/true", "args": [], "env": env_value},
+            original=original,
+            env_pairs=_normalized_env(original, context="server 'demo-mcp'"),
+            target_command="/bin/true",
             socket_path=tmp_path / "gateway.sock",
             work_dir=tmp_path,
             sandbox_mode="none",

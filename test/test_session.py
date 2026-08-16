@@ -1739,6 +1739,50 @@ class TestRelease:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr.release("nonexistent")  # should not raise
 
+    @pytest.mark.asyncio
+    async def test_stray_release_after_reset_does_not_over_permit_the_replacement(self, cfg, caplog):
+        """A failure-handling caller that still holds session A's semaphore may
+        call ``reset(key)`` (as ``record_failure`` does) before its own
+        ``finally`` reaches ``release(key)``. ``reset`` pops the session object
+        WITHOUT releasing its semaphore, and a concurrent ``get_or_create`` for
+        the same key can register a brand-new session in the meantime, with its
+        own fresh semaphore. By the time the original caller's late
+        ``release(key)`` runs, that new session may already have finished ITS
+        own turn and released its own semaphore normally -- so the stray
+        release lands on an already-full semaphore. A plain ``Semaphore`` would
+        silently accept it, permanently minting a second standing permit and
+        letting two turns run concurrently on the session forever after. The
+        bounded semaphore must instead reject it (logged, not raised into the
+        caller), leaving exactly one permit.
+        """
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("A")  # caller 1: holds session-1's semaphore
+
+        await mgr.reset("A")  # e.g. record_failure's circuit-breaker path
+        assert "A" not in mgr._sessions  # session-1 discarded; semaphore never released
+
+        await mgr.get_or_create("A")  # a concurrent caller 2: registers session-2, holds ITS semaphore
+        session_2 = mgr._sessions["A"]
+        assert session_2.semaphore.locked()
+        mgr.release("A")  # caller 2's OWN legitimate finally, already run
+        assert not session_2.semaphore.locked()
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            mgr.release("A")  # caller 1's finally, arriving late on a stale key lookup
+
+        assert "session was replaced" in caplog.text
+        # A single extra permit must not have been minted: only one acquire can
+        # succeed at a time, not two run concurrently.
+        first = asyncio.ensure_future(session_2.semaphore.acquire())
+        await asyncio.sleep(0)
+        assert first.done()
+        second = asyncio.ensure_future(session_2.semaphore.acquire())
+        await asyncio.sleep(0)
+        assert not second.done()  # blocked -- no surplus permit to grant it
+        second.cancel()
+        session_2.semaphore.release()
+        await mgr.close_all()
+
 
 class TestResetWithPid:
     """Tests for reset() PID capture and force-kill logic."""

@@ -101,12 +101,15 @@ from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort, model_supports_effo
 from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
+from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
 from kiro_crew.instances.constants import DEFAULT_RECOVER_BACKOFF_MAX_SECS as _DEFAULT_BACKOFF_MAX
 from kiro_crew.instances.constants import DEFAULT_SSH_COMPRESSION as _DEFAULT_SSH_COMPRESSION
 from kiro_crew.instances.constants import DEFAULT_TUNNEL_BASE_PORT as _DEFAULT_TUNNEL_BASE_PORT
 from kiro_crew.instances.constants import DEFAULT_WARM_SET_CAP as _DEFAULT_WARM_SET_CAP
 from kiro_crew.instances.constants import MAX_RECOVERY_ATTEMPTS_CEILING as _MAX_RECOVERY_CEILING
+from kiro_crew.instances.constants import MINT_TIMEOUT_CEILING_SECS as _MINT_TIMEOUT_CEILING
+from kiro_crew.instances.constants import MINT_TIMEOUT_FLOOR_SECS as _MINT_TIMEOUT_FLOOR
 from kiro_crew.instances.constants import (
     RECOVER_BACKOFF_MAX_CEILING_SECS as _RECOVER_BACKOFF_CEILING,
 )
@@ -188,6 +191,7 @@ CRED_MICROSOFT_APP_ID = "MICROSOFT_APP_ID"
 CRED_MICROSOFT_APP_PASSWORD = "MICROSOFT_APP_PASSWORD"
 CRED_MICROSOFT_APP_TENANT_ID = "MICROSOFT_APP_TENANT_ID"
 CRED_WEIXIN_TOKEN = "WEIXIN_TOKEN"  # iLink bot credential from the Settings QR flow
+CRED_JIRA_API_TOKEN = "JIRA_API_TOKEN"  # Jira Cloud/Server API token (resolved from .env)
 # kiro-cli's OWN model credential. Unlike the gateway-owned channel tokens
 # above, its rightful consumer is the agent subprocess itself (and the whoami
 # identity probe), so it is deliberately NOT in sandbox._AGENT_DENIED_ENV_KEYS:
@@ -207,8 +211,12 @@ _CREDENTIAL_KEYS = (
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
     CRED_WEIXIN_TOKEN,
+    CRED_JIRA_API_TOKEN,
     CRED_KIRO_API_KEY,
 )
+
+# Keys from .env that were already warned about (fire once per gateway boot).
+_warned_env_keys: set[str] = set()
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
@@ -1405,6 +1413,18 @@ class AgentConfig:
             "at all. Should be <= resource_pressure_gb. 0 disables the critical tier.",
         ),
     )
+    admission_gate: bool = field(
+        default=True,
+        metadata=_meta(
+            "Posture Admission Gate",
+            "While available memory is at or below resource_critical_gb, defer "
+            "scheduled cron firings to the next tick and refuse new subagent "
+            "spawns until memory frees. Manually triggered cron runs, in-flight "
+            "subagents, and direct chat turns are never gated; an unreadable "
+            "probe admits (fail-open). Set false to make the critical posture "
+            "advisory-only.",
+        ),
+    )
     workflow_run_timeout_secs: int = field(
         default=3600,
         metadata=_meta(
@@ -2441,6 +2461,33 @@ def _tailscale_config_from(raw: object) -> TailscaleConfig:
 
 
 @dataclass
+class JiraAuthEntry:
+    """Connection metadata for one Jira instance (Cloud or Server/DC).
+
+    The API token is NOT stored here — it lives in the protected .env file
+    as JIRA_API_TOKEN (same isolation pattern as Slack/Discord/Telegram tokens).
+    This dataclass holds only non-sensitive connection metadata.
+    """
+
+    host: str = field(
+        default="",
+        metadata=_meta(
+            "Host",
+            "Jira instance hostname (e.g. 'myorg.atlassian.net' or "
+            "'jira.internal.corp:8443'). Must match the host in the issue URL.",
+        ),
+    )
+    email: str = field(
+        default="",
+        metadata=_meta(
+            "Email",
+            "Atlassian account email for Cloud instances (used in Basic auth "
+            "header). Leave empty for Server/DC instances that use a PAT.",
+        ),
+    )
+
+
+@dataclass
 class DashboardConfig:
     url: str = field(
         default="",
@@ -2857,6 +2904,18 @@ class DashboardConfig:
             "accepted without listing. Empty = Cloud-only (deny-by-default): a "
             "Jira issue URL is only recognized if its host matches an entry "
             "here. Suffixes and wildcards are not matched.",
+        ),
+    )
+    jira_auth: list[JiraAuthEntry] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Jira Authentication",
+            "Per-host credentials for the Jira REST API so the Issues panel "
+            "can fetch issue details inline. Each entry pairs a host with an "
+            "API token. Atlassian Cloud (*.atlassian.net) uses email + API "
+            "token (Basic auth); Jira Server/Data Center uses a Personal "
+            "Access Token (Bearer). When no entry matches the issue host, the "
+            "panel falls back to the link-out 'Open in Jira' behavior.",
         ),
     )
 
@@ -3804,10 +3863,26 @@ def _read_skip_permissions(agent_data: dict) -> bool:
     ``dangerouslySkipPermissions`` (the camelCase form used by other agent tools,
     so a config copied from one still works) and the legacy ``yolo`` (so no
     existing config silently loses auto-approve on upgrade).
+
+    Requires a REAL ``bool``, not Python truthiness: a stringly-typed value
+    from a templated/generated config — ``"false"``, ``"0"``, ``"no"``, or any
+    other non-empty string a hand-edit or a config generator might write — is
+    truthy in Python, so a bare ``bool(...)`` here would silently turn
+    "explicitly disabled" into the standing, unattended tool-auto-approve
+    grant this key controls. A non-bool value is never treated as an
+    affirmative grant; it falls through to check the next spelling, then to
+    the ``False`` default.
     """
     for key in ("dangerously_skip_permissions", "dangerouslySkipPermissions", "yolo"):
         if key in agent_data:
-            return bool(agent_data.get(key))
+            value = agent_data[key]
+            if isinstance(value, bool):
+                return value
+            logger.warning(
+                "agent.%s must be a real boolean, got %r — treating as unset",
+                key,
+                value,
+            )
     return False
 
 
@@ -4349,6 +4424,19 @@ class InstancesConfig:
             "An explicit value applies to both transports. Clamped to [1, 120].",
         ),
     )
+    mint_timeout_secs: float | None = field(
+        default=None,
+        metadata=_meta(
+            "Mint Timeout (secs)",
+            "How long to wait for the remote `kirocrew token` mint to return "
+            "before failing a connect. When unset, SSH uses 30s and SSM uses "
+            "90s (its dispatch latency is higher). The mint runs over the same "
+            "ssh transport as the tunnel, so a host behind a ProxyCommand or "
+            "jump host pays the proxy handshake here too. An explicit value "
+            "applies to both transports, so size it for the slowest transport "
+            "you use. Clamped to [10, 120].",
+        ),
+    )
     max_recovery_attempts: int = field(
         default=_DEFAULT_MAX_RECOVERY,
         metadata=_meta(
@@ -4405,6 +4493,24 @@ class InstancesConfig:
                 _CONNECT_TIMEOUT_CEILING,
             )
             object.__setattr__(self, "connect_timeout_secs", _CONNECT_TIMEOUT_CEILING)
+        if self.mint_timeout_secs is not None and self.mint_timeout_secs < _MINT_TIMEOUT_FLOOR:
+            logger.warning(
+                "instances.mint_timeout_secs %s < %s, using the transport default",
+                self.mint_timeout_secs,
+                _MINT_TIMEOUT_FLOOR,
+            )
+            object.__setattr__(self, "mint_timeout_secs", None)
+        elif (
+            self.mint_timeout_secs is not None
+            and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING
+        ):
+            logger.warning(
+                "instances.mint_timeout_secs %s > %s, clamping to %s",
+                self.mint_timeout_secs,
+                _MINT_TIMEOUT_CEILING,
+                _MINT_TIMEOUT_CEILING,
+            )
+            object.__setattr__(self, "mint_timeout_secs", _MINT_TIMEOUT_CEILING)
         if self.max_recovery_attempts < 1:
             logger.warning(
                 "instances.max_recovery_attempts %d < 1, using %d",
@@ -5708,6 +5814,7 @@ class KiroCrewConfig:
         if not isinstance(instances_data, dict):
             instances_data = {}
         connect_timeout_raw = instances_data.get("connect_timeout_secs")
+        mint_timeout_raw = instances_data.get("mint_timeout_secs")
         mcp_gateway_data = data.get("mcp_gateway", {})
         if not isinstance(mcp_gateway_data, dict):
             mcp_gateway_data = {}
@@ -5886,6 +5993,7 @@ class KiroCrewConfig:
                 ),
                 resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
                 resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
+                admission_gate=_safe_bool(agent_data.get("admission_gate"), True),
                 subagent_max_turns=agent_data.get("subagent_max_turns", 100),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
                 subagent_stall_idle_secs=_safe_int(
@@ -6281,6 +6389,14 @@ class KiroCrewConfig:
                 ),
                 gitlab_hosts=_coerce_gitlab_hosts(dashboard_data.get("gitlab_hosts")),
                 jira_hosts=_coerce_jira_hosts(dashboard_data.get("jira_hosts")),
+                jira_auth=[
+                    JiraAuthEntry(
+                        host=str(entry.get("host", "")),
+                        email=str(entry.get("email", "")),
+                    )
+                    for entry in (dashboard_data.get("jira_auth") or [])
+                    if isinstance(entry, dict) and entry.get("host")
+                ],
             ),
             tunnel=TunnelConfig(
                 enabled=bool(tunnel_data.get("enabled", False)),
@@ -6459,6 +6575,11 @@ class KiroCrewConfig:
                 connect_timeout_secs=(
                     _safe_float(connect_timeout_raw, _DEFAULT_CONNECT_TIMEOUT)
                     if connect_timeout_raw is not None
+                    else None
+                ),
+                mint_timeout_secs=(
+                    _safe_float(mint_timeout_raw, _DEFAULT_MINT_TIMEOUT)
+                    if mint_timeout_raw is not None
                     else None
                 ),
                 max_recovery_attempts=_safe_int(
@@ -6746,6 +6867,23 @@ class KiroCrewConfig:
                 if "=" in line:
                     k, v = line.split("=", 1)
                     creds[k.strip()] = v.strip()
+
+            # Warn once per boot about keys not in the recognised allowlist.
+            # These keys still propagate (operators use them for proxy/feature
+            # settings), but the warning makes the behavior visible rather than
+            # silently surprising.  The encrypted vault (PR 1+) will provide a
+            # proper agent-isolated path for secrets.
+            unknown = set(creds) - set(_CREDENTIAL_KEYS) - _warned_env_keys
+            if unknown:
+                _warned_env_keys.update(unknown)
+                for uk in sorted(unknown):
+                    logger.warning(
+                        "Unknown key %s in .env is not a recognised credential"
+                        " -- it will propagate to child processes but is NOT"
+                        " agent-isolated. Recognised keys: %s",
+                        uk,
+                        ", ".join(sorted(_CREDENTIAL_KEYS)),
+                    )
 
         for key in _CREDENTIAL_KEYS:
             val = os.environ.get(key)

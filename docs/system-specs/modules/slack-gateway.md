@@ -250,7 +250,7 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - **Mimetypes**: `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp` (aligned with `AcpClient._send_prompt()` regex)
 - **Size limit**: 10 MB (checked from Slack metadata before download)
 - **Flow**: Download to temp file → inject local path into message text → `_send_prompt()` detects path, base64-encodes, sends as `{"type": "image"}` content block to kiro-cli
-- **Temp lifecycle**: Caller (`_route_message`) owns cleanup. Done callback on `handle_message` task cleans up after `_send_prompt()` reads the file. Early-return paths and `create_task` failures also clean up.
+- **Temp lifecycle**: Caller (`_route_message`) owns cleanup. Done callback on `handle_message` task cleans up after `_send_prompt()` reads the file. Early-return paths and `create_task` failures also clean up. Queued messages carry their paths in the entry's `image_temp_paths` kwargs; `_dispatch_queued` unlinks after the turn consumes them, and the queue-discard paths — `cancel_queued`, `clear_queue`, `dequeue`'s cancelled-skip, and the `_pending_queue` drops in `_handle_message_deleted` and the `!stop` handler — unlink via `session.unlink_queued_temp_paths()` so entries that never dispatch don't leak files. Known gap: session-teardown paths (restart/remove/destroy/idle sweep) drop `session.queue` without unlinking.
 - **Unsupported image types** (`image/svg+xml`, `image/tiff`, etc.) fall through to unsupported handler — metadata note only, no download
 
 ### Text / Code Files (`files.py`)

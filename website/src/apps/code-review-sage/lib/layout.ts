@@ -14,6 +14,13 @@ export const DEFAULT_RAIL_WIDTH = 360
 export const MIN_RAIL_WIDTH = 280
 export const MAX_RAIL_WIDTH = 560
 
+/** Width of the collapsed rail strip — icon-only, so it never competes with the
+ * detail pane for a phone's width. `MIN_RAIL_WIDTH` is 280px, which on a 390px
+ * viewport leaves the review pane ~100px; the strip is the narrow-width state
+ * the resize hook falls back to. */
+export const COLLAPSED_RAIL_WIDTH = 44
+export const RAIL_COLLAPSED_KEY = 'kc:code-review-sage:rail-collapsed'
+
 export const DEFAULT_LIST_WIDTH = 330
 export const MIN_LIST_WIDTH = 260
 export const MAX_LIST_WIDTH = 620
@@ -37,6 +44,18 @@ export function loadRailWidth(): number {
 
 export function loadListWidth(): number {
   return loadWidth(LIST_WIDTH_KEY, MIN_LIST_WIDTH, MAX_LIST_WIDTH, DEFAULT_LIST_WIDTH)
+}
+
+/** The DESKTOP collapsed preference. The narrow-viewport strip is a session-only
+ * override inside the resize hook and deliberately never reaches storage, so one
+ * phone visit cannot leave the desktop rail collapsed. */
+export function loadRailCollapsed(): boolean {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
+  } catch {
+    // Storage blocked (private mode, quota) — start expanded.
+    return false
+  }
 }
 
 /** Poll cadence while at least one run is live. Reviews advance on the order of

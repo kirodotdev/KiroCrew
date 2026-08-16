@@ -592,21 +592,39 @@ class TestIsDeniedReDoSResistance:
         for thread in spinners:
             thread.start()
         try:
+            # Majority vote across 5 independent samples, not a per-sample assert:
+            # both checks below depend on the OS scheduler actually interleaving
+            # this thread against the 2 spinners within each iteration's narrow
+            # window, which a heavily loaded shared CI runner (many concurrent
+            # pytest-xdist workers contending for the same cores) can occasionally
+            # fail to do for a single sample without the underlying invariant
+            # being false. A genuine break in `_cpu_cost` (seeing other threads'
+            # CPU, or the burst harness generating no process-level signal at all)
+            # still fails a majority of samples, since it holds on every iteration.
+            failures = []
             for _ in range(5):
                 process_start = time.process_time()
                 measured = self._cpu_cost(burn)
                 process_delta = time.process_time() - process_start
-                assert measured < true_cost * 2.0, (
-                    f"_cpu_cost reported {measured:.3f}s for {true_cost}s of own-thread "
-                    "work — the clock is seeing other threads' CPU"
-                )
+                if measured >= true_cost * 2.0:
+                    failures.append(
+                        f"_cpu_cost reported {measured:.3f}s for {true_cost}s of "
+                        "own-thread work — the clock is seeing other threads' CPU"
+                    )
+                    continue
                 # The control: the process-wide clock DOES absorb the burst (it
                 # accumulates the spinners' CPU during their GIL timeslices), so a
                 # clean _cpu_cost reading above is discriminating, not vacuous.
-                assert process_delta > measured, (
-                    "process_time did not exceed thread_time under a 2-spinner burst — "
-                    "the burst harness is not generating in-process noise"
-                )
+                if process_delta <= measured:
+                    failures.append(
+                        "process_time did not exceed thread_time under a "
+                        "2-spinner burst — the burst harness is not generating "
+                        "in-process noise"
+                    )
+            assert len(failures) <= 1, (
+                f"{len(failures)}/5 samples failed (need a majority to hold): "
+                + "; ".join(failures)
+            )
         finally:
             stop.set()
             for thread in spinners:
@@ -2922,3 +2940,149 @@ class TestCredentialMintSegmentScoping:
         mentioned_after = f"grep {_TOK}_auth.py  # in a {_NAME} worktree"
         assert _denied_by(under_path) is None
         assert _denied_by(mentioned_after) is None
+
+
+class TestSelfFloorShortCircuit:
+    """Perf gate for the self-protection floor (issue #3603).
+
+    The floor predicates tokenize the command and descend every nested shell
+    payload, which dominates deny-scan cost on complex bash. The gate
+    ``_self_floor_can_fire`` skips that descent when firing is provably
+    impossible. Ratcheted on STRUCTURE, never timing: (a) a benign command
+    performs ZERO descents; (b) every obfuscated spelling the floor denies
+    today still passes the gate, so no bypass window opens.
+    """
+
+    def _descent_calls(self, monkeypatch, text: str) -> int:
+        from kiro_crew import security
+
+        calls = {"n": 0}
+        real = security._self_token_frames
+
+        def spy(t: str):
+            calls["n"] += 1
+            return real(t)
+
+        monkeypatch.setattr(security, "_self_token_frames", spy)
+        security._is_credential_mint(text)
+        security._is_self_kill(text)
+        return calls["n"]
+
+    def test_benign_command_skips_the_descent_entirely(self, monkeypatch):
+        # The 95%+ common case: a tool name plus a path. No self name, no
+        # shell machinery — the recursive tokenize-and-descend must not run.
+        for benign in (
+            "fs_read /workplace/user/project/src/main.py",
+            "ls -la /tmp/foo",
+            "git status",
+            "cat notes.txt",
+            "npm run build",
+        ):
+            assert self._descent_calls(monkeypatch, benign) == 0, (
+                f"descent ran for benign input: {benign!r}"
+            )
+
+    def test_name_carrying_command_still_descends(self, monkeypatch):
+        # A real candidate must reach the full structural scan.
+        assert self._descent_calls(monkeypatch, "kirocrew token") >= 1
+        assert self._descent_calls(monkeypatch, "pkill -f kirocrew") >= 1
+
+    def test_gate_is_a_necessary_condition_not_a_name_grep(self):
+        """Every obfuscated spelling the floor denies must pass the gate.
+
+        The issue proposed gating on a raw ``_SELF_NAME_RE`` search; that is
+        UNSOUND — each input below fires a predicate today while its raw text
+        never matches ``kiro[-.]?crew``. The gate must answer True for all of
+        them (over-matching is safe; under-matching is a bypass).
+        """
+        from kiro_crew import security
+
+        for evasive in (
+            "python -m kiro_crew token",  # underscored module spelling
+            "[k]irocrew token",  # one-char bracket class
+            "kiro$()crew token",  # empty command substitution
+            "kiro${x:-crew} token",  # parameter default
+            'bash -c "\\x6birocrew token"',  # printf hex escape
+            'k""iro""crew token',  # empty-string concatenation
+            "kiro?rew token",  # glob the shell expands before exec
+            "kill $(pgrep -f kirocrew)",  # bare kill via substitution
+            'python -c "exec(__import__(\'base64\').b64decode(\'x\'))" token',
+        ):
+            assert security._self_floor_can_fire(evasive), (
+                f"gate would bypass the floor for {evasive!r}"
+            )
+
+    def test_gated_predicates_still_deny_the_obfuscation_corpus(self):
+        """End-to-end: the predicates (with the gate in front) keep firing."""
+        from kiro_crew import security
+
+        for mint in (
+            "[k]irocrew token",
+            "kiro$()crew token",
+            "kiro${x:-crew} token",
+            'bash -c "\\x6birocrew token"',
+            'k""iro""crew token',
+            "kiro?rew token",
+        ):
+            assert security._is_credential_mint(mint), f"mint not caught: {mint!r}"
+        assert security._is_self_kill("kill $(pgrep -f kirocrew)")
+        assert security._is_self_kill("pkill -f kirocrew")
+
+    def test_gate_declines_plain_text_without_machinery(self):
+        from kiro_crew import security
+
+        for plain in (
+            "ls -la /tmp/foo",
+            "git status",
+            "grep token app.log",
+            "cat /workplace/user/notes.txt",
+        ):
+            assert not security._self_floor_can_fire(plain), (
+                f"gate over-triggered on {plain!r}"
+            )
+
+    def test_tilde_expansion_still_reaches_the_floor(self, monkeypatch):
+        """``pkill -f ~`` IS a self-kill whenever $HOME lies under the product
+        tree: the kill predicates expanduser their targets, so the raw text
+        carries neither the self name nor any other machinery character.
+        ``~`` must therefore be in the machinery class, or the gate opens a
+        real bypass (pre-push review finding).
+        """
+        from kiro_crew import security
+
+        # expanduser reads HOME on POSIX but USERPROFILE on Windows — set
+        # both so the tilde target resolves under the product tree everywhere.
+        monkeypatch.setenv("HOME", "/opt/kiro-crew")
+        monkeypatch.setenv("USERPROFILE", "/opt/kiro-crew")
+        for kill in ("pkill -f ~", "killall ~", "pkill -f ~/"):
+            assert security._self_floor_can_fire(kill), (
+                f"gate would bypass the floor for {kill!r}"
+            )
+        # End-to-end: the gated predicate still denies it.
+        assert security._is_self_kill("pkill -f ~")
+
+    def test_quote_glued_dynamic_exec_still_reaches_the_floor(self):
+        """Empty-quote glue hides the dynamic-exec verb exactly as it hides the
+        name.  ``python -c "ex""ec(...)"`` carries no product name, no machinery
+        character, and no *raw* ``exec(`` — yet the floor denies it as a
+        credential mint, because the tokenizer removes the quotes before
+        ``_inline_payload_reaches_cli`` looks.  The gate must therefore search
+        the dynamic-exec marker on the quote-stripped text too, not only on the
+        raw text (pre-merge review finding, confirmed by two reviewers).
+        """
+        from kiro_crew import security
+
+        glued = "ex" + '""' + "ec"
+        cmd = f'python -c "{glued}(open(chr(47)).read())"'
+
+        # Precondition: none of the other branches can catch this input, so the
+        # test genuinely exercises the stripped dynamic-exec branch.
+        assert not security._SELF_FLOOR_NAME_HINT_RE.search(cmd)
+        assert not security._SELF_FLOOR_MACHINERY_RE.search(cmd)
+        assert not security._INLINE_DYNAMIC_EXEC_RE.search(cmd)
+
+        assert security._self_floor_can_fire(cmd), (
+            "gate would bypass the floor for quote-glued dynamic exec"
+        )
+        # And the floor's verdict survives the gate: still denied end-to-end.
+        assert security._is_credential_mint(cmd)

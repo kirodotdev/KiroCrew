@@ -51,6 +51,7 @@ _BACKEND_GUARDS = (
     "test/test_builtin_app_assets.py",
     "test/test_recovery_card_parity.py",
     "test/test_artifact_import_parity.py",
+    "test/test_knowledge_formats_parity.py",
     "test/test_windows_signing_contract.py",
     "test/test_meetings_routes.py",
     # Under the third testpath root -- these were silently unscanned until

@@ -11,11 +11,15 @@ Shared by two advisory surfaces:
 * the **``resource_status`` pull tool** in ``mcp_core`` — an on-demand probe
   the model can call before a heavy step ("am I clear to run the full suite?").
 
-This is **advisory only**: no enforcement, no lease, no cross-session
+The advisory surfaces carry no enforcement, no lease, no cross-session
 coordination. Two sessions can both read "ample" and both launch heavy work —
-the tradeoff of a cheap, zero-tuning guard. It makes the agent *smarter* about
-when to go light, not *bounded*. (A hard, cross-session admission lease is a
-separate, heavier design.)
+the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
+on top: :func:`admission_check` gates *background* work admission (scheduled
+cron firings, new subagent spawns) while posture is CRITICAL, so the scheduler
+stops piling work onto a host that is about to freeze. Direct user chat turns
+and the gateway's own operation are never gated, and the gate fails open on an
+unknown posture. (A hard, cross-session admission lease is a separate, heavier
+design.)
 
 The memory figure reuses :func:`kiro_crew.subagent._available_memory_gb`, the
 same cgroup-clamped, container-aware probe that auto-sizes the sub-agent cap, so
@@ -27,8 +31,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass
+
+from kiro_crew.config.loader import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -297,3 +305,130 @@ def inject_xdist_auto_cap(env: MutableMapping[str, str]) -> None:
     if available_gb < 0:
         return  # probe unavailable — fail open to xdist's default
     env[XDIST_AUTO_ENV] = str(compute_xdist_auto_workers(available_gb, os.cpu_count() or 1))
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    """Typed verdict from :func:`admission_check`.
+
+    ``reason`` is a caller-embeddable, human-readable explanation — non-empty
+    exactly when ``admitted`` is False, so refusal surfaces (spawn errors, cron
+    deferral logs) can relay it verbatim.
+    """
+
+    admitted: bool
+    posture: str        # POSTURE_* observed at decision time
+    available_gb: float  # -1.0 when the memory probe is unavailable
+    reason: str = ""
+
+
+def _gate_enabled(cfg: object | None) -> bool:
+    """Whether the admission gate is switched on (``agent.admission_gate``)."""
+    agent = getattr(cfg, "agent", None)
+    enabled = getattr(agent, "admission_gate", True)
+    return enabled if isinstance(enabled, bool) else True
+
+
+def admission_check(cfg: object | None = None) -> AdmissionDecision:
+    """Decide whether new *background* work may start right now.
+
+    The single enforcement point layered on the advisory posture tier: a
+    CRITICAL posture refuses; every other posture — ample, tight, and unknown —
+    admits. Callers on the two gated paths (scheduled cron firings, new
+    subagent spawns) consult this once per admission decision; it reuses the
+    same cheap :func:`probe` the advisory surfaces use (fingerprint-cached
+    config + one memory read) and adds no extra filesystem scanning.
+
+    Fail-open by construction: an unreadable memory probe classifies as
+    ``unknown`` (admitted), a disabled gate (``agent.admission_gate: false``)
+    always admits, and any unexpected error admits — the gate must never be
+    the thing that strands the scheduler. *cfg* is an optional pre-loaded
+    ``KiroCrewConfig``; never raises.
+    """
+    try:
+        if cfg is None:
+            try:
+                cfg = KiroCrewConfig.load()
+            except Exception:  # pragma: no cover - defensive
+                # Fail-open, not fall-back: probing with default thresholds
+                # (and the gate's default-on) could DEFER work because the
+                # config was unreadable — the documented contract is that
+                # only a genuine critical posture refuses.
+                return AdmissionDecision(
+                    admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0
+                )
+        status = probe(cfg)
+        if not _gate_enabled(cfg):
+            return AdmissionDecision(
+                admitted=True, posture=status.posture, available_gb=status.available_gb
+            )
+        if status.posture == POSTURE_CRITICAL:
+            return AdmissionDecision(
+                admitted=False,
+                posture=status.posture,
+                available_gb=status.available_gb,
+                reason=(
+                    f"host memory is critical (~{status.available_gb:.1f} GB free, "
+                    f"critical \u2264 {status.critical_gb:g} GB) — retry when memory frees"
+                ),
+            )
+        return AdmissionDecision(
+            admitted=True, posture=status.posture, available_gb=status.available_gb
+        )
+    except Exception:
+        logger.debug("admission check failed — admitting (fail-open)", exc_info=True)
+        return AdmissionDecision(admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0)
+
+
+# Cached-verdict layer for callers that must never block: the sync spawn path
+# runs on the gateway event loop, so it reads the last off-thread verdict
+# instead of probing inline. Freshness window sized to the posture's own rate
+# of change (memory exhaustion develops over tens of seconds, not millis).
+_CACHED_TTL_SECS = 5.0
+_cached_decision: AdmissionDecision | None = None
+_cached_at: float = 0.0
+_cache_refresh_inflight = threading.Lock()
+
+
+def _refresh_cached_decision() -> None:
+    global _cached_decision, _cached_at
+    try:
+        _cached_decision = admission_check()
+        _cached_at = time.monotonic()
+    finally:
+        _cache_refresh_inflight.release()
+
+
+def cached_admission_check() -> AdmissionDecision:
+    """Non-blocking admission verdict for event-loop hot paths.
+
+    Returns the last off-thread verdict while it is fresh; when stale, kicks
+    one background refresh (non-blocking dedupe) and returns the previous
+    verdict — or a fail-open admit before the first refresh completes. The
+    caller's thread never performs config or procfs I/O, which is what keeps
+    the sync spawn path safe to call from the gateway event loop. The
+    trade-off is bounded staleness (:data:`_CACHED_TTL_SECS` plus one refresh
+    latency), acceptable because the gate is advisory pressure-shedding, not
+    a correctness barrier.
+    """
+    if _cached_decision is None or time.monotonic() - _cached_at >= _CACHED_TTL_SECS:
+        if _cache_refresh_inflight.acquire(blocking=False):
+            try:
+                threading.Thread(
+                    target=_refresh_cached_decision,
+                    name="admission-refresh",
+                    daemon=True,
+                ).start()
+            except RuntimeError:
+                # Thread exhaustion: this runs on the spawn path, so it must
+                # neither raise nor retain the refresh lock. Fail-open below.
+                _cache_refresh_inflight.release()
+                logger.debug("admission refresh thread could not start", exc_info=True)
+    if _cached_decision is not None:
+        return _cached_decision
+    return AdmissionDecision(
+        admitted=True,
+        posture=POSTURE_UNKNOWN,
+        available_gb=-1.0,
+        reason="no cached verdict yet — admitting (fail-open)",
+    )

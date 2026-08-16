@@ -25,7 +25,7 @@ import logging
 import re
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
-from kiro_crew.instances.constants import TTL_PATTERN
+from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS, TTL_PATTERN
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,9 @@ _CLIPPED_RUN_RE = re.compile(r"^[A-Za-z0-9_\-.=+/%%:?&]{%d,}" % _CLIPPED_RUN_MIN
 _CLIPPED_MARKER = "<clipped>"
 
 # How long to wait for the remote `kirocrew token` to return before giving up.
-_DEFAULT_MINT_TIMEOUT_SECS = 30.0
+# Canonical default lives in instances.constants (user-tunable via
+# ``instances.mint_timeout_secs``); aliased here for the local call sites.
+_DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_MINT_TIMEOUT_SECS
 
 
 class TokenMintError(Exception):
@@ -322,19 +324,24 @@ def build_remote_token_command(
     )
 
 
-def _build_ssh_argv(ssh_host: str, remote_command: str) -> list[str]:
+def _build_ssh_argv(
+    ssh_host: str, remote_command: str, *, connect_timeout_secs: float = 10.0
+) -> list[str]:
     """Build the local ``ssh`` argv (no local shell) to run *remote_command*.
 
     ``BatchMode=yes`` fails fast instead of hanging on an interactive password
-    prompt; ``ConnectTimeout`` bounds the TCP connect. ``ssh_host`` is validated
-    by the caller (registry / tunnel manager) before reaching here.
+    prompt; ``ConnectTimeout`` bounds the TCP connect (and, on OpenSSH >= 8.6,
+    the banner/KEX exchange — which is where a slow ProxyCommand spends its
+    time, so the mint passes its own configurable budget here instead of the
+    10s fail-fast default). ``ssh_host`` is validated by the caller
+    (registry / tunnel manager) before reaching here.
     """
     return [
         "ssh",
         "-o",
         "BatchMode=yes",
         "-o",
-        "ConnectTimeout=10",
+        f"ConnectTimeout={max(1, round(connect_timeout_secs))}",
         "-o",
         "AddressFamily=inet",
         ssh_host,
@@ -416,7 +423,7 @@ async def mint_remote_token(
     remote_command = build_remote_token_command(
         remote_bin, ttl=ttl, port=remote_port, embed_parent_port=embed_parent_port
     )
-    argv = _build_ssh_argv(ssh_host, remote_command)
+    argv = _build_ssh_argv(ssh_host, remote_command, connect_timeout_secs=timeout_secs)
     logger.info("Minting token on %s (ttl=%s)", ssh_host, ttl)  # no token in logs
 
     try:
@@ -475,6 +482,7 @@ async def run_remote_kirocrew(
     remote_bin: str = "",
     marker_port: int | None = None,
     timeout_secs: float = 60.0,
+    connect_timeout_secs: float = 10.0,
 ) -> tuple[int, str]:
     """Run ``kirocrew <subcommand>`` on *ssh_host* over SSH.
 
@@ -488,11 +496,21 @@ async def run_remote_kirocrew(
     (same fix as token mint), instead of the blind PATH candidate search. This
     is what makes the dashboard "restart remote" action work on a host whose
     ``~/.local/bin/kirocrew`` points at an uninstalled worktree.
+
+    *connect_timeout_secs* — this is the same one-shot ssh-exec shape as
+    :func:`mint_remote_token`, so it pays the same proxy handshake cost on
+    CONNECT (OpenSSH >= 8.6 counts banner/KEX against ``ConnectTimeout``).
+    Callers should pass the resolved ``instances.mint_timeout_secs`` budget
+    rather than leaving the 10s fail-fast default, or a restart on a
+    slow-proxy host fails on the connect even after the user tuned the
+    tunable for exactly this. Independent of *timeout_secs* (the overall
+    wait_for budget): the outer wait_for is still the ultimate bound
+    regardless of what ``ConnectTimeout`` allows internally.
     """
     remote_command = build_remote_command(
         remote_bin, subcommand, marker_port=_validate_port(marker_port)
     )
-    argv = _build_ssh_argv(ssh_host, remote_command)
+    argv = _build_ssh_argv(ssh_host, remote_command, connect_timeout_secs=connect_timeout_secs)
     logger.info("Running 'kirocrew %s' on %s", subcommand, ssh_host)
     try:
         proc = await asyncio.create_subprocess_exec(

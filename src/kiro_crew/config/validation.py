@@ -56,11 +56,27 @@ def _lookup_schema_node(schema: dict, dot_path: str) -> dict | None:
     parts = dot_path.split(".")
     node = schema
     for part in parts:
+        # Numeric path components (array indices like "0", "1") are consumed
+        # by descending into the schema's `items` — they carry no property
+        # name, just signal "inside an array element".
+        if part.isdigit():
+            items = node.get("items", {})
+            if items:
+                node = items
+            else:
+                return None
+            continue
         props = node.get("properties", {})
         if part in props:
             node = props[part]
         else:
-            return None
+            # For array-typed fields, descend into items.properties
+            items = node.get("items", {})
+            items_props = items.get("properties", {})
+            if part in items_props:
+                node = items_props[part]
+            else:
+                return None
     return node
 
 

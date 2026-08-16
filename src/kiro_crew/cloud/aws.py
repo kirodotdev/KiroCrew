@@ -21,7 +21,7 @@ import os
 import subprocess
 from typing import Any, Optional
 
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
 
@@ -226,12 +226,11 @@ def run_aws(
     proc: Optional[subprocess.Popen[str]] = None
     try:
         try:
-            proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
+            proc = popen_limited(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
                 sandboxed,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                preexec_fn=resource_limit_preexec(),
             )
             if proc_sink is not None:
                 try:

@@ -608,7 +608,6 @@ def mcp_spawn(monkeypatch):
     monkeypatch.setattr(cron_script, "_resolve_mcp_server", lambda name: ("srv-bin", "--stdio"))
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
-    monkeypatch.setattr(cron_script, "resource_limit_preexec", lambda: None)
     state = SimpleNamespace(proc=None, popen_exc=None, calls=[])
 
     def _popen(argv, **kw):
@@ -617,7 +616,7 @@ def mcp_spawn(monkeypatch):
             raise state.popen_exc
         return state.proc
 
-    monkeypatch.setattr(cron_script.subprocess, "Popen", _popen)
+    monkeypatch.setattr(cron_script, "popen_limited", _popen)
     return state
 
 
@@ -940,7 +939,6 @@ def script_run(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
-    monkeypatch.setattr(cron_script, "resource_limit_preexec", lambda: None)
     monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda: "unit-secret")
     restricted: list[str] = []
     monkeypatch.setattr(
@@ -957,7 +955,7 @@ def script_run(monkeypatch, tmp_path):
         state.secret_seen = Path(state.env["_KIROCREW_SECRET_FILE"]).read_text()
         return state.proc
 
-    monkeypatch.setattr(cron_script.subprocess, "Popen", _popen)
+    monkeypatch.setattr(cron_script, "popen_limited", _popen)
     return state
 
 
@@ -1096,7 +1094,6 @@ class TestShellIsPosixStrict:
     def _no_real_sandbox(self, monkeypatch):
         monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
         monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
-        monkeypatch.setattr(cron_script, "resource_limit_preexec", lambda: None)
 
     def test_literal_output_is_accepted_and_memoized(self, monkeypatch):
         calls: list[list[str]] = []
@@ -1105,7 +1102,7 @@ class TestShellIsPosixStrict:
             calls.append(list(argv))
             return SimpleNamespace(returncode=0, stdout="x.{a,a}\n", stderr="")
 
-        monkeypatch.setattr(cron_script.subprocess, "run", _run)
+        monkeypatch.setattr(cron_script, "run_limited", _run)
 
         assert _shell_is_posix_strict("/bin/sh") is True
         assert _shell_is_posix_strict("/bin/sh") is True  # cache hit, no second spawn
@@ -1114,16 +1111,16 @@ class TestShellIsPosixStrict:
 
     def test_expanding_shell_is_rejected(self, monkeypatch):
         monkeypatch.setattr(
-            cron_script.subprocess,
-            "run",
+            cron_script,
+            "run_limited",
             lambda argv, **kw: SimpleNamespace(returncode=0, stdout="x.a x.a\n", stderr=""),
         )
         assert _shell_is_posix_strict("/bin/sh") is False
 
     def test_nonzero_probe_exit_is_rejected(self, monkeypatch):
         monkeypatch.setattr(
-            cron_script.subprocess,
-            "run",
+            cron_script,
+            "run_limited",
             lambda argv, **kw: SimpleNamespace(returncode=1, stdout="x.{a,a}", stderr=""),
         )
         assert _shell_is_posix_strict("/bin/sh") is False
@@ -1140,7 +1137,7 @@ class TestShellIsPosixStrict:
         def _run(argv, **kw):
             raise exc
 
-        monkeypatch.setattr(cron_script.subprocess, "run", _run)
+        monkeypatch.setattr(cron_script, "run_limited", _run)
         assert _shell_is_posix_strict("/bin/sh") is False
 
     def test_sandbox_profile_is_unlinked_even_when_gone(self, monkeypatch, tmp_path):
@@ -1150,8 +1147,8 @@ class TestShellIsPosixStrict:
             cron_script, "wrap_argv", lambda argv, **k: (list(argv), str(cleanup))
         )
         monkeypatch.setattr(
-            cron_script.subprocess,
-            "run",
+            cron_script,
+            "run_limited",
             lambda argv, **kw: SimpleNamespace(returncode=0, stdout="x.{a,a}", stderr=""),
         )
 
@@ -1171,7 +1168,6 @@ def command_run(monkeypatch):
     monkeypatch.setattr(cron_script, "_resolve_command_shell", lambda: "/bin/sh")
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
-    monkeypatch.setattr(cron_script, "resource_limit_preexec", lambda: None)
     state = SimpleNamespace(proc=None, argv=[], env={})
 
     def _popen(argv, **kw):
@@ -1179,7 +1175,7 @@ def command_run(monkeypatch):
         state.env = dict(kw.get("env") or {})
         return state.proc
 
-    monkeypatch.setattr(cron_script.subprocess, "Popen", _popen)
+    monkeypatch.setattr(cron_script, "popen_limited", _popen)
     return state
 
 
@@ -1261,7 +1257,7 @@ class TestRunCommandSandboxed:
         def _popen(argv, **kw):
             raise OSError("fork failed")
 
-        monkeypatch.setattr(cron_script.subprocess, "Popen", _popen)
+        monkeypatch.setattr(cron_script, "popen_limited", _popen)
 
         result = run_command_sandboxed("echo hi")
 

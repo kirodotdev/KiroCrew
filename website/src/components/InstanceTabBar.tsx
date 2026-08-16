@@ -463,21 +463,20 @@ function ExpandToggle({ expanded, onToggle }: { expanded: boolean; onToggle: () 
  * The expanded row always stays one line and scrolls horizontally: both the
  * fixed-height `inline` header and the fixed-height `strip` overlay bar would
  * spill a wrapped second row over the panel beneath them, so wrapping is not an
- * option in either. The `inline` header additionally caps its width so the row
- * never runs under the centered top-bar search.
+ * option in either. It needs no width cap of its own: in the header the row sits
+ * inside the identity group's own grid track, which the centred search can never
+ * be pushed out of.
  */
 function Switcher({
   entries,
   activeId,
   onSelect,
-  variant,
   expanded: expandedProp,
   onSetExpanded,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
-  variant: 'strip' | 'inline'
   /** When provided (embedded pane), the pin state is driven by the parent's
    *  relayed model instead of this realm's localStorage — a remote pane lives
    *  in a separate cross-origin iframe whose store the parent can't reach, so
@@ -504,12 +503,7 @@ function Switcher({
       {/* No role/aria here: the parent bar is already a role="group" labelled
           "Remote crews", so a second group with the same name would be
           announced twice around one control set. */}
-      <div
-        className={
-          'flex items-center gap-1 min-w-0 flex-nowrap overflow-x-auto ' +
-          (variant === 'inline' ? 'max-w-[42vw]' : '')
-        }
-      >
+      <div className="flex items-center gap-1 min-w-0 flex-nowrap overflow-x-auto">
         {entries.map(entry => (
           <SwitcherChip
             key={entry.id ?? LOCAL_VALUE}
@@ -575,7 +569,6 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         entries={entries}
         activeId={host.activeId}
         onSelect={onSelect}
-        variant={variant}
         expanded={host.expanded}
         onSetExpanded={onSetExpanded}
       />
@@ -702,7 +695,7 @@ export default function InstanceTabBar({
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
       <div className={`flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} variant={variant} />
+        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} />
       </div>
       {variant === 'strip' && activeInst && (
         <div className="flex items-center gap-1.5 shrink-0 pl-2 pr-1" title={tunnelTitle}>

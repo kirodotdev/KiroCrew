@@ -16,6 +16,10 @@ from typing import Any, Callable, Mapping, Sequence
 NPM_VERSION = "10.8.2"
 AUDIT_TIMEOUT_SECONDS = 120
 MAX_EXCEPTION_DAYS = 30
+# Lead time on the expiry warning. An exception stays valid through its expiry
+# date and the gate fails closed the day after, so this is the window in which
+# the owner can still renew or remove it before a build breaks.
+EXPIRY_WARNING_DAYS = 7
 EXCEPTIONS_FILENAME = ".vulnerability-exceptions.json"
 AUDITED_LOCKFILES = (
     "website/package-lock.json",
@@ -167,6 +171,49 @@ def load_exception_rules(path: Path, *, today: date | None = None) -> list[Excep
     except json.JSONDecodeError as exc:
         raise GateError(f"exception file {path} is not valid JSON: {exc}") from exc
     return validate_exception_document(document, today=today)
+
+
+def expiring_exception_rules(
+    rules: Sequence[ExceptionRule],
+    *,
+    today: date,
+    within_days: int = EXPIRY_WARNING_DAYS,
+) -> list[tuple[ExceptionRule, int]]:
+    """Return (rule, days remaining) for exceptions inside the warning window.
+
+    An already-expired rule is never returned: ``validate_exception_document``
+    rejects it outright, so by the time a rule reaches here it is still valid and
+    the count is zero or positive. Zero means the expiry date itself, which is
+    the last day the rule holds.
+    """
+    upcoming: list[tuple[ExceptionRule, int]] = []
+    for rule in rules:
+        remaining = (rule.expires - today).days
+        if 0 <= remaining <= within_days:
+            upcoming.append((rule, remaining))
+    # Soonest first, then by scope, so repeated runs emit an identical ordering.
+    upcoming.sort(key=lambda item: (item[0].expires, item[0].package, item[0].advisory))
+    return upcoming
+
+
+def expiry_warning_lines(
+    rules: Sequence[ExceptionRule],
+    *,
+    today: date,
+    within_days: int = EXPIRY_WARNING_DAYS,
+) -> list[str]:
+    """Render one actionable GitHub warning annotation per expiring exception."""
+    lines: list[str] = []
+    for rule, remaining in expiring_exception_rules(rules, today=today, within_days=within_days):
+        when = "today" if remaining == 0 else f"in {remaining} day(s)"
+        fails_on = rule.expires + timedelta(days=1)
+        lines.append(
+            f"::warning::vulnerability exception for {rule.package} {rule.advisory} "
+            f"(owner {rule.owner}) expires {when} on {rule.expires.isoformat()}; "
+            f"this audit fails closed from {fails_on.isoformat()} until the exception is "
+            f"renewed or removed in {EXCEPTIONS_FILENAME}"
+        )
+    return lines
 
 
 def locate_npx(which: Callable[[str], str | None] = shutil.which) -> str:
@@ -408,7 +455,16 @@ def unexcepted_findings(
 
 def main() -> int:
     try:
-        rules = load_exception_rules(_REPO_ROOT / EXCEPTIONS_FILENAME)
+        # One `today` for both the validation and the warning, so a run spanning
+        # UTC midnight cannot judge the same rule against two different dates.
+        today = _utc_today()
+        rules = load_exception_rules(_REPO_ROOT / EXCEPTIONS_FILENAME, today=today)
+        # Emitted BEFORE the audit: the audit reaches the network and can fail
+        # for reasons of its own, and the owner still needs the expiry notice
+        # when it does. This runs on every nightly, which is what makes the
+        # warning time-based rather than dependent on someone opening a PR.
+        for line in expiry_warning_lines(rules, today=today):
+            print(line)
         npx = locate_npx()
         findings: list[Finding] = []
         for lockfile in AUDITED_LOCKFILES:

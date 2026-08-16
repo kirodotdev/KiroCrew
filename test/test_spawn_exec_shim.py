@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import threading
 from unittest.mock import AsyncMock, patch
@@ -35,6 +36,8 @@ from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     RLIMIT_PROFILE_TOOL,
     create_subprocess_limited,
+    popen_limited,
+    run_limited,
     spawn_shim_argv,
 )
 
@@ -307,6 +310,249 @@ class TestCreateSubprocessLimited:
         assert kwargs["cwd"] == "/tmp"
         assert kwargs["env"] == {"A": "1"}
         assert kwargs["start_new_session"] is True
+
+
+# --------------------------------------------------------------------------
+# The synchronous siblings
+# --------------------------------------------------------------------------
+
+
+@posix_only
+class TestSyncLimitedSpawns:
+    def test_never_passes_a_fork_child_callable(self):
+        """The regression guard: a callable here forks the threaded gateway."""
+        with patch("subprocess.run") as spawn:
+            run_limited(["/bin/true"])
+        assert spawn.call_args.kwargs["preexec_fn"] is None
+        assert strip_spawn_shim(spawn.call_args.args[0]) == ("/bin/true",)
+
+        with patch("subprocess.Popen") as spawn:
+            popen_limited(["/bin/true"])
+        assert spawn.call_args.kwargs["preexec_fn"] is None
+        assert strip_spawn_shim(spawn.call_args.args[0]) == ("/bin/true",)
+
+    def test_the_shim_prefix_is_prepended_when_one_is_available(self):
+        """The whole point: the command is reached through the shim, not directly."""
+        prefix = spawn_shim_argv()
+        assert prefix, "no shim prefix on this host — the rest of this test is vacuous"
+        with patch("subprocess.run") as spawn:
+            run_limited(["/bin/true", "arg"])
+        argv = spawn.call_args.args[0]
+        assert tuple(argv[: len(prefix)]) == prefix
+        assert strip_spawn_shim(argv) == ("/bin/true", "arg")
+
+    @pytest.mark.parametrize("call", [run_limited, popen_limited])
+    def test_refuses_a_caller_supplied_preexec_fn(self, call):
+        with pytest.raises(TypeError, match="owns preexec_fn"):
+            call(["/bin/true"], preexec_fn=lambda: None)
+
+    @pytest.mark.parametrize("call", [run_limited, popen_limited])
+    def test_refuses_shell_true(self, call):
+        """A shell command is one string, so there is nowhere to put the prefix."""
+        with pytest.raises(TypeError, match="shell=True"):
+            call("true", shell=True)
+
+    @pytest.mark.parametrize("call", [run_limited, popen_limited])
+    def test_requires_a_command(self, call):
+        with pytest.raises(ValueError):
+            call([])
+
+    def test_bare_name_is_resolved_against_the_child_path(self):
+        true_path = shutil.which("true")
+        if not true_path:
+            pytest.skip("no `true` binary on PATH")
+        with patch("subprocess.run") as spawn:
+            run_limited(["true"], env={"PATH": os.path.dirname(true_path)})
+        # The shim execs without a PATH search, so the parent must hand it a path.
+        assert strip_spawn_shim(spawn.call_args.args[0])[0].endswith("/true")
+
+    def test_missing_command_still_raises_filenotfound_at_the_spawn(self):
+        with patch("subprocess.run"):
+            with pytest.raises(FileNotFoundError):
+                run_limited(["kirocrew-no-such-command"], env={"PATH": "/nonexistent"})
+
+    def test_path_search_runs_inline_not_on_a_worker_thread(self):
+        """A sync caller is already off the event loop, so a thread hop buys nothing."""
+        caller = threading.get_ident()
+        ran_on: list[int] = []
+
+        def spy(argv, env, cwd=None):
+            ran_on.append(threading.get_ident())
+            return "/bin/true"
+
+        with (
+            patch("subprocess.run"),
+            patch.object(sandbox, "_resolve_spawn_target", spy),
+        ):
+            run_limited(["true"])
+        assert ran_on == [caller]
+
+    def test_explicit_path_takes_no_resolution(self):
+        with (
+            patch("subprocess.run") as spawn,
+            patch.object(
+                sandbox, "_resolve_spawn_target", side_effect=AssertionError("resolved a path")
+            ),
+        ):
+            run_limited(["/nonexistent/tool"], cwd="/tmp")
+        assert strip_spawn_shim(spawn.call_args.args[0]) == ("/nonexistent/tool",)
+
+    @pytest.mark.parametrize(
+        ("call", "target"), [(run_limited, "subprocess.run"), (popen_limited, "subprocess.Popen")]
+    )
+    def test_falls_back_to_preexec_rather_than_dropping_the_limits(self, call, target):
+        """A truncated install must not silently spawn children uncapped."""
+        with (
+            patch.object(sandbox, "_SPAWN_SHIM_CODE", ""),
+            patch(target) as spawn,
+        ):
+            call(["/bin/true"])
+        assert callable(spawn.call_args.kwargs["preexec_fn"])
+        assert spawn.call_args.args[0] == ["/bin/true"]
+
+    def test_a_policy_free_profile_drops_both_the_shim_and_the_callable(self):
+        """The negative control for the fallback: nothing to apply, nothing applied."""
+        with patch("subprocess.run") as spawn:
+            run_limited(["/bin/true"], profile=RLIMIT_PROFILE_NONE)
+        assert spawn.call_args.kwargs["preexec_fn"] is None
+        assert spawn.call_args.args[0] == ["/bin/true"]
+
+    def test_forwards_every_other_keyword_untouched(self):
+        with patch("subprocess.run") as spawn:
+            run_limited(["/bin/true"], cwd="/tmp", env={"A": "1"}, timeout=5, check=True)
+        kwargs = spawn.call_args.kwargs
+        assert kwargs["cwd"] == "/tmp"
+        assert kwargs["env"] == {"A": "1"}
+        assert kwargs["timeout"] == 5
+        assert kwargs["check"] is True
+
+
+@posix_only
+class TestSyncReportedArgv:
+    """The shim source rides in argv as a ~8 KB ``-c`` string.
+
+    ``CompletedProcess.args`` and both failure exceptions render that argv into
+    their message, so reporting the spawned form would put the whole shim into
+    every failure log line. Each test here pins BOTH halves -- that the shim IS
+    in the argv actually spawned, and that it is NOT in what gets reported -- so
+    none of them can pass by the shim quietly ceasing to be prepended.
+    """
+
+    def _shim_is_prepended(self, spawned: "list[str]") -> bool:
+        return len(strip_spawn_shim(spawned)) < len(spawned)
+
+    def test_completed_process_reports_the_command_not_the_shim(self):
+        result = run_limited(["/bin/echo", "hi"], capture_output=True, text=True)
+        assert result.args == ["/bin/echo", "hi"]
+        assert not any("--rlimits=" in a for a in result.args)
+
+    def test_called_process_error_names_the_command_not_the_shim(self):
+        # A real exit(1), not `/bin/false`: that path is Linux-only (macOS ships
+        # `false`/`true` under /usr/bin, not /bin), so a hardcoded `/bin/false`
+        # made execv fail with ENOENT on macOS -- caught by the shim's own
+        # `except OSError`, which reports EXEC_FAILED (127), not the command's
+        # own exit status. sys.executable is the portable equivalent already
+        # used throughout this file for a real spawned child.
+        cmd = [sys.executable, "-c", "import sys;sys.exit(1)", "x"]
+        with pytest.raises(subprocess.CalledProcessError) as caught:
+            run_limited(cmd, check=True, capture_output=True)
+        assert caught.value.cmd == cmd
+        assert caught.value.returncode == 1
+        # The regression this guards: the message was 8815 chars, nearly all shim.
+        assert len(str(caught.value)) < 200
+
+    def test_timeout_expired_names_the_command_not_the_shim(self):
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            run_limited([sys.executable, "-c", "import time;time.sleep(30)"], timeout=0.3)
+        assert caught.value.cmd == [sys.executable, "-c", "import time;time.sleep(30)"]
+        assert len(str(caught.value)) < 200
+
+    def test_popen_communicate_timeout_names_the_command_not_the_shim(self):
+        """``communicate(timeout=...)`` builds TimeoutExpired from ``Popen.args``."""
+        proc = popen_limited(
+            [sys.executable, "-c", "import time;time.sleep(30)"], stdout=subprocess.PIPE
+        )
+        try:
+            assert proc.args == [sys.executable, "-c", "import time;time.sleep(30)"]
+            with pytest.raises(subprocess.TimeoutExpired) as caught:
+                proc.communicate(timeout=0.3)
+            assert len(str(caught.value)) < 200
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_the_shim_is_still_in_the_argv_that_was_spawned(self):
+        """The other half: rewriting what is REPORTED must not stop the wrapping."""
+        with patch("subprocess.run") as spawn:
+            run_limited(["/bin/true"])
+        assert self._shim_is_prepended(list(spawn.call_args.args[0]))
+        with patch("subprocess.Popen") as spawn:
+            popen_limited(["/bin/true"])
+        assert self._shim_is_prepended(list(spawn.call_args.args[0]))
+
+
+@posix_only
+class TestSyncRealChild:
+    def test_child_is_capped_and_is_its_own_process(self):
+        probe = (
+            "import os,resource,sys;"
+            "print(resource.getrlimit(resource.RLIMIT_NOFILE)[0], os.getpid(),"
+            " os.environ.get('KC_PROBE',''), *sys.argv[1:])"
+        )
+        proc = popen_limited(
+            [sys.executable, "-c", probe, "tail-arg"],
+            stdout=subprocess.PIPE,
+            env={"PATH": os.environ.get("PATH", ""), "KC_PROBE": "kept"},
+        )
+        out, _ = proc.communicate()
+        soft, pid, marker, tail = out.decode().split()
+        # The limit really bound the exec'd image...
+        assert int(soft) <= 65536
+        # ...the shim exec'd in place, so the PID the caller holds is the child's own...
+        assert int(pid) == proc.pid
+        # ...and the environment and trailing argv passed through untouched.
+        assert marker == "kept"
+        assert tail == "tail-arg"
+
+    def test_the_cap_is_lower_than_an_unwrapped_spawn(self):
+        """Negative control: without the wrapper the child inherits the gateway's soft limit."""
+        # The tool profile's cap is a fixed target (`_RLIMIT_DEFAULTS
+        # ["max_open_files"]` in security.py == 1024), not "whatever is lower
+        # than inherited". This negative control only proves anything when the
+        # inherited soft limit starts out ABOVE that cap -- and macOS's own
+        # per-process default can already sit AT or BELOW 1024 (the classic
+        # 256 login default), in which case an unwrapped child reports <=1024
+        # too and the assertion fails for a reason that has nothing to do with
+        # the shim. Same host-variance handling as
+        # test_session_host_child_gets_headroom_not_the_tool_cap: read the real
+        # limits and, if needed, raise this process's own soft limit above the
+        # cap first so the comparison is meaningful on any host.
+        default_cap = 1024
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and hard <= default_cap:
+            pytest.skip(f"host hard NOFILE limit ({hard}) is at or below the tool cap")
+        raised = soft <= default_cap
+        if raised:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (default_cap + 1, hard))
+        try:
+            probe = "import resource;print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+            wrapped = run_limited(
+                [sys.executable, "-c", probe], capture_output=True, text=True
+            ).stdout.strip()
+            bare = subprocess.run(
+                [sys.executable, "-c", probe], capture_output=True, text=True
+            ).stdout.strip()
+            inherited = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+            assert int(bare) == inherited
+            assert int(wrapped) < int(
+                bare
+            ), f"wrapped child got {wrapped}, unwrapped got {bare} — the cap did nothing"
+        finally:
+            if raised:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+    def test_exit_status_belongs_to_the_command(self):
+        assert run_limited([sys.executable, "-c", "raise SystemExit(42)"]).returncode == 42
 
 
 # --------------------------------------------------------------------------

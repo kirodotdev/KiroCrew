@@ -26,6 +26,7 @@ import {
   MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, COLLAPSED_RAIL_WIDTH,
 } from './lib/format'
 import { loadColumnWidth } from '../../lib/columnWidth'
+import ListDetailBack from '../../components/ListDetailBack'
 import { useColumnResize, type CollapseConfig } from '../../hooks/useColumnResize'
 import LeftRail from './components/LeftRail'
 import ResizeHandle from '../../components/ResizeHandle'
@@ -42,7 +43,11 @@ import { providerTerms } from './lib/links'
 
 import { i18nT } from '../../i18n/t'
 // Module-level so the hook's memoised resolver isn't invalidated every render.
-const RAIL_COLLAPSE: CollapseConfig = { width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY }
+// `whenNarrow`: three columns (rail + list + detail) cannot share a phone, so
+// the rail defaults to its icon strip there and acts as the app's nav bar.
+const RAIL_COLLAPSE: CollapseConfig = {
+  width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY, whenNarrow: true,
+}
 
 /** The crew roster column's own persisted width.
  *
@@ -62,7 +67,7 @@ export default function Workspace() {
     mainView, dashboardTab, activeIssue, activePull, active,
     selectedIssue, anyFilterActive, clearFilters,
     selectedPull, anyPrFilterActive, clearPrFilters,
-    crewView,
+    crewView, listDetail,
   } = useIssueRadar()
   // A selection resolved from the FILTERED list has no fallback (see context's
   // activeIssue/activePull), so an active filter that excludes the selected item
@@ -90,14 +95,51 @@ export default function Workspace() {
   // after a create. Transient by design: a restored-open dialog is not a page.
   const [crewEditor, setCrewEditor] = useState<{ crew: Crew | null } | null>(null)
 
+  // Expanding the rail on a phone gives it the whole viewport rather than
+  // restoring its 280px minimum beside a pane that then has ~110px — the strip's
+  // expand button must not lead straight back into the squeeze it escaped.
+  const railFull = listDetail.isMobile && !rail.collapsed
+  // Collapsed while narrow: the rail lies across the TOP rather than down the
+  // left edge. A ~48px strip costs nothing on a desktop and a tenth of the
+  // reading column on a phone, and horizontal space is the axis a phone cannot
+  // give — CJK body text pays for a squeezed column by the character, since it
+  // breaks almost anywhere and simply collapses instead of overflowing.
+  const railBar = listDetail.isMobile && rail.collapsed
+  const showList = listDetail.showList && !railFull
+  const showDetail = listDetail.showDetail && !railFull
+  // While narrow the visible pane takes the space left beside the strip, so it
+  // is flex-1 rather than the persisted desktop column width.
+  const listPaneClass = `${listDetail.isMobile ? 'flex-1' : 'flex-shrink-0'} min-h-0`
+  const listPaneStyle = (w: number) => (listDetail.isMobile ? undefined : { width: w })
+  // The only way back to the list once a phone has drilled into the detail: the
+  // rail strip's nav rows switch section, they do not leave the detail, and
+  // component selection state is not browser history. Null on a desktop, where
+  // both panes are on screen and there is nothing to return from.
+  const narrowBack = (label: string) => (
+    listDetail.isMobile && showDetail
+      ? <ListDetailBack label={label} onBack={listDetail.closeDetail} />
+      : null
+  )
+
   const DashboardView = dashboardComponent(dashboardTab)
 
   return (
-    <div className="flex h-full bg-bg text-text">
-      <LeftRail width={rail.width} collapsed={rail.collapsed} onExpand={rail.expand} />
+    <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
+      {/* Collapse on select: the expanded rail owns the whole viewport while
+          narrow, so navigating without collapsing would leave the user looking
+          at the rail instead of the section they picked. */}
+      <LeftRail
+        width={railFull ? '100%' : rail.width}
+        collapsed={rail.collapsed}
+        horizontal={railBar}
+        onExpand={rail.expand}
+        onNavigate={listDetail.isMobile ? rail.collapse : undefined}
+        onCollapse={railFull ? rail.collapse : undefined}
+      />
 
       {/* Drag handle — resize the left rail. Present in every main view, since
           the rail itself is. Dragging well past the minimum collapses it. */}
+      {!listDetail.isMobile && (
       <ResizeHandle
         handleProps={rail.handleProps}
         label={i18nT('apps.issueRadar.workspace.resize_sidebar')}
@@ -106,14 +148,18 @@ export default function Workspace() {
         min={MIN_RAIL_WIDTH}
         max={MAX_RAIL_WIDTH}
       />
+      )}
 
       {mainView === 'issues' ? (
         <>
-          <section style={{ width: list.width }} className="flex-shrink-0 min-h-0">
-            <IssueList resizing={list.dragging} />
-          </section>
+          {showList && (
+            <section style={listPaneStyle(list.width)} className={listPaneClass}>
+              <IssueList resizing={list.dragging} />
+            </section>
+          )}
 
           {/* Drag handle — resize the issue-list column. */}
+          {!listDetail.isMobile && (
           <ResizeHandle
             handleProps={list.handleProps}
             label={i18nT('apps.issueRadar.workspace.resize_list')}
@@ -122,8 +168,13 @@ export default function Workspace() {
             min={MIN_LIST_WIDTH}
             max={MAX_LIST_WIDTH}
           />
+          )}
 
-          <main className="flex-1 min-w-0 min-h-0">
+          <main className={`flex-1 min-w-0 min-h-0 flex flex-col ${showDetail ? '' : 'hidden'}`}>
+            {narrowBack(i18nT('apps.issueRadar.components.leftRail.issues'))}
+            {/* flex-1 min-h-0 so the Back row takes its 44px from this pane
+                rather than pushing the detail's own h-full past the fold. */}
+            <div className="flex-1 min-h-0">
             {activeIssue
               ? <IssueDetail issue={activeIssue} />
               : issueHiddenByFilter
@@ -140,19 +191,23 @@ export default function Workspace() {
                     <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_an_issue_to_see_its_details')}</div>
                   </div>
                 )}
+            </div>
           </main>
         </>
       ) : mainView === 'settings' ? (
-        <main className="flex-1 min-w-0 min-h-0">
+        <main className={`flex-1 min-w-0 min-h-0 ${railFull ? 'hidden' : ''}`}>
           <SettingsView />
         </main>
       ) : mainView === 'pulls' ? (
         <>
-          <section style={{ width: list.width }} className="flex-shrink-0 min-h-0">
-            <PrList resizing={list.dragging} />
-          </section>
+          {showList && (
+            <section style={listPaneStyle(list.width)} className={listPaneClass}>
+              <PrList resizing={list.dragging} />
+            </section>
+          )}
 
           {/* Drag handle — resize the PR-list column. */}
+          {!listDetail.isMobile && (
           <ResizeHandle
             handleProps={list.handleProps}
             label={i18nT('apps.issueRadar.workspace.resize_list')}
@@ -161,8 +216,11 @@ export default function Workspace() {
             min={MIN_LIST_WIDTH}
             max={MAX_LIST_WIDTH}
           />
+          )}
 
-          <main className="flex-1 min-w-0 min-h-0">
+          <main className={`flex-1 min-w-0 min-h-0 flex flex-col ${showDetail ? '' : 'hidden'}`}>
+            {narrowBack(terms.changeRequestPluralTitle)}
+            <div className="flex-1 min-h-0">
             {activePull
               ? <PrDetail pull={activePull} />
               : pullHiddenByFilter
@@ -179,18 +237,22 @@ export default function Workspace() {
                     <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_a')} {terms.changeRequestTitle} {i18nT('apps.issueRadar.workspace.to_see_its_details')}</div>
                   </div>
                 )}
+            </div>
           </main>
         </>
       ) : mainView === 'crews' ? (
         <>
-          <section style={{ width: crewList.width }} className="flex-shrink-0 min-h-0">
-            <CrewList onCreate={() => setCrewEditor({ crew: null })} />
-          </section>
+          {showList && (
+            <section style={listPaneStyle(crewList.width)} className={listPaneClass}>
+              <CrewList onCreate={() => setCrewEditor({ crew: null })} />
+            </section>
+          )}
 
           {/* Drag handle — resize the crew-list column. Its own width key (see
               CREW_LIST_WIDTH_KEY): sharing LIST_WIDTH_KEY would make dragging the
               roster narrower also narrow the issue and PR lists, which are
               different columns holding different content. */}
+          {!listDetail.isMobile && (
           <ResizeHandle
             handleProps={crewList.handleProps}
             label={i18nT('apps.issueRadar.workspace.resize_list')}
@@ -199,8 +261,13 @@ export default function Workspace() {
             min={MIN_LIST_WIDTH}
             max={MAX_LIST_WIDTH}
           />
+          )}
 
-          <main className="flex-1 min-w-0 min-h-0 overflow-y-auto">
+          <main className={`flex-1 min-w-0 min-h-0 flex flex-col ${showDetail ? '' : 'hidden'}`}>
+            {narrowBack(i18nT('apps.issueRadar.views.crews.rail_section'))}
+            {/* The scroll container moves off <main> onto this wrapper so the
+                Back row stays pinned instead of scrolling away with the page. */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
             {crewView.kind === 'crew'
               ? <CrewPageView crewId={crewView.id} onEdit={(crew) => setCrewEditor({ crew })} />
               : (
@@ -216,6 +283,7 @@ export default function Workspace() {
                   <div className="text-[13px]">{i18nT('apps.issueRadar.workspace.select_a')} {i18nT('apps.issueRadar.views.crews.group_crew')} {i18nT('apps.issueRadar.workspace.to_see_its_details')}</div>
                 </div>
               )}
+            </div>
           </main>
 
           {/* The create/edit dialog is mounted HERE rather than inside either
@@ -231,7 +299,10 @@ export default function Workspace() {
           />
         </>
       ) : (
-        <main className="flex-1 min-w-0 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none' }}>
+        <main
+          className={`flex-1 min-w-0 overflow-y-auto scrollbar-none ${railFull ? 'hidden' : ''}`}
+          style={{ scrollbarWidth: 'none' }}
+        >
           <DashboardView />
         </main>
       )}

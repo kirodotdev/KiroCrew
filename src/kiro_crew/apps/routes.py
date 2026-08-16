@@ -80,6 +80,7 @@ from kiro_crew.apps.registry import (
     install_from_registry,
     is_registry_source,
     known_registry_repos,
+    list_catalog_apps,
     list_registry,
     registry_name_from_source,
 )
@@ -1512,7 +1513,12 @@ async def handle_open_app(request: web.Request) -> web.Response:
 
 async def handle_registry(request: web.Request) -> web.Response:
     """GET /api/apps/registry — list all apps available for installation."""
-    apps = await list_registry()
+    # The published catalog is the storefront's source of truth when it is
+    # reachable: its rows replace the seed + per-app manifest fetch. Offline the
+    # catalog is empty and the seed listing answers instead.
+    apps = await list_catalog_apps()
+    if not apps:
+        apps = await list_registry()
     # Published rail order and layout ride along on the response the store already
     # makes, rather than endpoints the page would have to wait on separately. Off
     # the event loop: the first call after a cache expiry does network I/O. Both

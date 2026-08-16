@@ -23,11 +23,10 @@ import logging
 import os
 import re
 import secrets
-import subprocess
 import time
 from typing import Any, Optional
 
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, wrap_argv
+from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +108,11 @@ def run_aws(args: list[str], profile: str, timeout: int = 30) -> tuple[int, str,
     sandboxed, cleanup = wrap_argv(_aws(args, profile), mode="standard")
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
+        proc = run_limited(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
             sandboxed,
             capture_output=True,
             text=True,
             timeout=timeout,
-            preexec_fn=resource_limit_preexec(),
         )
     finally:
         if cleanup:

@@ -40,6 +40,7 @@ from kiro_crew.embeddings import (
     validate_custom_model_path,
 )
 from kiro_crew.executors import embed_executor, run_in_embed_pool
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -48,7 +49,8 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
-from ._shared import _get_memory, _is_restricted_session
+from ._shared import _get_memory, _is_restricted_session, _redact_memory_field
+from .cron import _recognize_session
 
 logger = logging.getLogger(__name__)
 
@@ -163,21 +165,6 @@ async def api_memory_settings(request: web.Request) -> web.Response:
     )
 
 
-def _redact_memory_field(val: object) -> object:
-    """Redact credentials and exfiltration URLs from a memory field."""
-    if isinstance(val, (bytes, memoryview)):
-        return None
-    if isinstance(val, str):
-        val, _ = redact_exfiltration_urls(val)
-        val, _ = redact_credentials(val)
-        return val
-    if isinstance(val, list):
-        return [_redact_memory_field(item) for item in val]
-    if isinstance(val, dict):
-        return {k: _redact_memory_field(v) for k, v in val.items()}
-    return val
-
-
 def _get_vector_store(state: DashboardState):
     """Get VectorMemoryStore from context_builder's memory, or create standalone."""
     mem = _get_memory(state)
@@ -229,8 +216,20 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
 
 async def api_memory_semantic_write(request: web.Request) -> web.Response:
     """PUT /api/memory/semantic — create/update a semantic entry."""
-    if _is_restricted_session(request.app["state"], request):
-        sk = request.headers.get("X-Session-Key", "")
+    state: DashboardState = request.app["state"]
+    # Session-recognition gate (shared with the lessons routes, #3226): the
+    # restricted-mode check below returns False for an unknown key, so before
+    # this gate a forged or never-established X-Session-Key could write
+    # semantic memory that create-style routes would refuse. Writes block
+    # every private persisted mode, mirroring ``api_lessons_create``.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "semantic.write",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
+    if _is_restricted_session(state, request):
         _sel().log_api_access(
             caller=sk, operation="semantic.write", outcome="denied",
             source="dashboard", resources="restricted_session_block",
@@ -280,8 +279,22 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
 
 async def api_memory_semantic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/semantic/{key} — tombstone a semantic entry."""
-    if _is_restricted_session(request.app["state"], request):
-        sk = request.headers.get("X-Session-Key", "")
+    state: DashboardState = request.app["state"]
+    # Same recognition gate as the write route: without it, this DELETE was
+    # LESS protected than the lessons delete #3226 fixed — an unknown key
+    # passed the restricted-mode check (False for unrecognised sessions) and
+    # could tombstone any semantic entry. Policy for known sessions is
+    # unchanged: this route keeps blocking incognito AND temporary (the
+    # ``_is_restricted_session`` check below), so the recovery-path probe
+    # blocks every private mode to match.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "semantic.delete",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
+    if _is_restricted_session(state, request):
         _sel().log_api_access(
             caller=sk, operation="semantic.delete", outcome="denied",
             source="dashboard", resources="restricted_session_block",
@@ -1062,7 +1075,32 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
 
 async def api_memory_episodic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/episodic/{id} — tombstone an episodic memory."""
-    store = _get_vector_store(request.app["state"])
+    state: DashboardState = request.app["state"]
+    # This route had NO session check at all — not even the restricted-mode
+    # one its semantic siblings carry — so any caller, restricted or forged,
+    # could tombstone episodic memories. Apply the shared recognition gate
+    # (#3226) plus the same live-slot restricted-mode policy as
+    # ``api_memory_semantic_delete``.
+    sk = request.headers.get("X-Session-Key", "")
+    refusal = await _recognize_session(
+        state, sk, "episodic.delete",
+        blocks_persisted_mode=is_incognito_transcript,
+    )
+    if refusal is not None:
+        return refusal
+    if _is_restricted_session(state, request):
+        _sel().log_api_access(
+            caller=sk, operation="episodic.delete", outcome="denied",
+            source="dashboard", resources="restricted_session_block",
+        )
+        return web.json_response(
+            {
+                "error": "Memory writes are not allowed in this session mode.",
+                "code": "restricted_session",
+            },
+            status=403,
+        )
+    store = _get_vector_store(state)
     mem_id = request.match_info["id"]
     # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
     ok = await asyncio.to_thread(store.delete_episodic, mem_id)
@@ -1343,6 +1381,11 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         try:
             for entry in vs.get_all_semantic():
                 key = entry.get("key", "")
+                # Lesson rows are rendered as prose by the lessons loop below;
+                # adding them here too would show each lesson twice, once as a
+                # dict repr of its stored mapping.
+                if str(key).startswith("lesson."):
+                    continue
                 val = entry.get("value_json", "")
                 if isinstance(val, str):
                     try:
@@ -1362,6 +1405,11 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
         except Exception:
             pass
         if lessons_data:
+            # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
+            # optional numpy/faiss imports, and this helper is the handler's
+            # only use of it, on one search path.
+            from kiro_crew.vector_memory import _lesson_display_text
+
             for entry in lessons_data:
                 rule = entry.get("value_json", "")
                 if isinstance(rule, str):
@@ -1369,7 +1417,10 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
                         rule = json.loads(rule)
                     except Exception:
                         pass
-                _add("lesson", str(rule)[:80], "lesson", str(rule))
+                # Rendered text for either storage shape; fall back to str() so a
+                # malformed row still surfaces in search rather than vanishing.
+                text = _lesson_display_text(rule) or str(rule)
+                _add("lesson", text[:80], "lesson", text)
         else:
             for le in lessons:
                 _add("lesson", le.rule[:80], "lesson", le.rule)

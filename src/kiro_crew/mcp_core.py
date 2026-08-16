@@ -53,6 +53,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import current_caller
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
+    internal_caller,
     run_mcp_stdio_loop,
 )
 from kiro_crew.mcp_tools import build_tool_list, dispatch
@@ -676,6 +677,57 @@ def _vet_messaging_governance(
         return None
 
 
+def _vet_browse_governance(caller_session: str) -> str | None:
+    """Return a denial reason if governance forbids web browsing, else None.
+
+    The ``browser`` MCP tool drives the native panel (and points at the
+    playwright-cli fallback), a web-egress surface an enterprise policy may
+    disable via ``capabilities.browse``. When DENIED the tool must refuse
+    outright and NOT fall back to playwright-cli -- falling back would let
+    browsing continue and defeat the control. This is distinct from the
+    no-native-panel case (capability ALLOWED, just no Electron), which is the
+    only condition that legitimately degrades to playwright-cli.
+
+    Same stdio-silent, best-effort discipline as :func:`_vet_messaging_governance`
+    (fail-OPEN on evaluation error: a broken policy eval must not brick browsing
+    on a default install). Runs inside the ``kirocrew-core`` stdio subprocess,
+    which boots the platform via ``cli.main`` so ``current_context()`` carries
+    the ceiling.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        from kiro_crew.platform.governance_profiles import vet_and_audit
+
+        decision = vet_and_audit(
+            "capabilities.browse",
+            "",
+            session_key=caller_session,
+            tool_name="browser",
+            app=_governance_app(),
+            log_warning=False,
+        )
+        if not getattr(decision, "permitted", True):
+            return "web browsing is disabled by governance policy"
+        return None
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        try:
+            from kiro_crew.platform.governance_profiles import audit_governance_degraded
+
+            audit_governance_degraded(
+                "browser",
+                session_key=caller_session,
+                scope="capabilities.browse",
+                app=_governance_app(),
+                log_warning=False,
+            )
+        except Exception:
+            pass
+        return None
+
+
 def _vet_channel_governance(caller_session: str, transport: str) -> str | None:
     """Return a denial reason if governance forbids messaging *via transport*.
 
@@ -832,9 +884,30 @@ def _session_key_header_error(sk: str) -> str | None:
         )
 
 
+def _caller_header() -> dict[str, str]:
+    """``X-Internal-Caller`` for this process, when it has declared one.
+
+    MCP stdio servers declare their component name via
+    ``mcp_shared.set_internal_caller`` (done centrally in
+    ``run_mcp_stdio_loop``), and every loopback request from these helpers
+    carries it so the gateway's audit log can attribute an internal write to
+    the actual component instead of inferring "some internal caller" from the
+    secret's mere presence (#3503). Attribution only — the gateway
+    authenticates on ``X-Internal-Secret`` and validates this name against a
+    known set before trusting it into an audit line. Processes that never
+    declared an identity (CLI, tests) send no header rather than a guess.
+    """
+    name = internal_caller()
+    return {"X-Internal-Caller": name} if name else {}
+
+
 def _post(path: str, body: dict | None = None, *, timeout: float = 30) -> dict:
     data = json.dumps(body or {}).encode()
-    headers = {"Content-Type": "application/json", "X-Internal-Secret": _internal_secret()}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+    }
     sk = _resolve_session_key()
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
@@ -891,6 +964,7 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
         raw = ""
     message = raw or str(exc)
     counted = False
+    code = ""
     if raw:
         try:
             parsed = json.loads(raw)
@@ -901,6 +975,17 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
                 # error-body flattening or spawn_run would double-reconcile
                 # in-process rejections and close waves early.
                 counted = bool(parsed.get("counted"))
+                # Preserve the backend's machine-readable error code (e.g.
+                # ``unknown_session`` from DELETE /api/lessons) so callers can
+                # dispatch on the stable code instead of matching the
+                # human-readable wording. The body is untrusted external
+                # content, so only a short identifier-shaped value survives —
+                # anything else is dropped rather than echoed onward.
+                raw_code = parsed.get("code")
+                if isinstance(raw_code, str) and _re.fullmatch(
+                    r"[a-z0-9_.-]{1,64}", raw_code
+                ):
+                    code = raw_code
         except Exception:
             pass
     message, _ = redact_exfiltration_urls(message)
@@ -908,6 +993,8 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     out: dict = {"error": message}
     if counted:
         out["counted"] = True
+    if code:
+        out["code"] = code
     return out
 
 
@@ -924,7 +1011,7 @@ def _get(path: str, session_key: str | None = None) -> dict:
     session. Passing the verified key makes the value that was checked the value
     that is used. It is still validated by ``_session_key_header_error``.
     """
-    headers = {"X-Internal-Secret": _internal_secret()}
+    headers = {"X-Internal-Secret": _internal_secret(), **_caller_header()}
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
@@ -944,10 +1031,21 @@ def _get(path: str, session_key: str | None = None) -> dict:
         return {"error": str(e)}
 
 
-def _patch(path: str, body: dict | None = None) -> dict:
+def _patch(path: str, body: dict | None = None, *, session_key: str | None = None) -> dict:
+    """PATCH a loopback gateway path with the internal-secret handshake.
+
+    ``session_key``: as in :func:`_put`. A caller gated on
+    :func:`_resolve_session_key_strict` must send the key it verified —
+    re-resolving through the lenient walk here would let the request carry a
+    different session's authority than the one the gate approved.
+    """
     data = json.dumps(body or {}).encode()
-    headers = {"Content-Type": "application/json", "X-Internal-Secret": _internal_secret()}
-    sk = _resolve_session_key()
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+    }
+    sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
         return {"error": _sk_err}
@@ -984,7 +1082,11 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
     this path means writing another crew's work item and public ledger.
     """
     data = json.dumps(body or {}).encode()
-    headers = {"Content-Type": "application/json", "X-Internal-Secret": _internal_secret()}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": _internal_secret(),
+        **_caller_header(),
+    }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)
     if _sk_err:
@@ -1010,7 +1112,7 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
 
 def _delete(path: str, body: dict | None = None) -> dict:
     data = json.dumps(body or {}).encode() if body else None
-    headers = {"X-Internal-Secret": _internal_secret()}
+    headers = {"X-Internal-Secret": _internal_secret(), **_caller_header()}
     sk = _resolve_session_key()
     _sk_err = _session_key_header_error(sk)
     if _sk_err:

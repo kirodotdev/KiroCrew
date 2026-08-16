@@ -1,4 +1,4 @@
-import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter } from 'lucide-react'
+import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import GithubLogo from '../../../components/icons/GithubLogo'
 import Clickable from '../../../components/Clickable'
 import { fmtNumber } from '../../../i18n/format'
@@ -6,6 +6,7 @@ import { useIssueRadar } from '../context'
 import { APP_VERSION, CREW_SORT_FIELDS, DEFAULT_RAIL_WIDTH } from '../lib/format'
 import { CREW_FILTERS, type CrewFilter } from '../lib/types'
 import AccordionSection from './Accordion'
+import { IconButton } from '../../../components/ui'
 import DashboardsSection from './DashboardsSection'
 import FiltersSection from './FiltersSection'
 import PrFiltersSection from './PrFiltersSection'
@@ -24,10 +25,21 @@ import { i18nT } from '../../../i18n/t'
  * the default is `w-72`. Dragging the handle far enough
  * past the minimum collapses the rail to `CollapsedRail`. */
 export default function LeftRail({
-  width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand,
+  width = DEFAULT_RAIL_WIDTH, collapsed = false, onExpand, onNavigate, onCollapse,
+  horizontal = false,
 }: {
-  width?: number
+  width?: number | string
+  /** Called after any section navigation. The narrow-viewport shell uses it to
+   * collapse the full-width rail, so a tap does not navigate to a section that
+   * the rail is still covering. */
+  onNavigate?: () => void
+  /** Set ONLY while narrow: renders an explicit collapse control, since the drag
+   * handle that closes the rail on a desktop is hidden on touch. */
+  onCollapse?: () => void
   collapsed?: boolean
+  /** Only meaningful with `collapsed`: lay the strip across the top instead of
+   * down the left edge, so the panes below keep the full viewport width. */
+  horizontal?: boolean
   onExpand?: () => void
 }) {
   const {
@@ -55,12 +67,23 @@ export default function LeftRail({
         repo={active.repo}
         readOnly={isReadOnly(activeEntry?.permissions)}
         onExpand={onExpand}
+        horizontal={horizontal}
       />
     )
   }
 
   return (
     <aside style={{ width }} className="flex-shrink-0 flex flex-col min-h-0 py-2 gap-2">
+      {/* A narrow viewport gives the expanded rail the WHOLE screen, and its drag
+          handle is hidden on touch, so without this a user who opened the rail to
+          look at it can only leave by navigating somewhere. */}
+      {onCollapse && (
+        <div className="px-2 flex justify-end">
+          <IconButton aria-label={i18nT('app.collapse_sidebar')} onClick={onCollapse}>
+            <PanelLeftClose size={16} />
+          </IconButton>
+        </div>
+      )}
       {/* Repo switcher — top of the rail, opens downward. */}
       <div className="px-2">
         <RepoSwitcher />
@@ -73,9 +96,9 @@ export default function LeftRail({
         // Return to the dashboard you were last on, not Overview: `dashboardTab`
         // is already persisted, so resetting it here would throw away the one
         // piece of state the section is meant to remember.
-        onToggle={() => openDashboard(dashboardTab)}
+        onToggle={() => { openDashboard(dashboardTab); onNavigate?.() }}
       >
-        <DashboardsSection />
+        <DashboardsSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
@@ -85,36 +108,36 @@ export default function LeftRail({
         // Return to the crews page you were last on — `crewView` is persisted, so
         // resetting it here would discard the one thing the section remembers.
         // Same contract as Dashboards above.
-        onToggle={() => openCrews()}
+        onToggle={() => { openCrews(); onNavigate?.() }}
       >
-        <CrewsSection />
+        <CrewsSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
         title={i18nT('apps.issueRadar.components.leftRail.issues')}
         icon={CircleDot}
         expanded={expanded === 'filters'}
-        onToggle={() => openIssues()}
+        onToggle={() => { openIssues(); onNavigate?.() }}
       >
-        <FiltersSection />
+        <FiltersSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
         title={terms.changeRequestPluralTitle}
         icon={GitPullRequest}
         expanded={expanded === 'pulls'}
-        onToggle={() => openPulls()}
+        onToggle={() => { openPulls(); onNavigate?.() }}
       >
-        <PrFiltersSection />
+        <PrFiltersSection onNavigate={onNavigate} />
       </AccordionSection>
 
       <AccordionSection
         title={i18nT('apps.issueRadar.components.leftRail.settings')}
         icon={Settings}
         expanded={expanded === 'settings'}
-        onToggle={() => openSettings()}
+        onToggle={() => { openSettings(); onNavigate?.() }}
       >
-        <SettingsSection />
+        <SettingsSection onNavigate={onNavigate} />
       </AccordionSection>
 
       {/* App identity — bottom-most. */}
@@ -135,7 +158,7 @@ export default function LeftRail({
  * The roster itself is deliberately absent here. Column 2 is where a crew's state
  * is read, and the rail is the surface that has to stay legible at 220px — a
  * second copy of one list, without the state, is the worse of the two. */
-function CrewsSection() {
+function CrewsSection({ onNavigate }: { onNavigate?: () => void }) {
   const {
     openCrews, crewCounts,
     crewFilter, setCrewFilter, crewSortKey, crewSortDir, cycleCrewSort,
@@ -212,7 +235,7 @@ function CrewsSection() {
             return (
               <Clickable
                 key={key}
-                onClick={() => { setCrewFilter(key); openCrews() }}
+                onClick={() => { setCrewFilter(key); openCrews(); onNavigate?.() }}
                 data-testid={`crew-filter-${key}`}
                 aria-pressed={isActive}
                 className={rowClass(isActive)}
@@ -230,23 +253,71 @@ function CrewsSection() {
   )
 }
 
-/** The rail dragged shut: one vertical rounded-rect card carrying the provider
- * logo and the full `owner/repo`, with the app mark below — the same
- * elevated-pill treatment the repo switcher gets when the rail is open, so you
- * still know which repo the workspace points at while the list and detail
- * columns take the window. The repo label rotates clockwise (top-to-bottom
- * reading) so it starts next to the logo. Clicking the repo half reopens the
- * rail at its previous width (dragging the handle back out works too). */
+/** The rail dragged shut: one rounded-rect card carrying the provider logo and
+ * the full `owner/repo`, with the app mark alongside — the same elevated-pill
+ * treatment the repo switcher gets when the rail is open, so you still know
+ * which repo the workspace points at while the list and detail columns take the
+ * window. Clicking the repo half reopens the rail at its previous width
+ * (dragging the handle back out works too).
+ *
+ * Two orientations, and the axis is the whole point. Down the left edge on a
+ * desktop, where a strip's width is free. Across the TOP while narrow, where it
+ * is not: a phone can spend vertical room and has none to the side. The vertical
+ * card rotates the repo label clockwise (top-to-bottom reading) so it starts
+ * next to the logo; the bar just truncates it. */
 function CollapsedRail({
-  width, owner, repo, readOnly, onExpand,
+  width, owner, repo, readOnly, onExpand, horizontal = false,
 }: {
-  width: number
+  // Shares LeftRail's pass-through prop, so it takes the same CSS-length type.
+  // In practice this is always the numeric strip width: the string form is only
+  // used for the full-width narrow-viewport rail, which is the EXPANDED branch.
+  width: number | string
   owner: string
   repo: string
   readOnly: boolean
   onExpand?: () => void
+  /** Lay the collapsed rail across the TOP instead of down the left edge. Set
+   * while narrow, where the strip's ~48px is horizontal space the reading
+   * column cannot spare: a phone has vertical room to give and none to the
+   * side, and CJK body text pays for a squeezed column by the character. */
+  horizontal?: boolean
 }) {
   const full = `${owner}/${repo}`
+  if (horizontal) {
+    return (
+      <aside className="w-full flex-shrink-0 px-2 pt-2">
+        <div className="flex items-center overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">
+          <button
+            type="button"
+            onClick={onExpand}
+            title={i18nT('apps.issueRadar.components.leftRail.click_to_expand_the_sidebar', { name: full })}
+            aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
+            className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
+          >
+            <GithubLogo size={16} className="flex-shrink-0 text-text" />
+            {/* Truncates from the tail: the repo half of `owner/repo` is what
+                tells two workspaces apart, and it survives longest that way. */}
+            <span className="min-w-0 truncate text-[13px] font-medium tracking-[.02em] text-text">
+              {full}
+            </span>
+            {readOnly && <ReadOnlyTag />}
+            {/* Opens toward the reader, matching the expanded rail's
+                PanelLeftClose — the bar is horizontal but the panel it reveals
+                is still the left rail. */}
+            <PanelLeftOpen size={15} className="ml-auto flex-shrink-0" />
+          </button>
+          {/* Adornment, not a control: no divider and no hover, because a
+              bordered cell beside a real button reads as a second button. */}
+          <div
+            className="flex-shrink-0 flex items-center pl-1 pr-3"
+            title={i18nT('apps.issueRadar.components.leftRail.issue_radar_version', { version: APP_VERSION })}
+          >
+            <Radar size={15} className="text-accent" />
+          </div>
+        </div>
+      </aside>
+    )
+  }
   return (
     <aside style={{ width }} className="flex-shrink-0 flex flex-col min-h-0 py-2 px-1">
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-xl border border-border-strong bg-bg-elevated shadow-sm">

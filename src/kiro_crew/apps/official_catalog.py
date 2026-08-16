@@ -21,11 +21,14 @@ instead of degrading silently:
   list non-empty is REFUSED outright and the client falls back to the seed. A
   withdrawn app must never be rendered because we skipped the mechanism that
   withdraws it.
-- **No new inventory.** Every entry annotates a row that already exists (a
-  built-in discovered from disk, or a seed-index row). A published ``git`` source
-  is pinned to a COMMIT, and the install path clones with ``--branch``, which a
-  commit id is not -- so adding installable entries needs that path changed
-  first. An entry matching nothing is ignored.
+- **Display-only inventory.** ``list_catalog_rows`` maps the published list's
+  DISPLAY fields (identity, name, summary, version, tags, author, asset refs)
+  into storefront rows. It emits no clone coordinates and no ``origin``, because
+  the catalog is trusted only as far as TLS: install coordinates stay with the
+  seed and external registries, and a non-builtin row never mints the verified
+  badge. ``list_catalog_apps`` intersects the rendered set with the seed's
+  installable entries, so a catalog-only ``git`` name renders nothing until it is
+  installable.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -387,3 +391,56 @@ def annotate(rows: list[dict[str, Any]], entries: list[dict[str, Any]]) -> None:
             row["iconUrlDark"] = dark
         if hero := _resolve_ref(entry.get("heroRef")):
             row["heroImage"] = hero
+
+
+def list_catalog_rows() -> list[dict[str, Any]]:
+    """Build display rows straight from the published catalog's entries.
+
+    This is the JSON-only storefront path: the published document IS the list,
+    so its curated display fields ARE the copy the store renders, and there is
+    no per-app ``app.json`` to prefer over them. Rows carry identity and display
+    fields ONLY — no clone coordinates and no ``origin`` — because the catalog
+    is trusted only as far as TLS, so it must not supply install coordinates or
+    a first-party provenance claim. Install status and trust are stamped later by
+    ``registry.py`` from the installed app, never from this document.
+
+    Returns ``[]`` when the catalog is unavailable, which is the caller's signal
+    to fall back to the seed listing offline. Every field is type-guarded on the
+    way in for the same reason as ``annotate``: the document arrived over the
+    network, so its types are as untrusted as its content. A name that is not
+    kebab-case is dropped, because a name becomes a filesystem path on install.
+    """
+    rows: list[dict[str, Any]] = []
+    for entry in load_official_catalog():
+        name = entry.get("name")
+        if not isinstance(name, str) or not KEBAB_RE.fullmatch(name):
+            continue
+        row: dict[str, Any] = {"name": name}
+        if display := _curated_str(entry.get("displayName")):
+            row["displayName"] = display
+        if summary := _curated_str(entry.get("summary")):
+            row["description"] = summary
+        if version := _curated_str(entry.get("version")):
+            row["version"] = version
+        if tags := _curated_tags(entry.get("tags")):
+            row["tags"] = tags
+        author = entry.get("author")
+        if isinstance(author, dict) and (author_name := _curated_str(author.get("name"))):
+            row["author"] = author_name
+        if icon := _resolve_ref(entry.get("iconRef")):
+            row["iconUrl"] = icon
+        if dark := _resolve_ref(entry.get("iconRefDark")):
+            row["iconUrlDark"] = dark
+        if hero := _resolve_ref(entry.get("heroRef")):
+            row["heroImage"] = hero
+        source = entry.get("source")
+        if isinstance(source, dict):
+            # The source TYPE is a display marker (builtin vs git), not install
+            # coordinates: url/ref stay out, so the catalog cannot name a clone
+            # target. ``registry.list_catalog_apps`` uses it to intersect git rows
+            # with the seed's installable set.
+            stype = _curated_str(source.get("type"))
+            if stype in ("builtin", "git"):
+                row["source"] = {"type": stype}
+        rows.append(row)
+    return rows

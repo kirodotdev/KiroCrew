@@ -133,10 +133,11 @@ def test_inject_auto_low_memory_floors_at_one_worker() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_env_carries_xdist_cap(tmp_path) -> None:
+async def test_spawn_env_carries_xdist_cap(tmp_path, monkeypatch) -> None:
     """The env handed to the agent subprocess carries the computed cap."""
     from kiro_crew.acp.client import AcpClient
 
+    monkeypatch.delenv(rs.XDIST_AUTO_ENV, raising=False)
     client = AcpClient(work_dir=tmp_path, session_key="k")
     with (
         patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),

@@ -35,8 +35,11 @@ from kiro_crew.instances.validation import (
 logger = logging.getLogger(__name__)
 
 _LOOPBACK = "127.0.0.1"
-_SSH_PROBE_TIMEOUT_SECS = 12.0
-_REMOTE_CURL_TIMEOUT_SECS = 15.0
+# Fallback ssh ConnectTimeout when a caller doesn't pass one (matches
+# token_mint._build_ssh_argv's own fallback default). Real callers pass the
+# configured instances.connect_timeout_secs, capped for diagnostics use — see
+# DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS.
+_DEFAULT_PROBE_CONNECT_TIMEOUT_SECS = 10.0
 _LOCAL_CONNECT_TIMEOUT_SECS = 2.0
 # SSM probes call the AWS control plane (describe-instance-information) and then
 # run a remote command via send-command, both slower than a direct ssh spawn.
@@ -99,28 +102,48 @@ class DiagnosisResult:
         return {"code": self.code, "ok": self.ok, "reason": self.reason, "probes": self.probes}
 
 
-async def _probe_ssh(ssh_host: str) -> bool:
-    """Return True if ``ssh <host> true`` succeeds (host reachable + auth ok)."""
+async def _probe_ssh(
+    ssh_host: str, connect_timeout_secs: float = _DEFAULT_PROBE_CONNECT_TIMEOUT_SECS
+) -> bool:
+    """Return True if ``ssh <host> true`` succeeds (host reachable + auth ok).
+
+    ``connect_timeout_secs`` bounds the ssh ``ConnectTimeout`` option (on
+    OpenSSH >= 8.6 this also covers the banner/KEX exchange, where a slow
+    ProxyCommand spends its time — see token_mint._build_ssh_argv). A caller
+    behind a slow proxy that raised ``instances.connect_timeout_secs`` to
+    make CONNECT work must pass it here too, or this probe reports a
+    reachable-but-slow host as unreachable. The outer wait_for leaves a fixed
+    2s margin past the ssh-side timeout for auth + running ``true`` after
+    connect succeeds.
+    """
     argv = [
         "ssh",
         "-o",
         "BatchMode=yes",
         "-o",
-        "ConnectTimeout=10",
+        f"ConnectTimeout={max(1, round(connect_timeout_secs))}",
         "-o",
         "AddressFamily=inet",
         ssh_host,
         "true",
     ]
-    return await _run_ok(argv, _SSH_PROBE_TIMEOUT_SECS)
+    return await _run_ok(argv, connect_timeout_secs + 2.0)
 
 
-async def _probe_remote_dashboard(ssh_host: str, remote_port: int) -> bool:
+async def _probe_remote_dashboard(
+    ssh_host: str,
+    remote_port: int,
+    connect_timeout_secs: float = _DEFAULT_PROBE_CONNECT_TIMEOUT_SECS,
+) -> bool:
     """Return True if the remote dashboard answers on its loopback port.
 
     Runs ``curl`` on the *remote* host against ``127.0.0.1:<remote_port>``; any
     HTTP status (incl. an auth gate like 401/403/404) means it's listening. A
     ``000`` code or empty output means nothing is bound there.
+
+    ``connect_timeout_secs`` — see :func:`_probe_ssh`. The outer wait_for
+    leaves a 5s margin past the ssh-side timeout, matching the remote
+    ``curl --max-time 5`` this runs after connect succeeds.
     """
     remote_cmd = (
         f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
@@ -131,13 +154,13 @@ async def _probe_remote_dashboard(ssh_host: str, remote_port: int) -> bool:
         "-o",
         "BatchMode=yes",
         "-o",
-        "ConnectTimeout=10",
+        f"ConnectTimeout={max(1, round(connect_timeout_secs))}",
         "-o",
         "AddressFamily=inet",
         ssh_host,
         remote_cmd,
     ]
-    out = await _run_stdout(argv, _REMOTE_CURL_TIMEOUT_SECS)
+    out = await _run_stdout(argv, connect_timeout_secs + 5.0)
     if out is None:
         return False
     code = out.strip().strip("'\"")
@@ -203,11 +226,17 @@ async def diagnose_instance(
     ssh_host: str,
     remote_port: int,
     local_port: int,
+    connect_timeout_secs: float = _DEFAULT_PROBE_CONNECT_TIMEOUT_SECS,
 ) -> DiagnosisResult:
     """Run the dependency-ordered probes and return the first broken link.
 
     Validates ``ssh_host`` first; an invalid host short-circuits to UNKNOWN with
     a clear reason rather than spawning ssh.
+
+    ``connect_timeout_secs`` is forwarded to the ssh-based probes — see
+    :func:`_probe_ssh`. Callers should pass the configured
+    ``instances.connect_timeout_secs``, capped at
+    ``DIAGNOSTICS_CONNECT_TIMEOUT_CAP_SECS``.
     """
     try:
         ssh_host = validate_ssh_host(ssh_host)
@@ -216,12 +245,12 @@ async def diagnose_instance(
 
     probes: list[dict] = []
 
-    ssh_ok = await _probe_ssh(ssh_host)
+    ssh_ok = await _probe_ssh(ssh_host, connect_timeout_secs)
     probes.append({"name": "ssh", "ok": ssh_ok})
     if not ssh_ok:
         return DiagnosisResult(SSH_UNREACHABLE, _REASONS[SSH_UNREACHABLE], probes)
 
-    remote_ok = await _probe_remote_dashboard(ssh_host, remote_port)
+    remote_ok = await _probe_remote_dashboard(ssh_host, remote_port, connect_timeout_secs)
     probes.append({"name": "remote_dashboard", "ok": remote_ok})
     if not remote_ok:
         return DiagnosisResult(REMOTE_DOWN, _REASONS[REMOTE_DOWN], probes)

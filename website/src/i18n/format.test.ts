@@ -161,8 +161,14 @@ describe('fmtUnit', () => {
 
   it('translates the unit itself', async () => {
     await withLanguage('de', () => {
+      // Byte-identical to Intl except for one documented deviation: a plain
+      // U+0020 inside the quantity is promoted to U+00A0 so a line can never
+      // break between the number and its unit. Which unit name and which
+      // separator STYLE still come entirely from CLDR — nothing is hardcoded,
+      // which is what this test exists to protect.
       expect(fmtUnit(90, 'minute')).toBe(
-        new Intl.NumberFormat('de', { style: 'unit', unit: 'minute', unitDisplay: 'narrow' }).format(90),
+        new Intl.NumberFormat('de', { style: 'unit', unit: 'minute', unitDisplay: 'narrow' })
+          .format(90).replace(/ /g, '\u00A0'),
       )
     })
   })
@@ -432,10 +438,14 @@ describe('fmtBytes', () => {
 
   it('localizes the unit and the separator', async () => {
     await withLanguage('ru', () => {
+      // ru's separator is CLDR's, not ours. The one deviation is that a plain
+      // U+0020 is promoted to U+00A0 — see `fmtUnit`. ru already uses U+00A0
+      // here, so this locale is unchanged by that; the normalization is applied
+      // to both sides so the test states the rule rather than the locale's luck.
       expect(fmtBytes(1500)).toBe(
         new Intl.NumberFormat('ru', {
           style: 'unit', unit: 'kilobyte', unitDisplay: 'narrow', maximumFractionDigits: 1,
-        }).format(1.5),
+        }).format(1.5).replace(/ /g, '\u00A0'),
       )
     })
   })

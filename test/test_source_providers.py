@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import tempfile
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -399,6 +402,13 @@ def test_provider_executable_rejects_relative_override(monkeypatch) -> None:
         source._resolve_provider_executable("gh")
 
 
+_tmp_owner_ok = (
+    sys.platform == "win32"
+    or os.stat(tempfile.gettempdir()).st_uid in (0, os.geteuid())
+)
+
+
+@pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
 def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -> None:
     """The default policy accepts the user's own gh — the Homebrew case that
     previously forced a `sudo cp` into a root-owned directory."""
@@ -412,6 +422,7 @@ def test_provider_executable_accepts_user_owned_install(monkeypatch, tmp_path) -
     assert source._resolve_provider_executable("gh") == str(executable.resolve())
 
 
+@pytest.mark.skipif(not _tmp_owner_ok, reason="temp dir not owned by root or current user")
 def test_provider_executable_accepts_symlinked_install(monkeypatch, tmp_path) -> None:
     """Homebrew's layout (bin/gh -> ../Cellar/gh/<v>/bin/gh) resolves through the
     symlink instead of being refused for not being canonical."""
@@ -5515,14 +5526,15 @@ def test_jira_ref_never_passes_the_change_gate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_issue_refuses_jira(monkeypatch) -> None:
-    """Jira chips are link-outs: fetch_issue must refuse before any CLI runs."""
+async def test_fetch_issue_jira_no_credentials(monkeypatch) -> None:
+    """Jira issues raise a descriptive error when no credentials are configured."""
 
     async def no_hosts() -> frozenset[str]:
         return frozenset()
 
     monkeypatch.setattr(source, "ensure_gitlab_hosts_loaded", no_hosts)
-    with pytest.raises(ValueError, match="Jira"):
+    monkeypatch.setattr(source, "_get_jira_auth", lambda host: None)
+    with pytest.raises(ValueError, match="jira_no_credentials"):
         await source.fetch_issue("https://acme.atlassian.net/browse/PROJ-123")
 
 
@@ -6794,7 +6806,7 @@ async def test_issue_endpoint_maps_value_error_to_400(monkeypatch) -> None:
     async with TestClient(TestServer(_app())) as client:
         response = await client.post("/api/source/issue", json={"url": "nope"})
         assert response.status == 400
-        assert await response.json() == {"error": "An issue URL is required."}
+        assert await response.json() == {"error": "An issue URL is required.", "code": "invalid_request"}
 
 
 @pytest.mark.asyncio
@@ -7189,3 +7201,339 @@ class TestBranchPatternSlashSemantics:
         # The reported fail-open: a `releases/*` rule must not open APPROVE for
         # `releases/x/y`, which GitHub does not protect.
         assert not source._branch_pattern_matches("*", "releases/x")
+
+
+# ── Jira issue fetching tests ────────────────────────────────────────────────
+
+
+class TestAdfToPlainText:
+    """The ADF plain-text extractor handles Atlassian Document Format JSON."""
+
+    def test_simple_paragraph(self):
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "Hello world"}],
+                }
+            ],
+        }
+        assert source._adf_to_plain_text(adf) == "Hello world\n"
+
+    def test_multiple_paragraphs(self):
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Line 1"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Line 2"}]},
+            ],
+        }
+        assert source._adf_to_plain_text(adf) == "Line 1\nLine 2\n"
+
+    def test_inline_card_extracts_url(self):
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "inlineCard", "attrs": {"url": "https://example.com"}},
+                    ],
+                }
+            ],
+        }
+        assert "https://example.com" in source._adf_to_plain_text(adf)
+
+    def test_empty_and_non_dict_returns_empty(self):
+        assert source._adf_to_plain_text(None) == ""
+        assert source._adf_to_plain_text("just a string") == ""
+        assert source._adf_to_plain_text({}) == ""
+
+    def test_nested_list_structure(self):
+        adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {"type": "paragraph", "content": [{"type": "text", "text": "item"}]}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        result = source._adf_to_plain_text(adf)
+        assert "item" in result
+
+
+class TestGetJiraAuth:
+    """Credential resolution for Jira hosts."""
+
+    def test_returns_none_when_no_config(self, monkeypatch):
+        """No entries → None."""
+
+        class FakeDashboard:
+            jira_auth = []
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        assert source._get_jira_auth("acme.atlassian.net") is None
+
+    def test_matches_host_case_insensitively(self, monkeypatch):
+        class FakeEntry:
+            host = "Acme.atlassian.net"
+            email = "user@acme.com"
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": "secret123"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        result = source._get_jira_auth("acme.atlassian.net")
+        assert result == ("user@acme.com", "secret123")
+
+    def test_strips_port_443(self, monkeypatch):
+        class FakeEntry:
+            host = "jira.internal:443"
+            email = ""
+
+        class FakeDashboard:
+            jira_auth = [FakeEntry()]
+
+        class FakeConfig:
+            dashboard = FakeDashboard()
+
+            @classmethod
+            def load(cls):
+                return cls()
+
+            def load_credentials(self):
+                return {"JIRA_API_TOKEN": "pat-token"}
+
+        monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
+        result = source._get_jira_auth("jira.internal")
+        assert result == ("", "pat-token")
+
+
+class TestJiraIsCloud:
+    def test_cloud_host(self):
+        assert source._jira_is_cloud("acme.atlassian.net") is True
+
+    def test_server_host(self):
+        assert source._jira_is_cloud("jira.internal.corp") is False
+
+    def test_subdomain_required_for_cloud(self):
+        # The URL parser already rejects bare .atlassian.net, but _jira_is_cloud
+        # is about suffix matching, not URL parsing. Any valid Cloud host has a
+        # non-empty org prefix.
+        assert source._jira_is_cloud("x.atlassian.net") is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_jira_issue_no_credentials_raises_value_error(monkeypatch):
+    """When no credentials are configured, a ValueError with the expected prefix is raised."""
+    monkeypatch.setattr(source, "_get_jira_auth", lambda host: None)
+    ref = source.SourceRef(
+        provider="jira",
+        url="https://acme.atlassian.net/browse/PROJ-123",
+        host="acme.atlassian.net",
+        owner="",
+        repo="PROJ",
+        number=123,
+        kind="issue",
+    )
+    with pytest.raises(ValueError, match="jira_no_credentials"):
+        await source._fetch_jira_issue(ref)
+
+
+def test_parse_jira_cloud_url() -> None:
+    """Jira Cloud URLs parse correctly."""
+    ref = source.parse_source_url("https://acme.atlassian.net/browse/PROJ-42")
+    assert ref.provider == "jira"
+    assert ref.host == "acme.atlassian.net"
+    assert ref.repo == "PROJ"
+    assert ref.number == 42
+    assert ref.kind == "issue"
+    assert ref.url == "https://acme.atlassian.net/browse/PROJ-42"
+
+
+def test_parse_jira_self_hosted_url(monkeypatch) -> None:
+    """Self-hosted Jira URLs parse when host is in the allowlist."""
+    monkeypatch.setattr(source, "_allowed_jira_hosts", lambda: frozenset({"jira.internal.corp"}))
+    ref = source.parse_source_url("https://jira.internal.corp/browse/TEAM-99")
+    assert ref.provider == "jira"
+    assert ref.host == "jira.internal.corp"
+    assert ref.repo == "TEAM"
+    assert ref.number == 99
+
+
+# --- Jira linked issues (issue #2584) ---
+
+
+class TestJiraLinkedChanges:
+    """Tests for _jira_linked_changes parsing."""
+
+    def test_outward_link_parsed(self) -> None:
+        """An outward issue link is parsed with the correct relation label."""
+        fields = {
+            "issuelinks": [
+                {
+                    "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                    "outwardIssue": {
+                        "key": "PROJ-456",
+                        "fields": {
+                            "summary": "Blocked task",
+                            "status": {"statusCategory": {"key": "new"}},
+                        },
+                    },
+                }
+            ]
+        }
+        result = source._jira_linked_changes(fields, "https://acme.atlassian.net")
+        assert len(result) == 1
+        assert result[0]["provider"] == "jira"
+        assert result[0]["url"] == "https://acme.atlassian.net/browse/PROJ-456"
+        assert result[0]["number"] == 456
+        assert result[0]["title"] == "Blocked task"
+        assert result[0]["state"] == "open"
+        assert result[0]["relation"] == "blocks"
+        assert result[0]["issueKey"] == "PROJ-456"
+
+    def test_inward_link_parsed(self) -> None:
+        """An inward issue link is parsed with the inward relation label."""
+        fields = {
+            "issuelinks": [
+                {
+                    "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                    "inwardIssue": {
+                        "key": "TEAM-10",
+                        "fields": {
+                            "summary": "Upstream dep",
+                            "status": {"statusCategory": {"key": "indeterminate"}},
+                        },
+                    },
+                }
+            ]
+        }
+        result = source._jira_linked_changes(fields, "https://jira.corp/jira")
+        assert len(result) == 1
+        assert result[0]["relation"] == "is blocked by"
+        assert result[0]["url"] == "https://jira.corp/jira/browse/TEAM-10"
+        assert result[0]["state"] == "open"
+        assert result[0]["issueKey"] == "TEAM-10"
+
+    def test_done_status_maps_to_closed(self) -> None:
+        """A linked issue with statusCategory 'done' maps to state 'closed'."""
+        fields = {
+            "issuelinks": [
+                {
+                    "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+                    "outwardIssue": {
+                        "key": "FIX-7",
+                        "fields": {
+                            "summary": "Done fix",
+                            "status": {"statusCategory": {"key": "done"}},
+                        },
+                    },
+                }
+            ]
+        }
+        result = source._jira_linked_changes(fields, "https://acme.atlassian.net")
+        assert result[0]["state"] == "closed"
+
+    def test_duplicate_keys_deduped(self) -> None:
+        """Duplicate issue keys are folded."""
+        link = {
+            "type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+            "outwardIssue": {
+                "key": "DUP-1",
+                "fields": {"summary": "Dup", "status": {"statusCategory": {"key": "new"}}},
+            },
+        }
+        fields = {"issuelinks": [link, link]}
+        result = source._jira_linked_changes(fields, "https://acme.atlassian.net")
+        assert len(result) == 1
+
+    def test_empty_issuelinks(self) -> None:
+        """Empty or missing issuelinks returns an empty list."""
+        assert source._jira_linked_changes({}, "https://x") == []
+        assert source._jira_linked_changes({"issuelinks": []}, "https://x") == []
+
+    def test_malformed_link_skipped(self) -> None:
+        """A link with neither inwardIssue nor outwardIssue is skipped."""
+        fields = {
+            "issuelinks": [
+                {"type": {"name": "Bad", "inward": "x", "outward": "y"}},
+                "not a dict",
+                None,
+            ]
+        }
+        result = source._jira_linked_changes(fields, "https://acme.atlassian.net")
+        assert result == []
+
+    def test_missing_summary_uses_key_as_title(self) -> None:
+        """When summary is missing, the issue key is used as the title."""
+        fields = {
+            "issuelinks": [
+                {
+                    "type": {"name": "Rel", "inward": "r", "outward": "r"},
+                    "outwardIssue": {
+                        "key": "NO-SUM-1",
+                        "fields": {"status": {"statusCategory": {"key": "new"}}},
+                    },
+                }
+            ]
+        }
+        result = source._jira_linked_changes(fields, "https://acme.atlassian.net")
+        assert result[0]["title"] == "NO-SUM-1"
+
+    def test_multiple_links(self) -> None:
+        """Multiple links are all returned in order."""
+        fields = {
+            "issuelinks": [
+                {
+                    "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                    "outwardIssue": {
+                        "key": "A-1",
+                        "fields": {"summary": "First", "status": {"statusCategory": {"key": "new"}}},
+                    },
+                },
+                {
+                    "type": {"name": "Duplicates", "inward": "is duplicated by", "outward": "duplicates"},
+                    "inwardIssue": {
+                        "key": "B-2",
+                        "fields": {"summary": "Second", "status": {"statusCategory": {"key": "done"}}},
+                    },
+                },
+            ]
+        }
+        result = source._jira_linked_changes(fields, "https://x.atlassian.net")
+        assert len(result) == 2
+        assert result[0]["issueKey"] == "A-1"
+        assert result[0]["relation"] == "blocks"
+        assert result[1]["issueKey"] == "B-2"
+        assert result[1]["relation"] == "is duplicated by"
+        assert result[1]["state"] == "closed"

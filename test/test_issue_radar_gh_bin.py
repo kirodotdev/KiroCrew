@@ -10,11 +10,20 @@ These tests pin that wiring — a regression here either locks out every stock
 ``brew install gh`` (the bug this replaced) or silently accepts an
 agent-plantable shim.
 """
+import os
 import sys
+import tempfile
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only gh resolution")
+pytestmark = [
+    pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only gh resolution"),
+    pytest.mark.skipif(
+        sys.platform != "win32"
+        and os.stat(tempfile.gettempdir()).st_uid not in (0, os.geteuid()),
+        reason="temp dir owned by another user; provider ownership checks reject it",
+    ),
+]
 
 from kiro_crew import github_runner  # noqa: E402
 from kiro_crew.apps.builtins.issue_radar.backend import github_client as gh  # noqa: E402

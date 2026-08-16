@@ -8,6 +8,7 @@ operator stubbed it, and sharing is a separate global decision over that set.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from kiro_crew.mcp_gateway.rewriter import _rewrite_single_spec
@@ -38,8 +39,8 @@ def _spec() -> dict:
     return {
         "name": "kirocrew",
         "mcpServers": {
-            "alpha-mcp": {"command": "alpha", "args": ["--serve"]},
-            "beta-mcp": {"command": "beta", "args": []},
+            "alpha-mcp": {"command": sys.executable, "args": ["--serve"]},
+            "beta-mcp": {"command": sys.executable, "args": []},
         },
     }
 
@@ -128,8 +129,8 @@ def test_a_spec_level_poolable_key_no_longer_opts_a_server_in(tmp_path: Path) ->
     spec = {
         "name": "kirocrew",
         "mcpServers": {
-            "alpha-mcp": {"command": "alpha", "args": [], "poolable": True},
-            "beta-mcp": {"command": "beta", "args": []},
+            "alpha-mcp": {"command": sys.executable, "args": [], "poolable": True},
+            "beta-mcp": {"command": sys.executable, "args": []},
         },
     }
     out, wrapped = _rewrite(spec, tmp_path, stub=frozenset())
@@ -147,8 +148,8 @@ def test_the_config_list_still_opts_that_same_server_in(tmp_path: Path) -> None:
     spec = {
         "name": "kirocrew",
         "mcpServers": {
-            "alpha-mcp": {"command": "alpha", "args": [], "poolable": True},
-            "beta-mcp": {"command": "beta", "args": []},
+            "alpha-mcp": {"command": sys.executable, "args": [], "poolable": True},
+            "beta-mcp": {"command": sys.executable, "args": []},
         },
     }
     out, wrapped = _rewrite(spec, tmp_path, stub=frozenset({"alpha-mcp"}))

@@ -748,17 +748,6 @@ async def _fetch_app_manifest(
     tmp_root: str | None = None
     try:
         tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-manifest-")
-        clone_cmd = [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            branch,
-            "--single-branch",
-            git_url,
-            tmp_root,
-        ]
         # Credential posture for the manifest clone. Default: anonymous+strict
         # (confused-deputy defense — see anonymous_git_env). Same-repo
         # carve-out: when owner_designated is True the clone URL is the
@@ -771,6 +760,17 @@ async def _fetch_app_manifest(
         else:
             clone_env = anonymous_git_env()
             sandbox_mode = "strict"
+        clone_cmd = [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            branch,
+            "--single-branch",
+            git_url,
+            tmp_root,
+        ]
         sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
@@ -1798,6 +1798,38 @@ async def list_registry() -> list[dict[str, Any]]:
     return _apply_trust_fields(
         _enrich_with_install_status(entries, installed_map, detected)
     )
+
+
+async def list_catalog_apps() -> list[dict[str, Any]]:
+    """Store rows built from the published catalog, enriched and trust-stamped.
+
+    The JSON-only storefront path: when the published catalog is available its
+    rows REPLACE the seed + per-app manifest fetch, so the store renders the
+    published document's list and display copy. An empty result means the catalog
+    was unavailable, and the caller falls back to ``list_registry`` offline.
+
+    Install coordinates stay with the seed: the catalog is trusted only as far as
+    TLS, so a ``git`` row is kept only when the seed or an external registry also
+    names it, and it carries no clone URL of its own — install resolves the seed
+    entry by name. A catalog-only ``git`` name renders nothing until it is
+    installable. ``verified`` stays ``False`` for non-builtin rows until the
+    catalog signature is checked, so this path never mints the first-party badge
+    from a document trusted only as far as TLS.
+    """
+    # Off the event loop: the first call after a cache expiry does network I/O.
+    rows = await asyncio.to_thread(official_catalog.list_catalog_rows)
+    if not rows:
+        return []
+    installable = await asyncio.to_thread(_load_registry_file)
+    installable_names = {e.get("name") for e in installable if isinstance(e, dict)}
+    rows = [
+        row
+        for row in rows
+        if row.get("source", {}).get("type") != "git" or row.get("name") in installable_names
+    ]
+    installed = await asyncio.to_thread(list_installed_apps)
+    installed_map = {a["name"]: a for a in installed}
+    return _apply_trust_fields(_enrich_with_install_status(rows, installed_map))
 
 
 def get_server_platform() -> dict[str, str]:

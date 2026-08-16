@@ -214,6 +214,10 @@ class TestParseDashboardUrlMalformed:
     urlparse()/.port raise ValueError on a malformed IPv6 literal or a
     non-integer port — those must degrade to defaults, not propagate."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_port_env(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+
     def test_malformed_ipv6_falls_back_to_defaults(self) -> None:
         # urlparse("http://[::1") raises ValueError('Invalid IPv6 URL').
         host, port = parse_dashboard_url("http://[::1")

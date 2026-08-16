@@ -1,4 +1,5 @@
-import { memo, useRef, useState, useEffect, useCallback } from 'react'
+import { memo, useRef, useEffect, useCallback } from 'react'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
@@ -219,16 +220,37 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
 }
 
 function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<FollowUpBarProps, 'layout'>) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [canScrollL, setCanScrollL] = useState(false)
-  const [canScrollR, setCanScrollR] = useState(false)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
-  const updateScroll = useCallback(() => {
+  // The hook owns the node's edge measurement; this keeps a plain handle to the
+  // same node for the row's own scroll and wheel behaviour.
+  const setScroller = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node
+    attachEdges(node)
+  }, [attachEdges])
+
+  // A mount effect is enough here: this scroller renders unconditionally with
+  // ScrollLayout, so its node exists by the time effects run — unlike the tab
+  // strip, which appears only below a breakpoint and is why the hook binds from
+  // a ref callback.
+  useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    setCanScrollL(el.scrollLeft > 2)
-    setCanScrollR(el.scrollLeft + el.clientWidth < el.scrollWidth - 2)
+    // Vertical wheel scrolls the row horizontally, but only while the row
+    // actually overflows — otherwise the page loses its own scroll.
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+      if (el.scrollWidth <= el.clientWidth) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
   }, [])
+
+  // Chips changing keeps the row's own box, so no observer reports it.
+  useEffect(() => { remeasure() }, [options, remeasure])
 
   // Scroll by ~80% of the visible width in the given direction, so a click
   // reveals the next set of chips while keeping one in view for continuity.
@@ -238,28 +260,6 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
     el.scrollBy({ left: dir * Math.max(el.clientWidth * 0.8, 120), behavior: 'smooth' })
   }, [])
 
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    updateScroll()
-    el.addEventListener('scroll', updateScroll, { passive: true })
-    const ro = new ResizeObserver(updateScroll)
-    ro.observe(el)
-    const onWheel = (e: WheelEvent) => {
-      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
-      if (el.scrollWidth <= el.clientWidth) return
-      e.preventDefault()
-      el.scrollLeft += e.deltaY
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-
-    return () => {
-      el.removeEventListener('scroll', updateScroll)
-      el.removeEventListener('wheel', onWheel)
-      ro.disconnect()
-    }
-  }, [updateScroll, options])
-
   // Small solid, vertically-centered pill button so the arrow reads as a
   // distinct control instead of a transparent icon colliding with the chip
   // text underneath it. The opaque background masks the faded edge chip.
@@ -268,9 +268,9 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
   return (
     <div className="pt-1">
       <div className="relative">
-      {canScrollL && <div className="absolute left-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-r from-bg to-transparent" />}
-      {canScrollR && <div className="absolute right-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-l from-bg to-transparent" />}
-      {canScrollL && (
+      {edges.left && <div className="absolute left-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-r from-bg to-transparent" />}
+      {edges.right && <div className="absolute right-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-l from-bg to-transparent" />}
+      {edges.left && (
         <button
           type="button"
           aria-label={i18nT('components.followUpBar.scroll_suggestions_left')}
@@ -282,7 +282,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
           <ChevronLeft size={16} />
         </button>
       )}
-      {canScrollR && (
+      {edges.right && (
         <button
           type="button"
           aria-label={i18nT('components.followUpBar.scroll_suggestions_right')}
@@ -294,7 +294,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend }: Omit<Fol
           <ChevronRight size={16} />
         </button>
       )}
-      <div ref={scrollRef} className="flex gap-1.5 overflow-x-auto items-center" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+      <div ref={setScroller} className="flex gap-1.5 overflow-x-auto items-center" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {options.map(o => {
           const isPicked = picked.has(o)
           return (

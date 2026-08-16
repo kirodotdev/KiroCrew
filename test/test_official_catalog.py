@@ -610,3 +610,49 @@ class TestRedirectsAreRefused:
     def test_the_handler_is_installed_on_the_opener(self):
         opener = urllib.request.build_opener(oc._NoRedirects)
         assert any(isinstance(h, oc._NoRedirects) for h in opener.handlers)
+
+
+class TestListCatalogRows:
+    def _git(self):
+        return {
+            "name": "git-app",
+            "source": {"type": "git", "url": "https://example.com/r.git", "ref": "a" * 40},
+            "displayName": "Git App",
+            "summary": "One line.",
+            "version": "1.0.0",
+            "tags": ["dev"],
+            "author": {"name": "Alice"},
+            "iconRef": "assets/icon.png",
+        }
+
+    def test_maps_display_fields_only(self, monkeypatch):
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [self._git()])
+        [row] = oc.list_catalog_rows()
+        assert row["name"] == "git-app"
+        assert row["displayName"] == "Git App"
+        assert row["description"] == "One line."
+        assert row["version"] == "1.0.0"
+        assert row["author"] == "Alice"
+
+    def test_a_row_carries_no_install_coordinates_or_trust(self, monkeypatch):
+        """The catalog is TLS-trusted only, so a row must not hand the install
+        path a clone URL or the trust stamp a provenance claim."""
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [self._git()])
+        [row] = oc.list_catalog_rows()
+        assert "gitUrl" not in row and "repo" not in row and "branch" not in row
+        assert "origin" not in row
+
+    def test_unavailable_catalog_yields_no_rows(self, monkeypatch):
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [])
+        assert oc.list_catalog_rows() == []
+
+    def test_a_non_kebab_name_is_dropped(self, monkeypatch):
+        """A catalog name becomes a filesystem path on install, so anything that
+        is not kebab-case must never reach list_catalog_rows."""
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [
+            {
+                "name": "/tmp/victim",
+                "source": {"type": "git", "url": "https://e.com/r", "ref": "c" * 40},
+            }
+        ])
+        assert oc.list_catalog_rows() == []

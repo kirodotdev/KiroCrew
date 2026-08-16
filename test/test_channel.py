@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
-
 import pytest
 
 from kiro_crew.channel import (
@@ -244,27 +242,32 @@ class TestChannelPersistence:
 
 
 class TestChannelManager:
+    @pytest.fixture(autouse=True)
+    def _channels_dir(self, tmp_path):
+        self._dir = str(tmp_path / "channels")
+        (tmp_path / "channels").mkdir()
+
     def test_create(self):
-        mgr = ChannelManager(channels_dir=tempfile.mkdtemp())
+        mgr = ChannelManager(channels_dir=self._dir)
         ch = mgr.create("test topic")
         assert ch is not None
         assert ch.topic == "test topic"
         assert mgr.count == 1
 
     def test_create_capacity(self):
-        mgr = ChannelManager(channels_dir=tempfile.mkdtemp(), max_channels=2)
+        mgr = ChannelManager(channels_dir=self._dir, max_channels=2)
         assert mgr.create("a") is not None
         assert mgr.create("b") is not None
         assert mgr.create("c") is None
 
     def test_get(self):
-        mgr = ChannelManager(channels_dir=tempfile.mkdtemp())
+        mgr = ChannelManager(channels_dir=self._dir)
         ch = mgr.create("t")
         assert mgr.get(ch.id) is ch
         assert mgr.get("nope") is None
 
     def test_close(self):
-        mgr = ChannelManager(channels_dir=tempfile.mkdtemp())
+        mgr = ChannelManager(channels_dir=self._dir)
         ch = mgr.create("t")
         agent = ch.add_agent(role="A", agent_name="a", task="t")
         assert mgr.close(ch.id)
@@ -273,7 +276,7 @@ class TestChannelManager:
         assert not mgr.close(ch.id)
 
     def test_list_channels(self):
-        mgr = ChannelManager(channels_dir=tempfile.mkdtemp(), max_channels=2)
+        mgr = ChannelManager(channels_dir=self._dir, max_channels=2)
         mgr.create("a")
         mgr.create("b")
         assert len(mgr.list_channels()) == 2

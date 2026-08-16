@@ -74,10 +74,10 @@ describe('issue link extraction', () => {
     })
   })
 
-  it('keeps a user-pasted issue OUT of the rich surface (first-mention attribution)', () => {
+  it('keeps a user-pasted GitHub issue OUT of the rich surface (first-mention attribution)', () => {
     const issue = 'https://github.com/acme/widgets/issues/9'
-    // The user referenced it for context, so it belongs in Resources, not the
-    // Issues tab — and a later agent echo must not reclassify it.
+    // GitHub/GitLab issues follow the same agent-first rule as PRs.
+    // User-pasted issues are context, not a panel source.
     expect(extractPullRequestLinks([
       ...userMessages(`Look at ${issue}`),
       ...messages(`Reading ${issue} now`),

@@ -1,4 +1,4 @@
-"""Tests for set_orch_cfg voice_reply restore — covers auto_speak + peers."""
+"""Tests for the voice_reply restore — set_orch_cfg and the dashboard path."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.slack import handler as handler_mod
-from kiro_crew.slack.handler import _vc, set_orch_cfg
+from kiro_crew.slack.handler import _vc, load_voice_reply_config, set_orch_cfg
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +52,7 @@ def test_set_orch_cfg_reads_auto_speak_from_raw(tmp_path, monkeypatch):
     set_orch_cfg(cfg)
     assert _vc.auto_speak is True
 
+
 # ── auto_reply_to_voice default follows enabled ─────────────────────────
 
 
@@ -74,7 +75,8 @@ def test_auto_reply_to_voice_defaults_true_when_enabled_true(tmp_path, monkeypat
 def test_auto_reply_to_voice_explicit_overrides_enabled_false(tmp_path, monkeypatch):
     """User can set ``auto_reply_to_voice=true`` while keeping ``enabled=false``."""
     _cfg_file(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         {"enabled": False, "auto_reply_to_voice": True},
     )
     set_orch_cfg(SimpleNamespace())
@@ -85,7 +87,8 @@ def test_auto_reply_to_voice_explicit_overrides_enabled_false(tmp_path, monkeypa
 def test_auto_reply_to_voice_explicit_overrides_enabled_true(tmp_path, monkeypatch):
     """User can set ``auto_reply_to_voice=false`` while keeping ``enabled=true``."""
     _cfg_file(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         {"enabled": True, "auto_reply_to_voice": False},
     )
     set_orch_cfg(SimpleNamespace())
@@ -125,8 +128,7 @@ def test_provider_typo_falls_back_to_polly_with_warning(tmp_path, monkeypatch, c
         set_orch_cfg(SimpleNamespace())
     assert _vc.provider == "polly"
     assert any(
-        "voice_reply.provider" in rec.message and "ploly" in rec.message
-        for rec in caplog.records
+        "voice_reply.provider" in rec.message and "ploly" in rec.message for rec in caplog.records
     ), "expected a warning log naming the bad provider value"
 
 
@@ -140,3 +142,47 @@ def test_provider_omitted_defaults_to_polly(tmp_path, monkeypatch):
     _cfg_file(tmp_path, monkeypatch, {})
     set_orch_cfg(SimpleNamespace())
     assert _vc.provider == "polly"
+
+
+# ── restore without a Slack orchestrator (dashboard-only gateway) ────────
+
+
+def test_load_voice_reply_config_restores_from_disk_without_cfg(tmp_path, monkeypatch):
+    """A gateway with no Slack tokens never calls set_orch_cfg, so the
+    loader must be callable with no config object and fall back to disk."""
+    _cfg_file(tmp_path, monkeypatch, {"enabled": True, "auto_speak": True})
+    load_voice_reply_config()
+    assert _vc.auto_speak is True
+    assert _vc.global_enabled is True
+    assert _vc.auto_reply_to_voice is True
+
+
+def test_load_voice_reply_config_keeps_defaults_when_config_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(handler_mod, "config_path", lambda: tmp_path / "missing.json")
+    load_voice_reply_config()
+    assert _vc.auto_speak is False
+    assert _vc.global_enabled is False
+
+
+def test_load_voice_reply_config_prefers_cfg_raw_over_disk(tmp_path, monkeypatch):
+    _cfg_file(tmp_path, monkeypatch, {"auto_speak": False})
+    load_voice_reply_config(SimpleNamespace(raw={"voice_reply": {"auto_speak": True}}))
+    assert _vc.auto_speak is True
+
+
+def test_dashboard_entrypoints_restore_voice_settings():
+    """Wiring pin: BOTH dashboard app builders must load persisted voice
+    settings at boot. On a dashboard-only gateway (no Slack tokens) nothing
+    else does — without this call every restart silently resets TTS to
+    disabled while the dashboard's settings PUT keeps reporting success."""
+    import inspect
+
+    from kiro_crew.dashboard import server as server_mod
+
+    for func, name in (
+        (server_mod.start_dashboard, "start_dashboard"),
+        (server_mod.start_api_server, "start_api_server"),
+    ):
+        assert "await asyncio.to_thread(load_voice_reply_config)" in inspect.getsource(
+            func
+        ), f"{name} must restore persisted voice settings without blocking the event loop"

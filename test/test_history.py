@@ -4062,3 +4062,137 @@ class TestAppendIfAbsentOffLoop:
             log, "dashboard:s1", "assistant", "body"
         ) is None
         log.append_if_absent.assert_called_once()
+
+
+class TestConsolidationValueGuard:
+    """A consolidation item whose 'value' the LLM omitted must not reach the store."""
+
+    @staticmethod
+    def _consolidator(store):
+        memory = MagicMock()
+        memory.read_preferences.return_value = ""
+        memory.read_projects.return_value = ""
+        return HistoryConsolidator(
+            log=MagicMock(),
+            memory=memory,
+            sessions=None,
+            vector_store=store,
+            migrated=True,
+        )
+
+    def _store(self, tmp_path):
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    def test_value_absent_item_does_not_clobber_existing_row(self, tmp_path) -> None:
+        store = self._store(tmp_path)
+        assert (
+            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+        )
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.alpha.status", "confidence": 1.0}]}, "sess-1"
+        )
+
+        row = store.get_semantic("project.alpha.status")
+        assert row["value_json"] == json.dumps("curated text")
+
+    def test_explicit_none_value_item_does_not_clobber_existing_row(self, tmp_path) -> None:
+        store = self._store(tmp_path)
+        assert (
+            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+        )
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.alpha.status", "value": None, "confidence": 1.0}]},
+            "sess-1",
+        )
+
+        row = store.get_semantic("project.alpha.status")
+        assert row["value_json"] == json.dumps("curated text")
+
+    def test_value_absent_item_is_logged_and_counted(self, tmp_path, caplog) -> None:
+        """The skip must be observable: layer 1 returns before set_semantic, so no event fires."""
+        store = self._store(tmp_path)
+        c = self._consolidator(store)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._write_structured_memory(
+                {"semantic": [{"key": "project.alpha.status", "confidence": 1.0}]}, "sess-1"
+            )
+
+        assert any(
+            "skipped 'project.alpha.status'" in r.getMessage() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), "the omitted-value item was dropped without a per-item warning"
+        assert any(
+            "0 written, 0 deleted, 1 skipped" in r.getMessage() for r in caplog.records
+        ), "the summary line did not report the skip"
+
+    def test_value_absent_item_creates_no_row(self, tmp_path) -> None:
+        store = self._store(tmp_path)
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.beta.status", "confidence": 1.0}]}, "sess-1"
+        )
+
+        assert store.get_semantic("project.beta.status") is None
+
+    def test_well_formed_item_still_overwrites(self, tmp_path) -> None:
+        """Negative control: the harness above can detect a clobber when one happens."""
+        store = self._store(tmp_path)
+        assert (
+            store.set_semantic("project.alpha.status", "curated text", 1.0, "user_explicit") is None
+        )
+        c = self._consolidator(store)
+
+        c._write_structured_memory(
+            {"semantic": [{"key": "project.alpha.status", "value": "replaced", "confidence": 1.0}]},
+            "sess-1",
+        )
+
+        row = store.get_semantic("project.alpha.status")
+        assert row["value_json"] == json.dumps("replaced")
+
+    def test_layer2_refusal_counted_apart_from_no_value_skip(self, tmp_path, caplog) -> None:
+        """An empty-string value clears layer 1 and is refused at layer 2, not 'no value'."""
+        store = self._store(tmp_path)
+        c = self._consolidator(store)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._write_structured_memory(
+                {"semantic": [{"key": "project.alpha.status", "value": "", "confidence": 1.0}]},
+                "sess-1",
+            )
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "0 written, 0 deleted, 0 skipped (no value), 1 refused" in m for m in msgs
+        ), "the layer-2 refusal was still folded into the no-value skip count"
+        assert any(
+            "refused 'project.alpha.status'" in m and "value_empty" in m for m in msgs
+        ), "the refusal did not name its reject cause"
+
+    def test_refusal_names_the_actual_cause_not_a_constant(self, tmp_path, caplog) -> None:
+        """A low-confidence refusal is not a missing value, so the label must follow the code."""
+        store = self._store(tmp_path)
+        c = self._consolidator(store)
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._write_structured_memory(
+                {"semantic": [{"key": "project.alpha.status", "value": "v", "confidence": 0.1}]},
+                "sess-1",
+            )
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(
+            "refused 'project.alpha.status'" in m and "low_confidence" in m for m in msgs
+        ), "the cause was not read from the reject code"
+        assert not any("value_empty" in m for m in msgs), "a non-empty value reported value_empty"
+        assert any("0 skipped (no value), 1 refused" in m for m in msgs)

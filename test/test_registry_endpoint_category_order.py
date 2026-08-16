@@ -27,12 +27,21 @@ async def _call() -> tuple[int, dict[str, Any]]:
 
 @pytest.fixture(autouse=True)
 def _quiet_registry(monkeypatch):
-    """Keep the test about the editorial half: the app list is stubbed."""
+    """Keep the test about the editorial half: the app list is stubbed.
+
+    ``handle_registry`` prefers the published catalog and falls back to the seed,
+    so BOTH sources are stubbed: an empty catalog lets the seed stub answer with
+    the single demo row the assertions expect.
+    """
 
     async def _apps():
         return [{"name": "demo", "tags": ["git"]}]
 
+    async def _no_catalog():
+        return []
+
     monkeypatch.setattr(routes, "list_registry", _apps)
+    monkeypatch.setattr(routes, "list_catalog_apps", _no_catalog)
     monkeypatch.setattr(routes, "get_server_platform", lambda: {"os": "linux", "arch": "x86_64"})
 
 

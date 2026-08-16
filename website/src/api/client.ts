@@ -1724,6 +1724,7 @@ export const api = {
     return fetch('/api/crons/' + jobId + '/history' + (qs ? '?' + qs : ''), { headers: { ..._sk } }).then(j)
   },
   cronRunDetail: (jobId: string, runId: string) => fetch('/api/crons/' + jobId + '/history/' + encodeURIComponent(runId), { headers: { ..._sk } }).then(j),
+  cronScript: (jobId: string) => fetch('/api/crons/' + jobId + '/script').then(j),
   ackCron: (id: string, summary: string, ts?: string) => post('/api/crons/' + id + '/ack', { summary, ts }).then(j),
   cronHistoryAll: (opts?: { offset?: number; limit?: number; jobId?: string }) => {
     const p = new URLSearchParams()

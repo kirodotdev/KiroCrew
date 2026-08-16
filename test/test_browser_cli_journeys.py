@@ -693,16 +693,25 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
 
     from kiro_crew.dashboard.handlers import messaging
 
-    # True = must refuse a non-owner caller. False = deliberately open.
+    # Stance per route:
+    #   "owner"    -> must call _deny_non_owner_browser_request (dashboard owner)
+    #   "internal" -> machine-only: gated on request["internal_auth"] (loopback +
+    #                 X-Internal-Secret); no cookie/app caller reaches it at all
+    #   "open"     -> deliberately readable by any caller
     EXPECTED = {
-        "api_browser_token_put": True,          # writes the attach credential
-        "api_browser_install_start": True,      # mutates the machine (npm install)
-        "api_browser_engine_install": True,     # mutates the machine (browser download)
-        "api_browser_view_get": True,           # returns the unauthenticated dashboard URL
-        "api_browser_view_start": True,         # launches the browser AND returns that URL
+        "api_browser_token_put": "owner",          # writes the attach credential
+        "api_browser_install_start": "owner",      # mutates the machine (npm install)
+        "api_browser_engine_install": "owner",     # mutates the machine (browser download)
+        "api_browser_view_get": "owner",           # returns the unauthenticated dashboard URL
+        "api_browser_view_start": "owner",         # launches the browser AND returns that URL
         # Presence/version reporting only. No credential, no URL, no mutation --
         # and an app that cannot read it cannot tell "absent" from "broken".
-        "api_browser_install_get": False,
+        "api_browser_install_get": "open",
+        # Native command-bus routes: called only by the browser MCP tool / the
+        # Electron poller over loopback with the internal secret. Machine-only.
+        "api_browser_command": "internal",
+        "api_browser_command_drain": "internal",
+        "api_browser_command_result": "internal",
     }
 
     found = {
@@ -716,14 +725,15 @@ def test_every_browser_route_has_a_deliberate_app_token_stance():
     )
 
     wrong = []
-    for name, must_deny in EXPECTED.items():
-        guarded = "_deny_non_owner_browser_request" in inspect.getsource(
-            getattr(messaging, name)
-        )
-        if guarded is not must_deny:
-            wrong.append(f"{name}: guarded={guarded} expected={must_deny}")
+    for name, stance in EXPECTED.items():
+        src = inspect.getsource(getattr(messaging, name))
+        owner_gated = "_deny_non_owner_browser_request" in src
+        internal_gated = 'request.get("internal_auth") is not True' in src
+        actual = "owner" if owner_gated else "internal" if internal_gated else "open"
+        if actual != stance:
+            wrong.append(f"{name}: guard={actual} expected={stance}")
     assert not wrong, (
-        "owner-gate stance does not match the declared intent: "
+        "browser route guard stance does not match the declared intent: "
         + "; ".join(wrong)
     )
 

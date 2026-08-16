@@ -5,7 +5,7 @@ import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../comp
 import Clickable from '../../components/Clickable'
 import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
-import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING } from './helpers'
+import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING, FALLBACK_SUPPORTED_FORMATS, formatSupportedFormats } from './helpers'
 import DetailView from './DetailView'
 import SourcesList from './SourcesList'
 import { ItemCard } from './ItemCard'
@@ -255,12 +255,12 @@ export default function KnowledgePage() {
   })
   // Build the upload accept filter from the backend's advertised formats
   // (single source of truth) so it never drifts from FileReader.SUPPORTED.
-  // Falls back to a superset that includes .pdf if config hasn't loaded yet.
-  const uploadAccept = (config?.supported_formats && config.supported_formats.length
+  // Until config resolves, fall back to the parity-tested mirror of that list.
+  const supportedFormats = config?.supported_formats && config.supported_formats.length
     ? config.supported_formats
-    : ['.md', '.txt', '.org', '.py', '.java', '.ts', '.js', '.rs', '.go', '.html', '.htm',
-       '.csv', '.log', '.json', '.yaml', '.yml', '.sh', '.rb', '.c', '.cpp', '.h', '.docx', '.pdf']
-  ).filter(Boolean).join(',')
+    : FALLBACK_SUPPORTED_FORMATS
+  const uploadAccept = supportedFormats.filter(Boolean).join(',')
+  const supportedFormatsDisplay = formatSupportedFormats(supportedFormats.filter(Boolean))
   const acceptsNoExtension = config?.accepts_no_extension ?? true
 
   const { data: sources = [] } = useQuery({
@@ -525,7 +525,7 @@ export default function KnowledgePage() {
             </div>
             <p className="text-sm text-muted mb-3">{ONBOARDING.description}</p>
             <ol className="space-y-2">
-              {ONBOARDING.steps.map((s, i) => <li key={i} className="text-[13px] text-text flex gap-2"><span className="text-accent font-bold">{i + 1}.</span>{s}</li>)}
+              {ONBOARDING.steps(supportedFormatsDisplay).map((s, i) => <li key={i} className="text-[13px] text-text flex gap-2"><span className="text-accent font-bold">{i + 1}.</span>{s}</li>)}
             </ol>
             <div className="mt-4 pt-3 border-t border-border">
               <div className="text-[12px] font-medium text-text-strong mb-1">{i18nT('pages.knowledge.index.keyboard_shortcuts')}</div>
@@ -661,7 +661,7 @@ export default function KnowledgePage() {
         ) : tab === 'settings' ? (
           <SettingsTab />
         ) : (
-          <SourcesList onIngest={handleFiles} uploadNamespace={uploadNamespace} setUploadNamespace={setUploadNamespace} namespaces={namespaces} ingestionJobs={ingestionJobs} uploadAccept={uploadAccept} acceptsNoExtension={acceptsNoExtension} />
+          <SourcesList onIngest={handleFiles} uploadNamespace={uploadNamespace} setUploadNamespace={setUploadNamespace} namespaces={namespaces} ingestionJobs={ingestionJobs} uploadAccept={uploadAccept} supportedFormatsDisplay={supportedFormatsDisplay} acceptsNoExtension={acceptsNoExtension} />
         )}
       </div>
 
@@ -674,7 +674,7 @@ export default function KnowledgePage() {
           <span className="whitespace-nowrap">{stats.sources} {i18nT('pages.knowledge.index.sources')}</span>
           {stats.embeddings?.enabled ? (
             <span className={`whitespace-nowrap ${stats.embeddings.available ? 'text-ok' : 'text-warn'}`} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : i18nT('pages.knowledge.index.embedding_model_loading', { name: stats.embeddings.model })}>
-              ● {stats.embeddings.available ? `embeddings (${stats.embeddings.embedded_items})` : i18nT('pages.knowledge.index.embeddings_loading')}
+              ● {stats.embeddings.available ? i18nT('pages.knowledge.index.embeddings_count', { value: stats.embeddings.embedded_items }) : i18nT('pages.knowledge.index.embeddings_loading')}
             </span>
           ) : (
             <span className="text-muted whitespace-nowrap" title={i18nT('pages.knowledge.index.embedding_model_is_downloading_in_the_background')}>{i18nT('pages.knowledge.index.embeddings_initializing')}</span>

@@ -7,7 +7,7 @@
  * normal file-tab path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 
 import FolderPanel from '../pages/chat/FolderPanel'
 import { renderWithProviders } from './helpers'
@@ -82,8 +82,34 @@ describe('FolderPanel', () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
-    fireEvent.click(await waitFor(() => screen.getByLabelText('Reveal in Finder')))
+    fireEvent.click(await waitFor(() => screen.getByLabelText('Show in file manager')))
     expect(reveal).toHaveBeenCalledWith('/Users/me/ws')
+  })
+
+  /**
+   * The control names the GATEWAY's file manager, not the browser's: `/api/reveal`
+   * shells out on the gateway, so a dashboard opened from a Mac against a Linux
+   * gateway must not promise Finder. The wording also has to hold for a DIRECTORY,
+   * which is what this button reveals.
+   */
+  it.each([
+    ['darwin', 'Open in Finder'],
+    ['win32', 'Open in File Explorer'],
+    // The sentinel a non-owner dashboard user (and a probe that could not run)
+    // gets. It must never be read as a platform we can name.
+    ['gateway', 'Show in file manager'],
+    ['linux', 'Show in file manager'],
+  ])('names the reveal control for a %s gateway host', async (platform, label) => {
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    const { queryClient } = renderWithProviders(
+      <FolderPanel path="/Users/me/ws" onClose={vi.fn()} />,
+    )
+    act(() => { queryClient.setQueryData(['kiro-prerequisite'], { platform }) })
+    const button = await waitFor(() => screen.getByLabelText(label))
+    // Both channels, because the button is icon-only: a tooltip alone leaves a
+    // screen-reader user with nothing, and an aria-label alone leaves a pointer
+    // user hovering a mystery glyph.
+    expect(button.getAttribute('title')).toBe(label)
   })
 
   it('activates rows by keyboard', async () => {

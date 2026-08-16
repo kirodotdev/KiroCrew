@@ -1,14 +1,32 @@
 ---
 name: web-browse
-description: Open a REAL external web page with playwright-cli so the user can see it in Kiro Crew's Browser panel. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server, that is the web-preview skill). Needs playwright-cli on PATH, and note that an attached browser carries the user's real logins.
+description: Open a REAL external web page so the user can see it in Kiro Crew's Browser panel. PRIMARY path is the `browser` MCP tool (drives the built-in native panel); playwright-cli is the fallback for remote/plain-browser sessions and for attached logged-in browsers. Use when the user wants to VIEW / verify / "show me" an actual website or public URL (not a local dev server, that is the web-preview skill).
 triggers: open this page, show me this site, show me the page, view this url, render this page, look at this website, open in the browser, see what this page looks like, pull up this site, visit this url
 ---
 
 # Web Browse: open a real page for the user to look at
 
-The dashboard's right-side **Browser** panel shows the live `playwright-cli`
-session. When the user wants to *see* an external page (a public site, a docs
-page, something they just deployed), open it:
+Your PRIMARY way to open a page in the dashboard's **Browser** panel is the
+**`browser` MCP tool** — it drives the built-in Electron panel in-process, with
+no separate Chromium and no macOS security prompt:
+
+    browser(op="navigate", args={"url": "https://example.com"})
+
+Other ops: `snapshot` (get element refs), then `click` / `type` / `press_key` /
+`hover` / `select_option` / `screenshot` / `wait_for` / `back` / `console`. Call
+`snapshot` first to get refs before a `click`/`type`.
+
+If the tool returns guidance that **no native panel is serving this session** (a
+remote gateway, or a plain-browser dashboard with no Electron panel), THEN fall
+back to `playwright-cli` (below). Do not reach for `playwright-cli` first: on the
+desktop app it spawns its own unsigned Chromium and triggers a macOS security
+prompt, and the user is watching the built-in panel, not that window.
+
+## Fallback (and attach / logged-in sessions): `playwright-cli`
+
+The dashboard's right-side **Browser** panel also shows a live `playwright-cli`
+session. When the `browser` tool reports no native panel — or you need an
+**attached** browser carrying the user's real logins — open a page with:
 
 ```bash
 playwright-cli open https://example.com
@@ -117,8 +135,9 @@ Leave the connection open instead, which costs them nothing.
 1. Confirm the URL is a real `http(s)://` page. You can derive it from the
    conversation; the user does not have to paste it. `file:`, `data:`, and
    `javascript:` are not view targets.
-2. `playwright-cli open <url>` (add `-s=<name>` when you want this page in its own
-   session rather than the current one).
+2. Call `browser(op="navigate", args={"url": "<url>"})`. Only if it reports no
+   native panel, fall back to `playwright-cli open <url>` (add `-s=<name>` for its
+   own session).
 3. Tell the user it is showing in the Browser panel, in one line.
 4. Do not screenshot to "prove" it opened. The user is watching the live view.
 

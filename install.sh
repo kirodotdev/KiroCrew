@@ -42,6 +42,10 @@ KIROCREW_APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 # pre-move ~/.kirocrew, which the one-time data-home migration deletes).
 KIROCREW_DATA_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
 NODE_VERSION="24"
+# Minimum Node major the frontend build actually supports. Defined here
+# (not just at the post-install check) because DETECTION consults it: a
+# pre-existing but too-old node must not short-circuit the install ladder.
+NODE_MIN_MAJOR=22
 PYTHON_VERSION="3.12"
 KIROCREW_PORT="${KIROCREW_PORT:-5476}"
 ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
@@ -116,6 +120,18 @@ spinner() {
 }
 
 has() { command -v "$1" >/dev/null 2>&1; }
+
+# True only when a usable node is on PATH: present AND at or above the build's
+# supported floor. `has node` alone was not enough -- Amazon Linux 2023 ships
+# node 18, so the "already installed" branch matched, every install branch
+# (including nvm) was skipped, and the frontend build then ran under an
+# unsupported node and produced no usable dist. A broken binary reports v0 and
+# fails the comparison, which is the intended answer.
+node_supported() {
+    has node || return 1
+    _n="$( { node --version 2>/dev/null || echo v0; } | sed 's/^v//' | cut -d. -f1)"
+    [ -n "$_n" ] && [ "$_n" -ge "$NODE_MIN_MAJOR" ] 2>/dev/null
+}
 
 # ── Pre-flight ──
 
@@ -238,9 +254,36 @@ fi
 # ── Node.js ──
 if [ "$USE_MISE" -eq 0 ]; then
 info "Checking Node.js…"
-if has node; then
+if node_supported; then
     _node_ver=$(node --version 2>/dev/null || echo "v0")
     ok "Node.js $_node_ver ($( which node ))"
+elif has node; then
+    # Present but below the floor: say so, then fall through to the install
+    # ladder below rather than building against it.
+    info "Node.js $(node --version 2>/dev/null || echo v0) is below the supported floor (>= $NODE_MIN_MAJOR) — installing a supported Node…"
+    if has apt-get; then
+        sudo apt-get install -y nodejs npm >/dev/null 2>&1 || true
+    elif has dnf; then
+        sudo dnf install -y nodejs >/dev/null 2>&1 || true
+    elif has brew; then
+        brew install node >/dev/null 2>&1 || true
+    fi
+    if ! node_supported; then
+        # Distro package still too old (the common case on AL2023/Debian):
+        # nvm is the only channel that reliably provides a current Node.
+        info "Installing Node.js $NODE_VERSION via nvm…"
+        if [ ! -d "$HOME/.nvm" ]; then
+            curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash 2>/dev/null
+        fi
+        export NVM_DIR="$HOME/.nvm"
+        # shellcheck disable=SC1091
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        nvm install "$NODE_VERSION" >/dev/null 2>&1
+        nvm alias default "$NODE_VERSION" >/dev/null 2>&1
+    fi
+    node_supported \
+        && ok "Node.js $(node --version) now active" \
+        || warn "Node.js is still below v$NODE_MIN_MAJOR — the frontend build will fail"
 elif has apt-get; then
     info "Installing nodejs via apt…"
     sudo apt-get install -y nodejs npm >/dev/null 2>&1
@@ -275,7 +318,6 @@ fi # USE_MISE -eq 0 (Node.js)
 # The apt/dnf/brew branches above accept whatever Node the distro ships, which
 # can be older than the supported floor (Debian/Ubuntu in particular). Catch
 # that here rather than as a confusing frontend-build failure later.
-NODE_MIN_MAJOR=22
 if has node; then
     # `|| echo v0` keeps a broken node binary (loader error) from killing the
     # installer under `set -e`; v0 then trips the floor warning below.
@@ -329,7 +371,11 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
         else
             npm install --no-audit --no-fund --loglevel=error 2>"$_fe_log"
         fi &&
-        npm run build 2>>"$_fe_log"
+        # Raise V8's heap ceiling for the bundle build. The default (~2 GB on
+        # 64-bit) is not enough for this app's 6k+ module graph, and the OOM
+        # surfaces as a build that dies without a clear cause -- leaving no
+        # dist/ and a "Dashboard HTML not found" page at first launch.
+        NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" npm run build 2>>"$_fe_log"
     ) &
     spinner $! "Installing npm packages & building React app…"
     _fe_ok=0

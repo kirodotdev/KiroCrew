@@ -42,6 +42,7 @@ from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.security import oauth_url_contains_credential
 
 # ── Shared helpers ────────────────────────────────────────────────────────
 
@@ -470,11 +471,11 @@ class TestAcpRedaction:
 
 class TestOauthUrlCredentialGate:
     def test_empty_url_is_not_a_credential(self):
-        assert chat_runner._oauth_url_contains_credential("") is False
+        assert oauth_url_contains_credential("") is False
 
     def test_plain_consent_url_is_allowed(self):
         assert (
-            chat_runner._oauth_url_contains_credential(
+            oauth_url_contains_credential(
                 "https://github.com/login/oauth/authorize?client_id=abc&state=xyz"
             )
             is False
@@ -483,17 +484,17 @@ class TestOauthUrlCredentialGate:
     def test_unparseable_url_is_refused(self):
         # An invalid IPv6 authority makes urlparse raise ValueError inside the
         # shared security gate, which fails closed.
-        assert chat_runner._oauth_url_contains_credential("https://[bad-ipv6/x") is True
+        assert oauth_url_contains_credential("https://[bad-ipv6/x") is True
 
     def test_credential_signature_inside_an_oauth_param_is_refused(self):
         url = "https://example.test/authorize?state=AKIAIOSFODNN7EXAMPLE1"
 
-        assert chat_runner._oauth_url_contains_credential(url) is True
+        assert oauth_url_contains_credential(url) is True
 
     def test_exfiltration_pattern_in_a_non_oauth_param_is_refused(self):
         url = "https://example.test/authorize?payload=" + ("A" * 260)
 
-        assert chat_runner._oauth_url_contains_credential(url) is True
+        assert oauth_url_contains_credential(url) is True
 
 
 class TestEmitMcpOauthRequest:

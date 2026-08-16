@@ -162,8 +162,6 @@ async def _interactive(provider: LLMProvider, cfg: KiroCrewConfig) -> None:
 
     print("Type your message (Ctrl+D or 'exit' to quit)\n")
 
-    prompt_count = 0
-
     while True:
         try:
             message = input("you> ").strip()
@@ -178,7 +176,6 @@ async def _interactive(provider: LLMProvider, cfg: KiroCrewConfig) -> None:
             break
 
         await _send_and_print(provider, message)
-        prompt_count += 1
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
@@ -193,7 +190,6 @@ async def _interactive(provider: LLMProvider, cfg: KiroCrewConfig) -> None:
                 pass
             await provider.shutdown()
             await provider.start()
-            prompt_count = 0
         elif pct >= 75.0:
             print(f"\n⚠️  Context at {pct:.0f}%", file=sys.stderr)
 

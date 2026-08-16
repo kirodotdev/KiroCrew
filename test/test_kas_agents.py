@@ -15,8 +15,10 @@ import pytest
 
 from kiro_crew import config as kiro_crew_config
 from kiro_crew.acp.kas_agents import (
+    _KAS_FALLBACK_PROMPT,
     KAS_MAX_CUSTOM_AGENTS,
     KasAgentTranslationError,
+    build_kas_custom_agents,
     resolve_prompt,
     to_client_custom_agent,
 )
@@ -204,10 +206,44 @@ class TestPromptResolution:
                 {"prompt": "file://../../etc/passwd"}, agent_id="a", agents_dir=tmp_path
             )
 
-    @pytest.mark.parametrize("bad", [None, "", "   ", 7])
-    def test_absent_prompt_is_refused(self, bad, tmp_path):
-        with pytest.raises(KasAgentTranslationError):
+    @pytest.mark.parametrize("bad", [None, "", "   "])
+    def test_empty_prompt_falls_back_to_the_kas_constant(self, bad, tmp_path, caplog):
+        # KAS requires a non-empty prompt; a missing or blank string is an
+        # intentionally prompt-less agent (e.g. kirocrew-lite ships "prompt": ""),
+        # so the projection substitutes the small inline fallback constant
+        # instead of crashing the session.
+        out = resolve_prompt({"prompt": bad}, agent_id="kirocrew-lite", agents_dir=tmp_path)
+        assert out == _KAS_FALLBACK_PROMPT
+        assert "falling back to the lightweight KAS prompt" in caplog.text
+
+    @pytest.mark.parametrize("bad", [7, 3.14, True, [], {}, ["x"]])
+    def test_non_string_prompt_is_refused_not_defaulted(self, bad, tmp_path):
+        # A non-string prompt is a malformed spec, not a prompt-less one — it
+        # must fail loud rather than silently run with the fallback text.
+        with pytest.raises(KasAgentTranslationError, match="must be a string"):
             resolve_prompt({"prompt": bad}, agent_id="a", agents_dir=tmp_path)
+
+    def test_a_real_prompt_wins_over_the_fallback(self, tmp_path):
+        # The fallback only fires for an empty spec.
+        assert resolve_prompt({"prompt": "own"}, agent_id="a", agents_dir=tmp_path) == "own"
+
+    def test_non_utf8_file_prompt_is_refused_not_crashing(self, tmp_path):
+        # A non-UTF-8 agent-supplied file:// prompt must fail loud as
+        # "unreadable", never raise a raw UnicodeDecodeError out of KAS session
+        # creation.
+        p = tmp_path / "prompt.md"
+        p.write_bytes(b"\xff\xfe not utf-8")
+        with pytest.raises(KasAgentTranslationError, match="unreadable"):
+            resolve_prompt({"prompt": f"file://{p}"}, agent_id="a", agents_dir=tmp_path)
+
+    def test_build_projects_a_prompt_less_spec_with_the_fallback(self, tmp_path):
+        (tmp_path / "kirocrew-lite.json").write_text(
+            json.dumps({"name": "kirocrew-lite", "tools": [], "prompt": ""}), encoding="utf-8"
+        )
+        agents = build_kas_custom_agents(tmp_path, "kirocrew-lite")
+        assert agents[0]["prompt"] == _KAS_FALLBACK_PROMPT
+        # Tool restriction is preserved — the fallback only supplies a prompt.
+        assert agents[0]["tools"] == []
 
 
 def test_the_batch_cap_matches_the_schema():

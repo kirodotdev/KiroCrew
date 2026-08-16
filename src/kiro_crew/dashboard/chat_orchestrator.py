@@ -22,14 +22,15 @@ from kiro_crew.sel import SecurityEvent, sel
 logger = logging.getLogger(__name__)
 
 
-def _build_stage_context(
+async def _build_stage_context(
     slot: "_ChatSlot",
     tracker: "OrchestrationTracker",
     stage_idx: int,
 ) -> str:
     """Build a focused context message for a single stage.
 
-    *stage_idx* is 0-based.
+    *stage_idx* is 0-based. Async because inlining the previous stages' results
+    reads them off disk, which must not block the event loop the stage runs on.
     """
     titles = getattr(slot, "_stage_titles", [])
     goal = getattr(slot, "_plan_goal", "")
@@ -42,7 +43,7 @@ def _build_stage_context(
     parts.append(tracker.status_summary(stage_idx, total, titles))
 
     # Previous stage result paths (LLM can read details via file tools)
-    prev_paths = _previous_result_paths(tracker, stage_idx)
+    prev_paths = await _previous_result_paths(tracker, stage_idx)
     if prev_paths:
         parts.append(f"## Previous Stage Results\n{prev_paths}")
 
@@ -62,17 +63,16 @@ def _build_stage_context(
     return "\n\n".join(parts)
 
 
-def _previous_result_paths(
-    tracker: "OrchestrationTracker",
-    current_idx: int,
-) -> str:
-    """Return compacted previous stage results with paths for full details."""
+def _read_previous_results(recorded: list[tuple[int, str]]) -> str:
+    """Read each recorded stage result and compact it. Blocking.
+
+    Split out so the reads can be handed to a worker thread as a unit. It takes
+    an already-materialised ``(stage_num, path)`` list rather than the tracker,
+    so nothing the event loop mutates is reachable from the worker.
+    """
     _max_per_stage = 2000
     parts: list[str] = []
-    for stage_num in range(1, current_idx + 1):
-        path_str = tracker._stage_results.get(stage_num)
-        if not path_str:
-            continue
+    for stage_num, path_str in recorded:
         p = Path(path_str)
         content = ""
         if p.exists() and not is_sensitive_path(str(p)):
@@ -101,6 +101,29 @@ def _previous_result_paths(
         else:
             parts.append(f"{header}\nFull result: `{path_str}`")
     return "\n\n".join(parts)
+
+
+async def _previous_result_paths(
+    tracker: "OrchestrationTracker",
+    current_idx: int,
+) -> str:
+    """Return compacted previous stage results with paths for full details.
+
+    Stage N inlines every earlier stage's result, so the read count grows with
+    the plan and lands at each stage boundary. ``_stage_loop`` is async, so those
+    reads are offloaded; the path list is snapshotted here first because
+    ``tracker._stage_results`` is mutated on the loop by ``record_stage_result``
+    as stages finish.
+    """
+    recorded: list[tuple[int, str]] = []
+    for stage_num in range(1, current_idx + 1):
+        path_str = tracker._stage_results.get(stage_num)
+        if path_str:
+            recorded.append((stage_num, path_str))
+    if not recorded:
+        # The first stage has nothing to inline; skip the worker hop entirely.
+        return ""
+    return await asyncio.to_thread(_read_previous_results, recorded)
 
 
 def _capture_stage_result(
@@ -136,6 +159,29 @@ def _capture_stage_result(
     path = session_dir / f"stage_{stage_num}_result.md"
     path.write_text(result_text, encoding="utf-8")
     return str(path)
+
+
+def _completion_excerpts(result_paths: tuple[tuple[int, str], ...]) -> dict[int, str]:
+    """Read captured stage results and return one summary excerpt per stage.
+
+    Runs on a worker thread, so it takes an already-snapshotted sequence of
+    ``(stage number, path)`` pairs rather than the live tracker: nothing mutable
+    crosses the boundary in either direction. A stage whose result cannot be read
+    is simply absent from the mapping, which is what makes the caller fall back
+    to a plain "done" line for it.
+    """
+    excerpts: dict[int, str] = {}
+    for stage_num, path_str in result_paths:
+        try:
+            text = safe_read_file(path_str).strip()
+        except (OSError, PermissionError):
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("───"):
+                excerpts[stage_num] = line[:120]
+                break
+    return excerpts
 
 
 async def _stage_loop(
@@ -243,7 +289,7 @@ async def _stage_loop(
             )
 
             # Build focused context and execute
-            context = _build_stage_context(slot, tracker, stage_idx)
+            context = await _build_stage_context(slot, tracker, stage_idx)
             context, _ = redact_exfiltration_urls(context)
             context, _ = redact_credentials(context)
             sel().log(
@@ -542,23 +588,25 @@ async def _stage_loop(
             # for loop completed without break — all stages done
             if not slot._stopping and start_idx < total:
                 slot._auto_run = False
+                # Snapshot the result paths on the loop thread — `_stage_results`
+                # is live orchestration state the loop mutates — then read the
+                # files on a worker: one read per completed stage, all of them
+                # landing at once on the gateway's single event loop.
+                _captured: list[tuple[int, str]] = []
+                for s_idx in range(total):
+                    _path = tracker._stage_results.get(s_idx + 1)
+                    if _path:
+                        _captured.append((s_idx + 1, _path))
+                # Nothing captured means nothing to read: skip the worker hop.
+                excerpts: dict[int, str] = {}
+                if _captured:
+                    excerpts = await asyncio.to_thread(_completion_excerpts, tuple(_captured))
                 # Build execution summary from captured stage results
                 summary_lines = [f"✅ All {total} stages complete."]
                 for s_idx in range(total):
                     s_num = s_idx + 1
                     s_title = titles[s_idx] if s_idx < len(titles) else ""
-                    result_path = tracker._stage_results.get(s_num)
-                    excerpt = ""
-                    if result_path:
-                        try:
-                            text = safe_read_file(result_path).strip()
-                            for line in text.splitlines():
-                                line = line.strip()
-                                if line and not line.startswith("───"):
-                                    excerpt = line[:120]
-                                    break
-                        except (OSError, PermissionError):
-                            pass
+                    excerpt = excerpts.get(s_num, "")
                     label = f"Stage {s_num}: {s_title}" if s_title else f"Stage {s_num}"
                     if excerpt:
                         summary_lines.append(f"  {label} — {excerpt}")

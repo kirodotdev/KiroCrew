@@ -320,7 +320,20 @@ export function measureSidePanelReservedW(): number {
   const clusters = Array.from(header.children).filter(
     c => c.tagName !== 'A' && !c.hasAttribute('data-topbar-overlay'),
   ) as HTMLElement[]
-  const content = clusters.reduce((sum, c) => sum + c.getBoundingClientRect().width, 0)
+  // Measure each cluster's CONTENT extent, not its box. The header is a grid
+  // whose side tracks are `minmax(0,1fr)` remainders and whose items stretch, so
+  // a cluster's own box tracks the TRACK width (about half the window) rather
+  // than what it holds — summing boxes inflated the reserve enough to halve a
+  // maximized panel. The extent spans first-child left to last-child right, so
+  // it includes the cluster's internal gaps but not the stretch slack.
+  const extent = (c: HTMLElement) => {
+    const kids = Array.from(c.children)
+      .map(k => k.getBoundingClientRect())
+      .filter(r => r.width > 0)
+    if (kids.length === 0) return 0
+    return Math.max(...kids.map(r => r.right)) - Math.min(...kids.map(r => r.left))
+  }
+  const content = clusters.reduce((sum, c) => sum + extent(c), 0)
   const cs = getComputedStyle(header as HTMLElement)
   const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
   // +24: minimum breathing gap between the two clusters.

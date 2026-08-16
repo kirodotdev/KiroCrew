@@ -434,6 +434,7 @@ class TestLoadCredentialsEnvPropagation:
             "MICROSOFT_APP_PASSWORD",
             "MICROSOFT_APP_TENANT_ID",
             "WEIXIN_TOKEN",
+            "JIRA_API_TOKEN",
             "KIRO_API_KEY",
         )
         assert set(fixture_keys) == set(_CREDENTIAL_KEYS)

@@ -123,7 +123,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
   const {
     filteredPulls, sortedPulls, pullsLoading, pullsError, pullsPartial,
     prStateFilter, colorByName,
-    selectedPull, setSelectedPull, refreshPulls, pullsRefreshing,
+    selectedPull, setSelectedPull, refreshPulls, pullsRefreshing, listDetail,
     prQuery, setPrQuery, pullsUpdatedAt, prPersonFilterActive, prSearchTruncatedAt,
     active, canWrite, checkedPulls, togglePullChecked, clearCheckedPulls,
   } = useIssueRadar()
@@ -301,7 +301,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
                   >
                     {row(pr, (
                       <button
-                        onClick={() => setSelectedPull(pr.number)}
+                        onClick={() => { setSelectedPull(pr.number); listDetail.openDetail() }}
                         className={cardClass(selectedPull === pr.number)}
                       >
                         {cardInner(pr)}
@@ -312,19 +312,24 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
               </AnimatePresence>
             </div>
           ) : (
-            // Large list: virtualize so only visible rows are DOM nodes. Row gap is
-            // a per-row bottom padding (Virtuoso positions rows absolutely, so a
-            // container flex `gap` does not apply).
+            // Large list: virtualize so only visible rows are DOM nodes.
+            //
+            // Horizontal inset and row gap BOTH live on the row wrapper, never on
+            // the scroller — see the same block in `IssueList` for why: Virtuoso's
+            // viewport is absolutely positioned with `width:100%` and no `left`, so
+            // scroller padding-left is respected while the width is measured against
+            // the PADDING box, making every row 16px too wide and pushing its right
+            // edge off screen.
             <Virtuoso
-              className="absolute inset-0 scrollbar-none px-2"
+              className="absolute inset-0 scrollbar-none"
               style={{ scrollbarWidth: 'none' }}
               data={sortedPulls}
               computeItemKey={(_i, pr) => pr.number}
               itemContent={(_i, pr) => (
-                <div className="pb-2">
+                <div className="px-2 pb-2">
                   {row(pr, (
                     <button
-                      onClick={() => setSelectedPull(pr.number)}
+                      onClick={() => { setSelectedPull(pr.number); listDetail.openDetail() }}
                       className={cardClass(selectedPull === pr.number)}
                     >
                       {cardInner(pr)}

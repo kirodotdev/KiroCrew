@@ -2537,6 +2537,7 @@
         "warm_set_cap": 5,
         "tunnel_base_port": 7778,
         "ssh_compression": true,
+        "mint_timeout_secs": null,
         "max_recovery_attempts": 8,
         "recover_backoff_max_secs": 30.0,
         "probe_failure_threshold": 3
@@ -2597,6 +2598,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "instances.mint_timeout_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mint Timeout (secs)",
+      "help": "How long to wait for the remote `kirocrew token` mint to return before failing a connect. When unset, SSH uses 30s and SSM uses 90s (its dispatch latency is higher). The mint runs over the same ssh transport as the tunnel, so a host behind a ProxyCommand or jump host pays the proxy handshake here too. An explicit value applies to both transports, so size it for the slowest transport you use. Clamped to [10, 120].",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "instances.max_recovery_attempts",

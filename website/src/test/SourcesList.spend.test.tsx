@@ -7,7 +7,7 @@
  * and the standing notice that indexing costs anything at all.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import SourcesList from '../pages/knowledge/SourcesList'
 import * as api from '../pages/knowledge/api'
@@ -62,7 +62,7 @@ describe('SourcesList — per-source spend visibility', () => {
     // Two significant figures, not the raw 11,460: the figure is an estimate, so
     // the rendered precision must not outrun the leading ~. The scale word is
     // locale-dependent (K in en, 万 in ja), hence the unit comes from the label.
-    expect(screen.getByText('~11K Kiro requests left')).toBeTruthy()
+    expect(screen.getByText('~11K Kiro requests to finish')).toBeTruthy()
   })
 
   it('names the same billing unit in the row and its tooltip', async () => {
@@ -76,7 +76,7 @@ describe('SourcesList — per-source spend visibility', () => {
         estimated_llm_calls_remaining: 11460,
       }),
     }])
-    const row = await screen.findByText('~11K Kiro requests left')
+    const row = await screen.findByText('~11K Kiro requests to finish')
     expect(row.getAttribute('title')).toContain('Kiro requests')
     // Engine vocabulary a user cannot act on.
     expect(row.getAttribute('title')).not.toMatch(/sweep/i)
@@ -142,7 +142,7 @@ describe('SourcesList — per-source spend visibility', () => {
     }])
     await screen.findByText('Notes')
     expect(screen.getByText('40/40 files indexed')).toBeTruthy()
-    expect(screen.queryByText(/Kiro requests left/)).toBeNull()
+    expect(screen.queryByText(/Kiro requests to finish/)).toBeNull()
   })
 
   it('renders nothing extra for a source with no queued work', async () => {
@@ -152,7 +152,7 @@ describe('SourcesList — per-source spend visibility', () => {
     }])
     await screen.findByText('doc.md')
     expect(screen.queryByText(/files indexed/)).toBeNull()
-    expect(screen.queryByText(/Kiro requests left/)).toBeNull()
+    expect(screen.queryByText(/Kiro requests to finish/)).toBeNull()
   })
 
   it('survives a source the API sent without a spend block', async () => {
@@ -171,5 +171,79 @@ describe('SourcesList — per-source spend visibility', () => {
     // gets -- they never open the add-source dialog that carries the up-front estimate.
     renderList([])
     expect(await screen.findByText(/Indexing uses Kiro requests/)).toBeTruthy()
+  })
+
+  it('keeps the cost notice to a single sentence', async () => {
+    // The banner sits above the list on every visit; two sentences of standing
+    // caveat is banner blindness fuel. One sentence, every fact retained.
+    renderList([])
+    const notice = await screen.findByText(/Indexing uses Kiro requests/)
+    const text = (notice.textContent ?? '').trim()
+    expect(text.endsWith('.')).toBe(true)
+    expect((text.match(/\./g) ?? []).length).toBe(1)
+  })
+
+  it('failed count on a folder source is a control that reveals which files failed', async () => {
+    // The count names a problem whose detail lives in the row's expanded view;
+    // inert text strands the user one hidden chevron away from the answer.
+    let files = {
+      total: 10, done: 8, failed: 2, skipped: 0,
+      files: [
+        { file_path: '/tmp/notes/a.pdf', status: 'failed', error_message: 'unreadable', mtime: 0, item_count: 0 },
+        { file_path: '/tmp/notes/b.pdf', status: 'failed', error_message: 'too large', mtime: 0, item_count: 0 },
+      ],
+    }
+    vi.mocked(api.knowledgeApi).mockImplementation(async (path: string) => {
+      if (path === '/sources') return [{
+        id: 's1', name: 'Notes', source_type: 'local_folder', uri: '/tmp/notes',
+        sync_status: 'active', item_count: 12,
+        spend: spend({ files_total: 10, files_done: 8, files_failed: 2 }),
+      }] as unknown as never
+      if (path === '/sources/s1/files') return files as unknown as never
+      return { ok: true } as unknown as never
+    })
+    render(
+      <SourcesList onIngest={() => {}} uploadNamespace="" setUploadNamespace={() => {}} namespaces={[]} ingestionJobs={[]} />,
+      { wrapper },
+    )
+    // A real button: keyboard-reachable, and the visible text IS the accessible
+    // name (WCAG 2.5.3 label-in-name); the what-it-does hint rides in title.
+    const count = await screen.findByRole('button', { name: '2 failed' })
+    expect(count.getAttribute('title')).toBe('Show which files failed')
+    // Visibly a control at rest: hover/title never fire on touch, so the
+    // affordance must be static, not hover-only.
+    expect(count.className).toContain('decoration-dotted')
+    // Exactly once: the count has one owner (the meta line), so the same number
+    // never shows twice on one row.
+    expect(screen.getAllByText('2 failed')).toHaveLength(1)
+    fireEvent.click(count)
+    // The expanded view opens and names the failed files.
+    expect(await screen.findByText('a.pdf')).toBeTruthy()
+    expect(screen.getByText('b.pdf')).toBeTruthy()
+    // Toggle, matching the chevron: a second click collapses instead of being dead.
+    fireEvent.click(count)
+    expect(screen.queryByText('a.pdf')).toBeNull()
+    // Reopening refetches rather than serving the Infinity-staleTime cache: a
+    // failure added by a later scan must appear.
+    files = {
+      total: 10, done: 7, failed: 3, skipped: 0,
+      files: [...files.files, { file_path: '/tmp/notes/c.pdf', status: 'failed', error_message: 'corrupt', mtime: 0, item_count: 0 }],
+    }
+    fireEvent.click(count)
+    expect(await screen.findByText('c.pdf')).toBeTruthy()
+  })
+
+  it('failed count stays plain text where no expanded view exists', async () => {
+    // An uploaded file has no per-file breakdown to reveal, so promising one with
+    // an affordance would be a control that does nothing.
+    renderList([{
+      id: 's1', name: 'doc.md', source_type: 'local_file', uri: '/tmp/doc.md',
+      sync_status: 'synced', item_count: 3,
+      spend: spend({ files_total: 4, files_done: 1, files_failed: 3 }),
+    }])
+    await screen.findByText('doc.md')
+    const failed = screen.getByText('3 failed')
+    expect(failed.tagName).not.toBe('BUTTON')
+    expect(screen.queryByRole('button', { name: '3 failed' })).toBeNull()
   })
 })

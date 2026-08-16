@@ -723,8 +723,34 @@ class TestFailureDetailIsRedactedAtTheSource:
         input sizes is stable: quadratic or exponential growth (ReDoS)
         doubles the ratio on each doubling of input, while linear growth
         keeps it near 2.0.
+
+        Two measurement details keep the ratio itself stable on a shared CI
+        runner, matching what ``TestIsDeniedReDoSResistance`` already does
+        for the same class of assertion:
+
+        * ``thread_time``, not ``perf_counter``: wall-clock bills this test
+          for however long the OS gave the core to the sibling pytest-xdist
+          workers, and that noise lands unevenly across the two samples.
+          Redaction is single-threaded pure-regex work, so per-thread CPU is
+          its complete cost — a genuinely catastrophic pattern inflates it
+          identically.
+        * Best-of-3 per size: this is a floor measurement, and scheduler
+          noise only ever ADDS, so the minimum is the closest estimate of
+          the true cost. A single sample per size (what this test used
+          before) let one unlucky small-input reading — the denominator —
+          push the ratio over the limit on an otherwise-healthy matcher,
+          which is how this failed CI intermittently at ~3.1-3.2x.
+
+        Neither change weakens the guarantee: the bound stays at 3.0x, and
+        quadratic growth still lands at >=4x on every sample.
         """
         import time
+
+        def cost(text: str) -> float:
+            """CPU consumed by THIS thread redacting *text*."""
+            start = time.thread_time()
+            mod._redact(text)
+            return time.thread_time() - start
 
         # Adversarial: all chars match the env-var prefix class [A-Z0-9_],
         # the shape that triggered the original catastrophic backtracking
@@ -735,13 +761,8 @@ class TestFailureDetailIsRedactedAtTheSource:
         # Warm up (JIT, import overhead).
         mod._redact(small)
 
-        start = time.perf_counter()
-        mod._redact(small)
-        t_small = time.perf_counter() - start
-
-        start = time.perf_counter()
-        mod._redact(large)
-        t_large = time.perf_counter() - start
+        t_small = min(cost(small) for _ in range(3))
+        t_large = min(cost(large) for _ in range(3))
 
         # Linear growth ⇒ ratio ≈ 2.0; allow up to 3.0 for noise.
         # ReDoS (quadratic+) yields ratio ≥ 4.0 reliably.

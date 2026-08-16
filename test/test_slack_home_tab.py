@@ -314,6 +314,32 @@ class TestPublishHomeTabVectorStore:
         new_callable=AsyncMock,
         return_value="*SSO:* ✅ 5.0h remaining",
     )
+    async def test_mapping_row_keeps_its_not_clause(self, _mw, _fmt, _yolo):
+        """A mapping-shaped lesson renders rule AND negative, not rule-only."""
+        orch = _make_orch()
+        orch.vector_memory = MagicMock()
+        orch.vector_memory.get_lessons.return_value = [
+            {
+                "key": "lesson.1",
+                "value_json": '{"rule": "prefer X", "category": "preference",'
+                ' "negative": "never Y"}',
+            },
+        ]
+        await _publish_home_tab(orch, "U123")
+
+        view = orch.slack.views_publish.call_args[1]["view"]
+        text = str(view["blocks"])
+        assert "prefer X" in text
+        assert "never Y" in text
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch("kiro_crew.slack.events.format_schedule", return_value="every 5m")
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ✅ 5.0h remaining",
+    )
     async def test_vector_store_error_falls_back_to_jsonl(self, _mw, _fmt, _yolo):
         """When vector store raises, falls back to JSONL lessons."""
         orch = _make_orch()

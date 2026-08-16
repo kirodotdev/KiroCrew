@@ -249,7 +249,10 @@ before the handler sees it: NFC unicode normalization with hidden-character
 stripping (control, format, private-use and surrogate code points, preserving
 `\n`/`\r`/`\t`), enum allow-lists, regex patterns for identifiers, range checks,
 unknown-field rejection, tiered length caps (`MAX_TOOL_NAME_LEN` 256,
-`MAX_SHORT_STRING` 500, `MAX_MEDIUM_STRING` 5 000, `MAX_LONG_STRING` 50 000), and
+`MAX_SHORT_STRING` 500, `MAX_MEDIUM_STRING` 5 000, `MAX_LONG_STRING` 50 000, and
+the field-specific `MAX_CRON_MESSAGE` 50 000 for the cron `message` — a task
+prompt, enforced on the MCP schemas, both REST cron endpoints, and the
+`CronService` persistence chokepoint), and
 response truncation at `MAX_RESPONSE_LEN` (100 000 chars) so unbounded tool output
 cannot be a DoS vector.
 

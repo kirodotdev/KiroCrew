@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.session import SessionManager, _Session
+from kiro_crew.session import SessionManager, _Session, unlink_queued_temp_paths
 
 # ── Unit tests for _Session queue fields ──
 
@@ -220,6 +221,30 @@ class TestHandleMessageDeleted:
              patch("kiro_crew.slack.events.sel"):
             await _handle_message_deleted(orch, event)
         assert orch._pending_queue == {"thread1": [("ts_other", "keep", {})]}
+
+    @pytest.mark.asyncio
+    async def test_pending_queue_drop_unlinks_temp_files(self, tmp_path):
+        """A pre-session entry dropped by message_deleted must unlink its temps."""
+        from kiro_crew.slack.events import _handle_message_deleted
+
+        dropped = tmp_path / "dropped.png"
+        dropped.write_bytes(b"fake")
+        kept = tmp_path / "kept.png"
+        kept.write_bytes(b"fake")
+        orch = self._make_orch()
+        orch._pending_queue = {
+            "thread1": [
+                ("ts_del", "hello", {"image_temp_paths": [str(dropped)]}),
+                ("ts_other", "keep", {"image_temp_paths": [str(kept)]}),
+            ]
+        }
+        event = self._make_event()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.sel"):
+            await _handle_message_deleted(orch, event)
+        assert not dropped.exists()
+        assert kept.exists()
+        assert len(orch._pending_queue["thread1"]) == 1
 
     @pytest.mark.asyncio
     async def test_pending_queue_cleaned_when_empty(self):
@@ -620,3 +645,100 @@ class TestQueuedMessageImagePaths:
 
         assert seen_paths["existed_at_dispatch"] is True  # survived until the turn
         assert not img.is_file()  # cleaned up afterwards (no leak)
+
+
+# ── Regression tests: discarded queue entries unlink their temp files ──
+
+
+class TestQueueTempFileCleanup:
+    """Discard paths must unlink image_temp_paths; the dispatch path must not."""
+
+    @staticmethod
+    def _temp_files(tmp_path, n: int = 2) -> list[str]:
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for i in range(n):
+            p = tmp_path / f"img{i}.png"
+            p.write_bytes(b"fake")
+            paths.append(str(p))
+        return paths
+
+    def test_cancel_queued_unlinks_temp_files(self, tmp_path):
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        paths = self._temp_files(tmp_path)
+        sess.queue.append(("ts1", "hello", {"image_temp_paths": paths}))
+        assert mgr.cancel_queued("thread1", "ts1") is True
+        assert len(sess.queue) == 0
+        for p in paths:
+            assert not os.path.exists(p)
+
+    def test_cancel_queued_leaves_other_entries_files(self, tmp_path):
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        cancelled_paths = self._temp_files(tmp_path / "a")
+        kept_paths = self._temp_files(tmp_path / "b")
+        sess.queue.append(("ts1", "cancel me", {"image_temp_paths": cancelled_paths}))
+        sess.queue.append(("ts2", "keep me", {"image_temp_paths": kept_paths}))
+        assert mgr.cancel_queued("thread1", "ts1") is True
+        for p in cancelled_paths:
+            assert not os.path.exists(p)
+        for p in kept_paths:
+            assert os.path.exists(p)
+
+    def test_clear_queue_unlinks_all_entries_temp_files(self, tmp_path):
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        paths1 = self._temp_files(tmp_path / "e1")
+        paths2 = self._temp_files(tmp_path / "e2")
+        sess.queue.append(("ts1", "one", {"image_temp_paths": paths1}))
+        sess.queue.append(("ts2", "two", {"image_temp_paths": paths2}))
+        mgr.clear_queue("thread1")
+        assert len(sess.queue) == 0
+        for p in paths1 + paths2:
+            assert not os.path.exists(p)
+
+    def test_dequeue_cancelled_skip_unlinks_temp_files(self, tmp_path):
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        paths = self._temp_files(tmp_path)
+        sess.queue.append(("ts1", "cancelled", {"image_temp_paths": paths}))
+        sess.queue.append(("ts2", "live", {}))
+        sess.cancelled.add("ts1")
+        result = mgr.dequeue("thread1")
+        assert result is not None
+        assert result[0] == "ts2"
+        for p in paths:
+            assert not os.path.exists(p)
+
+    def test_dequeue_returned_entry_keeps_temp_files(self, tmp_path):
+        """The dispatch path owns cleanup; dequeue must NOT unlink what it returns."""
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        paths = self._temp_files(tmp_path)
+        sess.queue.append(("ts1", "live", {"image_temp_paths": paths}))
+        result = mgr.dequeue("thread1")
+        assert result is not None
+        assert result[0] == "ts1"
+        for p in paths:
+            assert os.path.exists(p)
+
+    def test_already_missing_files_do_not_raise(self, tmp_path):
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        missing = [str(tmp_path / "gone1.png"), str(tmp_path / "gone2.png")]
+        sess.queue.append(("ts1", "hello", {"image_temp_paths": missing}))
+        assert mgr.cancel_queued("thread1", "ts1") is True
+        sess.queue.append(("ts2", "world", {"image_temp_paths": missing}))
+        mgr.clear_queue("thread1")  # must not raise either
+        assert len(sess.queue) == 0
+
+    def test_entries_without_temp_paths_are_fine(self):
+        mgr, sess = TestSessionManagerQueue._make_mgr()
+        sess.queue.append(("ts1", "no kwargs key", {}))
+        sess.queue.append(("ts2", "none value", {"image_temp_paths": None}))
+        assert mgr.cancel_queued("thread1", "ts1") is True
+        mgr.clear_queue("thread1")
+        assert len(sess.queue) == 0
+
+    def test_unlink_helper_directly(self, tmp_path):
+        p = tmp_path / "img.png"
+        p.write_bytes(b"fake")
+        unlink_queued_temp_paths({"image_temp_paths": [str(p)]})
+        assert not p.exists()
+        unlink_queued_temp_paths({"image_temp_paths": [str(p)]})  # idempotent
+        unlink_queued_temp_paths({})  # no key

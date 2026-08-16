@@ -32,7 +32,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
   const {
     filteredIssues, sortedIssues, issuesLoading, issuesError, issuesPartial,
     stateFilter, issues, colorByName,
-    selectedIssue, setSelectedIssue, refresh, refreshing,
+    selectedIssue, setSelectedIssue, refresh, refreshing, listDetail,
     query, setQuery, issuesUpdatedAt,
   } = useIssueRadar()
 
@@ -136,7 +136,7 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
                       duration: 0.18,
                       ease: [0.16, 1, 0.3, 1],
                     }}
-                    onClick={() => setSelectedIssue(iss.number)}
+                    onClick={() => { setSelectedIssue(iss.number); listDetail.openDetail() }}
                     className={cardClass(selectedIssue === iss.number)}
                   >
                     {cardInner(iss)}
@@ -146,18 +146,30 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             </div>
           ) : (
             // Large list: virtualize so only the visible rows exist as DOM nodes,
-            // instead of mounting thousands of cards on a big repo. Row gap is a
-            // per-row bottom padding (Virtuoso lays rows out absolutely, so a flex
-            // `gap` on the container does not apply).
+            // instead of mounting thousands of cards on a big repo.
+            //
+            // Horizontal inset and row gap BOTH live on the row wrapper, never on
+            // the scroller. Virtuoso's own viewport is
+            // `position:absolute; top:0; width:100%` inside a `position:relative`
+            // scroller, and it sets no `left`: so `left` falls back to the static
+            // position (which respects padding-left) while `width:100%` resolves
+            // against the PADDING box. A `px-2` here would therefore make every row
+            // 16px wider than the visible column and push its right edge 8px off
+            // screen — the left border would still line up, so it reads as "the
+            // card's right border is missing" rather than as a padding bug. Vertical
+            // padding on the scroller is swallowed outright (the viewport pins
+            // `top:0`), and a flex `gap` cannot apply either, since Virtuoso lays
+            // rows out absolutely. `LogsPage` puts its padding on the row for the
+            // same reason.
             <Virtuoso
-              className="absolute inset-0 scrollbar-none px-2"
+              className="absolute inset-0 scrollbar-none"
               style={{ scrollbarWidth: 'none' }}
               data={sortedIssues}
               computeItemKey={(_i, iss) => iss.number}
               itemContent={(_i, iss) => (
-                <div className="pb-2">
+                <div className="px-2 pb-2">
                   <button
-                    onClick={() => setSelectedIssue(iss.number)}
+                    onClick={() => { setSelectedIssue(iss.number); listDetail.openDetail() }}
                     className={cardClass(selectedIssue === iss.number)}
                   >
                     {cardInner(iss)}

@@ -7,6 +7,7 @@ import {
   CircleSlash,
   ExternalLink,
   GitPullRequest,
+  Link2,
   Lock,
   MessageSquare,
   Milestone as MilestoneIcon,
@@ -231,14 +232,19 @@ function IssueBody({
     <div>
       {source.linkedChanges.map((change, index) => {
         const changeUrl = safeExternalUrl(change.url)
-        const marker = change.provider === 'github' ? '#' : '!'
+        const isJiraLink = change.provider === 'jira'
+        const marker = isJiraLink ? '' : change.provider === 'github' ? '#' : '!'
+        const identifier = isJiraLink ? (change.issueKey || `${change.number}`) : `${marker}${change.number}`
         const content = (
           <>
-            <GitPullRequest className="lucide-inline text-muted shrink-0 mt-0.5" aria-hidden="true" />
+            {isJiraLink
+              ? <Link2 className="lucide-inline text-muted shrink-0 mt-0.5" aria-hidden="true" />
+              : <GitPullRequest className="lucide-inline text-muted shrink-0 mt-0.5" aria-hidden="true" />}
             <div className="min-w-0 flex-1">
               <div className="text-[13px] font-medium text-text truncate">{change.title || i18nT('components.issuePanel.untitled')}</div>
               <div className="flex items-center gap-2 mt-1 text-[11px] text-muted">
-                <span className="shrink-0">{marker}{change.number}</span>
+                {change.relation && <span className="shrink-0 italic">{change.relation}</span>}
+                <span className="shrink-0">{identifier}</span>
                 {change.state && <span className="capitalize shrink-0">{change.state.toLowerCase()}</span>}
               </div>
             </div>
@@ -323,9 +329,10 @@ export default function IssuePanel({
       forceRefreshRef.current = false
       return api.fetchIssueSource(selected!.url, force)
     },
-    // Jira issues have no backend fetcher — only GitHub/GitLab are supported.
-    // Skip the query entirely for Jira to avoid a permanent 400 error.
-    enabled: !!selected && selected.provider !== 'jira',
+    // Jira issues are fetched when credentials are configured; the backend
+    // returns a distinguishable error code when they are not, triggering the
+    // existing "Open in Jira" link-out fallback below.
+    enabled: !!selected,
     // Manual refresh ONLY — an issue has no CI or merge state that changes
     // under the user, so a background poll would spend provider calls (and SEL
     // audit entries) for nothing.
@@ -336,6 +343,12 @@ export default function IssuePanel({
   })
   const source = query.data
   const queryError = pullRequestErrorDetails(query.error)
+  // Extract the machine-readable error code from the JSON response body.
+  const errorCode = (() => {
+    const err = query.error as unknown as { body?: string } | null
+    const raw = typeof err?.body === 'string' ? err.body : ''
+    try { return (JSON.parse(raw) as { code?: string }).code || '' } catch { return '' }
+  })()
   const sourceUrl = safeExternalUrl(source?.url || '')
   const handleRefresh = () => {
     forceRefreshRef.current = true
@@ -393,7 +406,7 @@ export default function IssuePanel({
       )}
 
       {query.isLoading && <LoadingSkeleton />}
-      {query.error && (
+      {query.error && errorCode !== 'jira_no_credentials' && (
         <div className="flex-1 flex items-center justify-center px-6">
           <div role="alert" className="max-w-md flex flex-col items-center">
             <AlertCircle
@@ -432,13 +445,13 @@ export default function IssuePanel({
         </div>
       )}
 
-      {selected?.provider === 'jira' && !query.isLoading && !query.error && !source && (
+      {selected?.provider === 'jira' && !query.isLoading && !source && errorCode === 'jira_no_credentials' && (
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="max-w-md flex flex-col items-center text-center">
             <ExternalLink className="lucide-inline mb-2 text-muted" aria-hidden="true" />
             <div className="text-[13px] font-medium text-text">{selected.repo}-{selected.number}</div>
             <div className="text-[12px] text-muted mt-1">
-              {i18nT('components.issuePanel.jira_open_in_browser')}
+              {i18nT('components.issuePanel.jira_no_credentials')}
             </div>
             <a
               href={selected.url}
@@ -466,11 +479,18 @@ export default function IssuePanel({
               <span className="inline-flex items-center gap-1 shrink-0">
                 {source.provider === 'github'
                   ? <GithubLogo size={12} className="shrink-0" />
+                  : source.provider === 'jira'
+                  ? <JiraLogo size={12} className="shrink-0" />
                   : <GitlabLogo size={12} className="shrink-0" />}
-                {/* Brand names are cased explicitly: a CSS `capitalize` on the
-                    raw provider value renders "Github"/"Gitlab", which is wrong
-                    for both marks. */}
-                <span>{source.provider === 'github' ? 'GitHub' : 'GitLab'}</span>
+                {/* Brand names are proper nouns, not translatable UI copy. The
+                    i18n checker exempts them via the existing interpolation at
+                    line 413 where they are provider: param values. Here we
+                    replicate that pattern. */}
+                {source.provider === 'github'
+                  ? i18nT('components.issuePanel.provider_github')
+                  : source.provider === 'jira'
+                  ? i18nT('components.issuePanel.provider_jira')
+                  : i18nT('components.issuePanel.provider_gitlab')}
               </span>
               {source.locked && (
                 <span className="inline-flex items-center gap-1 shrink-0" title={i18nT('components.issuePanel.this_issue_is_locked')}>

@@ -95,7 +95,7 @@ export function SettingsPage({
   const [busy, setBusy] = useState(false)
   // Messages are scoped to the control that produced them, so feedback appears
   // where the click happened rather than at the foot of the page.
-  const [patNote, setPatNote] = useState<string | null>(null)
+  const [patNote, setPatNote] = useState<{ text: string; error?: boolean } | null>(null)
   const [knowledgeMsg, setKnowledgeMsg] = useState<
     Record<string, { text: string; error?: boolean } | null>
   >({})
@@ -127,6 +127,7 @@ export function SettingsPage({
   }, [])
   const [knowledgeBusy, setKnowledgeBusy] = useState<string | null>(null)
   const [confirmForget, setConfirmForget] = useState<string | null>(null)
+  const [forgetError, setForgetError] = useState<string | null>(null)
   const [recording, setRecording] = useState(false)
   const [shortcutError, setShortcutError] = useState<string | null>(null)
 
@@ -458,7 +459,10 @@ export function SettingsPage({
                     )}
                     <button
                       type="button"
-                      onClick={() => setConfirmForget(v.id)}
+                      onClick={() => {
+                        setConfirmForget(v.id)
+                        setForgetError(null)
+                      }}
                       style={{
                         ...pill(false),
                         color: 'var(--danger)',
@@ -540,12 +544,20 @@ export function SettingsPage({
                   </span>
                   <button
                     type="button"
+                    disabled={busy}
                     onClick={async () => {
                       const id = confirmForget
-                      setConfirmForget(null)
+                      if (!id) return
                       setBusy(true)
-                      await onForget(id)
-                      setBusy(false)
+                      setForgetError(null)
+                      try {
+                        await onForget(id)
+                        setConfirmForget(null)
+                      } catch (e) {
+                        setForgetError(e instanceof Error ? e.message : String(e))
+                      } finally {
+                        setBusy(false)
+                      }
                     }}
                     style={{
                       ...pill(false),
@@ -557,11 +569,22 @@ export function SettingsPage({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setConfirmForget(null)}
+                    onClick={() => {
+                      setConfirmForget(null)
+                      setForgetError(null)
+                    }}
                     style={pill(false)}
                   >
                     {i18nT('apps.mdNotebook.connect.cancel')}
                   </button>
+                  {/* This bar only exists while confirmForget is set, so a failure
+                      is reported right here rather than the shared editor banner,
+                      which is unmounted while Settings is open. */}
+                  {forgetError && (
+                    <div role="alert" style={{ flexBasis: '100%', fontSize: '11px' }}>
+                      {i18nT('apps.mdNotebook.settings.removeFailed', { message: forgetError })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -598,10 +621,21 @@ export function SettingsPage({
                 disabled={busy || !pat}
                 onClick={async () => {
                   setBusy(true)
-                  await onSetPat(pat)
-                  setPat('')
-                  setPatNote(i18nT('apps.mdNotebook.settings.tokenSaved'))
-                  setBusy(false)
+                  setPatNote(null)
+                  try {
+                    await onSetPat(pat)
+                    setPat('')
+                    setPatNote({ text: i18nT('apps.mdNotebook.settings.tokenSaved') })
+                  } catch (e) {
+                    setPatNote({
+                      text: i18nT('apps.mdNotebook.settings.tokenSaveFailed', {
+                        message: e instanceof Error ? e.message : String(e),
+                      }),
+                      error: true,
+                    })
+                  } finally {
+                    setBusy(false)
+                  }
                 }}
                 style={pill(true)}
               >
@@ -613,9 +647,20 @@ export function SettingsPage({
                   disabled={busy}
                   onClick={async () => {
                     setBusy(true)
-                    await onSetPat('')
-                    setPatNote(i18nT('apps.mdNotebook.settings.tokenCleared'))
-                    setBusy(false)
+                    setPatNote(null)
+                    try {
+                      await onSetPat('')
+                      setPatNote({ text: i18nT('apps.mdNotebook.settings.tokenCleared') })
+                    } catch (e) {
+                      setPatNote({
+                        text: i18nT('apps.mdNotebook.settings.tokenClearFailed', {
+                          message: e instanceof Error ? e.message : String(e),
+                        }),
+                        error: true,
+                      })
+                    } finally {
+                      setBusy(false)
+                    }
                   }}
                   style={pill(false)}
                 >
@@ -626,10 +671,14 @@ export function SettingsPage({
             {/* Result under the token controls, not at the foot of the page. */}
             {patNote && (
               <div
-                role="status"
-                style={{ fontSize: '11px', color: ACCENT, marginTop: '6px' }}
+                role={patNote.error ? 'alert' : 'status'}
+                style={{
+                  fontSize: '11px',
+                  color: patNote.error ? 'var(--danger)' : ACCENT,
+                  marginTop: '6px',
+                }}
               >
-                {patNote}
+                {patNote.text}
               </div>
             )}
           </div>

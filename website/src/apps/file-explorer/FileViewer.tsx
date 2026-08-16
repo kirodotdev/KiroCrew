@@ -1,4 +1,5 @@
 import { FileText, AlertTriangle, FileQuestion, RefreshCw, Download, Copy, ExternalLink, MoreHorizontal, ShieldAlert } from 'lucide-react'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import MarkdownRenderer, { BasePathCtx } from '../../components/MarkdownRenderer'
 import { EmptyState, Skeleton } from '../../components/ui'
 import {
@@ -64,10 +65,11 @@ function renderViewerBody({ ext, fileMeta, content, openFile }: { ext: string; f
 }
 
 export default function FileViewer({ filePath, fileMeta, content, loading, error, onReload, onDownload }: FileViewerProps) {
+  const isMobile = useIsMobile()
   // Before the early returns: a hook cannot sit behind a conditional.
   const gatewayPlatform = useGatewayPlatform()
   if (!filePath) {
-    return <EmptyState icon={<FileText size={28} />} title={i18nT('apps.fileExplorer.fileViewer.select_a_file_to_view')} subtitle={i18nT('apps.fileExplorer.fileViewer.tip_ctrl_cmd_f_to_search')} />
+    return <EmptyState icon={<FileText size={28} />} title={i18nT('apps.fileExplorer.fileViewer.select_a_file_to_view')} subtitle={isMobile ? undefined : i18nT('apps.fileExplorer.fileViewer.tip_ctrl_cmd_f_to_search')} />
   }
   if (loading) return <Skeleton className="h-full w-full" />
   if (error) {

@@ -480,6 +480,20 @@ describe('CommandPalette — render', () => {
     render(<CommandPalette open={false} onClose={vi.fn()} />, { wrapper })
     expect(screen.queryByRole('dialog')).toBeNull()
   })
+
+  it('lets the search input shrink so a narrow row never clips the close button', async () => {
+    // The header row is one flex line: search icon · scope chip · input · Tab
+    // hint · close button. Everything except the input is shrink-0, and an
+    // <input> defaults to `min-width: auto` (~20 characters), so without an
+    // explicit min-w-0 the input refuses to yield and the ROW overflows instead.
+    // The modal is overflow-hidden, so the overflow is not scrollable — it clips
+    // whatever trails the input, losing the close button entirely on a narrow
+    // viewport. JSDOM has no layout, so the contract is pinned on the class.
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    const input = await screen.findByRole('textbox', { name: 'Search everywhere' })
+    expect(input.className).toContain('flex-1')
+    expect(input.className).toContain('min-w-0')
+  })
 })
 
 describe('CommandPalette — keyboard & activation', () => {

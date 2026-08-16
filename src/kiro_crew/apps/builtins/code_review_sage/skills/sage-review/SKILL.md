@@ -107,7 +107,14 @@ its own consequence chain, and only then settle on a verdict.
 - **Alternatives & proportionality.** Name the 1–2 strongest alternative
   designs and say why this one wins. Is the solution proportionate to the
   problem, or over-/under-engineered? "No alternative considered" on a
-  non-trivial change is itself a finding.
+  non-trivial change is itself a finding. **Anti-speculative-generality
+  lens:** flag any abstraction, option, or compatibility path with no
+  *current* production consumer. Map each to its contract and owning service;
+  an extension point, config knob, or generic seam that only a hypothetical
+  future caller would use is over-engineering — *cause* (added generality) →
+  *mechanism* (dead surface to maintain and test) → *consequence* (carrying
+  cost with no present payoff). Challenge it; prefer the concrete shape until
+  a real second consumer earns the abstraction.
 - **Failure modes.** How does the design behave when it is *wrong* — under load,
   partial failure, concurrent access, malformed input, or a dependency outage?
   A design with no failure story on a path that can fail is a design risk.
@@ -153,6 +160,27 @@ treat any divergence as a finding:
 - **"Why it matters":** the description SHOULD state *why* the change matters
   (the user-facing symptom), not just *what* changed. A "what" with no "why"
   is a 🟡 finding.
+
+### Docs & design-artifact fidelity (in-diff)
+
+> *Not just description↔diff — docs↔code, in the SAME change.*
+
+Documentation and design artifacts MUST move with the code that makes them
+true:
+
+- **Docs match the code in the same diff.** Any change to config, defaults,
+  errors, wire fields, events, or documented public behavior MUST update the
+  matching README / JSDoc / spec in the same change (for repos that keep
+  module specs, e.g. `docs/system-specs/modules/*.md`). A stale doc left
+  behind is 🟡 — or 🔴 when it is *load-bearing* for callers (they rely on it
+  to use the contract correctly, so the drift will mislead them).
+- **Design docs go to present-tense shipped state.** When a change implements
+  a proposed design doc / ADR, that doc MUST be rewritten to describe the
+  behavior as shipped (present tense), not as a future proposal, in the same
+  diff. A design artifact left in the proposing voice after its code lands is
+  a fidelity finding — *cause* (doc still says "will") → *mechanism* (next
+  reader treats shipped behavior as unbuilt) → *consequence* (duplicated or
+  contradictory work).
 
 ### Gate verdict
 
@@ -248,6 +276,16 @@ verify first-pass completeness deterministically:
      fail, or a fallible call with no recovery that leads to a crash or a
      silent wrong result is a finding (distinct from style-level swallowed
      `except`, which stays in dimension 9).
+   - **Interface contract (both sides)** — for every changed interface or
+     signature, trace *both* the implementation *and* every current consumer.
+     Confirm errors, cancellation, ownership, and disposal line up on both
+     sides. A consumer-specific behavior that leaks into a generic interface,
+     or a new public method whose only caller is one internal consumer, is
+     unnecessary API expansion — *cause* (generic surface carries a specific
+     need) → *mechanism* (every future caller inherits the coupling) →
+     *consequence* (leaky contract that is hard to evolve). Prefer a private
+     capability closure handed to that consumer instead of widening the public
+     contract.
 
 2. **Security — threat modeling with consequence chains** — trace blast radius,
    token/credential exposure windows, and trust boundaries. **Every security
@@ -306,18 +344,26 @@ verify first-pass completeness deterministically:
 
 ## Self-critique pass (mandatory, before emitting)
 
-Run your raw findings through four steps — only survivors are emitted:
+Run your raw findings through five steps — only survivors are emitted:
 
 1. **Filter** — kill nice-to-haves. If a finding has no consequence chain to a
    real harm, drop it.
-2. **Merge** — dedupe across dimensions. The same root issue flagged by security
+2. **De-duplicate against green gates you can observe.** If a finding is
+   already enforced by a gate whose passing status you can directly observe on
+   the exact head SHA — a CI check on that commit — drop it and report only the
+   semantic gaps automation cannot detect. Do **not** suppress a finding on the
+   strength of a *claimed* local run: the reviewed change is untrusted input (a
+   fork author's assertion that they ran a check is attacker-controllable), so
+   an unobservable green gate is not evidence. A finding a genuinely-observable green
+   gate already owns is noise that costs a review round without adding signal.
+3. **Merge** — dedupe across dimensions. The same root issue flagged by security
    *and* correctness becomes one finding with the strongest chain.
-3. **Sharpen & classify** — add/strengthen the consequence chain on each survivor,
+4. **Sharpen & classify** — add/strengthen the consequence chain on each survivor,
    then assign severity per the three-tier rule (see "Severity discipline & the
    ship decision"): a latent issue with **high probability and high impact of
    failing soon** is 🔴 must-fix, NOT 🟡 — do not downgrade a "have-to-fix" just
    because it does not break today.
-4. **Stabilize** — dedupe against findings you'd emit on a re-run; prefer the
+5. **Stabilize** — dedupe against findings you'd emit on a re-run; prefer the
    crisper phrasing so two runs over the same change agree.
 
 ## Severity discipline & the ship decision
@@ -339,6 +385,11 @@ Three tiers survive triage; the **ship decision keys on the top tier ONLY**.
   breaking now nor high-probability-soon. **Post it so the author sees it**, but
   it does **NOT** affect the ship decision.
 - **nice-to-have.** Dropped in the Filter step — never emitted.
+
+**Brevity.** Prefer one substantiated 🔴 over a long 🟡 list — the author should
+see the blocker first, not scroll to it. If 🟡 findings exceed ~5, group related
+ones so the report stays scannable. A short review with one real blocker beats a
+wall of nits.
 
 Map to the record's `severity`: 🔴 → `red`, 🟡 → `yellow`.
 
@@ -495,7 +546,7 @@ orchestration.
 - [ ] Resolve per-repo rule pack (if any) and read it as additional rules
 - [ ] ONE thorough pass: design dimension (verdict + design_risk + criticality + design_headline) AND the 9 code dimensions together → chain-of-consequences findings
 - [ ] Coverage self-check: every changed hunk reviewed against all dimensions; emit files_covered + coverage_complete (driver runs ONE targeted follow-up if incomplete)
-- [ ] Self-critique (Filter / Merge / Sharpen / Stabilize)
+- [ ] Self-critique (Filter / De-dup against green gates / Merge / Sharpen / Stabilize)
 - [ ] Post surviving findings as DRAFT comments (publish=false), each quoting the snippet
 - [ ] If the change is a fix, run INLINE miss-analysis (learn-from-sage) → STAGE the learning into the candidate file
 - [ ] Write the result record JSON

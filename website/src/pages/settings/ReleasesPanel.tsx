@@ -140,10 +140,21 @@ export default function ReleasesPanel() {
         </p>
       )}
 
-      <div className="flex min-h-0 flex-1 gap-5">
+      {/* Stacked while narrow: a 192px version list beside the notes left the
+          release text roughly 150px of a 390px viewport, and the notes are the
+          reason the panel exists.
+          The list keeps its own scrolling at EVERY width and is capped when
+          stacked. Both are load-bearing: it is `shrink-0`, and a changelog grows
+          without limit, so an uncapped list would take its natural height and push
+          the notes heading down the pane.
+          The cap is `vh`, not a percentage: no ancestor here has a definite
+          height, so a percentage max-height does not resolve at all. Measured by
+          injecting caps on the live page -- a 10% cap left the list at its full
+          289px while 10vh brought it to 84px and made it scroll. */}
+      <div className="flex flex-col sm:flex-row min-h-0 flex-1 gap-5">
         <nav
           aria-label={i18nT('pages.settings.releases.list_label')}
-          className="w-48 shrink-0 space-y-1 overflow-y-auto border-r border-border pr-3 pb-6"
+          className="w-full sm:w-48 shrink-0 space-y-1 max-h-[40vh] sm:max-h-none overflow-y-auto border-b sm:border-b-0 sm:border-r border-border pb-3 sm:pr-3 sm:pb-6"
         >
           {releases.map(r => {
             const isActive = r.version === active?.version

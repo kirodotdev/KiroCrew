@@ -1,10 +1,11 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download } from 'lucide-react'
 import { api } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PageHeader, Card, Btn, SendBtn, Badge, SearchInput, EmptyState, FilteredEmpty, Skeleton, Input } from '../components/ui'
+import { CodeBlock } from '../components/CodeBlock'
 import SegmentedControl from '../components/SegmentedControl'
 import WeekGrid from '../components/WeekGrid'
 import TimezoneSelect from '../components/TimezoneSelect'
@@ -906,6 +907,83 @@ export default function SchedulePage() {
 }
 
 /**
+ * Collapsed-by-default source view for a script cron's callable.
+ *
+ * Collapsed so the detail dialog does not grow taller for every job, and the
+ * source is fetched lazily on first expand (React Query holds `enabled: false`
+ * until then), so opening the dialog costs no extra request. The backend
+ * derives the file path from the job's own stored `script` field — the job id
+ * is the only input this component sends.
+ */
+function ScriptSourcePanel({ jobId }: { jobId: string }) {
+  const [open, setOpen] = useState(false)
+  const { data, isPending, isError, error } = useQuery({
+    queryKey: ['cronScript', jobId],
+    queryFn: async () => (await api.cronScript(jobId)) as CronScriptSource,
+    enabled: open,
+    // The file on disk can change between expands (scripts are agent-editable),
+    // and the app-wide default is staleTime: Infinity — opt this query out so
+    // re-expanding always refetches the current source.
+    staleTime: 0,
+  })
+  const download = useCallback(() => {
+    if (!data) return
+    const blob = new Blob([data.source], { type: 'text/x-python' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = data.file || 'script.py'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }, [data])
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Clickable
+        className="flex items-center gap-1 w-fit text-[12px] text-muted font-medium hover:text-text cursor-pointer"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+      >
+        <ChevronRight size={14} className={`lucide-inline transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden="true" />
+        {i18nT('pages.schedulePage.script_source')}
+      </Clickable>
+      {open && isPending && <Skeleton className="h-16 rounded-xl" />}
+      {open && isError && (
+        <div className="text-danger text-[13px]">
+          {error instanceof Error && error.message ? error.message : i18nT('pages.schedulePage.script_source_failed')}
+        </div>
+      )}
+      {open && data && (
+        <>
+          <CodeBlock
+            code={data.source}
+            lang="python"
+            complete
+            headerActions={
+              <Btn
+                className="p-1 border-0 rounded text-muted hover:text-text hover:bg-bg-hover"
+                onClick={download}
+                title={i18nT('pages.schedulePage.script_source_download')}
+                aria-label={i18nT('pages.schedulePage.script_source_download')}
+              >
+                <Download size={13} className="lucide-inline" aria-hidden="true" />
+              </Btn>
+            }
+          />
+          {data.truncated && (
+            <div className="text-[12px] text-muted">{i18nT('pages.schedulePage.script_source_truncated')}</div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Shape of GET /api/crons/{id}/script. */
+type CronScriptSource = { source: string; file: string; function: string; truncated: boolean }
+
+/**
  * Job detail / create view, rendered as a shadcn (Radix) dialog.
  *
  * Was a resizable side panel pinned to the right of the job list. The dialog
@@ -973,6 +1051,7 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, on
             )}
             <JobForm job={job} prefill={prefill} agents={agents} defaultAgent={defaultAgent} onSaved={onSaved} layout="vertical" externalSubmit submitRef={submitRef} onSavingChange={setSaving} />
             {panelError && <div className="text-danger text-[13px]">{panelError}</div>}
+            {job?.script && <ScriptSourcePanel jobId={job.id} />}
             {job?.script && (job.last_result || job.last_error) && (
               <div className="flex flex-col gap-1.5">
                 <div className="text-[12px] text-muted font-medium">{job.last_error ? i18nT('pages.schedulePage.last_error') : i18nT('pages.schedulePage.last_output')}</div>

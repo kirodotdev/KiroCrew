@@ -1,0 +1,45 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "example-package": {
+      "name": "example-package",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1234567,
+          "name": "example-package",
+          "dependency": "example-package",
+          "title": "Example direct production vulnerability",
+          "url": "https://github.com/advisories/GHSA-2345-6789-cfgh",
+          "severity": "high",
+          "cwe": ["CWE-79"],
+          "cvss": { "score": 7.5, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N" },
+          "range": "<2.0.0"
+        }
+      ],
+      "effects": [],
+      "range": "<2.0.0",
+      "nodes": ["node_modules/example-package"],
+      "fixAvailable": true
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 1,
+      "critical": 0,
+      "total": 1
+    },
+    "dependencies": {
+      "prod": 412,
+      "dev": 0,
+      "optional": 7,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 418
+    }
+  }
+}

@@ -817,7 +817,14 @@ BIN_DIR="$(cd -P -- "$BIN_DIR" && pwd)" \
 if ! (umask 077; : >"$LOG") 2>/dev/null; then
   die "$EX_NOT_WRITABLE" "cannot write the install log $LOG"
 fi
-chmod 600 -- "$LOG" 2>/dev/null \
+# No "--" here: BSD chmod (macOS) does not recognise it as an end-of-options
+# marker and instead takes it literally as a file operand, so
+# `chmod 600 -- "$LOG"` fails with "illegal option -- -" on every macOS run.
+# GNU chmod has no such problem, so this is BSD-only breakage. Dropping "--"
+# is still safe against a dash-prefixed path: $LOG is "$PREFIX/..." and
+# $PREFIX was forced absolute (leading "/") before $LOG was ever built, so
+# $LOG can never be mistaken for an option.
+chmod 600 "$LOG" 2>/dev/null \
   || die "$EX_NOT_WRITABLE" "cannot restrict the install log $LOG to owner-only"
 
 # Empty stand-ins for npm's user and global config scopes, used by
@@ -910,8 +917,11 @@ _npm_install() {
 LOG_SUPPRESSED=0
 _sanitize_log() {
   [ -f "$LOG" ] || return 0
+  # No "--": same BSD chmod breakage as the earlier site, and "$LOG.redacted"
+  # is just "$LOG" with a suffix appended, so it inherits the same guaranteed
+  # leading "/" and can never be mistaken for an option.
   if (umask 077; _redact_urls <"$LOG" >"$LOG.redacted" 2>/dev/null) \
-     && chmod 600 -- "$LOG.redacted" 2>/dev/null \
+     && chmod 600 "$LOG.redacted" 2>/dev/null \
      && mv -- "$LOG.redacted" "$LOG"; then
     return 0
   fi

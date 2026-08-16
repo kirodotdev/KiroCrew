@@ -83,7 +83,17 @@ function HookForm({ hook, onSave, onCancel }: {
           <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={isToolHook ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git') : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')} value={matcher} onChange={e => setMatcher(e.target.value)} />
+          {/* The shared Input is `flex-1 min-w-0`, i.e. `flex-basis: 0%`, so its
+              hypothetical main size is ZERO. Flex line-breaking uses that size,
+              so the three non-shrinking siblings below never wrap to their own
+              line — they all stay on line 1 and this field absorbs the entire
+              shortfall. Measured across pane widths 320-760px: 45px at a 360px
+              pane, 105px at 420px, under 120px at six widths. `basis-full` while
+              narrow and `basis-auto` above restores intrinsic-size-aware
+              breaking, so a sibling that does not fit wraps instead: 231px worst
+              case, never below 120px. Same idiom as the tokens row in
+              WebhooksPage, which had the identical defect. */}
+          <Input className="basis-full sm:basis-auto" placeholder={isToolHook ? i18nT('pages.hooksPage.matcher_tool_filter_e_g_fs_write_git') : i18nT('pages.hooksPage.matcher_optional_e_g_deploy')} value={matcher} onChange={e => setMatcher(e.target.value)} />
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
             <span>{i18nT('pages.hooksPage.timeout')}</span>
             <Input type="number" min={1} max={300} className="w-16" value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
@@ -268,7 +278,29 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
           {providerHookError ? (
             <EmptyState icon={<AlertTriangle className="lucide-inline text-warning" />} title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={i18nT('pages.hooksPage.check_your_connection_or_configuration_and_try_a')} />
           ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
-            <div className="overflow-x-auto">
+            // Focusable, named scrollport. This table is read-only — every cell
+            // is plain text — and its columns reserve 700px, so at phone width
+            // ~412px of the Command column is clipped and can only be reached by
+            // scrolling. Two separate problems, and the tabIndex is not the whole
+            // fix for either:
+            //   Reach. Chromium >=130 already focuses a scroller that has no
+            //   focusable children, so Chrome alone is fine. That behaviour came
+            //   through blink-dev and no other engine has shipped it, and the
+            //   accessibility rule engines (axe scrollable-region-focusable, IBM,
+            //   BrowserStack) still require the explicit stop, so we keep it.
+            //   Name. Even where the scroller IS auto-focused, it lands focus on
+            //   an anonymous <div>. role + aria-label are what stop it announcing
+            //   as nothing in particular, in every engine including Chrome.
+            // Do NOT copy this onto the hooks table above. Its rows hold tabbable
+            // controls, which is exactly the case Chromium excludes and where
+            // focus already arrives via the control; a stop there would insert a
+            // redundant Tab press between every row.
+            <div
+              className="overflow-x-auto"
+              tabIndex={0}
+              role="region"
+              aria-label={provider.labels.hooksSection}
+            >
               <table className="w-full border-collapse table-striped">
                 <thead>
                   <tr>

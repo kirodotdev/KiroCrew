@@ -23,7 +23,13 @@ from typing import Callable
 import pytest
 
 from kiro_crew import vector_memory as vm
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text
+
+
+def _lesson_texts(store: VectorMemoryStore) -> list[str]:
+    """Stored lessons rendered as text — write_lesson stores the mapping shape."""
+    return [_lesson_display_text(json.loads(e["value_json"])) for e in store.get_lessons()]
+
 
 _DIM = 8
 
@@ -372,8 +378,7 @@ class TestDeleteLesson:
         assert store.write_lesson("Always pin the release tag before publishing a wheel")
         assert store.write_lesson("Never bind a diagnostic server to a public interface")
         assert store.delete_lesson("RELEASE TAG") is True
-        remaining = [json.loads(e["value_json"]) for e in store.get_lessons()]
-        assert remaining == ["Never bind a diagnostic server to a public interface"]
+        assert _lesson_texts(store) == ["Never bind a diagnostic server to a public interface"]
 
     def test_no_match_reports_false(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
@@ -474,6 +479,25 @@ class TestBackfillSweeps:
         blob = _raw_semantic_embedding(store, key)
         assert blob is not None and len(blob) == _DIM * 4
 
+    def test_backfill_embeds_the_bare_rule_matching_the_write_path(self, tmp_path: Path) -> None:
+        """write_lesson embeds only the rule, so a backfilled mapping row must
+        embed the same input -- embedding rule+clause would put its vector in a
+        different space than the query vectors it is compared against."""
+        store = _store(tmp_path)
+        assert store.write_lesson("Pin the port", "tool", "Do not autopick")
+        key = store.get_lessons()[0]["key"]
+        assert _raw_semantic_embedding(store, key) is None
+
+        embedded_inputs: list[str] = []
+
+        def _capture(text: str) -> list[float]:
+            embedded_inputs.append(text)
+            return [0.5] * _DIM
+
+        store.embed_fn = _capture
+        assert store._backfill_lesson_embeddings() == 1
+        assert embedded_inputs == ["Pin the port"]
+
     def test_lessons_with_unparseable_values_are_skipped(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.write_lesson("Always squash a review branch down to one commit")
@@ -521,8 +545,7 @@ class TestLessonDedup:
         assert store.write_lesson(
             "Always pin the release tag before publishing a wheel to the CDN"
         )
-        remaining = [json.loads(e["value_json"]) for e in store.get_lessons()]
-        assert remaining == ["Always pin the release tag before publishing a wheel to the CDN"]
+        assert _lesson_texts(store) == ["Always pin the release tag before publishing a wheel to the CDN"]
 
     def test_an_unpackable_stored_vector_does_not_break_the_dedup_scan(
         self, tmp_path: Path
@@ -1171,22 +1194,23 @@ class TestLessonDedupPaths:
         store = _store(tmp_path)
         assert store.write_lesson("pin dependency versions")
         assert store.write_lesson("Always pin dependency versions in the manifest")
-        lessons = store.get_lessons()
-        assert len(lessons) == 1
-        assert "manifest" in json.loads(lessons[0]["value_json"])
+        texts = _lesson_texts(store)
+        assert len(texts) == 1
+        assert "manifest" in texts[0]
 
     def test_topic_overlap_replaces_the_older_lesson(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.write_lesson("Rebase feature branches before pushing them")
         assert store.write_lesson("Rebase branches before pushing, never merge upward")
-        lessons = store.get_lessons()
-        assert len(lessons) == 1
-        assert "never merge upward" in json.loads(lessons[0]["value_json"])
+        texts = _lesson_texts(store)
+        assert len(texts) == 1
+        assert "never merge upward" in texts[0]
 
-    def test_a_negative_example_is_appended_to_the_value(self, tmp_path: Path) -> None:
+    def test_a_negative_example_is_stored_as_its_own_field(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.write_lesson("Quote shell arguments", negative="bare interpolation")
-        assert "NOT: bare interpolation" in json.loads(store.get_lessons()[0]["value_json"])
+        decoded = json.loads(store.get_lessons()[0]["value_json"])
+        assert decoded["negative"] == "bare interpolation"
 
     def test_a_non_user_source_lowers_the_confidence(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
@@ -1201,7 +1225,7 @@ class TestLessonDedupPaths:
         store.embed_fn = _TableEmbedder({short_rule: _unit(0), long_rule: _unit(0)})
         assert store.write_lesson(short_rule)
         assert store.write_lesson(long_rule)
-        assert [json.loads(e["value_json"]) for e in store.get_lessons()] == [long_rule]
+        assert _lesson_texts(store) == [long_rule]
 
     def test_semantic_dedup_rejects_the_shorter_rule(self, tmp_path: Path) -> None:
         long_rule = "Submarine hatches demand orange lanterns for visibility"
@@ -1210,7 +1234,7 @@ class TestLessonDedupPaths:
         store.embed_fn = _TableEmbedder({short_rule: _unit(0), long_rule: _unit(0)})
         assert store.write_lesson(long_rule)
         assert not store.write_lesson(short_rule)
-        assert [json.loads(e["value_json"]) for e in store.get_lessons()] == [long_rule]
+        assert _lesson_texts(store) == [long_rule]
 
     def test_the_rule_vector_is_persisted(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
