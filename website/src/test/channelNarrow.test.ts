@@ -197,4 +197,17 @@ describe('ChannelPage narrow viewport', () => {
     // up the tree, not this row. Plain flex is what actually contains it.
     expect(s).not.toMatch(/absolute inset-0[^']*'\s*:\s*'w-64 shrink-0 border-l/)
   })
+
+  it('lets the composer input shrink so the trailing Send button stays visible', async () => {
+    const s = await src()
+    // A flex item defaults to `min-width: auto`, which in engines that honor a
+    // form control's intrinsic floor through a wrapper can stop a flex-1 input
+    // wrapper from shrinking, overflowing the row and clipping the trailing
+    // Send button. min-w-0 lifts the floor unconditionally, matching the two
+    // sibling wrappers in this file that already carry it. Measured: the clip
+    // does not reproduce in Chromium or Firefox (the wrapper's flex basis is 0
+    // and the w-full textarea adds no min-content floor through it) — this
+    // pins alignment with the siblings, not an observed defect.
+    expect(s).toMatch(/className="relative flex-1 min-w-0"/)
+  })
 })

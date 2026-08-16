@@ -348,7 +348,7 @@ function MentionInput({ agents, value, onChange, onSend }: {
   const active = agents.filter(a => a.state !== 'done' && a.state !== 'failed' && a.role.toLowerCase().includes(filter))
 
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1 min-w-0">
       {show && active.length > 0 && (
         <div role="listbox" aria-label={i18nT('pages.channelPage.mention_suggestions')} className="absolute bottom-full left-0 mb-1 w-60 bg-bg-elevated border border-border rounded-lg shadow-lg z-10 py-1">
           {active.map((a, i) => (
