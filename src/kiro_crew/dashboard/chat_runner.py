@@ -6390,18 +6390,18 @@ async def _run_chat(
                 # turn (depth > 0), which the branches below never re-queue —
                 # it dies with "please retry", a user-visible fault that must
                 # reach fault_rate.
+                if event.stop_reason == STOP_REASON_STALE_RECOVER:
+                    _turn_exhausted = _prompt_depth > 0 or slot._stale_recovery_retries >= 3
+                elif event.stop_reason == STOP_REASON_TOOL_STALL:
+                    _turn_exhausted = _prompt_depth > 0 or slot._tool_stall_retries >= 3
+                else:
+                    _turn_exhausted = False
                 _emit_turn_metric(
                     event.usage.duration_ms,
                     event.stop_reason,
                     slot.key,
                     elapsed_ms=_turn_elapsed_ms,
-                    exhausted=(
-                        (_prompt_depth > 0 or slot._stale_recovery_retries >= 3)
-                        if event.stop_reason == STOP_REASON_STALE_RECOVER
-                        else (_prompt_depth > 0 or slot._tool_stall_retries >= 3)
-                        if event.stop_reason == STOP_REASON_TOOL_STALL
-                        else False
-                    ),
+                    exhausted=_turn_exhausted,
                 )
                 _stop_reason = event.stop_reason
                 # Recorded on the slot so post-turn consumers reached later
