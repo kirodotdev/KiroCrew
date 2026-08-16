@@ -2,7 +2,16 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- `interactive-widget=resizes-content`: the default, `resizes-visual`, shrinks only
+       the VISUAL viewport when the software keyboard opens. The layout viewport keeps
+       its full height, so `vh`, `dvh` and `position:fixed; inset:0` all keep laying out
+       against a window the user can no longer see the bottom of -- a focused full-screen
+       overlay strands its own content below the keyboard with no gesture to reach it.
+       `resizes-content` resizes the layout viewport instead, so the shell (already
+       `h-dvh` with `overflow-hidden` and inner `min-h-0` scrollers) simply gets shorter
+       and the focused input stays on screen. `dvh` alone cannot do this: it tracks
+       collapsible browser UI, not the keyboard. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
   <link rel="icon" href="/logo.png" type="image/png" />
   <link rel="manifest" href="/manifest.json" />
   <meta name="theme-color" content="#0d0f12" />
