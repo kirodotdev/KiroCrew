@@ -12,11 +12,13 @@ import { ScanSearch } from 'lucide-react'
 import { useEffect } from 'react'
 
 import { IconButton } from '../../components/ui'
+import ListDetailBack from '../../components/ListDetailBack'
 import { type CollapseConfig, useColumnResize } from '../../hooks/useColumnResize'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import EmptyState from './components/EmptyState'
 import LeftRail from './components/LeftRail'
 import PrReviewDetail from './components/PrReviewDetail'
+import RailHeader, { sectionHasList, sectionLabel } from './components/RailHeader'
 import RunDetail from './components/RunDetail'
 import { useSage } from './context'
 import {
@@ -25,6 +27,7 @@ import {
 } from './lib/layout'
 import LearningView from './views/LearningView'
 import SettingsView from './views/SettingsView'
+import type { ListTab, MainView } from './lib/types'
 
 import { i18nT } from '../../i18n/t'
 /** The 6px vertical drag handle between two columns. */
@@ -54,8 +57,35 @@ const RAIL_COLLAPSE: CollapseConfig = {
   width: COLLAPSED_RAIL_WIDTH, storageKey: RAIL_COLLAPSED_KEY, whenNarrow: true,
 }
 
+/** The name of the pane the rail will show for `view`.
+ *
+ * Deliberately NOT the section's own name. A control reading "Reviews" that opens
+ * the Pull requests tab, or "Learning" that opens a panel headed "Namespaces",
+ * names something the user cannot see — the defect class this shell exists to
+ * remove, so it must not reappear in the control pointing AT the rail. Each
+ * section therefore answers with its rail's own heading: reviews from the active
+ * list tab, learning from the namespaces panel. A section whose rail has no pane
+ * of its own falls back to the section name (and `sectionHasList` withholds the
+ * control there anyway).
+ *
+ * A function rather than a field on RailHeader's section table, because the
+ * reviews answer depends on runtime state (`listTab`) and a static key cannot
+ * express it. Resolved per call so a language switch reaches it.
+ */
+function railPaneLabel(view: MainView, listTab: ListTab): string {
+  if (view === 'reviews') {
+    return i18nT(listTab === 'reviews'
+      ? 'apps.codeReviewSage.components.middleColumn.reviews'
+      : 'apps.codeReviewSage.components.middleColumn.pull_requests')
+  }
+  if (view === 'learning') {
+    return i18nT('apps.codeReviewSage.components.learningRail.namespaces')
+  }
+  return sectionLabel(view)
+}
+
 export default function Workspace() {
-  const { mainView, activeRun, selectedPr } = useSage()
+  const { mainView, activeRun, selectedPr, listTab } = useSage()
 
   const rail = useColumnResize(
     RAIL_WIDTH_KEY, loadRailWidth, MIN_RAIL_WIDTH, MAX_RAIL_WIDTH, RAIL_COLLAPSE, loadRailCollapsed,
@@ -86,6 +116,21 @@ export default function Workspace() {
   // Every main pane shares this: hidden while the rail owns the viewport, so a
   // 100%-wide rail cannot push the report off-screen instead of replacing it.
   const mainClass = `flex-1 min-w-0 min-h-0 flex-col ${mobileRailOpen ? 'hidden' : 'flex'}`
+  // Whether reopening the rail leads anywhere from here. Settings' rail body is
+  // an empty spacer (see LeftRail), so expanding it there hands the user a
+  // viewport-filling panel holding nothing but this header — which is exactly
+  // what the back control already refuses to promise. ONE predicate for BOTH
+  // routes into the rail: gating only the labelled one let the icon re-tap open
+  // the empty panel the label was withheld to avoid.
+  const canOpenList = railBar && sectionHasList(mainView)
+  // Name the pane the control actually LANDS ON, not the section it belongs to —
+  // see railPaneLabel.
+  const listLabel = railPaneLabel(mainView, listTab)
+  // The bar's labelled route back to the list, which on this shell means
+  // reopening the rail — that is where both lists live.
+  const backToList = canOpenList
+    ? <ListDetailBack label={listLabel} onBack={rail.expand} />
+    : undefined
 
   return (
     // overflow-hidden so a mis-sized child can never grow the shell past the
@@ -97,17 +142,40 @@ export default function Workspace() {
         className={`flex-shrink-0 min-h-0 flex ${railBar ? 'w-full' : ''}`}
       >
         {rail.collapsed ? (
-          <div
-            className={`w-full flex ${railBar
-              ? 'flex-row items-center border-b border-border px-2 py-1.5'
-              : 'flex-col items-center border-r border-border pt-2'} bg-bg-accent`}
-          >
-            <IconButton aria-label={i18nT('app.expand_sidebar')} onClick={rail.expand}>
-              <ScanSearch size={16} className="text-accent" />
-            </IconButton>
-          </div>
+          railBar ? (
+            // The bar carries the rail's OWN header — app mark, name, section nav
+            // — plus the way back to the list. A bar holding nothing but an
+            // expand glyph hid the app's entire navigation behind a control that
+            // did not look like navigation: from a report there was no visible
+            // route to Learning or Settings, and no labelled way back either.
+            <div className="w-full flex flex-row items-center border-b border-border px-2 py-1.5 bg-bg-accent">
+              {/* Re-tapping the ACTIVE section opens the rail rather than
+                  re-setting the view it is already on. That tap did nothing at
+                  all before — no state changed, so nothing rendered — on the one
+                  control a user reaching for "the list" is most likely to press,
+                  and it is also the tap-the-active-tab-to-pop-to-root convention.
+                  Withheld where the rail holds no list, so it cannot open the
+                  empty panel `backToList` is withheld to avoid. */}
+              <RailHeader
+                narrow
+                leading={backToList}
+                onReselect={canOpenList ? rail.expand : undefined}
+              />
+            </div>
+
+          ) : (
+            <div
+              className="w-full flex flex-col items-center border-r border-border pt-2 bg-bg-accent"
+            >
+              <IconButton aria-label={i18nT('app.expand_sidebar')} onClick={rail.expand}>
+                <ScanSearch size={16} className="text-accent" />
+              </IconButton>
+            </div>
+          )
         ) : (
-          <LeftRail />
+          // Narrow and open, the rail IS the page, so it needs its own exit —
+          // see LeftRail's `onCollapse`.
+          <LeftRail narrow={mobileRailOpen} onCollapse={rail.collapse} />
         )}
       </div>
       {/* The drag handle is a pointer affordance and costs width a phone does
@@ -133,7 +201,16 @@ export default function Workspace() {
                 icon={ScanSearch}
                 title={i18nT('apps.codeReviewSage.workspace.select_a_review_to_see_its_progress_and_report')}
                 hint={i18nT('apps.codeReviewSage.workspace.start_a_new_one_several_can_run_at_once')}
-              />
+              >
+                {/* The list this points at is on screen on a desktop and HIDDEN
+                    behind the bar while narrow, so on a phone the copy asked the
+                    user to select from something they could not see — and this is
+                    the app's first-run mobile screen, where nothing is selected
+                    yet. The same control the bar carries, so both routes to the
+                    list read identically. */}
+                {backToList}
+              </EmptyState>
+
             )}
           </main>
         </>
