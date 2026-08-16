@@ -74,7 +74,15 @@ export default function InstalledAppCard({
         </div>
       )}
       <div className="p-4">
-        <div className="flex items-start justify-between gap-4">
+        {/* The action cluster is unbounded — up to five controls (Open,
+            Enable/Disable, Update or Sync, Uninstall, the disclosure) — and it
+            does not shrink, so on one row it takes its natural width and the
+            text column is left with the remainder: measured 34px at 390px and
+            0px at 320px, which clamps the description to about three
+            characters. Below `sm` the cluster gets its own full-width row under
+            the text instead, and wraps within it; from `sm` up the original
+            single row is unchanged. */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="flex items-start gap-3 flex-1 min-w-0">
             {/* Same tile and fallback chain as Discover's rows, so one app
                 looks like itself on both tabs. */}
@@ -86,7 +94,12 @@ export default function InstalledAppCard({
               className="w-11 h-11 mt-0.5"
             />
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1 flex-wrap">
+              {/* At least as tall as the tile while narrow, because the body text
+                  below is pulled back into the tile's column: a short header that
+                  fits one line is ~24px, so without this floor the description's
+                  first line paints over the tile's bottom 18px. Keep this equal
+                  to the tile's height (`w-11 h-11`); a test pins the pair. */}
+              <div className="flex items-center gap-2 mb-1 flex-wrap min-h-11 sm:min-h-0">
                 <button type="button" className="font-medium text-text cursor-pointer hover:text-accent transition-colors bg-transparent border-0 p-0 text-left" onClick={onDetail}>{appDisplayName(app)}</button>
                 <span className="text-[11px] text-muted bg-bg-elevated px-1.5 py-0.5 rounded">{i18nT('components.appstore.installedAppCard.v')}{app.version}{app.updateAvailable && ` (v${app._newVersion} available)`}</span>
                 {isBuiltin ? (
@@ -116,8 +129,15 @@ export default function InstalledAppCard({
                   <Badge variant="ok">{i18nT('components.appstore.installedAppCard.external')}</Badge>
                 )}
               </div>
-              <p className="text-sm text-muted mb-2 line-clamp-2">{appDescription({ name: app.name, description: m?.description })}</p>
-              <div className="flex items-center gap-3 text-[12px] text-muted flex-wrap">
+              {/* Body text is pulled back out of the icon's indent while narrow:
+                  the 56px gutter earns its keep for the name (it pairs the title
+                  with the tile) but not for prose, which is the widest thing in
+                  the card and the first to suffer. The offset must stay equal to
+                  the tile's own width plus the row gap -- `w-11` (44px) plus
+                  `gap-3` (12px) -- or the text no longer lines up with the tile's
+                  left edge; a test pins the three together. */}
+              <p className="text-sm text-muted mb-2 line-clamp-2 -ml-14 sm:ml-0">{appDescription({ name: app.name, description: m?.description })}</p>
+              <div className="flex items-center gap-3 text-[12px] text-muted flex-wrap -ml-14 sm:ml-0">
                 {m?.author && <span className="flex items-center gap-1"><Users size={11} /> {m.author}</span>}
                 {agentCount > 0 && <span className="flex items-center gap-1"><Bot size={11} /> {i18nT('components.appstore.installedAppCard.agent', { count: agentCount })}</span>}
                 {skillCount > 0 && <span className="flex items-center gap-1"><Zap size={11} /> {i18nT('components.appstore.installedAppCard.skill', { count: skillCount })}</span>}
@@ -126,7 +146,7 @@ export default function InstalledAppCard({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap sm:shrink-0">
             {/* Open button — all app types */}
             {hasOpenCommand && (
               <Btn primary onClick={() => api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
