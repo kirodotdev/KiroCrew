@@ -2754,6 +2754,71 @@ class TestHandlers:
         r = asyncio.run(handlers.api_instances_list(_FakeReq(_State(self._reg(tmp_path)))))
         assert r.status == 200
 
+    def test_update_locks_addressing_fields_for_correlated_cloud_instance(
+        self, tmp_path, monkeypatch
+    ):
+        # Regression test for #3387: PATCH must not let a non-dashboard caller
+        # (CLI, script, agent) rewrite the fields Stop/Start/Delete use to
+        # resolve an EC2 stack launched by Kiro Crew — doing so strands a running,
+        # billing instance with no dashboard path to reach it.
+        from kiro_crew.cloud import launch_job as lj
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        launched = reg.add(
+            name="Cloud",
+            connection_method="ssm",
+            ssm_target="i-0123abcd",
+            aws_profile="prod",
+            aws_region="us-east-1",
+            instance_id="cloud-launched",
+        )
+        # A job Kiro Crew provisioned whose EC2 instance id matches the
+        # instance's ssm_target — this is what makes it "correlated".
+        store = lj.LaunchJobStore()  # honours KIROCREW_HOME, same as production
+        job = store.create(profile="prod", region="us-east-1", size_key="light")
+        job.instance_id = "i-0123abcd"
+        store.save(job)
+        state = _State(reg)
+
+        # Editing an addressing field is rejected...
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cloud-launched"}, body={"aws_region": "us-west-2"})
+            )
+        )
+        assert r.status == 400
+        body = _body(r)
+        assert body["code"] == "cloud_instance_addressing_locked"
+        # ...and the record is untouched.
+        assert reg.get("cloud-launched").aws_region == "us-east-1"
+
+        # A non-addressing field on the same correlated instance is still editable.
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cloud-launched"}, body={"name": "Renamed"})
+            )
+        )
+        assert r.status == 200 and _body(r)["name"] == "Renamed"
+
+        # A hand-added SSM instance whose ssm_target matches no launch job is
+        # NOT correlated — its addressing fields stay editable.
+        reg.add(
+            name="Hand-added",
+            connection_method="ssm",
+            ssm_target="i-89ab1234",
+            instance_id="cloud-manual",
+        )
+        r = asyncio.run(
+            handlers.api_instances_update(
+                _FakeReq(state, match={"id": "cloud-manual"}, body={"aws_region": "eu-west-1"})
+            )
+        )
+        assert r.status == 200 and _body(r)["aws_region"] == "eu-west-1"
+
+        assert launched.ssm_target == "i-0123abcd"  # sanity: fixture unchanged
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Phase 3-4: resilience + convenience
