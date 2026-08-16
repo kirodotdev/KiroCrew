@@ -1832,6 +1832,23 @@ class _ChatSlot:
             # The frozen prefix grew → its cached bytes are stale.
             self._frozen_prefix_cache = None
 
+    def push_wire_frame(self, cls: str, content: str) -> None:
+        """Queue an ephemeral wire-only frame for live SSE readers.
+
+        Unlike ``append_message`` this touches NOTHING durable: the frame is
+        not added to ``messages``, not counted in ``total_messages``, not
+        persisted, and not WS-broadcast. It only lands in ``_pending`` so an
+        attached HTTP stream reader drains it before the turn's ``done``.
+        Use for out-of-band signals (e.g. the context meter) that a WebSocket
+        client gets via a typed broadcast but an SSE-only client would miss.
+        The queue/ordering contract lives here so callers never hand-roll a
+        raw ``_pending`` append at a distance.
+        """
+        self._pending.append(
+            {"role": cls, "content": content, "cls": cls, "ts": ""}
+        )
+        self.event.set()
+
     def drain(self) -> list[dict[str, str]]:
         """Return and clear pending messages."""
         out = self._pending[:]
@@ -6017,6 +6034,17 @@ class DashboardState:
         slot = self.get_slot(slot_key)
         if slot is None:
             return
+        # SSE-only consumers (API clients, soak harness) never open a
+        # WebSocket, so the broadcast above is invisible to them. Mirror the
+        # SAME payload into the slot's live stream queue as an ephemeral
+        # wire-only frame under the SAME ``context_usage`` name the WS
+        # transport uses. Done HERE, inside the single writer, so every
+        # producer (end-of-turn, compaction, cron injection, reset) feeds the
+        # SSE channel identically and it cannot drift from the WS channel.
+        try:
+            slot.push_wire_frame("context_usage", json.dumps(payload))
+        except (TypeError, ValueError):
+            pass  # non-serializable payload (e.g. a test mock) — skip the SSE mirror
         # Ephemeral tabs (incognito/temporary) leave no memory behind by
         # contract — same filter as _persist_open_slots.
         if getattr(slot, "memory_mode", "persistent") != "persistent":
