@@ -1568,6 +1568,9 @@
           "regenerate_summary": "Rigenera il riepilogo",
           "retry": "Riprova"
         },
+        "detailOverflowMenu": {
+          "more_actions": "Altre azioni"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "Accedi con la CLI gh per usare questo filtro"
         },
@@ -1601,10 +1604,8 @@
           "assignees": "Assegnatari",
           "by": "· di",
           "changed_the_title": "ha modificato il titolo",
-          "close": "Chiudi",
           "close_as_completed": "Chiudi come completata",
           "close_as_not_planned": "Chiudi come non pianificata",
-          "close_this_issue": "Chiudi questa issue",
           "closed": "Chiusa",
           "closed_as_not_planned": "Chiusa come non pianificata",
           "closed_this": "ha chiuso questa",
@@ -1612,7 +1613,6 @@
           "copy_link_to_this_issue": "Copia il link a questa issue",
           "couldn_t_load_activity": "Impossibile caricare l'attività:",
           "dates": "Date",
-          "dismiss_menu": "Chiudi il menu",
           "done": "Fatto",
           "edit": "Modifica",
           "finding_suggestions": "Ricerca di suggerimenti…",
@@ -1636,7 +1636,6 @@
           "opened": "aperta",
           "opened_2": "Aperta",
           "opened_this_issue": "ha aperto questa issue",
-          "re_fetch_issue_and_timeline_from": "Recupera di nuovo questa issue e la sua cronologia da {{provider}}",
           "read_only_connect_with_triage_push_access_to_app": "Sola lettura — collegati con accesso di triage/push per applicare.",
           "read_only_connect_with_triage_push_access_to_app_2": "Sola lettura — collegati con accesso di triage/push per applicare",
           "referenced_this_in": "ha fatto riferimento a questa in",
@@ -1645,7 +1644,6 @@
           "removed_the": "ha rimosso l'etichetta",
           "removed_this_from_the": "ha rimosso questo da",
           "reopen": "Riapri",
-          "reopen_this_issue": "Riapri questa issue",
           "reopened_this": "ha riaperto questa",
           "self_assigned_this": "si è assegnato questa",
           "suggested": "Suggerito",
@@ -1854,7 +1852,6 @@
           "opened": "aperta",
           "opened_2": "Aperta",
           "passed": "superato",
-          "re_fetch_this_and_its_timeline_from": "Recupera di nuovo questa {{subject}} e la sua cronologia da {{provider}}",
           "referenced_this_in": "ha fatto riferimento a questa in",
           "refresh_details": "Aggiorna i dettagli di {{subject}}",
           "removed_the": "ha rimosso l'etichetta",

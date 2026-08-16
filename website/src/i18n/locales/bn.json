@@ -1539,6 +1539,9 @@
           "regenerate_summary": "সারসংক্ষেপ আবার তৈরি করুন",
           "retry": "আবার চেষ্টা করুন"
         },
+        "detailOverflowMenu": {
+          "more_actions": "আরও অ্যাকশন"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "এই ফিল্টার ব্যবহার করতে gh CLI দিয়ে সাইন ইন করো"
         },
@@ -1572,10 +1575,8 @@
           "assignees": "অ্যাসাইনি",
           "by": "· লেখক",
           "changed_the_title": "শিরোনাম বদলেছেন",
-          "close": "বন্ধ করুন",
           "close_as_completed": "সম্পন্ন হিসেবে বন্ধ করুন",
           "close_as_not_planned": "পরিকল্পিত নয় হিসেবে বন্ধ করুন",
-          "close_this_issue": "এই ইস্যুটি বন্ধ করুন",
           "closed": "বন্ধ",
           "closed_as_not_planned": "পরিকল্পিত নয় হিসেবে বন্ধ করা হয়েছে",
           "closed_this": "এটি বন্ধ করেছেন",
@@ -1583,7 +1584,6 @@
           "copy_link_to_this_issue": "এই ইস্যুর লিঙ্ক কপি করুন",
           "couldn_t_load_activity": "অ্যাক্টিভিটি লোড করা যায়নি:",
           "dates": "তারিখ",
-          "dismiss_menu": "মেনু বন্ধ করুন",
           "done": "সম্পন্ন",
           "edit": "সম্পাদনা",
           "finding_suggestions": "পরামর্শ খোঁজা হচ্ছে…",
@@ -1607,7 +1607,6 @@
           "opened": "খুলেছেন",
           "opened_2": "খোলা হয়েছে",
           "opened_this_issue": "এই ইস্যু খুলেছে",
-          "re_fetch_issue_and_timeline_from": "{{provider}} থেকে এই ইস্যু + তার টাইমলাইন আবার আনো",
           "read_only_connect_with_triage_push_access_to_app": "শুধু-পঠন — প্রয়োগ করতে triage/push অ্যাক্সেস নিয়ে সংযুক্ত হোন।",
           "read_only_connect_with_triage_push_access_to_app_2": "রিড-অনলি — প্রয়োগ করতে triage/push অ্যাক্সেস দিয়ে কানেক্ট করো",
           "referenced_this_in": "এটির উল্লেখ করেছেন এখানে:",
@@ -1616,7 +1615,6 @@
           "removed_the": "সরিয়ে দিয়েছেন",
           "removed_this_from_the": "এটি সরিয়ে দিয়েছেন এখান থেকে:",
           "reopen": "পুনরায় খুলুন",
-          "reopen_this_issue": "এই ইস্যুটি পুনরায় খুলুন",
           "reopened_this": "এটি পুনরায় খুলেছেন",
           "self_assigned_this": "এটি নিজেকে অ্যাসাইন করেছেন",
           "suggested": "প্রস্তাবিত",
@@ -1815,7 +1813,6 @@
           "opened": "খুলেছেন",
           "opened_2": "খোলা হয়েছে",
           "passed": "পাস হয়েছে",
-          "re_fetch_this_and_its_timeline_from": "{{provider}} থেকে এই {{subject}} + তার টাইমলাইন আবার আনো",
           "referenced_this_in": "এটির উল্লেখ করেছেন এখানে",
           "refresh_details": "{{subject}}-এর বিবরণ রিফ্রেশ করো",
           "removed_the": "সরিয়ে দিয়েছেন",

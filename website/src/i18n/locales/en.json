@@ -911,6 +911,9 @@
           "regenerate_summary": "Regenerate summary",
           "retry": "Retry"
         },
+        "detailOverflowMenu": {
+          "more_actions": "More actions"
+        },
         "filtersSection": {
           "assigned_to_me": "Assigned to me",
           "clear": "clear",
@@ -931,17 +934,14 @@
           "assignees": "Assignees",
           "by": "· by",
           "changed_the_title": "changed the title",
-          "close": "Close",
           "close_as_completed": "Close as completed",
           "close_as_not_planned": "Close as not planned",
-          "close_this_issue": "Close this issue",
           "closed": "Closed",
           "closed_as_not_planned": "Closed as not planned",
           "closed_this": "closed this",
           "copy_link_to_this_issue": "Copy link to this issue",
           "couldn_t_load_activity": "Couldn't load activity:",
           "dates": "Dates",
-          "dismiss_menu": "Dismiss menu",
           "done": "Done",
           "edit": "Edit",
           "finding_suggestions": "Finding suggestions…",
@@ -969,7 +969,6 @@
           "removed_the": "removed the",
           "removed_this_from_the": "removed this from the",
           "reopen": "Reopen",
-          "reopen_this_issue": "Reopen this issue",
           "reopened_this": "reopened this",
           "self_assigned_this": "self-assigned this",
           "suggested": "Suggested",

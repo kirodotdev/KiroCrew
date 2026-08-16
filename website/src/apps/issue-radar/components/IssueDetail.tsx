@@ -25,7 +25,7 @@ import {
   Copy, Check, RefreshCw, CircleDot, CircleCheck, CircleSlash, MessageSquare,
   Tag, UserPlus, UserMinus, Pencil, Milestone as MilestoneIcon, GitPullRequest,
   GitCommitHorizontal, Link2, Users, CalendarDays, Lock, Sparkles,
-  Plus, ChevronDown, Loader2,
+  Plus, Loader2,
   ThumbsUp, ThumbsDown, Laugh, PartyPopper, Frown, Heart, Rocket, Eye,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -34,12 +34,18 @@ import { parseRepoRef } from '../lib/refLinks'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
 import AiSummaryCard from './AiSummaryCard'
-import Clickable from '../../../components/Clickable'
 import LabelChip from './LabelChip'
 import LabelPicker from './LabelPicker'
 import MemberBadge from './MemberBadge'
+import DetailHeader from './DetailHeader'
+import DetailOverflowMenu from './DetailOverflowMenu'
+import {
+  DropdownMenuItem, DropdownMenuSeparator,
+} from '../../../components/ui/dropdown-menu'
+import ListDetailBack from '../../../components/ListDetailBack'
 import InvestigateButton from './InvestigateButton'
 import { useIssueRadar } from '../context'
+import { useTitleScrolledOut } from '../lib/useTitleScrolledOut'
 import { relativeTimeOrDate, hexToRgba, asArray, detailPollMs } from '../lib/format'
 import {
   issueRadarApi,
@@ -118,58 +124,6 @@ function StatePill({ state, reason }: { state?: string; reason?: string | null }
     <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-aim-subtle text-aim">
       <CircleCheck size={12} /> {i18nT('apps.issueRadar.components.issueDetail.closed')}
     </span>
-  )
-}
-
-/** Header close/reopen control. Only rendered when the user can write. When the
- * issue is open, "Close" opens a tiny menu to pick the close reason (completed
- * vs not planned, matching GitHub); when closed, a single "Reopen" button. */
-function StateActions({
-  state, pending, onClose, onReopen,
-}: {
-  state: string
-  pending: boolean
-  onClose: (reason: 'completed' | 'not_planned') => void
-  onReopen: () => void
-}) {
-  const [menu, setMenu] = useState(false)
-  const btn =
-    'inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md border border-border ' +
-    'text-muted hover:text-text hover:border-accent/50 disabled:opacity-40 disabled:cursor-default ' +
-    'cursor-pointer bg-transparent whitespace-nowrap'
-
-  if (state === 'closed') {
-    return (
-      <button onClick={onReopen} disabled={pending} title={i18nT('apps.issueRadar.components.issueDetail.reopen_this_issue')} className={btn}>
-        {pending ? <Loader2 size={13} className="animate-spin" /> : <CircleDot size={13} className="text-ok" />} {i18nT('apps.issueRadar.components.issueDetail.reopen')}
-      </button>
-    )
-  }
-  return (
-    <div className="relative">
-      <button onClick={() => setMenu((v) => !v)} disabled={pending} title={i18nT('apps.issueRadar.components.issueDetail.close_this_issue')} className={btn}>
-        {pending ? <Loader2 size={13} className="animate-spin" /> : <CircleCheck size={13} />} {i18nT('apps.issueRadar.components.issueDetail.close')} <ChevronDown size={12} />
-      </button>
-      {menu && (
-        <>
-          <Clickable className="fixed inset-0 z-10" aria-label={i18nT('apps.issueRadar.components.issueDetail.dismiss_menu')} onClick={() => setMenu(false)} />
-          <div className="absolute right-0 mt-1 z-20 w-48 rounded-md border border-border bg-card shadow-lg py-1 text-[12.5px]">
-            <button
-              onClick={() => { setMenu(false); onClose('completed') }}
-              className="w-full text-left px-3 py-1.5 hover:bg-bg-elevated flex items-center gap-2 cursor-pointer bg-transparent text-text"
-            >
-              <CircleCheck size={13} className="text-aim" /> {i18nT('apps.issueRadar.components.issueDetail.close_as_completed')}
-            </button>
-            <button
-              onClick={() => { setMenu(false); onClose('not_planned') }}
-              className="w-full text-left px-3 py-1.5 hover:bg-bg-elevated flex items-center gap-2 cursor-pointer bg-transparent text-text"
-            >
-              <CircleSlash size={13} className="text-muted" /> {i18nT('apps.issueRadar.components.issueDetail.close_as_not_planned')}
-            </button>
-          </div>
-        </>
-      )}
-    </div>
   )
 }
 
@@ -497,7 +451,7 @@ function Section({
 export default function IssueDetail({ issue }: { issue: Issue }) {
   const {
     active, colorByName, memberRoleByLogin, repoLabels, countByLabel, canWrite, stateFilter,
-    refreshPrefs,
+    refreshPrefs, listDetail, refStack,
   } = useIssueRadar()
   const { owner, repo } = active
   const scopeKey = repoScopeKey(active)
@@ -559,7 +513,18 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
     ),
     refetchIntervalInBackground: refreshPrefs.pollInBackground,
   })
-  const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
+  // Tracks a USER-REQUESTED refresh so the overflow trigger can acknowledge it.
+  // Deliberately NOT `detailQuery.isFetching`: `refetchInterval` polls this query
+  // in the background, so that flag would spin the trigger with no user action —
+  // a spinner that misreports what is happening is worse than none. `refreshRef`
+  // cannot serve either: it is a ref consumed inside the queryFn, so it never
+  // re-renders anything.
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshDetail = () => {
+    refreshRef.current = true
+    setRefreshing(true)
+    detailQuery.refetch().finally(() => setRefreshing(false))
+  }
 
   // AI triage (summary + suggested labels): fires on open, cache-first
   // server-side (one model call per issue, served instantly on re-open). The
@@ -720,91 +685,123 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   // detail cache updates). Kept to labels that still exist on the repo.
   const suggestions = asArray<SuggestedLabel>(aiQuery.data?.suggested_labels).filter((s) => !currentNames.includes(s.name))
 
+  // The tall title is ordinary scrolling content now; the compact echo in the
+  // sticky bar fades in exactly when that title leaves the scroller.
+  const { scrolledOut, setScroller, setTitle } = useTitleScrolledOut()
+  const title = detail?.title ?? issue.title
+
   return (
     <article className="h-full flex flex-col">
-      {/* ── Header (does not scroll) ── */}
-      <header className="px-6 pt-5 pb-4 border-b border-border">
-        {/* Stacked while narrow: the actions are ~150px of fixed width, and
-            holding them beside the title left it ~120px on a phone, which wrapped
-            a normal issue title onto six lines. Label above content, not beside. */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3">
-          <div className="flex-1 min-w-0">
-            {awaitingFirstPaint ? <HeaderSkeleton /> : (<>
-            <h1 className="text-[27px] font-bold leading-tight text-text-strong break-words">
-              {detail?.title ?? issue.title}
-            </h1>
-            <div className="flex items-center gap-2 mt-3 flex-wrap text-[12.5px] text-muted">
-              <StatePill state={state} reason={stateReason} />
-              {/* Copy-link + issue number, sitting right after the state pill.
-                  The copy button writes the URL to the clipboard; the #number
-                  itself links out to the provider. */}
-              <span className="inline-flex items-center gap-1">
-                <button
-                  onClick={copyLink}
-                  title={copied ? i18nT('apps.issueRadar.components.issueDetail.link_copied') : i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}
-                  aria-label={i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}
-                  className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
-                >
-                  {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
-                </button>
-                <a
-                  href={safeHttpUrl(detail?.url ?? issue.url ?? '') ?? undefined}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={`Open on ${terms.providerName}`}
-                  className="font-mono text-muted hover:text-accent hover:underline"
-                >
-                  #{issue.number}
-                </a>
-              </span>
+      {/* The header lives INSIDE the scroller now, so its height is not standing
+          furniture on a phone: the tall title scrolls away by physics and a
+          sticky bar keeps state + the actions reachable. Above `sm:` the wrapper
+          below stops scrolling and this reads exactly as it did before — a static
+          block above both body columns. See DetailHeader for the full rationale. */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div
+          ref={setScroller}
+          className="h-full flex flex-col overflow-y-auto sm:overflow-visible"
+        >
+          <DetailHeader
+            collapsed={scrolledOut}
+            title={title}
+            titleRef={setTitle}
+            /* Suppressed inside a cross-reference sheet. RefSheet reuses this
+               whole pane as a detour over the workspace, and this control's
+               `closeDetail` acts on the workspace BEHIND the sheet — it would
+               mutate hidden state while the sheet stayed open. The sheet has its
+               own chrome (a stack-back plus owner/repo/#number), so nothing is
+               lost by leaving navigation to it. */
+            back={listDetail.isMobile && refStack.length === 0
+              ? <ListDetailBack label={i18nT('apps.issueRadar.components.leftRail.issues')} onBack={listDetail.closeDetail} />
+              : null}
+            awaitingFirstPaint={awaitingFirstPaint}
+            skeleton={<HeaderSkeleton />}
+            meta={<>
               <MemberBadge role={authorRole} assoc={association} />
               <span>
                 {author ? <span className="text-text font-medium">{author}</span> : 'someone'} {i18nT('apps.issueRadar.components.issueDetail.opened')}{' '}
                 {createdAt ? <RelTime iso={createdAt} /> : ''}
               </span>
+            </>}
+            identity={<>
+              <StatePill state={state} reason={stateReason} />
+              {/* The #number links out to the provider. Copy-link is NOT here: it
+                  is an action control, and a fourth one on this row breaks
+                  `max-two-buttons-per-row`. It lives in the overflow menu, where
+                  it also gains a text label it never had as a bare icon. */}
+              <a
+                href={safeHttpUrl(detail?.url ?? issue.url ?? '') ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open on ${terms.providerName}`}
+                className="font-mono text-muted hover:text-accent hover:underline"
+              >
+                #{issue.number}
+              </a>
+              {/* Lock state stands with the state pill rather than scrolling away
+                  with the metadata: CommentCard takes author/when/assoc/role/
+                  body/reactions and carries no lock, so a locked issue would
+                  otherwise show no lock indicator anywhere once scrolled. */}
               {locked && <span className="inline-flex items-center gap-1 text-warn"><Lock size={12} /> {i18nT('apps.issueRadar.components.issueDetail.locked')}</span>}
-            </div>
-            </>)}
-          </div>
-          <div className="flex-shrink-0 flex items-center gap-1.5">
-            {/* Withheld until the pane has something real to describe: the seed
-                prompt names the issue by title, so firing it from a placeholder
-                row would persist a session titled "#0" with a malformed context
-                line. */}
-            {!awaitingFirstPaint && <InvestigateButton repoRef={active} issue={actionIssue} />}
-            {canWrite && stateKnown && (
-              <StateActions
-                state={state}
-                pending={stateMutation.isPending}
-                onClose={(reason) => stateMutation.mutate({ state: 'closed', reason })}
-                onReopen={() => stateMutation.mutate({ state: 'open' })}
-              />
+            </>}
+            /* TWO controls, per `max-two-buttons-per-row`: the pane's primary
+               action, and one overflow trigger for the rest. */
+            actions={<>
+              {/* Withheld until the pane has something real to describe: the seed
+                  prompt names the issue by title, so firing it from a placeholder
+                  row would persist a session titled "#0" with a malformed context
+                  line. */}
+              {!awaitingFirstPaint && <InvestigateButton repoRef={active} issue={actionIssue} />}
+              {/* `pending` surfaces the state write's in-flight state on the
+                  trigger, since the menu closes as soon as the item is chosen. */}
+              <DetailOverflowMenu pending={stateMutation.isPending || refreshing}>
+                {canWrite && stateKnown && (state === 'closed' ? (
+                  <DropdownMenuItem disabled={stateMutation.isPending} onSelect={() => stateMutation.mutate({ state: 'open' })}>
+                    <CircleDot size={13} className="shrink-0 text-ok" />
+                    <span>{i18nT('apps.issueRadar.components.issueDetail.reopen')}</span>
+                  </DropdownMenuItem>
+                ) : (<>
+                  {/* The two close reasons are separate items rather than a
+                      submenu — GitHub treats them as two verbs, and flattening
+                      them costs one row instead of a second hover level. */}
+                  <DropdownMenuItem disabled={stateMutation.isPending} onSelect={() => stateMutation.mutate({ state: 'closed', reason: 'completed' })}>
+                    <CircleCheck size={13} className="shrink-0 text-aim" />
+                    <span>{i18nT('apps.issueRadar.components.issueDetail.close_as_completed')}</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={stateMutation.isPending} onSelect={() => stateMutation.mutate({ state: 'closed', reason: 'not_planned' })}>
+                    <CircleSlash size={13} className="shrink-0 text-muted" />
+                    <span>{i18nT('apps.issueRadar.components.issueDetail.close_as_not_planned')}</span>
+                  </DropdownMenuItem>
+                </>))}
+                {canWrite && stateKnown && <DropdownMenuSeparator />}
+                {/* Keeps the menu OPEN on select: the copy affordance's whole
+                    feedback is the glyph flipping to a tick and back, and an item
+                    that closes the menu on select would take that confirmation
+                    off screen the instant it was earned. */}
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); copyLink() }}>
+                  {copied
+                    ? <><Check size={13} className="shrink-0 text-ok" /><span>{i18nT('apps.issueRadar.components.issueDetail.link_copied')}</span></>
+                    : <><Copy size={13} className="shrink-0 text-muted" /><span>{i18nT('apps.issueRadar.components.issueDetail.copy_link_to_this_issue')}</span></>}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={detailQuery.isFetching} onSelect={refreshDetail}>
+                  <RefreshCw size={13} className={`shrink-0 text-muted ${detailQuery.isFetching ? 'animate-spin' : ''}`} />
+                  <span>{i18nT('apps.issueRadar.components.issueDetail.refresh_issue_details')}</span>
+                </DropdownMenuItem>
+              </DetailOverflowMenu>
+            </>}
+            extra={stateMutation.isError && (
+              <div className="mt-2 text-[12px] text-danger">
+                {(stateMutation.error as Error).message}
+              </div>
             )}
-            <button
-              onClick={refreshDetail}
-              disabled={detailQuery.isFetching}
-              aria-label={i18nT('apps.issueRadar.components.issueDetail.refresh_issue_details')}
-              title={i18nT('apps.issueRadar.components.issueDetail.re_fetch_issue_and_timeline_from', { provider: terms.providerName })}
-              className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
-            >
-              <RefreshCw size={14} className={detailQuery.isFetching ? 'animate-spin' : ''} />
-            </button>
-          </div>
-        </div>
-        {stateMutation.isError && (
-          <div className="mt-2 text-[12px] text-danger">
-            {(stateMutation.error as Error).message}
-          </div>
-        )}
-      </header>
+          />
 
-      {/* ── Scroll area: timeline + sidebar ── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
         {/* Stacked while narrow. Side by side, the 236px sidebar took the width
             out of the column holding the summary, description and timeline: at
             390px that column measured 34px and clipped its text to two or three
             characters a line. The metadata reads fine full-width underneath. */}
-        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 h-full sm:items-stretch overflow-y-auto sm:overflow-visible">
+        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 sm:flex-1 sm:min-h-0 sm:items-stretch">
           {/* Main column — AI summary, the pinned description, linked refs,
               then the activity timeline (newest-first). */}
           {/* Scroll ownership is transferred WHOLE at the breakpoint. Keeping an
@@ -966,6 +963,7 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
               </dl>
             </Section>
           </aside>
+        </div>
         </div>
       </div>
     </article>

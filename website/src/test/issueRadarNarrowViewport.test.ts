@@ -59,10 +59,16 @@ describe('Issue Radar at narrow widths', () => {
   it('keeps a way back out of the detail pane', async () => {
     const s = await shell()
     expect(s).toMatch(/import ListDetailBack from/)
-    expect(s).toMatch(/onBack=\{listDetail\.closeDetail\}/)
-    // One Back per drill-down view; the rail's nav rows switch section without
-    // leaving the detail, so this is the only way back.
-    expect((s.match(/\{narrowBack\(/g) ?? []).length).toBe(3)
+    // Only the crews pane still takes its Back row from the shell: the issue and
+    // pull panes render theirs inside their own sticky header, so it can share a
+    // row with the compact title instead of standing on its own 44px.
+    expect((s.match(/\{narrowBack\(/g) ?? []).length).toBe(1)
+    for (const pane of ['IssueDetail', 'PrDetail']) {
+      const detail = await src(`components/${pane}.tsx`)
+      expect(detail, `${pane}: must render its own way back while narrow`)
+        .toMatch(/back=\{listDetail\.isMobile/)
+      expect(detail).toMatch(/onBack=\{listDetail\.closeDetail\}/)
+    }
   })
 
   it('drills in from every row handler, not from "is a row selected"', async () => {
@@ -161,8 +167,10 @@ describe('Issue Radar at narrow widths', () => {
     const s = await shell()
     // `changeRequestTitle` is singular ("Pull Request") and reads as the item you
     // are looking at; Back returns to the list, which is the plural.
-    expect(s).toContain('narrowBack(terms.changeRequestPluralTitle)')
-    expect(s).not.toContain('narrowBack(terms.changeRequestTitle)')
+    // The PR pane owns its own Back control now, so the label lives there.
+    const pr = await src('components/PrDetail.tsx')
+    expect(pr).toContain('label={terms.changeRequestPluralTitle}')
+    expect(pr).not.toContain('label={terms.changeRequestTitle}')
   })
 
   it('keeps the drill-down state stable enough to host in a context', async () => {
@@ -188,10 +196,14 @@ describe('Issue Radar at narrow widths', () => {
         .toMatch(/className="w-full sm:w-\[236px\]/)
       expect(detail, `${pane}: the body columns must stack while narrow`)
         .toMatch(/flex flex-col sm:flex-row gap-6 px-6 py-5/)
-      // The actions are a fixed cluster; beside the title they left it ~120px
-      // and a normal title wrapped onto six lines.
-      expect(detail, `${pane}: the header actions must stack under the title`)
-        .toMatch(/flex flex-col sm:flex-row items-stretch sm:items-start gap-3/)
+      // The actions no longer compete with the title for width at all: they live
+      // in the sticky bar, and the title is a full-width block above it. What
+      // must hold is that the pane renders its header through the SHARED shell,
+      // so the mechanism is not spelled once per pane.
+      expect(detail, `${pane}: the header must come from the shared shell`)
+        .toMatch(/<DetailHeader\b/)
+      expect(detail, `${pane}: no per-pane header element may come back`)
+        .not.toMatch(/<header className=/)
       // No unguarded fixed width may come back on either column.
       expect(detail, `${pane}: no ungated fixed sidebar width`).not.toMatch(/className="w-\[236px\]/)
     }

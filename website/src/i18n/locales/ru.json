@@ -1597,6 +1597,9 @@
           "regenerate_summary": "Пересоздать сводку",
           "retry": "Повторить"
         },
+        "detailOverflowMenu": {
+          "more_actions": "Другие действия"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "Войди через gh CLI, чтобы использовать этот фильтр"
         },
@@ -1630,10 +1633,8 @@
           "assignees": "Исполнители",
           "by": "· автор",
           "changed_the_title": "изменил заголовок",
-          "close": "Закрыть",
           "close_as_completed": "Закрыть как выполненную",
           "close_as_not_planned": "Закрыть как незапланированную",
-          "close_this_issue": "Закрыть эту задачу",
           "closed": "Закрыта",
           "closed_as_not_planned": "Закрыта как незапланированная",
           "closed_this": "закрыл это",
@@ -1641,7 +1642,6 @@
           "copy_link_to_this_issue": "Копировать ссылку на задачу",
           "couldn_t_load_activity": "Не удалось загрузить активность:",
           "dates": "Даты",
-          "dismiss_menu": "Закрыть меню",
           "done": "Готово",
           "edit": "Изменить",
           "finding_suggestions": "Поиск предложений…",
@@ -1665,7 +1665,6 @@
           "opened": "открыл",
           "opened_2": "Открыта",
           "opened_this_issue": "создал эту задачу",
-          "re_fetch_issue_and_timeline_from": "Заново загрузить эту задачу и её историю из {{provider}}",
           "read_only_connect_with_triage_push_access_to_app": "Только чтение — подключитесь с правами triage/push, чтобы применить.",
           "read_only_connect_with_triage_push_access_to_app_2": "Только чтение — подключись с правами triage/push, чтобы применить",
           "referenced_this_in": "упомянул это в",
@@ -1674,7 +1673,6 @@
           "removed_the": "убрал",
           "removed_this_from_the": "убрал это из",
           "reopen": "Открыть заново",
-          "reopen_this_issue": "Открыть эту задачу заново",
           "reopened_this": "открыл это заново",
           "self_assigned_this": "назначил это себе",
           "suggested": "Предложено",
@@ -1893,7 +1891,6 @@
           "opened": "открыл",
           "opened_2": "Открыто",
           "passed": "успешно",
-          "re_fetch_this_and_its_timeline_from": "Заново загрузить {{subject}} вместе с историей из {{provider}}",
           "referenced_this_in": "упомянул это в",
           "refresh_details": "Обновить данные: {{subject}}",
           "removed_the": "удалил",

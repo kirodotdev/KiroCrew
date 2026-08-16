@@ -1568,6 +1568,9 @@
           "regenerate_summary": "Regenerar resumen",
           "retry": "Reintentar"
         },
+        "detailOverflowMenu": {
+          "more_actions": "Más acciones"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "Inicia sesión con la CLI de gh para usar este filtro"
         },
@@ -1601,10 +1604,8 @@
           "assignees": "Asignados",
           "by": "· por",
           "changed_the_title": "cambió el título",
-          "close": "Cerrar",
           "close_as_completed": "Cerrar como completada",
           "close_as_not_planned": "Cerrar como no planificada",
-          "close_this_issue": "Cerrar esta incidencia",
           "closed": "Cerrada",
           "closed_as_not_planned": "Cerrada como no planificada",
           "closed_this": "cerró esto",
@@ -1612,7 +1613,6 @@
           "copy_link_to_this_issue": "Copiar el enlace a esta incidencia",
           "couldn_t_load_activity": "No se pudo cargar la actividad:",
           "dates": "Fechas",
-          "dismiss_menu": "Descartar el menú",
           "done": "Hecho",
           "edit": "Editar",
           "finding_suggestions": "Buscando sugerencias…",
@@ -1636,7 +1636,6 @@
           "opened": "abrió",
           "opened_2": "Abierta",
           "opened_this_issue": "abrió esta incidencia",
-          "re_fetch_issue_and_timeline_from": "Volver a obtener esta incidencia y su cronología desde {{provider}}",
           "read_only_connect_with_triage_push_access_to_app": "Solo lectura — conéctate con acceso de triaje/escritura para aplicar cambios.",
           "read_only_connect_with_triage_push_access_to_app_2": "Solo lectura — conéctate con acceso de triaje/escritura para aplicar cambios",
           "referenced_this_in": "hizo referencia a esto en",
@@ -1645,7 +1644,6 @@
           "removed_the": "quitó la",
           "removed_this_from_the": "quitó esto del",
           "reopen": "Reabrir",
-          "reopen_this_issue": "Reabrir esta incidencia",
           "reopened_this": "reabrió esto",
           "self_assigned_this": "se autoasignó esto",
           "suggested": "Sugeridas",
@@ -1854,7 +1852,6 @@
           "opened": "abrió",
           "opened_2": "Abierto",
           "passed": "superadas",
-          "re_fetch_this_and_its_timeline_from": "Volver a obtener {{subject}} y su cronología desde {{provider}}",
           "referenced_this_in": "hizo referencia a esto en",
           "refresh_details": "Actualizar los detalles de {{subject}}",
           "removed_the": "eliminó la",

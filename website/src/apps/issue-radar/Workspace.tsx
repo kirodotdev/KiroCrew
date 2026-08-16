@@ -115,6 +115,9 @@ export default function Workspace() {
   // rail strip's nav rows switch section, they do not leave the detail, and
   // component selection state is not browser history. Null on a desktop, where
   // both panes are on screen and there is nothing to return from.
+  // Only the crews pane still takes its Back row from the shell. The issue and
+  // pull panes render their own inside their sticky header, so the control can
+  // share a row with the compact title instead of standing on its own 44px.
   const narrowBack = (label: string) => (
     listDetail.isMobile && showDetail
       ? <ListDetailBack label={label} onBack={listDetail.closeDetail} />
@@ -171,7 +174,15 @@ export default function Workspace() {
           )}
 
           <main className={`flex-1 min-w-0 min-h-0 flex flex-col ${showDetail ? '' : 'hidden'}`}>
-            {narrowBack(i18nT('apps.issueRadar.components.leftRail.issues'))}
+            {/* The pane renders its own Back inside its sticky header — but only
+                when there IS a pane. With no active issue the shell has to
+                supply one, or a narrow viewport is trapped: the list is hidden
+                while `showDetail` holds, and neither the hidden-by-filter notice
+                nor the empty state carries a way back. That state is reachable
+                without the user doing anything odd — closing the issue from the
+                detail toolbar while the list filters to open drops it out of the
+                list, which nulls `activeIssue` under a still-open detail. */}
+            {!activeIssue && narrowBack(i18nT('apps.issueRadar.components.leftRail.issues'))}
             {/* flex-1 min-h-0 so the Back row takes its 44px from this pane
                 rather than pushing the detail's own h-full past the fold. */}
             <div className="flex-1 min-h-0">
@@ -219,7 +230,9 @@ export default function Workspace() {
           )}
 
           <main className={`flex-1 min-w-0 min-h-0 flex flex-col ${showDetail ? '' : 'hidden'}`}>
-            {narrowBack(terms.changeRequestPluralTitle)}
+            {/* Same shell fallback as the issues pane: no active pull means no
+                pane, and therefore no Back of its own to escape by. */}
+            {!activePull && narrowBack(terms.changeRequestPluralTitle)}
             <div className="flex-1 min-h-0">
             {activePull
               ? <PrDetail pull={activePull} />

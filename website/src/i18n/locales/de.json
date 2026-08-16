@@ -1539,6 +1539,9 @@
           "regenerate_summary": "Zusammenfassung neu erstellen",
           "retry": "Wiederholen"
         },
+        "detailOverflowMenu": {
+          "more_actions": "Weitere Aktionen"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "Melde dich mit der gh CLI an, um diesen Filter zu nutzen"
         },
@@ -1572,10 +1575,8 @@
           "assignees": "Zugewiesene Personen",
           "by": "· von",
           "changed_the_title": "hat den Titel geändert",
-          "close": "Schließen",
           "close_as_completed": "Als abgeschlossen schließen",
           "close_as_not_planned": "Als nicht geplant schließen",
-          "close_this_issue": "Dieses Issue schließen",
           "closed": "Geschlossen",
           "closed_as_not_planned": "Als nicht geplant geschlossen",
           "closed_this": "hat dies geschlossen",
@@ -1583,7 +1584,6 @@
           "copy_link_to_this_issue": "Link zu diesem Issue kopieren",
           "couldn_t_load_activity": "Aktivität konnte nicht geladen werden:",
           "dates": "Daten",
-          "dismiss_menu": "Menü schließen",
           "done": "Fertig",
           "edit": "Bearbeiten",
           "finding_suggestions": "Vorschläge werden gesucht…",
@@ -1607,7 +1607,6 @@
           "opened": "geöffnet",
           "opened_2": "Geöffnet",
           "opened_this_issue": "hat dieses Issue erstellt",
-          "re_fetch_issue_and_timeline_from": "Dieses Issue und seinen Verlauf erneut von {{provider}} abrufen",
           "read_only_connect_with_triage_push_access_to_app": "Nur lesbar — verbinden Sie sich mit Triage-/Push-Zugriff, um dies anzuwenden.",
           "read_only_connect_with_triage_push_access_to_app_2": "Nur Lesezugriff — verbinde dich mit Triage-/Push-Rechten, um es anzuwenden",
           "referenced_this_in": "hat dies erwähnt in",
@@ -1616,7 +1615,6 @@
           "removed_the": "hat das",
           "removed_this_from_the": "hat dies entfernt von",
           "reopen": "Erneut öffnen",
-          "reopen_this_issue": "Dieses Issue erneut öffnen",
           "reopened_this": "hat dies erneut geöffnet",
           "self_assigned_this": "hat dies sich selbst zugewiesen",
           "suggested": "Vorgeschlagen",
@@ -1815,7 +1813,6 @@
           "opened": "geöffnet",
           "opened_2": "Geöffnet",
           "passed": "erfolgreich",
-          "re_fetch_this_and_its_timeline_from": "{{subject}} und Verlauf erneut von {{provider}} abrufen",
           "referenced_this_in": "hat dies erwähnt in",
           "refresh_details": "Details zu {{subject}} aktualisieren",
           "removed_the": "hat das",

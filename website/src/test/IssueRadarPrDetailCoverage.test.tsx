@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -166,7 +166,12 @@ function renderPane(pull: PullRequest = ROW) {
   )
   const sidebar = () => view.container.querySelector('aside') as HTMLElement
   const header = () => view.container.querySelector('header') as HTMLElement
-  return { qc, sidebar, header, ...view }
+  // The header is TWO siblings now — a tall title block that scrolls away and a
+  // sticky bar that persists — because `position: sticky` cannot escape its
+  // parent. Metadata that may scroll away lives in the title block; pane state
+  // and the actions live in the bar, so an assertion has to name its half.
+  const titleBlock = () => view.container.querySelector('[data-testid="detail-title-block"]') as HTMLElement
+  return { qc, sidebar, header, titleBlock, ...view }
 }
 
 /** The sidebar block whose uppercase heading is `title`. */
@@ -188,6 +193,10 @@ beforeEach(() => {
     memberRoleByLogin: new Map([['alice', 'Admin']]),
     canWrite: true,
     refreshPrefs: { detailPollMs: 30_000, pollInBackground: false },
+    // The panes render their own narrow Back control now, inside their sticky
+    // header, so they read the drill-down state directly. Desktop here, which is
+    // what keeps that row unrendered for the assertions below.
+    listDetail: { isMobile: false, showList: true, showDetail: true, openDetail: vi.fn(), closeDetail: vi.fn() },
   }
   api.pullDetail.mockResolvedValue(response())
   api.pullAi.mockResolvedValue({
@@ -198,9 +207,23 @@ beforeEach(() => {
 
 afterEach(() => vi.clearAllMocks())
 
+/** Opens the detail toolbar's overflow menu.
+ *
+ * Copy-link and Refresh are no longer buttons in the toolbar row:
+ * `max-two-buttons-per-row` caps that row at two, so everything past Review moved
+ * behind this trigger. Radix opens on a pointer/keyboard event rather than a
+ * synthetic click, and Enter also proves the menu is reachable without a
+ * pointer. */
+async function openOverflow() {
+  const trigger = screen.getByRole('button', { name: /more actions/i })
+  fireEvent.keyDown(trigger, { key: 'Enter' })
+  await waitFor(() => expect(screen.getAllByRole('menuitem').length).toBeGreaterThan(0))
+  return trigger
+}
+
 describe('PrDetail — header and first paint', () => {
   it('paints the detail title, author identity, and the action affordances', async () => {
-    const { header } = renderPane()
+    const { header, titleBlock } = renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
     const h = header()
@@ -208,9 +231,9 @@ describe('PrDetail — header and first paint', () => {
     expect(within(h).getByRole('link', { name: '#7' }).getAttribute('href'))
       .toBe('https://github.com/kirodotdev/Kiro/pull/7#detail')
     expect(within(h).getByText('Open')).toBeTruthy()
-    expect(within(h).getByText('alice')).toBeTruthy()
+    expect(within(titleBlock()).getByText('alice')).toBeTruthy()
     // Admin, from the authoritative member roster rather than author_association.
-    expect(within(h).getByText('Admin')).toBeTruthy()
+    expect(within(titleBlock()).getByText('Admin')).toBeTruthy()
     expect(screen.getByText('review-button')).toBeTruthy()
     expect(screen.getByText('pr-actions-bar')).toBeTruthy()
   })
@@ -478,7 +501,8 @@ describe('PrDetail — activity errors', () => {
     const { container } = renderPane()
     await waitFor(() => expect(screen.getByText('reopened this')).toBeTruthy())
 
-    await userEvent.click(screen.getByRole('button', { name: /refresh|re_fetch|Refresh/i }))
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: /refresh/i }))
     await waitFor(() => expect(screen.getByText(/refresh blew up/)).toBeTruthy())
 
     // Warn, not danger: the rows on screen are real, just old — and they are
@@ -494,7 +518,8 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
     await waitFor(() => expect(api.pullDetail).toHaveBeenCalledTimes(1))
     expect(api.pullDetail.mock.calls[0][2]).toEqual({ refresh: false })
 
-    await userEvent.click(screen.getByRole('button', { name: /refresh|re_fetch/i }))
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: /refresh/i }))
     await waitFor(() => expect(api.pullDetail).toHaveBeenCalledTimes(2))
     expect(api.pullDetail.mock.calls[1][2]).toEqual({ refresh: true })
   })
@@ -503,13 +528,18 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy())
 
-    const copy = screen.getByRole('button', { name: /copy/i })
-    await userEvent.click(copy)
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
     expect(writeText).toHaveBeenCalledWith('https://github.com/kirodotdev/Kiro/pull/7#detail')
-    // The tick replaces the copy glyph…
-    await waitFor(() => expect(copy.querySelector('.text-ok')).toBeTruthy())
-    // …and times out back to it, so the affordance does not read as latched.
-    await waitFor(() => expect(copy.querySelector('.text-ok')).toBeNull(), { timeout: 4000 })
+    // The item stays put and relabels — a select that closed the menu would take
+    // the confirmation off screen the instant it was earned.
+    const copied = await screen.findByRole('menuitem', { name: 'Link copied' })
+    expect(copied.querySelector('.text-ok')).toBeTruthy()
+    // …and it times out back, so the affordance does not read as latched.
+    await waitFor(
+      () => expect(screen.getByRole('menuitem', { name: /copy link/i })).toBeTruthy(),
+      { timeout: 4000 },
+    )
   })
 
   it('stays quiet when the clipboard is unavailable', async () => {
@@ -517,11 +547,11 @@ describe('PrDetail — refresh, copy, and the AI summary', () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy())
 
-    const copy = screen.getByRole('button', { name: /copy/i })
-    await userEvent.click(copy)
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: /copy link/i }))
     await waitFor(() => expect(writeText).toHaveBeenCalled())
     // No tick — the copy did not happen, so nothing claims it did.
-    expect(copy.querySelector('.text-ok')).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()
   })
 
   it('waits for the detail read before asking for a summary, then regenerates on request', async () => {

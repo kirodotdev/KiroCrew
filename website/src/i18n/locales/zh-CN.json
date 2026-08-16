@@ -1510,6 +1510,9 @@
           "regenerate_summary": "重新生成摘要",
           "retry": "重试"
         },
+        "detailOverflowMenu": {
+          "more_actions": "更多操作"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "使用 gh CLI 登录后才能使用此筛选条件"
         },
@@ -1543,10 +1546,8 @@
           "assignees": "负责人",
           "by": "· 由",
           "changed_the_title": "修改了标题",
-          "close": "关闭",
           "close_as_completed": "标记为已完成并关闭",
           "close_as_not_planned": "标记为不计划并关闭",
-          "close_this_issue": "关闭此 issue",
           "closed": "已关闭",
           "closed_as_not_planned": "已按不计划关闭",
           "closed_this": "关闭了此项",
@@ -1554,7 +1555,6 @@
           "copy_link_to_this_issue": "复制此 issue 链接",
           "couldn_t_load_activity": "无法加载动态：",
           "dates": "日期",
-          "dismiss_menu": "关闭菜单",
           "done": "已完成",
           "edit": "编辑",
           "finding_suggestions": "正在查找建议…",
@@ -1578,7 +1578,6 @@
           "opened": "创建了",
           "opened_2": "创建时间",
           "opened_this_issue": "创建了此 issue",
-          "re_fetch_issue_and_timeline_from": "从 {{provider}} 重新获取此 issue 及其时间线",
           "read_only_connect_with_triage_push_access_to_app": "只读 — 需以具备 triage/push 权限的身份连接才能应用。",
           "read_only_connect_with_triage_push_access_to_app_2": "只读 — 需以具备 triage/push 权限的身份连接才能应用",
           "referenced_this_in": "在以下位置引用了此项：",
@@ -1587,7 +1586,6 @@
           "removed_the": "移除了",
           "removed_this_from_the": "将此从以下位置移除：",
           "reopen": "重新打开",
-          "reopen_this_issue": "重新打开此 issue",
           "reopened_this": "重新打开了此项",
           "self_assigned_this": "自行接手了此项",
           "suggested": "建议",
@@ -1776,7 +1774,6 @@
           "opened": "创建了",
           "opened_2": "创建时间",
           "passed": "通过",
-          "re_fetch_this_and_its_timeline_from": "从 {{provider}} 重新获取此 {{subject}} 及其时间线",
           "referenced_this_in": "在以下位置引用了此项：",
           "refresh_details": "刷新 {{subject}} 详情",
           "removed_the": "移除了",

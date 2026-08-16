@@ -1539,6 +1539,9 @@
           "regenerate_summary": "सारांश फिर से तैयार करें",
           "retry": "पुनः प्रयास करें"
         },
+        "detailOverflowMenu": {
+          "more_actions": "और कार्रवाइयां"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "इस फ़िल्टर का उपयोग करने के लिए gh CLI से साइन इन करें"
         },
@@ -1572,10 +1575,8 @@
           "assignees": "असाइनी",
           "by": "· द्वारा",
           "changed_the_title": "ने शीर्षक बदला",
-          "close": "बंद करें",
           "close_as_completed": "पूर्ण के रूप में बंद करें",
           "close_as_not_planned": "नियोजित नहीं के रूप में बंद करें",
-          "close_this_issue": "यह इश्यू बंद करें",
           "closed": "बंद",
           "closed_as_not_planned": "नियोजित नहीं के रूप में बंद किया गया",
           "closed_this": "ने इसे बंद किया",
@@ -1583,7 +1584,6 @@
           "copy_link_to_this_issue": "इस इश्यू का लिंक कॉपी करें",
           "couldn_t_load_activity": "गतिविधि लोड नहीं हो सकी:",
           "dates": "तिथियाँ",
-          "dismiss_menu": "मेनू बंद करें",
           "done": "पूर्ण",
           "edit": "संपादित करें",
           "finding_suggestions": "सुझाव खोजे जा रहे हैं…",
@@ -1607,7 +1607,6 @@
           "opened": "ने खोला",
           "opened_2": "खोला गया",
           "opened_this_issue": "ने यह इश्यू खोला",
-          "re_fetch_issue_and_timeline_from": "{{provider}} से यह इश्यू और इसकी टाइमलाइन दोबारा लाओ",
           "read_only_connect_with_triage_push_access_to_app": "केवल पढ़ने के लिए — लागू करने के लिए triage/push एक्सेस के साथ कनेक्ट करें।",
           "read_only_connect_with_triage_push_access_to_app_2": "केवल पढ़ने के लिए — लागू करने के लिए triage/push एक्सेस के साथ कनेक्ट करें",
           "referenced_this_in": "ने इसका उल्लेख इसमें किया:",
@@ -1616,7 +1615,6 @@
           "removed_the": "ने हटाया:",
           "removed_this_from_the": "ने इसे इससे हटाया:",
           "reopen": "फिर से खोलें",
-          "reopen_this_issue": "इस इश्यू को फिर से खोलें",
           "reopened_this": "ने इसे फिर से खोला",
           "self_assigned_this": "ने इसे स्वयं को असाइन किया",
           "suggested": "सुझाए गए",
@@ -1815,7 +1813,6 @@
           "opened": "खोला",
           "opened_2": "खोला गया",
           "passed": "पास",
-          "re_fetch_this_and_its_timeline_from": "{{provider}} से यह {{subject}} और इसकी टाइमलाइन दोबारा लाओ",
           "referenced_this_in": "इसका संदर्भ दिया:",
           "refresh_details": "{{subject}} का विवरण रिफ़्रेश करो",
           "removed_the": "हटाया",

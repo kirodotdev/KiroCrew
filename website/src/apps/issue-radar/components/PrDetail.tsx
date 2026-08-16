@@ -31,7 +31,12 @@ import AiSummaryCard from './AiSummaryCard'
 import ReviewButton from './ReviewButton'
 import PrActionsBar from './PrActionsBar'
 import PrRunActions from './PrRunActions'
+import DetailHeader from './DetailHeader'
+import DetailOverflowMenu from './DetailOverflowMenu'
+import { DropdownMenuItem } from '../../../components/ui/dropdown-menu'
+import ListDetailBack from '../../../components/ListDetailBack'
 import { useIssueRadar } from '../context'
+import { useTitleScrolledOut } from '../lib/useTitleScrolledOut'
 import { relativeTimeOrDate, asArray, detailPollMs } from '../lib/format'
 import {
   issueRadarApi,
@@ -515,7 +520,9 @@ function AutoReviewChecks(
 }
 
 export default function PrDetail({ pull }: { pull: PullRequest }) {
-  const { active, colorByName, memberRoleByLogin, canWrite, refreshPrefs } = useIssueRadar()
+  const {
+    active, colorByName, memberRoleByLogin, canWrite, refreshPrefs, listDetail, refStack,
+  } = useIssueRadar()
   const scopeKey = repoScopeKey(active)
   // GitLab calls these merge requests; the whole pane's copy follows the ref.
   const terms = providerTerms(active)
@@ -556,7 +563,18 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
     ),
     refetchIntervalInBackground: refreshPrefs.pollInBackground,
   })
-  const refreshDetail = () => { refreshRef.current = true; detailQuery.refetch() }
+  // Tracks a USER-REQUESTED refresh so the overflow trigger can acknowledge it.
+  // Deliberately NOT `detailQuery.isFetching`: `refetchInterval` polls this query
+  // in the background, so that flag would spin the trigger with no user action —
+  // a spinner that misreports what is happening is worse than none. `refreshRef`
+  // cannot serve either: it is a ref consumed inside the queryFn, so it never
+  // re-renders anything.
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshDetail = () => {
+    refreshRef.current = true
+    setRefreshing(true)
+    detailQuery.refetch().finally(() => setRefreshing(false))
+  }
 
   // Push the freshly-read check state onto this PR's row in whichever cached
   // list holds it (plain list and search results both). Without this the card
@@ -697,79 +715,93 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   // from a cross-reference starts from a placeholder row.
   const actionPull: PullRequest = { ...pull, title: detail?.title ?? pull.title, body }
 
+  // The tall title is ordinary scrolling content now; the compact echo in the
+  // sticky bar fades in exactly when that title leaves the scroller.
+  const { scrolledOut, setScroller, setTitle } = useTitleScrolledOut()
+  const title = detail?.title ?? pull.title
+
   return (
     <article className="h-full flex flex-col">
-      {/* ── Header (does not scroll) ── */}
-      <header className="px-6 pt-5 pb-4 border-b border-border">
-        {/* Stacked while narrow, for the same reason as the issue pane: the
-            actions are a fixed cluster, and beside the title they left it too
-            little width to hold a normal title in a few lines. */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3">
-          <div className="flex-1 min-w-0">
-            {awaitingFirstPaint ? <HeaderSkeleton /> : (<>
-            <h1 className="text-[27px] font-bold leading-tight text-text-strong break-words">
-              {detail?.title ?? pull.title}
-            </h1>
-            <div className="flex items-center gap-2 mt-3 flex-wrap text-[12.5px] text-muted">
-              <StatePill state={state} draft={draft} merged={merged} />
-              <span className="inline-flex items-center gap-1">
-                <button
-                  onClick={copyLink}
-                  title={copied ? i18nT('apps.issueRadar.components.prDetail.link_copied') : i18nT('apps.issueRadar.components.prDetail.copy_link_to_this', { subject: terms.changeRequestTitle })}
-                  aria-label={i18nT('apps.issueRadar.components.prDetail.copy_link_to_this', { subject: terms.changeRequestTitle })}
-                  className="inline-flex items-center -ml-0.5 p-0.5 cursor-pointer bg-transparent text-muted hover:text-accent"
-                >
-                  {copied ? <Check size={13} className="text-ok" /> : <Copy size={13} />}
-                </button>
-                <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
-                  #{pull.number}
-                </a>
-              </span>
+      {/* Header inside the scroller — same shape and same reasoning as the issue
+          pane; see DetailHeader. */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div
+          ref={setScroller}
+          className="h-full flex flex-col overflow-y-auto sm:overflow-visible"
+        >
+          <DetailHeader
+            collapsed={scrolledOut}
+            title={title}
+            titleRef={setTitle}
+            /* Suppressed inside a cross-reference sheet. RefSheet reuses this
+               whole pane as a detour over the workspace, and this control's
+               `closeDetail` acts on the workspace BEHIND the sheet — it would
+               mutate hidden state while the sheet stayed open. The sheet has its
+               own chrome (a stack-back plus owner/repo/#number), so nothing is
+               lost by leaving navigation to it. */
+            back={listDetail.isMobile && refStack.length === 0
+              ? <ListDetailBack label={terms.changeRequestPluralTitle} onBack={listDetail.closeDetail} />
+              : null}
+            awaitingFirstPaint={awaitingFirstPaint}
+            skeleton={<HeaderSkeleton />}
+            meta={<>
               <MemberBadge role={authorRole} assoc={association} />
               <span>
                 {author ? <span className="text-text font-medium">{author}</span> : 'someone'} {i18nT('apps.issueRadar.components.prDetail.opened')}{' '}
                 {createdAt ? <RelTime iso={createdAt} /> : ''}
               </span>
-            </div>
-            </>)}
-          </div>
-          <div className="flex-shrink-0 flex items-center gap-1.5">
-            {/* Same reason as IssueDetail's Investigate: the review seed prompt
-                names the PR by title. */}
-            {!awaitingFirstPaint && <ReviewButton repoRef={active} pull={actionPull} />}
-            <button
-              onClick={refreshDetail}
-              disabled={detailQuery.isFetching}
-              aria-label={i18nT('apps.issueRadar.components.prDetail.refresh_details', { subject: terms.changeRequestTitle })}
-              title={i18nT('apps.issueRadar.components.prDetail.re_fetch_this_and_its_timeline_from', { subject: terms.changeRequestShort, provider: terms.providerName })}
-              className="inline-flex items-center text-muted hover:text-text disabled:opacity-30 cursor-pointer bg-transparent p-1"
-            >
-              <RefreshCw size={14} className={detailQuery.isFetching ? 'animate-spin' : ''} />
-            </button>
-          </div>
-        </div>
+            </>}
+            identity={<>
+              <StatePill state={state} draft={draft} merged={merged} />
+              {/* Copy-link is an action control and lives in the overflow menu —
+                  see DetailOverflowMenu. Only the outbound #number stays here. */}
+              <a href={safeHttpUrl(detail?.url ?? pull.url ?? '') ?? undefined} target="_blank" rel="noreferrer" title={`Open on ${terms.providerName}`} className="font-mono text-muted hover:text-accent hover:underline">
+                #{pull.number}
+              </a>
+            </>}
+            /* TWO controls, per `max-two-buttons-per-row`. */
+            actions={<>
+              {/* Same reason as IssueDetail's Investigate: the review seed prompt
+                  names the PR by title. */}
+              {!awaitingFirstPaint && <ReviewButton repoRef={active} pull={actionPull} />}
+              {/* The trigger carries in-flight state for the actions it hosts;
+                  this pane has no state write, so refresh is the only one. */}
+              <DetailOverflowMenu pending={refreshing}>
+                {/* Keeps the menu OPEN on select: the copy affordance's whole
+                    feedback is the glyph flipping to a tick and back, and an item
+                    that closes the menu on select would take that confirmation
+                    off screen the instant it was earned. */}
+                <DropdownMenuItem onSelect={(e) => { e.preventDefault(); copyLink() }}>
+                  {copied
+                    ? <><Check size={13} className="shrink-0 text-ok" /><span>{i18nT('apps.issueRadar.components.prDetail.link_copied')}</span></>
+                    : <><Copy size={13} className="shrink-0 text-muted" /><span>{i18nT('apps.issueRadar.components.prDetail.copy_link_to_this', { subject: terms.changeRequestTitle })}</span></>}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={detailQuery.isFetching} onSelect={refreshDetail}>
+                  <RefreshCw size={13} className={`shrink-0 text-muted ${detailQuery.isFetching ? 'animate-spin' : ''}`} />
+                  <span>{i18nT('apps.issueRadar.components.prDetail.refresh_details', { subject: terms.changeRequestTitle })}</span>
+                </DropdownMenuItem>
+              </DetailOverflowMenu>
+            </>}
+            /* The review/comment composer needs the full header width, and a row
+               that grows in place keeps the title from reflowing when it opens.
+               It rides in the sticky bar so a reviewer can approve without
+               scrolling back to the top. */
+            extra={!awaitingFirstPaint && (
+              <div className="mt-2">
+                <PrActionsBar
+                  repoRef={active}
+                  pull={actionPull}
+                  detail={detail}
+                  canWrite={canWrite}
+                />
+              </div>
+            )}
+          />
 
-        {/* Actions on their own row rather than beside Review: the review/comment
-            composer needs the full header width, and a row that grows in place
-            keeps the title from reflowing when it opens. */}
-        {!awaitingFirstPaint && (
-          <div className="mt-3">
-            <PrActionsBar
-              repoRef={active}
-              pull={actionPull}
-              detail={detail}
-              canWrite={canWrite}
-            />
-          </div>
-        )}
-      </header>
-
-      {/* ── Scroll area: main column + sidebar ── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
         {/* Stacked while narrow: side by side, the 236px sidebar took the
             width out of the column holding the summary, description, files and
             timeline, leaving it unreadable on a phone. */}
-        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 h-full sm:items-stretch overflow-y-auto sm:overflow-visible">
+        <div className="flex flex-col sm:flex-row gap-6 px-6 py-5 sm:flex-1 sm:min-h-0 sm:items-stretch">
           {/* Scroll ownership is transferred WHOLE at the breakpoint. Keeping an
               unconditional flex-1 + overflow-y-auto here would clamp this column
               to the space a shrink-0 metadata block left over and then hide the
@@ -1016,6 +1048,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
               </dl>
             </Section>
           </aside>
+        </div>
         </div>
       </div>
     </article>

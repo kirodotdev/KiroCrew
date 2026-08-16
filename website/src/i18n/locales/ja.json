@@ -1510,6 +1510,9 @@
           "regenerate_summary": "要約を再生成",
           "retry": "再試行"
         },
+        "detailOverflowMenu": {
+          "more_actions": "その他の操作"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "このフィルターを使用するには、gh CLIでサインインしてください"
         },
@@ -1543,10 +1546,8 @@
           "assignees": "担当者",
           "by": "· 者",
           "changed_the_title": "タイトルを変更した",
-          "close": "閉じる",
           "close_as_completed": "完了として閉じる",
           "close_as_not_planned": "計画外として閉じる",
-          "close_this_issue": "このIssueを閉じる",
           "closed": "閉じられた",
           "closed_as_not_planned": "計画外として閉じられた",
           "closed_this": "これを閉じた",
@@ -1554,7 +1555,6 @@
           "copy_link_to_this_issue": "このIssueへのリンクをコピー",
           "couldn_t_load_activity": "アクティビティを読み込めませんでした：",
           "dates": "日付",
-          "dismiss_menu": "メニューを閉じる",
           "done": "完了",
           "edit": "編集",
           "finding_suggestions": "提案を検索中…",
@@ -1578,7 +1578,6 @@
           "opened": "開く",
           "opened_2": "開かれた",
           "opened_this_issue": "このIssueを開いた",
-          "re_fetch_issue_and_timeline_from": "この issue とそのタイムラインを {{provider}} から再取得",
           "read_only_connect_with_triage_push_access_to_app": "読み取り専用 — トリアージ/プッシュアクセス権を持つユーザーと接続して適用してください。",
           "read_only_connect_with_triage_push_access_to_app_2": "読み取り専用 — トリアージ/プッシュアクセス権を持つユーザーと接続して適用してください",
           "referenced_this_in": "これを参照した",
@@ -1587,7 +1586,6 @@
           "removed_the": "削除した",
           "removed_this_from_the": "これを削除した",
           "reopen": "再度開く",
-          "reopen_this_issue": "このIssueを再度開く",
           "reopened_this": "これを再度開いた",
           "self_assigned_this": "自分に割り当てた",
           "suggested": "提案",
@@ -1776,7 +1774,6 @@
           "opened": "開かれた",
           "opened_2": "開かれた",
           "passed": "合格",
-          "re_fetch_this_and_its_timeline_from": "この {{subject}} とそのタイムラインを {{provider}} から再取得",
           "referenced_this_in": "これをで参照",
           "refresh_details": "{{subject}} の詳細を更新",
           "removed_the": "を削除",

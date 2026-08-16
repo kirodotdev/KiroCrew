@@ -1510,6 +1510,9 @@
           "regenerate_summary": "요약 다시 생성",
           "retry": "다시 시도"
         },
+        "detailOverflowMenu": {
+          "more_actions": "추가 작업"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "이 필터를 사용하려면 gh CLI로 로그인하세요"
         },
@@ -1543,10 +1546,8 @@
           "assignees": "담당자",
           "by": "· 작성자",
           "changed_the_title": "제목을 변경함",
-          "close": "닫기",
           "close_as_completed": "완료로 닫기",
           "close_as_not_planned": "계획 없음으로 닫기",
-          "close_this_issue": "이 이슈 닫기",
           "closed": "닫힘",
           "closed_as_not_planned": "계획 없음으로 닫힘",
           "closed_this": "이 항목을 닫음",
@@ -1554,7 +1555,6 @@
           "copy_link_to_this_issue": "이 이슈 링크 복사",
           "couldn_t_load_activity": "활동을 불러오지 못했습니다:",
           "dates": "날짜",
-          "dismiss_menu": "메뉴 닫기",
           "done": "완료",
           "edit": "편집",
           "finding_suggestions": "제안을 찾는 중…",
@@ -1578,7 +1578,6 @@
           "opened": "열었음",
           "opened_2": "열림",
           "opened_this_issue": "이 이슈를 열었음",
-          "re_fetch_issue_and_timeline_from": "이 이슈와 타임라인을 {{provider}}에서 다시 가져오기",
           "read_only_connect_with_triage_push_access_to_app": "읽기 전용 — 적용하려면 트리아지/푸시 권한으로 연결하세요.",
           "read_only_connect_with_triage_push_access_to_app_2": "읽기 전용 — 적용하려면 트리아지/푸시 권한으로 연결하세요",
           "referenced_this_in": "이 항목을 다음에서 참조함",
@@ -1587,7 +1586,6 @@
           "removed_the": "다음을 삭제함",
           "removed_this_from_the": "이 항목을 다음에서 삭제함",
           "reopen": "다시 열기",
-          "reopen_this_issue": "이 이슈 다시 열기",
           "reopened_this": "이 항목을 다시 열었음",
           "self_assigned_this": "이 항목을 자신에게 할당함",
           "suggested": "제안",
@@ -1776,7 +1774,6 @@
           "opened": "열었습니다",
           "opened_2": "열린 시각",
           "passed": "통과",
-          "re_fetch_this_and_its_timeline_from": "이 {{subject}}와(과) 타임라인을 {{provider}}에서 다시 가져오기",
           "referenced_this_in": "이 항목을 참조한 위치:",
           "refresh_details": "{{subject}} 세부 정보 새로 고침",
           "removed_the": "제거함:",

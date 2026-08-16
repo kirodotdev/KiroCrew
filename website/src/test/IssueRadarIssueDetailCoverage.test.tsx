@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -186,9 +186,14 @@ function renderPane(issue: Issue = ROW) {
     </QueryClientProvider>,
   )
   const header = () => view.container.querySelector('header') as HTMLElement
+  // The header is TWO siblings now — a tall title block that scrolls away and a
+  // sticky bar that persists — because `position: sticky` cannot escape its
+  // parent. Metadata that may scroll away lives in the title block; pane state
+  // and the actions live in the bar, so an assertion has to name its half.
+  const titleBlock = () => view.container.querySelector('[data-testid="detail-title-block"]') as HTMLElement
   const sidebar = () => view.container.querySelector('aside') as HTMLElement
   const main = () => view.container.querySelector('main') as HTMLElement
-  return { qc, header, sidebar, main, ...view }
+  return { qc, header, titleBlock, sidebar, main, ...view }
 }
 
 /** The sidebar block whose uppercase heading is `title`. */
@@ -216,6 +221,10 @@ beforeEach(() => {
     canWrite: true,
     stateFilter: 'open',
     refreshPrefs: { detailPollMs: 30_000, pollInBackground: false },
+    // The panes render their own narrow Back control now, inside their sticky
+    // header, so they read the drill-down state directly. Desktop here, which is
+    // what keeps that row unrendered for the assertions below.
+    listDetail: { isMobile: false, showList: true, showDetail: true, openDetail: vi.fn(), closeDetail: vi.fn() },
     openRef,
   }
   api.issueDetail.mockResolvedValue(response())
@@ -224,9 +233,23 @@ beforeEach(() => {
 
 afterEach(() => vi.clearAllMocks())
 
+/** Opens the detail toolbar's overflow menu.
+ *
+ * Copy-link, Refresh and Close/Reopen are no longer buttons in the toolbar row:
+ * `max-two-buttons-per-row` caps that row at two, so everything past the pane's
+ * primary action moved behind this trigger. Radix opens on a pointer/keyboard
+ * event rather than a synthetic click, and Enter also proves the menu is
+ * reachable without a pointer. */
+async function openOverflow() {
+  const trigger = screen.getByRole('button', { name: /more actions/i })
+  fireEvent.keyDown(trigger, { key: 'Enter' })
+  await waitFor(() => expect(screen.getAllByRole('menuitem').length).toBeGreaterThan(0))
+  return trigger
+}
+
 describe('IssueDetail — header and first paint', () => {
   it('paints the detail title, identity, and the action affordances', async () => {
-    const { header } = renderPane()
+    const { header, titleBlock } = renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
     const h = header()
@@ -234,9 +257,9 @@ describe('IssueDetail — header and first paint', () => {
     expect(within(h).getByRole('link', { name: '#11' }).getAttribute('href'))
       .toBe('https://github.com/kirodotdev/Kiro/issues/11#detail')
     expect(within(h).getByText('Open')).toBeTruthy()
-    expect(within(h).getByText('alice')).toBeTruthy()
+    expect(within(titleBlock()).getByText('alice')).toBeTruthy()
     // Admin comes from the authoritative roster, not author_association.
-    expect(within(h).getByText('Admin')).toBeTruthy()
+    expect(within(titleBlock()).getByText('Admin')).toBeTruthy()
     expect(screen.getByText('investigate:Detail title')).toBeTruthy()
     // The AI read is its own query, so it can land after the detail heading
     // does -- wait on its content rather than assuming a single flush covers
@@ -294,14 +317,18 @@ describe('IssueDetail — header and first paint', () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
-    const copy = screen.getByRole('button', { name: 'Copy link to this issue' })
-    await userEvent.click(copy)
+    await openOverflow()
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Copy link to this issue' }))
     expect(writeText).toHaveBeenCalledWith('https://github.com/kirodotdev/Kiro/issues/11#detail')
-    // The tick replaces the copy glyph…
-    await waitFor(() => expect(copy.querySelector('.text-ok')).toBeTruthy())
-    expect(copy.getAttribute('title')).toBe('Link copied')
-    // …and times out back to it, so the affordance does not read as latched.
-    await waitFor(() => expect(copy.querySelector('.text-ok')).toBeNull(), { timeout: 4000 })
+    // The item stays put and relabels — a select that closed the menu would take
+    // the confirmation off screen the instant it was earned.
+    const copied = await screen.findByRole('menuitem', { name: 'Link copied' })
+    expect(copied.querySelector('.text-ok')).toBeTruthy()
+    // …and it times out back, so the affordance does not read as latched.
+    await waitFor(
+      () => expect(screen.getByRole('menuitem', { name: 'Copy link to this issue' })).toBeTruthy(),
+      { timeout: 4000 },
+    )
   })
 
   it('survives a clipboard that refuses the write', async () => {
@@ -309,12 +336,13 @@ describe('IssueDetail — header and first paint', () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
-    const copy = screen.getByRole('button', { name: 'Copy link to this issue' })
+    await openOverflow()
+    const copy = screen.getByRole('menuitem', { name: 'Copy link to this issue' })
     await userEvent.click(copy)
     await waitFor(() => expect(writeText).toHaveBeenCalled())
     // No tick — the copy did not happen, so nothing claims it did.
-    expect(copy.querySelector('.text-ok')).toBeNull()
-    expect(copy.getAttribute('title')).toBe('Copy link to this issue')
+    expect(screen.queryByRole('menuitem', { name: 'Link copied' })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: 'Copy link to this issue' })).toBeTruthy()
   })
 
   it('forces a server re-read from the refresh button and the AI regenerate', async () => {
@@ -324,7 +352,8 @@ describe('IssueDetail — header and first paint', () => {
     // First fetch after opening is cache-first.
     expect(api.issueDetail.mock.calls[0][2]).toEqual({ refresh: false })
 
-    await user.click(screen.getByRole('button', { name: 'Refresh issue details' }))
+    await openOverflow()
+    await user.click(screen.getByRole('menuitem', { name: 'Refresh issue details' }))
     await waitFor(() => expect(api.issueDetail).toHaveBeenCalledTimes(2))
     expect(api.issueDetail.mock.calls[1][2]).toEqual({ refresh: true })
 
@@ -375,8 +404,8 @@ describe('IssueDetail — close / reopen writes', () => {
     seed('closed', SCOPE)
     seed('open', OTHER_SCOPE)
 
-    await user.click(screen.getByRole('button', { name: /Close/ }))
-    await user.click(screen.getByRole('button', { name: 'Close as completed' }))
+    await openOverflow()
+    await user.click(screen.getByRole('menuitem', { name: 'Close as completed' }))
 
     await waitFor(() => expect(api.setIssueState).toHaveBeenCalledWith(REF, 11, 'closed', 'completed'))
     // Both of this repo's list caches carry the new state…
@@ -398,21 +427,22 @@ describe('IssueDetail — close / reopen writes', () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
-    await user.click(screen.getByRole('button', { name: /Close/ }))
-    await user.click(screen.getByRole('button', { name: 'Close as not planned' }))
+    await openOverflow()
+    await user.click(screen.getByRole('menuitem', { name: 'Close as not planned' }))
     await waitFor(() => expect(api.setIssueState).toHaveBeenCalledWith(REF, 11, 'closed', 'not_planned'))
     await waitFor(() => expect(screen.getByText('Closed as not planned')).toBeTruthy())
   })
 
-  it('dismisses the close menu without writing', async () => {
-    const user = userEvent.setup()
+  it('dismisses the overflow menu without writing', async () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
-    await user.click(screen.getByRole('button', { name: /Close/ }))
-    expect(screen.getByRole('button', { name: 'Close as completed' })).toBeTruthy()
-    await user.click(screen.getByRole('button', { name: 'Dismiss menu' }))
-    expect(screen.queryByRole('button', { name: 'Close as completed' })).toBeNull()
+    const trigger = await openOverflow()
+    expect(screen.getByRole('menuitem', { name: 'Close as completed' })).toBeTruthy()
+    // Escape rather than a scrim click: the menu is Radix's, so dismissal is its
+    // own, and a state write must not be the price of looking at the options.
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Close as completed' })).toBeNull())
     expect(api.setIssueState).not.toHaveBeenCalled()
   })
 
@@ -424,8 +454,10 @@ describe('IssueDetail — close / reopen writes', () => {
     api.setIssueState.mockResolvedValue({ state: 'open', state_reason: null })
     renderPane({ ...ROW, state: 'closed' })
 
-    const reopen = await screen.findByRole('button', { name: 'Reopen' })
-    expect(screen.queryByRole('button', { name: /^Close/ })).toBeNull()
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
+    await openOverflow()
+    const reopen = screen.getByRole('menuitem', { name: 'Reopen' })
+    expect(screen.queryByRole('menuitem', { name: /^Close as/ })).toBeNull()
     await user.click(reopen)
     await waitFor(() => expect(api.setIssueState).toHaveBeenCalledWith(REF, 11, 'open', undefined))
     await waitFor(() => expect(screen.getByText('Open')).toBeTruthy())
@@ -437,8 +469,8 @@ describe('IssueDetail — close / reopen writes', () => {
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
 
-    await user.click(screen.getByRole('button', { name: /Close/ }))
-    await user.click(screen.getByRole('button', { name: 'Close as completed' }))
+    await openOverflow()
+    await user.click(screen.getByRole('menuitem', { name: 'Close as completed' }))
     expect(await screen.findByText('403 not a collaborator')).toBeTruthy()
   })
 
@@ -446,8 +478,9 @@ describe('IssueDetail — close / reopen writes', () => {
     ctx.value = { ...ctx.value, canWrite: false }
     renderPane()
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Detail title'))
-    expect(screen.queryByRole('button', { name: /^Close/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
+    await openOverflow()
+    expect(screen.queryByRole('menuitem', { name: /^Close as/ })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Reopen' })).toBeNull()
   })
 
   it('withholds the close control until the state is actually known', async () => {
@@ -455,8 +488,9 @@ describe('IssueDetail — close / reopen writes', () => {
     renderPane(PLACEHOLDER)
     // The placeholder has no state; `state` falls back to 'open', so an offered
     // "Close as completed" here would be a blind write.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh issue details' })).toBeTruthy())
-    expect(screen.queryByRole('button', { name: /^Close/ })).toBeNull()
+    await openOverflow()
+    expect(screen.getByRole('menuitem', { name: 'Refresh issue details' })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: /^Close as/ })).toBeNull()
   })
 })
 

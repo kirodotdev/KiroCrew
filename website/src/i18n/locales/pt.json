@@ -1568,6 +1568,9 @@
           "regenerate_summary": "Gerar resumo novamente",
           "retry": "Tentar novamente"
         },
+        "detailOverflowMenu": {
+          "more_actions": "Mais ações"
+        },
         "filterRow": {
           "sign_in_with_the_gh_cli_to_use_this_filter": "Entre com a CLI gh para usar este filtro"
         },
@@ -1601,10 +1604,8 @@
           "assignees": "Responsáveis",
           "by": "· por",
           "changed_the_title": "alterou o título",
-          "close": "Fechar",
           "close_as_completed": "Fechar como concluída",
           "close_as_not_planned": "Fechar como não planejada",
-          "close_this_issue": "Fechar esta issue",
           "closed": "Fechada",
           "closed_as_not_planned": "Fechada como não planejada",
           "closed_this": "fechou isto",
@@ -1612,7 +1613,6 @@
           "copy_link_to_this_issue": "Copiar link desta issue",
           "couldn_t_load_activity": "Não foi possível carregar a atividade:",
           "dates": "Datas",
-          "dismiss_menu": "Fechar menu",
           "done": "Concluir",
           "edit": "Editar",
           "finding_suggestions": "Buscando sugestões…",
@@ -1636,7 +1636,6 @@
           "opened": "abriu",
           "opened_2": "Aberta",
           "opened_this_issue": "abriu esta issue",
-          "re_fetch_issue_and_timeline_from": "Buscar novamente esta issue + a linha do tempo dela no {{provider}}",
           "read_only_connect_with_triage_push_access_to_app": "Somente leitura — conecte-se com acesso de triagem/push para aplicar.",
           "read_only_connect_with_triage_push_access_to_app_2": "Somente leitura — conecte-se com acesso de triagem/push para aplicar",
           "referenced_this_in": "referenciou isto em",
@@ -1645,7 +1644,6 @@
           "removed_the": "removeu o",
           "removed_this_from_the": "removeu isto do",
           "reopen": "Reabrir",
-          "reopen_this_issue": "Reabrir esta issue",
           "reopened_this": "reabriu isto",
           "self_assigned_this": "atribuiu isto a si",
           "suggested": "Sugeridos",
@@ -1854,7 +1852,6 @@
           "opened": "abriu",
           "opened_2": "Aberto",
           "passed": "aprovadas",
-          "re_fetch_this_and_its_timeline_from": "Buscar novamente {{subject}} + a linha do tempo dele no {{provider}}",
           "referenced_this_in": "referenciou isto em",
           "refresh_details": "Atualizar detalhes de {{subject}}",
           "removed_the": "removeu a",
