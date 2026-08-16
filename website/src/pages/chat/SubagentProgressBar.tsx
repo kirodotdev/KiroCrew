@@ -193,6 +193,15 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             const taskPreview = sanitizeLlmOutput((a.task || '').slice(0, 80)) + ((a.task || '').length > 80 ? '…' : '')
             const agentLabel = taskPreview || sanitizeLlmOutput(a.agent || 'agent')
             const elapsed = Math.round((Date.now() - a.startedAt) / 1000)
+            // The backend sends `idle_secs` once, on the stalled transition, so a
+            // bare render would freeze at that value beside the live `elapsed`
+            // above — the same two-numbers-disagree confusion this row exists to
+            // remove. `stalled` means no activity by definition, so advancing it
+            // locally from the receipt instant is sound. The 1Hz tick above
+            // re-renders it.
+            const idleShown = typeof a.idleSecs === 'number'
+              ? a.idleSecs + (a.stalledAt ? Math.max(0, Math.round((Date.now() - a.stalledAt) / 1000)) : 0)
+              : undefined
             const stoppable = a.status === 'running' || a.status === 'tool'
             return (
               <div key={a.id} data-testid="subagent-row" className="flex items-start gap-1">
@@ -218,10 +227,21 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                     ) : a.stalled ? (
                       <span className="text-warn flex items-center gap-1">
                         <AlertTriangle size={11} className="shrink-0" />
-                        {/* The tool name carries the same mono as the non-stalled
-                            `→ lastTool` line below — the two render the SAME value
-                            and diverged once the parent stopped supplying it. */}
-                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.stalled')}{a.lastTool ? <span className="font-mono">{` at ${sanitizeLlmOutput(a.lastTool)}`}</span> : ''} {i18nT('pages.chat.subagentProgressBar.no_activity')}</span>
+                        {/* Hedged to match the header tooltip: the watchdog sees
+                            an ABSENCE of stream events, which a slow silent tool
+                            also produces — it cannot prove a stall, so it must
+                            not assert one. The idle span (not `elapsed`) is the
+                            figure that justifies the warning, so it is shown
+                            here; `elapsed` already sits on the row above and the
+                            two are different numbers. The tool name carries the
+                            same mono as the non-stalled `→ lastTool` line. */}
+                        <span className="truncate">
+                          {i18nT('pages.chat.subagentProgressBar.possibly_stalled')}
+                          {a.lastTool ? <span className="font-mono">{` at ${sanitizeLlmOutput(a.lastTool)}`}</span> : ''}
+                          {typeof idleShown === 'number'
+                            ? ` — ${i18nT('pages.chat.subagentProgressBar.no_activity_for', { secs: idleShown })}`
+                            : ` ${i18nT('pages.chat.subagentProgressBar.no_activity')}`}
+                        </span>
                       </span>
                     ) : (a.lastTool && <span className="block font-mono text-accent/60 truncate">→ {sanitizeLlmOutput(a.lastTool)}</span>)}
                   </span>

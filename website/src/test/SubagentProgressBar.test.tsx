@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
@@ -239,6 +239,69 @@ describe('SubagentProgressBar — chrome follows the Font Family setting', () =>
     // And the sanitised value is still what gets rendered — the whole line reads
     // as one sentence with exactly one space before `at`.
     expect(toolFragment!.parentElement!.textContent).toContain('at npx vitest run')
+  })
+
+  it('hedges the stalled copy and shows the IDLE span, not total elapsed', () => {
+    // The watchdog observes an ABSENCE of stream events, which a slow silent
+    // tool also produces — so the row must not assert a stall, and the number
+    // beside the warning must be the idle span that justifies it (the row's
+    // other figure, `elapsed`, is total runtime and is a different number).
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'Reading retrieval.py:1', tool_count: 7 }))
+    store.dispatch(sseSubagentStalled({
+      slot: SLOT, id: 'a1', stalled: true, idle_secs: 196,
+    }))
+    const { container } = renderBar(store)
+
+    const warn = [...container.querySelectorAll('span.text-warn')]
+      .find(s => s.textContent?.includes('possibly stalled'))
+    expect(warn).toBeTruthy()
+    expect(warn!.textContent).toContain('no activity for 196s')
+    // Hedged, not asserted: the bare "stalled ... — no activity" wording is gone.
+    expect(warn!.textContent).not.toMatch(/(^|[^y] )stalled at/)
+  })
+
+  it('advances the idle figure while stalled instead of freezing it', async () => {
+    // The backend emits `idle_secs` ONCE on the stalled transition. Rendering it
+    // verbatim would freeze at that value beside the live elapsed counter, so a
+    // subagent wedged for 20 minutes would still read "no activity for 196s" —
+    // a milder form of the contradiction this row exists to remove.
+    vi.useFakeTimers()
+    try {
+      const store = makeStore(['a1'])
+      store.dispatch(sseSubagentTool({ slot: SLOT, id: 'a1', tool: 'sleep 600', tool_count: 1 }))
+      store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true, idle_secs: 196 }))
+      const { container } = renderBar(store)
+
+      const idleText = () => [...container.querySelectorAll('span.text-warn')]
+        .find(s => s.textContent?.includes('possibly stalled'))?.textContent ?? ''
+      expect(idleText()).toContain('no activity for 196s')
+
+      // Two 1Hz ticks later the figure has moved with the clock.
+      // Advance ONE tick per act() flush. The component's 1Hz tick is a toggle
+      // (`setTick(n => 1 - n)`), so jumping two intervals inside a single flush
+      // lands back on the original value and React bails out of the re-render —
+      // an artifact of batching, not a product bug (real ticks arrive singly).
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(idleText()).toContain('no activity for 197s')
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      expect(idleText()).toContain('no activity for 198s')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('falls back to the plain no-activity wording when no idle span was sent', () => {
+    // Reconnect replays from a pre-upgrade gateway carry no idle_secs; the row
+    // must still render hedged copy rather than a bare "196s"-shaped gap.
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: 'a1', stalled: true }))
+    const { container } = renderBar(store)
+    const warn = [...container.querySelectorAll('span.text-warn')]
+      .find(s => s.textContent?.includes('possibly stalled'))
+    expect(warn).toBeTruthy()
+    expect(warn!.textContent).toContain('no activity')
+    expect(warn!.textContent).not.toContain('no activity for')
   })
 })
 

@@ -3,7 +3,8 @@
  * chat.subagents. These verify the progress fields land:
  *  - sseSubagentTool records toolCount (fired on EVENT_TOOL_CALL too, so a
  *    simple/auto-approved task shows live tool activity) and clears stalled.
- *  - sseSubagentStalled toggles the idle/stalled flag surfaced by the reaper.
+ *  - sseSubagentStalled toggles the idle/stalled flag surfaced by the reaper,
+ *    and retains the `idle_secs` span that justifies it.
  */
 import { describe, it, expect } from 'vitest'
 import { createTestStore } from './helpers'
@@ -38,5 +39,29 @@ describe('subagent progress reducers', () => {
     // Fresh activity clears the stalled state.
     store.dispatch(sseSubagentTool({ slot: SLOT, id: ID, tool: 'grep', tool_count: 4 }))
     expect(sub(store).stalled).toBe(false)
+  })
+
+  it('sseSubagentStalled retains idle_secs so the card can justify the warning', () => {
+    const store = createTestStore()
+    const SLOT = spawn(store)
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: true, idle_secs: 196 }))
+    // The idle span is the figure that justifies the badge — total elapsed does
+    // not. The backend already sent it; this reducer used to drop it.
+    expect(sub(store).idleSecs).toBe(196)
+  })
+
+  it('clears idleSecs when the agent un-stalls or resumes work', () => {
+    const store = createTestStore()
+    const SLOT = spawn(store)
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: true, idle_secs: 196 }))
+    // Explicit un-stall frame (backend _touch_activity path).
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: false }))
+    expect(sub(store).stalled).toBe(false)
+    expect(sub(store).idleSecs).toBeUndefined()
+    // And again via resumed tool activity, so a stale "no activity for 196s"
+    // can never outlive the quiet stretch that produced it.
+    store.dispatch(sseSubagentStalled({ slot: SLOT, id: ID, stalled: true, idle_secs: 300 }))
+    store.dispatch(sseSubagentTool({ slot: SLOT, id: ID, tool: 'grep', tool_count: 5 }))
+    expect(sub(store).idleSecs).toBeUndefined()
   })
 })

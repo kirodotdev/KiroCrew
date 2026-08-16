@@ -2195,6 +2195,8 @@ const chatSlice = createSlice({
         a.lastTool = action.payload.tool; a.status = 'tool'
         if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
         a.stalled = false
+        a.idleSecs = undefined
+        a.stalledAt = undefined
         a.retrying = false
       }
     },
@@ -2205,27 +2207,42 @@ const chatSlice = createSlice({
       const { slot, id } = action.payload
       if (id === '__proto__' || id === 'constructor' || id === 'prototype') return
       const a = getSlotSubs(state, slot)?.[id]
-      if (a) { a.retrying = true; a.stalled = false }
+      if (a) { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
     },
     sseSubagentStalled(state, action: PayloadAction<{ slot: string; id: string; stalled: boolean; idle_secs?: number }>) {
       const { slot, id } = action.payload
       // Prototype-pollution guard is centralized in getSlotSub.
       const a = getSlotSub(state, slot, id)
-      if (a) a.stalled = action.payload.stalled
+      if (!a) return
+      a.stalled = action.payload.stalled
+      // Keep the idle span with the flag it justifies, and clear it on the
+      // un-stall frame so a resumed agent cannot keep showing a stale
+      // "no activity for Ns" from its previous quiet stretch.
+      // `stalledAt` is the receipt instant: the backend emits `idle_secs` only on
+      // the transition, so the row advances the figure from here rather than
+      // freezing it next to a live elapsed counter.
+      a.idleSecs = action.payload.stalled ? action.payload.idle_secs : undefined
+      a.stalledAt = action.payload.stalled ? Date.now() : undefined
     },
     /** One coalesced ~1s frame carrying the latest delta per agent (scale
      *  plumbing — replaces per-event tool/stalled/retrying frames when many
      *  agents run). Field presence decides what to apply; latest wins. */
-    sseSubagentBatchUpdate(state, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; attempt?: number }[] }>) {
+    sseSubagentBatchUpdate(state, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
       for (const u of action.payload.updates || []) {
         const a = getSlotSub(state, u.slot, u.id)
         if (!a) continue
         // Order matters: retrying (attempt) applies FIRST so a tool field in
         // the same merged entry — meaning work resumed — clears it last.
-        if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false }
+        if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
         if (typeof u.tool === 'string' && u.tool) { a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
         if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
-        if (typeof u.stalled === 'boolean') a.stalled = u.stalled
+        if (typeof u.stalled === 'boolean') {
+          a.stalled = u.stalled
+          // Mirror the per-event frame: the idle span lives and dies with the
+          // flag, so a coalesced un-stall cannot leave a stale idle figure.
+          a.idleSecs = u.stalled ? u.idle_secs : undefined
+          a.stalledAt = u.stalled ? Date.now() : undefined
+        }
       }
     },
     /** One coalesced ~1s frame of concatenated streaming text per agent

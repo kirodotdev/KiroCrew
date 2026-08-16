@@ -5312,9 +5312,10 @@
         "backend_hiccup_retrying": "backend hiccup — retrying…",
         "more_running_normally": "more running normally…",
         "no_activity": "— no activity",
+        "no_activity_for": "no activity for {{secs}}s",
         "no_activity_possibly_stalled": "No activity — possibly stalled",
+        "possibly_stalled": "possibly stalled",
         "s": "s",
-        "stalled": "stalled",
         "stop": "Stop",
         "stop_this_subagent": "Stop this subagent",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
