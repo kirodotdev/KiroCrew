@@ -706,9 +706,11 @@ sensitive-path check and the governance ceiling — would never be reached.
   user-sized tree; one blocking call here would freeze every chat session on the
   gateway (AUTOSDE `no-blocking-call-on-event-loop`).
 - **Spawn hardening.** Every engine and `uv` invocation goes through
-  `sandboxed_spawn_argv` + `cgroup_scope_argv` + `resource_limit_preexec` — the
+  `sandboxed_spawn_argv` + `cgroup_scope_argv` + `run_limited` — the
   same OS sandbox, credential-scrubbed environment and resource ceiling the rest of
-  the codebase applies. Argv is fixed; the only variable parts are the resolved
+  the codebase applies, with the resource limits delivered after `exec` by the
+  spawn shim rather than in a fork child. Argv is fixed; the only variable parts
+  are the resolved
   `uv` path and paths already contained by `paths.py`. `PYTHONPATH` is cleared so
   the engine venv's pinned native dependencies win. `argv[0]` is always absolute,
   so nothing depends on the scrubbed env's `PATH`.

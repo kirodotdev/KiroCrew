@@ -339,15 +339,23 @@ class TestCrossPlatform(unittest.TestCase):
     def test_preexec_fn_comes_from_the_shim_not_a_raw_callable(self):
         """``preexec_fn`` is unsupported on Windows — passing ANY callable raises.
 
-        ``resource_limit_preexec()`` returns ``None`` off POSIX, so routing through it is
-        what makes these spawns portable. A hand-rolled ``preexec_fn=lambda: ...`` would
-        work locally and raise ValueError on every Windows spawn.
+        Both spawns route through the shim wrappers (``create_subprocess_limited``
+        for the async git spawn, ``run_limited`` for the sync gh spawn), which
+        deliver the resource caps after ``exec`` and pass no ``preexec_fn`` at all
+        off POSIX — that routing is what makes these spawns portable. Matched as a
+        CALL (trailing paren), not a bare name, so a docstring or comment that
+        merely mentions a wrapper cannot satisfy the pin. Any ``preexec_fn=`` that
+        does appear must come from the shim accessor: a hand-rolled
+        ``preexec_fn=lambda: ...`` would work locally and raise ValueError on
+        every Windows spawn.
         """
+        wrapper_calls = ("create_subprocess_limited(", "run_limited(", "popen_limited(")
         for name, src in self._sources().items():
-            if "preexec_fn" not in src:
-                continue
             with self.subTest(file=name):
-                self.assertIn("resource_limit_preexec", src)
+                self.assertTrue(
+                    any(w in src for w in wrapper_calls),
+                    f"{name}: spawns must route resource limits through a shim wrapper",
+                )
                 for line in src.splitlines():
                     if "preexec_fn=" in line:
                         self.assertIn(

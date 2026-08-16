@@ -81,7 +81,7 @@ from pathlib import Path
 from typing import Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 
 from ...spine import agent_discovery
 from ...spine import scope as scope_util
@@ -346,7 +346,12 @@ def _run(
     # test code. See `_CREDENTIAL_ENV_MARKERS`.
     scrubbed_env = strip_credential_env(scrubbed_env)
     try:
-        return subprocess.run(
+        # Kernel RLIMIT ceiling (NPROC/NOFILE/CPU/AS) on top of the sandbox: a
+        # runaway conftest or a fork bomb in the agent's own test cannot exhaust
+        # the host running the gateway. run_limited delivers the limits after
+        # exec via the spawn shim instead of in a fork child of this threaded
+        # process.
+        return run_limited(
             sandboxed,
             cwd=root,
             capture_output=True,
@@ -354,10 +359,6 @@ def _run(
             timeout=timeout,
             shell=False,
             env=scrubbed_env,
-            # Kernel RLIMIT ceiling (NPROC/NOFILE/CPU/AS) on top of the sandbox: a
-            # runaway conftest or a fork bomb in the agent's own test cannot exhaust
-            # the host running the gateway.
-            preexec_fn=resource_limit_preexec(),
         )
     finally:
         # A temp launcher/profile FILE, per sandboxed_spawn_argv's contract — unlink it,

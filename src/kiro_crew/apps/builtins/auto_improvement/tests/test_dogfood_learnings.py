@@ -707,7 +707,7 @@ class TestSubprocessFallbackIsAudited:
         def _no_spawn(*a, **kw):  # pragma: no cover - reaching this IS the failure
             raise AssertionError("spawned a permissionless agent without an audit trail")
 
-        monkeypatch.setattr(ar.subprocess, "Popen", _no_spawn)
+        monkeypatch.setattr(ar, "popen_limited", _no_spawn)
         result = ar.AgentRunner().run("do a thing", cwd=str(tmp_path))
         assert result.ok is False
         assert "audited" in result.error
@@ -1442,7 +1442,7 @@ class TestFallbackAgentCannotSeeCredentials:
         # module scope, so it is bound here at import time and patching
         # `kiro_crew.sandbox` would not affect the already-bound reference.
         monkeypatch.setattr(ar, "sandboxed_spawn_argv", _fake_spawn)
-        monkeypatch.setattr(ar.subprocess, "Popen", lambda *a, **k: object())
+        monkeypatch.setattr(ar, "popen_limited", lambda *a, **k: object())
         ar.AgentRunner()._spawn_sandboxed_agent(["/bin/true"], str(tmp_path))
 
         assert seen["mode"] == "strict", "the unattended agent must not see credential dirs"

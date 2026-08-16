@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
-from kiro_crew.sandbox import cgroup_scope_argv, resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -207,7 +207,7 @@ def _spawn(argv: list[str], *, cwd: str, timeout: int) -> EngineResult:
     wrapped, env, cleanup = sandboxed_spawn_argv(argv, mode="strict", strip_python_env=True)
     wrapped = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, contained paths only
+        proc = run_limited(  # noqa: S603 - fixed argv, contained paths only
             wrapped,
             cwd=cwd,
             env=env,
@@ -215,7 +215,6 @@ def _spawn(argv: list[str], *, cwd: str, timeout: int) -> EngineResult:
             text=True,
             timeout=timeout,
             check=False,
-            preexec_fn=resource_limit_preexec(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("pptx-maker: engine spawn failed: %s", exc)

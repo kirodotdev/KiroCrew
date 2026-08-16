@@ -4497,8 +4497,12 @@ def resource_limit_preexec() -> "Callable[[], None] | None":
     gives a child filesystem + credential isolation, and this gives it a
     kernel-enforced ceiling on processes / file descriptors / CPU / memory so a
     fork bomb or runaway allocation in a compromised tool or MCP server cannot
-    exhaust the host out from under the gateway. Every agent-influenced spawn
-    passes the result as ``preexec_fn=`` (see ``docs/architecture/resource-protection.md``).
+    exhaust the host out from under the gateway. Call sites do not use this
+    directly: agent-influenced spawns go through
+    :func:`create_subprocess_limited` / :func:`run_limited` /
+    :func:`popen_limited`, which deliver the same limits AFTER ``exec`` via the
+    spawn shim and fall back to this ``preexec_fn`` only on a host with no
+    usable shim (see ``docs/architecture/resource-protection.md``).
 
     Returns the callable from :func:`kiro_crew.security.apply_resource_limits`,
     or ``None`` on non-POSIX platforms (where there is nothing to enforce and

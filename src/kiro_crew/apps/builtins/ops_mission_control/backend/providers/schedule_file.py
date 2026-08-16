@@ -56,7 +56,7 @@ from typing import Any
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, policy_store
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import ShiftStatus
-from kiro_crew.sandbox import resource_limit_preexec, sandboxed_spawn_argv
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ def schedule_path() -> Path:
 def _resolve_login_sync() -> str:
     """This operator's GitHub login, from config or the local ``gh`` CLI.
 
-    Routed through ``sandboxed_spawn_argv`` + ``resource_limit_preexec`` like every
+    Routed through ``sandboxed_spawn_argv`` + ``run_limited`` like every
     other agent-reachable spawn in this app — the ``test/test_spawn_audit.py`` gate
     requires that chokepoint, and a rotation check is reachable from a cron an agent
     can trigger. Returns "" on any failure; the caller turns that into ``unknown``.
@@ -113,12 +113,11 @@ def _resolve_login_sync() -> str:
 
     argv, env, cleanup = sandboxed_spawn_argv(["gh", "api", "user", "--jq", ".login"])
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell, sandbox-routed
+        proc = run_limited(  # noqa: S603 — fixed argv, no shell, sandbox-routed
             argv,
             capture_output=True,
             timeout=_GH_TIMEOUT_SECS,
             env=env,
-            preexec_fn=resource_limit_preexec(),
         )
         login = proc.stdout.decode("utf-8", "replace").strip() if proc.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
