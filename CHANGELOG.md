@@ -4,6 +4,24 @@ All notable changes to KiroCrew are documented in this file.
 
 ## [Unreleased]
 
+- **A parent agent can read its own sub-agent's result file again on a host
+  whose home is a symlink.** The result path handed back in a completion event
+  was built through `Path.resolve()`, which is correct for the traversal check
+  it exists to serve and wrong for a path somebody is told to go read: on an
+  Amazon cloud desktop, where `/home/<user>` is a symlink to
+  `/local/home/<user>`, that resolved spelling carries a `/local/home/...`
+  prefix the reader's own path allowlist -- keyed on the `$HOME` it was given --
+  does not match. The file was always readable; only the spelling was
+  unrecognized. So the read was refused, and refused as an approval prompt that
+  times out rather than as an error, which made a whole wave of sub-agent
+  results look unreadable while the parent concluded it lacked permission.
+  Paths emitted as TEXT (the completion event, the batch digest, `spawn_status`,
+  the prior-result hint on an unresumable conversation, and `info.result_path`
+  wherever it surfaces) now carry the declared home spelling, while every path
+  used to open a file stays symlink-resolved so the traversal check is unchanged.
+  Validation is delegated to the resolving helper rather than duplicated, so the
+  two cannot drift apart.
+
 - **A long-running cron job's next tick is no longer dispatched up to 30s
   late.** A job is invisible to the scheduler's wake computation while it's
   executing (`_next_wake_secs` skips anything in `self._executing`), so for

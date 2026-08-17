@@ -53,6 +53,35 @@ def _agent_dir(agent_id: str) -> Path:
     return resolved
 
 
+def agent_dir_for_display(agent_id: str) -> Path:
+    """The run directory in the home spelling the reader's own tooling uses.
+
+    :func:`_agent_dir` returns a symlink-RESOLVED path, and must: a traversal
+    check is only sound against the canonical target. That resolved spelling is
+    the right one to open a file with, and the wrong one to hand to somebody as
+    a path to go read.
+
+    On a host whose home is itself a symlink the two spellings differ. An Amazon
+    cloud desktop's ``/home/<user> -> /local/home/<user>`` is the ordinary case,
+    and there ``data_home()`` under ``$HOME`` resolves to a ``/local/home/...``
+    prefix that the reader's path allowlist -- keyed on the ``$HOME`` it was
+    given -- does not match. The file is readable; the spelling is not
+    recognized. So a result path emitted in resolved form is refused, while the
+    identical file in declared form is allowed, and the refusal arrives as an
+    approval prompt that times out rather than as an error anyone can act on.
+
+    Hence: validate on the resolved form, hand out the declared one. Callers
+    doing file I/O keep using :func:`_agent_dir`; this is for a path that a
+    human or an agent will read and then act on.
+
+    Raises the same ``ValueError`` as :func:`_agent_dir` for a rejected
+    ``agent_id`` -- the validation is not duplicated here, it is delegated, so
+    the two cannot drift apart.
+    """
+    _agent_dir(agent_id)  # validation only; the return value is deliberately unused
+    return _subagents_dir() / agent_id
+
+
 # ── create ───────────────────────────────────────────────────────────
 
 

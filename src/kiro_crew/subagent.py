@@ -89,6 +89,7 @@ from kiro_crew.subagent_persistence import (
     _agent_dir,
     _cleanup_session_files_sync,
     _subagents_dir,
+    agent_dir_for_display,
     clear_tombstone,
     create_agent_folder,
     list_orphans,
@@ -1540,7 +1541,7 @@ class SubagentManager:
         """
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
-        result_path = str(_agent_dir(agent_id) / "result.txt")
+        result_path = str(agent_dir_for_display(agent_id) / "result.txt")
 
         if has_result:
             msg = (
@@ -3372,7 +3373,7 @@ class SubagentManager:
             # (result.txt outlives the session under the tombstone TTL).
             result_hint = ""
             try:
-                _rp = _agent_dir(conv_id) / "result.txt"
+                _rp = agent_dir_for_display(conv_id) / "result.txt"
                 if _rp.exists():
                     result_hint = f" Prior result still readable at: {_rp}"
             except Exception:
@@ -5025,7 +5026,7 @@ class SubagentManager:
         except Exception:
             logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
 
-        _rp = _agent_dir(info.id) / "result.txt"
+        _rp = agent_dir_for_display(info.id) / "result.txt"
         info.result_path = str(_rp)
         # Cache tool names by tool_call_id so PostToolUse can recover the tool name
         # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
