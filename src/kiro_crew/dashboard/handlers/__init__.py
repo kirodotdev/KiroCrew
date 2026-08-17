@@ -376,6 +376,11 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.skill_budget import (  # noqa: E402, F401
     api_skills_budget,
 )
+
+# ── Brokered Slack channel routing write (app-callable) ──
+from kiro_crew.dashboard.handlers.slack_routing import (  # noqa: E402, F401
+    api_slack_channel_routing_put,
+)
 from kiro_crew.dashboard.handlers.sso_login import (  # noqa: E402, F401
     api_sso_login_ws,
 )

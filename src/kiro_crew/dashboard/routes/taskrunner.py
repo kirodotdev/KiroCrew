@@ -61,7 +61,6 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/chat/slots/{name}/mirror-link", chat.api_chat_slot_mirror_link)
     app.router.add_post("/api/chat/slots/{name}/mirror-unlink", chat.api_chat_slot_mirror_unlink)
     app.router.add_post("/api/chat/slots/{name}/mirror-pause", chat.api_chat_slot_mirror_pause)
-    app.router.add_get("/api/slack/channels", chat.api_slack_channels)
     app.router.add_post("/api/outbox/notify", handlers.api_outbox_notify)
     app.router.add_get("/api/outbox", handlers.api_outbox_list)
     app.router.add_get("/api/outbox/{filename}", handlers.api_outbox_download)

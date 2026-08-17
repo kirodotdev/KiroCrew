@@ -1056,20 +1056,40 @@ def _persist_channel_config(
     channel_id: str,
     activation: str | None = None,
     agent: str | None = None,
-) -> None:
-    """Update a single channel's config in config.json (merge, not overwrite)."""
+    remove: bool = False,
+) -> list[str]:
+    """Update a single channel's config in config.json (merge, not overwrite).
+
+    ``remove=True`` deletes ``slack.channels[channel_id]`` outright; it is the
+    teardown direction used by the brokered routing endpoint
+    (``dashboard/handlers/slack_routing.py``) and is mutually exclusive with
+    ``activation`` / ``agent``.
+
+    Returns the field names actually changed (``["agent"]``, ``["removed"]``,
+    ``[]`` when the value was already what was asked for). Existing callers
+    ignore the return; the routing endpoint reports it to its caller so an app
+    can tell a real change from a no-op.
+    """
     path = config_path()
     if is_sensitive_path(str(path)):
         raise ValueError(f"Refusing to write to sensitive path: {path}")
 
+    changed: list[str] = []
+
     def _apply(data: dict) -> dict:
         slack_data = data.setdefault("slack", {})
         channels = slack_data.setdefault("channels", {})
+        if remove:
+            if channels.pop(channel_id, None) is not None:
+                changed.append("removed")
+            return data
         ch = channels.setdefault(channel_id, {})
-        if activation is not None:
+        if activation is not None and ch.get("activation") != activation:
             ch["activation"] = activation
-        if agent is not None:
+            changed.append("activation")
+        if agent is not None and ch.get("agent") != agent:
             ch["agent"] = agent
+            changed.append("agent")
         return data
 
     try:
@@ -1082,6 +1102,7 @@ def _persist_channel_config(
         raise ValueError(f"Failed to read config: {e}") from e
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
+    return changed
 
 
 class _PendingApproval:

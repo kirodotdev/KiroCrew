@@ -11,6 +11,7 @@ single subsystem belongs in [../modules/](../modules/README.md) instead.
 | [prompt-optimizer.md](prompt-optimizer.md) | Rewriting a draft prompt on demand, and the paste-forwarding surface. |
 | [app-notifications.md](app-notifications.md) | How an app publishes a notification to the local bus. |
 | [inline-action-buttons.md](inline-action-buttons.md) | Agent-proposed buttons rendered inline in chat. |
+| [recipes.md](recipes.md) | Seams for an edition-supplied recipes app: the `recipes` manifest vocabulary plus brokered Slack channel provisioning and routing. Core ships no recipes implementation. |
 | [workflow-chat-cards.md](workflow-chat-cards.md) | Rendering a workflow run's progress as a chat card. |
 | [steering-viewer.md](steering-viewer.md) | Viewing the steering files a session loaded. |
 | [stt-streaming.md](stt-streaming.md) | Live speech-to-text partials in the composer. |

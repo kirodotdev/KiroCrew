@@ -884,6 +884,159 @@ class PublishProviderConfig:
 
 
 # ---------------------------------------------------------------------------
+# Recipes — interactive, user-personalized resource installs (Slack channels,
+# customizable crons). See docs/system-specs/features/recipes.md.
+# Recipes are *declared* in the manifest and validated here; core ships no
+# installer, so nothing in this repo acts on the block. An edition-supplied app
+# tagged ``recipes-provider`` owns the install/update/cleanup lifecycle.
+# ---------------------------------------------------------------------------
+
+# Maximum length for the channelNamePart segment used in Slack channel naming
+# ({alias}-{channelNamePart}-kc-{ts}). Slack channel names are capped at 80
+# chars; 15 here leaves room for prefix, suffix, and a unique timestamp.
+_RECIPE_CHANNEL_NAME_PART_MAX = 15
+
+# Allowed values for SlackRecipe.activation. Mirrors ChannelConfig.activation
+# in kiro_crew.config.loader. Update both together if either changes.
+_SLACK_ACTIVATION_VALUES = frozenset({"always", "mention", "observe"})
+
+
+@dataclass
+class SlackRecipe:
+    """A Slack channel recipe — creates a private channel and routes an agent.
+
+    Fields baked from manifest (not prompted at install): ``name``,
+    ``description``, ``channelNamePart``, ``purpose``.
+    Prompted at install: full channel name (default uses ``channelNamePart``),
+    ``agent``, ``activation``.
+    """
+
+    name: str = ""  # kebab-case, unique within app
+    description: str = ""  # one-line summary shown in `recipes list`
+    channelNamePart: str = ""  # ≤15 chars; used in {alias}-{part}-kc-{ts}  # noqa: N815
+    agent: str = ""  # default agent (prompt overridable)
+    activation: str = "always"  # always | mention | observe (prompt overridable)
+    purpose: str = ""  # optional Slack channel purpose override; default derived from description
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": self.name,
+            "description": self.description,
+            "channelNamePart": self.channelNamePart,
+            "agent": self.agent,
+            "activation": self.activation,
+        }
+        if self.purpose:
+            d["purpose"] = self.purpose
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SlackRecipe:
+        return cls(
+            name=str(data.get("name", "")),
+            description=str(data.get("description", "")),
+            channelNamePart=str(data.get("channelNamePart", "")),  # noqa: N815
+            agent=str(data.get("agent", "")),
+            activation=str(data.get("activation", "always")),
+            purpose=str(data.get("purpose", "")),
+        )
+
+
+@dataclass
+class CronRecipe:
+    """A cron job recipe — creates a scheduled job with a templated prompt.
+
+    Exactly one of ``schedule`` or ``everySecs`` must be specified.
+    Exactly one of ``promptFile`` or ``promptText`` must be specified — the
+    cron job needs work to do.  ``promptFile`` is resolved relative to the
+    app root and may not contain ``..``.
+
+    Fields baked from manifest: ``name``, ``description``, ``channelNamePart``,
+    ``promptFile`` / ``promptText``, ``everySecs``, ``persistentSession``,
+    ``silent``.  Prompted at install: ``agent``, ``schedule``
+    (when set, not for ``everySecs``-based recipes), output channel name
+    (when ``channelNamePart`` is set).
+    """
+
+    name: str = ""  # kebab-case, unique within app
+    description: str = ""
+    schedule: str = ""  # 5-field cron expression; XOR with everySecs
+    everySecs: int = 0  # interval in seconds; XOR with schedule  # noqa: N815
+    agent: str = ""  # default agent (prompt overridable)
+    channelNamePart: str = ""  # if set, creates an output channel  # noqa: N815
+    promptFile: str = ""  # path relative to app root; XOR with promptText  # noqa: N815
+    promptText: str = ""  # inline prompt; XOR with promptFile  # noqa: N815
+    persistentSession: bool = True  # carry context between runs (maps to CronEntry)  # noqa: N815
+    silent: bool = False  # suppress dashboard notifications (matches CronEntry)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": self.name,
+            "description": self.description,
+            "agent": self.agent,
+        }
+        if self.schedule:
+            d["schedule"] = self.schedule
+        if self.everySecs:
+            d["everySecs"] = self.everySecs
+        if self.channelNamePart:
+            d["channelNamePart"] = self.channelNamePart
+        if self.promptFile:
+            d["promptFile"] = self.promptFile
+        if self.promptText:
+            d["promptText"] = self.promptText
+        if not self.persistentSession:
+            d["persistentSession"] = False
+        if self.silent:
+            d["silent"] = True
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CronRecipe:
+        return cls(
+            name=str(data.get("name", "")),
+            description=str(data.get("description", "")),
+            schedule=str(data.get("schedule", "")),
+            everySecs=int(data.get("everySecs", 0)),  # noqa: N815
+            agent=str(data.get("agent", "")),
+            channelNamePart=str(data.get("channelNamePart", "")),  # noqa: N815
+            promptFile=str(data.get("promptFile", "")),  # noqa: N815
+            promptText=str(data.get("promptText", "")),  # noqa: N815
+            persistentSession=bool(data.get("persistentSession", True)),  # noqa: N815
+            silent=bool(data.get("silent", False)),
+        )
+
+
+@dataclass
+class RecipesConfig:
+    """Recipes section of an app manifest.
+
+    Holds the two recipe types as parallel arrays (flat schema, no spec
+    wrapper, type implicit from array membership).
+    """
+
+    slack: list[SlackRecipe] = field(default_factory=list)
+    crons: list[CronRecipe] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.slack:
+            d["slack"] = [r.to_dict() for r in self.slack]
+        if self.crons:
+            d["crons"] = [r.to_dict() for r in self.crons]
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecipesConfig:
+        # ``or []`` rather than a ``.get`` default: a manifest carrying an
+        # explicit ``"slack": null`` returns None from ``.get``, and iterating
+        # that raises TypeError out of install_app rather than validating.
+        slack = [SlackRecipe.from_dict(r) for r in (data.get("slack") or []) if isinstance(r, dict)]
+        crons = [CronRecipe.from_dict(r) for r in (data.get("crons") or []) if isinstance(r, dict)]
+        return cls(slack=slack, crons=crons)
+
+
+# ---------------------------------------------------------------------------
 # Main AppManifest
 # ---------------------------------------------------------------------------
 
@@ -998,6 +1151,7 @@ _KNOWN_FIELDS = frozenset(
         "dependencies",
         "publishProvider",
         "notifications",
+        "recipes",
     }
 )
 
@@ -1058,6 +1212,9 @@ class AppManifest:
 
     # --- Notifications (RFC local notification bus, Phase 2) ---
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+
+    # --- Recipes (interactive, user-personalized installs) ---
+    recipes: RecipesConfig = field(default_factory=RecipesConfig)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -1177,6 +1334,84 @@ class AppManifest:
         # Notification channel validation (RFC Phase 2: 8-channel cap, kebab ids)
         errors.extend(self.notifications.validate())
 
+        # Recipes validation
+        errors.extend(self._validate_recipes())
+
+        return errors
+
+    def _validate_recipes(self) -> list[str]:
+        """Validate recipes section. Returns list of errors."""
+        errors: list[str] = []
+        seen_names: set[tuple[str, str]] = set()  # (type, name)
+
+        for sr in self.recipes.slack:
+            ctx = f"recipes.slack[{sr.name!r}]"
+            if not sr.name:
+                errors.append("recipes.slack entry missing required field: name")
+                continue
+            if not KEBAB_RE.match(sr.name):
+                errors.append(f"{ctx} name must be kebab-case, got: {sr.name!r}")
+            key = ("slack", sr.name)
+            if key in seen_names:
+                errors.append(f"{ctx} duplicate recipe name within recipes.slack")
+            seen_names.add(key)
+            if not sr.description:
+                errors.append(f"{ctx} missing required field: description")
+            if not sr.channelNamePart:
+                errors.append(f"{ctx} missing required field: channelNamePart")
+            elif len(sr.channelNamePart) > _RECIPE_CHANNEL_NAME_PART_MAX:
+                errors.append(
+                    f"{ctx} channelNamePart must be ≤{_RECIPE_CHANNEL_NAME_PART_MAX} chars, "
+                    f"got {len(sr.channelNamePart)}: {sr.channelNamePart!r}"
+                )
+            if not sr.agent:
+                errors.append(f"{ctx} missing required field: agent")
+            if sr.activation not in _SLACK_ACTIVATION_VALUES:
+                errors.append(
+                    f"{ctx} activation must be one of "
+                    f"{sorted(_SLACK_ACTIVATION_VALUES)}, got: {sr.activation!r}"
+                )
+
+        for cr in self.recipes.crons:
+            ctx = f"recipes.crons[{cr.name!r}]"
+            if not cr.name:
+                errors.append("recipes.crons entry missing required field: name")
+                continue
+            if not KEBAB_RE.match(cr.name):
+                errors.append(f"{ctx} name must be kebab-case, got: {cr.name!r}")
+            key = ("cron", cr.name)
+            if key in seen_names:
+                errors.append(f"{ctx} duplicate recipe name within recipes.crons")
+            seen_names.add(key)
+            if not cr.description:
+                errors.append(f"{ctx} missing required field: description")
+            if not cr.agent:
+                errors.append(f"{ctx} missing required field: agent")
+            # schedule XOR everySecs (exactly one required)
+            if bool(cr.schedule) == bool(cr.everySecs):
+                if cr.schedule and cr.everySecs:
+                    errors.append(
+                        f"{ctx} must specify exactly one of 'schedule' or 'everySecs', not both"
+                    )
+                else:
+                    errors.append(f"{ctx} must specify either 'schedule' or 'everySecs'")
+            # promptFile XOR promptText (exactly one required)
+            if bool(cr.promptFile) == bool(cr.promptText):
+                if cr.promptFile and cr.promptText:
+                    errors.append(
+                        f"{ctx} must specify exactly one of 'promptFile' or 'promptText', "
+                        f"not both"
+                    )
+                else:
+                    errors.append(f"{ctx} must specify either 'promptFile' or 'promptText'")
+            if cr.promptFile and ".." in cr.promptFile:
+                errors.append(f"{ctx} promptFile contains path traversal: {cr.promptFile!r}")
+            if cr.channelNamePart and len(cr.channelNamePart) > _RECIPE_CHANNEL_NAME_PART_MAX:
+                errors.append(
+                    f"{ctx} channelNamePart must be ≤{_RECIPE_CHANNEL_NAME_PART_MAX} chars, "
+                    f"got {len(cr.channelNamePart)}: {cr.channelNamePart!r}"
+                )
+
         return errors
 
     def signing_payload(self) -> bytes:
@@ -1266,6 +1501,9 @@ class AppManifest:
         notif_d = self.notifications.to_dict()
         if notif_d:
             d["notifications"] = notif_d
+        recipes_d = self.recipes.to_dict()
+        if recipes_d:
+            d["recipes"] = recipes_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -1332,6 +1570,13 @@ class AppManifest:
             else NotificationsConfig()
         )
 
+        recipes_raw = data.get("recipes", {})
+        recipes_cfg = (
+            RecipesConfig.from_dict(recipes_raw)
+            if isinstance(recipes_raw, dict)
+            else RecipesConfig()
+        )
+
         return cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -1359,6 +1604,7 @@ class AppManifest:
             platform=platform_cfg,
             publishProvider=publish_provider,
             notifications=notifications,
+            recipes=recipes_cfg,
             tags=[str(t) for t in data.get("tags", []) if t],
             jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
             extra=extra,
