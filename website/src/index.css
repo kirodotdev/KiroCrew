@@ -1593,14 +1593,19 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   align-items:center;
   gap:12px}
 /* Mobile: the centre track holds the trigger in its icon-only form rather than
-   the full-width one, sized `auto` so it sits next to the identity group instead
-   of floating mid-header. It stays a grid child of its own -- NOT a third
-   sibling inside the actions group, which would put three action controls in one
-   horizontal row (website/AUTOSDE.yaml max-two-buttons-per-row) -- and it also
-   keeps the three tracks matched to three children, so the actions group cannot
-   land in the centre track by auto-placement. */
+   the full-width one, sized `auto` so the track costs only the icon. The side
+   tracks stay the same `minmax(0,1fr)` pair as on desktop, so the trigger is
+   window-centred at every width -- one placement for the control instead of a
+   jump to the left edge at 767px, which read as the button having been shoved
+   there under width pressure.
+
+   It stays a grid child of its own -- NOT a third sibling inside the actions
+   group, which would put three action controls in one horizontal row
+   (website/AUTOSDE.yaml max-two-buttons-per-row) -- and that also keeps the
+   three tracks matched to three children, so the actions group cannot land in
+   the centre track by auto-placement. */
 @media (max-width:767px){
-  .topbar{grid-template-columns:auto auto minmax(0,1fr)}
+  .topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 }
 
 /* Each side group is a size-query container. Inline-size containment also stops
@@ -1624,20 +1629,15 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
    re-clips it, more lets real content escape into the header's padding. */
 .tb-right{justify-content:flex-end;gap:.375rem;padding:4px 4px 0 0;margin:-4px -4px 0 0}
 
-/* …except where the track asks the group for a size. The containment above is
-   sound while both side tracks are `minmax(0,1fr)`, because the window sizes them
-   and the contents only adapt. The narrow rule makes the identity track `auto`,
-   which does the opposite: it asks the item for a content size, and an
-   inline-size container has none to give. The track then collapsed to this
-   group's own padding -- 16px measured, `16px 28px 298px` for the three tracks --
-   and `overflow:hidden` clipped the 36px menu button down to an 8px sliver, so
-   the only route to the nav on a phone was invisible.
-   Dropped rather than worked around: nothing queries this group. Every
-   `@container` rung below targets a descendant of `.tb-right`. Must sit AFTER the
-   declaration above, which is unconditional and would otherwise win on order. */
-@media (max-width:767px){
-  .tb-left{container-type:normal}
-}
+/* Both side tracks are `minmax(0,1fr)` at EVERY width, and that is load-bearing
+   for the containment above, not just for centring. A side track sized `auto`
+   asks its item for a content size, and an inline-size container has none to
+   give: when the narrow rule made the identity track `auto`, the track collapsed
+   to that group's own padding -- 16px measured, `16px 28px 298px` for the three
+   tracks -- and `overflow:hidden` clipped the 36px menu button down to an 8px
+   sliver, leaving a phone with no visible route to the nav at all. Only the
+   centre track, whose item is not a size container, may be `auto`. Pinned by
+   test/topbarMenuButtonNarrow.test.ts. */
 
 /* The collapse ladder. Each rung is keyed off the GROUP's own width, so it
    responds to the space actually handed to it rather than to a viewport

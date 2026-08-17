@@ -124,18 +124,19 @@ function TopBar() {
   )
 }
 
-/** Mobile form: no centre track, search rides in the actions group as an icon. */
+/** Mobile form: the icon-only search is its OWN grid child in the window-centred
+ *  centre track, exactly as App.tsx renders it -- not a member of the actions
+ *  group, which would put three action controls in one horizontal row. */
 function TopBarMobile() {
   return (
     <header className="topbar topbar-glass relative pl-3 pr-3" data-topbar style={{ height: 42 }}>
       <div className="tb-left relative h-full px-2">
         <button className="p-2 rounded-md bg-transparent border-none text-muted shrink-0">☰</button>
       </div>
-      <div />
+      <button className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center shrink-0">
+        <Search size={14} />
+      </button>
       <div className="tb-right relative">
-        <button className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center shrink-0">
-          <Search size={14} />
-        </button>
         <div className="flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
           <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span className="w-px h-3.5 bg-border shrink-0" />

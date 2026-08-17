@@ -1837,8 +1837,8 @@ export default function App() {
         </div>
         {/* Centre track: the ⌘K trigger. A flow item, not an overlay — its width
             is the track's width, so it can never sit under a sibling cluster and
-            never has to be dropped to stay clear of one. On mobile the centre
-            track holds nothing and the trigger moves into the actions group. */}
+            never has to be dropped to stay clear of one. On mobile the same
+            track holds the icon-only form below. */}
         {!isMobile && (
           <button
             type="button"
@@ -1851,10 +1851,12 @@ export default function App() {
             <span className="text-[13px] truncate min-w-0">{i18nT('app.k_search_for_anything')}</span>
           </button>
         )}
-        {/* Mobile centre track: the same trigger in its icon-only form. A grid
-            child of its own, not a third sibling inside the actions group --
-            three action controls in one horizontal row is what
-            website/AUTOSDE.yaml's max-two-buttons-per-row forbids. */}
+        {/* Mobile centre track: the same trigger in its icon-only form, in the
+            same window-centred track the desktop one uses, so the control does
+            not change place at the breakpoint. A grid child of its own, not a
+            third sibling inside the actions group -- three action controls in one
+            horizontal row is what website/AUTOSDE.yaml's max-two-buttons-per-row
+            forbids. */}
         {isMobile && (
           <button
             type="button"
