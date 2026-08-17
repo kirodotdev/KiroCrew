@@ -21,10 +21,12 @@ import {
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
 import { MermaidBlock } from './MermaidBlock'
+import { NoteCode } from './NoteCode'
 import { NoteImage } from './NoteImage'
 import {
   FM_RE,
   LIST_MARKER_RE,
+  fenceLang,
   indentPx,
   parseMermaidBlock,
   parseTable,
@@ -243,6 +245,9 @@ export function Preview({
   let inCode = false
   let codeBuf: string[] = []
   let codeStart = 0
+  // Language named by the fence that opened the current block, carried from the
+  // opening line to the closing one because that is where the block is emitted.
+  let codeLang: string | undefined
   /** Last line swallowed by a multi-line block, so the loop skips past it. */
   let skipTo = -1
 
@@ -361,26 +366,16 @@ export function Preview({
           blk(
             codeStart,
             idx,
-            <pre
-              style={{
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                padding: '10px',
-                fontSize: '12px',
-                overflowX: 'auto',
-                fontFamily: FONT_MONO,
-              }}
-            >
-              {codeBuf.join('\n')}
-            </pre>,
+            <NoteCode code={codeBuf.join('\n')} lang={codeLang} />,
             { fontSize: '12px', fontFamily: FONT_MONO },
             { split: false },
           ),
         )
         codeBuf = []
+        codeLang = undefined
       } else {
         codeStart = idx
+        codeLang = fenceLang(line)
       }
       inCode = !inCode
       return

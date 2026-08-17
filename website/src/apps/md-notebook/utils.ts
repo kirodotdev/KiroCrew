@@ -192,6 +192,26 @@ export function noteDirPath(
   return slash === -1 ? root : `${root}/${notePath.slice(0, slash)}`
 }
 
+/**
+ * Language named by a fence's opening line, or undefined when it names none.
+ *
+ * Only the first word of the info string counts, because CommonMark lets the
+ * rest carry anything (`js title="x"`, and Obsidian's own `mermaid {1-3}`), and
+ * highlight.js keys its grammars on that first word alone. It is lowercased and
+ * length-capped: the value reaches highlight.js as a grammar name, so a note
+ * cannot turn a fence into a long or oddly-cased probe of the registry.
+ *
+ * Undefined for a bare fence is the point, not an omission: the caller uses it
+ * to leave unlabelled blocks uncoloured rather than letting the highlighter
+ * guess a grammar for a log or a directory tree.
+ */
+export function fenceLang(line: string): string | undefined {
+  const info = line.replace(/^\s*`{3,}/, '').trim()
+  if (!info) return undefined
+  const word = /^[A-Za-z0-9+#._-]{1,20}/.exec(info)
+  return word ? word[0].toLowerCase() : undefined
+}
+
 export function shiftListItem(
   text: string,
   pos: number,
