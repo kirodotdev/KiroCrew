@@ -22,7 +22,7 @@ def _make_app() -> web.Application:
 @pytest.fixture
 def mock_sel():
     with patch("kiro_crew.sel.sel") as m, \
-         patch("kiro_crew.security.is_sensitive_path", return_value=False):
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=False):
         instance = MagicMock()
         m.return_value = instance
         yield instance
@@ -133,7 +133,7 @@ async def test_rejects_sensitive_path(tmp_path, mock_sel):
     f = tmp_path / "creds.png"
     f.write_bytes(_PNG_HEADER)
     with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)), \
-         patch("kiro_crew.security.is_sensitive_path", return_value=True):
+         patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-raw?path={f}")
             assert resp.status == 403
@@ -185,3 +185,68 @@ class TestOpenRbNofollow:
         with pytest.raises(OSError) as exc_info:
             _open_rb_nofollow(str(link))
         assert exc_info.value.errno == errno.ELOOP
+
+
+# ── both file endpoints share ONE security envelope (#4031) ──────────────────
+
+
+def test_both_endpoints_route_through_the_shared_envelope():
+    """api_file_raw and api_file_download must not re-grow private copies.
+
+    The envelope (validate -> sensitive-path -> O_NOFOLLOW open -> fstat size
+    cap -> read) is a security boundary. It used to be spelled out per endpoint,
+    and the copies had already drifted -- they called different bindings of
+    is_sensitive_path, so an override applied to one was invisible to the other.
+    Three divergent copies mean a future hardening fix lands in some and leaves
+    the rest on the old posture.
+
+    Asserted on the source because the property is structural: what matters is
+    that neither endpoint opens files itself, not what a given call returns.
+    """
+    import inspect
+
+    from kiro_crew.dashboard.handlers import files as mod
+
+    for fn in (mod.api_file_raw, mod.api_file_download):
+        src = inspect.getsource(fn)
+        body = "\n".join(
+            line for line in src.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "_open_checked(" in body, f"{fn.__name__} must use the shared envelope"
+        assert "_open_rb_nofollow(" not in body, (
+            f"{fn.__name__} re-opened a file itself instead of going through "
+            "_open_checked -- that is how the copies drifted apart"
+        )
+        assert "is_sensitive_path" not in body, (
+            f"{fn.__name__} re-checks the sensitive path itself; the envelope owns it"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_envelope_still_rejects_a_symlink_for_both(tmp_path):
+    """The boundary's most load-bearing guard, exercised through both endpoints
+    now that only one implementation of it exists."""
+    from kiro_crew.dashboard.handlers import api_file_download
+
+    real = tmp_path / "real.png"
+    real.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    link = tmp_path / "link.png"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable on this platform/user")
+
+    app = web.Application()
+    app.router.add_get("/api/file-raw", api_file_raw)
+    app.router.add_get("/api/file-download", api_file_download)
+
+    for route in ("file-raw", "file-download"):
+        with patch(
+            "kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(link)
+        ), patch(
+            "kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=False
+        ), patch("kiro_crew.sel.sel") as m:
+            m.return_value = MagicMock()
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get(f"/api/{route}?path={link}")
+                assert resp.status == 403, route
