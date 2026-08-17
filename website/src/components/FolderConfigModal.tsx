@@ -261,8 +261,8 @@ export default function FolderConfigModal({
               placeholder={i18nT('components.folderConfigModal.name_placeholder')}
               value={draft.name}
               onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-              {...ime.composition}
-              onKeyDown={e => { if (e.key === 'Enter' && !ime.isComposing(e)) { e.preventDefault(); submit() } }}
+              {...ime.bindComposition()}
+              onKeyDown={e => { if (e.key === 'Enter' && ime.claimEnter(e)) submit() }}
             />
           </label>
 
@@ -315,8 +315,8 @@ export default function FolderConfigModal({
                   : i18nT('components.folderConfigModal.project_dir_placeholder')}
                 value={draft.projectDir}
                 onChange={e => setDraft(d => ({ ...d, projectDir: e.target.value }))}
-                {...ime.composition}
-                onKeyDown={e => { if (e.key === 'Enter' && !ime.isComposing(e)) { e.preventDefault(); submit() } }}
+                {...ime.bindComposition()}
+                onKeyDown={e => { if (e.key === 'Enter' && ime.claimEnter(e)) submit() }}
               />
               <Btn ref={browseRef} data-testid="folder-config-browse" onClick={() => setPickerOpen(true)}>
                 <FolderOpen size={13} /> {i18nT('components.folderConfigModal.browse')}

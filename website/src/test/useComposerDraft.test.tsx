@@ -416,10 +416,14 @@ describe('useComposerDraft', () => {
     it('does not submit between compositionStart and compositionEnd', () => {
       const { result } = setup()
       const submit = vi.fn()
+      const e = keyEvent()
       act(() => result.current.composition.onCompositionStart())
       // Both browser signals say "not composing" — only the tracked state knows.
-      act(() => result.current.submitOnEnter(keyEvent(), submit))
+      act(() => result.current.submitOnEnter(e, submit))
       expect(submit).not.toHaveBeenCalled()
+      // Declining the submit still consumes the key: the default action would put a
+      // line break in the question the user is composing.
+      expect(e.preventDefault).toHaveBeenCalled()
     })
 
     it('submits again once the composition has settled', () => {
@@ -445,9 +449,8 @@ describe('useComposerDraft', () => {
      * The recovery half of the guard's contract. A composition abandoned WITHOUT a
      * `compositionend` (focus moves away mid-composition, an OS-level IME cancel,
      * Escape in some IME/browser pairs) leaves the latch set. Without a recovery
-     * path every later Enter takes the composing early-return — which neither
-     * submits nor prevents default — so the surface silently inserts newlines and
-     * can never send again until it remounts.
+     * path every later Enter takes the composing early-return, and the surface can
+     * never send again until it remounts.
      */
     describe('abandoned-composition recovery', () => {
       const blurEvent = () =>

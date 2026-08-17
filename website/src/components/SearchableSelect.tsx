@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, Search } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { useImeGuard } from '../hooks/useImeGuard'
 
 import { i18nT } from '../i18n/t'
 
@@ -75,6 +76,7 @@ export default function SearchableSelect({
   const triggerRef = useRef<HTMLButtonElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const ime = useImeGuard()
 
   const selected = options.find(o => o.value === value)
 
@@ -154,13 +156,17 @@ export default function SearchableSelect({
             type="text"
             value={filter}
             onChange={e => setFilter(e.target.value)}
+            {...ime.bindComposition<HTMLInputElement>()}
             onKeyDown={e => {
-              // An IME confirms a composition with Enter. Letting that through
-              // would commit `filtered[0]` and close the picker instead of
-              // accepting the composed text — so every CJK user typing into this
-              // box would lose their input on the first Enter. `isComposing` is
-              // true for exactly the keystrokes the IME owns.
-              if (e.nativeEvent.isComposing) return
+              // An IME confirms a composition with Enter. Letting that through would
+              // commit `filtered[0]` and close the picker instead of accepting the
+              // composed text — so every CJK user typing into this box would lose their
+              // input on the first Enter. The guard is the host's rather than the native
+              // flag alone, because WebKit dispatches that committing keydown AFTER
+              // `compositionend`, where the native flag already reads false.
+              // `isComposing`, not `claimEnter`: this handler also carries the arrow keys,
+              // and claiming those would suppress list navigation.
+              if (ime.isComposing(e)) return
               onListKeyDown(e)
             }}
             placeholder={searchPlaceholder ?? i18nT('components.searchableSelect.search')}

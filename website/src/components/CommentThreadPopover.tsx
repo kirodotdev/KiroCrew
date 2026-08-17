@@ -173,9 +173,11 @@ export function CommentThreadPopover({
           rows={2}
           placeholder={i18nT('components.commentThreadPopover.reply')}
           onChange={e => setReply(e.target.value)}
-          {...ime.composition}
+          {...ime.bindComposition()}
           onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e) && reply.trim()) { e.preventDefault(); submit() }
+            // The emptiness test stays OUTSIDE the claim: on a blank box this Enter is
+            // not a submit at all, and taking it would cost the newline it means there.
+            if (e.key === 'Enter' && !e.shiftKey && reply.trim()) { if (ime.claimEnter(e)) submit() }
           }}
           className="w-full bg-bg-elevated border border-border rounded-md px-2 py-1.5 text-text text-[13px] font-body outline-none resize-none focus-ring leading-[18px]"
         />

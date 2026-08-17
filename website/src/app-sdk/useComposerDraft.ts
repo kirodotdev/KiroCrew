@@ -328,9 +328,10 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     // An IME sends a final Enter to COMMIT the candidate the user just chose. Reading
     // that as a submit sends a half-written question and is unrecoverable — the text is
     // already gone from the box. The guard is the host's, layered over the native flag,
-    // because the native flag alone is false on that Enter in some browsers.
-    if (ime.isComposing(e)) return
-    e.preventDefault()
+    // because the native flag alone is false on that Enter in some browsers. `claimEnter`
+    // consumes the key in both outcomes, so a swallowed Enter cannot fall through to the
+    // textarea and land a newline in the question instead.
+    if (!ime.claimEnter(e)) return
     submit()
   }, [ime])
 
@@ -338,12 +339,7 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     draft,
     setDraft,
     textareaRef,
-    composition: {
-      ...ime.composition,
-      // Focus leaving the box mid-composition means no `compositionend` is coming.
-      // Clear the latch, or the guard eats every Enter for the component's life.
-      onBlur: () => { ime.reset() },
-    },
+    composition: ime.bindComposition(),
     isComposing,
     mergeIntoDraft,
     picked,

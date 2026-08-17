@@ -83,10 +83,12 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
         rows={2}
         placeholder={i18nT('components.commentsSidebar.reply')}
         onChange={e => setText(e.target.value)}
-        {...ime.composition}
+        {...ime.bindComposition()}
         onKeyDown={e => {
-          if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e) && text.trim()) {
-            e.preventDefault(); onSubmit(text.trim())
+          // The emptiness test stays OUTSIDE the claim: on a blank box this Enter is not
+          // a submit at all, and taking it would cost the newline it means there.
+          if (e.key === 'Enter' && !e.shiftKey && text.trim()) {
+            if (ime.claimEnter(e)) onSubmit(text.trim())
           }
           if (e.key === 'Escape') { e.preventDefault(); onCancel() }
         }}
@@ -126,10 +128,10 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
         rows={2}
         placeholder={i18nT('components.commentsSidebar.edit_comment')}
         onChange={e => setText(e.target.value)}
-        {...ime.composition}
+        {...ime.bindComposition()}
         onKeyDown={e => {
-          if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e) && text.trim()) {
-            e.preventDefault(); e.stopPropagation(); onSubmit(text.trim())
+          if (e.key === 'Enter' && !e.shiftKey && text.trim()) {
+            if (ime.claimEnter(e)) { e.stopPropagation(); onSubmit(text.trim()) }
           }
           if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel() }
         }}
@@ -555,10 +557,10 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
               rows={2}
               placeholder={i18nT('components.commentsSidebar.add_a_comment_on_the_whole_artifact')}
               onChange={e => setAddText(e.target.value)}
-              {...ime.composition}
+              {...ime.bindComposition()}
               onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e) && addText.trim()) {
-                  e.preventDefault(); submitAdd()
+                if (e.key === 'Enter' && !e.shiftKey && addText.trim()) {
+                  if (ime.claimEnter(e)) submitAdd()
                 }
                 if (e.key === 'Escape') { e.preventDefault(); setAdding(false); setAddText('') }
               }}

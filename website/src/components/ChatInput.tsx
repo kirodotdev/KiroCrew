@@ -1820,14 +1820,18 @@ function ChatInput({
     const sendKey = sendOnEnter === 'ctrl-enter'
       ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey))
       : (e.key === 'Enter' && !e.shiftKey)
-    if (sendKey && !e.defaultPrevented && !ime.isComposing(e) && !optimizingRef.current) {
-      // preventDefault always fires when sendKey matches so the textarea's
-      // default Enter behavior (newline insert into draft) doesn't leak
-      // through when the gateway is offline. The action itself is gated on
-      // `connected` to match the disabled-state on the Send button.
+    if (sendKey && !e.defaultPrevented) {
+      // The key is ours as soon as it matches the send binding, so claim it before
+      // deciding what to do with it — `claimEnter` suppresses the default and returns
+      // false for an Enter the IME is committing. Every early return below therefore
+      // leaves the draft untouched instead of gaining a newline, which is what the
+      // browser does with an Enter nobody consumed.
+      // The send itself is gated on `connected` to match the Send button's disabled
+      // state, and skipped while a prompt optimization owns the draft.
       // While the composer is busy, Enter follows the split-button mode:
       // steer (default) acts on the text now; queue defers it.
-      e.preventDefault()
+      if (!ime.claimEnter(e)) return
+      if (optimizingRef.current) return
       if (connected) fireComposer()
       return
     }
@@ -2518,13 +2522,16 @@ function ChatInput({
             recordCaret()
           }}
           onKeyDown={handleKeyDown}
-          {...ime.composition}
+          {...ime.bindComposition<HTMLTextAreaElement>({
+            // The paste-hover preview dismisses on blur; the guard's latch reset rides
+            // in the binding itself, so this handler only carries what is local here.
+            onBlur: () => { if (hoverRef.current) hoverRef.current.handleMouseLeave() },
+          })}
           onPaste={handlePaste}
           onCopy={handleCopy}
           onCut={handleCut}
           onClick={handleTextareaClick}
           onFocus={prefetchSkills}
-          onBlur={() => { if (hoverRef.current) hoverRef.current.handleMouseLeave() }}
           onMouseUp={handleSelectSnap}
           onSelect={handleSelectSnap}
           onInput={handleInput}

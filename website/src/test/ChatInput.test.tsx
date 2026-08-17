@@ -255,6 +255,21 @@ describe('ChatInput', () => {
       }
     })
 
+    it('consumes the swallowed Enter so no newline lands in the draft', () => {
+      // The reported symptom: pick a candidate, press Enter to send, and the draft
+      // gains a line break instead. The guard is allowed to decline the submit; it is
+      // not allowed to let the textarea's default action edit the text. `fireEvent`
+      // returns false when a handler called preventDefault.
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="你好" onSend={onSend} sendOnEnter="enter" />)
+      const ta = screen.getByLabelText('Message input')
+      fireEvent.compositionStart(ta)
+      fireEvent.compositionEnd(ta)
+      const notCancelled = fireEvent.keyDown(ta, { key: 'Enter', isComposing: false })
+      expect(notCancelled).toBe(false)
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
     it('does not call onSend on Enter when sendOnEnter is false', () => {
       const onSend = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} value="test" onSend={onSend} sendOnEnter="ctrl-enter" />)

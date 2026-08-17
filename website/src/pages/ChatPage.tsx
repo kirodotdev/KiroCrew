@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useNavigationType, useSearchParams } from 're
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useImeGuard } from '../hooks/useImeGuard'
 import { useRailWidth } from '../hooks/useRailWidth'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -4951,7 +4952,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   )
 
   const cancelTitleRef = useRef(false)
-  const composingRef = useRef(false)
+  // The session-title field is an Enter-to-commit input; the guard owns both the
+  // composition latch and the keypress, so the rename cannot fire on the Enter that
+  // commits an IME candidate.
+  const titleIme = useImeGuard()
   useEffect(() => {
     const togglePin = () => {
       // Always-available collapse. Only guard is no-sessions (the sidebar is
@@ -6306,7 +6310,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md bg-bg-hover">
                   {currentSlot?.memory_mode === 'incognito' && <span title={i18nT('pages.chatPage.incognito_memory_writes_disabled')}><EyeOff size={13} className="shrink-0 text-warn" /></span>}
                   {currentSlot?.memory_mode === 'temporary' && <span title={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')}><VenetianMask size={13} className="shrink-0 text-aim" /></span>}
-                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} onBlur={() => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitleSlot(null) }} onCompositionStart={() => { composingRef.current = true }} onCompositionEnd={() => { composingRef.current = true; setTimeout(() => { composingRef.current = false }, 50) }} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && !composingRef.current) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { cancelTitleRef.current = true; setEditingTitleSlot(null) } }} />
+                  <Input className="session-header-title text-sm font-semibold text-muted font-body bg-transparent border-0 rounded-none p-0 m-0 min-w-0 flex-1 outline-none md:max-w-[50vw] focus:!shadow-none" size={Math.min(Math.max(titleDraft.length + 2, 6), 80)} autoFocus value={titleDraft} onChange={e => setTitleDraft(e.target.value)} {...titleIme.bindComposition<HTMLInputElement>({ onBlur: () => { if (!cancelTitleRef.current && titleDraft.trim() && activeSlot && titleDraft !== title) { dispatch(sseSlotTitle({ key: activeSlot, title: titleDraft.trim() })); api.renameSlot(activeSlot, titleDraft.trim()).catch(() => {}) } cancelTitleRef.current = false; setEditingTitleSlot(null) } })} onKeyDown={e => { if (e.key === 'Enter' && titleIme.claimEnter(e)) (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { titleIme.reset(); cancelTitleRef.current = true; setEditingTitleSlot(null) } }} />
                 </div>
               ) : (
                 <div className="cursor-text flex min-w-0 items-center gap-1 px-1.5 py-0.5 rounded-l-[2px] rounded-r-md group-hover/header:bg-bg-hover transition-colors">

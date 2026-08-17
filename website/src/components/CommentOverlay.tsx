@@ -85,8 +85,8 @@ function CommentPopover({ x, y, onSubmit, onCancel, containerRef, scrollRef }: {
           value={text}
           rows={1}
           onChange={e => { setText(e.target.value); autoGrow(e.target) }}
-          {...ime.composition}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e) && text.trim()) { e.preventDefault(); e.stopPropagation(); onSubmit(text.trim()) } if (e.key === 'Escape') { ime.reset(); e.preventDefault(); e.stopPropagation(); onCancel() } }}
+          {...ime.bindComposition()}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && text.trim()) { if (ime.claimEnter(e)) { e.stopPropagation(); onSubmit(text.trim()) } } if (e.key === 'Escape') { ime.reset(); e.preventDefault(); e.stopPropagation(); onCancel() } }}
           className="bg-bg-elevated border border-border rounded-md pl-3 pr-8 py-2 text-text text-sm font-body outline-none w-full transition-colors focus-ring resize-none leading-[21px] overflow-hidden"
         />
         <button
@@ -131,12 +131,11 @@ function CommentRow({ comment, onEdit, onRemove }: {
         <div className="text-muted text-[11px] font-mono truncate" title={comment.anchor}>"{comment.anchor.slice(0, 60)}{comment.anchor.length > 60 ? '…' : ''}"</div>
         {editing ? (
           <input ref={inputRef} value={draft} onChange={e => setDraft(e.target.value)}
-            {...ime.composition}
+            {...ime.bindComposition<HTMLInputElement>({ onBlur: commitEdit })}
             onKeyDown={e => {
-              if (e.key === 'Enter' && !ime.isComposing(e) && draft.trim()) commitEdit()
+              if (e.key === 'Enter' && draft.trim()) { if (ime.claimEnter(e)) commitEdit() }
               if (e.key === 'Escape') { ime.reset(); cancelledRef.current = true; setDraft(comment.text); setEditing(false) }
             }}
-            onBlur={commitEdit}
             className="bg-bg border border-border rounded px-1.5 py-0.5 text-text text-[13px] w-full outline-none focus-ring" />
         ) : (
           <div

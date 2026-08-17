@@ -364,14 +364,14 @@ function MentionInput({ agents, value, onChange, onSend }: {
         aria-label={i18nT('pages.channelPage.message_the_channel')}
         className="w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-none flex-1 transition-colors focus-ring resize-none"
         placeholder={i18nT('pages.channelPage.message_the_channel_type_to_mention')}
-        {...ime.composition}
+        {...ime.bindComposition()}
         onKeyDown={e => {
           if (show && active.length > 0) {
             if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => (s + 1) % active.length) }
             else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => (s - 1 + active.length) % active.length) }
-            else if (e.key === 'Enter' && !ime.isComposing(e)) { e.preventDefault(); pick(active[sel]) }
+            else if (e.key === 'Enter') { if (ime.claimEnter(e)) pick(active[sel]) }
             else if (e.key === 'Escape') { ime.reset(); setShow(false) }
-          } else if (e.key === 'Enter' && !e.shiftKey && !ime.isComposing(e)) { e.preventDefault(); onSend() }
+          } else if (e.key === 'Enter' && !e.shiftKey) { if (ime.claimEnter(e)) onSend() }
         }} />
     </div>
   )

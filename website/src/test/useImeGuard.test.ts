@@ -69,15 +69,25 @@ describe('useImeGuard', () => {
     expect(result.current.isComposing(key())).toBe(false)
   })
 
-  it('the bare composition binding carries ONLY the composition handlers', () => {
-    // Pins the docblock's claim: `composition` does not auto-reset. A consumer that
-    // needs abandoned-composition recovery wires `reset()` itself, or consumes
-    // `useComposerDraft`, whose composition binding adds the blur reset. Adding a
-    // handler here changes every `{...ime.composition}` spread in the tree — do it
-    // deliberately, with the consumer audit, not by accident.
+  it('the composition binding carries the latch recovery, and composes a caller onBlur', () => {
+    // There is no recovery-less binding to pick. A composition abandoned without a
+    // `compositionend` latches the guard, and since claimEnter consumes what it
+    // declines, a surface missing the reset stops sending SILENTLY. Shipping the reset
+    // with the tracking is what makes that unreachable rather than merely documented.
+    // A caller's own blur handler is composed, never replaced — the earlier shape,
+    // where a consumer spread the binding and then declared its own `onBlur`, dropped
+    // the reset without a word.
     const { result } = renderHook(() => useImeGuard())
-    expect(Object.keys(result.current.composition).sort())
-      .toEqual(['onCompositionEnd', 'onCompositionStart'])
+    expect(Object.keys(result.current.bindComposition()).sort())
+      .toEqual(['onBlur', 'onCompositionEnd', 'onCompositionStart'])
+
+    const onBlur = vi.fn()
+    const bound = result.current.bindComposition<HTMLTextAreaElement>({ onBlur })
+    act(() => result.current.onCompositionStart())
+    expect(result.current.isComposing(key())).toBe(true)
+    act(() => bound.onBlur({} as React.FocusEvent<HTMLTextAreaElement>))
+    expect(result.current.isComposing(key())).toBe(false)
+    expect(onBlur).toHaveBeenCalledTimes(1)
   })
 
   it('clears pending timer on unmount (no stale timer callbacks after teardown)', () => {
@@ -155,7 +165,10 @@ describe('useImeGuard', () => {
       expect(onEnter).toHaveBeenCalledTimes(1)
     })
 
-    it('Enter during composition does NOT preventDefault or invoke onEnter', () => {
+    it('Enter during composition is CONSUMED but does not invoke onEnter', () => {
+      // Not submitting is not the same as declining the key. `bindEnter` also serves
+      // multiline inputs, where an Enter left to the browser inserts a newline into
+      // the value the user is about to commit — so the swallow must still consume it.
       const onEnter = vi.fn()
       const preventDefault = vi.fn()
       const { result } = renderHook(() => useImeGuard())
@@ -169,8 +182,73 @@ describe('useImeGuard', () => {
         keyCode: 13,
       } as unknown as React.KeyboardEvent<HTMLInputElement>))
 
-      expect(preventDefault).not.toHaveBeenCalled()
+      expect(preventDefault).toHaveBeenCalledTimes(1)
       expect(onEnter).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('claimEnter', () => {
+    const claimKey = (opts: { isComposing?: boolean; keyCode?: number } = {}) => {
+      const preventDefault = vi.fn()
+      const e = {
+        preventDefault,
+        nativeEvent: { isComposing: opts.isComposing ?? false },
+        keyCode: opts.keyCode ?? 13,
+      } as unknown as React.KeyboardEvent
+      return { e, preventDefault }
+    }
+
+    it('claims the key and reports true when no composition is in flight', () => {
+      const { result } = renderHook(() => useImeGuard())
+      const { e, preventDefault } = claimKey()
+      expect(result.current.claimEnter(e)).toBe(true)
+      expect(preventDefault).toHaveBeenCalledTimes(1)
+    })
+
+    it('claims the key and reports false while composing', () => {
+      const { result } = renderHook(() => useImeGuard())
+      act(() => result.current.onCompositionStart())
+      const { e, preventDefault } = claimKey()
+      expect(result.current.claimEnter(e)).toBe(false)
+      // The whole point: a swallowed Enter is consumed, not handed to the browser.
+      expect(preventDefault).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves the default alone when a native signal reports composing', () => {
+      // The browser is consuming this keypress for the IME, so there is no newline
+      // to prevent — and the same press carries the candidate commit, which is not
+      // ours to cancel. Both native signals are checked; the tracked latch is not,
+      // because the latch outliving them is exactly the case that DOES need claiming.
+      const { result } = renderHook(() => useImeGuard())
+      for (const opts of [{ isComposing: true }, { keyCode: 229 }]) {
+        const { e, preventDefault } = claimKey(opts)
+        expect(result.current.claimEnter(e)).toBe(false)
+        expect(preventDefault).not.toHaveBeenCalled()
+      }
+    })
+
+    it('claims the key inside the post-compositionEnd window', () => {
+      // The window is the guard's own false-positive surface: a fast typist who picks a
+      // candidate and presses Enter lands in it on a browser that never needed the
+      // timer. Swallowing there is acceptable; leaking a newline into the draft is not.
+      vi.useFakeTimers()
+      try {
+        const { result } = renderHook(() => useImeGuard())
+        act(() => {
+          result.current.onCompositionStart()
+          result.current.onCompositionEnd()
+        })
+        const inWindow = claimKey()
+        expect(result.current.claimEnter(inWindow.e)).toBe(false)
+        expect(inWindow.preventDefault).toHaveBeenCalledTimes(1)
+
+        act(() => { vi.advanceTimersByTime(50) })
+        const after = claimKey()
+        expect(result.current.claimEnter(after.e)).toBe(true)
+        expect(after.preventDefault).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 })
