@@ -205,3 +205,30 @@ describe('UpdateModal', () => {
     })
   })
 })
+
+describe('aborted install recovery', () => {
+  beforeEach(() => {
+    install.mockReset()
+    install.mockResolvedValue(undefined)
+    ;(window as unknown as { updateAPI?: { install: () => Promise<unknown> } }).updateAPI = { install }
+  })
+  afterEach(() => {
+    delete (window as unknown as { updateAPI?: unknown }).updateAPI
+  })
+
+  it('an aborted install does not brick the modal for the next downloaded version', async () => {
+    const { push } = await mount({ state: 'downloaded', version: '9.9.9' })
+    fireEvent.click(
+      await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') }),
+    )
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+    // Main process aborts the handoff (stage invalidated) — error/install state.
+    await push({ state: 'error', phase: 'install', version: '9.9.9' })
+    // The superseding version is later downloaded: the modal must reopen LIVE.
+    await push({ state: 'downloaded', version: '9.9.10' })
+    const restart = await screen.findByRole('button', { name: i18nT('components.updateModal.restart_update') })
+    expect(restart).toBeEnabled()
+    fireEvent.click(restart)
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(2))
+  })
+})
