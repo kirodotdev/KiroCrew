@@ -360,10 +360,12 @@ def _build_recorder() -> _Build:
 
     # PeriodicExportingMetricReader starts its daemon ticker thread inside
     # __init__, so if any later step (MeterProvider construction, etc.) raises,
-    # the reader is already ticking. Hoist the list here so the except can reap
-    # every reader it started — otherwise an orphaned thread keeps running and
-    # spamming export WARNINGs for the life of the process even though metrics
-    # are "disabled".
+    # the reader is already ticking. This list is bound BEFORE the try — binding
+    # it inside would leave it unbound when the first reader's constructor
+    # raises, and the except would then fail on the reap instead of degrading —
+    # and each reader joins it once constructed, so the except reaps every one.
+    # Otherwise an orphaned thread keeps running and spamming export WARNINGs for
+    # the life of the process even though metrics are "disabled".
     started_readers: list = []
     try:
         directory = (
@@ -371,23 +373,24 @@ def _build_recorder() -> _Build:
             if cfg.local_dir
             else _default_metrics_dir()
         )
-        reader = PeriodicExportingMetricReader(
-            JsonlMetricExporter(
-                directory,
-                retention_days=cfg.retention_days,
-                max_total_mb=cfg.max_total_mb,
-            ),
-            export_interval_millis=float(cfg.export_interval_seconds) * 1000.0,
+        started_readers.append(
+            PeriodicExportingMetricReader(
+                JsonlMetricExporter(
+                    directory,
+                    retention_days=cfg.retention_days,
+                    max_total_mb=cfg.max_total_mb,
+                ),
+                export_interval_millis=float(cfg.export_interval_seconds) * 1000.0,
+            )
         )
-        readers = [reader]
-        started_readers = readers
         # Opt-in OTLP egress: only when telemetry.otlp_endpoint is set.
         # Empty endpoint => local-only, no network egress (the default).
         otlp_reader = _build_otlp_reader(cfg)
+        otlp_active = otlp_reader is not None
         if otlp_reader is not None:
-            readers.append(otlp_reader)
+            started_readers.append(otlp_reader)
         provider = MeterProvider(
-            metric_readers=readers,
+            metric_readers=started_readers,
             resource=Resource.create({"service.name": _SERVICE_NAME}),
             # One View per instrument, from _HISTOGRAM_BUCKETS_MS. Deliberately
             # NOT a catch-all `instrument_type=Histogram` View: the OTEL SDK
@@ -404,18 +407,17 @@ def _build_recorder() -> _Build:
                 for name, bounds in _HISTOGRAM_BUCKETS_MS.items()
             ],
         )
-        _provider_built = provider
         logger.info(
             "telemetry enabled; local JSONL sink at %s (otlp=%s)",
             directory,
-            "on" if len(readers) > 1 else "off",
+            "on" if otlp_active else "off",
         )
-        if len(readers) > 1:
+        if otlp_active:
             # Name the egress start on its own line: a file/CLI enable is trusted
             # and ungated, so this log is the only record that metrics began
             # leaving the machine.
             logger.info("telemetry OTLP export active; metrics leave this machine")
-        return _Build(MetricsRecorder(provider.get_meter(_SCOPE)), _provider_built, consent)
+        return _Build(MetricsRecorder(provider.get_meter(_SCOPE)), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: with
